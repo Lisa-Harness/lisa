@@ -1,0 +1,72 @@
+[project]
+name = "lisa-framework-workspace"
+version = "0.1.0"
+description = "Workspace for the public Lisa framework packages and examples"
+requires-python = ">=3.11"
+dependencies = [
+    "lisa-kernel",
+    "lisa-sdk",
+    "lisa-ext-clarity",
+    "lisa-ext-cloudflare",
+    "lisa-ext-github",
+    "lisa-ext-stripe",
+    "lisa-pack-core",
+    "lisa-pack-extras",
+    "little-lisa",
+    "rich>=13.7.0",
+    "typer>=0.12.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.10.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+    "ruff>=0.8.0",
+    "types-PyYAML>=6.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+    "kernel",
+    "lisa_sdk",
+    "sdk_extensions/clarity",
+    "sdk_extensions/cloudflare",
+    "sdk_extensions/github",
+    "sdk_extensions/stripe",
+    "sdk_packs/core",
+    "sdk_packs/extras",
+    "examples/little_lisa",
+]
+
+[tool.uv.sources]
+lisa-kernel = { workspace = true }
+lisa-sdk = { workspace = true }
+lisa-ext-clarity = { workspace = true }
+lisa-ext-cloudflare = { workspace = true }
+lisa-ext-github = { workspace = true }
+lisa-ext-stripe = { workspace = true }
+lisa-pack-core = { workspace = true }
+lisa-pack-extras = { workspace = true }
+little-lisa = { workspace = true }
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+markers = [
+    "live: hits real external signal or provider APIs and prints a tester-visible summary",
+    "integration: multi-module in-process test; may require local services",
+    "eval: deterministic agent regression evals (no model calls, no I/O)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "PL"]
+ignore = ["PLR0913"]

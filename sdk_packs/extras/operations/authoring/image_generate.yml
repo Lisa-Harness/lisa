@@ -1,0 +1,4 @@
+operation_id: image_generate
+description: Generate one image from a natural-language prompt with requested format and supported size hints.
+mode_allowlist: [image]
+preferred_model_id: gpt-5.4-mini

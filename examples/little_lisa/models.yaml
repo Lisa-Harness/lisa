@@ -1,0 +1,31 @@
+---
+version: 1
+mode_models:
+  discuss: glm-5.2:cloud
+  markdown: gemini-3-flash-preview:cloud
+  search: gemini-3-flash-preview:cloud
+  thinkabout: glm-5.2:cloud
+models:
+  - model_id: llama3.2:latest
+    provider: ollama
+
+  - model_id: gemma4:latest
+    provider: ollama
+
+  - model_id: gemini-3-flash-preview:cloud
+    provider: ollama
+    designations: [front-door, default]
+
+  - model_id: deepseek-v4-pro:cloud
+    provider: ollama
+
+  - model_id: deepseek-v4-flash:cloud
+    provider: ollama
+    
+  - model_id: glm-5.2:cloud
+    provider: ollama
+
+  - model_id: gpt-5.4
+    provider: azure_openai
+    reasoning_model: true
+    designations: [deep]

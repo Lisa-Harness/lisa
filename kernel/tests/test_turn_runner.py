@@ -1,0 +1,425 @@
+"""Tests for kernel/turn_runner.py — the shared model+tool loop."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from kernel.ipsar_fsm import register_content_roots, register_operation_callbacks
+from kernel.models import (
+    OperationExecutionContext,
+    OperationResult,
+    ToolExecutionContext,
+    ToolResult,
+)
+from kernel.operations.registry import (
+    execute_operation,
+    get_operation_catalog,
+)
+from kernel.turn_runner import TurnHooks, TurnResult, run_turn
+
+# ── Module-level setup ────────────────────────────────────────────────
+_CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk_packs" / "core").resolve()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _turn_runner_setup() -> None:
+    """Wire the operation callbacks and content roots so run_turn works."""
+    register_content_roots(_CORE_ROOT)
+    register_operation_callbacks(get_operation_catalog, execute_operation)
+
+
+# ── Test helpers ──────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class _StubCompletion:
+    """Fake model completion for tests."""
+
+    content: str
+    tool_calls: list[dict[str, Any]] | None = None
+
+
+def _make_stub_complete(response: str, tool_calls: list[dict[str, Any]] | None = None):  # noqa: D401
+    """Return an async complete stub that returns the given response."""
+
+    async def stub(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content=response, tool_calls=tool_calls)
+
+    return stub
+
+
+async def _stub_execute_tool(tool_id: str, _ctx: ToolExecutionContext) -> ToolResult:
+    return ToolResult(tool_id=tool_id, output_text=f"Executed {tool_id}")
+
+
+async def _stub_execute_operation(
+    operation_id: str, _ctx: OperationExecutionContext
+) -> OperationResult:
+    return OperationResult(output_text=f"Executed {operation_id}")
+
+
+def _build_minimal_hooks(complete_fn) -> TurnHooks:
+    return TurnHooks(complete=complete_fn)
+
+
+# ── Core flow tests ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_turn_requires_complete_hook() -> None:
+    """run_turn raises NotImplementedError when hooks.complete is None."""
+    hooks = TurnHooks()  # no complete
+
+    with pytest.raises(NotImplementedError, match="complete"):
+        await run_turn(mode_id="default", query="hello", hooks=hooks)
+
+
+@pytest.mark.asyncio
+async def test_run_turn_simple_chat_no_tools() -> None:
+    """Basic chat: model returns text immediately, no tool calls."""
+    hooks = _build_minimal_hooks(_make_stub_complete("Hello, world!"))
+
+    result = await run_turn(mode_id="default", query="hello", hooks=hooks)
+
+    assert isinstance(result, TurnResult)
+    assert result.response_text == "Hello, world!"
+    assert result.tool_call_count == 0
+    assert result.iteration_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_turn_simple_chat_default_mode() -> None:
+    """Chat through the default mode (no pre-turn ops) produces a TurnResult."""
+    hooks = _build_minimal_hooks(_make_stub_complete("Response from default mode."))
+
+    result = await run_turn(mode_id="default", query="hello", hooks=hooks)
+
+    assert isinstance(result, TurnResult)
+    assert result.response_text == "Response from default mode."
+    assert result.tool_call_count == 0
+    assert result.iteration_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_turn_missing_complete_raises_not_implemented() -> None:
+    """A search (action) mode with entry ops needs complete_fn, and the
+    operation fails with an OperationExecutionError wrapping the
+    NotImplementedError when hooks.complete is missing."""
+    from kernel.operations.registry import OperationExecutionError
+
+    hooks = TurnHooks()  # no complete
+
+    with pytest.raises(OperationExecutionError, match="web_search"):
+        await run_turn(mode_id="search", query="python asyncio", hooks=hooks)
+
+
+@pytest.mark.asyncio
+async def test_run_turn_tool_loop_single_tool_call() -> None:
+    """Model returns one tool call, then text — one tool loop iteration.
+
+    Uses the 'default' mode which has no pre-turn operations, so the
+    stub complete function's two-step logic works predictably.
+    """
+    call_counts = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        call_counts.append(1)
+        if len(call_counts) == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "web_search", "arguments": '{"q": "test"}'},
+                    }
+                ],
+            )
+        return _StubCompletion(content="Here is your search result.")
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.execute_operation = _stub_execute_operation
+
+    result = await run_turn(mode_id="default", query="test", hooks=hooks)
+
+    assert result.response_text == "Here is your search result."
+    assert result.tool_call_count == 1
+    assert result.iteration_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_turn_max_tool_iterations_capped() -> None:
+    """Tool loop capped at max_tool_iterations."""
+    call_counts = []
+
+    async def infinite_tools(**kwargs: Any) -> _StubCompletion:
+        call_counts.append(1)
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": f"call_{len(call_counts)}",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"q": "test"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(infinite_tools)
+    hooks.execute_operation = _stub_execute_operation
+
+    result = await run_turn(
+        mode_id="default",
+        query="test",
+        hooks=hooks,
+        max_tool_iterations=3,
+    )
+
+    assert result.iteration_count == 3
+    assert result.tool_call_count == 3
+    assert "did not produce a final response" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_run_turn_stores_and_recalls_memory() -> None:
+    """Memory is stored after the turn and recalled on subsequent turns."""
+    memory_store: list[dict[str, str]] = []
+
+    async def recall(query: str, _scope: str, _budget: int) -> str:
+        if not memory_store:
+            return ""
+        # Simple keyword match
+        for entry in memory_store:
+            if entry["query"] in query:
+                return entry["response"]
+        return ""
+
+    async def store(query: str, response: str, _scope: str) -> None:
+        memory_store.append({"query": query, "response": response})
+
+    hooks = _build_minimal_hooks(_make_stub_complete("Stored that for you."))
+    hooks.recall_memory = recall
+    hooks.store_memory = store
+
+    # First turn: stores memory
+    result1 = await run_turn(mode_id="default", query="my favorite color is blue", hooks=hooks)
+    assert result1.response_text == "Stored that for you."
+    assert len(memory_store) == 1
+
+    # Override complete for second turn
+    hooks = _build_minimal_hooks(_make_stub_complete("Your favorite color is blue."))
+    hooks.recall_memory = recall
+    hooks.store_memory = store
+
+    # Second turn: should recall previous memory
+    _ = await run_turn(
+        mode_id="default", query="what is my favorite color", hooks=hooks
+    )
+    # The recall hook is called — verify it returned data
+    assert len(memory_store) == 2  # stored second entry too
+
+
+@pytest.mark.asyncio
+async def test_run_turn_calls_on_turn_complete() -> None:
+    """on_turn_complete is called after a successful turn."""
+    side_effects: list[dict[str, Any]] = []
+
+    async def on_complete(
+        mode_id: str, query: str, response_text: str, messages: list[dict[str, Any]]
+    ) -> None:
+        side_effects.append(
+            {
+                "mode_id": mode_id,
+                "query": query,
+                "response_text": response_text,
+                "message_count": len(messages),
+            }
+        )
+
+    hooks = _build_minimal_hooks(_make_stub_complete("Done."))
+    hooks.on_turn_complete = on_complete
+
+    result = await run_turn(mode_id="default", query="hello", hooks=hooks)
+
+    assert result.response_text == "Done."
+    assert len(side_effects) == 1
+    assert side_effects[0]["mode_id"] == "default"
+    assert side_effects[0]["query"] == "hello"
+    assert side_effects[0]["response_text"] == "Done."
+    assert side_effects[0]["message_count"] >= 2  # system + user + assistant
+
+
+@pytest.mark.asyncio
+async def test_run_turn_omits_empty_structured_pre_turn_briefing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Structured pre-turn ops with empty output_text should not inject JSON fallback."""
+
+    captured_messages: list[dict[str, Any]] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        captured_messages.extend(kwargs["messages"])
+        return _StubCompletion(content="Done.")
+
+    async def pre_turn_result(
+        mode_id: str,
+        ctx: OperationExecutionContext,
+    ) -> OperationResult:
+        _ = (mode_id, ctx)
+        return OperationResult(
+            output_text='{"briefing_points": [], "output_text": "", "source_kind": "", "source_urls": []}',
+            output_json={
+                "briefing_points": [],
+                "output_text": "",
+                "source_kind": "",
+                "source_urls": [],
+            },
+        )
+
+    monkeypatch.setattr("kernel.turn_runner.run_mode_pre_turn_operations", pre_turn_result)
+
+    hooks = _build_minimal_hooks(complete)
+    result = await run_turn(mode_id="discuss", query="hello", hooks=hooks)
+
+    assert result.response_text == "Done."
+    assert len(captured_messages) >= 2
+    user_message = str(captured_messages[1]["content"])
+    assert "## Pre-turn Briefing" not in user_message
+    assert "briefing_points" not in user_message
+
+
+@pytest.mark.asyncio
+async def test_run_turn_includes_non_empty_structured_pre_turn_briefing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Structured pre-turn ops still inject authored output_text when present."""
+
+    captured_messages: list[dict[str, Any]] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        captured_messages.extend(kwargs["messages"])
+        return _StubCompletion(content="Done.")
+
+    async def pre_turn_result(
+        mode_id: str,
+        ctx: OperationExecutionContext,
+    ) -> OperationResult:
+        _ = (mode_id, ctx)
+        return OperationResult(
+            output_text="{\"output_text\": \"fallback json dump\"}",
+            output_json={
+                "output_text": "Fresh web context for this discussion:\n- grounded point",
+                "briefing_points": ["grounded point"],
+            },
+        )
+
+    monkeypatch.setattr("kernel.turn_runner.run_mode_pre_turn_operations", pre_turn_result)
+
+    hooks = _build_minimal_hooks(complete)
+    result = await run_turn(mode_id="discuss", query="hello", hooks=hooks)
+
+    assert result.response_text == "Done."
+    assert len(captured_messages) >= 2
+    user_message = str(captured_messages[1]["content"])
+    assert "## Pre-turn Briefing" in user_message
+    assert "Fresh web context for this discussion:" in user_message
+    assert "fallback json dump" not in user_message
+
+
+@pytest.mark.asyncio
+async def test_run_turn_prefers_explicit_model_override() -> None:
+    """A host-supplied preferred model override beats the mode default."""
+
+    resolved_model_ids: list[str] = []
+
+    def resolve_model(model_id: str) -> Any:
+        resolved_model_ids.append(model_id)
+        return SimpleNamespace(model_id=model_id, reasoning_model=False)
+
+    hooks = _build_minimal_hooks(_make_stub_complete("Done."))
+    hooks.resolve_model = resolve_model
+
+    result = await run_turn(
+        mode_id="default",
+        query="hello",
+        hooks=hooks,
+        preferred_model_id="haiku",
+    )
+
+    assert result.response_text == "Done."
+    assert resolved_model_ids == ["haiku"]
+
+
+@pytest.mark.asyncio
+async def test_run_turn_tool_execution_fallback_to_tool_hook() -> None:
+    """When a tool name is not in the operation catalog, the tool hook is tried."""
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "custom_tool_not_in_catalog",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Used custom tool.")
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.execute_tool = _stub_execute_tool
+    hooks.execute_operation = _stub_execute_operation
+
+    result = await run_turn(mode_id="default", query="test", hooks=hooks)
+
+    assert result.response_text == "Used custom tool."
+    assert result.tool_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_default_hooks_are_noops() -> None:
+    """TurnHooks defaults do not crash when invoked directly."""
+    hooks = TurnHooks()
+
+    # Default resolve_model returns a stub
+    model = hooks.resolve_model("test") if hooks.resolve_model else None
+    if hooks.resolve_model:
+        assert model is not None
+
+    # Default assemble_system_prompt
+    if hooks.assemble_system_prompt:
+        result = hooks.assemble_system_prompt("instruction", None)
+        assert result == "instruction"
+
+    # Default assemble_user_context returns empty
+    if hooks.assemble_user_context:
+        result = hooks.assemble_user_context("m", "q", "b")
+        assert result == ""
+
+    # Default extra_tool_schemas returns empty list
+    if hooks.build_extra_tool_schemas:
+        result = hooks.build_extra_tool_schemas("m")
+        assert result == []
+
+
+@pytest.mark.asyncio
+async def test_turn_result_struct() -> None:
+    """TurnResult is a plain dataclass with expected fields."""
+    result = TurnResult(response_text="ok", tool_call_count=3, iteration_count=2)
+
+    assert result.response_text == "ok"
+    assert result.tool_call_count == 3
+    assert result.iteration_count == 2

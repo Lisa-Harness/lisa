@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["kernel*"]
+
+[project]
+name = "lisa-kernel"
+version = "0.1.0"
+description = "Lisa kernel — runtime-neutral FSM engine, contracts, operation registry, and telemetry primitives"
+requires-python = ">=3.11"
+
+dependencies = [
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "pyyaml>=6.0",
+    "opentelemetry-api>=1.40.0,<2.0.0",
+    "opentelemetry-sdk>=1.40.0,<2.0.0",
+    "openai>=1.59.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+    "types-PyYAML>=6.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = [".."]
+testpaths = ["tests"]
+markers = [
+    "live: hits real external signal or provider APIs and prints a tester-visible summary",
+    "integration: multi-module in-process test; may require Azurite on localhost:10000",
+    "eval: deterministic agent regression evals (no model calls, no I/O)",
+]
