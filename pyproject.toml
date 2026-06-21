@@ -42,6 +42,7 @@ members = [
     "sdk_packs/core",
     "sdk_packs/extras",
     "examples/little_lisa",
+    "mcp_server",
 ]
 
 [tool.uv.sources]

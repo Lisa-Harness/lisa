@@ -72,6 +72,7 @@ from kernel.ipsar_fsm import (  # noqa: E402
     register_content_roots,
     register_operation_callbacks,
 )
+from kernel.mcp_client import MCPMemoryClient  # noqa: E402
 from kernel.lite_memory import LiteMemoryStore  # noqa: E402
 from kernel.model_manifest import ModelManifest  # noqa: E402
 from kernel.models import (  # noqa: E402
@@ -3670,7 +3671,7 @@ class LittleLisaStateProvider:
         self,
         *,
         thread_path: Path | None,
-        memory_store: LiteMemoryStore,
+        memory_store: MCPMemoryClient | LiteMemoryStore,
         max_thread_entries: int = _DEFAULT_THREAD_MAX_ENTRIES,
         max_memory_records: int = _DEFAULT_MEMORY_MAX_RECORDS,
     ) -> None:
@@ -3813,7 +3814,10 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
 
     from kernel.slice import SlicePolicy, SliceTuning  # noqa: PLC0415
 
-    memory_store = LiteMemoryStore(_runtime_memory_db_path())
+    # MCP Client wiring
+    mcp_command = os.getenv("LISA_MCP_COMMAND", "uv")
+    mcp_args = os.getenv("LISA_MCP_ARGS", "run --package mcp-server python -m mcp_server.server").split()
+    memory_store = MCPMemoryClient(mcp_command, mcp_args)
     slice_tuning_dict, explicit_budget_ms = _resolve_slice_tuning()
     slice_tuning = SliceTuning.from_mapping(slice_tuning_dict)
     state_provider = LittleLisaStateProvider(
@@ -4080,7 +4084,7 @@ async def _run_explicit_slice_command(*, message: str) -> str:
     _, explicit_budget_ms = _resolve_slice_tuning()
     provider = LittleLisaStateProvider(
         thread_path=_runtime_thread_path(),
-        memory_store=LiteMemoryStore(_runtime_memory_db_path()),
+        memory_store=MCPMemoryClient(os.getenv("LISA_MCP_COMMAND", "uv"), os.getenv("LISA_MCP_ARGS", "run --package mcp-server python -m mcp_server.server").split()),
         max_thread_entries=_resolve_int_env(
             _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES
         ),

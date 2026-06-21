@@ -1,0 +1,17 @@
+[project]
+name = "mcp-server"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Adam Migus", email = "adam@migus.org" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.28.0",
+    "pydantic>=2.13.4",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.17,<0.12.0"]
+build-backend = "uv_build"
