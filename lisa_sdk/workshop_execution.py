@@ -8,10 +8,11 @@ operations can reuse it without importing host orchestration modules.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from kernel.models import (
     SurfaceContext,

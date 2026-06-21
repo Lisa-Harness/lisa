@@ -2,9 +2,6 @@ from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
-# We will connect this to the actual lisa_framework context/memory backend.
-# For now, we define the schema and the FastMCP instance.
-from kernel.context.memory_store import MemoryStore # assuming this exists
 from kernel.lite_memory import LiteMemoryStore
 
 # Initialize the MCP Server
@@ -92,6 +89,27 @@ async def get_surface_context(
     if not records:
          return "No recent context."
     return "\n".join(f"- {r.content}" for r in records)
+
+import json
+@mcp.tool()
+async def list_memories(
+    user_slug: str,
+    memory_scope: str = "personal",
+    workspace_id: str = "default",
+    surface_id: str = "",
+    limit: int = 20
+) -> str:
+    """
+    Returns a raw JSON array string of memory records.
+    """
+    records = await store.list_memories(
+        user_slug=user_slug,
+        workspace_id=workspace_id,
+        memory_scope=memory_scope,
+        surface_id=surface_id,
+        limit=limit
+    )
+    return json.dumps([r.model_dump(mode="json") for r in records])
 
 if __name__ == "__main__":
     # If run directly as a script, start stdio server.

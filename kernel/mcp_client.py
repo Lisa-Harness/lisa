@@ -43,7 +43,7 @@ class MCPMemoryClient:
                     source_user_slug="",
                     operation_id="",
                     instruction_id="",
-                    memory_kind="",
+                    memory_kind="episodic",
                     confidence=1.0,
                     evidence_ids=[],
                     supersedes_id=0,
@@ -71,6 +71,32 @@ class MCPMemoryClient:
                 if result.content and len(result.content) > 0:
                     return result.content[0].text
                 return ""
+
+    async def list_memories(
+        self,
+        *,
+        user_slug: str,
+        workspace_id: str = "default",
+        memory_scope: str = "personal",
+        surface_id: str = "",
+        limit: int = 20,
+    ) -> list[MemoryRecord]:
+        async with stdio_client(self.server_params) as (read, write_stream):
+            async with ClientSession(read, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool("list_memories", arguments={
+                    "user_slug": user_slug,
+                    "memory_scope": memory_scope,
+                    "workspace_id": workspace_id,
+                    "surface_id": surface_id,
+                    "limit": limit
+                })
+                if result.content and len(result.content) > 0:
+                    import json
+                    text = result.content[0].text
+                    data = json.loads(text)
+                    return [MemoryRecord.model_validate(r) for r in data]
+                return []
 
     async def list_recent_memories(self, **kwargs: Any) -> list[MemoryRecord]:
         return []

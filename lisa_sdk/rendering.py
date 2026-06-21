@@ -1,9 +1,8 @@
 """Public rendering contracts shared by the host and external authors.
 
 These types live in ``lisa_sdk`` so extension and pack authors can contribute
-rich reply content and refresh-summary detail blocks without importing
-``app.*`` modules. Host layers still own wire conversion and channel-specific
-delivery.
+rich reply content and refresh-summary detail blocks.
+Host layers still own wire conversion and channel-specific delivery.
 """
 
 from __future__ import annotations

@@ -3777,7 +3777,10 @@ class LittleLisaStateProvider:
         """
         if _slice_budget_expired(policy, started):
             return 0, "", ""
-        records = self._memory_store._records  # noqa: SLF001
+        if not hasattr(self._memory_store, "_records"):
+            return 0, "", "eviction skipped: store is an external MCP client"
+            
+        records = getattr(self._memory_store, "_records", [])  # noqa: SLF001
         if len(records) <= self._max_memory_records:
             return 0, "", ""
 
@@ -3816,7 +3819,10 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
 
     # MCP Client wiring
     mcp_command = os.getenv("LISA_MCP_COMMAND", "uv")
-    mcp_args = os.getenv("LISA_MCP_ARGS", "run --package mcp-server python -m mcp_server.server").split()
+    mcp_args = os.getenv(
+        "LISA_MCP_ARGS", 
+        f"run --directory {FRAMEWORK_ROOT.absolute()} --package mcp-server python -m mcp_server.server"
+    ).split()
     memory_store = MCPMemoryClient(mcp_command, mcp_args)
     slice_tuning_dict, explicit_budget_ms = _resolve_slice_tuning()
     slice_tuning = SliceTuning.from_mapping(slice_tuning_dict)

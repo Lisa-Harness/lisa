@@ -8,10 +8,15 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "lisa-kernel",
     "mcp>=1.28.0",
     "pydantic>=2.13.4",
+    "sqlite-vec>=0.1.9",
 ]
 
 [build-system]
 requires = ["uv_build>=0.11.17,<0.12.0"]
 build-backend = "uv_build"
+
+[tool.uv.sources]
+lisa-kernel = { workspace = true }
