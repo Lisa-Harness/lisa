@@ -1,1 +1,9 @@
 # Custom Dictionary Words
+asyncio
+dataclasses
+evals
+isort
+mypy
+noqa
+pytest
+xfail
