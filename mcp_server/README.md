@@ -23,6 +23,8 @@ python -m mcp_server.server
 | --- | --- | --- |
 | `LISA_MCP_DB_PATH` | `.lisa_mcp_data/memories.json` | Path to the JSON-backed memory store file |
 
+Hosts that embed this server (e.g. Little Lisa via `kernel.mcp_client.MCPMemoryClient`) can inject `LISA_MCP_DB_PATH` through the subprocess `env` to pin storage to their own data-dir or memory-db without polluting the parent process environment. When the env var is unset, the server falls back to the relative default in its working directory.
+
 ## Tools
 
 ### `add_memory`

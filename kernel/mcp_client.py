@@ -1,4 +1,5 @@
 from typing import Any
+from pathlib import Path
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
 
@@ -6,8 +7,25 @@ from kernel.models import MemoryRecord, MemoryWriteRequest
 
 class MCPMemoryClient:
     """Uses MCP to communicate with the Context Server."""
-    def __init__(self, command: str, args: list[str]) -> None:
-        self.server_params = StdioServerParameters(command=command, args=args)
+
+    def __init__(
+        self,
+        command: str,
+        args: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | Path | None = None,
+    ) -> None:
+        # Hosts may pass env (e.g. {"LISA_MCP_DB_PATH": ...}) to pin the
+        # Context Server's storage location without polluting the parent
+        # process environment. When env is None the subprocess inherits the
+        # parent env unchanged.
+        self.server_params = StdioServerParameters(
+            command=command,
+            args=args,
+            env=env,
+            cwd=cwd,
+        )
 
     async def record_memory(self, request: MemoryWriteRequest | Any) -> MemoryRecord:
         if isinstance(request, MemoryWriteRequest):
