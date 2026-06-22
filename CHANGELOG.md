@@ -6,19 +6,84 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Added
 
-- `lisa-kernel`: runtime-neutral FSM engine, contracts, operation registry, and telemetry primitives.
-- `lisa-sdk`: author-facing helper contracts for packs, extensions, workshop execution, and rendering.
-- `lisa-ext-clarity`: public Clarity extension.
-- `lisa-ext-cloudflare`: public Cloudflare extension.
-- `lisa-ext-github`: public GitHub extension.
-- `lisa-ext-stripe`: public Stripe extension.
-- `lisa-pack-core`: baseline public modes, operations, and prompt assets.
+#### Kernel (`lisa-kernel`)
+
+- Runtime-neutral FSM engine (`ipsar_fsm.py`) with mode catalog loading, stage validation, transition tool schema, and operation lifecycle hooks (entry, pre-turn, post-turn).
+- IPSAR route resolution (`ipsar.py`) for detecting user-facing mode targets from natural-language messages.
+- Shared front-door routing engine (`frontdoor.py`) with fast-path regex matching, verifier-model confirmation, model-bounded routing fallback, and structured-output retry.
+- Turn runner (`turn_runner.py`) — the single model+tool loop shared by lightweight hosts and the full app, with `TurnHooks` extension points and three-phase execution (pre-turn → tool loop → post-turn).
+- Opportunistic slice system (`slice.py`) with pressure-model budget math: budget grows as a function of idle time, not a wall-clock tick.
+- Pydantic contracts (`models.py`) for surface context, route decisions, operation execution, tool execution, workflow FSM, workshop fan-out, memory, surf sessions, web search, intelligence pipeline, unified state, context evidence, anomaly alerts, domain knowledge, self-model, and more.
+- Provider gateway abstractions (`provider_core.py`) with `AzureOpenAIGateway`, `OpenAICompatibleGateway`, completion/embedding request/result dataclasses, and Anthropic usage extraction.
+- Model manifest loader (`model_manifest.py`) with YAML/JSON parsing, designation-based model resolution, and per-mode model overrides.
+- Content roots discovery (`content_roots.py`) via `lisa.extensions.content_roots` entry points and `SDK_CONTENT_ROOTS` env var.
+- Extension runtime contracts (`extension_runtime.py`) for scheduled jobs, state hydration, heartbeat context, digest sections, debug context, anomaly detectors, and context evidence builders.
+- Signal connector base class (`signal_connectors/base.py`) and data source base class (`data_sources/base.py`).
+- Brave Web Search integration (`web_search.py`) with configurable endpoint, market, and result count.
+- Durable surf session helpers (`surf_workflow.py`) for iterative browser workflows with TTL, trimming, and page/commentary tracking.
+- File-backed lite memory store (`lite_memory.py`) with keyword-overlap matching for local testing.
+- MCP memory client (`mcp_client.py`) for delegating memory operations to an MCP Context Server over stdio.
+- OpenAI function-tool schema builder (`openai_function_tools.py`) with strict-mode support.
+- Blank state provider (`state_providers.py`) for hosts that don't need memory.
+- OpenTelemetry span helpers (`telemetry.py`).
+- Kernel-owned settings (`config.py`) for surf, web search, and workshop budgets.
+- Extension harness (`testing/extension_harness.py`) for validating connectors and data sources without a host app.
+- Operation registry (`operations/registry.py`) for discovering and executing operations from packs.
+
+#### SDK (`lisa-sdk`)
+
+- Author-facing helper contracts for packs, extensions, workshop execution, and rendering.
+- `WorkshopExecutionService` (`workshop_execution.py`) for safe child-workflow fan-out with isolated session keys and structured concurrency.
+- `RichAttachment` and `RefreshSummarySection` rendering contracts (`rendering.py`) for host-neutral rich reply content.
+- SDK-owned settings (`config.py`) for heartbeat interval, signal timeout, memory recall limit, and surf/web search defaults.
+- Import-boundary test enforcing `lisa_sdk` isolation from private app modules.
+
+#### Extensions (`lisa-ext-*`)
+
+- `lisa-ext-clarity`: Microsoft Clarity live-insights signal connector with anomaly detection (rage clicks, JS errors), context evidence, heartbeat context, digest sections, refresh summary, poll job scheduling, PII sanitization, and blob storage helpers.
+- `lisa-ext-cloudflare`: Cloudflare signal connector with GraphQL analytics (worker requests/errors/CPU, edge status codes, KV/Durable Objects/D1 metrics, WAF events, Pages projects), anomaly detection, context evidence, heartbeat context, digest sections, and refresh summary.
+- `lisa-ext-github`: GitHub signal connector with repo status, commit info, workflow runs, open PRs, anomaly detection, context evidence, heartbeat context, digest sections, refresh summary, read-only code search/file excerpt/tree listing client, and write-capable PR creation client with protected-branch safety.
+- `lisa-ext-stripe`: Stripe billing signal connector with active/trialing subscriptions and MRR, context evidence, heartbeat context, digest sections, and refresh summary.
+
+#### Packs (`lisa-pack-*`)
+
+- `lisa-pack-core`: baseline public modes (default, discuss, learn, search, thinkabout, workshop), authored front-door routing prompts, user context templates, memory recall/synthesize operations, research workshop operation with planner+synthesis pipeline, and structured output contracts for discussion briefing and web search.
 - `lisa-pack-extras`: optional general-purpose modes and authoring operations.
-- `little-lisa`: local terminal host CLI with `--doctor`, `--setup`, `--version`, and interactive REPL.
-- Hermes installer scripts (`install.sh`, `install.ps1`) for one-command setup.
+
+#### Little Lisa (`little-lisa`)
+
+- Local terminal host CLI with seven subcommands: `cli` (interactive REPL), `desktop` (localhost web UI), `verify` (environment checks), `setup` (interactive provider configuration wizard), `modes` (list supported/installed modes), `models` (list configured models with designations), and `once` (single-turn execution).
+- Tray-first desktop mode: `little-lisa` with no arguments launches a system tray icon (Windows/macOS/Linux via `pystray`) that manages a desktop web host subprocess.
+- Local aiohttp desktop web server with token-authenticated chat API, health check, and last-turn context endpoint.
+- Manifest-driven model routing with `front-door`, `default`, and `deep` designations supporting `azure_openai`, `openai`, `anthropic`, and `ollama` providers.
+- Terminal streaming support (`--streaming none|stage|text|hybrid[:delay]`) with configurable character delay.
+- Structured JSONL turn logging with `--log`, `--no-log`, and `--log-level` options.
+- Front-door diagnostics via `/debug frontdoor` with planner reasoning, confidence scores, fallback tracking, and structured-output retry recording.
+- Runtime introspection commands: `/help capabilities`, `/settings`, `/debug context`, `/debug capabilities`, `/debug self`.
+- File-backed thread persistence with `--thread-dir` and `--no-thread` options.
+- Configurable artifacts root via `--data-dir` and memory store path via `--memory-db`.
+- `--user`, `--session-context`, `--timeout-profile`, `--timezone`, and `--state-snapshot` runtime options.
+- `prompt_toolkit` integration for command history and slash-command completion in CLI mode.
+- `LiteMemoryStore`-backed memory with `--memory-db` override.
+- `LittleLisaStateProvider` with bounded thread compaction and memory eviction via the slice system.
+- `LocalBlobIO` for file-backed blob operations used by Markdown artifact generation.
+
+#### MCP Server (`mcp-server`)
+
+- FastMCP server (`"Lisa Context Server"`) exposing four memory tools over stdio: `add_memory`, `search_memory`, `get_surface_context`, `list_memories`.
+- Surface-scoped privacy isolation enforced at the tool level.
+- `LiteMemoryStore`-backed with configurable database path via `LISA_MCP_DB_PATH`.
+
+#### Tooling & CI
+
+- Hermes installer scripts (`install.sh`, `install.ps1`) with provider selection (`ollama`, `openai`, `azure_openai`, `anthropic`, `google`), custom install directory/branch, and optional diagnostics skip.
 - CI matrix (Ubuntu, macOS, Windows × Python 3.11, 3.12).
 - PyPI publish workflow on `v*` tags.
+- `pytest` markers: `live` (real external APIs), `integration` (multi-module in-process), `eval` (deterministic agent regression, no model calls).
+- Import-boundary tests across all packages enforcing public/private separation.
 
 ### Changed
 
 - `little-lisa` turn logs now emit top-level resolved model fields and per-invocation token totals for both front-door planning and mode execution, making `turn.completed` JSONL entries readable without deep payload expansion.
+- Front-door routing retries once without `response_format` when the first structured-output call fails, using explicit JSON-only instructions before deciding fallback.
+- Slice budget is pressure-driven: budget grows as a function of idle time since the last slice finished, not a wall-clock tick. This is the canonical pattern for opportunistic house-keeping (reindex, eviction, sync) — everything not wall-clock bound is a candidate.

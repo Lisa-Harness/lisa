@@ -1,0 +1,236 @@
+# Kernel Architecture
+
+This document describes the architecture of `lisa-kernel`, the runtime-neutral engine at the center of the Lisa Framework. It is written for contributors who need to understand how the pieces fit together and for host authors who need to wire the kernel into their own applications.
+
+## Design Philosophy
+
+The kernel is **runtime-neutral** by design. It owns all contracts, abstractions, and core built-ins. It imports nothing from host apps, SDK extensions, or private packages. Hosts inject concrete implementations through protocols and callbacks.
+
+Key principles:
+
+- **Contracts over implementations**: The kernel defines Pydantic models, protocols, and dataclasses. Hosts provide the concrete wiring (model completion, tool execution, memory storage, blob I/O).
+- **Pressure, not a clock**: Background work uses an opportunistic slice model where budget grows as a function of idle time since the last slice finished. Wall-clock timers are reserved for heartbeat-driven jobs only.
+- **No compat or migration layers**: When a pattern changes, old code goes away. No shim layers, no dual-path code.
+- **Sensible defaults, externalize later**: Keep defaults working; defer config-driven knobs until the pattern is proven.
+
+## Module Map
+
+### Core Engine
+
+| Module | Responsibility |
+| --- | --- |
+| `turn_runner.py` | The single model+tool loop shared by all hosts. Executes pre-turn → tool loop → post-turn phases. Hosts wire behavior through `TurnHooks`. |
+| `frontdoor.py` | Shared front-door routing engine. Chooses which mode owns a natural-language turn using fast-path regex → verifier model → model-bounded routing fallback. |
+| `ipsar.py` | IPSAR route resolution. Detects which user-facing mode a slash-command or pattern-matched message targets. |
+| `ipsar_fsm.py` | Workflow FSM loader and runtime. Discovers mode definitions from disk, validates stage transitions, and provides operation lifecycle hooks. |
+| `slice.py` | Opportunistic house-keeping system. Budget is `base + max_deferred * (1 - 0.5^(gap/half_life))`, clamped to `hard_cap_ms`. |
+
+### Contracts & Models
+
+| Module | Responsibility |
+| --- | --- |
+| `models.py` | All runtime-neutral Pydantic contracts: surface context, route decisions, operation/tool execution, workflow FSM, workshop fan-out, memory, surf sessions, web search, intelligence pipeline, unified state, context evidence, anomaly alerts, domain knowledge, self-model. |
+| `provider_core.py` | Provider gateway abstractions: `AzureOpenAIGateway`, `OpenAICompatibleGateway`, completion/embedding request/result dataclasses, message normalization, and usage extraction. |
+| `extension_runtime.py` | Extension job and rendering contracts: `ScheduledExtensionJob`, `ExtensionRuntimeContext`, state hydration, heartbeat context, digest sections, debug context, anomaly detectors, context evidence builders. |
+
+### Discovery & Configuration
+
+| Module | Responsibility |
+| --- | --- |
+| `content_roots.py` | Discovers pack and extension roots from `lisa.extensions.content_roots` entry points and `SDK_CONTENT_ROOTS` env var. |
+| `model_manifest.py` | Loads and validates model manifests (YAML/JSON). Resolves models by designation (`front-door`, `default`, `deep`) and per-mode overrides. |
+| `config.py` | Kernel-owned settings: surf, web search, and workshop budgets. Loads from environment. |
+
+### Built-in Capabilities
+
+| Module | Responsibility |
+| --- | --- |
+| `web_search.py` | Brave Web Search integration. Configurable endpoint, market, and result count. |
+| `surf_workflow.py` | Durable surf session helpers for iterative browser workflows: TTL, trimming, page/commentary tracking, session persistence. |
+| `lite_memory.py` | File-backed JSON memory store with keyword-overlap matching. Intentionally minimal — for local testing only. |
+| `mcp_client.py` | MCP stdio client for delegating memory operations to an external Context Server. |
+| `openai_function_tools.py` | OpenAI function-tool schema builder with strict-mode support. |
+| `state_providers.py` | `BlankStateProvider` for hosts that don't need memory. |
+| `telemetry.py` | OpenTelemetry span helpers. |
+
+### Subpackages
+
+| Subpackage | Responsibility |
+| --- | --- |
+| `operations/` | Operation registry for discovering and executing operations from packs. |
+| `signal_connectors/` | `SignalConnector` base class for external service polling. |
+| `data_sources/` | `DataSource` base class for structured data ingestion. |
+| `testing/` | `extension_harness` for validating connectors and data sources without a host app. |
+| `context/` | App-layer context assembly (consumed by host, not exported as kernel contracts). |
+| `io/` | I/O abstractions. |
+| `intelligence/` | Intelligence pipeline models and processing. |
+| `domain_knowledge/` | Domain knowledge artifact management. |
+| `inference_profiles/` | Inference profile definitions. |
+
+## Turn Execution Flow
+
+A turn through the kernel follows this path:
+
+```mermaid
+sequenceDiagram
+    participant Host
+    participant TurnRunner
+    participant FrontDoor
+    participant IPSAR
+    participant FSM
+    participant Operations
+    participant Provider
+
+    Host->>TurnRunner: run_turn(mode_id, query, hooks)
+    
+    Note over TurnRunner: Pre-turn phase
+    TurnRunner->>FSM: run_mode_pre_turn_operations()
+    FSM->>Operations: execute_operation()
+    Operations-->>TurnRunner: OperationResult
+    
+    Note over TurnRunner: Tool loop (up to max_tool_iterations)
+    loop Tool loop
+        TurnRunner->>TurnRunner: assemble system + user prompts
+        TurnRunner->>Provider: hooks.complete(request)
+        Provider-->>TurnRunner: CompletionResult
+        alt has tool_calls
+            TurnRunner->>Host: hooks.execute_tool(tool_id, ctx)
+            Host-->>TurnRunner: ToolResult
+        else no tool_calls
+            Note over TurnRunner: Exit tool loop
+        end
+    end
+    
+    Note over TurnRunner: Post-turn phase
+    TurnRunner->>FSM: run_mode_post_turn_operations()
+    FSM->>Operations: execute_operation()
+    Operations-->>TurnRunner: OperationResult
+    
+    TurnRunner->>Host: hooks.on_turn_complete(result)
+    TurnRunner-->>Host: TurnResult
+```
+
+### Route Resolution
+
+For natural-language turns (non-slash-commands), the host first resolves the mode through the front-door router:
+
+```mermaid
+flowchart TD
+    A[User message] --> B{Slash command?}
+    B -->|Yes| C[IPSAR parse_route]
+    C --> D[Direct mode dispatch]
+    B -->|No| E{Fast-path regex match?}
+    E -->|Yes| F[Verifier model confirm]
+    F -->|Confirmed| D
+    F -->|Rejected| G[Model-bounded routing]
+    E -->|No| G
+    G -->|Success| D
+    G -->|Structured output fails| H[Retry without response_format]
+    H -->|Success| D
+    H -->|Fails| I[Fallback to default mode]
+    I --> D
+```
+
+### TurnHooks Extension Points
+
+`TurnHooks` is a dataclass that hosts populate with callbacks. Every hook is optional — hosts wire only what they need.
+
+| Hook | Signature | Purpose |
+| --- | --- | --- |
+| `resolve_model` | `(mode_id, preferred_model_id) -> model_def` | Resolve which model to use for a mode |
+| `complete` | `async (request: CompletionRequest) -> CompletionResult` | Execute a model completion |
+| `assemble_system_prompt` | `(mode_id, stage_id, ...) -> str` | Build the system prompt for a turn |
+| `assemble_user_context` | `(mode_id, query, ...) -> str` | Build user-specific context |
+| `build_extra_tool_schemas` | `(mode_id) -> list[dict]` | Add host-specific tool schemas |
+| `execute_tool` | `async (tool_id, ctx) -> ToolResult` | Execute a tool call |
+| `execute_operation` | `async (operation_id, ctx) -> OperationResult` | Execute an operation |
+| `recall_memory` | `async (query, scope, budget) -> str` | Recall relevant memories |
+| `store_memory` | `async (query, response, scope) -> None` | Store a new memory |
+| `on_turn_complete` | `async (result: TurnResult) -> None` | Post-turn callback |
+| `slice_tuning` | `() -> SliceTuning` | Return slice tuning parameters |
+| `pre_turn_slice` | `async (policy) -> SliceOutcome` | Run pre-turn house-keeping |
+| `post_turn_slice` | `async (policy) -> SliceOutcome` | Run post-turn house-keeping |
+| `explicit_slice` | `async (policy) -> SliceOutcome` | Run explicit house-keeping |
+| `last_slice_finished_at` | `() -> float \| None` | Return last slice completion time |
+
+## The Slice System
+
+The slice system (`slice.py`) is the kernel's approach to background work. Instead of cron or wall-clock timers, it uses a **pressure model**: the longer it has been since the last slice finished, the more budget the next slice gets.
+
+```plaintext
+budget_ms = base_budget_ms + max_deferred_ms * (1 - 0.5^(gap_seconds / pressure_half_life_seconds))
+```
+
+The budget is clamped to `hard_cap_ms`. The policy is split between pre-turn and post-turn shares (default: 40% pre-turn, 60% post-turn).
+
+Slice modes:
+
+- `NEVER`: slicing is disabled
+- `PRE_TURN`: run before each turn
+- `POST_TURN`: run after each turn
+- `EXPLICIT`: run only when explicitly requested
+
+This pattern is the canonical approach for all opportunistic house-keeping: reindex, eviction, sync, compaction. Heartbeat-driven jobs (wall-clock bound) stay on traditional schedulers.
+
+## Pack and Extension Discovery
+
+```mermaid
+flowchart LR
+    A[Host starts] --> B[content_roots.discover_installed_content_roots]
+    B --> C[Entry points: lisa.extensions.content_roots]
+    A --> D[content_roots.discover_configured_content_roots]
+    D --> E[SDK_CONTENT_ROOTS env var]
+    C --> F[ipsar_fsm.load_catalog_merged]
+    E --> F
+    F --> G[Validated WorkflowModeConfig catalog]
+    C --> H[operations/registry]
+    E --> H
+    H --> I[Operation catalog]
+```
+
+Extensions are discovered through their own entry-point groups (`lisa.extensions.signal_connectors`, `lisa.extensions.data_sources`, etc.) and are loaded by the host's extension runtime, not by the kernel directly.
+
+## Host Responsibilities
+
+A real host must inject concrete implementations for these seams:
+
+| Seam | Kernel contract | Example |
+| --- | --- | --- |
+| Model completion | `TurnHooks.complete` | Azure OpenAI, OpenAI, Anthropic, Ollama |
+| Model resolution | `TurnHooks.resolve_model` | Manifest-based or database-backed |
+| Tool execution | `TurnHooks.execute_tool` | Web search, surf, custom tools |
+| Operation execution | `TurnHooks.execute_operation` | `operations.registry.execute_operation` |
+| Memory | `TurnHooks.recall_memory` / `store_memory` | `LiteMemoryStore`, `MCPMemoryClient`, or production store |
+| Blob/object storage | Host-owned | Azure Blob, S3, local filesystem |
+| Transport adapter | Host-owned | Teams, Slack, WebSocket, console |
+| Scheduler | Host-owned | For signal connector polling and heartbeat jobs |
+| Browser automation | Host-owned | For surf workflow execution |
+
+Little Lisa (`examples/little_lisa/`) is the reference host. It wires a minimal subset of these seams for local development and pack authoring.
+
+## Privacy Model
+
+The kernel models privacy explicitly in its contracts:
+
+- `SurfaceContext` carries `surface_type`, `surface_id`, and `memory_scope`.
+- Memory writes and recalls are scoped by the active surface and memory scope.
+- Shared surfaces must not receive personal context unless a host implements explicit, audited sharing semantics.
+- Proactive delivery targets are host-owned and must be explicit.
+
+Prompt wording is not a privacy control. Hosts must enforce scope in storage keys, retrieval filters, and delivery routing.
+
+## Testing
+
+The kernel ships with:
+
+- `kernel/tests/`: unit tests for contracts, FSM validation, route parsing, and slice math.
+- `kernel/testing/extension_harness.py`: public harness for validating connectors and data sources without a host app.
+
+Import-boundary tests across all packages (`lisa_sdk/tests/test_import_boundaries.py`, extension `tests/test_import_boundaries.py`) enforce that public packages never import private app modules.
+
+## Further Reading
+
+- [BOUNDARIES.md](BOUNDARIES.md) — public/private boundary definition
+- [PACK_AUTHORING_GUIDE.md](PACK_AUTHORING_GUIDE.md) — how to create modes, operations, and content packs
+- [SDK_EXTENSIONS_GUIDE.md](SDK_EXTENSIONS_GUIDE.md) — how to create signal connectors and data sources
+- [LITTLE_LISA_GUIDE.md](LITTLE_LISA_GUIDE.md) — reference host usage and configuration

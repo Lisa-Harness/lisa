@@ -169,13 +169,13 @@ From `lisa_framework/` on Windows:
 
 ```powershell
 $env:SDK_CONTENT_ROOTS = (Resolve-Path .\sdk_packs\hello_world)
-uv run python examples/little_lisa/main.py --list-modes
-uv run python examples/little_lisa/main.py --once "/hello framework"
+uv run little-lisa modes
+uv run little-lisa once "/hello framework"
 ```
 
 Expected outcome:
 
-- `--list-modes` shows `hello` under supported Little Lisa modes.
+- `modes` shows `hello` under supported Little Lisa modes.
 - `/hello framework` prints `Hello from custom pack: framework`.
 
 Use single quotes around regex-based `command_pattern` values in YAML front matter so backslashes like `\s` are not treated as YAML escape sequences.
@@ -209,8 +209,8 @@ hello_world = "sdk_packs.hello_world:get_content_root"
 Focused local checks from `lisa_framework/`:
 
 ```powershell
-uv run python examples/little_lisa/main.py --list-modes
-uv run python examples/little_lisa/main.py --once "/markdown Draft a quick checklist"
-uv run python examples/little_lisa/main.py --once "/hello framework"  # after setting SDK_CONTENT_ROOTS
+uv run little-lisa modes
+uv run little-lisa once "/markdown Draft a quick checklist"
+uv run little-lisa once "/hello framework"  # after setting SDK_CONTENT_ROOTS
 uv run ruff check sdk_packs examples
 ```

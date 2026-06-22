@@ -6,7 +6,7 @@ Thank you for your interest in contributing.
 
 1. Fork the repo and clone it locally.
 2. Install dependencies: `uv sync --extra dev`
-3. Run the doctor: `uv run little-lisa doctor`
+3. Run the verification: `uv run little-lisa verify`
 4. Make your changes on a feature branch.
 
 ## Development Loop
@@ -21,15 +21,15 @@ uv run mypy kernel lisa_sdk
 # Run tests (no live API calls)
 uv run pytest -m "not live" --tb=short -v
 
-# Run doctor smoke test
-uv run little-lisa doctor
+# Run verification smoke test
+uv run little-lisa verify
 ```
 
 ## Pull Request Checklist
 
 - [ ] Code passes `ruff check` and `mypy` with no new errors.
 - [ ] All non-live tests pass (`pytest -m "not live"`).
-- [ ] `little-lisa doctor` exits 0.
+- [ ] `little-lisa verify` exits 0.
 - [ ] New public APIs have docstrings.
 - [ ] Breaking changes are noted in the PR description.
 

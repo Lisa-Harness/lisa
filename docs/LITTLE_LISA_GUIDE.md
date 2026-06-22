@@ -10,11 +10,14 @@ From `lisa_framework/`:
 
 ```powershell
 uv sync --extra dev
+uv run little-lisa verify
+uv run little-lisa setup
 uv run little-lisa modes
+uv run little-lisa models
 uv run little-lisa once "/search recent Python packaging guidance"
 uv run little-lisa once "/markdown Draft a short incident-review outline"
 uv run little-lisa once "/deep Evaluate migration risks"
-uv run little-lisa once "/discuss capability tradeoffs" --session_context system
+uv run little-lisa once "/discuss capability tradeoffs" --session-context system
 uv run little-lisa cli --debug --log-level debug --log .\artifacts\turns.jsonl
 uv run little-lisa desktop --port 8765
 uv run little-lisa
@@ -23,6 +26,11 @@ uv run little-lisa
 - `little-lisa` with no arguments launches tray-first desktop mode.
 - `little-lisa cli` launches the enhanced terminal REPL.
 - `little-lisa desktop` launches the localhost web interface directly.
+- `little-lisa verify` runs environment and configuration checks.
+- `little-lisa setup` launches an interactive provider configuration wizard.
+- `little-lisa modes` lists supported and installed modes.
+- `little-lisa models` lists configured models with designations and aliases.
+- `little-lisa --version` prints the version and exits.
 
 ### Windows EXE Build
 
@@ -144,10 +152,12 @@ no TTL.  Use `app/memory_store.py` for production.
 
 ## Expected Behavior
 
-- `--list-modes` separates supported Little Lisa modes from installed modes that require a fuller host.
+- `modes` separates supported Little Lisa modes from installed modes that require a fuller host.
 - `--debug` prints turn context above each response and, unless overridden by `--log-level`, defaults JSONL logging to `debug` for full request/response diagnostics.
 - `--log <file>` appends structured JSONL records with `event` and `level` fields plus route metadata, completion summaries, and runtime metadata.
 - `--log-level debug|info|warning|error` controls JSONL verbosity. `debug` is tell-all and includes full provider request/response diagnostics.
+- `--no-log` suppresses JSONL logging entirely.
+- `--streaming none|stage|text|hybrid[:delay]` controls terminal streaming mode. `none` disables streaming, `stage` streams stage-level progress, `text` streams token-by-token, `hybrid` combines both. An optional `:N` suffix sets the character delay in milliseconds.
 - `/help` prints Little Lisa's actual capability surface.
 - Natural-language turns first pass through a front-door router prompt before the selected mode runs.
 - `/help capabilities` prints a deterministic runtime capability matrix preview.
@@ -170,6 +180,12 @@ no TTL.  Use `app/memory_store.py` for production.
 - `--timeout-profile fast|balanced|deep` applies per-mode operation timeout presets in the local host.
 - `--timezone <IANA>` pins status-line local time and timezone display.
 - `--state-snapshot <file.json>` injects compact local snapshot context into prompt assembly.
+- `--user <slug>` selects authored context from `content/user_contexts/<slug>.md` and controls local thread-log keying.
+- `--data-dir <path>` overrides the artifacts root directory.
+- `--memory-db <path>` overrides the memory store file path.
+- `--thread-dir <path>` overrides the thread persistence directory.
+- `--no-thread` disables thread persistence entirely.
+- `--session-context <slug>` sets the session context slug for the turn.
 
 ## Front-Door Routing
 
@@ -239,6 +255,15 @@ This is the check-of-record surface for proving whether a `default` route was in
 - `--timezone <IANA>` sets runtime timezone used for status-line local time.
 - `--state-snapshot <file.json>` loads one local JSON object for compact state-context hints.
 - `--log-level debug|info|warning|error` sets the JSONL logging threshold.
+- `--log <file>` appends structured JSONL turn records.
+- `--no-log` suppresses JSONL logging entirely.
+- `--data-dir <path>` overrides the artifacts root directory.
+- `--memory-db <path>` overrides the memory store file path.
+- `--thread-dir <path>` overrides the thread persistence directory.
+- `--no-thread` disables thread persistence entirely.
+- `--session-context <slug>` sets the session context slug for the turn.
+- `--streaming none|stage|text|hybrid[:delay]` controls terminal streaming mode.
+- `--version` prints the Little Lisa version and exits.
 
 Settings precedence:
 
@@ -247,24 +272,14 @@ Settings precedence:
 3. OS timezone env vars when present (`TZ`, `TIMEZONE`, `LOCAL_TIMEZONE`, `APPSETTING_WEBSITE_TIME_ZONE`) for timezone only
 4. Built-in defaults (`balanced`, `UTC`, and `info` log level, unless `--debug` is set)
 
-## Model-Free Harness
-
-Use the separate model-free harness when you want to test tool and operation behavior without model credentials or a model manifest.
-
-```powershell
-uv run python examples/tool_test_harness/main.py --list-tools
-uv run python examples/tool_test_harness/main.py --list-operations
-uv run python examples/tool_test_harness/main.py --run-tool surf_session_flush --query "flush" --params "{}"
-```
-
 ## Hello World Pack Smoke
 
 The quickest pack-authoring proof is a local pack under `sdk_packs/` plus one `SDK_CONTENT_ROOTS` entry:
 
 ```powershell
 $env:SDK_CONTENT_ROOTS = (Resolve-Path .\sdk_packs\hello_world)
-uv run python examples/little_lisa/main.py --list-modes
-uv run python examples/little_lisa/main.py --once "/hello framework"
+uv run little-lisa modes
+uv run little-lisa once "/hello framework"
 ```
 
 See [PACK_AUTHORING_GUIDE.md](PACK_AUTHORING_GUIDE.md) for the complete hello-world file set.
