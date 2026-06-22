@@ -19,8 +19,8 @@ from typing import Generic, TypeVar
 import httpx
 from openai import AsyncAzureOpenAI
 
-from kernel.seams.protocols import DataSourceHooks
 from kernel.models import DomainKnowledgeArtifact
+from kernel.seams.protocols import DataSourceHooks
 
 ArtifactT = TypeVar("ArtifactT", bound=DomainKnowledgeArtifact)
 
