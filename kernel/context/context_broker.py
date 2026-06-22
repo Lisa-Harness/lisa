@@ -22,7 +22,7 @@ from kernel.models import (
     IntelCollection,
     UnifiedState,
 )
-from kernel.signal_connectors.discovery import discover_installed_signal_connectors
+from kernel.intake.connector_discovery import discover_installed_signal_connectors
 
 from app.config import settings
 from app.context_frames import render_ranked_evidence_namespace_frame

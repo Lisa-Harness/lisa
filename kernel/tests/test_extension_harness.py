@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 from pydantic import BaseModel
 
-from kernel.signal_connectors.base import SignalConnector
+from kernel.intake.connectors import SignalConnector
 from kernel.testing import extension_harness
 
 

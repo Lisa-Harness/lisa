@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from kernel.io.protocols import StateProvider
+from kernel.seams.protocols import StateProvider
 from kernel.slice import SliceOutcome, SlicePolicy
 
 

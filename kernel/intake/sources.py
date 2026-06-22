@@ -14,7 +14,7 @@ import httpx
 from openai import AsyncAzureOpenAI
 from pydantic import BaseModel
 
-from kernel.io.protocols import DataSourceHooks
+from kernel.seams.protocols import DataSourceHooks
 
 DataSnapshotT = TypeVar("DataSnapshotT", bound=BaseModel)
 

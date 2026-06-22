@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from kernel.io.protocols import DataSourceHookSet
+from kernel.seams.protocols import DataSourceHookSet
 
 
 class StaticStateProvider:
@@ -79,7 +79,7 @@ def make_data_source_hooks(
     thread_store: Any = None,
     event_bus: Any = None,
 ) -> DataSourceHookSet:
-    """Build one hook bundle compatible with kernel.io.protocols.DataSourceHooks."""
+    """Build one hook bundle compatible with kernel.seams.protocols.DataSourceHooks."""
     resolved_state_provider = state_provider or StaticStateProvider(state)
     return DataSourceHookSet(
         blob_io=blob_io,

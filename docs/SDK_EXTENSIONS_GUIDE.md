@@ -86,7 +86,7 @@ class HelloWorldSnapshot(BaseModel):
 ```python
 import httpx
 
-from kernel.signal_connectors.base import SignalConnector
+from kernel.intake.connectors import SignalConnector
 
 from .models import HelloWorldSnapshot
 

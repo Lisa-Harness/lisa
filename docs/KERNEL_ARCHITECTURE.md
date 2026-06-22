@@ -58,13 +58,11 @@ Key principles:
 | Subpackage | Responsibility |
 | --- | --- |
 | `operations/` | Operation registry for discovering and executing operations from packs. |
-| `signal_connectors/` | `SignalConnector` base class for external service polling. |
-| `data_sources/` | `DataSource` base class for structured data ingestion. |
+| `intake/` | External data collection: `SignalConnector` (stateless monitors), `DataSource` (stateful fetchers), and `DomainKnowledgeProvider` (pack-owned orientation material). |
+| `seams/` | Host-injection protocols: `BlobIO`, `StateProvider`, `MemoryStore`, `BrowserAutomation`, `DataSourceHooks`, and completion/tool/operation callbacks. |
+| `synthesis/` | Post-collection intelligence pipeline: extension-owned stages (local analysis → synthesis → memory) and stage execution contracts. |
 | `testing/` | `extension_harness` for validating connectors and data sources without a host app. |
 | `context/` | App-layer context assembly (consumed by host, not exported as kernel contracts). |
-| `io/` | I/O abstractions. |
-| `intelligence/` | Intelligence pipeline models and processing. |
-| `domain_knowledge/` | Domain knowledge artifact management. |
 | `inference_profiles/` | Inference profile definitions. |
 
 ## Turn Execution Flow

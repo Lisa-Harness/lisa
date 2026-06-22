@@ -31,7 +31,7 @@ from app import blob_client, providers
 from app.config import settings
 from app.data_sanitizer import apply_redaction_pipeline
 from app.event_bus import BusBackend
-from kernel.io.protocols import MemoryStore as MemoryStoreProtocol
+from kernel.seams.protocols import MemoryStore as MemoryStoreProtocol
 
 logger = logging.getLogger(__name__)
 

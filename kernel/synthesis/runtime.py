@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from kernel.intelligence.spec import (
+from kernel.synthesis.spec import (
     ExtensionIntelligenceSpec,
     IntelligenceStageKind,
     IntelligenceStageSpec,

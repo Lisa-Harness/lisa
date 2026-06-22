@@ -39,7 +39,7 @@ from typing import Any
 
 import httpx
 
-from kernel.signal_connectors.base import SignalConnector
+from kernel.intake.connectors import SignalConnector
 from sdk_extensions.cloudflare.config import get_cloudflare_connector_settings
 from sdk_extensions.cloudflare.models import CloudflareMetrics
 

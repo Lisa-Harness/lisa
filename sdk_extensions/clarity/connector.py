@@ -27,7 +27,7 @@ from typing import Any
 import aiohttp
 import httpx
 
-from kernel.signal_connectors.base import SignalConnector
+from kernel.intake.connectors import SignalConnector
 from sdk_extensions.clarity.config import get_clarity_connector_settings
 from sdk_extensions.clarity.models import ClarityLiveInsightsResponse, ClarityMetricRow
 

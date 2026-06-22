@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import httpx
 
-from kernel.signal_connectors.base import SignalConnector
+from kernel.intake.connectors import SignalConnector
 from sdk_extensions.stripe.config import get_stripe_connector_settings
 from sdk_extensions.stripe.models import StripeMetrics
 

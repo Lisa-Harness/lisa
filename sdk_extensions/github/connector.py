@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import httpx
 
-from kernel.signal_connectors.base import SignalConnector
+from kernel.intake.connectors import SignalConnector
 from sdk_extensions.github.config import get_github_extension_settings
 from sdk_extensions.github.models import GitHubStatus
 

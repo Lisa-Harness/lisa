@@ -56,7 +56,7 @@ from kernel.models import (
     WorkshopRenderConfig,
 )
 from kernel.openai_function_tools import build_strict_openai_function_tool
-from kernel.signal_connectors.discovery import discover_installed_signal_connectors
+from kernel.intake.connector_discovery import discover_installed_signal_connectors
 
 logger = logging.getLogger(__name__)
 

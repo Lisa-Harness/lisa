@@ -1,8 +1,9 @@
-"""Kernel I/O protocols — runtime-neutral abstractions for blob, browser, state, and memory.
+"""Kernel seams — host-injection protocols for blob, browser, state, and memory.
 
-These Protocols define the interface contracts that host apps must satisfy.
-The kernel imports nothing from host apps; host apps implement these protocols
-and inject them into execution contexts.
+These Protocols define the dependency-inversion surface between the
+runtime-neutral kernel and host applications. Hosts implement these
+protocols and inject concrete instances into execution contexts; the
+kernel never imports host code.
 """
 
 from __future__ import annotations

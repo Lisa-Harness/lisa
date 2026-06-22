@@ -18,7 +18,7 @@ All notable changes to the Lisa Framework will be documented in this file.
 - Model manifest loader (`model_manifest.py`) with YAML/JSON parsing, designation-based model resolution, and per-mode model overrides.
 - Content roots discovery (`content_roots.py`) via `lisa.extensions.content_roots` entry points and `SDK_CONTENT_ROOTS` env var.
 - Extension runtime contracts (`extension_runtime.py`) for scheduled jobs, state hydration, heartbeat context, digest sections, debug context, anomaly detectors, and context evidence builders.
-- Signal connector base class (`signal_connectors/base.py`) and data source base class (`data_sources/base.py`).
+- Signal connector base class (`intake/connectors.py`) and data source base class (`intake/sources.py`).
 - Brave Web Search integration (`web_search.py`) with configurable endpoint, market, and result count.
 - Durable surf session helpers (`surf_workflow.py`) for iterative browser workflows with TTL, trimming, and page/commentary tracking.
 - File-backed lite memory store (`lite_memory.py`) with keyword-overlap matching for local testing.

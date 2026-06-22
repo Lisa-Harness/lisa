@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from kernel.io.protocols import BlobIO, StateProvider
+from kernel.seams.protocols import BlobIO, StateProvider
 from kernel.models import (
     AnomalyAlert,
     ContextEvidence,

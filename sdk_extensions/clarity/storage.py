@@ -6,7 +6,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Protocol
 
-from kernel.io.protocols import BlobIO
+from kernel.seams.protocols import BlobIO
 from lisa_sdk.config import settings as runtime_settings
 from sdk_extensions.clarity.config import settings
 from sdk_extensions.clarity.connector import hydrate_live_insights_snapshot

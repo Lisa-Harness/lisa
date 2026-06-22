@@ -11,10 +11,10 @@ import httpx
 from openai import AsyncAzureOpenAI
 from pydantic import BaseModel, Field, SerializeAsAny
 
-from kernel.data_sources.base import DataSource
-from kernel.io.protocols import DataSourceHooks
+from kernel.intake.sources import DataSource
+from kernel.seams.protocols import DataSourceHooks
 from kernel.models import SignalConnectorError, SignalConnectorRefreshResult, SignalConnectorRun
-from kernel.signal_connectors.base import SignalConnector, SignalRunMode
+from kernel.intake.connectors import SignalConnector, SignalRunMode
 from kernel.testing.stubs import make_data_source_hooks
 
 _SIGNAL_CONNECTOR_GROUP = "lisa.extensions.signal_connectors"
