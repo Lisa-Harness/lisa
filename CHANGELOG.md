@@ -2,6 +2,14 @@
 
 All notable changes to the Lisa Framework will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+#### Kernel (`lisa-kernel`)
+
+- Renamed kernel subpackages for narrative coherence: `kernel/io/` → `kernel/seams/` (host-injection protocols), `kernel/signal_connectors/` + `kernel/data_sources/` + `kernel/domain_knowledge/` → `kernel/intake/` (unified external data collection), `kernel/intelligence/` → `kernel/synthesis/` (post-collection pipeline). Entry-point group names unchanged in this phase; migration planned with deprecation window.
+
 ## [0.1.0] — Unreleased
 
 ### Added
