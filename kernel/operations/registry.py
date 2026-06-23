@@ -235,12 +235,22 @@ def _parse_string_mapping_field(
 
 
 def _iter_operation_module_files(operations_dir: Path) -> list[Path]:
-    """Return sorted Python operation modules under one operations root."""
-    return sorted(
-        module_path
-        for module_path in operations_dir.rglob("*.py")
-        if module_path.name != "__init__.py" and "__pycache__" not in module_path.parts
-    )
+    """Return sorted Python operation modules under one operations root.
+
+    Skips ``.py`` files that have a sibling ``<stem>.operation.md`` declarative
+    entrypoint: those modules hold the Pydantic response-format contract for a
+    prompt-authored operation, not a runtime ``execute(ctx)`` entrypoint, so
+    they must not be treated as runtime operations requiring a ``.yml`` file.
+    """
+    runtime_modules: list[Path] = []
+    for module_path in operations_dir.rglob("*.py"):
+        if module_path.name == "__init__.py" or "__pycache__" in module_path.parts:
+            continue
+        declarative_sibling = module_path.with_suffix(_DECLARATIVE_OPERATION_SUFFIX)
+        if declarative_sibling.exists():
+            continue
+        runtime_modules.append(module_path)
+    return sorted(runtime_modules)
 
 
 def _iter_operation_markdown_files(operations_dir: Path) -> list[Path]:
