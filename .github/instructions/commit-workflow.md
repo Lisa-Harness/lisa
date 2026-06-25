@@ -24,3 +24,20 @@ When an agent completes an implementation change (code, docs, or config) and the
 ## Release notes
 
 After committing a materially shippable change, update `CHANGELOG.md` proactively in the same commit (or a follow-up `docs:` commit if the change is already pushed) — do not leave release-note intake for a later session.
+
+## Code review after non-trivial commits
+
+After committing any change that is **not** purely a docstring edit, whitespace
+fix, comment update, or test-fixture tweak, invoke the `code-review` agent
+against the commit(s) just created.
+
+- Pass the resolved commit range (e.g. `HEAD~1..HEAD`) as the input.
+- Treat any **Critical** finding as a blocker: create a `fixup!` commit that
+  resolves it before closing the session.
+- Treat any **Major** finding as a tracked action item: note it in the
+  `CHANGELOG.md` entry or a follow-up issue.
+- **Minor** findings are advisory; handle them at your discretion.
+
+This review step runs *after* the primary commit exists so that the
+`fixup!` workflow in the section above can be used for any findings that
+require code changes.
