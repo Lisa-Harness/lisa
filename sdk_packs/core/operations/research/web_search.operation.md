@@ -7,7 +7,7 @@ timeout_seconds: 120
 max_calls_per_turn: 3
 completion_max_tokens: 4000
 completion_temperature: 0.2
-response_format_model_path: sdk_packs.core.operation_contracts.web_search.WebSearchStructuredOutput
+response_format_model_path: sdk_packs.core.operations.research.web_search.WebSearchStructuredOutput
 response_output_text_field: output_text
 ---
 

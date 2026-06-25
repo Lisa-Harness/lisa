@@ -6,7 +6,7 @@ mode_allowlist: [discuss]
 timeout_seconds: 15
 max_calls_per_turn: 1
 completion_temperature: 0
-response_format_model_path: sdk_packs.core.operation_contracts.discussion_briefing.DiscussionBriefingStructuredOutput
+response_format_model_path: sdk_packs.core.operations.research.discussion_briefing.DiscussionBriefingStructuredOutput
 response_output_text_field: output_text
 ---
 
