@@ -54,6 +54,8 @@ _SYNTHESIS_PROMPT_FALLBACK = (
     "Resolve disagreements, surface converging signal, and finish with concrete next moves."
 )
 
+# TODO: clean that sh*t up ☝️
+
 
 class WorkshopSynthesis(BaseModel):
     """Compact final synthesis returned after all child panels complete."""
