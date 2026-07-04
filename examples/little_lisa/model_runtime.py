@@ -28,13 +28,22 @@ class StubModelDefinition:
 
 @dataclass(frozen=True, slots=True)
 class StubCompletion:
-    """Completion result shape consumed by the declarative operation runner."""
+    """Completion result shape consumed by the declarative operation runner.
+
+    Token sub-counters (``cached_tokens``, ``reasoning_tokens``) and
+    ``duration_ms`` flow through from the provider response so the
+    host's token-usage ledger can bill cache hits, reasoning tokens,
+    and time-based providers (e.g. Ollama local GPU time) accurately.
+    """
 
     content: str
     tool_calls: list[dict[str, Any]]
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    duration_ms: float = 0.0
 
 
 def manifest_path_from_env(*, env_var: str = MANIFEST_ENV) -> Path | None:

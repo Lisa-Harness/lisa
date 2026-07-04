@@ -571,6 +571,95 @@ def test_apply_turn_usage_accumulates_model_mode_stage_breakdowns() -> None:
     assert little_lisa._RUNTIME_STATE["session_total_tokens"] == 250
 
 
+def test_apply_turn_usage_threads_cached_reasoning_duration_latency() -> None:
+    """Sub-counters and time fields flow through to the ledger and breakdowns."""
+    little_lisa._RUNTIME_STATE["session_token_ledger"] = []
+    little_lisa._RUNTIME_STATE["model_token_totals"] = {}
+    little_lisa._RUNTIME_STATE["mode_token_totals"] = {}
+    little_lisa._RUNTIME_STATE["stage_token_totals"] = {}
+    little_lisa._RUNTIME_STATE["session_cached_tokens"] = 0
+    little_lisa._RUNTIME_STATE["session_reasoning_tokens"] = 0
+    little_lisa._RUNTIME_STATE["session_duration_ms"] = 0.0
+    little_lisa._RUNTIME_STATE["session_latency_ms"] = 0
+
+    result = TurnResult(
+        response_text="ok",
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+        cached_tokens=20,
+        reasoning_tokens=10,
+        duration_ms=750.0,
+        latency_ms=800,
+    )
+    little_lisa._apply_turn_usage(
+        result,
+        model_id="gpt-4o",
+        mode_id="search",
+        stage_id="search",
+    )
+
+    # Ledger entry carries every field.
+    ledger = little_lisa._RUNTIME_STATE["session_token_ledger"]
+    assert len(ledger) == 1
+    entry = ledger[0]
+    assert entry["cached_tokens"] == 20
+    assert entry["reasoning_tokens"] == 10
+    assert entry["duration_ms"] == 750.0
+    assert entry["latency_ms"] == 800
+
+    # Per-model breakdown carries every field.
+    model_totals = little_lisa._RUNTIME_STATE["model_token_totals"]
+    assert model_totals["gpt-4o"]["cached_tokens"] == 20
+    assert model_totals["gpt-4o"]["reasoning_tokens"] == 10
+    assert model_totals["gpt-4o"]["duration_ms"] == 750.0
+    assert model_totals["gpt-4o"]["latency_ms"] == 800
+
+    # Session-level sub-counter and time totals accumulate.
+    assert little_lisa._RUNTIME_STATE["session_cached_tokens"] == 20
+    assert little_lisa._RUNTIME_STATE["session_reasoning_tokens"] == 10
+    assert little_lisa._RUNTIME_STATE["session_duration_ms"] == 750.0
+    assert little_lisa._RUNTIME_STATE["session_latency_ms"] == 800
+
+
+def test_apply_turn_usage_upgrades_old_schema_entries_in_place() -> None:
+    """Pre-existing breakdown dicts with the old 3-key schema get upgraded."""
+    little_lisa._RUNTIME_STATE["session_token_ledger"] = []
+    # Simulate a stale entry from a prior session that only had 3 keys.
+    little_lisa._RUNTIME_STATE["model_token_totals"] = {
+        "gpt-4o": {"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60},
+    }
+    little_lisa._RUNTIME_STATE["mode_token_totals"] = {}
+    little_lisa._RUNTIME_STATE["stage_token_totals"] = {}
+
+    result = TurnResult(
+        response_text="ok",
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+        cached_tokens=5,
+        reasoning_tokens=3,
+        duration_ms=200.0,
+        latency_ms=210,
+    )
+    # Must not raise KeyError on the stale entry.
+    little_lisa._apply_turn_usage(
+        result,
+        model_id="gpt-4o",
+        mode_id="default",
+        stage_id="default",
+    )
+
+    model_entry = little_lisa._RUNTIME_STATE["model_token_totals"]["gpt-4o"]
+    assert model_entry["prompt_tokens"] == 150
+    assert model_entry["completion_tokens"] == 60
+    assert model_entry["total_tokens"] == 210
+    assert model_entry["cached_tokens"] == 5
+    assert model_entry["reasoning_tokens"] == 3
+    assert model_entry["duration_ms"] == 200.0
+    assert model_entry["latency_ms"] == 210
+
+
 @pytest.mark.asyncio
 async def test_tokens_command_returns_detailed_stats() -> None:
     little_lisa._RUNTIME_STATE["session_turn_count"] = 2

@@ -45,6 +45,11 @@ class CompletionUsage:
     for cost math; ``total_tokens`` falls out as the sum when the provider
     does not report it directly. ``cached_tokens`` and ``reasoning_tokens``
     cover the common sub-counters that vendors bill separately.
+
+    ``duration_ms`` captures wall-clock time spent on the provider call.
+    Some providers (notably Ollama when billing local GPU time) charge by
+    duration rather than token count; hosts that need time-based cost
+    math read this field. Defaults to 0 when the gateway did not measure.
     """
 
     prompt_tokens: int = 0
@@ -52,6 +57,7 @@ class CompletionUsage:
     total_tokens: int = 0
     cached_tokens: int = 0
     reasoning_tokens: int = 0
+    duration_ms: float = 0.0
 
 
 @dataclass(slots=True)

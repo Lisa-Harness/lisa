@@ -1871,15 +1871,21 @@ class TokenUsageEvent(BusEvent):
     provider: str = ""
     model_id: str = ""
     request_id: str = ""
-    kind: Literal["chat_completion", "embedding", "image_generation", "stream_chunk"] = (
-        "chat_completion"
-    )
+    kind: Literal[
+        "chat_completion",
+        "embedding",
+        "image_generation",
+        "stream_chunk",
+        "time_billed",
+    ] = "chat_completion"
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
     cached_tokens: int = 0
     reasoning_tokens: int = 0
     cost_usd: float = 0.0
+    duration_ms: float = 0.0
+    time_cost_usd: float = 0.0
     latency_ms: int = 0
     extra: dict[str, Any] = Field(default_factory=dict)
     extra_context_appended: bool = False

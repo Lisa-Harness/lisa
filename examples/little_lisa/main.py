@@ -97,6 +97,10 @@ from kernel.operations.registry import (  # noqa: E402
     register_tool_catalog_callback,
 )
 from kernel.slice import SliceOutcome  # noqa: E402
+from kernel.token_usage import (  # noqa: E402
+    TokenUsageTelemetryHandler,
+    build_token_usage_event,
+)
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn  # noqa: E402
 from kernel.web_search import is_configured as web_search_is_configured  # noqa: E402
 from kernel.web_search import search as web_search  # noqa: E402
@@ -372,12 +376,20 @@ _RUNTIME_STATE: dict[str, Any] = {
     "turn_prompt_tokens": 0,
     "turn_completion_tokens": 0,
     "turn_total_tokens": 0,
+    "turn_cached_tokens": 0,
+    "turn_reasoning_tokens": 0,
+    "turn_duration_ms": 0.0,
+    "turn_latency_ms": 0,
     "pending_turn_prompt_tokens": 0,
     "pending_turn_completion_tokens": 0,
     "pending_turn_total_tokens": 0,
     "session_prompt_tokens": 0,
     "session_completion_tokens": 0,
     "session_total_tokens": 0,
+    "session_cached_tokens": 0,
+    "session_reasoning_tokens": 0,
+    "session_duration_ms": 0.0,
+    "session_latency_ms": 0,
     "session_token_ledger": [],
     "model_token_totals": {},
     "mode_token_totals": {},
@@ -774,6 +786,83 @@ def _runtime_log_path() -> Path | None:
     return configured if isinstance(configured, Path) else None
 
 
+def _runtime_token_usage_path() -> Path:
+    """Return the durable ``token-usage.jsonl`` path under the data dir.
+
+    The file lives at ``<data_dir>/lsa-state/token-usage.jsonl`` so it
+    survives process restarts. The ``TokenUsageTelemetryHandler``
+    creates parent directories lazily on first write.
+    """
+    return _runtime_data_dir() / "lsa-state" / "token-usage.jsonl"
+
+
+def _token_usage_handler() -> TokenUsageTelemetryHandler:
+    """Return (and cache) the singleton ``TokenUsageTelemetryHandler``."""
+    cached = _RUNTIME_STATE.get("token_usage_handler")
+    if isinstance(cached, TokenUsageTelemetryHandler):
+        return cached
+    handler = TokenUsageTelemetryHandler(_runtime_token_usage_path())
+    _RUNTIME_STATE["token_usage_handler"] = handler
+    return handler
+
+
+async def _publish_token_usage(
+    *,
+    provider: str,
+    model_id: str,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    total_tokens: int = 0,
+    cached_tokens: int = 0,
+    reasoning_tokens: int = 0,
+    duration_ms: float = 0.0,
+    latency_ms: int = 0,
+    kind: str = "chat_completion",
+    request_id: str = "",
+    mode_id: str = "",
+    stage_id: str = "",
+    call_site: str = "",
+) -> None:
+    """Publish one ``TokenUsageEvent`` to the durable JSONL handler.
+
+    Called from every LLM call site so each provider call produces
+    exactly one durable record. Failures are swallowed inside the
+    handler; this function never raises into the turn loop.
+    """
+    event = build_token_usage_event(
+        provider=provider,
+        model_id=model_id,
+        kind=kind,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cached_tokens=cached_tokens,
+        reasoning_tokens=reasoning_tokens,
+        duration_ms=duration_ms,
+        latency_ms=latency_ms,
+        request_id=request_id,
+        mode_id=mode_id,
+        stage_id=stage_id,
+        call_site=call_site,
+        user_slug=_runtime_user_slug() or "default",
+        surface_id="little-lisa-console",
+    )
+    try:
+        await _token_usage_handler().publish(event)
+    except Exception as exc:  # pylint: disable=broad-except
+        # Telemetry must never break the turn loop.
+        _append_log_event(
+            level="warning",
+            event="token_usage.publish_failed",
+            payload={
+                "provider": provider,
+                "model_id": model_id,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        )
+
+
 def _runtime_user_slug() -> str:
     configured = str(_RUNTIME_STATE.get("user_slug") or "").strip()
     return configured
@@ -916,7 +1005,10 @@ def _apply_turn_usage(
 
     Records a per-turn ledger entry with model/mode/stage attribution and
     accumulates breakdown totals keyed by resolved model id (never designation),
-    mode id, and stage id.
+    mode id, and stage id. Sub-counters (``cached_tokens``,
+    ``reasoning_tokens``), ``duration_ms``, and ``latency_ms`` flow through
+    so time-based providers (e.g. Ollama local GPU time) can be billed
+    alongside token-based providers.
     """
 
     # ── Input extraction ───────────────────────────────────────────────
@@ -925,10 +1017,18 @@ def _apply_turn_usage(
     main_total = _coerce_non_negative_int(result.total_tokens)
     if main_total <= 0:
         main_total = main_prompt + main_completion
+    main_cached = _coerce_non_negative_int(getattr(result, "cached_tokens", 0))
+    main_reasoning = _coerce_non_negative_int(getattr(result, "reasoning_tokens", 0))
+    main_duration_ms = _coerce_non_negative_float(getattr(result, "duration_ms", 0.0))
+    main_latency_ms = _coerce_non_negative_int(getattr(result, "latency_ms", 0))
 
     fd_prompt = 0
     fd_completion = 0
     fd_total = 0
+    fd_cached = 0
+    fd_reasoning = 0
+    fd_duration_ms = 0.0
+    fd_latency_ms = 0
     fd_model_id = ""
     if isinstance(frontdoor_routing, dict):
         fd_prompt = _coerce_non_negative_int(frontdoor_routing.get("planner_prompt_tokens"))
@@ -936,16 +1036,32 @@ def _apply_turn_usage(
         fd_total = _coerce_non_negative_int(frontdoor_routing.get("planner_total_tokens"))
         if fd_total <= 0:
             fd_total = fd_prompt + fd_completion
+        fd_cached = _coerce_non_negative_int(frontdoor_routing.get("planner_cached_tokens"))
+        fd_reasoning = _coerce_non_negative_int(frontdoor_routing.get("planner_reasoning_tokens"))
+        fd_duration_ms = _coerce_non_negative_float(
+            frontdoor_routing.get("planner_duration_ms")
+        )
+        fd_latency_ms = _coerce_non_negative_int(
+            frontdoor_routing.get("planner_latency_ms")
+        )
         fd_model_id = str(frontdoor_routing.get("resolved_model_id") or "").strip()
 
     # ── Turn totals ────────────────────────────────────────────────────
     turn_prompt = main_prompt + fd_prompt
     turn_completion = main_completion + fd_completion
     turn_total = main_total + fd_total
+    turn_cached = main_cached + fd_cached
+    turn_reasoning = main_reasoning + fd_reasoning
+    turn_duration_ms = main_duration_ms + fd_duration_ms
+    turn_latency_ms = main_latency_ms + fd_latency_ms
 
     _RUNTIME_STATE["turn_prompt_tokens"] = turn_prompt
     _RUNTIME_STATE["turn_completion_tokens"] = turn_completion
     _RUNTIME_STATE["turn_total_tokens"] = turn_total
+    _RUNTIME_STATE["turn_cached_tokens"] = turn_cached
+    _RUNTIME_STATE["turn_reasoning_tokens"] = turn_reasoning
+    _RUNTIME_STATE["turn_duration_ms"] = turn_duration_ms
+    _RUNTIME_STATE["turn_latency_ms"] = turn_latency_ms
 
     _RUNTIME_STATE["session_prompt_tokens"] = (
         _coerce_non_negative_int(_RUNTIME_STATE.get("session_prompt_tokens", 0)) + turn_prompt
@@ -957,12 +1073,26 @@ def _apply_turn_usage(
     _RUNTIME_STATE["session_total_tokens"] = (
         _coerce_non_negative_int(_RUNTIME_STATE.get("session_total_tokens", 0)) + turn_total
     )
+    _RUNTIME_STATE["session_cached_tokens"] = (
+        _coerce_non_negative_int(_RUNTIME_STATE.get("session_cached_tokens", 0)) + turn_cached
+    )
+    _RUNTIME_STATE["session_reasoning_tokens"] = (
+        _coerce_non_negative_int(_RUNTIME_STATE.get("session_reasoning_tokens", 0))
+        + turn_reasoning
+    )
+    _RUNTIME_STATE["session_duration_ms"] = (
+        _coerce_non_negative_float(_RUNTIME_STATE.get("session_duration_ms", 0.0))
+        + turn_duration_ms
+    )
+    _RUNTIME_STATE["session_latency_ms"] = (
+        _coerce_non_negative_int(_RUNTIME_STATE.get("session_latency_ms", 0)) + turn_latency_ms
+    )
 
     ledger: list[dict[str, Any]] = _RUNTIME_STATE.setdefault("session_token_ledger", [])
     turn_index = len(ledger) + 1
 
     # ── Front-door ledger and breakdowns (if applicable) ───────────────
-    if fd_total > 0:
+    if fd_total > 0 or fd_duration_ms > 0:
         # Record front-door call first in the ledger
         ledger.append(
             {
@@ -973,30 +1103,62 @@ def _apply_turn_usage(
                 "prompt_tokens": fd_prompt,
                 "completion_tokens": fd_completion,
                 "total_tokens": fd_total,
+                "cached_tokens": fd_cached,
+                "reasoning_tokens": fd_reasoning,
+                "duration_ms": fd_duration_ms,
+                "latency_ms": fd_latency_ms,
             }
         )
 
         model_key = fd_model_id or "front-door"
         if model_key != "-":
-            model_totals: dict[str, dict[str, int]] = _RUNTIME_STATE.setdefault(
+            model_totals: dict[str, dict[str, Any]] = _RUNTIME_STATE.setdefault(
                 "model_token_totals", {}
             )
-            model_entry = model_totals.setdefault(
-                model_key,
-                {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            model_entry = _ensure_usage_entry(
+                model_totals.setdefault(
+                    model_key,
+                    {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                        "cached_tokens": 0,
+                        "reasoning_tokens": 0,
+                        "duration_ms": 0.0,
+                        "latency_ms": 0,
+                    },
+                )
             )
             model_entry["prompt_tokens"] += fd_prompt
             model_entry["completion_tokens"] += fd_completion
             model_entry["total_tokens"] += fd_total
+            model_entry["cached_tokens"] += fd_cached
+            model_entry["reasoning_tokens"] += fd_reasoning
+            model_entry["duration_ms"] += fd_duration_ms
+            model_entry["latency_ms"] += fd_latency_ms
 
-        mode_totals: dict[str, dict[str, int]] = _RUNTIME_STATE.setdefault("mode_token_totals", {})
-        mode_entry = mode_totals.setdefault(
-            "front-door",
-            {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        mode_totals: dict[str, dict[str, Any]] = _RUNTIME_STATE.setdefault("mode_token_totals", {})
+        mode_entry = _ensure_usage_entry(
+            mode_totals.setdefault(
+                "front-door",
+                {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "cached_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "duration_ms": 0.0,
+                    "latency_ms": 0,
+                },
+            )
         )
         mode_entry["prompt_tokens"] += fd_prompt
         mode_entry["completion_tokens"] += fd_completion
         mode_entry["total_tokens"] += fd_total
+        mode_entry["cached_tokens"] += fd_cached
+        mode_entry["reasoning_tokens"] += fd_reasoning
+        mode_entry["duration_ms"] += fd_duration_ms
+        mode_entry["latency_ms"] += fd_latency_ms
 
     # ── Main execution ledger entry ────────────────────────────────────
     ledger.append(
@@ -1008,41 +1170,87 @@ def _apply_turn_usage(
             "prompt_tokens": main_prompt,
             "completion_tokens": main_completion,
             "total_tokens": main_total,
+            "cached_tokens": main_cached,
+            "reasoning_tokens": main_reasoning,
+            "duration_ms": main_duration_ms,
+            "latency_ms": main_latency_ms,
         }
     )
 
     # ── Per-model breakdown ────────────────────────────────────────────
     model_key = (model_id or "-").strip()
     model_totals = _RUNTIME_STATE.setdefault("model_token_totals", {})
-    model_entry = model_totals.setdefault(
-        model_key,
-        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    model_entry = _ensure_usage_entry(
+        model_totals.setdefault(
+            model_key,
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cached_tokens": 0,
+                "reasoning_tokens": 0,
+                "duration_ms": 0.0,
+                "latency_ms": 0,
+            },
+        )
     )
     model_entry["prompt_tokens"] += main_prompt
     model_entry["completion_tokens"] += main_completion
     model_entry["total_tokens"] += main_total
+    model_entry["cached_tokens"] += main_cached
+    model_entry["reasoning_tokens"] += main_reasoning
+    model_entry["duration_ms"] += main_duration_ms
+    model_entry["latency_ms"] += main_latency_ms
 
     # ── Per-mode breakdown ─────────────────────────────────────────────
     mode_key = (mode_id or "-").strip()
     mode_totals = _RUNTIME_STATE.setdefault("mode_token_totals", {})
-    mode_entry = mode_totals.setdefault(
-        mode_key,
-        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    mode_entry = _ensure_usage_entry(
+        mode_totals.setdefault(
+            mode_key,
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cached_tokens": 0,
+                "reasoning_tokens": 0,
+                "duration_ms": 0.0,
+                "latency_ms": 0,
+            },
+        )
     )
     mode_entry["prompt_tokens"] += main_prompt
     mode_entry["completion_tokens"] += main_completion
     mode_entry["total_tokens"] += main_total
+    mode_entry["cached_tokens"] += main_cached
+    mode_entry["reasoning_tokens"] += main_reasoning
+    mode_entry["duration_ms"] += main_duration_ms
+    mode_entry["latency_ms"] += main_latency_ms
 
     # ── Per-stage breakdown ────────────────────────────────────────────
     stage_key = (stage_id or "-").strip()
-    stage_totals: dict[str, dict[str, int]] = _RUNTIME_STATE.setdefault("stage_token_totals", {})
-    stage_entry = stage_totals.setdefault(
-        stage_key,
-        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    stage_totals: dict[str, dict[str, Any]] = _RUNTIME_STATE.setdefault("stage_token_totals", {})
+    stage_entry = _ensure_usage_entry(
+        stage_totals.setdefault(
+            stage_key,
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cached_tokens": 0,
+                "reasoning_tokens": 0,
+                "duration_ms": 0.0,
+                "latency_ms": 0,
+            },
+        )
     )
     stage_entry["prompt_tokens"] += main_prompt
     stage_entry["completion_tokens"] += main_completion
     stage_entry["total_tokens"] += main_total
+    stage_entry["cached_tokens"] += main_cached
+    stage_entry["reasoning_tokens"] += main_reasoning
+    stage_entry["duration_ms"] += main_duration_ms
+    stage_entry["latency_ms"] += main_latency_ms
 
 
 def _top_session_mode() -> tuple[str, int] | None:
@@ -1078,80 +1286,98 @@ def _format_session_exit_summary_lines() -> list[str]:
     session_prompt = int(_RUNTIME_STATE.get("session_prompt_tokens", 0) or 0)
     session_completion = int(_RUNTIME_STATE.get("session_completion_tokens", 0) or 0)
     session_total = int(_RUNTIME_STATE.get("session_total_tokens", 0) or 0)
+    session_cached = int(_RUNTIME_STATE.get("session_cached_tokens", 0) or 0)
+    session_reasoning = int(_RUNTIME_STATE.get("session_reasoning_tokens", 0) or 0)
+    session_duration_ms = float(_RUNTIME_STATE.get("session_duration_ms", 0.0) or 0.0)
     turn_prompt = int(_RUNTIME_STATE.get("turn_prompt_tokens", 0) or 0)
     turn_completion = int(_RUNTIME_STATE.get("turn_completion_tokens", 0) or 0)
     turn_total = int(_RUNTIME_STATE.get("turn_total_tokens", 0) or 0)
+    turn_cached = int(_RUNTIME_STATE.get("turn_cached_tokens", 0) or 0)
+    turn_reasoning = int(_RUNTIME_STATE.get("turn_reasoning_tokens", 0) or 0)
+    turn_duration_ms = float(_RUNTIME_STATE.get("turn_duration_ms", 0.0) or 0.0)
 
     avg_prompt = (session_prompt / turn_count) if turn_count else 0.0
     avg_completion = (session_completion / turn_count) if turn_count else 0.0
     avg_total_tokens = (session_total / turn_count) if turn_count else 0.0
+    avg_duration_ms = (session_duration_ms / turn_count) if turn_count else 0.0
 
     lines = [
         "## Session Summary",
         f"- Duration: {duration_seconds:.1f}s",
         f"- Turns: {turn_count} (ok: {success_count}, errors: {error_count})",
         f"- Avg turn latency: {avg_latency_ms:.0f} ms",
+        f"- Provider time: {session_duration_ms:.0f} ms (avg {avg_duration_ms:.0f} ms/turn)",
         "",
         "### Token Totals",
-        "| Category | Prompt | Completion | Total |",
-        "| --- | --- | --- | --- |",
-        f"| Session | {session_prompt} | {session_completion} | {session_total} |",
-        f"| Last turn | {turn_prompt} | {turn_completion} | {turn_total} |",
-        f"| Avg/turn | {avg_prompt:.0f} | {avg_completion:.0f} | {avg_total_tokens:.0f} |",
+        "| Category | Prompt | Completion | Total | Cached | Reasoning |",
+        "| --- | --- | --- | --- | --- | --- |",
+        f"| Session | {session_prompt} | {session_completion} | {session_total} | "
+        f"{session_cached} | {session_reasoning} |",
+        f"| Last turn | {turn_prompt} | {turn_completion} | {turn_total} | "
+        f"{turn_cached} | {turn_reasoning} |",
+        f"| Avg/turn | {avg_prompt:.0f} | {avg_completion:.0f} | {avg_total_tokens:.0f} | "
+        f"{(session_cached / turn_count) if turn_count else 0:.0f} | "
+        f"{(session_reasoning / turn_count) if turn_count else 0:.0f} |",
     ]
 
     # ── Per-model breakdown ────────────────────────────────────────────
-    model_totals: dict[str, dict[str, int]] = _RUNTIME_STATE.get("model_token_totals") or {}
+    model_totals: dict[str, dict[str, Any]] = _RUNTIME_STATE.get("model_token_totals") or {}
     if model_totals:
         lines.extend(
             [
                 "",
                 "### By Model",
-                "| Model | Prompt | Completion | Total |",
-                "| --- | --- | --- | --- |",
+                "| Model | Prompt | Completion | Total | Cached | Reasoning | Duration ms |",
+                "| --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for model_key in sorted(model_totals):
             entry = model_totals[model_key]
             lines.append(
-                f"| {model_key} | {entry['prompt_tokens']} | "
-                f"{entry['completion_tokens']} | {entry['total_tokens']} |"
+                f"| {model_key} | {entry.get('prompt_tokens', 0)} | "
+                f"{entry.get('completion_tokens', 0)} | {entry.get('total_tokens', 0)} | "
+                f"{entry.get('cached_tokens', 0)} | {entry.get('reasoning_tokens', 0)} | "
+                f"{entry.get('duration_ms', 0.0):.0f} |"
             )
 
     # ── Per-mode breakdown ─────────────────────────────────────────────
-    mode_totals: dict[str, dict[str, int]] = _RUNTIME_STATE.get("mode_token_totals") or {}
+    mode_totals: dict[str, dict[str, Any]] = _RUNTIME_STATE.get("mode_token_totals") or {}
     if mode_totals:
         lines.extend(
             [
                 "",
                 "### By Mode",
-                "| Mode | Prompt | Completion | Total |",
-                "| --- | --- | --- | --- |",
+                "| Mode | Prompt | Completion | Total | Cached | Reasoning | Duration ms |",
+                "| --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for mode_key in sorted(mode_totals):
             entry = mode_totals[mode_key]
             lines.append(
-                f"| {mode_key} | {entry['prompt_tokens']} | "
-                f"{entry['completion_tokens']} | {entry['total_tokens']} |"
+                f"| {mode_key} | {entry.get('prompt_tokens', 0)} | "
+                f"{entry.get('completion_tokens', 0)} | {entry.get('total_tokens', 0)} | "
+                f"{entry.get('cached_tokens', 0)} | {entry.get('reasoning_tokens', 0)} | "
+                f"{entry.get('duration_ms', 0.0):.0f} |"
             )
 
     # ── Per-stage breakdown ────────────────────────────────────────────
-    stage_totals: dict[str, dict[str, int]] = _RUNTIME_STATE.get("stage_token_totals") or {}
+    stage_totals: dict[str, dict[str, Any]] = _RUNTIME_STATE.get("stage_token_totals") or {}
     if stage_totals:
         lines.extend(
             [
                 "",
                 "### By Stage",
-                "| Stage | Prompt | Completion | Total |",
-                "| --- | --- | --- | --- |",
+                "| Stage | Prompt | Completion | Total | Cached | Reasoning | Duration ms |",
+                "| --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for stage_key in sorted(stage_totals):
             entry = stage_totals[stage_key]
             lines.append(
-                f"| {stage_key} | {entry['prompt_tokens']} | "
-                f"{entry['completion_tokens']} | {entry['total_tokens']} |"
+                f"| {stage_key} | {entry.get('prompt_tokens', 0)} | "
+                f"{entry.get('completion_tokens', 0)} | {entry.get('total_tokens', 0)} | "
+                f"{entry.get('cached_tokens', 0)} | {entry.get('reasoning_tokens', 0)} | "
+                f"{entry.get('duration_ms', 0.0):.0f} |"
             )
 
     top_mode = _top_session_mode()
@@ -2933,12 +3159,45 @@ def _coerce_non_negative_int(value: Any) -> int:
         return 0
 
 
-def _extract_usage_counts(usage_payload: Any) -> tuple[int, int, int]:
-    """Extract prompt/completion/total token usage across provider payload shapes."""
+def _coerce_non_negative_float(value: Any) -> float:
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _ensure_usage_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Ensure one breakdown dict has every token/time field.
+
+    Pre-existing entries (from earlier sessions or tests with the old
+    3-key schema) are upgraded in place so the accumulator math never
+    raises ``KeyError`` on a missing ``cached_tokens`` etc.
+    """
+    entry.setdefault("prompt_tokens", 0)
+    entry.setdefault("completion_tokens", 0)
+    entry.setdefault("total_tokens", 0)
+    entry.setdefault("cached_tokens", 0)
+    entry.setdefault("reasoning_tokens", 0)
+    entry.setdefault("duration_ms", 0.0)
+    entry.setdefault("latency_ms", 0)
+    return entry
+
+
+def _extract_usage_counts(
+    usage_payload: Any,
+) -> tuple[int, int, int, int, int]:
+    """Extract token and sub-counter usage across provider payload shapes.
+
+    Returns a 5-tuple ``(prompt_tokens, completion_tokens, total_tokens,
+    cached_tokens, reasoning_tokens)``. Sub-counters default to 0 when
+    the provider did not surface them.
+    """
 
     prompt_tokens = 0
     completion_tokens = 0
     total_tokens = 0
+    cached_tokens = 0
+    reasoning_tokens = 0
     if isinstance(usage_payload, dict):
         prompt_tokens = _coerce_non_negative_int(
             usage_payload.get("prompt_tokens") or usage_payload.get("input_tokens")
@@ -2947,6 +3206,14 @@ def _extract_usage_counts(usage_payload: Any) -> tuple[int, int, int]:
             usage_payload.get("completion_tokens") or usage_payload.get("output_tokens")
         )
         total_tokens = _coerce_non_negative_int(usage_payload.get("total_tokens"))
+        cached_tokens = _coerce_non_negative_int(
+            usage_payload.get("cached_tokens")
+            or usage_payload.get("cache_read_input_tokens")
+        )
+        reasoning_tokens = _coerce_non_negative_int(
+            usage_payload.get("reasoning_tokens")
+            or usage_payload.get("cache_creation_input_tokens")
+        )
     elif usage_payload is not None:
         prompt_tokens = _coerce_non_negative_int(
             getattr(usage_payload, "prompt_tokens", None)
@@ -2957,10 +3224,18 @@ def _extract_usage_counts(usage_payload: Any) -> tuple[int, int, int]:
             or getattr(usage_payload, "output_tokens", None)
         )
         total_tokens = _coerce_non_negative_int(getattr(usage_payload, "total_tokens", None))
+        cached_tokens = _coerce_non_negative_int(
+            getattr(usage_payload, "cached_tokens", None)
+            or getattr(usage_payload, "cache_read_input_tokens", None)
+        )
+        reasoning_tokens = _coerce_non_negative_int(
+            getattr(usage_payload, "reasoning_tokens", None)
+            or getattr(usage_payload, "cache_creation_input_tokens", None)
+        )
 
     if total_tokens <= 0:
         total_tokens = prompt_tokens + completion_tokens
-    return prompt_tokens, completion_tokens, total_tokens
+    return prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens
 
 
 def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
@@ -3204,9 +3479,13 @@ async def _complete_anthropic(
     content_blocks = response_json.get("content")
     content = _extract_anthropic_text(content_blocks)
     tool_calls = _extract_anthropic_tool_calls(content_blocks)
-    prompt_tokens, completion_tokens, total_tokens = _extract_usage_counts(
-        response_json.get("usage")
-    )
+    (
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        cached_tokens,
+        reasoning_tokens,
+    ) = _extract_usage_counts(response_json.get("usage"))
 
     content = _normalize_structured_content(content, response_format)
 
@@ -3216,6 +3495,8 @@ async def _complete_anthropic(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
+        cached_tokens=cached_tokens,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -3391,6 +3672,8 @@ async def _complete_live(
                 "prompt_tokens": result.prompt_tokens,
                 "completion_tokens": result.completion_tokens,
                 "total_tokens": result.total_tokens,
+                "cached_tokens": result.cached_tokens,
+                "reasoning_tokens": result.reasoning_tokens,
                 "response_preview": _preview_text(result.content, limit=320),
             },
             debug_payload={
@@ -3398,7 +3681,31 @@ async def _complete_live(
                 "tool_calls": result.tool_calls,
             },
         )
-        return result
+        # StubCompletion is frozen; rebuild with the host-measured
+        # duration so the ledger can bill time-based providers.
+        final_result = StubCompletion(
+            content=result.content,
+            tool_calls=result.tool_calls,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            total_tokens=result.total_tokens,
+            cached_tokens=result.cached_tokens,
+            reasoning_tokens=result.reasoning_tokens,
+            duration_ms=elapsed_ms,
+        )
+        await _publish_token_usage(
+            provider=model_def.provider,
+            model_id=model_def.model_id,
+            prompt_tokens=final_result.prompt_tokens,
+            completion_tokens=final_result.completion_tokens,
+            total_tokens=final_result.total_tokens,
+            cached_tokens=final_result.cached_tokens,
+            reasoning_tokens=final_result.reasoning_tokens,
+            duration_ms=final_result.duration_ms,
+            latency_ms=int(elapsed_ms),
+            call_site="complete_live.anthropic",
+        )
+        return final_result
 
     if stream_stage:
         console.print(f"[dim][stage] contacting {stage_label}...[/]")
@@ -3458,9 +3765,13 @@ async def _complete_live(
     message = choice.message
     content = _first_message_content(message)
     tool_calls = _extract_completion_tool_calls(getattr(message, "tool_calls", None))
-    prompt_tokens, completion_tokens, total_tokens = _extract_usage_counts(
-        getattr(response, "usage", None)
-    )
+    (
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        cached_tokens,
+        reasoning_tokens,
+    ) = _extract_usage_counts(getattr(response, "usage", None))
 
     content = _normalize_structured_content(content, response_format)
 
@@ -3479,6 +3790,8 @@ async def _complete_live(
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
+            "cached_tokens": cached_tokens,
+            "reasoning_tokens": reasoning_tokens,
             "response_preview": _preview_text(content, limit=320),
         },
         debug_payload={
@@ -3487,13 +3800,29 @@ async def _complete_live(
         },
     )
 
-    return StubCompletion(
+    final_result = StubCompletion(
         content=content,
         tool_calls=tool_calls,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
+        cached_tokens=cached_tokens,
+        reasoning_tokens=reasoning_tokens,
+        duration_ms=elapsed_ms,
     )
+    await _publish_token_usage(
+        provider=model_def.provider,
+        model_id=model_def.model_id,
+        prompt_tokens=final_result.prompt_tokens,
+        completion_tokens=final_result.completion_tokens,
+        total_tokens=final_result.total_tokens,
+        cached_tokens=final_result.cached_tokens,
+        reasoning_tokens=final_result.reasoning_tokens,
+        duration_ms=final_result.duration_ms,
+        latency_ms=int(elapsed_ms),
+        call_site="complete_live.openai_compatible",
+    )
+    return final_result
 
 
 async def _execute_tool(tool_id: str, ctx: Any) -> ToolResult:

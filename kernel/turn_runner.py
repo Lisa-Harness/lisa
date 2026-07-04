@@ -73,6 +73,10 @@ class TurnResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    duration_ms: float = 0.0
+    latency_ms: int = 0
     slice_outcomes: list[SliceOutcome] = field(default_factory=list)
     """SliceOutcome records for every opportunistic slice that ran
     during this turn. Populated only when the host has wired the
@@ -584,6 +588,10 @@ async def run_turn(
     total_prompt_tokens = 0
     total_completion_tokens = 0
     total_tokens = 0
+    total_cached_tokens = 0
+    total_reasoning_tokens = 0
+    total_duration_ms = 0.0
+    total_latency_ms = 0
 
     while iteration < max_tool_iterations:
         iteration += 1
@@ -594,12 +602,22 @@ async def run_turn(
             temperature=0.4,
             tools=tool_schemas if tool_schemas else None,
         )
-        prompt_tokens, completion_tokens, completion_total_tokens = _extract_completion_usage(
-            completion
-        )
+        (
+            prompt_tokens,
+            completion_tokens,
+            completion_total_tokens,
+            cached_tokens,
+            reasoning_tokens,
+            duration_ms,
+            latency_ms,
+        ) = _extract_completion_usage(completion)
         total_prompt_tokens += prompt_tokens
         total_completion_tokens += completion_tokens
         total_tokens += completion_total_tokens
+        total_cached_tokens += cached_tokens
+        total_reasoning_tokens += reasoning_tokens
+        total_duration_ms += duration_ms
+        total_latency_ms += latency_ms
 
         assistant_msg: dict[str, Any] = {"role": "assistant"}
         if getattr(completion, "content", None):
@@ -708,6 +726,10 @@ async def run_turn(
         prompt_tokens=total_prompt_tokens,
         completion_tokens=total_completion_tokens,
         total_tokens=total_tokens,
+        cached_tokens=total_cached_tokens,
+        reasoning_tokens=total_reasoning_tokens,
+        duration_ms=total_duration_ms,
+        latency_ms=total_latency_ms,
         slice_outcomes=slice_outcomes,
     )
 
@@ -761,17 +783,43 @@ def _coerce_non_negative_int(value: Any) -> int:
         return 0
 
 
-def _extract_completion_usage(completion: Any) -> tuple[int, int, int]:
-    """Extract prompt/completion/total token counts from provider completion payloads."""
+def _coerce_non_negative_float(value: Any) -> float:
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _extract_completion_usage(
+    completion: Any,
+) -> tuple[int, int, int, int, int, float, int]:
+    """Extract token, sub-counter, duration, and latency counts from one completion.
+
+    Returns a 7-tuple ``(prompt_tokens, completion_tokens, total_tokens,
+    cached_tokens, reasoning_tokens, duration_ms, latency_ms)``.
+
+    The function reads both the flat attributes some hosts set on the
+    completion object (``prompt_tokens`` etc.) and the nested ``usage``
+    object the kernel gateways populate. Sub-counters (``cached_tokens``,
+    ``reasoning_tokens``) and ``duration_ms`` are read defensively so a
+    missing field never raises; they default to 0 when the provider did
+    not surface them.
+    """
 
     prompt_tokens = _coerce_non_negative_int(getattr(completion, "prompt_tokens", 0))
     completion_tokens = _coerce_non_negative_int(getattr(completion, "completion_tokens", 0))
     total_tokens = _coerce_non_negative_int(getattr(completion, "total_tokens", 0))
+    cached_tokens = _coerce_non_negative_int(getattr(completion, "cached_tokens", 0))
+    reasoning_tokens = _coerce_non_negative_int(getattr(completion, "reasoning_tokens", 0))
+    duration_ms = _coerce_non_negative_float(getattr(completion, "duration_ms", 0.0))
+    latency_ms = _coerce_non_negative_int(getattr(completion, "latency_ms", 0))
 
     usage = getattr(completion, "usage", None)
     usage_prompt = 0
     usage_completion = 0
     usage_total = 0
+    usage_cached = 0
+    usage_reasoning = 0
     if isinstance(usage, dict):
         usage_prompt = _coerce_non_negative_int(
             usage.get("prompt_tokens") or usage.get("input_tokens")
@@ -780,6 +828,8 @@ def _extract_completion_usage(completion: Any) -> tuple[int, int, int]:
             usage.get("completion_tokens") or usage.get("output_tokens")
         )
         usage_total = _coerce_non_negative_int(usage.get("total_tokens"))
+        usage_cached = _coerce_non_negative_int(usage.get("cached_tokens"))
+        usage_reasoning = _coerce_non_negative_int(usage.get("reasoning_tokens"))
     elif usage is not None:
         usage_prompt = _coerce_non_negative_int(
             getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", None)
@@ -788,11 +838,19 @@ def _extract_completion_usage(completion: Any) -> tuple[int, int, int]:
             getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", None)
         )
         usage_total = _coerce_non_negative_int(getattr(usage, "total_tokens", None))
+        usage_cached = _coerce_non_negative_int(
+            getattr(usage, "cached_tokens", None)
+        )
+        usage_reasoning = _coerce_non_negative_int(
+            getattr(usage, "reasoning_tokens", None)
+        )
 
     prompt = prompt_tokens or usage_prompt
     completion_value = completion_tokens or usage_completion
     total_value = total_tokens or usage_total
     if total_value <= 0:
         total_value = prompt + completion_value
+    cached = cached_tokens or usage_cached
+    reasoning = reasoning_tokens or usage_reasoning
 
-    return prompt, completion_value, total_value
+    return prompt, completion_value, total_value, cached, reasoning, duration_ms, latency_ms
