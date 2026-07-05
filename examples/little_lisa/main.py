@@ -4408,7 +4408,7 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
     return TurnHooks(
         resolve_model=_resolve_model,
         complete=_complete_live,
-        execute_tool=_execute_tool,
+        mcp_tool_servers=[],
         execute_operation=_execute_operation,
         assemble_system_prompt=_assemble_system_prompt,
         assemble_user_context=_assemble_dynamic_user_context,
@@ -4760,7 +4760,6 @@ async def handle_message(message: str) -> str:  # noqa: PLR0911, PLR0912, PLR091
             mode_id=mode.mode_id,
             query=query or message,
             hooks=hooks,
-            operation_catalog=get_operation_catalog(),
             preferred_model_id=preferred_model_id,
         )
     except OperationExecutionError as exc:

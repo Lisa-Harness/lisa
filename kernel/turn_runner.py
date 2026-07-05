@@ -41,14 +41,21 @@ from kernel.ipsar_fsm import (
 from kernel.models import (
     OperationExecutionContext,
     OperationResult,
-    ToolExecutionContext,
     ToolResult,
 )
 from kernel.operations.registry import (
-    build_openai_operation_schema,
     execute_operation,
-    get_operation_catalog,
 )
+from kernel.seams.protocols import (
+    ContentRegistry,
+    DataSanitizer,
+    EventBus,
+    ExtensionEvidenceBuilder,
+    ModelPolicy,
+    ProviderGatewayProvider,
+)
+from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
+from kernel.tools.schema_translator import mcp_tool_to_openai_function, openai_tool_call_to_mcp
 from kernel.slice import (
     SliceMode,
     SliceOutcome,
@@ -83,6 +90,62 @@ class TurnResult:
     corresponding slice slot. Empty list when opportunistic
     house-keeping is off (``slice_tuning=None`` or all triggers set
     to ``never``)."""
+
+
+def _lazy_content_registry() -> ContentRegistry:
+    from kernel.context import DiskContentRegistry
+
+    return DiskContentRegistry()
+
+
+def _lazy_model_policy() -> ModelPolicy:
+    from kernel.context import ManifestModelPolicy
+
+    return ManifestModelPolicy()
+
+
+def _lazy_provider_gateways() -> ProviderGatewayProvider:
+    from kernel.context import KernelProviderGatewayProvider
+
+    return KernelProviderGatewayProvider()
+
+
+def _lazy_event_bus() -> EventBus:
+    from kernel.context import InProcessEventBus
+
+    return InProcessEventBus()
+
+
+def _lazy_data_sanitizer() -> DataSanitizer:
+    from kernel.context import PassThroughSanitizer
+
+    return PassThroughSanitizer()
+
+
+def _lazy_extension_evidence_builder() -> ExtensionEvidenceBuilder:
+    from kernel.context import NoOpExtensionEvidenceBuilder
+
+    return NoOpExtensionEvidenceBuilder()
+
+
+@dataclass
+class ContextSeams:
+    """Bundle of context-layer seams injected through ``TurnHooks``.
+
+    These six seams invert the private ``app.*`` dependencies that
+    ``kernel/context/`` previously took. Defaults wire the public
+    implementations shipped under ``kernel.context``; the production app
+    overrides any of them with its own without a shim layer.
+    """
+
+    content_registry: ContentRegistry = field(default_factory=_lazy_content_registry)
+    model_policy: ModelPolicy = field(default_factory=_lazy_model_policy)
+    provider_gateways: ProviderGatewayProvider = field(default_factory=_lazy_provider_gateways)
+    event_bus: EventBus = field(default_factory=_lazy_event_bus)
+    data_sanitizer: DataSanitizer = field(default_factory=_lazy_data_sanitizer)
+    extension_evidence_builder: ExtensionEvidenceBuilder = field(
+        default_factory=_lazy_extension_evidence_builder
+    )
 
 
 @dataclass
@@ -130,22 +193,26 @@ class TurnHooks:
     self-model, architecture atlas, etc. here.
     """
 
-    # ── Tool schemas ─────────────────────────────────────────────────────
-    build_extra_tool_schemas: Callable[[str], list[dict[str, Any]]] | None = None
-    """Return extra tool schemas to merge with operation-sourced schemas.
-    Default: empty list.  The app injects its tool catalog, transition tools,
-    and delegation tools here.
+    # ── MCP tool servers ──────────────────────────────────────────────────
+    mcp_tool_servers: list[MCPClientConfig] = field(default_factory=list)
+    """MCP server configurations to spawn for tool discovery and dispatch.
+    Default: empty list (no external tools). The host declares which MCP
+    servers to run (e.g. ``lisa-context``, ``lisa-search``, ``lisa-operations``)
+    and the kernel manages the subprocess lifecycle via ``MCPToolPool``.
+
+    The kernel speaks MCP tool schema internally. At the provider edge,
+    ``schema_translator`` converts to whatever the provider expects.
     """
 
-    # ── Tool/operation dispatch ──────────────────────────────────────────
-    execute_tool: Callable[..., Awaitable[ToolResult]] | None = None
-    """Execute a named tool with a ToolExecutionContext. Default: returns a
-    ToolResult with 'tool unavailable' text.
-    """
-
+    # ── Operation dispatch ────────────────────────────────────────────────
     execute_operation: Callable[..., Awaitable[OperationResult]] | None = None
     """Execute a named operation with an OperationExecutionContext. Default:
     delegates to `kernel.operations.registry.execute_operation`.
+
+    Operations are internal kernel capabilities (pre-turn briefings, entry
+    actions, declarative prompts). They are not advertised to the model as
+    tools; if an operation should be LLM-callable, expose it through the
+    ``lisa-operations`` MCP server.
     """
 
     # ── Memory (lite) ────────────────────────────────────────────────────
@@ -208,6 +275,12 @@ class TurnHooks:
     host. Used by the framework's pressure math. The host can also
     read/write this to coordinate multiple slices."""
 
+    context_seams: ContextSeams = field(default_factory=ContextSeams)
+    """Context-layer seams (content registry, model policy, provider gateways,
+    event bus, data sanitizer). Defaults wire the public implementations
+    shipped under ``kernel.context``; the production app overrides any of
+    them with its own."""
+
 
 # ── Default hook implementations ───────────────────────────────────────────
 
@@ -237,20 +310,6 @@ def _default_assemble_user_context(
     _pre_turn_briefing: str,
 ) -> str:
     return ""
-
-
-def _default_extra_tool_schemas(_mode_id: str) -> list[dict[str, Any]]:
-    return []
-
-
-async def _default_execute_tool(
-    tool_id: str,
-    _ctx: ToolExecutionContext,
-) -> ToolResult:
-    return ToolResult(
-        tool_id=tool_id,
-        output_text=f"Tool '{tool_id}' is not wired in this host.",
-    )
 
 
 async def _default_execute_operation(
@@ -389,35 +448,6 @@ class _StubModelDef:
     reasoning_model: bool = False
 
 
-def _extract_tool_name(tool_call: dict[str, Any]) -> str:
-    function = tool_call.get("function")
-    if isinstance(function, dict):
-        return str(function.get("name", ""))
-    return str(tool_call.get("name", ""))
-
-
-def _extract_tool_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
-    import json as _json
-
-    raw = None
-    function = tool_call.get("function")
-    if isinstance(function, dict):
-        raw = function.get("arguments", "{}")
-    else:
-        raw = tool_call.get("arguments", "{}")
-    if isinstance(raw, str):
-        try:
-            parsed = _json.loads(raw)
-            if isinstance(parsed, dict):
-                return parsed
-            return {}
-        except _json.JSONDecodeError:
-            return {}
-    if isinstance(raw, dict):
-        return raw
-    return {}
-
-
 def _extract_pre_turn_briefing(result: OperationResult) -> str:
     """Return the briefing text that should be injected into the user payload.
 
@@ -446,7 +476,6 @@ async def run_turn(
     mode_id: str,
     query: str,
     hooks: TurnHooks,
-    operation_catalog: dict[str, Any] | None = None,
     max_tool_iterations: int = 5,
     preferred_model_id: str | None = None,
     logger_override: logging.Logger | None = None,
@@ -460,8 +489,8 @@ async def run_turn(
     Phases:
     1. **PRE-TURN**: Resolve mode config, run pre-turn/entry operations,
        assemble system prompt and user context, recall memory snippet.
-    2. **TOOL LOOP**: Call hooks.complete → dispatch tool/operation calls
-       via hooks → feed results back → repeat until the model returns
+    2. **TOOL LOOP**: Call hooks.complete → dispatch MCP tool calls via
+       MCPToolPool → feed results back → repeat until the model returns
        content without tools or max_tool_iterations is reached.
     3. **POST-TURN**: Call hooks.on_turn_complete and hooks.store_memory.
 
@@ -469,8 +498,6 @@ async def run_turn(
         mode_id: The route mode string (e.g. 'default', 'discuss', 'search').
         query: The user's message text after command-prefix stripping.
         hooks: Extension-point callbacks provided by the host.
-        operation_catalog: Pre-loaded operation catalog. Defaults to
-            `get_operation_catalog()`.
         max_tool_iterations: Maximum number of tool-calling loop iterations.
         preferred_model_id: Optional per-turn model alias override supplied by
             the host when routing needs an explicit front-door model.
@@ -483,7 +510,6 @@ async def run_turn(
         NotImplementedError: If hooks.complete is None.
     """
     _log = logger_override or logger
-    catalog = operation_catalog or get_operation_catalog()
     mode_config = get_workflow_catalog().get(mode_id)
 
     # Resolve hook callables with defaults
@@ -491,12 +517,78 @@ async def run_turn(
     complete = hooks.complete or _noop_complete
     assemble_system = hooks.assemble_system_prompt or _default_assemble_system_prompt
     assemble_user = hooks.assemble_user_context or _default_assemble_user_context
-    extra_tool_schemas_fn = hooks.build_extra_tool_schemas or _default_extra_tool_schemas
-    exec_tool = hooks.execute_tool or _default_execute_tool
     exec_op = hooks.execute_operation or _default_execute_operation
     recall_mem = hooks.recall_memory or _default_recall_memory
     store_mem = hooks.store_memory or _default_store_memory
     on_complete = hooks.on_turn_complete or _default_on_turn_complete
+
+    # ── MCP tool pool ──────────────────────────────────────────────────
+    # The kernel speaks MCP tool schema internally. Tool discovery and
+    # dispatch go through MCPToolPool; provider-specific schemas are
+    # translated at the provider edge by schema_translator.
+    pool = MCPToolPool(hooks.mcp_tool_servers)
+    await pool.start()
+    try:
+        return await _run_turn_inner(
+            mode_id=mode_id,
+            query=query,
+            hooks=hooks,
+            pool=pool,
+            resolve_model=resolve_model,
+            complete=complete,
+            assemble_system=assemble_system,
+            assemble_user=assemble_user,
+            exec_op=exec_op,
+            recall_mem=recall_mem,
+            store_mem=store_mem,
+            on_complete=on_complete,
+            mode_config=mode_config,
+            max_tool_iterations=max_tool_iterations,
+            preferred_model_id=preferred_model_id,
+            logger_override=logger_override,
+        )
+    finally:
+        await pool.aclose()
+
+
+async def _run_turn_inner(
+    *,
+    mode_id: str,
+    query: str,
+    hooks: "TurnHooks",
+    pool: MCPToolPool,
+    resolve_model: Callable[[str], Any],
+    complete: Callable[..., Awaitable[Any]],
+    assemble_system: Callable[[str, str | None], str],
+    assemble_user: Callable[[str, str, str], str],
+    exec_op: Callable[..., Awaitable[OperationResult]],
+    recall_mem: Callable[[str, str, int], Awaitable[str]],
+    store_mem: Callable[[str, str, str], Awaitable[None]],
+    on_complete: Callable[[str, str, str, list[dict[str, Any]]], Awaitable[None]],
+    mode_config: Any,
+    max_tool_iterations: int,
+    preferred_model_id: str | None,
+    logger_override: logging.Logger | None,
+) -> TurnResult:
+    """Inner turn loop that owns the MCPToolPool lifecycle via the caller."""
+
+    _log = logger_override or logger
+
+    async def _mcp_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
+        """Bridge OperationExecutionContext.execute_tool_fn to MCPToolPool.
+
+        Declarative operations that need to call tools route through here.
+        The MCP pool owns the actual dispatch; we convert MCPToolResult to
+        ToolResult for compatibility with the operation execution contract.
+        """
+
+        params = getattr(_ctx, "parameters", {}) or {}
+        mcp_result = await pool.call_tool(tool_id, params)
+        return ToolResult(
+            tool_id=tool_id,
+            output_text=mcp_result.output_text,
+            error=mcp_result.output_text if mcp_result.is_error else "",
+        )
 
     # ── Phase 1: Pre-turn ─────────────────────────────────────────────
     pre_briefing = ""
@@ -511,7 +603,7 @@ async def run_turn(
             query=query,
             resolve_model_fn=resolve_model,
             complete_fn=complete,
-            execute_tool_fn=exec_tool,
+            execute_tool_fn=_mcp_tool_executor,
             execute_operation_fn=exec_op,
         )
         result = await run_mode_entry_operations(mode_id, ctx)
@@ -528,7 +620,7 @@ async def run_turn(
         query=query,
         resolve_model_fn=resolve_model,
         complete_fn=complete,
-        execute_tool_fn=exec_tool,
+        execute_tool_fn=_mcp_tool_executor,
         execute_operation_fn=exec_op,
     )
     pre_result = await run_mode_pre_turn_operations(mode_id, ctx)
@@ -567,10 +659,19 @@ async def run_turn(
     user_content = "\n\n".join(user_parts)
     messages.append({"role": "user", "content": user_content})
 
-    # Build tool schemas for this turn
-    tool_schemas: list[dict[str, Any]] = []
-    tool_schemas.extend(build_openai_operation_schema(mode_id))
-    tool_schemas.extend(extra_tool_schemas_fn(mode_id))
+    # Build tool schemas for this turn — MCP tools translated to OpenAI format.
+    # Operations are no longer advertised as tools; they are internal kernel
+    # capabilities. If an operation should be LLM-callable, expose it through
+    # the lisa-operations MCP server.
+    mcp_tools = await pool.list_tools()
+    tool_schemas: list[dict[str, Any]] = [
+        mcp_tool_to_openai_function(
+            name=spec.name,
+            description=spec.description,
+            input_schema=spec.input_schema,
+        )
+        for spec in mcp_tools
+    ]
 
     # Resolve preferred model
     preferred_model_id = (
@@ -632,52 +733,20 @@ async def run_turn(
             content = content.strip()
             break
 
-        # Dispatch tool/operation calls
-        standard_tools_dispatched = False
+        # Dispatch MCP tool calls
+        tools_dispatched = False
         for tool_call in tool_calls:
-            tool_name = _extract_tool_name(tool_call)
+            tool_name, tool_arguments = openai_tool_call_to_mcp(tool_call)
             tool_call_id = str(tool_call.get("id") or "")
-            tool_arguments = _extract_tool_arguments(tool_call)
 
-            tool_output = "Tool call budget exhausted."
-            execution_result: OperationResult | ToolResult | None = None
-
-            if tool_name in catalog:
-                standard_tools_dispatched = True
-                try:
-                    op_ctx = _build_minimal_context(
-                        mode_id=mode_id,
-                        query=query,
-                        resolve_model_fn=resolve_model,
-                        complete_fn=complete,
-                        execute_tool_fn=exec_tool,
-                        execute_operation_fn=exec_op,
-                    )
-                    op_ctx.params = tool_arguments
-                    execution_result = await exec_op(tool_name, op_ctx)
-                    tool_output = _stringify_result(execution_result)
-                    total_tool_calls += 1
-                except Exception as exc:  # pylint: disable=broad-except
-                    _log.warning("operation '%s' failed in turn runner: %s", tool_name, exc)
-                    tool_output = f"Operation execution failed: {type(exc).__name__}: {exc}"
-            else:
-                standard_tools_dispatched = True
-                try:
-                    t_ctx = ToolExecutionContext(
-                        tool_id=tool_name,
-                        workspace_id="lite-host",
-                        user_id="lite-user",
-                        user_slug="lite-user",
-                        mode_id=mode_id,
-                        query=query,
-                        parameters=tool_arguments,
-                    )
-                    execution_result = await exec_tool(tool_name, t_ctx)
-                    tool_output = _stringify_result(execution_result)
-                    total_tool_calls += 1
-                except Exception as exc:  # pylint: disable=broad-except
-                    _log.warning("tool '%s' failed in turn runner: %s", tool_name, exc)
-                    tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
+            tools_dispatched = True
+            try:
+                mcp_result = await pool.call_tool(tool_name, tool_arguments)
+                tool_output = mcp_result.output_text or "Done"
+                total_tool_calls += 1
+            except Exception as exc:  # pylint: disable=broad-except
+                _log.warning("MCP tool '%s' failed in turn runner: %s", tool_name, exc)
+                tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
 
             if not tool_output.strip():
                 tool_output = "Done"
@@ -695,8 +764,8 @@ async def run_turn(
                 tool_result_msg["function"] = {"thought_signature": thought_sig}
             messages.append(tool_result_msg)
 
-        if not standard_tools_dispatched:
-            # No non-transition tools were dispatched — model returned text
+        if not tools_dispatched:
+            # No tool calls were dispatched — model returned text
             content = getattr(completion, "content", "") or ""
             content = content.strip()
             break
@@ -763,8 +832,8 @@ def _build_minimal_context(
     )
 
 
-def _stringify_result(result: OperationResult | ToolResult) -> str:
-    """Convert a tool or operation result into plain text for model consumption."""
+def _stringify_result(result: OperationResult) -> str:
+    """Convert an operation result into plain text for model consumption."""
     output_text = getattr(result, "output_text", "") or ""
     output_json = getattr(result, "output_json", None) or {}
     if output_text.strip():

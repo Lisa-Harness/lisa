@@ -13,8 +13,6 @@ from kernel.ipsar_fsm import register_content_roots, register_operation_callback
 from kernel.models import (
     OperationExecutionContext,
     OperationResult,
-    ToolExecutionContext,
-    ToolResult,
 )
 from kernel.operations.registry import (
     execute_operation,
@@ -51,10 +49,6 @@ def _make_stub_complete(response: str, tool_calls: list[dict[str, Any]] | None =
         return _StubCompletion(content=response, tool_calls=tool_calls)
 
     return stub
-
-
-async def _stub_execute_tool(tool_id: str, _ctx: ToolExecutionContext) -> ToolResult:
-    return ToolResult(tool_id=tool_id, output_text=f"Executed {tool_id}")
 
 
 async def _stub_execute_operation(
@@ -357,8 +351,9 @@ async def test_run_turn_prefers_explicit_model_override() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_turn_tool_execution_fallback_to_tool_hook() -> None:
-    """When a tool name is not in the operation catalog, the tool hook is tried."""
+async def test_run_turn_mcp_tool_not_registered() -> None:
+    """When a tool name is not on any MCP server, the pool returns an error
+    and the turn continues."""
     call_count = 0
 
     async def two_step(**kwargs: Any) -> _StubCompletion:
@@ -371,7 +366,7 @@ async def test_run_turn_tool_execution_fallback_to_tool_hook() -> None:
                     {
                         "id": "call_1",
                         "function": {
-                            "name": "custom_tool_not_in_catalog",
+                            "name": "custom_tool_not_registered",
                             "arguments": "{}",
                         },
                     }
@@ -380,8 +375,7 @@ async def test_run_turn_tool_execution_fallback_to_tool_hook() -> None:
         return _StubCompletion(content="Used custom tool.")
 
     hooks = _build_minimal_hooks(two_step)
-    hooks.execute_tool = _stub_execute_tool
-    hooks.execute_operation = _stub_execute_operation
+    # No mcp_tool_servers configured — pool has no tools registered.
 
     result = await run_turn(mode_id="default", query="test", hooks=hooks)
 
@@ -409,10 +403,8 @@ async def test_default_hooks_are_noops() -> None:
         result = hooks.assemble_user_context("m", "q", "b")
         assert result == ""
 
-    # Default extra_tool_schemas returns empty list
-    if hooks.build_extra_tool_schemas:
-        result = hooks.build_extra_tool_schemas("m")
-        assert result == []
+    # Default mcp_tool_servers is an empty list
+    assert hooks.mcp_tool_servers == []
 
 
 @pytest.mark.asyncio

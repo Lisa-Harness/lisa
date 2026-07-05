@@ -722,46 +722,6 @@ def get_operation_catalog() -> dict[str, OperationDefinition]:
     return _OPERATION_CATALOG
 
 
-def build_openai_operation_schema(mode_id: str = "") -> list[dict[str, Any]]:
-    """Return allowed operations for a mode formatted as OpenAI function tools.
-
-    Workflow modes with an explicit catalog entry now treat `allowed_operation_ids`
-    as the source of truth, even when the list is empty. The older fallback to
-    `mode_allowlist` remains only for callers that do not provide a mode id.
-    """
-    operations: list[dict[str, Any]] = []
-
-    allowed_ids: list[str] | None = None
-    if mode_id:
-        # pylint: disable=import-outside-toplevel
-        from kernel.ipsar_fsm import get_workflow_catalog
-
-        mode_catalog = get_workflow_catalog().get(mode_id)
-        if mode_catalog:
-            allowed_ids = list(mode_catalog.allowed_operation_ids)
-
-    # When no mode context is available, keep the legacy fallback so direct
-    # callers can still expose mode-allowlisted operations.
-    if allowed_ids is None:
-        allowed_ids = []
-        for operation_id, sd in _OPERATION_CATALOG.items():
-            if not mode_id or not sd.mode_allowlist or (mode_id in sd.mode_allowlist):
-                allowed_ids.append(operation_id)
-    else:
-        allowed_ids = [s for s in allowed_ids if s in _OPERATION_CATALOG]
-
-    for operation_id in set(allowed_ids):
-        sd = _OPERATION_CATALOG[operation_id]
-        operations.append(
-            build_strict_openai_function_tool(
-                name=sd.operation_id,
-                description=sd.description,
-                parameters_schema=sd.parameters_schema,
-            )
-        )
-    return sorted(operations, key=lambda x: x["function"]["name"])
-
-
 def _is_operation_allowed_for_mode(
     *,
     operation_id: str,
