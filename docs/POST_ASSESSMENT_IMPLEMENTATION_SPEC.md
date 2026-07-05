@@ -262,7 +262,7 @@ class KernelProviderGatewayProvider:
 
 ---
 
-## Part 2 — Streaming Support
+## Part 2 — Streaming Support ✅ Implemented (v1: OpenAI + Anthropic)
 
 ### Design Verdicts
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
@@ -71,6 +71,35 @@ class CompletionResult:
     request_id: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     usage: CompletionUsage | None = None
+
+
+@dataclass(slots=True)
+class StreamedChunk:
+    """One chunk from a streaming completion.
+
+    v1 streams tokens only — tool-call streaming is deferred to v2.
+    """
+
+    content: str = ""
+    """Delta text for this chunk."""
+
+    finish_reason: str | None = None
+    """``'stop'``, ``'length'``, ``'tool_calls'``, or ``None`` (mid-stream)."""
+
+    usage: CompletionUsage | None = None
+    """Final usage — only present on the last chunk for providers that
+    include usage in the stream."""
+
+
+@dataclass(slots=True)
+class StreamedCompletion:
+    """Aggregated result of a streaming completion."""
+
+    content: str = ""
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    usage: CompletionUsage | None = None
+    finish_reason: str = "stop"
+    chunks: list[StreamedChunk] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -535,6 +564,33 @@ def extract_openai_embedding_usage(response: Any) -> CompletionUsage | None:
     )
 
 
+def _aggregate_streamed_chunks(chunks: list[StreamedChunk]) -> StreamedCompletion:
+    """Aggregate a list of ``StreamedChunk`` into one ``StreamedCompletion``.
+
+    v1 streams tokens only — tool-call streaming is deferred to v2, so this
+    helper does not attempt to reconstruct tool calls from deltas. The last
+    non-``None`` ``finish_reason`` wins. The last non-``None`` ``usage`` wins.
+    """
+
+    parts: list[str] = []
+    finish_reason = "stop"
+    usage: CompletionUsage | None = None
+    for chunk in chunks:
+        if chunk.content:
+            parts.append(chunk.content)
+        if chunk.finish_reason is not None:
+            finish_reason = chunk.finish_reason
+        if chunk.usage is not None:
+            usage = chunk.usage
+    return StreamedCompletion(
+        content="".join(parts),
+        tool_calls=[],
+        usage=usage,
+        finish_reason=finish_reason,
+        chunks=chunks,
+    )
+
+
 def extract_anthropic_usage(response: Any) -> CompletionUsage | None:
     """Extract normalized usage from one Anthropic Messages response.
 
@@ -798,6 +854,67 @@ class OpenAICompatibleGateway:
             usage=extract_openai_embedding_usage(response),
         )
 
+    async def complete_stream(self, request: CompletionRequest) -> AsyncIterator[StreamedChunk]:
+        """Stream completion chunks from an OpenAI-compatible endpoint.
+
+        v1 streams tokens only. Tool-call deltas are not parsed; the host
+        gets text deltas and a final ``finish_reason``. When the model wants
+        to call tools, the stream's ``finish_reason`` will be ``'tool_calls'``
+        and the host should fall back to ``complete()`` for that iteration.
+        """
+
+        client = self._client_factory()
+        kwargs = build_openai_completion_kwargs(request)
+        kwargs["stream"] = True
+        kwargs["stream_options"] = {"include_usage": True}
+        await self._emit(
+            {
+                "type": "provider_call_started",
+                "provider": request.model_def.provider,
+                "model_id": request.model_def.model_id,
+                "display_name": request.model_def.display_name,
+            }
+        )
+        try:
+            stream = await client.chat.completions.create(**kwargs)
+        except Exception as exc:  # pylint: disable=broad-except
+            await self._emit(
+                {
+                    "type": "provider_call_failed",
+                    "provider": request.model_def.provider,
+                    "model_id": request.model_def.model_id,
+                    "display_name": request.model_def.display_name,
+                    "request_id": extract_request_id(exc),
+                    "error": str(exc) or type(exc).__name__,
+                }
+            )
+            raise provider_gateway_error_from_exception(request, exc) from exc
+        async for event in stream:
+            delta_content = ""
+            finish_reason = None
+            choices = getattr(event, "choices", None) or []
+            if choices:
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                if delta is not None:
+                    delta_content = getattr(delta, "content", None) or ""
+                finish_reason = getattr(choice, "finish_reason", None)
+            usage = extract_openai_completion_usage(event)
+            yield StreamedChunk(
+                content=delta_content,
+                finish_reason=finish_reason,
+                usage=usage,
+            )
+        await self._emit(
+            {
+                "type": "provider_call_completed",
+                "provider": request.model_def.provider,
+                "model_id": request.model_def.model_id,
+                "display_name": request.model_def.display_name,
+                "request_id": "",
+            }
+        )
+
     async def _emit(self, event: ProviderStreamEvent) -> None:
         if self._event_emitter is None:
             return
@@ -904,6 +1021,86 @@ class AnthropicGateway:
             request_id=request_id,
             tool_calls=tool_calls,
             usage=extract_anthropic_usage(response),
+        )
+
+    async def complete_stream(self, request: CompletionRequest) -> AsyncIterator[StreamedChunk]:
+        """Stream completion chunks from the Anthropic Messages API.
+
+        v1 streams tokens only. Uses ``client.messages.stream()`` which yields
+        events; we extract ``text_delta`` events for content deltas and the
+        ``message_stop`` event for ``finish_reason``. Usage is read from the
+        final message object via ``extract_anthropic_usage``.
+        """
+
+        client = self._client_factory()
+        system_text = next(
+            (message["content"] for message in request.messages if message["role"] == "system"),
+            "",
+        )
+        anthropic_messages = _build_anthropic_messages(
+            [message for message in request.messages if message["role"] != "system"]
+        )
+        create_kwargs: dict[str, Any] = {
+            "model": request.model_def.model_id,
+            "max_tokens": request.max_tokens,
+            "messages": anthropic_messages,
+        }
+        if system_text:
+            create_kwargs["system"] = system_text
+        if request.temperature:
+            create_kwargs["temperature"] = request.temperature
+        if request.tools:
+            create_kwargs["tools"] = [
+                _openai_tool_to_anthropic_tool(tool) for tool in request.tools
+            ]
+        if getattr(request.model_def, "thinking_model", False):
+            create_kwargs["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": request.max_tokens,
+            }
+        await self._emit(
+            {
+                "type": "provider_call_started",
+                "provider": request.model_def.provider,
+                "model_id": request.model_def.model_id,
+                "display_name": request.model_def.display_name,
+            }
+        )
+        try:
+            async with client.messages.stream(**create_kwargs) as stream:
+                async for event in stream:
+                    event_type = getattr(event, "type", "")
+                    if event_type == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        delta_text = getattr(delta, "text", None) if delta is not None else None
+                        if delta_text:
+                            yield StreamedChunk(content=delta_text)
+                    elif event_type == "message_stop":
+                        yield StreamedChunk(finish_reason="stop")
+                final_message = await stream.get_final_message()
+                usage = extract_anthropic_usage(final_message)
+                if usage is not None:
+                    yield StreamedChunk(usage=usage)
+        except Exception as exc:  # pylint: disable=broad-except
+            await self._emit(
+                {
+                    "type": "provider_call_failed",
+                    "provider": request.model_def.provider,
+                    "model_id": request.model_def.model_id,
+                    "display_name": request.model_def.display_name,
+                    "request_id": extract_request_id(exc),
+                    "error": str(exc) or type(exc).__name__,
+                }
+            )
+            raise provider_gateway_error_from_exception(request, exc) from exc
+        await self._emit(
+            {
+                "type": "provider_call_completed",
+                "provider": request.model_def.provider,
+                "model_id": request.model_def.model_id,
+                "display_name": request.model_def.display_name,
+                "request_id": "",
+            }
         )
 
     async def _emit(self, event: ProviderStreamEvent) -> None:

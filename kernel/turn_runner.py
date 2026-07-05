@@ -47,6 +47,7 @@ from kernel.models import (
 from kernel.operations.registry import (
     execute_operation,
 )
+from kernel.provider_core import StreamedChunk, StreamedCompletion, _aggregate_streamed_chunks
 from kernel.seams.protocols import (
     ContentRegistry,
     DataSanitizer,
@@ -204,6 +205,17 @@ class TurnHooks:
     A host MUST provide this.  If None, `run_turn` raises NotImplementedError.
     """
 
+    complete_stream: Callable[..., Any] | None = None
+    """Streaming completion function. When set, the turn runner uses this
+    instead of ``complete`` for the model call. Must be an async generator
+    that yields ``StreamedChunk`` objects as tokens arrive.
+
+    v1 streams tokens only — tool-call streaming is deferred to v2. When
+    the model wants to call tools, the stream's ``finish_reason`` will be
+    ``'tool_calls'`` and the host should fall back to ``complete`` for that
+    iteration. The turn runner handles this fallback automatically.
+    """
+
     # ── Pre-turn context assembly ────────────────────────────────────────
     assemble_system_prompt: Callable[[str, str | None], str] | None = None
     """Given mode_instruction: str and optional stage_instruction: str|None,
@@ -308,6 +320,31 @@ class TurnHooks:
     event bus, data sanitizer). Defaults wire the public implementations
     shipped under ``kernel.context``; the production app overrides any of
     them with its own."""
+
+
+# ── Streaming adapter ──────────────────────────────────────────────────────
+
+
+class StreamedCompletionAdapter:
+    """Adapter that makes a ``StreamedCompletion`` look like a ``CompletionResult``.
+
+    The turn runner's tool loop expects ``completion.content``,
+    ``completion.tool_calls``, and ``completion.usage``. When the streaming
+    path produces a ``StreamedCompletion`` (no tool calls in v1), this adapter
+    bridges the two shapes without forcing the streaming code to construct a
+    full ``CompletionResult``.
+    """
+
+    __slots__ = ("content", "tool_calls", "usage", "_aggregated")
+
+    def __init__(self, aggregated: StreamedCompletion) -> None:
+        self._aggregated = aggregated
+        self.content = aggregated.content
+        self.tool_calls = aggregated.tool_calls
+        self.usage = aggregated.usage
+
+    def __repr__(self) -> str:
+        return f"StreamedCompletionAdapter(content={self.content!r}, finish_reason={self._aggregated.finish_reason!r})"
 
 
 # ── Default hook implementations ───────────────────────────────────────────
@@ -746,13 +783,42 @@ async def _run_turn_inner(
 
     while iteration < max_tool_iterations:
         iteration += 1
-        completion = await complete(
-            messages=messages,
-            model_def=model_def,
-            max_tokens=4096,
-            temperature=0.4,
-            tools=tool_schemas if tool_schemas else None,
-        )
+        if hooks.complete_stream is not None:
+            # ── Streaming path ──────────────────────────────────────────
+            # v1: stream tokens to the host. When the stream indicates
+            # tool_calls are needed (finish_reason='tool_calls'), fall
+            # back to the non-streaming complete() for that iteration to
+            # get the structured tool-call payload.
+            chunks: list[StreamedChunk] = []
+            async for chunk in hooks.complete_stream(
+                messages=messages,
+                model_def=model_def,
+                max_tokens=4096,
+                temperature=0.4,
+                tools=tool_schemas if tool_schemas else None,
+            ):
+                chunks.append(chunk)
+            aggregated = _aggregate_streamed_chunks(chunks)
+            if aggregated.finish_reason == "tool_calls":
+                # Fall back to non-streaming for tool-call payload
+                completion = await complete(
+                    messages=messages,
+                    model_def=model_def,
+                    max_tokens=4096,
+                    temperature=0.4,
+                    tools=tool_schemas if tool_schemas else None,
+                )
+            else:
+                # Build a completion-like object from the aggregated stream
+                completion = StreamedCompletionAdapter(aggregated)
+        else:
+            completion = await complete(
+                messages=messages,
+                model_def=model_def,
+                max_tokens=4096,
+                temperature=0.4,
+                tools=tool_schemas if tool_schemas else None,
+            )
         (
             prompt_tokens,
             completion_tokens,
