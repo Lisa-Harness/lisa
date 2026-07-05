@@ -32,6 +32,8 @@ class KernelProviderGatewayProvider:
             return self._provider_core.AzureOpenAIGateway
         if normalized == "anthropic":
             return self._provider_core.AnthropicGateway
+        if normalized == "google":
+            return self._provider_core.GoogleGeminiGateway
         if normalized in {"openai", "ollama"}:
             return self._provider_core.OpenAICompatibleGateway
         return None

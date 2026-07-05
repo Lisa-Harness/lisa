@@ -22,7 +22,7 @@ assigned to a separate agent workflow.
 | AWS: REST or SDK? | **`boto3` (bedrock-runtime).** The AWS Bedrock REST API requires SigV4 signing, which is non-trivial. `boto3` is the standard Python AWS SDK and is already a common dependency in production environments. |
 | Anthropic: finish or defer? | **Finish.** The Anthropic gateway already has usage extraction. Complete the tool-use path (Phase 5 of MCP cutover). |
 
-### 1.1 Google Gemini Gateway
+### 1.1 Google Gemini Gateway ✅ Implemented
 
 #### Location
 
