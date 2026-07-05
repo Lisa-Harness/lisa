@@ -6,6 +6,22 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Added
 
+#### SQLite+Embeddings memory store (Part 3)
+
+- **`SqliteMemoryStore`** in `kernel/sqlite_memory.py` implementing the `MemoryStore` contract with SQLite persistence and optional sqlite-vec semantic recall.
+- **`EmbeddingProvider` Protocol** for pluggable embedding generation (`embed(texts) -> vectors`) with graceful keyword-only fallback when embeddings or sqlite-vec are unavailable.
+- **Schema + indexes**: `memories` table, scoped/operation/expiry indexes, and `memory_embeddings` vec0 virtual table when sqlite-vec is available.
+- **Recall behavior**: semantic recall (distance-ranked, salience-weighted) with keyword fallback, access tracking (`access_count`, `last_accessed_at`), and scoped multi-tenant filtering.
+- **Maintenance API**: `evict_expired()` and `vacuum()`.
+- **Default seam wiring**: `ContextSeams.memory_store` now defaults to `SqliteMemoryStore(db_path="lsa-state/memory.db")`.
+- **`kernel/tests/test_sqlite_memory.py`** — 21 tests covering schema/init, record/list flows, semantic + keyword recall, TTL eviction, vacuum, and access tracking.
+
+#### Kernel-as-MCP servers (Part 4)
+
+- Added four MCP server packages under `mcp_server/src/`: `lisa_context` (memory tools), `lisa_operations` (operation tools), `lisa_search` (search tools), and `lisa_surf` (surf tools).
+- **`mcp_server/pyproject.toml`** updated with script entry points: `lisa-context`, `lisa-operations`, `lisa-search`, `lisa-surf`.
+- **`mcp_server/tests/test_mcp_servers.py`** — 17 tests validating tool registration and in-process dispatch for all four servers.
+
 #### AWS Bedrock gateway (Part 1.2)
 
 - **`BedrockGateway`** class in `kernel/provider_core.py` — AWS Bedrock runtime gateway via boto3 (optional dependency). Uses the Converse API (`bedrock-runtime.converse()`) for normalized cross-model interface across Claude, Llama, Nova, and Titan. Sync boto3 calls wrapped with `asyncio.to_thread`.

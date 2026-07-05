@@ -388,7 +388,9 @@ wires `complete_stream` instead of `complete`.
 
 ---
 
-## Part 3 — Open-Source SQLite+Embeddings Memory System
+## Part 3 — Open-Source SQLite+Embeddings Memory System ✅ Implemented
+
+**Status: Implemented 2026-07-05.**
 
 ### Design Verdicts
 
@@ -555,7 +557,9 @@ that want production memory get `SqliteMemoryStore` by default.
 
 ---
 
-## Part 4 — Kernel-as-MCP (KaMCP)
+## Part 4 — Kernel-as-MCP (KaMCP) ✅ Implemented
+
+**Status: Implemented 2026-07-05.**
 
 ### Design Verdicts
 
@@ -569,10 +573,10 @@ that want production memory get `SqliteMemoryStore` by default.
 
 | Server | Package | Tools | Status |
 | --- | --- | --- | --- |
-| `lisa-context` | `mcp_server/src/lisa_context/` | `add_memory`, `search_memory`, `list_memories`, `get_surface_context` | Stub exists; complete it |
-| `lisa-operations` | `mcp_server/src/lisa_operations/` | One tool per operation in the registry: `web_search`, `save_learning`, `take_note`, etc. | **New** |
-| `lisa-search` | `mcp_server/src/lisa_search/` | `web_search` (wraps `kernel.web_search`) | **New** |
-| `lisa-surf` | `mcp_server/src/lisa_surf/` | `surf_url`, `flush_session`, `get_session_state` | **New** |
+| `lisa-context` | `mcp_server/src/lisa_context/` | `add_memory`, `search_memory`, `list_memories`, `get_surface_context` | ✅ Implemented |
+| `lisa-operations` | `mcp_server/src/lisa_operations/` | `list_operations`, `run_operation` (dynamic operation execution) | ✅ Implemented |
+| `lisa-search` | `mcp_server/src/lisa_search/` | `web_search`, `web_search_configured` | ✅ Implemented |
+| `lisa-surf` | `mcp_server/src/lisa_surf/` | `surf_url`, `flush_session`, `get_session_state` | ✅ Implemented |
 
 ### 4.2 lisa-operations Design
 
