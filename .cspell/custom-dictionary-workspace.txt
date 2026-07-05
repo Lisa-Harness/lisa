@@ -1,10 +1,12 @@
 # Custom Dictionary Words
 asyncio
 dataclasses
+deepseek
 evals
 frontdoor
 isort
 mypy
 noqa
 pytest
+thinkabout
 xfail
