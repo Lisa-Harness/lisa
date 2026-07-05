@@ -9,11 +9,12 @@ kernel never imports host code.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from kernel.models import (
     SurfSessionState,
+    SurfaceContext,
     UnifiedState,
 )
 
@@ -110,6 +111,55 @@ class StateProvider(Protocol):
     """
 
     def __call__(self) -> UnifiedState | None: ...
+
+
+@dataclass(slots=True)
+class GuardResult:
+    """The outcome of a guardrail check.
+
+    ``allowed=False`` blocks the turn (input guard) or replaces the output
+    (output guard). ``sanitized_text`` replaces the original text when the
+    guard rewrites it. ``annotations`` carry provider-specific metadata
+    (toxicity scores, PII findings, etc.) for audit logging.
+    """
+
+    allowed: bool
+    blocked_reason: str | None = None
+    sanitized_text: str | None = None
+    annotations: dict[str, Any] = field(default_factory=dict)
+
+
+@runtime_checkable
+class InputGuard(Protocol):
+    """Validate user input before it reaches the model.
+
+    Called by the turn runner in Phase 1 (pre-turn), before system
+    prompt assembly. If the guard returns ``allowed=False``, the turn
+    is aborted and the ``blocked_reason`` is returned to the user.
+    """
+
+    async def validate(
+        self,
+        query: str,
+        surface: SurfaceContext,
+    ) -> GuardResult: ...
+
+
+@runtime_checkable
+class OutputGuard(Protocol):
+    """Validate model output before it reaches the user.
+
+    Called by the turn runner in Phase 3 (post-turn), after the tool
+    loop produces final text and before ``store_memory()``. If the guard
+    returns ``allowed=False``, the output is replaced with a safe
+    fallback message and the original output is logged for audit.
+    """
+
+    async def validate(
+        self,
+        text: str,
+        surface: SurfaceContext,
+    ) -> GuardResult: ...
 
 
 @runtime_checkable

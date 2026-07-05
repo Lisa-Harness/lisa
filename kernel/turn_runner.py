@@ -41,6 +41,7 @@ from kernel.ipsar_fsm import (
 from kernel.models import (
     OperationExecutionContext,
     OperationResult,
+    SurfaceContext,
     ToolResult,
 )
 from kernel.operations.registry import (
@@ -51,7 +52,9 @@ from kernel.seams.protocols import (
     DataSanitizer,
     EventBus,
     ExtensionEvidenceBuilder,
+    InputGuard,
     ModelPolicy,
+    OutputGuard,
     ProviderGatewayProvider,
 )
 from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
@@ -90,6 +93,10 @@ class TurnResult:
     corresponding slice slot. Empty list when opportunistic
     house-keeping is off (``slice_tuning=None`` or all triggers set
     to ``never``)."""
+    blocked: bool = False
+    """True when an input or output guard blocked the turn. Input blocks
+    short-circuit before the model call; output blocks replace the response
+    with a safe fallback and emit a ``guardrail.audit`` event."""
 
 
 def _lazy_content_registry() -> ContentRegistry:
@@ -128,6 +135,18 @@ def _lazy_extension_evidence_builder() -> ExtensionEvidenceBuilder:
     return NoOpExtensionEvidenceBuilder()
 
 
+def _lazy_input_guard() -> InputGuard:
+    from kernel.context import PassThroughInputGuard
+
+    return PassThroughInputGuard()
+
+
+def _lazy_output_guard() -> OutputGuard:
+    from kernel.context import PassThroughOutputGuard
+
+    return PassThroughOutputGuard()
+
+
 @dataclass
 class ContextSeams:
     """Bundle of context-layer seams injected through ``TurnHooks``.
@@ -146,6 +165,15 @@ class ContextSeams:
     extension_evidence_builder: ExtensionEvidenceBuilder = field(
         default_factory=_lazy_extension_evidence_builder
     )
+    input_guard: InputGuard = field(default_factory=_lazy_input_guard)
+    """Validates user input before the model call (Phase 1). Default:
+    ``PassThroughInputGuard`` allows everything. Hosts override with a real
+    implementation (Azure AI Content Safety, Bedrock Guardrails, regex, etc.)."""
+    output_guard: OutputGuard = field(default_factory=_lazy_output_guard)
+    """Validates model output before it reaches the user (Phase 3). Default:
+    ``PassThroughOutputGuard`` allows everything. Hosts override with a real
+    implementation. Blocked outputs are replaced with a safe fallback and
+    audited via ``event_bus.publish("guardrail.audit", ...)``."""
 
 
 @dataclass
@@ -625,6 +653,28 @@ async def _run_turn_inner(
     )
     pre_result = await run_mode_pre_turn_operations(mode_id, ctx)
     pre_briefing = _extract_pre_turn_briefing(pre_result)
+    # ── Phase 1.0: Input guard ─────────────────────────────────────
+    # Runs before the pre-turn slice so a blocked input does not consume
+    # house-keeping budget. A sanitizing guard rewrites the query for the
+    # remainder of the turn.
+    guard_surface = SurfaceContext(
+        surface_type="personal_dm",
+        surface_id="lite-host-console",
+        memory_scope="personal",
+        thread_owner_id="lite-user",
+    )
+    input_guard_result = await hooks.context_seams.input_guard.validate(
+        query, guard_surface
+    )
+    if not input_guard_result.allowed:
+        blocked_reason = input_guard_result.blocked_reason or "Input blocked by safety policy."
+        _log.warning("Input guard blocked turn for mode=%s: %s", mode_id, blocked_reason)
+        return TurnResult(
+            response_text=blocked_reason,
+            blocked=True,
+        )
+    if input_guard_result.sanitized_text is not None:
+        query = input_guard_result.sanitized_text
 
     # ── Phase 1.5: Pre-turn opportunistic slice ────────────────────────
     # Fires before the model call so any state the recall/assemble
@@ -774,19 +824,54 @@ async def _run_turn_inner(
         content = "The model did not produce a final response."
 
     # ── Phase 3: Post-turn ────────────────────────────────────────────
+    # Output guard runs before on_complete/store_mem so the persisted and
+    # delivered text is the sanitized/safe-fallback version. Blocked
+    # outputs emit a guardrail.audit event and skip the post-turn slice.
+    output_guard_result = await hooks.context_seams.output_guard.validate(
+        content, guard_surface
+    )
+    turn_blocked = False
+    if not output_guard_result.allowed:
+        original_len = len(content)
+        safe_fallback = "I'm unable to provide that response. Please rephrase your request."
+        _log.warning(
+            "Output guard blocked turn for mode=%s (original_len=%d)",
+            mode_id,
+            original_len,
+        )
+        try:
+            await hooks.context_seams.event_bus.publish(
+                "guardrail.audit",
+                {
+                    "surface_id": guard_surface.surface_id,
+                    "mode_id": mode_id,
+                    "blocked_reason": output_guard_result.blocked_reason or "",
+                    "original_text_len": original_len,
+                },
+            )
+        except Exception as audit_exc:  # pylint: disable=broad-except
+            _log.warning("guardrail.audit publish failed: %s", audit_exc)
+        content = safe_fallback
+        turn_blocked = True
+    elif output_guard_result.sanitized_text is not None:
+        content = output_guard_result.sanitized_text
+
     await on_complete(mode_id, query, content, messages)
     await store_mem(query, content, "personal")
 
-    # ── Phase 3.5: Post-turn opportunistic slice ──────────────────────
+    # ── Phase 3.5: Post-turn opportunistic slice ─────────────────────
     # Fires after the response is committed. The user has already seen
     # the answer; this slice consumes the deferred pressure budget.
-    post_turn_outcome = await _fire_slice(
-        hooks=hooks,
-        trigger=SliceMode.POST_TURN,
-        slice_outcomes=slice_outcomes,
-    )
-    if post_turn_outcome is not None:
-        hooks.last_slice_finished_at = time.monotonic()
+    # Skipped when the output guard blocked the turn — abnormal turns do
+    # not run opportunistic house-keeping.
+    if not turn_blocked:
+        post_turn_outcome = await _fire_slice(
+            hooks=hooks,
+            trigger=SliceMode.POST_TURN,
+            slice_outcomes=slice_outcomes,
+        )
+        if post_turn_outcome is not None:
+            hooks.last_slice_finished_at = time.monotonic()
 
     return TurnResult(
         response_text=content,
@@ -800,6 +885,7 @@ async def _run_turn_inner(
         duration_ms=total_duration_ms,
         latency_ms=total_latency_ms,
         slice_outcomes=slice_outcomes,
+        blocked=turn_blocked,
     )
 
 

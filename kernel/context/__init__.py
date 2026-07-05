@@ -10,7 +10,9 @@ from kernel.context.content_registry import DiskContentRegistry
 from kernel.context.data_sanitizer import PassThroughSanitizer
 from kernel.context.event_bus import InProcessEventBus
 from kernel.context.extension_evidence import NoOpExtensionEvidenceBuilder
+from kernel.context.input_guard import PassThroughInputGuard
 from kernel.context.model_policy import ManifestModelPolicy
+from kernel.context.output_guard import PassThroughOutputGuard
 from kernel.context.provider_gateway_provider import KernelProviderGatewayProvider
 
 __all__ = [
@@ -19,5 +21,7 @@ __all__ = [
     "KernelProviderGatewayProvider",
     "ManifestModelPolicy",
     "NoOpExtensionEvidenceBuilder",
+    "PassThroughInputGuard",
+    "PassThroughOutputGuard",
     "PassThroughSanitizer",
 ]

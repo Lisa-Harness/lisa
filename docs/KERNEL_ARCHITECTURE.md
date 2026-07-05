@@ -59,7 +59,7 @@ Key principles:
 | --- | --- |
 | `operations/` | Operation registry for discovering and executing operations from packs. |
 | `intake/` | External data collection: `SignalConnector` (stateless monitors), `DataSource` (stateful fetchers), and `DomainKnowledgeProvider` (pack-owned orientation material). |
-| `seams/` | Host-injection protocols: `BlobIO`, `StateProvider`, `MemoryStore`, `BrowserAutomation`, `DataSourceHooks`, and completion/tool/operation callbacks. |
+| `seams/` | Host-injection protocols: `BlobIO`, `StateProvider`, `MemoryStore`, `BrowserAutomation`, `DataSourceHooks`, `InputGuard`, `OutputGuard`, and completion/tool/operation callbacks. |
 | `synthesis/` | Post-collection intelligence pipeline: extension-owned stages (local analysis → synthesis → memory) and stage execution contracts. |
 | `testing/` | `extension_harness` for validating connectors and data sources without a host app. |
 | `context/` | App-layer context assembly (consumed by host, not exported as kernel contracts). |
@@ -151,6 +151,35 @@ flowchart TD
 | `explicit_slice` | `async (policy) -> SliceOutcome` | Run explicit house-keeping |
 | `last_slice_finished_at` | `() -> float \| None` | Return last slice completion time |
 
+### Guardrails
+
+The kernel defines two guardrail seams in `ContextSeams` that hosts override
+with real safety implementations. Both default to pass-through (allow
+everything) so public hosts run without a private safety pipeline.
+
+| Seam | Protocol | When it runs | Default |
+| --- | --- | --- | --- |
+| `input_guard` | `InputGuard.validate(query, surface) -> GuardResult` | Phase 1, before the pre-turn slice and system prompt assembly | `PassThroughInputGuard` |
+| `output_guard` | `OutputGuard.validate(text, surface) -> GuardResult` | Phase 3, after the tool loop and before `store_memory` | `PassThroughOutputGuard` |
+
+A `GuardResult` carries `allowed: bool`, an optional `blocked_reason`, an
+optional `sanitized_text` (for rewriting input/output in place), and
+`annotations` for provider-specific metadata.
+
+- **Input block**: the turn short-circuits with `TurnResult(blocked=True)` and
+  the `blocked_reason` as the response text. The model is never called and the
+  pre-turn slice does not fire.
+- **Output block**: the response is replaced with a safe fallback, a
+  `guardrail.audit` event is published on the `EventBus`, and the post-turn
+  slice is skipped. `on_turn_complete` and `store_memory` still fire with the
+  safe-fallback text so the audit trail is complete.
+- **Sanitization**: when `sanitized_text` is set, the original text is
+  replaced in place for the remainder of the turn.
+
+Enterprise implementations (Azure AI Content Safety, AWS Bedrock Guardrails,
+Cloudflare AI Gateway, Presidio PII redaction, custom regex) are host-owned;
+the kernel only defines the contract and the insertion points.
+
 ## The Slice System
 
 The slice system (`slice.py`) is the kernel's approach to background work. Instead of cron or wall-clock timers, it uses a **pressure model**: the longer it has been since the last slice finished, the more budget the next slice gets.
@@ -199,6 +228,8 @@ A real host must inject concrete implementations for these seams:
 | Tool execution | `TurnHooks.execute_tool` | Web search, surf, custom tools |
 | Operation execution | `TurnHooks.execute_operation` | `operations.registry.execute_operation` |
 | Memory | `TurnHooks.recall_memory` / `store_memory` | `LiteMemoryStore`, `MCPMemoryClient`, or production store |
+| Input guard | `ContextSeams.input_guard` | `PassThroughInputGuard` (default), Azure AI Content Safety, Bedrock Guardrails, regex |
+| Output guard | `ContextSeams.output_guard` | `PassThroughOutputGuard` (default), Azure AI Content Safety, Bedrock Guardrails, Presidio |
 | Blob/object storage | Host-owned | Azure Blob, S3, local filesystem |
 | Transport adapter | Host-owned | Teams, Slack, WebSocket, console |
 | Scheduler | Host-owned | For signal connector polling and heartbeat jobs |
