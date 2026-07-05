@@ -24,9 +24,21 @@ from kernel.models import (
 )
 from kernel.intake.connector_discovery import discover_installed_signal_connectors
 
-from app.config import settings
-from app.context_frames import render_ranked_evidence_namespace_frame
-from app.extension_context_evidence import build_extension_context_evidence
+from kernel.config import settings
+from kernel.context.context_frames import render_ranked_evidence_namespace_frame
+from kernel.context.extension_evidence import NoOpExtensionEvidenceBuilder
+from kernel.seams.protocols import ExtensionEvidenceBuilder
+
+# Module-level extension-evidence builder. Hosts override via
+# ``set_extension_evidence_builder`` when they need the production builder.
+_extension_evidence_builder: ExtensionEvidenceBuilder = NoOpExtensionEvidenceBuilder()
+
+
+def set_extension_evidence_builder(builder: ExtensionEvidenceBuilder) -> None:
+    """Override the module-level extension-evidence builder."""
+
+    global _extension_evidence_builder
+    _extension_evidence_builder = builder
 
 _TOKEN_RE = re.compile(r"[a-z0-9']+")
 _STOPWORDS = {
@@ -313,7 +325,7 @@ def _new_evidence(
 
 def _build_extension_evidence(state: UnifiedState) -> list[ContextEvidence]:
     runtime_context = ExtensionRuntimeContext(blob_io=None, state_provider=None)
-    return build_extension_context_evidence(runtime_context, state)
+    return _extension_evidence_builder.build_extension_context_evidence(runtime_context, state)
 
 
 def _build_alert_evidence(state: UnifiedState) -> list[ContextEvidence]:

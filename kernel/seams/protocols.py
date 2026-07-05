@@ -8,6 +8,7 @@ kernel never imports host code.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -228,3 +229,89 @@ class DataSourceHookSet:
     thread_store: ThreadStore
     event_bus: Any
     outbox_reader: OutboxReader | None = None
+
+
+# ── Context seams ───────────────────────────────────────────────────────────
+#
+# The following Protocols invert the dependencies that ``kernel/context/``
+# previously took on private ``app.*`` modules. Hosts inject concrete
+# implementations through ``TurnHooks.context_seams``; the kernel ships public
+# default implementations so third-party hosts get working context and memory
+# without the private app.
+
+
+@runtime_checkable
+class ContentRegistry(Protocol):
+    """Load authored text assets from merged content roots.
+
+    Replaces ``app.content_registry.read_authored_text``. The default
+    implementation reads from pack and extension content roots discovered
+    through ``kernel.content_roots``.
+    """
+
+    def read_authored_text(self, relative_path: str) -> str: ...
+
+
+@runtime_checkable
+class ModelPolicy(Protocol):
+    """Resolve model aliases and availability without coupling to a provider.
+
+    Replaces ``app.model_policy``. The default implementation resolves
+    aliases through ``kernel.model_manifest``.
+    """
+
+    def resolve_alias(self, alias: str) -> str: ...
+    def is_available(self, model_id: str) -> bool: ...
+
+
+@runtime_checkable
+class ProviderGatewayProvider(Protocol):
+    """Return a ``ProviderGateway`` for a given provider name.
+
+    Replaces direct ``app.providers`` imports. The default implementation
+    returns the gateways shipped in ``kernel.provider_core``.
+    """
+
+    def gateway_for(self, provider: str) -> Any | None: ...
+
+
+@runtime_checkable
+class EventBus(Protocol):
+    """Lightweight pub/sub for salience events and consolidation triggers.
+
+    Replaces ``app.event_bus.BusBackend``. The default implementation is an
+    in-process ``asyncio`` queue bus with no external dependencies.
+    """
+
+    async def publish(self, topic: str, payload: dict[str, Any]) -> None: ...
+    def subscribe(
+        self, topic: str, handler: Callable[[dict[str, Any]], Awaitable[None]]
+    ) -> None: ...
+
+
+@runtime_checkable
+class DataSanitizer(Protocol):
+    """Apply redaction before memory writes or context assembly.
+
+    Replaces ``app.data_sanitizer.apply_redaction_pipeline``. The default
+    implementation is a pass-through that performs no redaction; production
+    hosts override with a real sanitizer.
+    """
+
+    def redact(self, text: str, *, scope: str) -> str: ...
+
+
+@runtime_checkable
+class ExtensionEvidenceBuilder(Protocol):
+    """Build context evidence records from installed extensions.
+
+    Replaces ``app.extension_context_evidence.build_extension_context_evidence``.
+    The default implementation returns an empty list; production hosts override
+    with a builder that walks installed extensions.
+    """
+
+    def build_extension_context_evidence(
+        self,
+        runtime_context: Any,
+        state: Any,
+    ) -> list[Any]: ...

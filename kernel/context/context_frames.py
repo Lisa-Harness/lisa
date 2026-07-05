@@ -5,8 +5,9 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from app.content_registry import read_authored_text
+from kernel.context.content_registry import DiskContentRegistry
 from kernel.models import ContextEvidenceNamespace
+from kernel.seams.protocols import ContentRegistry
 
 ContextFrameId = Literal[
     "surface_context",
@@ -39,12 +40,26 @@ CONTEXT_FRAME_IDS: tuple[ContextFrameId, ...] = (
 _FRAME_ASSET_PREFIX = "prompts/context_frames"
 _RANKED_EVIDENCE_NAMESPACE_PREFIX = "prompts/context_frames/ranked_evidence"
 
+# Module-level content registry. Hosts override via ``set_content_registry``
+# when they need a custom registry; the default reads from discovered
+# content roots.
+_content_registry: ContentRegistry = DiskContentRegistry()
+
+
+def set_content_registry(registry: ContentRegistry) -> None:
+    """Override the module-level content registry and invalidate caches."""
+
+    global _content_registry
+    _content_registry = registry
+    read_context_frame.cache_clear()
+    read_ranked_evidence_namespace_frame.cache_clear()
+
 
 @lru_cache(maxsize=len(CONTEXT_FRAME_IDS))
 def read_context_frame(frame_id: ContextFrameId) -> str:
     """Load one authored context frame from the merged content registry."""
 
-    return read_authored_text(f"{_FRAME_ASSET_PREFIX}/{frame_id}.md").strip()
+    return _content_registry.read_authored_text(f"{_FRAME_ASSET_PREFIX}/{frame_id}.md").strip()
 
 
 def render_context_frame(frame_id: ContextFrameId, body: str) -> str:
@@ -63,7 +78,9 @@ def render_context_frame(frame_id: ContextFrameId, body: str) -> str:
 def read_ranked_evidence_namespace_frame(namespace: ContextEvidenceNamespace) -> str:
     """Load the authored consumption frame for one ranked-evidence namespace."""
 
-    return read_authored_text(f"{_RANKED_EVIDENCE_NAMESPACE_PREFIX}/{namespace}.md").strip()
+    return _content_registry.read_authored_text(
+        f"{_RANKED_EVIDENCE_NAMESPACE_PREFIX}/{namespace}.md"
+    ).strip()
 
 
 def render_ranked_evidence_namespace_frame(

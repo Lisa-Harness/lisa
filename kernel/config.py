@@ -109,6 +109,84 @@ class Settings(BaseSettings):
     workshop_default_synthesis_max_tokens: int = 700
     workshop_max_synthesis_tokens: int = 1200
 
+    # ── Context broker ──────────────────────────────────────────────────
+    heartbeat_interval_seconds: int = 60
+    repo_context_stale_after_hours: int = 6
+    reflection_cadence_minutes: int = 30
+    dream_hypothesis_ttl_hours: int = 24
+    context_broker_prefer_recent: bool = True
+    context_broker_min_evidence_score: float = 0.15
+    context_broker_max_selected_items: int = 8
+    context_broker_max_markdown_chars: int = 4000
+
+    # ── Context budget ──────────────────────────────────────────────────
+    context_budget_enabled: bool = True
+    context_budget_default_total_tokens: int = 6000
+    context_budget_deep_total_tokens: int = 12000
+    context_budget_core_max_tokens: int = 2000
+    context_budget_retrieval_max_tokens: int = 1500
+    context_budget_memory_max_tokens: int = 1200
+    context_budget_reflection_max_tokens: int = 1000
+    context_budget_history_max_tokens: int = 1500
+    context_budget_operational_max_tokens: int = 800
+    context_budget_token_char_ratio: int = 4
+
+    # ── Conversation digest ─────────────────────────────────────────────
+    conversation_digest_enabled: bool = True
+    conversation_digest_model: str = ""
+    conversation_digest_max_prompt_chars: int = 12000
+    conversation_digest_max_summary_chars: int = 800
+    conversation_digest_source_turns: int = 8
+    conversation_digest_recent_turns: int = 4
+
+    # ── Memory ──────────────────────────────────────────────────────────
+    memory_enabled: bool = True
+    memory_sqlite_path: str = ""
+    memory_sync_enabled: bool = False
+    memory_eager_sync_on_write: bool = False
+    memory_sync_batch_size: int = 50
+    memory_final_sync_timeout_seconds: float = 5.0
+    memory_flush_interval_seconds: int = 60
+    memory_snapshot_interval_seconds: int = 300
+    memory_salience_event_threshold: float = 0.6
+    memory_embedding_enabled: bool = False
+    memory_embedding_provider: str = "azure_openai"
+    memory_embedding_model: str = ""
+    memory_embedding_dimensions: int = 1536
+    memory_ann_enabled: bool = False
+    memory_decay_enabled: bool = True
+    memory_decay_half_life_days: float = 14.0
+    memory_decay_floor: float = 0.05
+    memory_recall_candidate_pool_size: int = 50
+    memory_recall_recent_limit: int = 5
+    memory_recall_lexical_limit: int = 20
+    memory_recall_semantic_limit: int = 10
+    memory_recall_final_limit: int = 5
+    memory_recall_auto_deep_threshold: float = 0.4
+    memory_recall_cheap_model: str = ""
+    memory_promotion_threshold: int = 3
+    memory_consolidation_enabled: bool = True
+    memory_eviction_enabled: bool = True
+    memory_eviction_min_age_days: int = 30
+    memory_eviction_default_ttl_days: int = 90
+    memory_eviction_min_salience: float = 0.1
+    memory_eviction_min_access_count: int = 0
+    memory_eviction_max_active_per_scope: int = 500
+    memory_eviction_max_kind_per_user: dict[str, int] = {}
+
+    # ── Passive intelligence ────────────────────────────────────────────
+    passive_intelligence_enabled: bool = True
+    passive_intelligence_default_chat_enabled: bool = True
+    passive_intelligence_min_recurrence: int = 2
+    passive_intelligence_min_salience: float = 0.3
+    passive_intelligence_min_score: float = 0.2
+    passive_intelligence_evidence_limit: int = 3
+    passive_intelligence_max_items: int = 5
+    passive_intelligence_window_turns: int = 12
+    passive_intelligence_window_memories: int = 20
+    passive_intelligence_stale_after_minutes: int = 30
+    passive_intelligence_default_chat_min_overlap: float = 0.25
+
     @staticmethod
     def _strip_inline_comment(value: object) -> object:
         if not isinstance(value, str):
@@ -128,6 +206,44 @@ class Settings(BaseSettings):
         "workshop_max_parallel_panels_hard_cap",
         "workshop_default_synthesis_max_tokens",
         "workshop_max_synthesis_tokens",
+        "heartbeat_interval_seconds",
+        "repo_context_stale_after_hours",
+        "reflection_cadence_minutes",
+        "dream_hypothesis_ttl_hours",
+        "context_budget_default_total_tokens",
+        "context_budget_deep_total_tokens",
+        "context_budget_core_max_tokens",
+        "context_budget_retrieval_max_tokens",
+        "context_budget_memory_max_tokens",
+        "context_budget_reflection_max_tokens",
+        "context_budget_history_max_tokens",
+        "context_budget_operational_max_tokens",
+        "context_budget_token_char_ratio",
+        "conversation_digest_max_prompt_chars",
+        "conversation_digest_max_summary_chars",
+        "conversation_digest_source_turns",
+        "conversation_digest_recent_turns",
+        "memory_sync_batch_size",
+        "memory_final_sync_timeout_seconds",
+        "memory_flush_interval_seconds",
+        "memory_snapshot_interval_seconds",
+        "memory_embedding_dimensions",
+        "memory_recall_candidate_pool_size",
+        "memory_recall_recent_limit",
+        "memory_recall_lexical_limit",
+        "memory_recall_semantic_limit",
+        "memory_recall_final_limit",
+        "memory_promotion_threshold",
+        "memory_eviction_min_age_days",
+        "memory_eviction_default_ttl_days",
+        "memory_eviction_min_access_count",
+        "memory_eviction_max_active_per_scope",
+        "passive_intelligence_min_recurrence",
+        "passive_intelligence_evidence_limit",
+        "passive_intelligence_max_items",
+        "passive_intelligence_window_turns",
+        "passive_intelligence_window_memories",
+        "passive_intelligence_stale_after_minutes",
         mode="before",
     )
     @classmethod

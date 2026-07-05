@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from math import ceil
 from typing import Literal
 
-from app.config import settings
+from kernel.config import settings
 
 __all__ = [
     "ContextBudgetAllocator",
