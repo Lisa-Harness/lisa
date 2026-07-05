@@ -1,7 +1,7 @@
 [project]
 name = "mcp-server"
 version = "0.1.0"
-description = "Add your description here"
+description = "Kernel-as-MCP servers: context, operations, search, surf"
 readme = "README.md"
 authors = [
     { name = "Adam Migus", email = "adam@migus.org" }
@@ -13,6 +13,12 @@ dependencies = [
     "pydantic>=2.13.4",
     "sqlite-vec>=0.1.9",
 ]
+
+[project.scripts]
+lisa-context = "lisa_context.server:main"
+lisa-operations = "lisa_operations.server:main"
+lisa-search = "lisa_search.server:main"
+lisa-surf = "lisa_surf.server:main"
 
 [build-system]
 requires = ["uv_build>=0.11.17,<0.12.0"]
