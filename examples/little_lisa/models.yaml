@@ -1,6 +1,7 @@
 ---
 version: 1
 mode_models:
+  search: deepseek-v4-flash:cloud
   thinkabout: deepseek-v4-pro:cloud
 models:
   - model_id: deepseek-v4-pro:cloud
@@ -8,5 +9,7 @@ models:
 
   - model_id: deepseek-v4-flash:cloud
     provider: ollama
-    designations: [default, front-door]
 
+  - model_id: gemma4:cloud
+    provider: ollama
+    designations: [default, front-door]
