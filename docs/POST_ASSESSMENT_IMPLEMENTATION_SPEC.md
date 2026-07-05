@@ -133,7 +133,7 @@ models:
     aliases: [gemini-pro]
 ```
 
-### 1.2 AWS Bedrock Gateway
+### 1.2 AWS Bedrock Gateway ✅ Implemented
 
 #### Location
 
