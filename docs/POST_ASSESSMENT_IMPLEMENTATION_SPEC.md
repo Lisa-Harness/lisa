@@ -222,19 +222,20 @@ models:
     aliases: [nova-pro]
 ```
 
-### 1.3 Anthropic Gateway — Complete Tool-Use Path
+### 1.3 Anthropic Gateway — Complete Tool-Use Path ✅ Implemented
 
 The existing `provider_core.py` Anthropic path currently only extracts usage. The
 tool-use path (Phase 5 of MCP cutover) must be completed:
 
-| Gap | Fix |
-| --- | --- |
-| `AnthropicGateway.complete()` returns `CompletionResult` with `tool_calls` | Implement message translation: Anthropic `tool_use` content blocks → `CompletionResult.tool_calls` |
-| Tool results fed back to Anthropic | Implement `tool_result` content blocks in the next request's messages |
-| `mcp_tool_to_anthropic_tool` in `schema_translator.py` | Already stubbed; implement the full translation |
-| `anthropic_tool_use_to_mcp` in `schema_translator.py` | Already stubbed; implement the full translation |
-| System prompt | Anthropic `system` top-level parameter (not a message) |
-| Thinking budget | Anthropic `thinking.budget_tokens` parameter |
+| Gap | Fix | Status |
+| --- | --- | --- |
+| `AnthropicGateway.complete()` returns `CompletionResult` with `tool_calls` | Implement message translation: Anthropic `tool_use` content blocks → `CompletionResult.tool_calls` | ✅ Done |
+| Tool results fed back to Anthropic | Implement `tool_result` content blocks in the next request's messages | ✅ Done (`_build_anthropic_messages`) |
+| `mcp_tool_to_anthropic_tool` in `schema_translator.py` | Already stubbed; implement the full translation | ✅ Already present |
+| `anthropic_tool_use_to_mcp` in `schema_translator.py` | Already stubbed; implement the full translation | ✅ Already present |
+| System prompt | Anthropic `system` top-level parameter (not a message) | ✅ Done |
+| Thinking budget | Anthropic `thinking.budget_tokens` parameter | ✅ Done |
+| Provider routing | `gateway_for("anthropic")` returns `AnthropicGateway` (was incorrectly routed to `OpenAICompatibleGateway`) | ✅ Done |
 
 ### 1.4 Provider Gateway Provider Updates
 

@@ -30,6 +30,8 @@ class KernelProviderGatewayProvider:
         normalized = (provider or "").strip().lower()
         if normalized == "azure_openai":
             return self._provider_core.AzureOpenAIGateway
-        if normalized in {"openai", "anthropic", "ollama"}:
+        if normalized == "anthropic":
+            return self._provider_core.AnthropicGateway
+        if normalized in {"openai", "ollama"}:
             return self._provider_core.OpenAICompatibleGateway
         return None

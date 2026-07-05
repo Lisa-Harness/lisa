@@ -824,14 +824,27 @@ class AnthropicGateway:
             (message["content"] for message in request.messages if message["role"] == "system"),
             "",
         )
-        human_messages = [message for message in request.messages if message["role"] != "system"]
+        anthropic_messages = _build_anthropic_messages(
+            [message for message in request.messages if message["role"] != "system"]
+        )
         create_kwargs: dict[str, Any] = {
             "model": request.model_def.model_id,
             "max_tokens": request.max_tokens,
-            "messages": human_messages,
+            "messages": anthropic_messages,
         }
         if system_text:
             create_kwargs["system"] = system_text
+        if request.temperature:
+            create_kwargs["temperature"] = request.temperature
+        if request.tools:
+            create_kwargs["tools"] = [
+                _openai_tool_to_anthropic_tool(tool) for tool in request.tools
+            ]
+        if getattr(request.model_def, "thinking_model", False):
+            create_kwargs["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": request.max_tokens,
+            }
         await self._emit(
             {
                 "type": "provider_call_started",
@@ -856,7 +869,23 @@ class AnthropicGateway:
             raise provider_gateway_error_from_exception(request, exc) from exc
 
         content_blocks = getattr(response, "content", [])
-        first_block = content_blocks[0] if content_blocks else None
+        text_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        for block in content_blocks:
+            block_type = getattr(block, "type", "")
+            if block_type == "text":
+                text_parts.append(getattr(block, "text", "") or "")
+            elif block_type == "tool_use":
+                tool_calls.append(
+                    {
+                        "id": getattr(block, "id", ""),
+                        "type": "function",
+                        "name": getattr(block, "name", ""),
+                        "arguments": _normalize_openai_tool_arguments(
+                            getattr(block, "input", {})
+                        ),
+                    }
+                )
         request_id = extract_request_id(response)
         await self._emit(
             {
@@ -868,11 +897,12 @@ class AnthropicGateway:
             }
         )
         return CompletionResult(
-            content=getattr(first_block, "text", "") or "",
+            content="\n".join(text_parts),
             provider=request.model_def.provider,
             model_id=request.model_def.model_id,
             display_name=request.model_def.display_name,
             request_id=request_id,
+            tool_calls=tool_calls,
             usage=extract_anthropic_usage(response),
         )
 
@@ -915,6 +945,82 @@ def _normalize_openai_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
     if thought_sig:
         normalized["function"]["thought_signature"] = thought_sig
     return normalized
+
+
+def _openai_tool_to_anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    """Translate one OpenAI-format tool definition to Anthropic tool format.
+
+    The turn runner produces tools via ``mcp_tool_to_openai_function``::
+
+        {"type": "function", "function": {"name": ..., "description": ...,
+        "parameters": <JSON-Schema>}}
+
+    Anthropic expects::
+
+        {"name": ..., "description": ..., "input_schema": <JSON-Schema>}
+    """
+
+    function_payload: dict[str, Any] = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    return {
+        "name": str(function_payload.get("name", "")),
+        "description": str(function_payload.get("description", "")),
+        "input_schema": function_payload.get("parameters") or {"type": "object", "properties": {}},
+    }
+
+
+def _build_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Translate OpenAI-style chat messages to Anthropic messages format.
+
+    Handles three conversions:
+    - ``tool``-role messages → Anthropic ``user`` messages with ``tool_result``
+      content blocks.
+    - ``assistant`` messages with ``tool_calls`` → Anthropic ``assistant``
+      messages with ``text`` + ``tool_use`` content blocks.
+    - All other messages pass through with ``role`` and ``content`` preserved.
+    """
+
+    anthropic_messages: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role", "user")
+        if role == "tool":
+            tool_result_content: list[dict[str, Any]] = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": str(message.get("tool_call_id", "")),
+                    "content": str(message.get("content", "")),
+                }
+            ]
+            anthropic_messages.append({"role": "user", "content": tool_result_content})
+            continue
+        if role == "assistant" and message.get("tool_calls"):
+            content_blocks: list[dict[str, Any]] = []
+            text = message.get("content")
+            if text:
+                content_blocks.append({"type": "text", "text": str(text)})
+            for tool_call in message["tool_calls"]:
+                function_payload = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else tool_call
+                raw_input = function_payload.get("arguments", "{}")
+                if isinstance(raw_input, str):
+                    try:
+                        parsed_input = json.loads(raw_input)
+                    except json.JSONDecodeError:
+                        parsed_input = {}
+                elif isinstance(raw_input, dict):
+                    parsed_input = raw_input
+                else:
+                    parsed_input = {}
+                content_blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": str(tool_call.get("id", "")),
+                        "name": str(function_payload.get("name", "")),
+                        "input": parsed_input,
+                    }
+                )
+            anthropic_messages.append({"role": "assistant", "content": content_blocks})
+            continue
+        anthropic_messages.append({"role": role, "content": message.get("content", "")})
+    return anthropic_messages
 
 
 def _normalize_openai_response_tool(tool: dict[str, Any]) -> dict[str, Any]:
