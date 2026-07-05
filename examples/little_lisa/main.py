@@ -789,11 +789,12 @@ def _runtime_log_path() -> Path | None:
 def _runtime_token_usage_path() -> Path:
     """Return the durable ``token-usage.jsonl`` path under the data dir.
 
-    The file lives at ``<data_dir>/lsa-state/token-usage.jsonl`` so it
-    survives process restarts. The ``TokenUsageTelemetryHandler``
-    creates parent directories lazily on first write.
+    The file lives at ``<data_dir>/token-usage.jsonl`` (alongside
+    ``memory.json``) so it survives process restarts. The
+    ``TokenUsageTelemetryHandler`` creates parent directories lazily
+    on first write.
     """
-    return _runtime_data_dir() / "lsa-state" / "token-usage.jsonl"
+    return _runtime_data_dir() / "token-usage.jsonl"
 
 
 def _token_usage_handler() -> TokenUsageTelemetryHandler:

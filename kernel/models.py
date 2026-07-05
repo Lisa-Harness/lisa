@@ -1853,9 +1853,10 @@ class TokenUsageEvent(BusEvent):
     """Telemetry envelope for one LLM provider call's token usage and cost.
 
     Consumed by the host's `TokenUsageTelemetryHandler` which appends every
-    payload to the durable `lsa-state/token-usage.jsonl` blob. The handler
-    uses a timestamp + nanosecond suffix as the idempotency key so retries and
-    stream-final events always append without collapsing.
+    payload to the durable `token-usage.jsonl` blob under the host's data
+    directory. The handler uses a timestamp + nanosecond suffix as the
+    idempotency key so retries and stream-final events always append without
+    collapsing.
     """
 
     event_type: BusEventType = "token_used"
