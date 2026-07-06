@@ -149,35 +149,35 @@ def test_operations_build_tool_catalog(operations_setup: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_operations_list_operations(operations_setup: None) -> None:
+async def test_operations_registers_operation_tools(operations_setup: None) -> None:
     from lisa_operations.server import mcp
+    from kernel.operations.registry import get_operation_catalog
 
-    result = await mcp.call_tool("list_operations", {})
-    text = _tool_text(result)
-    # Should list at least one operation
-    assert "-" in text or "No operations" in text
+    tools = await mcp.list_tools()
+    tool_names = {tool.name for tool in tools}
+    operation_ids = set(get_operation_catalog().keys())
+    assert operation_ids
+    assert operation_ids <= tool_names
 
 
 @pytest.mark.asyncio
-async def test_operations_run_operation_bad_json(operations_setup: None) -> None:
+async def test_operations_call_unknown_tool_fails(operations_setup: None) -> None:
     from lisa_operations.server import mcp
 
-    result = await mcp.call_tool(
-        "run_operation",
-        {"operation_id": "any_op", "arguments": "not-json"},
-    )
-    assert "invalid JSON" in _tool_text(result)
+    with pytest.raises(Exception):
+        await mcp.call_tool("nonexistent_op_xyz", {})
 
 
 @pytest.mark.asyncio
-async def test_operations_run_unknown_operation(operations_setup: None) -> None:
+async def test_operations_call_registered_operation(operations_setup: None) -> None:
     from lisa_operations.server import mcp
+    from kernel.operations.registry import get_operation_catalog
 
-    result = await mcp.call_tool(
-        "run_operation",
-        {"operation_id": "nonexistent_op_xyz", "arguments": "{}"},
-    )
-    assert "Error" in _tool_text(result)
+    operation_id = next(iter(get_operation_catalog().keys()))
+    result = await mcp.call_tool(operation_id, {})
+    # Registered operation tool should execute and return text (possibly an error string
+    # if required context/params are missing, but the MCP tool itself is callable).
+    assert isinstance(_tool_text(result), str)
 
 
 # ── lisa_search ─────────────────────────────────────────────────────────────
