@@ -25,6 +25,22 @@ from kernel.sqlite_memory import SqliteMemoryStore
 __all__ = ["mcp", "main", "get_store"]
 
 
+def _sqlite_db_path() -> Path:
+    """Resolve the sqlite db path for the MCP context server.
+
+    Priority:
+    1) ``LISA_MCP_DB_PATH`` (injected by host runtimes like Little Lisa)
+    2) ``LISA_MEMORY_DB_PATH`` (legacy compatibility)
+    3) ``.lisa_mcp_data/memory.db`` (standalone default)
+    """
+    return Path(
+        os.getenv(
+            "LISA_MCP_DB_PATH",
+            os.getenv("LISA_MEMORY_DB_PATH", ".lisa_mcp_data/memory.db"),
+        )
+    )
+
+
 def get_store() -> Any:
     """Build the memory store from environment configuration.
 
@@ -37,7 +53,7 @@ def get_store() -> Any:
             os.getenv("LISA_MEMORIES_JSON_PATH", str(Path(tempfile.gettempdir()) / "lisa_memories.json"))
         )
         return LiteMemoryStore(db_path)
-    db_path = Path(os.getenv("LISA_MEMORY_DB_PATH", "lsa-state/memory.db"))
+    db_path = _sqlite_db_path()
     return SqliteMemoryStore(db_path=db_path)
 
 
