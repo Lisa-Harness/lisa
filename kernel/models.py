@@ -822,6 +822,28 @@ class ContextPacket(BaseModel):
     ranking_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ContextBrokerRequest(BaseModel):
+    """Request payload for the MCP context broker."""
+
+    query: str
+    mode_id: str = "default"
+    stage_id: str = ""
+    surface: SurfaceContext = Field(default_factory=SurfaceContext)
+    user_slug: str = "default"
+    workspace_id: str = "default"
+    connectors: list[str] = Field(default_factory=list)
+    context_budget: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextBrokerResponse(BaseModel):
+    """Response payload from the MCP context broker."""
+
+    packet: ContextPacket | None = None
+    packet_markdown: str = ""
+    context_tag: str = ""
+    warnings: list[str] = Field(default_factory=list)
+
+
 ContextPromptStrategy = Literal[
     "broker_packet",
     "legacy_fallback_live_context",

@@ -176,44 +176,30 @@ class _SanitizingOutputGuard:
 @pytest.mark.asyncio
 async def test_blocking_output_guard_replaces_with_safe_fallback() -> None:
     """A blocking OutputGuard replaces content with the safe fallback and
-    sets blocked=True. store_mem receives the safe fallback, not the
-    original."""
-    stored: list[str] = []
-
-    async def store(query: str, response: str, _scope: str) -> None:
-        stored.append(response)
+    sets blocked=True."""
 
     hooks = _build_minimal_hooks(_make_stub_complete("dangerous output"))
-    hooks.store_memory = store
     hooks.context_seams.output_guard = _BlockingOutputGuard()
 
     result = await run_turn(mode_id="default", query="hi", hooks=hooks)
 
     assert result.blocked is True
     assert "unable to provide that response" in result.response_text
-    # store_mem received the safe fallback, not "dangerous output"
-    assert len(stored) == 1
-    assert "dangerous output" not in stored[0]
+    assert "dangerous output" not in result.response_text
 
 
 @pytest.mark.asyncio
 async def test_sanitizing_output_guard_replaces_content() -> None:
-    """A sanitizing OutputGuard replaces content with sanitized text, and
-    store_mem receives the sanitized version."""
-    stored: list[str] = []
-
-    async def store(query: str, response: str, _scope: str) -> None:
-        stored.append(response)
+    """A sanitizing OutputGuard replaces content with sanitized text."""
 
     hooks = _build_minimal_hooks(_make_stub_complete("original output"))
-    hooks.store_memory = store
     hooks.context_seams.output_guard = _SanitizingOutputGuard("safe output")
 
     result = await run_turn(mode_id="default", query="hi", hooks=hooks)
 
     assert result.blocked is False
     assert result.response_text == "safe output"
-    assert stored == ["safe output"]
+    assert result.response_text == "safe output"
 
 
 @pytest.mark.asyncio

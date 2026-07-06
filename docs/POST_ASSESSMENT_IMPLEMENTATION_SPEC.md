@@ -399,11 +399,11 @@ wires `complete_stream` instead of `complete`.
 | Import from private app or rewrite? | **Import, then adapt.** The production memory store is proven. Import it into the kernel, strip CloudServers-specific auth/blob wiring, and ship it as the default `MemoryStore` implementation. |
 | Embedding model? | **Pluggable.** The store accepts an `EmbeddingProvider` Protocol. Ship a default that uses the host's configured embedding model (via `ProviderGatewayProvider`). |
 | Vector search? | **sqlite-vec.** The production store already uses it. It's a single-file SQLite extension, MIT-licensed, no external services. |
-| Replaces `LiteMemoryStore`? | **No.** `LiteMemoryStore` stays as the zero-dependency fallback for local testing. The SQLite store is the production-grade default. |
+| Replaces `LiteMemoryStore`? | **Yes.** Memory moves to the `lisa-context` MCP server; no kernel fallback. |
 
 ### 3.1 Location
 
-`kernel/sqlite_memory.py` — new module
+`mcp_server/src/lisa_context/server.py` — SQLite-backed memory store (server-owned)
 
 ### 3.2 API
 
@@ -536,7 +536,7 @@ init and falls back to keyword-only mode if unavailable.
 
 ### 3.6 Migration from LiteMemoryStore
 
-`LiteMemoryStore` stays in `kernel/lite_memory.py` unchanged. The `ContextSeams`
+`LiteMemoryStore` is removed from the kernel. The `ContextSeams`
 default changes:
 
 ```python
@@ -544,16 +544,11 @@ default changes:
 class ContextSeams:
     # ... existing fields ...
 
-    # Changed default: SqliteMemoryStore instead of LiteMemoryStore
-    memory_store: MemoryStore = field(
-        default_factory=lambda: SqliteMemoryStore(
-            db_path=Path("lsa-state/memory.db"),
-        )
-    )
+    # Memory is MCP-only; the kernel does not instantiate a memory store.
+    memory_store: Any = field(default_factory=lambda: None)
 ```
 
-Hosts that want the lightweight fallback explicitly wire `LiteMemoryStore`. Hosts
-that want production memory get `SqliteMemoryStore` by default.
+Hosts that want memory wire the `lisa-context` MCP server via `mcp_tool_servers`.
 
 ---
 

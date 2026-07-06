@@ -1062,6 +1062,9 @@ dev = [
     { name = "pytest-mock" },
     { name = "types-pyyaml" },
 ]
+memory = [
+    { name = "sqlite-vec" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1077,9 +1080,10 @@ requires-dist = [
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "sqlite-vec", marker = "extra == 'memory'", specifier = ">=0.1.9" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "memory"]
 
 [[package]]
 name = "lisa-pack-core"

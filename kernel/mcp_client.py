@@ -121,7 +121,9 @@ class MCPMemoryClient:
 
     async def store(self, query: str, response: str) -> None:
         """Compatibility helper used only by lightweight tests/examples."""
-        from kernel.lite_memory import _synthesize_content
+        content = f"Q: {query}\nA: {response}".strip()
+        if not content:
+            return
         await self.record_memory(
             MemoryWriteRequest(
                 user_slug="default",
@@ -129,7 +131,7 @@ class MCPMemoryClient:
                 operation_id="lite_store",
                 instruction_id="lite_store.v1",
                 memory_tier="daily",
-                content=_synthesize_content(query, response),
+                content=content,
                 content_json={"query": query},
                 salience=0.2,
             )

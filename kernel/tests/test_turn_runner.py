@@ -181,45 +181,6 @@ async def test_run_turn_max_tool_iterations_capped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_turn_stores_and_recalls_memory() -> None:
-    """Memory is stored after the turn and recalled on subsequent turns."""
-    memory_store: list[dict[str, str]] = []
-
-    async def recall(query: str, _scope: str, _budget: int) -> str:
-        if not memory_store:
-            return ""
-        # Simple keyword match
-        for entry in memory_store:
-            if entry["query"] in query:
-                return entry["response"]
-        return ""
-
-    async def store(query: str, response: str, _scope: str) -> None:
-        memory_store.append({"query": query, "response": response})
-
-    hooks = _build_minimal_hooks(_make_stub_complete("Stored that for you."))
-    hooks.recall_memory = recall
-    hooks.store_memory = store
-
-    # First turn: stores memory
-    result1 = await run_turn(mode_id="default", query="my favorite color is blue", hooks=hooks)
-    assert result1.response_text == "Stored that for you."
-    assert len(memory_store) == 1
-
-    # Override complete for second turn
-    hooks = _build_minimal_hooks(_make_stub_complete("Your favorite color is blue."))
-    hooks.recall_memory = recall
-    hooks.store_memory = store
-
-    # Second turn: should recall previous memory
-    _ = await run_turn(
-        mode_id="default", query="what is my favorite color", hooks=hooks
-    )
-    # The recall hook is called — verify it returned data
-    assert len(memory_store) == 2  # stored second entry too
-
-
-@pytest.mark.asyncio
 async def test_run_turn_calls_on_turn_complete() -> None:
     """on_turn_complete is called after a successful turn."""
     side_effects: list[dict[str, Any]] = []

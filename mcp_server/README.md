@@ -7,21 +7,21 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes
 From `lisa_framework/`:
 
 ```powershell
-uv run mcp-server
+uv run lisa-context
 ```
 
 Or install the package and run directly:
 
 ```powershell
 uv pip install -e .\mcp_server
-python -m mcp_server.server
+python -m lisa_context.server
 ```
 
 ## Configuration
 
 | Env var | Default | Description |
 | --- | --- | --- |
-| `LISA_MCP_DB_PATH` | `.lisa_mcp_data/memories.json` | Path to the JSON-backed memory store file |
+| `LISA_MCP_DB_PATH` | `.lisa_mcp_data/memory.db` | Path to the SQLite-backed memory store file |
 
 Hosts that embed this server (e.g. Little Lisa via `kernel.mcp_client.MCPMemoryClient`) can inject `LISA_MCP_DB_PATH` through the subprocess `env` to pin storage to their own data-dir or memory-db without polluting the parent process environment. When the env var is unset, the server falls back to the relative default in its working directory.
 
@@ -41,7 +41,7 @@ Store a new memory snippet scoped to a user identity and surface.
 
 ### `search_memory`
 
-Search for surface-scoped memories by keyword overlap.
+Search for surface-scoped memories by keyword recall.
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -86,15 +86,15 @@ All tools enforce Lisa's surface-scoped privacy isolation:
 
 ## Architecture
 
-The server uses `kernel.lite_memory.LiteMemoryStore` — a file-backed JSON store with keyword-overlap matching. It is intentionally minimal: no embeddings, no semantic search, no multi-tenant isolation beyond the key-based filtering, and no TTL. For production use, replace `LiteMemoryStore` with a host-owned memory implementation (e.g., Azure Blob-backed with vector search).
+The `lisa-context` MCP server owns a SQLite-backed memory store and exposes memory tools over MCP. It is the default and only memory implementation; the kernel is a pure client.
 
 ## MCP Client Integration
 
-The `kernel.mcp_client.MCPMemoryClient` class can connect to this server from any Lisa host process. It implements the same `MemoryStore` protocol as `LiteMemoryStore`, so hosts can swap between local and MCP-backed memory without changing turn-runner code.
+The `kernel.mcp_client.MCPMemoryClient` class can connect to this server from any Lisa host process.
 
 ```python
 from kernel.mcp_client import MCPMemoryClient
 
-client = MCPMemoryClient(command="uv", args=["run", "mcp-server"])
+client = MCPMemoryClient(command="uv", args=["run", "lisa-context"])
 result = await client.recall(query="deployment checklist", user_slug="alice")
 ```

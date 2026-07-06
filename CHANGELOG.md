@@ -6,15 +6,12 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Added
 
-#### SQLite+Embeddings memory store (Part 3)
+#### MCP memory + context (Part 3)
 
-- **`SqliteMemoryStore`** in `kernel/sqlite_memory.py` implementing the `MemoryStore` contract with SQLite persistence and optional sqlite-vec semantic recall.
-- **`EmbeddingProvider` Protocol** for pluggable embedding generation (`embed(texts) -> vectors`) with graceful keyword-only fallback when embeddings or sqlite-vec are unavailable.
-- **Schema + indexes**: `memories` table, scoped/operation/expiry indexes, and `memory_embeddings` vec0 virtual table when sqlite-vec is available.
-- **Recall behavior**: semantic recall (distance-ranked, salience-weighted) with keyword fallback, access tracking (`access_count`, `last_accessed_at`), and scoped multi-tenant filtering.
-- **Maintenance API**: `evict_expired()` and `vacuum()`.
-- **Default seam wiring**: `ContextSeams.memory_store` now defaults to `SqliteMemoryStore(db_path="lsa-state/memory.db")`.
-- **`kernel/tests/test_sqlite_memory.py`** — 21 tests covering schema/init, record/list flows, semantic + keyword recall, TTL eviction, vacuum, and access tracking.
+- `lisa-context` MCP server owns the SQLite-backed memory store and context broker.
+- Kernel no longer ships in-process memory stores or memory hooks; memory is MCP-only.
+- Memory tools exposed over MCP: `add_memory`, `search_memory`, `list_memories`, `get_surface_context`.
+- Context broker exposed over MCP: `broker_context` returns `ContextBrokerResponse` (packet + markdown).
 
 #### Kernel-as-MCP servers (Part 4)
 
@@ -121,8 +118,7 @@ All notable changes to the Lisa Framework will be documented in this file.
 - Signal connector base class (`intake/connectors.py`) and data source base class (`intake/sources.py`).
 - Brave Web Search integration (`web_search.py`) with configurable endpoint, market, and result count.
 - Durable surf session helpers (`surf_workflow.py`) for iterative browser workflows with TTL, trimming, and page/commentary tracking.
-- File-backed lite memory store (`lite_memory.py`) with keyword-overlap matching for local testing.
-- MCP memory client (`mcp_client.py`) for delegating memory operations to an MCP Context Server over stdio.
+- MCP memory client (`mcp_client.py`) for delegating memory operations to the `lisa-context` MCP server over stdio.
 - OpenAI function-tool schema builder (`openai_function_tools.py`) with strict-mode support.
 - Blank state provider (`state_providers.py`) for hosts that don't need memory.
 - OpenTelemetry span helpers (`telemetry.py`).
@@ -164,7 +160,7 @@ All notable changes to the Lisa Framework will be documented in this file.
 - Configurable artifacts root via `--data-dir` and memory store path via `--memory-db`.
 - `--user`, `--session-context`, `--timeout-profile`, `--timezone`, and `--state-snapshot` runtime options.
 - `prompt_toolkit` integration for command history and slash-command completion in CLI mode.
-- `LiteMemoryStore`-backed memory with `--memory-db` override.
+- MCP-backed memory via `lisa-context` with `--memory-db` override.
 - `LittleLisaStateProvider` with bounded thread compaction and memory eviction via the slice system.
 - `LocalBlobIO` for file-backed blob operations used by Markdown artifact generation.
 
@@ -172,7 +168,7 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 - FastMCP server (`"Lisa Context Server"`) exposing four memory tools over stdio: `add_memory`, `search_memory`, `get_surface_context`, `list_memories`.
 - Surface-scoped privacy isolation enforced at the tool level.
-- `LiteMemoryStore`-backed with configurable database path via `LISA_MCP_DB_PATH`.
+- SQLite-backed memory store with configurable database path via `LISA_MCP_DB_PATH`.
 
 #### Tooling & CI
 

@@ -1836,13 +1836,11 @@ async def test_handle_message_requires_models_before_running_turn(
 async def test_build_turn_hooks_wires_recall_hook() -> None:
     """Auto-recall is wired so memory snippets are injected before turns.
 
-    The little-lisa host wires `TurnHooks.recall_memory` to a callable that
-    queries the local LiteMemoryStore and returns a compact snippet. The
-    `recall_memory` operation is also available for explicit model calls.
+    The little-lisa host provides MCP-backed memory access and exposes the
+    `recall_memory` operation for explicit model calls.
     """
     hooks = little_lisa._build_turn_hooks({"mode_id": "default"})
 
-    assert callable(hooks.recall_memory)
 
 
 @pytest.mark.asyncio

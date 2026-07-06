@@ -138,13 +138,13 @@ As of 2026-06-19, Little Lisa delegates all turn execution to
 - `complete` — executes live chat completions against the provider configured for the selected model manifest entry.
 - `execute_tool` — executes `web_search` through `kernel.web_search` when configured; other tools remain stubbed.
 - `execute_operation` — delegates to `kernel.operations.registry.execute_operation`.
-- `recall_memory` / `store_memory` — backed by `kernel.lite_memory.LiteMemoryStore`.
+- Memory is MCP-backed via the `lisa-context` MCP server.
 
 This means action, chat, and workflow modes all flow through the same
 three-phase loop (pre-turn → tool loop → post-turn) as the production app.
 The only difference is which hooks are wired.
 
-### Lite Memory (kernel/lite_memory.py)
+### MCP Memory (lisa-context)
 
 File-backed JSON memory with keyword-overlap matching.  Intentionally
 minimal — no embeddings, no semantic search, no multi-tenant isolation,

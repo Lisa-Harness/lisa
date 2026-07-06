@@ -40,6 +40,7 @@ def set_extension_evidence_builder(builder: ExtensionEvidenceBuilder) -> None:
     global _extension_evidence_builder
     _extension_evidence_builder = builder
 
+
 _TOKEN_RE = re.compile(r"[a-z0-9']+")
 _STOPWORDS = {
     "a",

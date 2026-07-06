@@ -338,24 +338,15 @@ async def select_memory_store(
                 continue
         if spec.kind == "in_process" and spec.factory:
             return spec.factory()
-    return SQLiteMemoryStore.default()
+    raise MCPConnectionError("No MCP memory provider available")
 ```
 
-### Built-in fallback: `SQLiteMemoryStore`
+### Memory lives in MCP
 
-Replace `LiteMemoryStore` (keyword-overlap, file-backed) with a real SQLite-backed
-store that supports the full `MemoryStore` protocol including embeddings via
-`sqlite_vec`. This is the same shape as the private `app/memory_store.py` but with
-the app dependencies inverted through the new seams.
-
-| Capability | `LiteMemoryStore` (today) | `SQLiteMemoryStore` (new fallback) |
-| --- | --- | --- |
-| Storage | JSON file | SQLite + `sqlite_vec` |
-| Recall | keyword overlap | BM25 + cosine (when embeddings configured) |
-| Scope filtering | yes | yes |
-| Consolidation | no | yes (promotion + eviction) |
-| Embeddings | no | optional (when `ProviderGatewayProvider` returns an `EmbeddingGateway`) |
-| Privacy scoping | yes | yes (enforced in storage keys, not prompt text) |
+The kernel does not ship a fallback memory store. All memory storage and recall
+is owned by the `lisa-context` MCP server, which bundles the SQLite-backed store
+and exposes memory tools over MCP. The kernel is a pure client and does not
+instantiate memory stores in-process.
 
 ### Popular discoverable memory systems
 
@@ -403,7 +394,7 @@ These stay as in-process `Protocol` seams, **not** MCP:
 
 | Seam | Why not MCP |
 | --- | --- |
-| `MemoryStore` | In-process by default; MCP is one impl among many. Forcing MCP adds a subprocess for the common case. |
+| `MemoryStore` | MCP-only; the store lives behind the `lisa-context` MCP server. |
 | `BlobIO` | Host-owned storage layout; in-process. |
 | `StateProvider` | Hot cache of `UnifiedState`; in-process. |
 | `BrowserAutomation` | Playwright session; in-process. |
@@ -440,14 +431,10 @@ Per the "no compat or migration" preference, this is one cutover, not a staged m
 ### Phase 3 — Memory discovery (1–2 days)
 
 1. Add `kernel/memory/providers.py` with `MemoryProviderSpec` and `discover_memory_providers`.
-2. Add `SQLiteMemoryStore` as the built-in fallback.
-3. Add `MCPMemoryStore` implementing the full `MemoryStore` Protocol.
-4. Ship adapter specs for mem0 (default when installed), Letta, and
-   `@modelcontextprotocol/server-memory`.
-5. Update Little Lisa to use `select_memory_store()` in `TurnHooks.recall_memory` / `store_memory`.
-6. Delete `LiteMemoryStore` from the public path (it stays as a test fixture only).
-7. Declare `mem0ai` as an optional extra in `pyproject.toml`; the mem0 adapter
-   activates only when importable and runs out of the host `data-dir`.
+2. Move `SQLiteMemoryStore` into the `lisa-context` MCP server (no kernel fallback).
+3. Remove in-process `MemoryStore` implementations from the kernel.
+4. Update Little Lisa to use the MCP memory server directly (no `recall_memory` / `store_memory` hooks).
+5. Delete `LiteMemoryStore` from the public path.
 
 ### Phase 4 — Kernel-owned MCP servers (1–2 days)
 
@@ -482,8 +469,5 @@ implemented when needed. OpenAI translation ships in Phase 2.
 3. **Operation-as-tool exposure.** All operations are tools and are always exposed
    through `lisa-operations`. No opt-in flag. The operation registry's full catalog
    is surfaced as MCP tools.
-4. **mem0 as default.** mem0 is included as a default memory provider when its
-   pip dependencies are installed and it can run out of the host's `data-dir`. The
-   adapter spec activates `mem0ai` when importable; otherwise falls back to
-   `SQLiteMemoryStore`. No bundling — `mem0ai` is an optional dependency declared in
-   `pyproject.toml` extras.
+4. **mem0 as default.** mem0 can be installed as an alternative MCP memory server,
+    but `lisa-context` remains the default. No kernel fallback.

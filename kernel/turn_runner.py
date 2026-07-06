@@ -137,9 +137,7 @@ def _lazy_extension_evidence_builder() -> ExtensionEvidenceBuilder:
 
 
 def _lazy_memory_store() -> Any:
-    from kernel.sqlite_memory import SqliteMemoryStore
-
-    return SqliteMemoryStore(db_path="lsa-state/memory.db")
+    return None
 
 
 def _lazy_input_guard() -> InputGuard:
@@ -173,9 +171,7 @@ class ContextSeams:
         default_factory=_lazy_extension_evidence_builder
     )
     memory_store: Any = field(default_factory=_lazy_memory_store)
-    """Durable conversation memory. Default: ``SqliteMemoryStore`` backed by
-    SQLite + sqlite-vec (production-grade). Hosts that want the zero-dependency
-    fallback explicitly wire ``LiteMemoryStore``."""
+    """Durable conversation memory. Default: None (memory is MCP-only)."""
     input_guard: InputGuard = field(default_factory=_lazy_input_guard)
     """Validates user input before the model call (Phase 1). Default:
     ``PassThroughInputGuard`` allows everything. Hosts override with a real
@@ -202,17 +198,13 @@ class TurnHooks:
 
     # ── Model resolution ────────────────────────────────────────────────
     resolve_model: Callable[[str], Any] | None = None
-    """Map a model_id string to a model-definition object.
-    Default: returns a simple dataclass with model_id and reasoning_model=False.
-    """
 
-    # ── Completion ───────────────────────────────────────────────────────
     complete: Callable[..., Awaitable[Any]] | None = None
-    """Core completion function.  Must accept messages, model_def, max_tokens,
-    temperature, tools (optional), and response_format (optional).  Returns
+    """Core completion function. Must accept messages, model_def, max_tokens,
+    temperature, tools (optional), and response_format (optional). Returns
     an object with `.content` (str) and `.tool_calls` (list[dict]).
 
-    A host MUST provide this.  If None, `run_turn` raises NotImplementedError.
+    A host MUST provide this. If None, `run_turn` raises NotImplementedError.
     """
 
     complete_stream: Callable[..., Any] | None = None
@@ -263,21 +255,6 @@ class TurnHooks:
     actions, declarative prompts). They are not advertised to the model as
     tools; if an operation should be LLM-callable, expose it through the
     ``lisa-operations`` MCP server.
-    """
-
-    # ── Memory (lite) ────────────────────────────────────────────────────
-    recall_memory: Callable[[str, str, int], Awaitable[str]] | None = None
-    """Return a memory snippet for the given query (str), scoped to a
-    memory_scope (str), within a token budget (int). Default: empty string.
-
-    The app overrides with build_auto_recall_snippet.
-    """
-
-    store_memory: Callable[[str, str, str], Awaitable[None]] | None = None
-    """Persist a (query: str, response: str, memory_scope: str) tuple as a
-    memory. Default: no-op.
-
-    The app overrides with memory_store.record_memory.
     """
 
     # ── Post-turn side effects ───────────────────────────────────────────
@@ -392,22 +369,6 @@ async def _default_execute_operation(
     ctx: OperationExecutionContext,
 ) -> OperationResult:
     return await execute_operation(operation_id, ctx)
-
-
-async def _default_recall_memory(
-    _query: str,
-    _memory_scope: str,
-    _budget_tokens: int,
-) -> str:
-    return ""
-
-
-async def _default_store_memory(
-    _query: str,
-    _response: str,
-    _memory_scope: str,
-) -> None:
-    return
 
 
 async def _default_on_turn_complete(
@@ -567,7 +528,7 @@ async def run_turn(
     2. **TOOL LOOP**: Call hooks.complete → dispatch MCP tool calls via
        MCPToolPool → feed results back → repeat until the model returns
        content without tools or max_tool_iterations is reached.
-    3. **POST-TURN**: Call hooks.on_turn_complete and hooks.store_memory.
+    3. **POST-TURN**: Call hooks.on_turn_complete.
 
     Args:
         mode_id: The route mode string (e.g. 'default', 'discuss', 'search').
@@ -593,8 +554,6 @@ async def run_turn(
     assemble_system = hooks.assemble_system_prompt or _default_assemble_system_prompt
     assemble_user = hooks.assemble_user_context or _default_assemble_user_context
     exec_op = hooks.execute_operation or _default_execute_operation
-    recall_mem = hooks.recall_memory or _default_recall_memory
-    store_mem = hooks.store_memory or _default_store_memory
     on_complete = hooks.on_turn_complete or _default_on_turn_complete
 
     # ── MCP tool pool ──────────────────────────────────────────────────
@@ -614,8 +573,6 @@ async def run_turn(
             assemble_system=assemble_system,
             assemble_user=assemble_user,
             exec_op=exec_op,
-            recall_mem=recall_mem,
-            store_mem=store_mem,
             on_complete=on_complete,
             mode_config=mode_config,
             max_tool_iterations=max_tool_iterations,
@@ -637,8 +594,6 @@ async def _run_turn_inner(
     assemble_system: Callable[[str, str | None], str],
     assemble_user: Callable[[str, str, str], str],
     exec_op: Callable[..., Awaitable[OperationResult]],
-    recall_mem: Callable[[str, str, int], Awaitable[str]],
-    store_mem: Callable[[str, str, str], Awaitable[None]],
     on_complete: Callable[[str, str, str, list[dict[str, Any]]], Awaitable[None]],
     mode_config: Any,
     max_tool_iterations: int,
@@ -682,7 +637,6 @@ async def _run_turn_inner(
             execute_operation_fn=exec_op,
         )
         result = await run_mode_entry_operations(mode_id, ctx)
-        await store_mem(query, result.output_text, "personal")
         return TurnResult(
             response_text=result.output_text.strip() or "Done",
             tool_call_count=0,
@@ -739,7 +693,7 @@ async def _run_turn_inner(
     mode_instruction = get_mode_system_intro(mode_id)
     system_prompt = assemble_system(mode_instruction, None)
     user_context = assemble_user(mode_id, query, pre_briefing)
-    memory_snippet = await recall_mem(query, "personal", 2000)
+    memory_snippet = ""
 
     # ── Phase 2: Tool loop ────────────────────────────────────────────
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
@@ -933,7 +887,6 @@ async def _run_turn_inner(
         content = output_guard_result.sanitized_text
 
     await on_complete(mode_id, query, content, messages)
-    await store_mem(query, content, "personal")
 
     # ── Phase 3.5: Post-turn opportunistic slice ─────────────────────
     # Fires after the response is committed. The user has already seen

@@ -47,8 +47,7 @@ Key principles:
 | --- | --- |
 | `web_search.py` | Brave Web Search integration. Configurable endpoint, market, and result count. |
 | `surf_workflow.py` | Durable surf session helpers for iterative browser workflows: TTL, trimming, page/commentary tracking, session persistence. |
-| `lite_memory.py` | File-backed JSON memory store with keyword-overlap matching. Intentionally minimal — for local testing only. |
-| `mcp_client.py` | MCP stdio client for delegating memory operations to an external Context Server. |
+| `mcp_client.py` | MCP stdio client for delegating memory operations to the `lisa-context` MCP server. |
 | `openai_function_tools.py` | OpenAI function-tool schema builder with strict-mode support. |
 | `state_providers.py` | `BlankStateProvider` for hosts that don't need memory. |
 | `telemetry.py` | OpenTelemetry span helpers. |
@@ -62,7 +61,7 @@ Key principles:
 | `seams/` | Host-injection protocols: `BlobIO`, `StateProvider`, `MemoryStore`, `BrowserAutomation`, `DataSourceHooks`, `InputGuard`, `OutputGuard`, and completion/tool/operation callbacks. |
 | `synthesis/` | Post-collection intelligence pipeline: extension-owned stages (local analysis → synthesis → memory) and stage execution contracts. |
 | `testing/` | `extension_harness` for validating connectors and data sources without a host app. |
-| `context/` | App-layer context assembly (consumed by host, not exported as kernel contracts). |
+| `context/` | Context seam defaults (guards, event bus, content registry). Context brokerage lives in MCP. |
 | `inference_profiles/` | Inference profile definitions. |
 
 ## Turn Execution Flow
@@ -92,8 +91,8 @@ sequenceDiagram
         TurnRunner->>Provider: hooks.complete(request)
         Provider-->>TurnRunner: CompletionResult
         alt has tool_calls
-            TurnRunner->>Host: hooks.execute_tool(tool_id, ctx)
-            Host-->>TurnRunner: ToolResult
+          TurnRunner->>MCP: call_tool(tool_id, ctx)
+          MCP-->>TurnRunner: ToolResult
         else no tool_calls
             Note over TurnRunner: Exit tool loop
         end
@@ -107,6 +106,62 @@ sequenceDiagram
     TurnRunner->>Host: hooks.on_turn_complete(result)
     TurnRunner-->>Host: TurnResult
 ```
+
+## MCP-Native Architecture
+
+The kernel is MCP-native by design. All tool, memory, and context operations
+cross a process boundary through MCP servers. The kernel is a pure client that
+orchestrates a turn; the MCP servers own execution, storage, and brokerage.
+
+```mermaid
+flowchart TD
+  subgraph Kernel
+    TR[Turn Runner]
+    FD[Frontdoor + IPSAR + FSM]
+    SLICE[Slice]
+    TOOLS[MCP Tool Pool]
+  end
+
+  subgraph MCP
+    Mem[lisa-context MCP
+      (SQLite memory + context broker)]
+    Ops[lisa-operations MCP
+      (pack-authored operations)]
+    Tools[Other MCP tool servers]
+  end
+
+  TR --> FD
+  TR --> SLICE
+  TR --> TOOLS
+  TOOLS --> Mem
+  TOOLS --> Ops
+  TOOLS --> Tools
+```
+
+### Context Broker MCP Contract
+
+The kernel does not assemble context in-process. It sends a request to the
+`lisa-context` MCP server and receives a brokered payload. The MCP contract is
+explicit so hosts can swap the server without changing kernel behavior.
+
+**Request**: `ContextBrokerRequest`
+
+- `query`: user query for relevance scoring
+- `mode_id` / `stage_id`: routing metadata
+- `surface`: `SurfaceContext` for privacy scoping
+- `user_slug` / `workspace_id`: multi-tenant isolation
+- `connectors`: connector allow-list (optional)
+- `context_budget`: limits, tags, and render strategy hints
+
+**Response**: `ContextBrokerResponse`
+
+- `packet`: structured `ContextPacket` with ranked evidence
+- `packet_markdown`: prompt-safe markdown for injection
+- `context_tag`: trace tag for debugging
+- `warnings`: non-fatal broker warnings
+
+The kernel only consumes the response payload; it does not interpret or rank
+evidence locally.
 
 ### Route Resolution
 
@@ -139,11 +194,8 @@ flowchart TD
 | `complete` | `async (request: CompletionRequest) -> CompletionResult` | Execute a model completion |
 | `assemble_system_prompt` | `(mode_id, stage_id, ...) -> str` | Build the system prompt for a turn |
 | `assemble_user_context` | `(mode_id, query, ...) -> str` | Build user-specific context |
-| `build_extra_tool_schemas` | `(mode_id) -> list[dict]` | Add host-specific tool schemas |
-| `execute_tool` | `async (tool_id, ctx) -> ToolResult` | Execute a tool call |
+| `mcp_tool_servers` | `list[MCPClientConfig]` | MCP servers to spawn for tool discovery/dispatch |
 | `execute_operation` | `async (operation_id, ctx) -> OperationResult` | Execute an operation |
-| `recall_memory` | `async (query, scope, budget) -> str` | Recall relevant memories |
-| `store_memory` | `async (query, response, scope) -> None` | Store a new memory |
 | `on_turn_complete` | `async (result: TurnResult) -> None` | Post-turn callback |
 | `slice_tuning` | `() -> SliceTuning` | Return slice tuning parameters |
 | `pre_turn_slice` | `async (policy) -> SliceOutcome` | Run pre-turn house-keeping |
@@ -160,7 +212,7 @@ everything) so public hosts run without a private safety pipeline.
 | Seam | Protocol | When it runs | Default |
 | --- | --- | --- | --- |
 | `input_guard` | `InputGuard.validate(query, surface) -> GuardResult` | Phase 1, before the pre-turn slice and system prompt assembly | `PassThroughInputGuard` |
-| `output_guard` | `OutputGuard.validate(text, surface) -> GuardResult` | Phase 3, after the tool loop and before `store_memory` | `PassThroughOutputGuard` |
+| `output_guard` | `OutputGuard.validate(text, surface) -> GuardResult` | Phase 3, after the tool loop | `PassThroughOutputGuard` |
 
 A `GuardResult` carries `allowed: bool`, an optional `blocked_reason`, an
 optional `sanitized_text` (for rewriting input/output in place), and
@@ -171,8 +223,8 @@ optional `sanitized_text` (for rewriting input/output in place), and
   pre-turn slice does not fire.
 - **Output block**: the response is replaced with a safe fallback, a
   `guardrail.audit` event is published on the `EventBus`, and the post-turn
-  slice is skipped. `on_turn_complete` and `store_memory` still fire with the
-  safe-fallback text so the audit trail is complete.
+  slice is skipped. `on_turn_complete` still fires with the safe-fallback
+  text so the audit trail is complete.
 - **Sanitization**: when `sanitized_text` is set, the original text is
   replaced in place for the remainder of the turn.
 
@@ -225,9 +277,9 @@ A real host must inject concrete implementations for these seams:
 | --- | --- | --- |
 | Model completion | `TurnHooks.complete` | Azure OpenAI, OpenAI, Anthropic, Ollama |
 | Model resolution | `TurnHooks.resolve_model` | Manifest-based or database-backed |
-| Tool execution | `TurnHooks.execute_tool` | Web search, surf, custom tools |
+| Tool execution | MCP tool servers | Web search, surf, custom tools |
 | Operation execution | `TurnHooks.execute_operation` | `operations.registry.execute_operation` |
-| Memory | `TurnHooks.recall_memory` / `store_memory` | `LiteMemoryStore`, `MCPMemoryClient`, or production store |
+| Memory | MCP memory server (`lisa-context`) | SQLite-backed MCP store |
 | Input guard | `ContextSeams.input_guard` | `PassThroughInputGuard` (default), Azure AI Content Safety, Bedrock Guardrails, regex |
 | Output guard | `ContextSeams.output_guard` | `PassThroughOutputGuard` (default), Azure AI Content Safety, Bedrock Guardrails, Presidio |
 | Blob/object storage | Host-owned | Azure Blob, S3, local filesystem |

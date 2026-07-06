@@ -73,7 +73,6 @@ from kernel.ipsar_fsm import (  # noqa: E402
     register_operation_callbacks,
 )
 from kernel.mcp_client import MCPMemoryClient  # noqa: E402
-from kernel.lite_memory import LiteMemoryStore  # noqa: E402
 from kernel.model_manifest import ModelManifest  # noqa: E402
 from kernel.models import (  # noqa: E402
     MemoryRecallAnswer,
@@ -1716,7 +1715,7 @@ def _mcp_server_env() -> dict[str, str]:
     """Build the env dict passed to the MCP Context Server subprocess.
 
     Pins the server's storage location to Little Lisa's runtime memory db
-    path so the MCP-backed memory and the local LiteMemoryStore would
+    path so the MCP-backed memory and the local store would
     resolve to the same data-dir/memory-db when the host swaps between
     them. Hosts that want to override this explicitly can still set
     ``LISA_MCP_DB_PATH`` in the parent env; we only inject when unset.
@@ -4016,7 +4015,7 @@ class LittleLisaStateProvider:
         self,
         *,
         thread_path: Path | None,
-        memory_store: MCPMemoryClient | LiteMemoryStore,
+        memory_store: MCPMemoryClient,
         max_thread_entries: int = _DEFAULT_THREAD_MAX_ENTRIES,
         max_memory_records: int = _DEFAULT_MEMORY_MAX_RECORDS,
     ) -> None:
@@ -4165,8 +4164,8 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
     # MCP Client wiring
     mcp_command = os.getenv("LISA_MCP_COMMAND", "uv")
     mcp_args = os.getenv(
-        "LISA_MCP_ARGS", 
-        f"run --directory {FRAMEWORK_ROOT.absolute()} --package mcp-server python -m mcp_server.server"
+        "LISA_MCP_ARGS",
+        f"run --directory {FRAMEWORK_ROOT.absolute()} --package mcp-server python -m lisa_context.server"
     ).split()
     memory_store = MCPMemoryClient(
         mcp_command,
@@ -4203,67 +4202,6 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
     async def _explicit_slice(policy: SlicePolicy) -> Any:
         return await state_provider.slice(ctx=None, policy=policy)
 
-    async def _recall_memory(query: str, memory_scope: str, budget_tokens: int) -> str:
-        """Auto-recall hook for run_turn: return a compact memory snippet."""
-        user_slug = _runtime_user_slug() or "system"
-        records = await memory_store.list_memories(
-            user_slug=user_slug,
-            workspace_id="little-lisa",
-            memory_scope=memory_scope,
-            surface_id="little-lisa-console",
-            limit=20,
-        )
-        if not records:
-            return ""
-        query_tokens = _tokenize(query)
-        ranked: list[tuple[float, MemoryRecord]] = []
-        for record in records:
-            haystack = f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
-            overlap = len(query_tokens.intersection(_tokenize(haystack)))
-            if overlap <= 0 and query_tokens:
-                continue
-            lexical_score = overlap / max(len(query_tokens), 1) if query_tokens else 1.0
-            combined = min(1.0, lexical_score + max(0.0, record.salience) * 0.2)
-            ranked.append((combined, record))
-        ranked.sort(key=lambda item: (item[0], item[1].id), reverse=True)
-        if not ranked:
-            return ""
-        budget_chars = max(200, int(budget_tokens) * 4)
-        lines: list[str] = ["## Relevant Memory Notes"]
-        used = len(lines[0])
-        for _score, record in ranked:
-            line = f"- {record.content}"
-            if used + len(line) + 1 > budget_chars:
-                break
-            lines.append(line)
-            used += len(line) + 1
-        if len(lines) <= 1:
-            return ""
-        return "\n".join(lines)
-
-    async def _store_memory(query: str, response: str, memory_scope: str) -> None:
-        """Persist a turn exchange as an episodic memory record."""
-        user_slug = _runtime_user_slug() or "system"
-        content = f"Q: {query}\nA: {response}".strip()
-        if not content:
-            return
-        await memory_store.record_memory(
-            MemoryWriteRequest(
-                workspace_id="little-lisa",
-                user_id=user_slug,
-                user_slug=user_slug,
-                memory_scope=memory_scope,
-                surface_id="little-lisa-console",
-                source_user_id=user_slug,
-                source_user_slug=user_slug,
-                agent_id="little-lisa",
-                operation_id="turn",
-                instruction_id="turn.v1",
-                memory_tier="daily",
-                content=content,
-                memory_kind="episodic",
-            )
-        )
 
     async def _answer_memory_recall(
         *,
@@ -4413,8 +4351,6 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         assemble_system_prompt=_assemble_system_prompt,
         assemble_user_context=_assemble_dynamic_user_context,
         on_turn_complete=_on_turn_complete,
-        recall_memory=_recall_memory,
-        store_memory=_store_memory,
         slice_tuning=slice_tuning,
         pre_turn_slice=_pre_turn_slice,
         post_turn_slice=_post_turn_slice,
@@ -4441,7 +4377,10 @@ async def _run_explicit_slice_command(*, message: str) -> str:
         thread_path=_runtime_thread_path(),
         memory_store=MCPMemoryClient(
             os.getenv("LISA_MCP_COMMAND", "uv"),
-            os.getenv("LISA_MCP_ARGS", "run --package mcp-server python -m mcp_server.server").split(),
+            os.getenv(
+                "LISA_MCP_ARGS",
+                "run --package mcp-server python -m lisa_context.server",
+            ).split(),
             env=_mcp_server_env(),
         ),
         max_thread_entries=_resolve_int_env(

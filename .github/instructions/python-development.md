@@ -38,9 +38,9 @@ Before committing any Python change:
 
 Every public callable added or materially changed in a commit ships with a corresponding test in the same commit. "Materially changed" means the observable behavior changed — not a pure rename, formatting, or docstring-only edit.
 
-- **Location**: tests live under the package's `tests/` directory (e.g. `kernel/tests/test_<module>.py`). Mirror the source module name in the test filename so `test_lite_memory.py` ↔ `kernel/lite_memory.py` stays discoverable.
+- **Location**: tests live under the package's `tests/` directory (e.g. `kernel/tests/test_<module>.py`). Mirror the source module name in the test filename.
 - **Coverage target**: every new public function/method gets at least one test exercising the happy path and one test for each documented `Raises:` failure mode. Pure dataclasses and trivial re-exports are exempt.
-- **Style**: follow the existing house style — `pytest` + `pytest-asyncio`, `@pytest.mark.asyncio` for coroutines, `tmp_path` for filesystem fixtures, module-level docstring `"""Tests for kernel/<module>.py."""`. See `kernel/tests/test_lite_memory.py` for the reference pattern.
+- **Style**: follow the existing house style — `pytest` + `pytest-asyncio`, `@pytest.mark.asyncio` for coroutines, `tmp_path` for filesystem fixtures, module-level docstring `"""Tests for kernel/<module>.py."""`.
 - **Markers**: use the workspace markers from `pyproject.toml` — `live` for tests hitting real external APIs, `integration` for multi-module in-process tests, `eval` for deterministic agent regression evals. Unmarked = fast unit test.
 - **Run before commit**: `pytest <package>/tests` must be green for the files you touched. Do not commit a change that leaves a previously-passing test failing.
 - **Co-maintenance**: if you change a callable's signature or behavior, update its tests in the same commit. A test that no longer reflects the code is worse than no test — fix it or delete it with a one-line commit-message note explaining why.
