@@ -34,3 +34,5 @@ coverage/
 htmlcov/
 
 .lisa_mcp_data**/**
+.tmp_mcp_data/
+
