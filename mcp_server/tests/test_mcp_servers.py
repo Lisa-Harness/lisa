@@ -34,14 +34,14 @@ def _tool_text(result: Any) -> str:
 
 @pytest.fixture
 def context_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    db = tmp_path / "ctx_memory.db"
-    monkeypatch.setenv("LISA_MEMORY_BACKEND", "sqlite")
-    monkeypatch.setenv("LISA_MEMORY_DB_PATH", str(db))
-    # Reset the module-level store cache
+    data_dir = tmp_path / "ctx_data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    # Initialize the module-level store from the resolved data directory.
+    # The server derives memory.db from --data-dir; no env-var fallback.
     from lisa_context import server as ctx_server
 
-    ctx_server._store = None
-    return db
+    ctx_server.init_store(data_dir)
+    return data_dir / "memory.db"
 
 
 @pytest.mark.asyncio

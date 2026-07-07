@@ -122,8 +122,22 @@ async def get_session_state(
 
 
 def main() -> None:
-    """Entry point for the lisa-surf MCP server (stdio transport)."""
-    mcp.run(transport="stdio")
+    """Entry point for the lisa-surf MCP server (stdio transport).
+
+    Parses the standard CLI contract via the shared argparse helper. No
+    path config is needed today, but ``--data-dir`` is required for
+    consistency across all first-party servers.
+    """
+    from lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
+
+    parser = build_parser("lisa-surf")
+    args = parser.parse_args()
+
+    log = configure_logging(args.log_level, server_name="lisa-surf")
+    data_dir = resolve_data_dir(args.data_dir)
+    log.info("lisa-surf starting (data_dir=%s)", data_dir)
+
+    mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":

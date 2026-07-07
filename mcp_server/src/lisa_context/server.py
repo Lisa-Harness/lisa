@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -247,29 +246,14 @@ class SqliteMemoryStore:
         return "\n".join(lines)
 
 
-def _sqlite_db_path() -> Path:
-    """Resolve the sqlite db path for the MCP context server.
+def get_store(data_dir: Path) -> Any:
+    """Build the memory store from a resolved data directory.
 
-    Priority:
-    1) ``LISA_MCP_DB_PATH`` (injected by host runtimes like Little Lisa)
-    2) ``LISA_MEMORY_DB_PATH`` (legacy compatibility)
-    3) ``.lisa_mcp_data/memory.db`` (standalone default)
+    The context server always owns the SQLite-backed store. The db path is
+    derived exclusively from ``--data-dir`` (via ``data_dir / "memory.db"``);
+    no env-var fallback, no hardcoded default.
     """
-    return Path(
-        os.getenv(
-            "LISA_MCP_DB_PATH",
-            os.getenv("LISA_MEMORY_DB_PATH", ".lisa_mcp_data/memory.db"),
-        )
-    )
-
-
-def get_store() -> Any:
-    """Build the memory store from environment configuration.
-
-    The context server always owns the SQLite-backed store.
-    """
-    db_path = _sqlite_db_path()
-    return SqliteMemoryStore(db_path=db_path)
+    return SqliteMemoryStore(db_path=data_dir / "memory.db")
 
 
 mcp = FastMCP("Lisa Context Server")
@@ -279,8 +263,21 @@ _store: Any | None = None
 def _store_instance() -> Any:
     global _store
     if _store is None:
-        _store = get_store()
+        raise RuntimeError(
+            "lisa_context store is not initialized. "
+            "Call init_store(data_dir) from main() before serving tools."
+        )
     return _store
+
+
+def init_store(data_dir: Path) -> None:
+    """Initialize the module-level store from a resolved data directory.
+
+    Called by :func:`main` after parsing ``--data-dir``. Tests may call this
+    directly with a ``tmp_path`` to pin the store without spawning the server.
+    """
+    global _store
+    _store = get_store(data_dir)
 
 
 def _state_from_request(payload: dict[str, Any]) -> UnifiedState:
@@ -413,8 +410,23 @@ async def broker_context(payload: dict[str, Any]) -> str:
 
 
 def main() -> None:
-    """Entry point for the lisa-context MCP server (stdio transport)."""
-    mcp.run(transport="stdio")
+    """Entry point for the lisa-context MCP server (stdio transport).
+
+    Parses the standard CLI contract via the shared argparse helper, derives
+    ``memory.db`` from ``--data-dir``, initializes the store, and runs the
+    server. No env-var path fallback.
+    """
+    from lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
+
+    parser = build_parser("lisa-context", supports_readonly=True)
+    args = parser.parse_args()
+
+    log = configure_logging(args.log_level, server_name="lisa-context")
+    data_dir = resolve_data_dir(args.data_dir)
+    log.info("lisa-context starting (data_dir=%s, readonly=%s)", data_dir, args.readonly)
+
+    init_store(data_dir)
+    mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":

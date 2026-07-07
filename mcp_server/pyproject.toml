@@ -19,6 +19,9 @@ lisa-context = "lisa_context.server:main"
 lisa-operations = "lisa_operations.server:main"
 lisa-search = "lisa_search.server:main"
 lisa-surf = "lisa_surf.server:main"
+lisa-guard = "lisa_guard.server:main"
+lisa-storage = "lisa_storage.server:main"
+lisa-content = "lisa_content.server:main"
 
 [build-system]
 requires = ["uv_build>=0.11.17,<0.12.0"]

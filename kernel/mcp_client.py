@@ -1,9 +1,11 @@
-from typing import Any
 from pathlib import Path
+from typing import Any
+
 from mcp.client.session import ClientSession
-from mcp.client.stdio import stdio_client, StdioServerParameters
+from mcp.client.stdio import StdioServerParamet ers, stdio_client
 
 from kernel.models import MemoryRecord, MemoryWriteRequest
+
 
 class MCPMemoryClient:
     """Uses MCP to communicate with the Context Server."""
@@ -16,9 +18,9 @@ class MCPMemoryClient:
         env: dict[str, str] | None = None,
         cwd: str | Path | None = None,
     ) -> None:
-        # Hosts may pass env (e.g. {"LISA_MCP_DB_PATH": ...}) to pin the
-        # Context Server's storage location without polluting the parent
-        # process environment. When env is None the subprocess inherits the
+        # Hosts may pass env overrides for behavioral config (API keys,
+        # feature flags). Path-like config is passed via CLI args
+        # (e.g. --data-dir). When env is None the subprocess inherits the
         # parent env unchanged.
         self.server_params = StdioServerParameters(
             command=command,

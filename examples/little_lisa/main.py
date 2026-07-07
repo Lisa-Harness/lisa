@@ -1711,19 +1711,14 @@ def _runtime_memory_db_path() -> Path:
     return configured if isinstance(configured, Path) else _runtime_data_dir() / "memory.json"
 
 
-def _mcp_server_env() -> dict[str, str]:
-    """Build the env dict passed to the MCP Context Server subprocess.
+def _mcp_server_extra_args() -> list[str]:
+    """Build the extra CLI args passed to the MCP Context Server subprocess.
 
-    Pins the server's storage location to Little Lisa's runtime memory db
-    path so the MCP-backed memory and the local store would
-    resolve to the same data-dir/memory-db when the host swaps between
-    them. Hosts that want to override this explicitly can still set
-    ``LISA_MCP_DB_PATH`` in the parent env; we only inject when unset.
+    The context server derives ``memory.db`` from ``--data-dir``; no env-var
+    path fallback. We pass Little Lisa's runtime data directory so the MCP
+    server's SQLite store lives alongside the host's other artifacts.
     """
-    env: dict[str, str] = {}
-    if not os.getenv("LISA_MCP_DB_PATH"):
-        env["LISA_MCP_DB_PATH"] = str(_runtime_memory_db_path())
-    return env
+    return ["--data-dir", str(_runtime_data_dir())]
 
 
 def _runtime_thread_dir() -> Path | None:
@@ -4167,10 +4162,10 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         "LISA_MCP_ARGS",
         f"run --directory {FRAMEWORK_ROOT.absolute()} --package mcp-server python -m lisa_context.server"
     ).split()
+    mcp_args = [*mcp_args, *_mcp_server_extra_args()]
     memory_store = MCPMemoryClient(
         mcp_command,
         mcp_args,
-        env=_mcp_server_env(),
     )
     slice_tuning_dict, explicit_budget_ms = _resolve_slice_tuning()
     slice_tuning = SliceTuning.from_mapping(slice_tuning_dict)
@@ -4377,11 +4372,13 @@ async def _run_explicit_slice_command(*, message: str) -> str:
         thread_path=_runtime_thread_path(),
         memory_store=MCPMemoryClient(
             os.getenv("LISA_MCP_COMMAND", "uv"),
-            os.getenv(
-                "LISA_MCP_ARGS",
-                "run --package mcp-server python -m lisa_context.server",
-            ).split(),
-            env=_mcp_server_env(),
+            [
+                *os.getenv(
+                    "LISA_MCP_ARGS",
+                    "run --package mcp-server python -m lisa_context.server",
+                ).split(),
+                *_mcp_server_extra_args(),
+            ],
         ),
         max_thread_entries=_resolve_int_env(
             _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES
