@@ -20,6 +20,7 @@ Design — MCP at the edges, Protocols in the middle:
 from __future__ import annotations
 
 import logging
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -99,7 +100,7 @@ class MCPToolPool:
     def __init__(self, configs: list[MCPClientConfig]) -> None:
         self._configs = list(configs)
         self._sessions: dict[str, Any] = {}
-        self._stdio_ctx: dict[str, Any] = {}
+        self._exit_stack: AsyncExitStack | None = None
         self._tool_index: dict[str, tuple[str, MCPToolSpec]] = {}
         self._tools: list[MCPToolSpec] = []
         self._started = False
@@ -121,6 +122,8 @@ class MCPToolPool:
         if self._started:
             return
         self._started = True
+        self._exit_stack = AsyncExitStack()
+        await self._exit_stack.__aenter__()
         for config in self._configs:
             try:
                 await self._connect(config)
@@ -137,26 +140,21 @@ class MCPToolPool:
         from mcp.client.session import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
+        assert self._exit_stack is not None
         params = StdioServerParameters(
             command=config.command,
             args=config.args,
             env=config.env,
             cwd=config.cwd,
         )
-        # stdio_client is an async context manager yielding (read, write).
-        # We hold the context open for the pool's lifetime and close it
-        # explicitly in aclose().
-        ctx = stdio_client(params)
-        read, write = await ctx.__aenter__()  # type: ignore[union-attr]
-        try:
-            session = ClientSession(read, write)
-            await session.__aenter__()
-            await session.initialize()
-        except Exception:
-            await ctx.__aexit__(None, None, None)
-            raise
+        # Use AsyncExitStack to manage stdio_client + ClientSession lifetimes.
+        # Manually calling __aenter__/__aexit__ on anyio-based context managers
+        # breaks cancel-scope tracking; AsyncExitStack preserves the correct
+        # nesting and ensures cleanup on failure.
+        read, write = await self._exit_stack.enter_async_context(stdio_client(params))
+        session = await self._exit_stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
         self._sessions[config.server_id] = session
-        self._stdio_ctx[config.server_id] = ctx
 
     async def _refresh_tool_index(self) -> None:
         """Merge tool lists from all connected servers into one index."""
@@ -247,18 +245,13 @@ class MCPToolPool:
     async def aclose(self) -> None:
         """Close every session and terminate every subprocess."""
 
-        for session in list(self._sessions.values()):
-            try:
-                await session.__aexit__(None, None, None)
-            except Exception:  # pylint: disable=broad-except
-                logger.debug("MCP session close failed", exc_info=True)
         self._sessions.clear()
-        for ctx in list(self._stdio_ctx.values()):
+        if self._exit_stack is not None:
             try:
-                await ctx.__aexit__(None, None, None)
+                await self._exit_stack.aclose()
             except Exception:  # pylint: disable=broad-except
-                logger.debug("MCP stdio context close failed", exc_info=True)
-        self._stdio_ctx.clear()
+                logger.debug("MCP exit stack close failed", exc_info=True)
+        self._exit_stack = None
         self._tool_index.clear()
         self._tools = []
         self._started = False
