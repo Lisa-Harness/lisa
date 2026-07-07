@@ -273,14 +273,32 @@ external clients (and to itself when a host wants to run them out-of-process):
 
 | Server | Package | Tools |
 | --- | --- | --- |
-| `lisa-context` | `mcp_server/` (already exists) | `add_memory`, `search_memory`, `list_memories`, `get_surface_context` |
-| `lisa-operations` | new, `mcp_server/operations/` | one tool per operation in the registry |
-| `lisa-search` | new, `mcp_server/search/` | `web_search` (wraps `kernel.web_search`) |
-| `lisa-surf` | new, `mcp_server/surf/` | `surf_url`, `flush_session` |
+| `lisa-context` | `mcp_server/src/lisa_context/` | `add_memory`, `search_memory`, `list_memories`, `get_surface_context` |
+| `lisa-operations` | `mcp_server/src/lisa_operations/` | one tool per operation in the registry |
+| `lisa-search` | `mcp_server/src/lisa_search/` | `web_search` (wraps `kernel.web_search`) |
+| `lisa-surf` | `mcp_server/src/lisa_surf/` | `surf_url`, `flush_session` |
+| `lisa-guard` | `mcp_server/src/lisa_guard/` | `validate_input`, `validate_output`, `guard_configured` |
+| `lisa-storage` | `mcp_server/src/lisa_storage/` | 23 BlobIO tools (text/bytes read/write, overlays, metadata) |
+| `lisa-content` | `mcp_server/src/lisa_content/` | `read_authored_text`, `list_content_roots`, `invalidate_cache` |
 
 A host can either wire these as in-process Protocols (default, zero subprocesses) or
 spawn them as MCP servers for isolation or cross-process access. The kernel does not
 prefer one path; both are first-class.
+
+#### Launch contract
+
+All first-party servers share a common CLI contract (`--data-dir` required, no
+env-var fallback) enforced by `mcp_server/src/lisa_mcp_config/cli.py`. The
+`kernel/mcp_launch/` package provides the policy registry (`MCPServerRegistry`),
+runtime adapter (`compile_command`, `compile_env`, `compile_cwd`), config
+compiler (`compile_mcp_config`, `compile_registry`), and tool filter
+(`filter_tools`). Hosts register approved specs, compile them to
+`MCPClientConfig` entries, and pass those to `MCPToolPool`.
+
+When a host uses `MCPInputGuard`/`MCPOutputGuard` (the MCP-backed guard
+adapters), the `guardrail.audit` event bus is not needed — the `lisa-guard`
+server handles audit logging internally. In-process guards still use the
+event bus.
 
 ### What gets removed (hard cutover, no compat)
 

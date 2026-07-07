@@ -62,6 +62,7 @@ Key principles:
 | `synthesis/` | Post-collection intelligence pipeline: extension-owned stages (local analysis → synthesis → memory) and stage execution contracts. |
 | `testing/` | `extension_harness` for validating connectors and data sources without a host app. |
 | `context/` | Context seam defaults (guards, event bus, content registry). Context brokerage lives in MCP. |
+| `mcp_launch/` | MCP launch contract: policy types (`MCPServerSpec`, `EnvPolicy`, `ToolPolicy`), registry (`MCPServerRegistry`), runtime adapter (`compile_command`, `compile_env`, `compile_cwd`), config compiler (`compile_mcp_config`, `compile_registry`), and tool filter (`filter_tools`). |
 | `inference_profiles/` | Inference profile definitions. |
 
 ## Turn Execution Flow
