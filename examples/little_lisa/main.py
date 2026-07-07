@@ -4151,12 +4151,71 @@ def _slice_budget_expired(policy: Any, started: float) -> bool:
     return (time.monotonic() - started) * 1000.0 >= budget_ms
 
 
+def _build_mcp_tool_servers() -> list[Any]:
+    """Build the approved MCP server registry and compile it to configs.
+
+    Registers all first-party MCP servers (context, operations, search, surf,
+    guard, storage, content) with the launch policy registry, then compiles
+    them into ``MCPClientConfig`` entries for ``MCPToolPool``.
+
+    v1 keeps ``MCPMemoryClient`` for the memory seam; the servers compiled
+    here go through ``MCPToolPool`` for tool discovery and dispatch.
+    """
+    from kernel.mcp_launch.compiler import compile_registry  # noqa: PLC0415
+    from kernel.mcp_launch.policy import (  # noqa: PLC0415
+        EnvPolicy,
+        MCPServerRegistry,
+        MCPServerSpec,
+        RuntimeKind,
+    )
+
+    registry = MCPServerRegistry()
+    data_dir = str(_runtime_data_dir())
+    workspace_root = str(FRAMEWORK_ROOT)
+
+    # All first-party servers run via uv from the framework root.
+    base_uv_args = [
+        "run",
+        "--directory",
+        str(FRAMEWORK_ROOT.absolute()),
+        "--package",
+        "mcp-server",
+        "python",
+        "-m",
+    ]
+
+    first_party_servers = [
+        ("lisa-context", "lisa_context.server", True),
+        ("lisa-operations", "lisa_operations.server", False),
+        ("lisa-search", "lisa_search.server", False),
+        ("lisa-surf", "lisa_surf.server", False),
+        ("lisa-guard", "lisa_guard.server", False),
+        ("lisa-storage", "lisa_storage.server", True),
+        ("lisa-content", "lisa_content.server", False),
+    ]
+
+    for server_id, module, _supports_readonly in first_party_servers:
+        cli_args = [*base_uv_args, module]
+        registry.register(
+            MCPServerSpec(
+                server_id=server_id,
+                runtime_kind=RuntimeKind.PYTHON,
+                module=module,
+                cli_args=cli_args,
+                env_policy=EnvPolicy(inherit_parent=True),
+            )
+        )
+
+    return compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
+
+
 def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
     """Build TurnHooks wired to Little Lisa callbacks and memory operations."""
 
     from kernel.slice import SlicePolicy, SliceTuning  # noqa: PLC0415
 
-    # MCP Client wiring
+    # MCP Client wiring — memory stays on MCPMemoryClient (v1);
+    # tool servers go through MCPToolPool via the compiled registry.
     mcp_command = os.getenv("LISA_MCP_COMMAND", "uv")
     mcp_args = os.getenv(
         "LISA_MCP_ARGS",
@@ -4341,7 +4400,7 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
     return TurnHooks(
         resolve_model=_resolve_model,
         complete=_complete_live,
-        mcp_tool_servers=[],
+        mcp_tool_servers=_build_mcp_tool_servers(),
         execute_operation=_execute_operation,
         assemble_system_prompt=_assemble_system_prompt,
         assemble_user_context=_assemble_dynamic_user_context,

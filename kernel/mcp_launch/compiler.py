@@ -139,11 +139,11 @@ def compile_registry(
     workspace_root: str | None = None,
 ) -> list[MCPClientConfig]:
     """Compile all approved server specs from a registry into MCPClientConfig entries."""
+    from dataclasses import replace
+
     configs: list[MCPClientConfig] = []
     for spec in registry.all_specs():
-        # Inject host-provided args
-        resolved_spec = MCPServerSpec(
-            **{**spec.__dict__, "data_dir": data_dir, "workspace_root": workspace_root}
-        )
+        # Inject host-provided args (slots dataclass — use replace, not __dict__)
+        resolved_spec = replace(spec, data_dir=data_dir, workspace_root=workspace_root)
         configs.append(compile_mcp_config(resolved_spec))
     return configs

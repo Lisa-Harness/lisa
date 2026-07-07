@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.client.session import ClientSession
-from mcp.client.stdio import StdioServerParamet ers, stdio_client
+from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from kernel.models import MemoryRecord, MemoryWriteRequest
 
