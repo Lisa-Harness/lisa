@@ -4174,15 +4174,8 @@ def _build_mcp_tool_servers() -> list[Any]:
     workspace_root = str(FRAMEWORK_ROOT)
 
     # All first-party servers run via uv from the framework root.
-    base_uv_args = [
-        "run",
-        "--directory",
-        str(FRAMEWORK_ROOT.absolute()),
-        "--package",
-        "mcp-server",
-        "python",
-        "-m",
-    ]
+    uv_directory = str(FRAMEWORK_ROOT.absolute())
+    package = "mcp-server"
 
     first_party_servers = [
         ("lisa-context", "lisa_context.server", True),
@@ -4194,14 +4187,14 @@ def _build_mcp_tool_servers() -> list[Any]:
         ("lisa-content", "lisa_content.server", False),
     ]
 
-    for server_id, module, _supports_readonly in first_party_servers:
-        cli_args = [*base_uv_args, module]
+    for server_id, module, supports_readonly in first_party_servers:
         registry.register(
             MCPServerSpec(
                 server_id=server_id,
-                runtime_kind=RuntimeKind.PYTHON,
+                runtime_kind=RuntimeKind.UV,
+                package=package,
                 module=module,
-                cli_args=cli_args,
+                uv_directory=uv_directory,
                 env_policy=EnvPolicy(inherit_parent=True),
             )
         )

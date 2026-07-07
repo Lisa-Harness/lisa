@@ -77,7 +77,11 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
     if spec.runtime_kind == RuntimeKind.UV:
         if not spec.package or not spec.module:
             raise ValueError(f"UV runtime requires 'package' and 'module' for server '{spec.server_id}'")
-        return "uv", ["run", "--package", spec.package, "python", "-m", spec.module]
+        args: list[str] = ["run"]
+        if spec.uv_directory:
+            args.extend(["--directory", spec.uv_directory])
+        args.extend(["--package", spec.package, "python", "-m", spec.module])
+        return "uv", args
 
     if spec.runtime_kind == RuntimeKind.NODE:
         if not spec.command_path or not spec.script_path:

@@ -99,6 +99,20 @@ def test_compile_command_uv() -> None:
     assert "pkg.server" in args
 
 
+def test_compile_command_uv_with_directory() -> None:
+    spec = MCPServerSpec(
+        server_id="t",
+        runtime_kind=RuntimeKind.UV,
+        package="mcp-server",
+        module="pkg.server",
+        uv_directory="/path/to/framework",
+    )
+    cmd, args = compile_command(spec)
+    assert cmd == "uv"
+    assert "--directory" in args
+    assert "/path/to/framework" in args
+
+
 def test_compile_command_npx() -> None:
     spec = MCPServerSpec(
         server_id="t", runtime_kind=RuntimeKind.NPX, npx_package="@scope/server"

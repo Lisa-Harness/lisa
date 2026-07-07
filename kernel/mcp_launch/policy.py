@@ -116,6 +116,9 @@ class MCPServerSpec:
     npx_package: str | None = None
     """npx package spec for runtime_kind=NPX (e.g. '@modelcontextprotocol/server-memory')."""
 
+    uv_directory: str | None = None
+    """Working directory for runtime_kind=UV (passed as ``uv run --directory <path>``)."""
+
     cli_args: list[str] = field(default_factory=list)
     """Additional CLI args to pass after the standard contract args."""
 
