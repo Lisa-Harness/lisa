@@ -48,6 +48,7 @@ class MCPClientConfig:
         env: Optional environment overrides for the subprocess. When
             ``None``, the subprocess inherits the parent environment.
         cwd: Optional working directory for the subprocess.
+        tool_policy: Optional allow/deny list for filtering discovered tools.
     """
 
     server_id: str
@@ -55,6 +56,7 @@ class MCPClientConfig:
     args: list[str]
     env: dict[str, str] | None = None
     cwd: str | Path | None = None
+    tool_policy: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +161,8 @@ class MCPToolPool:
     async def _refresh_tool_index(self) -> None:
         """Merge tool lists from all connected servers into one index."""
 
+        from kernel.mcp_launch.tool_filter import filter_tools
+
         self._tools = []
         self._tool_index = {}
         for config in self._configs:
@@ -175,13 +179,18 @@ class MCPToolPool:
                     exc,
                 )
                 continue
-            for tool in result.tools:
-                spec = MCPToolSpec(
+            server_tools = [
+                MCPToolSpec(
                     server_id=config.server_id,
                     name=tool.name,
                     description=tool.description or "",
                     input_schema=tool.inputSchema or {"type": "object", "properties": {}},
                 )
+                for tool in result.tools
+            ]
+            if config.tool_policy is not None:
+                server_tools = filter_tools(server_tools, config.tool_policy)
+            for spec in server_tools:
                 if spec.name in self._tool_index:
                     existing_server = self._tool_index[spec.name][0]
                     logger.warning(

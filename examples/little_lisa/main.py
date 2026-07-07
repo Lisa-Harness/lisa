@@ -2807,6 +2807,25 @@ def _render_debug_context() -> str:
     if not isinstance(payload, dict):
         return "No assembled user payload is available yet."
     lines = ["## Last Turn Context"]
+
+    # System prompt summary
+    system_prompt_info = turn_input.get("system_prompt")
+    if isinstance(system_prompt_info, dict):
+        lines.append(f"\n### system_prompt")
+        lines.append(f"- chars: {system_prompt_info.get('chars', 0)}")
+        lines.append(f"- preview: {system_prompt_info.get('preview', '(empty)')}")
+        if system_prompt_info.get("omitted_for_brevity"):
+            lines.append("- (truncated for brevity)")
+    else:
+        lines.append("\n### system_prompt\n(not available)")
+
+    # Session context
+    session_ref = _runtime_session_context_ref()
+    session_active = bool(_RUNTIME_STATE.get("session_context_active", False))
+    lines.append(f"\n### session_context")
+    lines.append(f"- ref: {session_ref or '(none)'}")
+    lines.append(f"- active: {'true' if session_active else 'false'}")
+
     for key in (
         "pre_turn_briefing",
         "memory_recall",
@@ -4167,6 +4186,7 @@ def _build_mcp_tool_servers() -> list[Any]:
         MCPServerRegistry,
         MCPServerSpec,
         RuntimeKind,
+        ToolPolicy,
     )
 
     registry = MCPServerRegistry()
@@ -4188,6 +4208,12 @@ def _build_mcp_tool_servers() -> list[Any]:
     ]
 
     for server_id, module, supports_readonly in first_party_servers:
+        # lisa-operations exposes every operation as a tool, including
+        # web_search. lisa-search already owns web_search, so deny it
+        # from lisa-operations to avoid a tool-name collision.
+        tool_policy = ToolPolicy()
+        if server_id == "lisa-operations":
+            tool_policy = ToolPolicy(denied_tools=["web_search"])
         registry.register(
             MCPServerSpec(
                 server_id=server_id,
@@ -4196,6 +4222,7 @@ def _build_mcp_tool_servers() -> list[Any]:
                 module=module,
                 uv_directory=uv_directory,
                 env_policy=EnvPolicy(inherit_parent=True),
+                tool_policy=tool_policy,
             )
         )
 

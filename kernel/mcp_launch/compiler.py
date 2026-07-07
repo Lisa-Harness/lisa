@@ -133,6 +133,7 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
         args=all_args,
         env=env,
         cwd=cwd,
+        tool_policy=spec.tool_policy,
     )
 
 
