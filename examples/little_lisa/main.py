@@ -210,8 +210,8 @@ try:
     from .provider_completions import (
         _normalize_google_base_url as _normalize_google_base_url_helper,
     )
-    from . import frontdoor_routing  # noqa: E402 — after env loading
-    from . import turn_hooks as turn_hooks_module  # noqa: E402 — after env loading
+    from . import frontdoor_routing
+    from . import turn_hooks as turn_hooks_module
     from .tray import TrayConfig, run_tray
 except ImportError:  # pragma: no cover - direct script execution fallback
     from desktop import (  # type: ignore[no-redef]
@@ -3552,14 +3552,12 @@ async def _run_explicit_slice_command(*, message: str) -> str:
     )
 
 
-async def handle_message(message: str) -> str:  # noqa: PLR0911, PLR0912, PLR0915
+async def handle_message(message: str) -> str:
     """Route one console message through the kernel turn runner.
 
-    For action modes, entry operations run through `run_turn` which delegates
-    to the operation. For chat and workflow modes, the full model+tool loop
-    executes via `run_turn` with live provider-backed completion.
+    Host shortcut commands are dispatched first, then model-backed routing
+    (front-door + run_turn) handles everything else.
     """
-
     stripped = message.strip()
     lowered = stripped.lower()
     _append_log_event(
@@ -3572,97 +3570,87 @@ async def handle_message(message: str) -> str:  # noqa: PLR0911, PLR0912, PLR091
         },
     )
 
+    result = await _dispatch_host_command(stripped, lowered, message)
+    if result is not None:
+        return result
+
+    return await _route_model_turn(message, stripped, lowered)
+
+
+async def _dispatch_host_command(
+    stripped: str,
+    lowered: str,
+    message: str,
+) -> str | None:
+    """Try each host shortcut command; return response or None to continue."""
     if lowered.startswith("/help") or lowered == "help":
-        help_topic = ""
-        if lowered.startswith("/help"):
-            help_topic = stripped[5:].strip().lower()
-        help_context = {
-            "timestamp_utc": datetime.now(UTC).isoformat(),
-            "raw_message": message,
-            "mode_id": "help",
-            "handoff": "help shortcut",
-        }
-        _set_last_turn_context(help_context)
-        if help_topic in {"capabilities", "capability"}:
-            response_text = _render_capability_help()
-        else:
-            response_text = _format_help()
-        _append_turn_log(context=help_context, response_text=response_text)
-        _append_thread_entry(mode_id="help", query=message, response_text=response_text)
-        _RUNTIME_STATE["current_mode_id"] = "help"
-        _RUNTIME_STATE["current_stage_id"] = "-"
-        _RUNTIME_STATE["next_model_id"] = "-"
-        return response_text
-
+        return await _handle_help_command(stripped, lowered, message)
     if lowered in {"/tokens", "tokens"}:
-        tokens_context = {
-            "timestamp_utc": datetime.now(UTC).isoformat(),
-            "raw_message": message,
-            "mode_id": "tokens",
-            "handoff": "tokens shortcut",
-        }
-        response_text = _format_token_stats()
-        _set_last_turn_context(tokens_context)
-        _append_turn_log(context=tokens_context, response_text=response_text)
-        _append_thread_entry(mode_id="tokens", query=message, response_text=response_text)
-        _RUNTIME_STATE["current_mode_id"] = "tokens"
-        _RUNTIME_STATE["current_stage_id"] = "-"
-        _RUNTIME_STATE["next_model_id"] = "-"
-        return response_text
-
+        return _handle_simple_command(message, "tokens", _format_token_stats())
     if lowered in {"/settings", "settings"}:
-        settings_context = {
-            "timestamp_utc": datetime.now(UTC).isoformat(),
-            "raw_message": message,
-            "mode_id": "settings",
-            "handoff": "settings shortcut",
-        }
-        response_text = _render_runtime_settings()
-        _set_last_turn_context(settings_context)
-        _append_turn_log(context=settings_context, response_text=response_text)
-        _append_thread_entry(mode_id="settings", query=message, response_text=response_text)
-        _RUNTIME_STATE["current_mode_id"] = "settings"
-        _RUNTIME_STATE["current_stage_id"] = "-"
-        _RUNTIME_STATE["next_model_id"] = "-"
-        return response_text
-
+        return _handle_simple_command(message, "settings", _render_runtime_settings())
     if lowered in {"/consolidate", "consolidate", "/slice", "slice"}:
         return await _run_explicit_slice_command(message=message)
-
     if lowered.startswith("/debug"):
-        subcommand = stripped[6:].strip().lower()
-        if subcommand in {"", "help"}:
-            response_text = (
-                "Supported debug commands: "
-                "/debug context, /debug capabilities, /debug self, /debug frontdoor"
-            )
-        elif subcommand == "context":
-            response_text = _render_debug_context()
-        elif subcommand == "capabilities":
-            response_text = _render_capability_debug()
-        elif subcommand == "self":
-            response_text = _render_debug_self()
-        elif subcommand == "frontdoor":
-            response_text = _render_debug_frontdoor()
-        else:
-            response_text = (
-                f"Unknown debug command '{subcommand}'. "
-                "Supported: context, capabilities, self, frontdoor."
-            )
-        debug_context = {
-            "timestamp_utc": datetime.now(UTC).isoformat(),
-            "raw_message": message,
-            "mode_id": "debug",
-            "handoff": "debug shortcut",
-        }
-        _set_last_turn_context(debug_context)
-        _append_turn_log(context=debug_context, response_text=response_text)
-        _append_thread_entry(mode_id="debug", query=message, response_text=response_text)
-        _RUNTIME_STATE["current_mode_id"] = "debug"
-        _RUNTIME_STATE["current_stage_id"] = "-"
-        _RUNTIME_STATE["next_model_id"] = "-"
-        return response_text
+        return _handle_debug_command(stripped, message)
+    return None
 
+
+def _handle_simple_command(message: str, mode_id: str, response_text: str) -> str:
+    """Handle a simple shortcut command that just renders static output."""
+    context = {
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "raw_message": message,
+        "mode_id": mode_id,
+        "handoff": f"{mode_id} shortcut",
+    }
+    _set_last_turn_context(context)
+    _append_turn_log(context=context, response_text=response_text)
+    _append_thread_entry(mode_id=mode_id, query=message, response_text=response_text)
+    _RUNTIME_STATE["current_mode_id"] = mode_id
+    _RUNTIME_STATE["current_stage_id"] = "-"
+    _RUNTIME_STATE["next_model_id"] = "-"
+    return response_text
+
+
+async def _handle_help_command(stripped: str, lowered: str, message: str) -> str:
+    """Handle /help and /help capabilities."""
+    help_topic = ""
+    if lowered.startswith("/help"):
+        help_topic = stripped[5:].strip().lower()
+    if help_topic in {"capabilities", "capability"}:
+        response_text = _render_capability_help()
+    else:
+        response_text = _format_help()
+    return _handle_simple_command(message, "help", response_text)
+
+
+def _handle_debug_command(stripped: str, message: str) -> str:
+    """Handle /debug subcommands."""
+    subcommand = stripped[6:].strip().lower()
+    if subcommand in {"", "help"}:
+        response_text = (
+            "Supported debug commands: "
+            "/debug context, /debug capabilities, /debug self, /debug frontdoor"
+        )
+    elif subcommand == "context":
+        response_text = _render_debug_context()
+    elif subcommand == "capabilities":
+        response_text = _render_capability_debug()
+    elif subcommand == "self":
+        response_text = _render_debug_self()
+    elif subcommand == "frontdoor":
+        response_text = _render_debug_frontdoor()
+    else:
+        response_text = (
+            f"Unknown debug command '{subcommand}'. "
+            "Supported: context, capabilities, self, frontdoor."
+        )
+    return _handle_simple_command(message, "debug", response_text)
+
+
+async def _route_model_turn(message: str, stripped: str, lowered: str) -> str:
+    """Handle model-backed routing: front-door planning and run_turn dispatch."""
     _require_models_present()
 
     deep_query = _explicit_deep_query(message)
@@ -3673,73 +3661,134 @@ async def handle_message(message: str) -> str:  # noqa: PLR0911, PLR0912, PLR091
     elif message.lstrip().startswith("/"):
         mode_id, query = parse_route(message)
     else:
+        direct = await _try_frontdoor_shortcut(message)
+        if direct is not None:
+            return direct
         route_decision = await _plan_frontdoor_route(
             raw_message=message,
             conversation_excerpt_markdown=_build_recent_thread_excerpt(),
         )
-        if (
-            not route_decision.clarification_needed
-            and route_decision.direct_response
-            and route_decision.selected_mode_id == "default"
-        ):
-            response_text = route_decision.direct_response
-            planner_debug = _last_frontdoor_debug() or {}
-            direct_context = {
-                "timestamp_utc": datetime.now(UTC).isoformat(),
-                "raw_message": message,
-                "mode_id": "default",
-                "handoff": "front-door optimization (direct response)",
-                "frontdoor_route": route_decision.model_dump(mode="json"),
-            }
-            if planner_debug:
-                direct_context["frontdoor_debug"] = planner_debug
-            _set_last_turn_context(direct_context)
-            _append_turn_log(context=direct_context, response_text=response_text)
-            _append_thread_entry(
-                mode_id="default",
-                query=route_decision.normalized_query or message,
-                response_text=response_text,
-            )
-
-            # Record usage as if it was a default mode turn
-            default_alias = _model_alias_for_mode("default")
-            resolved_default = _resolve_model(default_alias)
-            _apply_turn_usage(
-                TurnResult(
-                    content=response_text,
-                    prompt_tokens=0,  # Included in front-door usage
-                    completion_tokens=0,
-                ),
-                model_id=resolved_default.model_id,
-                mode_id="default",
-                stage_id="-",
-                frontdoor_routing=planner_debug,
-            )
-            return response_text
-
-        if route_decision.clarification_needed and route_decision.clarification_question:
-            response_text = route_decision.clarification_question
-            planner_debug = _last_frontdoor_debug() or {}
-            clarification_context = {
-                "timestamp_utc": datetime.now(UTC).isoformat(),
-                "raw_message": message,
-                "mode_id": "front-door",
-                "handoff": "front-door clarification",
-                "frontdoor_route": route_decision.model_dump(mode="json"),
-            }
-            if planner_debug:
-                clarification_context["frontdoor_debug"] = planner_debug
-            _set_last_turn_context(clarification_context)
-            _append_turn_log(context=clarification_context, response_text=response_text)
-            _append_thread_entry(
-                mode_id="front-door",
-                query=message,
-                response_text=response_text,
-            )
-            return response_text
+        clarification = _try_frontdoor_clarification(message, route_decision)
+        if clarification is not None:
+            return clarification
         mode_id = route_decision.selected_mode_id
         query = route_decision.normalized_query or message
 
+    return await _execute_mode_turn(message, mode_id, query, deep_route)
+
+
+async def _try_frontdoor_shortcut(message: str) -> str | None:
+    """Try the front-door direct-response optimization; return response or None."""
+    route_decision = await _plan_frontdoor_route(
+        raw_message=message,
+        conversation_excerpt_markdown=_build_recent_thread_excerpt(),
+    )
+    if (
+        route_decision.clarification_needed
+        or not route_decision.direct_response
+        or route_decision.selected_mode_id != "default"
+    ):
+        return None
+
+    response_text = route_decision.direct_response
+    planner_debug = _last_frontdoor_debug() or {}
+    direct_context = {
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "raw_message": message,
+        "mode_id": "default",
+        "handoff": "front-door optimization (direct response)",
+        "frontdoor_route": route_decision.model_dump(mode="json"),
+    }
+    if planner_debug:
+        direct_context["frontdoor_debug"] = planner_debug
+    _set_last_turn_context(direct_context)
+    _append_turn_log(context=direct_context, response_text=response_text)
+    _append_thread_entry(
+        mode_id="default",
+        query=route_decision.normalized_query or message,
+        response_text=response_text,
+    )
+
+    default_alias = _model_alias_for_mode("default")
+    resolved_default = _resolve_model(default_alias)
+    _apply_turn_usage(
+        TurnResult(
+            content=response_text,
+            prompt_tokens=0,
+            completion_tokens=0,
+        ),
+        model_id=resolved_default.model_id,
+        mode_id="default",
+        stage_id="-",
+        frontdoor_routing=planner_debug,
+    )
+    return response_text
+
+
+def _try_frontdoor_clarification(
+    message: str,
+    route_decision: FrontDoorRouteDecision,
+) -> str | None:
+    """Return a clarification question if the front-door requests one."""
+    if not (route_decision.clarification_needed and route_decision.clarification_question):
+        return None
+
+    response_text = route_decision.clarification_question
+    planner_debug = _last_frontdoor_debug() or {}
+    clarification_context = {
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "raw_message": message,
+        "mode_id": "front-door",
+        "handoff": "front-door clarification",
+        "frontdoor_route": route_decision.model_dump(mode="json"),
+    }
+    if planner_debug:
+        clarification_context["frontdoor_debug"] = planner_debug
+    _set_last_turn_context(clarification_context)
+    _append_turn_log(context=clarification_context, response_text=response_text)
+    _append_thread_entry(
+        mode_id="front-door",
+        query=message,
+        response_text=response_text,
+    )
+    return response_text
+
+
+def _handle_unsupported_mode(
+    message: str,
+    mode: WorkflowModeConfig,
+    query: str,
+    deep_route: bool,
+) -> str:
+    """Handle a mode that Little Lisa cannot run."""
+    logger.info(
+        "unsupported mode %s in Little Lisa (gap=%s)",
+        mode.mode_id,
+        _mode_support_gap(mode),
+    )
+    unsupported_context = {
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "raw_message": message,
+        "mode_id": mode.mode_id,
+        "mode_kind": mode.mode_kind,
+        "query": query,
+        "deep_route": deep_route,
+        "handoff": "unsupported mode in Little Lisa",
+        "unsupported_requirement": _mode_support_gap(mode),
+    }
+    _set_last_turn_context(unsupported_context)
+    response_text = _format_unsupported_mode(mode)
+    _append_turn_log(context=unsupported_context, response_text=response_text)
+    return response_text
+
+
+async def _execute_mode_turn(
+    message: str,
+    mode_id: str,
+    query: str,
+    deep_route: bool,
+) -> str:
+    """Resolve mode, build context, and run the turn through the kernel."""
     catalog = get_workflow_catalog()
     mode = catalog.get(mode_id) or catalog["default"]
     preview_model_id = _preferred_model_id_for_route(
@@ -3749,25 +3798,7 @@ async def handle_message(message: str) -> str:  # noqa: PLR0911, PLR0912, PLR091
     )
     _set_runtime_route_preview(mode_id=mode.mode_id, preferred_model_id=preview_model_id)
     if _mode_support_gap(mode) is not None:
-        logger.info(
-            "unsupported mode %s in Little Lisa (gap=%s)",
-            mode.mode_id,
-            _mode_support_gap(mode),
-        )
-        unsupported_context = {
-            "timestamp_utc": datetime.now(UTC).isoformat(),
-            "raw_message": message,
-            "mode_id": mode.mode_id,
-            "mode_kind": mode.mode_kind,
-            "query": query,
-            "deep_route": deep_route,
-            "handoff": "unsupported mode in Little Lisa",
-            "unsupported_requirement": _mode_support_gap(mode),
-        }
-        _set_last_turn_context(unsupported_context)
-        response_text = _format_unsupported_mode(mode)
-        _append_turn_log(context=unsupported_context, response_text=response_text)
-        return response_text
+        return _handle_unsupported_mode(message, mode, query, deep_route)
 
     preferred_model_id = preview_model_id
     resolved_model = _resolve_model(preferred_model_id)
