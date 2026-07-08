@@ -45,6 +45,7 @@ data-flow diagram.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -2677,13 +2678,70 @@ async def _complete_live(
     stream_stage = _runtime_stream_enabled() and _runtime_stream_mode() in {"stage", "hybrid"}
     stage_label = f"{model_def.provider}:{model_def.model_id}"
     started_at = time.perf_counter()
-    response_format_name = ""
-    if response_format is not None:
-        response_format_name = str(getattr(response_format, "__name__", "") or "")
+    response_format_name = _completion_response_format_name(response_format)
+    kwargs = _build_completion_kwargs(
+        model_def=model_def,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        tools=tools,
+        response_format=response_format,
+    )
 
+    _log_completion_request(
+        messages=messages,
+        model_def=model_def,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        response_format_name=response_format_name,
+        tools=tools,
+    )
+
+    if model_def.provider == "anthropic":
+        return await _complete_live_anthropic(
+            messages=messages,
+            model_def=model_def,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+            response_format=response_format,
+            stream_stage=stream_stage,
+            stage_label=stage_label,
+            started_at=started_at,
+            response_format_name=response_format_name,
+        )
+
+    return await _complete_live_openai_compatible(
+        messages=messages,
+        model_def=model_def,
+        response_format=response_format,
+        stream_stage=stream_stage,
+        stage_label=stage_label,
+        started_at=started_at,
+        response_format_name=response_format_name,
+        kwargs=kwargs,
+        tools=tools,
+    )
+
+
+def _completion_response_format_name(response_format: type[Any] | None) -> str:
+    """Return the __name__ of the response_format type, or empty string."""
+    if response_format is None:
+        return ""
+    return str(getattr(response_format, "__name__", "") or "")
+
+
+def _build_completion_kwargs(
+    *,
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None,
+    response_format: type[Any] | None,
+) -> dict[str, Any]:
+    """Build the kwargs dict for an OpenAI-compatible chat completion call."""
     kwargs: dict[str, Any] = {
         "model": model_def.model_id,
-        "messages": messages,
+        "messages": [],  # placeholder — caller sets messages via kwargs.update
     }
     if model_def.provider == "azure_openai" or model_def.reasoning_model:
         kwargs["max_completion_tokens"] = max_tokens
@@ -2695,7 +2753,19 @@ async def _complete_live(
     normalized_format = _normalize_response_format(response_format)
     if normalized_format is not None:
         kwargs["response_format"] = normalized_format
+    return kwargs
 
+
+def _log_completion_request(
+    *,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    response_format_name: str,
+    tools: list[dict[str, Any]] | None,
+) -> None:
+    """Log the completion.request debug event."""
     _append_log_event(
         level="debug",
         event="completion.request",
@@ -2716,153 +2786,223 @@ async def _complete_live(
         },
     )
 
-    if model_def.provider == "anthropic":
-        try:
-            if stream_stage:
-                console.print(f"[dim][stage] contacting {stage_label}...[/]")
-                result = await _complete_anthropic(
-                    messages=messages,
-                    model_def=model_def,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    tools=tools,
-                    response_format=response_format,
-                )
-                console.print(f"[dim][stage] {stage_label} completed.[/]")
-            else:
-                with console.status("[bold yellow]Thinking...", spinner="dots"):
-                    result = await _complete_anthropic(
-                        messages=messages,
-                        model_def=model_def,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        tools=tools,
-                        response_format=response_format,
-                    )
-        except Exception as exc:  # pylint: disable=broad-except
-            if stream_stage:
-                console.print(f"[dim][stage] {stage_label} failed.[/]")
-            elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
-            _append_log_event(
-                level="error",
-                event="completion.error",
-                payload={
-                    "provider": model_def.provider,
-                    "model_id": model_def.model_id,
-                    "reasoning_model": model_def.reasoning_model,
-                    "response_format": response_format_name,
-                    "latency_ms": round(elapsed_ms, 2),
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc),
-                },
-                debug_payload={
-                    "messages": messages,
-                    "tool_schemas": tools or [],
-                },
-            )
-            raise
 
-        elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
-        _append_log_event(
-            level="debug",
-            event="completion.response",
-            payload={
-                "provider": model_def.provider,
-                "model_id": model_def.model_id,
-                "reasoning_model": model_def.reasoning_model,
-                "response_format": response_format_name,
-                "latency_ms": round(elapsed_ms, 2),
-                "content_chars": len(result.content),
-                "tool_call_count": len(result.tool_calls),
-                "prompt_tokens": result.prompt_tokens,
-                "completion_tokens": result.completion_tokens,
-                "total_tokens": result.total_tokens,
-                "cached_tokens": result.cached_tokens,
-                "reasoning_tokens": result.reasoning_tokens,
-                "response_preview": _preview_text(result.content, limit=320),
-            },
-            debug_payload={
-                "response_text": result.content,
-                "tool_calls": result.tool_calls,
-            },
-        )
-        # StubCompletion is frozen; rebuild with the host-measured
-        # duration so the ledger can bill time-based providers.
-        final_result = StubCompletion(
-            content=result.content,
-            tool_calls=result.tool_calls,
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-            total_tokens=result.total_tokens,
-            cached_tokens=result.cached_tokens,
-            reasoning_tokens=result.reasoning_tokens,
-            duration_ms=elapsed_ms,
-        )
-        await _publish_token_usage(
-            provider=model_def.provider,
-            model_id=model_def.model_id,
-            prompt_tokens=final_result.prompt_tokens,
-            completion_tokens=final_result.completion_tokens,
-            total_tokens=final_result.total_tokens,
-            cached_tokens=final_result.cached_tokens,
-            reasoning_tokens=final_result.reasoning_tokens,
-            duration_ms=final_result.duration_ms,
-            latency_ms=int(elapsed_ms),
-            call_site="complete_live.anthropic",
-        )
-        return final_result
+def _log_completion_error(
+    *,
+    exc: Exception,
+    model_def: StubModelDefinition,
+    response_format_name: str,
+    elapsed_ms: float,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+) -> None:
+    """Log the completion.error event for a failed provider call."""
+    _append_log_event(
+        level="error",
+        event="completion.error",
+        payload={
+            "provider": model_def.provider,
+            "model_id": model_def.model_id,
+            "reasoning_model": model_def.reasoning_model,
+            "response_format": response_format_name,
+            "latency_ms": round(elapsed_ms, 2),
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+        },
+        debug_payload={
+            "messages": messages,
+            "tool_schemas": tools or [],
+        },
+    )
 
+
+def _log_completion_response(
+    *,
+    model_def: StubModelDefinition,
+    response_format_name: str,
+    elapsed_ms: float,
+    result: StubCompletion,
+) -> None:
+    """Log the completion.response debug event for a successful provider call."""
+    _append_log_event(
+        level="debug",
+        event="completion.response",
+        payload={
+            "provider": model_def.provider,
+            "model_id": model_def.model_id,
+            "reasoning_model": model_def.reasoning_model,
+            "response_format": response_format_name,
+            "latency_ms": round(elapsed_ms, 2),
+            "content_chars": len(result.content),
+            "tool_call_count": len(result.tool_calls),
+            "prompt_tokens": result.prompt_tokens,
+            "completion_tokens": result.completion_tokens,
+            "total_tokens": result.total_tokens,
+            "cached_tokens": result.cached_tokens,
+            "reasoning_tokens": result.reasoning_tokens,
+            "response_preview": _preview_text(result.content, limit=320),
+        },
+        debug_payload={
+            "response_text": result.content,
+            "tool_calls": result.tool_calls,
+        },
+    )
+
+
+async def _publish_completion_usage(
+    *,
+    model_def: StubModelDefinition,
+    result: StubCompletion,
+    elapsed_ms: float,
+    call_site: str,
+) -> None:
+    """Publish token usage for a completed provider call."""
+    await _publish_token_usage(
+        provider=model_def.provider,
+        model_id=model_def.model_id,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        total_tokens=result.total_tokens,
+        cached_tokens=result.cached_tokens,
+        reasoning_tokens=result.reasoning_tokens,
+        duration_ms=result.duration_ms,
+        latency_ms=int(elapsed_ms),
+        call_site=call_site,
+    )
+
+
+def _with_duration(result: StubCompletion, elapsed_ms: float) -> StubCompletion:
+    """Rebuild a frozen StubCompletion with the host-measured duration."""
+    return StubCompletion(
+        content=result.content,
+        tool_calls=result.tool_calls,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        total_tokens=result.total_tokens,
+        cached_tokens=result.cached_tokens,
+        reasoning_tokens=result.reasoning_tokens,
+        duration_ms=elapsed_ms,
+    )
+
+
+def _stage_status_context(stream_stage: bool, stage_label: str) -> Any:
+    """Return a context manager for the provider call spinner."""
     if stream_stage:
         console.print(f"[dim][stage] contacting {stage_label}...[/]")
+        return contextlib.nullcontext()
+    return console.status("[bold yellow]Thinking...", spinner="dots")
+
+
+async def _complete_live_anthropic(
+    *,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None,
+    response_format: type[Any] | None,
+    stream_stage: bool,
+    stage_label: str,
+    started_at: float,
+    response_format_name: str,
+) -> StubCompletion:
+    """Execute an Anthropic provider completion with logging and token publishing."""
     try:
+        with _stage_status_context(stream_stage, stage_label):
+            result = await _complete_anthropic(
+                messages=messages,
+                model_def=model_def,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+                response_format=response_format,
+            )
         if stream_stage:
-            if model_def.provider == "azure_openai":
-                response = await _azure_client_instance().chat.completions.create(**kwargs)
-            elif model_def.provider == "openai":
-                response = await _openai_client_instance().chat.completions.create(**kwargs)
-            elif model_def.provider == "ollama":
-                response = await _ollama_client_instance().chat.completions.create(**kwargs)
-            elif model_def.provider == "google":
-                response = await _google_client_instance().chat.completions.create(**kwargs)
-            else:
-                raise ValueError(
-                    f"Unsupported provider '{model_def.provider}' in Little Lisa manifest."
-                )
             console.print(f"[dim][stage] {stage_label} completed.[/]")
-        else:
-            with console.status("[bold yellow]Thinking...", spinner="dots"):
-                if model_def.provider == "azure_openai":
-                    response = await _azure_client_instance().chat.completions.create(**kwargs)
-                elif model_def.provider == "openai":
-                    response = await _openai_client_instance().chat.completions.create(**kwargs)
-                elif model_def.provider == "ollama":
-                    response = await _ollama_client_instance().chat.completions.create(**kwargs)
-                elif model_def.provider == "google":
-                    response = await _google_client_instance().chat.completions.create(**kwargs)
-                else:
-                    raise ValueError(
-                        f"Unsupported provider '{model_def.provider}' in Little Lisa manifest."
-                    )
     except Exception as exc:  # pylint: disable=broad-except
         if stream_stage:
             console.print(f"[dim][stage] {stage_label} failed.[/]")
         elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
-        _append_log_event(
-            level="error",
-            event="completion.error",
-            payload={
-                "provider": model_def.provider,
-                "model_id": model_def.model_id,
-                "reasoning_model": model_def.reasoning_model,
-                "response_format": response_format_name,
-                "latency_ms": round(elapsed_ms, 2),
-                "error_type": type(exc).__name__,
-                "error_message": str(exc),
-            },
-            debug_payload={
-                "messages": messages,
-                "tool_schemas": tools or [],
-            },
+        _log_completion_error(
+            exc=exc,
+            model_def=model_def,
+            response_format_name=response_format_name,
+            elapsed_ms=elapsed_ms,
+            messages=messages,
+            tools=tools,
+        )
+        raise
+
+    elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+    _log_completion_response(
+        model_def=model_def,
+        response_format_name=response_format_name,
+        elapsed_ms=elapsed_ms,
+        result=result,
+    )
+    final_result = _with_duration(result, elapsed_ms)
+    await _publish_completion_usage(
+        model_def=model_def,
+        result=final_result,
+        elapsed_ms=elapsed_ms,
+        call_site="complete_live.anthropic",
+    )
+    return final_result
+
+
+async def _dispatch_openai_compatible_provider(
+    *,
+    model_def: StubModelDefinition,
+    kwargs: dict[str, Any],
+) -> Any:
+    """Dispatch to the correct OpenAI-compatible client based on provider name."""
+    provider = model_def.provider
+    if provider == "azure_openai":
+        return await _azure_client_instance().chat.completions.create(**kwargs)
+    if provider == "openai":
+        return await _openai_client_instance().chat.completions.create(**kwargs)
+    if provider == "ollama":
+        return await _ollama_client_instance().chat.completions.create(**kwargs)
+    if provider == "google":
+        return await _google_client_instance().chat.completions.create(**kwargs)
+    raise ValueError(f"Unsupported provider '{provider}' in Little Lisa manifest.")
+
+
+async def _complete_live_openai_compatible(
+    *,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    response_format: type[Any] | None,
+    stream_stage: bool,
+    stage_label: str,
+    started_at: float,
+    response_format_name: str,
+    kwargs: dict[str, Any],
+    tools: list[dict[str, Any]] | None,
+) -> StubCompletion:
+    """Execute an OpenAI-compatible provider completion with logging and token publishing."""
+    kwargs["messages"] = messages
+    if stream_stage:
+        console.print(f"[dim][stage] contacting {stage_label}...[/]")
+    try:
+        with _stage_status_context(stream_stage, stage_label):
+            response = await _dispatch_openai_compatible_provider(
+                model_def=model_def,
+                kwargs=kwargs,
+            )
+        if stream_stage:
+            console.print(f"[dim][stage] {stage_label} completed.[/]")
+    except Exception as exc:  # pylint: disable=broad-except
+        if stream_stage:
+            console.print(f"[dim][stage] {stage_label} failed.[/]")
+        elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+        _log_completion_error(
+            exc=exc,
+            model_def=model_def,
+            response_format_name=response_format_name,
+            elapsed_ms=elapsed_ms,
+            messages=messages,
+            tools=tools,
         )
         raise
 
@@ -2881,31 +3021,7 @@ async def _complete_live(
     content = _normalize_structured_content(content, response_format)
 
     elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
-    _append_log_event(
-        level="debug",
-        event="completion.response",
-        payload={
-            "provider": model_def.provider,
-            "model_id": model_def.model_id,
-            "reasoning_model": model_def.reasoning_model,
-            "response_format": response_format_name,
-            "latency_ms": round(elapsed_ms, 2),
-            "content_chars": len(content),
-            "tool_call_count": len(tool_calls),
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-            "cached_tokens": cached_tokens,
-            "reasoning_tokens": reasoning_tokens,
-            "response_preview": _preview_text(content, limit=320),
-        },
-        debug_payload={
-            "response_text": content,
-            "tool_calls": tool_calls,
-        },
-    )
-
-    final_result = StubCompletion(
+    result = StubCompletion(
         content=content,
         tool_calls=tool_calls,
         prompt_tokens=prompt_tokens,
@@ -2915,19 +3031,19 @@ async def _complete_live(
         reasoning_tokens=reasoning_tokens,
         duration_ms=elapsed_ms,
     )
-    await _publish_token_usage(
-        provider=model_def.provider,
-        model_id=model_def.model_id,
-        prompt_tokens=final_result.prompt_tokens,
-        completion_tokens=final_result.completion_tokens,
-        total_tokens=final_result.total_tokens,
-        cached_tokens=final_result.cached_tokens,
-        reasoning_tokens=final_result.reasoning_tokens,
-        duration_ms=final_result.duration_ms,
-        latency_ms=int(elapsed_ms),
+    _log_completion_response(
+        model_def=model_def,
+        response_format_name=response_format_name,
+        elapsed_ms=elapsed_ms,
+        result=result,
+    )
+    await _publish_completion_usage(
+        model_def=model_def,
+        result=result,
+        elapsed_ms=elapsed_ms,
         call_site="complete_live.openai_compatible",
     )
-    return final_result
+    return result
 
 
 async def _execute_tool(tool_id: str, ctx: Any) -> ToolResult:
