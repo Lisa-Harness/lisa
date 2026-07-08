@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-07-08
+**Complete** — 2026-07-08. `handle_message` decomposed into 9 focused functions with a dispatch pattern. C901=25 → resolved. Zero test regressions.
 
 ## Problem
 
