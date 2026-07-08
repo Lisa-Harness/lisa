@@ -197,15 +197,18 @@ try:
         _extract_anthropic_tool_calls,
         _extract_completion_tool_calls,
         _extract_json_object,
-        _extract_usage_counts as _extract_usage_counts_helper,
         _first_message_content,
-        _normalize_google_base_url as _normalize_google_base_url_helper,
         _normalize_ollama_host_to_base_url,
         _normalize_response_format,
         _normalize_structured_content,
-        _parse_tool_arguments,
         _to_anthropic_payload_messages,
         _to_anthropic_tools,
+    )
+    from .provider_completions import (
+        _extract_usage_counts as _extract_usage_counts_helper,
+    )
+    from .provider_completions import (
+        _normalize_google_base_url as _normalize_google_base_url_helper,
     )
     from .tray import TrayConfig, run_tray
 except ImportError:  # pragma: no cover - direct script execution fallback
@@ -222,15 +225,18 @@ except ImportError:  # pragma: no cover - direct script execution fallback
         _extract_anthropic_tool_calls,
         _extract_completion_tool_calls,
         _extract_json_object,
-        _extract_usage_counts as _extract_usage_counts_helper,
         _first_message_content,
-        _normalize_google_base_url as _normalize_google_base_url_helper,
         _normalize_ollama_host_to_base_url,
         _normalize_response_format,
         _normalize_structured_content,
-        _parse_tool_arguments,
         _to_anthropic_payload_messages,
         _to_anthropic_tools,
+    )
+    from provider_completions import (
+        _extract_usage_counts as _extract_usage_counts_helper,
+    )
+    from provider_completions import (
+        _normalize_google_base_url as _normalize_google_base_url_helper,
     )
     from tray import TrayConfig, run_tray  # type: ignore[no-redef]
 
@@ -273,7 +279,6 @@ try:
     from .config import (
         _DEFAULT_MEMORY_MAX_RECORDS,
         _DEFAULT_THREAD_MAX_ENTRIES,
-        _LITTLE_LISA_TIMEZONE_ENV,
         _LOG_LEVEL_ORDER,
         _THREAD_DIGEST_FILE_NAME,
         _normalize_log_level,
