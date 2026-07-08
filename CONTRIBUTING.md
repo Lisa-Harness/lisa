@@ -31,6 +31,7 @@ uv run little-lisa verify
 - [ ] All non-live tests pass (`pytest -m "not live"`).
 - [ ] `little-lisa verify` exits 0.
 - [ ] New public APIs have docstrings.
+- [ ] Logging best practices followed (module-level logger and appropriate debug/info/warning/error statements).
 - [ ] Breaking changes are noted in the PR description.
 
 ## Package Layout
