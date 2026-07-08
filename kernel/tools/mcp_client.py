@@ -19,6 +19,7 @@ Design — MCP at the edges, Protocols in the middle:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -49,6 +50,19 @@ class MCPClientConfig:
             ``None``, the subprocess inherits the parent environment.
         cwd: Optional working directory for the subprocess.
         tool_policy: Optional allow/deny list for filtering discovered tools.
+        warm: When True, this server is a candidate for the host-owned
+            long-lived pool: it is spawned once at runtime init and kept
+            alive across turns instead of spawn/teardown per turn. The
+            kernel still spawns non-warm (cold) servers per turn as today.
+            Default False (zero behavior change for existing callers).
+        required: Meaningful only when ``warm=True``. When True, startup
+            failure (after bounded retry-with-backoff) raises
+            :class:`MCPConnectionError`, propagating to the caller so a
+            load-bearing warm server fails the turn or startup loudly.
+            When False, startup failure is logged and the pool proceeds
+            without that server's tools. Ignored when ``warm=False``;
+            cold servers keep their existing swallow-and-warn behavior.
+            Default False.
     """
 
     server_id: str
@@ -57,6 +71,8 @@ class MCPClientConfig:
     env: dict[str, str] | None = None
     cwd: str | Path | None = None
     tool_policy: Any = None
+    warm: bool = False
+    required: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,19 +113,60 @@ class MCPToolPool:
     Tool dispatch routes by tool name to the server that owns the tool. If
     two servers expose the same tool name, the first one registered wins and
     a warning is logged.
+
+    Warm vs cold servers (host-owned long-lived pool):
+
+    A config with ``warm=True`` is a candidate for a host-owned pool whose
+    ``start()`` is called once at runtime init and whose ``aclose()`` is
+    called at process exit. The kernel's ``run_turn`` accepts such a pool
+    via ``TurnHooks.mcp_tool_pool`` and reuses it across turns without
+    spawning/tearing down subprocesses per turn. A config with
+    ``warm=False`` (default) is spawned and torn down per turn as before.
+
+    ``required`` (only meaningful with ``warm=True``) designates whether a
+    startup failure is fatal (raise :class:`MCPConnectionError` after
+    bounded retry) or non-fatal (log and proceed without the server's
+    tools). Mid-session crashes of warm servers are recovered
+    event-drivenly via :meth:`restart_warm` from :meth:`call_tool` /
+    :meth:`list_tools`, not via a background scheduler.
     """
+
+    # Retry-with-backoff for warm server (re)starts. Bounded so a
+    # permanently-broken required server fails fast rather than hanging.
+    _WARM_STARTUP_ATTEMPTS = 3
+    _WARM_BACKOFF_SECONDS = (0.2, 0.4, 0.8)
 
     def __init__(self, configs: list[MCPClientConfig]) -> None:
         self._configs = list(configs)
+        self._warm_configs = [c for c in self._configs if c.warm]
+        self._cold_configs = [c for c in self._configs if not c.warm]
         self._sessions: dict[str, Any] = {}
         self._exit_stack: AsyncExitStack | None = None
         self._tool_index: dict[str, tuple[str, MCPToolSpec]] = {}
         self._tools: list[MCPToolSpec] = []
         self._started = False
+        self._warm_failed: set[str] = set()
+        """Server ids of warm servers whose (re)start failed non-fatally."""
 
     @property
     def configs(self) -> list[MCPClientConfig]:
         return list(self._configs)
+
+    @property
+    def warm_configs(self) -> list[MCPClientConfig]:
+        return list(self._warm_configs)
+
+    @property
+    def cold_configs(self) -> list[MCPClientConfig]:
+        return list(self._cold_configs)
+
+    def warm_server_ids(self) -> list[str]:
+        """Return ids of warm servers currently connected."""
+        return [c.server_id for c in self._warm_configs if c.server_id in self._sessions]
+
+    def warm_failed_ids(self) -> list[str]:
+        """Return ids of warm servers that failed (re)start and are down."""
+        return sorted(self._warm_failed)
 
     async def __aenter__(self) -> MCPToolPool:
         await self.start()
@@ -119,14 +176,27 @@ class MCPToolPool:
         await self.aclose()
 
     async def start(self) -> None:
-        """Spawn and initialize every configured MCP server."""
+        """Spawn and initialize every configured MCP server.
+
+        Warm servers (``config.warm=True``) are (re)started with bounded
+        retry-with-backoff. A warm server with ``required=True`` whose
+        retries are exhausted raises :class:`MCPConnectionError`; a
+        non-required warm server is logged and skipped. Cold servers
+        keep the original swallow-and-warn behavior.
+        """
 
         if self._started:
             return
         self._started = True
         self._exit_stack = AsyncExitStack()
         await self._exit_stack.__aenter__()
-        for config in self._configs:
+
+        # Warm servers: bounded retry; required failures are fatal.
+        for config in self._warm_configs:
+            await self._connect_warm(config)
+
+        # Cold servers: best-effort, swallow startup errors.
+        for config in self._cold_configs:
             try:
                 await self._connect(config)
             except Exception as exc:  # pylint: disable=broad-except
@@ -137,6 +207,51 @@ class MCPToolPool:
                     exc,
                 )
         await self._refresh_tool_index()
+
+    async def _connect_warm(self, config: MCPClientConfig) -> None:
+        """Connect one warm server with bounded retry-with-backoff.
+
+        On exhaustion: raise :class:`MCPConnectionError` when
+        ``config.required`` is True, else record the server as failed and
+        continue (its tools are simply absent from the catalog).
+        """
+        last_exc: Exception | None = None
+        for attempt in range(self._WARM_STARTUP_ATTEMPTS):
+            try:
+                await self._connect(config)
+                self._warm_failed.discard(config.server_id)
+                return
+            except Exception as exc:  # pylint: disable=broad-except
+                last_exc = exc
+                if attempt < self._WARM_STARTUP_ATTEMPTS - 1:
+                    delay = self._WARM_BACKOFF_SECONDS[min(
+                        attempt, len(self._WARM_BACKOFF_SECONDS) - 1
+                    )]
+                    logger.warning(
+                        "Warm MCP server %r start attempt %d/%d failed: %s: %s; "
+                        "retrying in %.2fs",
+                        config.server_id,
+                        attempt + 1,
+                        self._WARM_STARTUP_ATTEMPTS,
+                        type(exc).__name__,
+                        exc,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+        # Exhausted retries.
+        if config.required:
+            raise MCPConnectionError(
+                f"Required warm MCP server '{config.server_id}' failed to start "
+                f"after {self._WARM_STARTUP_ATTEMPTS} attempts: "
+                f"{type(last_exc).__name__ if last_exc else 'unknown'}: {last_exc}"
+            ) from last_exc
+        logger.warning(
+            "Warm MCP server %r failed to start after %d attempts (non-required); "
+            "proceeding without it.",
+            config.server_id,
+            self._WARM_STARTUP_ATTEMPTS,
+        )
+        self._warm_failed.add(config.server_id)
 
     async def _connect(self, config: MCPClientConfig) -> None:
         from mcp.client.session import ClientSession
@@ -178,6 +293,9 @@ class MCPToolPool:
                     type(exc).__name__,
                     exc,
                 )
+                # Warm server session may have died; attempt a restart.
+                if config.warm:
+                    await self._maybe_restart_warm(config)
                 continue
             server_tools = [
                 MCPToolSpec(
@@ -204,6 +322,53 @@ class MCPToolPool:
                 self._tool_index[spec.name] = (config.server_id, spec)
                 self._tools.append(spec)
 
+    async def refresh_tool_index(self) -> None:
+        """Rebuild the merged tool catalog from connected sessions.
+
+        Public entry point for hosts that change a server's tool surface
+        at runtime (e.g. after installing/uninstalling packs that affect a
+        cold server like ``lisa-operations``). Re-queries every connected
+        session and rebuilds the index.
+        """
+        await self._refresh_tool_index()
+
+    async def restart_warm(self, server_id: str) -> bool:
+        """Re-spawn one warm server after a mid-session crash.
+
+        Returns True if the server is (re)connected after the attempt,
+        False if it remains down. Uses the same bounded retry-with-backoff
+        as :meth:`start`. A non-required warm server that fails is recorded
+        in ``warm_failed_ids()``; a required one raises
+        :class:`MCPConnectionError`.
+        """
+        config = next((c for c in self._warm_configs if c.server_id == server_id), None)
+        if config is None:
+            logger.warning("restart_warm: %r is not a warm server in this pool", server_id)
+            return False
+        # Drop any stale session for this server before retrying.
+        self._sessions.pop(server_id, None)
+        await self._connect_warm(config)
+        return server_id in self._sessions
+
+    async def _maybe_restart_warm(self, config: MCPClientConfig) -> None:
+        """Best-effort restart of a warm server whose session errored.
+
+        Swallows failures for non-required servers; lets required ones raise
+        so the caller can fail the turn loudly.
+        """
+        try:
+            await self.restart_warm(config.server_id)
+        except MCPConnectionError:
+            if config.required:
+                raise
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.debug(
+                "Warm MCP server %r restart attempt failed: %s: %s",
+                config.server_id,
+                type(exc).__name__,
+                exc,
+            )
+
     async def list_tools(self) -> list[MCPToolSpec]:
         """Return the merged tool catalog from all connected servers."""
 
@@ -224,16 +389,29 @@ class MCPToolPool:
                 is_error=True,
             )
         server_id, _spec = entry
+        config = next((c for c in self._configs if c.server_id == server_id), None)
         session = self._sessions.get(server_id)
         if session is None:
-            return MCPToolResult(
-                tool_id=tool_id,
-                output_text=f"MCP server '{server_id}' for tool '{tool_id}' is not connected.",
-                is_error=True,
-            )
+            # Warm server may have crashed; try one restart before failing.
+            if config is not None and config.warm:
+                await self._maybe_restart_warm(config)
+                session = self._sessions.get(server_id)
+            if session is None:
+                return MCPToolResult(
+                    tool_id=tool_id,
+                    output_text=f"MCP server '{server_id}' for tool '{tool_id}' is not connected.",
+                    is_error=True,
+                )
         try:
             result = await session.call_tool(tool_id, arguments=arguments)
         except Exception as exc:  # pylint: disable=broad-except
+            # Session may have died mid-call; attempt one warm restart.
+            if config is not None and config.warm:
+                try:
+                    await self.restart_warm(server_id)
+                except MCPConnectionError:
+                    if config.required:
+                        raise
             return MCPToolResult(
                 tool_id=tool_id,
                 output_text=f"MCP tool '{tool_id}' failed: {type(exc).__name__}: {exc}",

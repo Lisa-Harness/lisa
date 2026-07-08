@@ -246,6 +246,21 @@ class TurnHooks:
     ``schema_translator`` converts to whatever the provider expects.
     """
 
+    mcp_tool_pool: Any = None
+    """Optional host-owned long-lived :class:`MCPToolPool`.
+
+    When set, ``run_turn`` reuses this pool across turns instead of
+    spawning/tearing down a per-turn pool. The host owns the lifecycle:
+    it calls ``await pool.start()`` once at runtime init and
+    ``await pool.aclose()`` at process exit. This is the eager-start /
+    warm-server path — ``mcp_tool_servers`` should then contain only the
+    cold (per-turn) configs; the warm configs live inside this pool.
+
+    When ``None`` (default), ``run_turn`` builds a per-turn pool from
+    ``mcp_tool_servers`` as before — existing hosts and tests keep
+    working unchanged.
+    """
+
     # ── Operation dispatch ────────────────────────────────────────────────
     execute_operation: Callable[..., Awaitable[OperationResult]] | None = None
     """Execute a named operation with an OperationExecutionContext. Default:
@@ -584,6 +599,31 @@ async def run_turn(
     # The kernel speaks MCP tool schema internally. Tool discovery and
     # dispatch go through MCPToolPool; provider-specific schemas are
     # translated at the provider edge by schema_translator.
+    #
+    # When the host provides a long-lived warm pool (``hooks.mcp_tool_pool``),
+    # reuse it across turns without spawning/tearing down subprocesses per
+    # turn. The host owns that pool's lifecycle (start at init, aclose at
+    # exit). Otherwise fall back to a per-turn pool built from
+    # ``hooks.mcp_tool_servers`` (cold servers only when a warm pool is
+    # present, or all servers when no warm pool is set).
+    host_pool = hooks.mcp_tool_pool
+    if host_pool is not None:
+        return await _run_turn_inner(
+            mode_id=mode_id,
+            query=query,
+            hooks=hooks,
+            pool=host_pool,
+            resolve_model=resolve_model,
+            complete=complete,
+            assemble_system=assemble_system,
+            assemble_user=assemble_user,
+            exec_op=exec_op,
+            on_complete=on_complete,
+            mode_config=mode_config,
+            max_tool_iterations=max_tool_iterations,
+            preferred_model_id=preferred_model_id,
+            logger_override=logger_override,
+        )
     pool = MCPToolPool(hooks.mcp_tool_servers)
     await pool.start()
     try:

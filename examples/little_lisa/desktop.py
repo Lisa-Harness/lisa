@@ -413,9 +413,20 @@ def run_desktop_server(
     port: int,
     token: str,
     open_browser: bool,
+    on_startup: Any = None,
+    on_cleanup: Any = None,
 ) -> None:
-    """Run the local desktop web host until interrupted."""
+    """Run the local desktop web host until interrupted.
 
+    ``on_startup`` (when provided) is awaited during the aiohttp
+    ``on_startup`` signal — used to eagerly start a warm MCP server pool
+    inside the server's own event loop (anyio cancel scopes must be
+    entered and exited in the same loop).
+
+    ``on_cleanup`` (when provided) is awaited during the aiohttp
+    ``on_cleanup`` signal (on server shutdown) so hosts can release
+    long-lived resources such as a warm MCP server pool.
+    """
     app = _build_desktop_app(callbacks=callbacks, token=token)
     launch_url = desktop_url(host=host, port=port, token=token)
     logger.info("starting desktop server on %s:%d", host, port)
@@ -426,5 +437,19 @@ def run_desktop_server(
             webbrowser.open(launch_url)
 
         app.on_startup.append(_open_browser_on_startup)
+
+    if on_startup is not None:
+
+        async def _startup(_app: web.Application) -> None:
+            await on_startup()
+
+        app.on_startup.append(_startup)
+
+    if on_cleanup is not None:
+
+        async def _cleanup(_app: web.Application) -> None:
+            await on_cleanup()
+
+        app.on_cleanup.append(_cleanup)
 
     web.run_app(app, host=host, port=port, print=None)

@@ -140,6 +140,10 @@ from kernel.token_usage import (  # noqa: E402
     TokenUsageTelemetryHandler,
     build_token_usage_event,
 )
+from kernel.tools.mcp_client import (  # noqa: E402
+    MCPConnectionError,
+    MCPToolPool,
+)
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn  # noqa: E402
 from lisa_sdk.lisa_search.web_search import is_configured as web_search_is_configured  # noqa: E402
 from lisa_sdk.lisa_search.web_search import search as web_search  # noqa: E402
@@ -3261,7 +3265,30 @@ def _build_mcp_tool_servers() -> list[Any]:
     All first-party servers use ``VENV_BIN`` runtime — they run as native
     console_scripts entry points (``.venv/Scripts/lisa-*.exe``) with zero
     subprocess overhead. No ``uv`` resolution needed.
+
+    Warm vs cold: ``lisa-content`` and ``lisa-context`` are marked
+    ``warm=True, required=True`` so the host owns a long-lived pool for
+    them (spawned once at init, reused across turns). ``lisa-operations``
+    is intentionally NOT warmed — its tool surface changes when packs are
+    installed/uninstalled and a warm pool's cached tool index would go
+    stale. The other servers stay cold (per-turn spawn/teardown).
     """
+    warm_configs, cold_configs = _compile_mcp_configs()
+    return [*warm_configs, *cold_configs]
+
+
+def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
+    """Compile first-party MCP servers and split them into (warm, cold).
+
+    Warm configs get ``warm=True, required=True`` applied post-compile via
+    ``dataclasses.replace`` — the launch policy layer (``MCPServerSpec`` /
+    ``MCPServerRegistry``) stays pure and runtime-agnostic. Only
+    ``lisa-content`` and ``lisa-context`` are warm; both are load-bearing
+    for every turn, so they are ``required=True`` (startup failure fails
+    the turn loudly after bounded retry).
+    """
+    from dataclasses import replace  # noqa: PLC0415
+
     from kernel.mcp_launch.compiler import compile_registry  # noqa: PLC0415
     from kernel.mcp_launch.policy import (  # noqa: PLC0415
         EnvPolicy,
@@ -3307,7 +3334,11 @@ def _build_mcp_tool_servers() -> list[Any]:
             )
         )
 
-    return compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
+    compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
+    warm_ids = {"lisa-context", "lisa-content"}
+    warm = [replace(c, warm=True, required=True) for c in compiled if c.server_id in warm_ids]
+    cold = [c for c in compiled if c.server_id not in warm_ids]
+    return warm, cold
 
 
 def _build_workshop_context_bundle(
@@ -3456,7 +3487,8 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
     return TurnHooks(
         resolve_model=provider.resolve_model_hook,
         complete=provider.complete,
-        mcp_tool_servers=_build_mcp_tool_servers(),
+        mcp_tool_pool=_runtime_warm_pool(),
+        mcp_tool_servers=_runtime_cold_mcp_configs(),
         execute_operation=_execute_operation,
         assemble_system_prompt=_assemble_system_prompt,
         assemble_user_context=_assemble_dynamic_user_context,
@@ -3471,6 +3503,34 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         state_provider=_state_provider,
         build_workshop_context_bundle_fn=_build_workshop_context_bundle,
     )
+
+
+def _runtime_warm_pool() -> Any:
+    """Return the host-owned warm MCP pool, or None when not initialized.
+
+    When None (e.g. tests calling ``_build_turn_hooks`` without
+    ``_initialize_runtime``), ``run_turn`` falls back to building a
+    per-turn pool from ``mcp_tool_servers``. To preserve that fallback
+    shape in the no-pool case, ``_runtime_cold_mcp_configs`` returns
+    the full server list so existing tests keep working.
+    """
+    return _RUNTIME_STATE.get("mcp_tool_pool")
+
+
+def _runtime_cold_mcp_configs() -> list[Any]:
+    """Return cold MCP configs for the per-turn fallback pool.
+
+    When a warm pool is active, only cold servers are returned (warm
+    servers live in the pool). When no warm pool is active, the full
+    server list is returned so ``run_turn``'s per-turn fallback can
+    spawn everything — preserving the pre-warm-pool behavior for tests
+    and minimal hosts.
+    """
+    pool = _RUNTIME_STATE.get("mcp_tool_pool")
+    cold = _RUNTIME_STATE.get("mcp_cold_configs")
+    if pool is not None and cold is not None:
+        return list(cold)
+    return _build_mcp_tool_servers()
 
 
 async def _run_explicit_slice_command(*, message: str) -> str:
@@ -4018,6 +4078,8 @@ def _run_desktop_host(
         port=port,
         token=token,
         open_browser=open_browser,
+        on_startup=astart_warm_mcp_pool,
+        on_cleanup=aclose_warm_mcp_pool,
     )
 
 
@@ -4117,6 +4179,7 @@ def _run_default_no_args_mode(
 
 async def _run_repl() -> None:
     """Run the interactive REPL loop."""
+    await astart_warm_mcp_pool()
     _print_startup_banner()
     console.print(
         Panel(
@@ -4129,7 +4192,10 @@ async def _run_repl() -> None:
     prompt_session = _build_repl_prompt_session()
     if prompt_session is None:
         console.print(f"[{STYLE_TEXT_MUTED}]prompt_toolkit unavailable; using basic input mode.[/]")
-    await _run_repl_loop(prompt_session)
+    try:
+        await _run_repl_loop(prompt_session)
+    finally:
+        await aclose_warm_mcp_pool()
 
 
 async def _run_repl_loop(prompt_session: PromptSession[str] | None) -> None:
@@ -4506,12 +4572,84 @@ def _initialize_runtime(
     _init_timeout_and_timezone(timeout_profile=timeout_profile, timezone=timezone)
     _init_state_snapshot(state_snapshot_path=state_snapshot_path)
     _init_streaming(streaming=streaming)
+    _build_warm_mcp_pool()
     _log_runtime_initialized(
         normalized_user=normalized_user,
         context_ref=context_ref,
         context_active=context_active,
     )
     reload_model_manifest()
+
+
+def _build_warm_mcp_pool() -> None:
+    """Build (but do NOT start) the long-lived warm MCP server pool.
+
+    ``lisa-content`` and ``lisa-context`` are compiled as warm configs and
+    collected into an :class:`MCPToolPool` here. The pool is **started**
+    later, inside the host's long-lived event loop, by
+    :func:`astart_warm_mcp_pool`.
+
+    Why split build and start: ``stdio_client`` (an anyio async context
+    manager) binds its cancel scope to the task/loop that entered it. If
+    ``start()`` ran here inside a throwaway ``asyncio.run`` loop, the
+    pool's sessions would belong to a dead loop, and ``aclose()`` in the
+    REPL's loop would raise
+    ``RuntimeError: Attempted to exit cancel scope in a different task
+    than it was entered in``. Starting and closing in the same loop is
+    required.
+
+    Cold server configs are also compiled here and stashed on runtime
+    state for the per-turn fallback pool.
+    """
+    warm_configs, cold_configs = _compile_mcp_configs()
+    pool = MCPToolPool(warm_configs)
+    _RUNTIME_STATE["mcp_tool_pool"] = pool
+    _RUNTIME_STATE["mcp_cold_configs"] = cold_configs
+
+
+async def astart_warm_mcp_pool() -> None:
+    """Eagerly start the warm MCP pool inside the host's event loop.
+
+    Called at the top of each async entry point (REPL, ``once``, desktop).
+    A required warm server that cannot start after bounded retry raises
+    :class:`MCPConnectionError`; the caller surfaces it as a startup
+    error. Idempotent: a no-op when the pool is already started.
+    """
+    pool = _RUNTIME_STATE.get("mcp_tool_pool")
+    if pool is None:
+        return
+    try:
+        await pool.start()
+    except MCPConnectionError as exc:
+        _render_runtime_error(exc, title="MCP Startup Error")
+        raise typer.Exit(code=2) from exc
+    _append_log_event(
+        level="info",
+        event="mcp.warm_pool.started",
+        payload={
+            "warm_server_ids": pool.warm_server_ids(),
+            "warm_failed_ids": pool.warm_failed_ids(),
+            "cold_server_ids": [
+                c.server_id for c in (_RUNTIME_STATE.get("mcp_cold_configs") or [])
+            ],
+        },
+    )
+
+
+async def aclose_warm_mcp_pool() -> None:
+    """Asynchronously close the warm MCP pool at process exit.
+
+    Called from the CLI REPL finally block and the desktop shutdown hook.
+    Safe to call when no pool exists or the pool is already closed.
+    """
+    pool = _RUNTIME_STATE.pop("mcp_tool_pool", None)
+    _RUNTIME_STATE.pop("mcp_cold_configs", None)
+    if pool is None:
+        return
+    try:
+        await pool.aclose()
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.debug("warm MCP pool close failed: %s: %s", type(exc).__name__, exc)
 
 
 def _init_core(*, debug: bool, log_level: str) -> None:
@@ -5483,7 +5621,16 @@ def _once_command(
         state_snapshot_path=state_snapshot,
         streaming=streaming,
     )
-    asyncio.run(_run_once(message))
+    asyncio.run(_run_once_with_teardown(message))
+
+
+async def _run_once_with_teardown(message: str) -> None:
+    """Run one turn, then close the warm MCP pool."""
+    await astart_warm_mcp_pool()
+    try:
+        await _run_once(message)
+    finally:
+        await aclose_warm_mcp_pool()
 
 
 def main() -> None:

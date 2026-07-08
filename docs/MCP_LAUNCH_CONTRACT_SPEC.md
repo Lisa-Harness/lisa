@@ -685,6 +685,45 @@ Env vars (behavioral):
 Each adapter implements the corresponding Protocol by calling MCP tools through
 a persistent or per-call MCP session.
 
+### Warm vs cold servers (pool lifecycle)
+
+`MCPClientConfig` carries two runtime fields that govern pool lifecycle:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `warm` | `False` | When `True`, this server is a candidate for the host-owned long-lived pool: spawned once at runtime init and kept alive across turns (no per-turn spawn/teardown). Cold servers (`False`) keep the original per-turn spawn/teardown lifecycle. |
+| `required` | `False` | Meaningful only with `warm=True`. When `True`, startup failure after bounded retry-with-backoff raises `MCPConnectionError` (propagates, fails the turn or startup loudly). When `False`, startup failure is logged and the pool proceeds without that server's tools. Ignored when `warm=False`. |
+
+These are **runtime** fields, applied by the host post-`compile_registry` via
+`dataclasses.replace`. The launch policy layer (`MCPServerSpec` /
+`MCPServerRegistry`) stays pure and runtime-agnostic — it does not know about
+warm-ness.
+
+The host owns the warm pool lifecycle:
+
+1. At runtime init: build warm configs, create `MCPToolPool(warm_configs)`,
+   `await pool.start()`, stash on host state.
+2. Pass the started pool through `TurnHooks.mcp_tool_pool`; pass cold configs
+   through `TurnHooks.mcp_tool_servers` (the per-turn fallback).
+3. `run_turn` reuses the host pool directly (no `start()`/`aclose()` on it).
+4. At process exit (CLI REPL finally / desktop `on_cleanup` / tray child exit):
+   `await pool.aclose()`.
+
+Mid-session crashes of warm servers are recovered event-drivenly via
+`MCPToolPool.restart_warm(server_id)` from `call_tool` / `list_tools` when a
+session is missing or errors — not via a background scheduler. This respects
+the "no cron in lightweight hosts" rule: eager-start is a one-time startup
+cost; crash-restart is event-driven.
+
+Non-warm designation: `lisa-operations` is intentionally NOT warmed. It
+exposes every operation as a tool, so its tool surface changes when packs are
+installed/uninstalled and a warm pool's cached `_tool_index` would go stale.
+`lisa-content` and `lisa-context` have stable tool surfaces and are warmed.
+
+`MCPToolPool.refresh_tool_index()` is the public entry point for hosts that
+change a server's tool surface at runtime (e.g. after installing/uninstalling
+packs) to rebuild the merged catalog without restarting the pool.
+
 ### `kernel/context/mcp_guard.py`
 
 ```python
