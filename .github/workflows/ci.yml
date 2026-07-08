@@ -30,11 +30,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
+      - name: Format check (ruff)
+        run: uv run ruff format --check kernel lisa_sdk sdk_extensions sdk_packs examples
+
       - name: Lint (ruff)
         run: uv run ruff check kernel lisa_sdk sdk_extensions sdk_packs examples
 
-      - name: Type check (mypy)
-        run: uv run mypy kernel lisa_sdk
+      - name: Type check (mypy — all public packages)
+        run: uv run mypy kernel lisa_sdk sdk_extensions sdk_packs
 
       - name: Unit tests (no live)
         run: uv run pytest -m "not live" --tb=short -v

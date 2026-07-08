@@ -56,5 +56,17 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "PL"]
+select = ["E", "F", "I", "UP", "B", "SIM", "PL", "C90", "RET", "RUF"]
 ignore = ["PLR0913"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-returns = 6
+max-branches = 12
+max-statements = 50
+max-locals = 15
+
+[tool.ruff.format]
+line-ending = "lf"

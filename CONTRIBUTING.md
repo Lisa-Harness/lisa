@@ -11,28 +11,40 @@ Thank you for your interest in contributing.
 
 ## Development Loop
 
+The local loop and CI use the same commands in the same order. There is no
+warn-only stage — any failure blocks. Run all steps from the repo root.
+
 ```powershell
-# Lint
+# 1. Format check (deterministic; idempotent)
+uv run ruff format --check kernel lisa_sdk sdk_extensions sdk_packs examples
+
+# 2. Lint (complexity + style + import ordering)
 uv run ruff check kernel lisa_sdk sdk_extensions sdk_packs examples
 
-# Type check
-uv run mypy kernel lisa_sdk
+# 3. Type check (strict, all public packages)
+uv run mypy kernel lisa_sdk sdk_extensions sdk_packs
 
-# Run tests (no live API calls)
+# 4. Tests (no live API calls)
 uv run pytest -m "not live" --tb=short -v
 
-# Run verification smoke test
+# 5. Smoke test
 uv run little-lisa verify
 ```
 
 ## Pull Request Checklist
 
-- [ ] Code passes `ruff check` and `mypy` with no new errors.
+- [ ] `ruff format --check` passes for touched files.
+- [ ] `ruff check` passes with zero new violations for touched files.
+- [ ] `mypy` passes with zero new errors for touched packages.
 - [ ] All non-live tests pass (`pytest -m "not live"`).
 - [ ] `little-lisa verify` exits 0.
-- [ ] New public APIs have docstrings.
-- [ ] Logging best practices followed (module-level logger and appropriate debug/info/warning/error statements).
-- [ ] Breaking changes are noted in the PR description.
+- [ ] New public APIs have docstrings (module, class, function/method).
+- [ ] New or materially changed public callables have co-maintained tests.
+- [ ] No new `# noqa` without a specific rule code and one-line justification.
+- [ ] No `dict[str, Any]` state bags introduced — use Pydantic model or dataclass.
+- [ ] No broad `except Exception:` outside top-level process boundaries.
+- [ ] No nested closures capturing mutable parent state — flatten to module level.
+- [ ] Breaking changes are noted in the PR description and `CHANGELOG.md`.
 
 ## Package Layout
 

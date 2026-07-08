@@ -10,7 +10,7 @@ applyTo: "**/*"
 
 When an agent completes an implementation change (code, docs, or config) and the required verification for that change is green or explicitly baseline-qualified, **commit the change immediately** — do not wait for the user to request a commit, and do not batch multiple unrelated changes into one commit.
 
-- "Implementation is complete" means the intended behavior is in place, docstrings/tests required by `python-development.md` are added, and `ruff check`, `mypy`, and `pytest` for the touched files are green (or the failure is pre-existing and noted in the commit message).
+- "Implementation is complete" means the intended behavior is in place, docstrings/tests required by `python-development.md` are added, and the full verification loop is green for the touched files: `ruff format --check`, `ruff check`, `mypy` (strict, all public packages), and `pytest -m "not live"`. There is no warn-only stage — any violation blocks the commit. Pre-existing failures in untouched files are noted in the commit message but do not block.
 - Use one normal commit per shippable slice. Do not amend or rewrite history after pushing.
 - If later review or verification finds issues after the commit exists, create `fixup!` commits targeting the affected commit instead of amending.
 
