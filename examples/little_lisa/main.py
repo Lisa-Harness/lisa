@@ -62,8 +62,6 @@ from pathlib import Path
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-logger = logging.getLogger(__name__)
-
 import httpx
 import typer
 from dotenv import load_dotenv
@@ -76,6 +74,8 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
+
+logger = logging.getLogger(__name__)
 
 try:
     from prompt_toolkit import PromptSession
