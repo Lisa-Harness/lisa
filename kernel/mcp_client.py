@@ -189,25 +189,29 @@ class MCPHttpMemoryClient:
         if tool_names:
             self._tool_names.update(tool_names)
 
-    async def _session(self) -> tuple[Any, Any]:
-        """Open a streamable-HTTP MCP session to the endpoint.
+    def _session(self):
+        """Async context manager yielding an initialized streamable-HTTP MCP session.
 
-        Returns ``(session, stack)`` so the caller can drive the session and
-        then close everything via ``stack.aclose()`` in a ``finally`` block.
-        The stack bundles the streamable_http_client + ClientSession lifetimes.
+        The streamable_http_client + ClientSession lifetimes must live in one
+        cancel scope; returning a (session, stack) tuple and closing it later
+        breaks anyio task/scope tracking and cancels the session mid-call. So
+        this returns a proper async context manager — callers use
+        ``async with self._session() as session:`` and the full lifecycle is
+        scoped to the ``async with`` block.
         """
-        from contextlib import AsyncExitStack
+        from contextlib import asynccontextmanager
 
         from mcp.client.session import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 
-        stack = AsyncExitStack()
-        read, write, _ = await stack.enter_async_context(
-            streamablehttp_client(self._url, headers=self._headers)
-        )
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        return session, stack
+        @asynccontextmanager
+        async def _cm():
+            async with streamablehttp_client(self._url, headers=self._headers) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    yield session
+
+        return _cm()
 
     async def record_memory(self, request: MemoryWriteRequest | Any) -> MemoryRecord:
         write = (
@@ -215,8 +219,7 @@ class MCPHttpMemoryClient:
             if isinstance(request, MemoryWriteRequest)
             else MemoryWriteRequest.model_validate(request)
         )
-        session, stack = await self._session()
-        try:
+        async with self._session() as session:
             await session.call_tool(
                 self._tool_names["add"],
                 arguments={
@@ -235,8 +238,6 @@ class MCPHttpMemoryClient:
                     },
                 },
             )
-        finally:
-            await stack.aclose()
         # The server stores its own IDs; echo a MemoryRecord back so the
         # kernel's downstream typing (MemoryStore Protocol) does not change.
         return MemoryRecord(
@@ -265,8 +266,7 @@ class MCPHttpMemoryClient:
     async def recall(self, query: str, **kwargs: Any) -> str:
         user_slug = str(kwargs.get("user_slug") or "").strip() or "default"
         limit = int(kwargs.get("limit", 5) or 5)
-        session, stack = await self._session()
-        try:
+        async with self._session() as session:
             result = await session.call_tool(
                 self._tool_names["search"],
                 arguments={
@@ -275,8 +275,6 @@ class MCPHttpMemoryClient:
                     "limit": limit,
                 },
             )
-        finally:
-            await stack.aclose()
         if result.content and len(result.content) > 0:
             return result.content[0].text
         return ""
@@ -290,14 +288,11 @@ class MCPHttpMemoryClient:
         surface_id: str = "",
         limit: int = 20,
     ) -> list[MemoryRecord]:
-        session, stack = await self._session()
-        try:
+        async with self._session() as session:
             result = await session.call_tool(
                 self._tool_names["list"],
                 arguments={"user_id": user_slug, "limit": limit},
             )
-        finally:
-            await stack.aclose()
         if not (result.content and len(result.content) > 0):
             return []
         import json as _json
