@@ -11,7 +11,7 @@ import logging
 
 from mcp.server.fastmcp import FastMCP
 
-from kernel import web_search as _web_search
+from lisa_sdk.lisa_search import web_search as _web_search
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def main() -> None:
     ``WEB_SEARCH_API_KEY`` stays in env (behavioral config); ``--data-dir``
     is required for consistency but not used for path resolution today.
     """
-    from lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
+    from lisa_sdk.lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
 
     parser = build_parser("lisa-search")
     args = parser.parse_args()

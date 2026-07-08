@@ -97,7 +97,7 @@ def main() -> None:
     Parses the standard CLI contract via the shared argparse helper.
     ``--readonly`` is not applicable (content server is read-only by design).
     """
-    from lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
+    from lisa_sdk.lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
 
     parser = build_parser("lisa-content")
     args = parser.parse_args()

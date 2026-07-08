@@ -22,8 +22,17 @@ from typing import Any, Protocol, runtime_checkable
 
 from mcp.server.fastmcp import FastMCP
 
-from lisa_context.context_broker import render_context_packet_markdown, select_ranked_context
-from kernel.models import ContextBrokerRequest, ContextBrokerResponse, MemoryRecord, MemoryWriteRequest, UnifiedState
+from kernel.models import (
+    ContextBrokerRequest,
+    ContextBrokerResponse,
+    MemoryRecord,
+    MemoryWriteRequest,
+    UnifiedState,
+)
+from lisa_sdk.lisa_context.context_broker import (
+    render_context_packet_markdown,
+    select_ranked_context,
+)
 
 __all__ = ["mcp", "main", "get_store"]
 
@@ -416,7 +425,7 @@ def main() -> None:
     ``memory.db`` from ``--data-dir``, initializes the store, and runs the
     server. No env-var path fallback.
     """
-    from lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
+    from lisa_sdk.lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
 
     parser = build_parser("lisa-context", supports_readonly=True)
     args = parser.parse_args()

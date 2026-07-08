@@ -16,14 +16,12 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from kernel.models import SurfaceContext, SurfSessionState
-from kernel.surf_workflow import (
-    build_surf_session_id,
+from kernel.models import SurfaceContext
+from lisa_sdk.lisa_surf.surf_workflow import (
     build_surf_session_summary,
     create_surf_session,
     delete_surf_session,
     load_surf_session,
-    save_surf_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,7 +126,7 @@ def main() -> None:
     path config is needed today, but ``--data-dir`` is required for
     consistency across all first-party servers.
     """
-    from lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
+    from lisa_sdk.lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
 
     parser = build_parser("lisa-surf")
     args = parser.parse_args()

@@ -20,7 +20,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from kernel.models import SurfSessionState, UnifiedState
+from kernel.models import UnifiedState
+from lisa_sdk.models import SurfSessionState
 
 logger = logging.getLogger(__name__)
 
@@ -357,7 +358,7 @@ def main() -> None:
     Parses the standard CLI contract via the shared argparse helper.
     ``--readonly`` disables all write tools.
     """
-    from lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
+    from lisa_sdk.lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
 
     parser = build_parser("lisa-storage", supports_readonly=True)
     args = parser.parse_args()

@@ -17,8 +17,8 @@ from datetime import UTC, datetime
 
 import httpx
 
-from kernel.config import settings
-from kernel.models import WebSearchResponse, WebSearchResult
+from lisa_sdk.models import WebSearchResponse, WebSearchResult
+from lisa_sdk.config import settings
 
 __all__ = [
     "is_configured",

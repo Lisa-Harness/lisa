@@ -38,7 +38,7 @@ def context_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     data_dir.mkdir(parents=True, exist_ok=True)
     # Initialize the module-level store from the resolved data directory.
     # The server derives memory.db from --data-dir; no env-var fallback.
-    from lisa_context import server as ctx_server
+    from lisa_sdk.lisa_context import server as ctx_server
 
     ctx_server.init_store(data_dir)
     return data_dir / "memory.db"
@@ -46,7 +46,7 @@ def context_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.mark.asyncio
 async def test_context_add_memory(context_env: Path) -> None:
-    from lisa_context.server import mcp
+    from lisa_sdk.lisa_context.server import mcp
 
     result = await mcp.call_tool(
         "add_memory",
@@ -57,7 +57,7 @@ async def test_context_add_memory(context_env: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_context_search_memory(context_env: Path) -> None:
-    from lisa_context.server import mcp
+    from lisa_sdk.lisa_context.server import mcp
 
     await mcp.call_tool(
         "add_memory",
@@ -72,7 +72,7 @@ async def test_context_search_memory(context_env: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_context_search_no_match(context_env: Path) -> None:
-    from lisa_context.server import mcp
+    from lisa_sdk.lisa_context.server import mcp
 
     result = await mcp.call_tool(
         "search_memory",
@@ -83,7 +83,7 @@ async def test_context_search_no_match(context_env: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_context_list_memories_json(context_env: Path) -> None:
-    from lisa_context.server import mcp
+    from lisa_sdk.lisa_context.server import mcp
 
     await mcp.call_tool(
         "add_memory",
@@ -101,7 +101,7 @@ async def test_context_list_memories_json(context_env: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_context_get_surface_context(context_env: Path) -> None:
-    from lisa_context.server import mcp
+    from lisa_sdk.lisa_context.server import mcp
 
     await mcp.call_tool(
         "add_memory",
@@ -116,7 +116,7 @@ async def test_context_get_surface_context(context_env: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_context_lists_four_tools() -> None:
-    from lisa_context.server import mcp
+    from lisa_sdk.lisa_context.server import mcp
 
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
@@ -137,7 +137,7 @@ def operations_setup(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_operations_build_tool_catalog(operations_setup: None) -> None:
-    from lisa_operations.server import build_tool_catalog
+    from lisa_sdk.lisa_operations.server import build_tool_catalog
 
     catalog = build_tool_catalog()
     assert isinstance(catalog, dict)
@@ -150,7 +150,7 @@ def test_operations_build_tool_catalog(operations_setup: None) -> None:
 
 @pytest.mark.asyncio
 async def test_operations_registers_operation_tools(operations_setup: None) -> None:
-    from lisa_operations.server import mcp
+    from lisa_sdk.lisa_operations.server import mcp
     from kernel.operations.registry import get_operation_catalog
 
     tools = await mcp.list_tools()
@@ -162,7 +162,7 @@ async def test_operations_registers_operation_tools(operations_setup: None) -> N
 
 @pytest.mark.asyncio
 async def test_operations_call_unknown_tool_fails(operations_setup: None) -> None:
-    from lisa_operations.server import mcp
+    from lisa_sdk.lisa_operations.server import mcp
 
     with pytest.raises(Exception):
         await mcp.call_tool("nonexistent_op_xyz", {})
@@ -170,7 +170,7 @@ async def test_operations_call_unknown_tool_fails(operations_setup: None) -> Non
 
 @pytest.mark.asyncio
 async def test_operations_call_registered_operation(operations_setup: None) -> None:
-    from lisa_operations.server import mcp
+    from lisa_sdk.lisa_operations.server import mcp
     from kernel.operations.registry import get_operation_catalog
 
     operation_id = next(iter(get_operation_catalog().keys()))
@@ -185,8 +185,8 @@ async def test_operations_call_registered_operation(operations_setup: None) -> N
 
 @pytest.mark.asyncio
 async def test_search_web_search_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    from kernel import web_search as ws
-    from lisa_search import server as search_server
+    from lisa_sdk.lisa_search import web_search as ws
+    from lisa_sdk.lisa_search import server as search_server
 
     monkeypatch.setattr(ws, "is_configured", lambda: False)
 
@@ -195,7 +195,7 @@ async def test_search_web_search_not_configured(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(ws, "search", _raise)
     monkeypatch.setattr(search_server, "_web_search", ws)
-    from lisa_search.server import mcp
+    from lisa_sdk.lisa_search.server import mcp
 
     result = await mcp.call_tool("web_search", {"query": "test"})
     assert "not configured" in _tool_text(result)
@@ -203,12 +203,12 @@ async def test_search_web_search_not_configured(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.asyncio
 async def test_search_configured_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    from kernel import web_search as ws
-    from lisa_search import server as search_server
+    from lisa_sdk.lisa_search import web_search as ws
+    from lisa_sdk.lisa_search import server as search_server
 
     monkeypatch.setattr(ws, "is_configured", lambda: True)
     monkeypatch.setattr(search_server, "_web_search", ws)
-    from lisa_search.server import mcp
+    from lisa_sdk.lisa_search.server import mcp
 
     result = await mcp.call_tool("web_search_configured", {})
     parsed = json.loads(_tool_text(result))
@@ -216,7 +216,7 @@ async def test_search_configured_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_search_lists_tools() -> None:
-    from lisa_search.server import mcp
+    from lisa_sdk.lisa_search.server import mcp
 
     tools = asyncio_get_tools(mcp)
     names = {t.name for t in tools}
@@ -228,7 +228,7 @@ def test_search_lists_tools() -> None:
 
 @pytest.mark.asyncio
 async def test_surf_url_creates_session() -> None:
-    from lisa_surf.server import mcp
+    from lisa_sdk.lisa_surf.server import mcp
 
     result = await mcp.call_tool(
         "surf_url",
@@ -246,7 +246,7 @@ async def test_surf_url_creates_session() -> None:
 
 @pytest.mark.asyncio
 async def test_surf_get_session_no_blob_io() -> None:
-    from lisa_surf.server import mcp
+    from lisa_sdk.lisa_surf.server import mcp
 
     result = await mcp.call_tool(
         "get_session_state",
@@ -258,7 +258,7 @@ async def test_surf_get_session_no_blob_io() -> None:
 
 @pytest.mark.asyncio
 async def test_surf_flush_session_no_blob_io() -> None:
-    from lisa_surf.server import mcp
+    from lisa_sdk.lisa_surf.server import mcp
 
     result = await mcp.call_tool(
         "flush_session",
@@ -269,7 +269,7 @@ async def test_surf_flush_session_no_blob_io() -> None:
 
 
 def test_surf_lists_three_tools() -> None:
-    from lisa_surf.server import mcp
+    from lisa_sdk.lisa_surf.server import mcp
 
     tools = asyncio_get_tools(mcp)
     names = {t.name for t in tools}

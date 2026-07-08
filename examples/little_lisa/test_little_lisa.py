@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from kernel.model_manifest import ModelManifest
-from kernel.models import WebSearchResponse, WebSearchResult
+from lisa_sdk.models import WebSearchResponse, WebSearchResult
 from kernel.operations.registry import OperationExecutionError
 from kernel.turn_runner import TurnResult
 from pydantic import BaseModel

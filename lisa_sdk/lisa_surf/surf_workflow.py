@@ -16,14 +16,14 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from kernel.config import settings
-from kernel.models import (
-    SurfaceContext,
+from kernel.models import SurfaceContext
+from lisa_sdk.models import (
     SurfCommentaryEntry,
     SurfLinkCandidate,
     SurfPageCapture,
     SurfSessionState,
 )
+from lisa_sdk.config import settings
 
 _LINK_FILLER_WORDS = frozenset(
     {"a", "an", "the", "page", "pages", "link", "links", "tab", "section", "site", "please"}

@@ -31,14 +31,14 @@ def _tool_text(result: Any) -> str:
 
 @pytest.fixture
 def guard_setup() -> None:
-    from lisa_guard.server import init_backend
+    from lisa_sdk.lisa_guard.server import init_backend
 
     init_backend("passthrough")
 
 
 @pytest.mark.asyncio
 async def test_guard_lists_three_tools(guard_setup: None) -> None:
-    from lisa_guard.server import mcp
+    from lisa_sdk.lisa_guard.server import mcp
 
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
@@ -47,7 +47,7 @@ async def test_guard_lists_three_tools(guard_setup: None) -> None:
 
 @pytest.mark.asyncio
 async def test_guard_validate_input_passthrough(guard_setup: None) -> None:
-    from lisa_guard.server import mcp
+    from lisa_sdk.lisa_guard.server import mcp
 
     result = await mcp.call_tool(
         "validate_input",
@@ -61,7 +61,7 @@ async def test_guard_validate_input_passthrough(guard_setup: None) -> None:
 
 @pytest.mark.asyncio
 async def test_guard_validate_output_passthrough(guard_setup: None) -> None:
-    from lisa_guard.server import mcp
+    from lisa_sdk.lisa_guard.server import mcp
 
     result = await mcp.call_tool(
         "validate_output",
@@ -73,7 +73,7 @@ async def test_guard_validate_output_passthrough(guard_setup: None) -> None:
 
 @pytest.mark.asyncio
 async def test_guard_configured(guard_setup: None) -> None:
-    from lisa_guard.server import mcp
+    from lisa_sdk.lisa_guard.server import mcp
 
     result = await mcp.call_tool("guard_configured", {})
     data = json.loads(_tool_text(result))
@@ -86,7 +86,7 @@ async def test_guard_configured(guard_setup: None) -> None:
 
 @pytest.fixture
 def storage_env(tmp_path: Path) -> Path:
-    from lisa_storage.server import init_storage
+    from lisa_sdk.lisa_storage.server import init_storage
 
     init_storage(tmp_path, readonly=False)
     return tmp_path
@@ -94,7 +94,7 @@ def storage_env(tmp_path: Path) -> Path:
 
 @pytest.mark.asyncio
 async def test_storage_lists_all_blobio_tools(storage_env: Path) -> None:
-    from lisa_storage.server import mcp
+    from lisa_sdk.lisa_storage.server import mcp
 
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
@@ -118,7 +118,7 @@ async def test_storage_lists_all_blobio_tools(storage_env: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_storage_blob_text_round_trip(storage_env: Path) -> None:
-    from lisa_storage.server import mcp
+    from lisa_sdk.lisa_storage.server import mcp
 
     await mcp.call_tool(
         "write_blob_text",
@@ -132,7 +132,7 @@ async def test_storage_blob_text_round_trip(storage_env: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_storage_blob_bytes_round_trip(storage_env: Path) -> None:
-    from lisa_storage.server import mcp
+    from lisa_sdk.lisa_storage.server import mcp
 
     payload = base64.b64encode(b"binary data").decode()
     await mcp.call_tool(
@@ -147,7 +147,7 @@ async def test_storage_blob_bytes_round_trip(storage_env: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_storage_read_absent_returns_null(storage_env: Path) -> None:
-    from lisa_storage.server import mcp
+    from lisa_sdk.lisa_storage.server import mcp
 
     result = await mcp.call_tool(
         "read_blob_text", {"container": "test", "blob_path": "absent.txt"}
@@ -157,7 +157,7 @@ async def test_storage_read_absent_returns_null(storage_env: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_storage_path_traversal_blocked(storage_env: Path) -> None:
-    from lisa_storage.server import mcp
+    from lisa_sdk.lisa_storage.server import mcp
 
     with pytest.raises(Exception):
         await mcp.call_tool(
@@ -167,7 +167,7 @@ async def test_storage_path_traversal_blocked(storage_env: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_storage_readonly_blocks_writes(tmp_path: Path) -> None:
-    from lisa_storage.server import init_storage, mcp
+    from lisa_sdk.lisa_storage.server import init_storage, mcp
 
     init_storage(tmp_path, readonly=True)
     result = await mcp.call_tool(
@@ -181,7 +181,7 @@ async def test_storage_readonly_blocks_writes(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_storage_overlays_round_trip(storage_env: Path) -> None:
-    from lisa_storage.server import mcp
+    from lisa_sdk.lisa_storage.server import mcp
 
     overlays = {"key": "value", "nested": {"a": 1}}
     await mcp.call_tool(
@@ -198,14 +198,14 @@ async def test_storage_overlays_round_trip(storage_env: Path) -> None:
 
 @pytest.fixture
 def content_setup() -> None:
-    from lisa_content.server import init_content
+    from lisa_sdk.lisa_content.server import init_content
 
     init_content()
 
 
 @pytest.mark.asyncio
 async def test_content_lists_three_tools(content_setup: None) -> None:
-    from lisa_content.server import mcp
+    from lisa_sdk.lisa_content.server import mcp
 
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
@@ -214,7 +214,7 @@ async def test_content_lists_three_tools(content_setup: None) -> None:
 
 @pytest.mark.asyncio
 async def test_content_read_absent_returns_empty(content_setup: None) -> None:
-    from lisa_content.server import mcp
+    from lisa_sdk.lisa_content.server import mcp
 
     result = await mcp.call_tool(
         "read_authored_text", {"relative_path": "nonexistent/file.md"}
@@ -224,7 +224,7 @@ async def test_content_read_absent_returns_empty(content_setup: None) -> None:
 
 @pytest.mark.asyncio
 async def test_content_invalidate_cache(content_setup: None) -> None:
-    from lisa_content.server import mcp
+    from lisa_sdk.lisa_content.server import mcp
 
     result = await mcp.call_tool("invalidate_cache", {})
     data = json.loads(_tool_text(result))
@@ -233,7 +233,7 @@ async def test_content_invalidate_cache(content_setup: None) -> None:
 
 @pytest.mark.asyncio
 async def test_content_list_roots_returns_array(content_setup: None) -> None:
-    from lisa_content.server import mcp
+    from lisa_sdk.lisa_content.server import mcp
 
     result = await mcp.call_tool("list_content_roots", {})
     data = json.loads(_tool_text(result))

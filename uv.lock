@@ -18,10 +18,8 @@ members = [
     "lisa-framework-workspace",
     "lisa-kernel",
     "lisa-pack-core",
-    "lisa-pack-extras",
     "lisa-sdk",
     "little-lisa",
-    "mcp-server",
 ]
 
 [[package]]
@@ -998,7 +996,6 @@ dependencies = [
     { name = "lisa-ext-stripe" },
     { name = "lisa-kernel" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-extras" },
     { name = "lisa-sdk" },
     { name = "little-lisa" },
     { name = "rich" },
@@ -1024,7 +1021,6 @@ requires-dist = [
     { name = "lisa-ext-stripe", editable = "sdk_extensions/stripe" },
     { name = "lisa-kernel", editable = "kernel" },
     { name = "lisa-pack-core", editable = "sdk_packs/core" },
-    { name = "lisa-pack-extras", editable = "sdk_packs/extras" },
     { name = "lisa-sdk", editable = "lisa_sdk" },
     { name = "little-lisa", editable = "examples/little_lisa" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
@@ -1108,34 +1104,15 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "lisa-pack-extras"
-version = "0.1.0"
-source = { editable = "sdk_packs/extras" }
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "lisa-sdk"
 version = "0.1.0"
 source = { editable = "lisa_sdk" }
 dependencies = [
     { name = "httpx" },
     { name = "lisa-kernel" },
+    { name = "mcp" },
+    { name = "pydantic" },
+    { name = "sqlite-vec" },
 ]
 
 [package.optional-dependencies]
@@ -1150,10 +1127,13 @@ dev = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "lisa-kernel", editable = "kernel" },
+    { name = "mcp", specifier = ">=1.28.0" },
+    { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+    { name = "sqlite-vec", specifier = ">=0.1.9" },
 ]
 provides-extras = ["dev"]
 
@@ -1166,7 +1146,6 @@ dependencies = [
     { name = "httpx" },
     { name = "lisa-kernel" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-extras" },
     { name = "lisa-sdk" },
     { name = "openai" },
     { name = "pillow" },
@@ -1193,7 +1172,6 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "lisa-kernel" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-extras" },
     { name = "lisa-sdk" },
     { name = "openai", specifier = ">=1.30.0" },
     { name = "pillow", specifier = ">=10.0.0" },
@@ -1258,25 +1236,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c1/ee/94c6c50ffc5b5cf4737052275d11b57367f32d1a8516e31dcd60591b3916/mcp-1.28.0.tar.gz", hash = "sha256:559d3f9943674cafbe5744c5d3794f3237e8b47f9bbc58e20c0fad680d8487c2", size = 636040, upload-time = "2026-06-16T21:37:17.996Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2e/e1/4c1dc1fbb688641a712d34650c3d58bbbdcb314ddb75bc5817bbf33515a4/mcp-1.28.0-py3-none-any.whl", hash = "sha256:9c1e7cf3a9125557e418ecd4fed8e9adddce81b0dfdae4d6601d700f5beb71a4", size = 221959, upload-time = "2026-06-16T21:37:16.579Z" },
-]
-
-[[package]]
-name = "mcp-server"
-version = "0.1.0"
-source = { editable = "mcp_server" }
-dependencies = [
-    { name = "lisa-kernel" },
-    { name = "mcp" },
-    { name = "pydantic" },
-    { name = "sqlite-vec" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "lisa-kernel", editable = "kernel" },
-    { name = "mcp", specifier = ">=1.28.0" },
-    { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "sqlite-vec", specifier = ">=0.1.9" },
 ]
 
 [[package]]

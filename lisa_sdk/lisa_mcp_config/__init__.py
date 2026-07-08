@@ -8,6 +8,6 @@ Env vars are for behavioral configuration only (API keys, feature flags,
 endpoints). Path-like configuration comes exclusively from CLI args.
 """
 
-from lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
+from lisa_sdk.lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
 
 __all__ = ["build_parser", "configure_logging", "resolve_data_dir"]

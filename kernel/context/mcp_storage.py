@@ -20,7 +20,7 @@ from typing import Any
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from kernel.models import SurfSessionState, UnifiedState
+from kernel.models import UnifiedState
 from kernel.tools.mcp_client import MCPClientConfig
 
 __all__ = ["MCPBlobIO"]
@@ -170,8 +170,10 @@ class MCPBlobIO:
 
     def read_surf_workflow_session(
         self, workspace_id: str, surface_id: str
-    ) -> SurfSessionState | None:
+    ) -> Any:
         import asyncio
+
+        from lisa_sdk.models import SurfSessionState
 
         text = asyncio.run(
             self._call(
@@ -183,7 +185,7 @@ class MCPBlobIO:
             return None
         return SurfSessionState.model_validate_json(text)
 
-    def write_surf_workflow_session(self, session: SurfSessionState) -> bool:
+    def write_surf_workflow_session(self, session: Any) -> bool:
         import asyncio
 
         text = asyncio.run(

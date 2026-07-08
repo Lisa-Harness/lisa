@@ -129,7 +129,7 @@ def main() -> None:
     ``--backend`` for backend selection. ``--readonly`` is not supported
     (guards are stateless) but ``--data-dir`` is required for consistency.
     """
-    from lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
+    from lisa_sdk.lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
 
     parser = build_parser("lisa-guard")
     parser.add_argument(

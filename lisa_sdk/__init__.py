@@ -1,7 +1,7 @@
 """Lisa SDK — author-facing helpers for framework extensions and packs.
 
 This package provides optional extension content for Lisa framework hosts:
-- Product- and domain-specific extension surfaces that are not in the core or extras packs
+- Product- and domain-specific extension surfaces that build on the core pack
 - Extension operations used by those surfaces
 - Signal connector and data-source base contracts
 
