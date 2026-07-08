@@ -53,6 +53,7 @@ import platform
 import re
 import sys
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
@@ -118,9 +119,6 @@ from kernel.ipsar_fsm import (  # noqa: E402
 from kernel.mcp_client import MCPMemoryClient  # noqa: E402
 from kernel.model_manifest import ModelManifest  # noqa: E402
 from kernel.models import (  # noqa: E402
-    MemoryRecallAnswer,
-    MemoryRecallEvidence,
-    MemoryRecord,
     OperationExecutionContext,
     OperationResult,
     RouteDecision,
@@ -184,6 +182,8 @@ except ImportError:  # pragma: no cover - direct script execution fallback
     )
 
 try:
+    from . import frontdoor_routing
+    from . import turn_hooks as turn_hooks_module
     from .desktop import (
         DEFAULT_DESKTOP_HOST,
         DEFAULT_DESKTOP_PORT,
@@ -210,10 +210,10 @@ try:
     from .provider_completions import (
         _normalize_google_base_url as _normalize_google_base_url_helper,
     )
-    from . import frontdoor_routing
-    from . import turn_hooks as turn_hooks_module
     from .tray import TrayConfig, run_tray
 except ImportError:  # pragma: no cover - direct script execution fallback
+    import frontdoor_routing  # type: ignore[no-redef]
+    import turn_hooks as turn_hooks_module  # type: ignore[no-redef]
     from desktop import (  # type: ignore[no-redef]
         DEFAULT_DESKTOP_HOST,
         DEFAULT_DESKTOP_PORT,
@@ -240,8 +240,6 @@ except ImportError:  # pragma: no cover - direct script execution fallback
     from provider_completions import (
         _normalize_google_base_url as _normalize_google_base_url_helper,
     )
-    import frontdoor_routing  # type: ignore[no-redef]
-    import turn_hooks as turn_hooks_module  # type: ignore[no-redef]
     from tray import TrayConfig, run_tray  # type: ignore[no-redef]
 
 CORE_PACK_ROOT = FRAMEWORK_ROOT / "sdk_packs" / "core"
@@ -5241,7 +5239,7 @@ async def _setup_validate_anthropic(api_key: str) -> tuple[bool, str]:
 
 
 @app.command("setup", help="Interactive wizard to configure Little Lisa providers.")
-def _setup_command() -> None:  # noqa: PLR0912, PLR0915
+def _setup_command() -> None:
     """Interactive wizard to configure Little Lisa providers."""
     env_path = Path(__file__).resolve().parent / ".env"
 
@@ -5265,87 +5263,8 @@ def _setup_command() -> None:  # noqa: PLR0912, PLR0915
         raise typer.Exit(code=1)
 
     provider, _ = _SETUP_PROVIDERS[choice]
-    updates: dict[str, str] = {}
-
-    if provider == "ollama":
-        console.print("\n[bold]Ollama[/bold] no API key required.")
-        console.print("Make sure Ollama is installed and running.")
-        console.print("Install: https://ollama.com")
-        console.print("\nPull the default models:")
-        console.print("  ollama pull llama3.2:latest")
-        console.print("  ollama pull qwen2.5:7b")
-        console.print()
-        ok, msg = asyncio.run(_setup_validate_ollama())
-        if ok:
-            console.print(f"[green]{msg}[/green]")
-        else:
-            console.print(f"[yellow]{msg}[/yellow]")
-            console.print("You can still proceed just start Ollama before running Little Lisa.")
-
-    elif provider == "openai":
-        console.print("\n[bold]OpenAI[/bold]")
-        api_key = console.input("Enter your OpenAI API key: ").strip()
-        if not api_key:
-            console.print("[red]API key is required.[/red]")
-            raise typer.Exit(code=1)
-        console.print("Validating...")
-        ok, msg = asyncio.run(_setup_validate_openai(api_key))
-        if ok:
-            console.print(f"[green]{msg}[/green]")
-        else:
-            console.print(f"[red]{msg}[/red]")
-            raise typer.Exit(code=1)
-        updates["LITTLE_LISA_OPENAI_API_KEY"] = api_key
-
-    elif provider == "azure_openai":
-        console.print("\n[bold]Azure OpenAI[/bold]")
-        endpoint = console.input("Enter your Azure OpenAI endpoint URL: ").strip()
-        if not endpoint:
-            console.print("[red]Endpoint URL is required.[/red]")
-            raise typer.Exit(code=1)
-        api_key = console.input("Enter your Azure OpenAI API key: ").strip()
-        if not api_key:
-            console.print("[red]API key is required.[/red]")
-            raise typer.Exit(code=1)
-        console.print("Validating...")
-        ok, msg = asyncio.run(_setup_validate_azure(endpoint, api_key))
-        if ok:
-            console.print(f"[green]{msg}[/green]")
-        else:
-            console.print(f"[red]{msg}[/red]")
-            raise typer.Exit(code=1)
-        updates["LITTLE_LISA_AZURE_OPENAI_ENDPOINT"] = endpoint
-        updates["LITTLE_LISA_AZURE_OPENAI_API_KEY"] = api_key
-
-    elif provider == "anthropic":
-        console.print("\n[bold]Anthropic[/bold]")
-        api_key = console.input("Enter your Anthropic API key: ").strip()
-        if not api_key:
-            console.print("[red]API key is required.[/red]")
-            raise typer.Exit(code=1)
-        console.print("Validating...")
-        ok, msg = asyncio.run(_setup_validate_anthropic(api_key))
-        if ok:
-            console.print(f"[green]{msg}[/green]")
-        else:
-            console.print(f"[red]{msg}[/red]")
-            raise typer.Exit(code=1)
-        updates["LITTLE_LISA_ANTHROPIC_API_KEY"] = api_key
-
-    elif provider == "google":
-        console.print("\n[bold]Google Gemini[/bold]")
-        api_key = console.input("Enter your Google API key: ").strip()
-        if not api_key:
-            console.print("[red]API key is required.[/red]")
-            raise typer.Exit(code=1)
-        console.print("Validating...")
-        ok, msg = asyncio.run(_setup_validate_google(api_key))
-        if ok:
-            console.print(f"[green]{msg}[/green]")
-        else:
-            console.print(f"[red]{msg}[/red]")
-            raise typer.Exit(code=1)
-        updates["LITTLE_LISA_GOOGLE_API_KEY"] = api_key
+    _SETUP_PROVIDER_STEPS[provider]()
+    updates = _SETUP_PROVIDER_UPDATES.get(provider, {})
 
     if updates:
         _setup_write_env(env_path, updates)
@@ -5358,6 +5277,110 @@ def _setup_command() -> None:  # noqa: PLR0912, PLR0915
     )
     console.print("  3. Run [bold]little-lisa cli[/bold] for the interactive REPL")
     console.print("  4. Run [bold]little-lisa[/bold] for tray-first desktop launch")
+
+
+def _setup_step_ollama() -> dict[str, str]:
+    """Ollama setup step — no API key needed, just validate the local server."""
+    console.print("\n[bold]Ollama[/bold] no API key required.")
+    console.print("Make sure Ollama is installed and running.")
+    console.print("Install: https://ollama.com")
+    console.print("\nPull the default models:")
+    console.print("  ollama pull llama3.2:latest")
+    console.print("  ollama pull qwen2.5:7b")
+    console.print()
+    ok, msg = asyncio.run(_setup_validate_ollama())
+    if ok:
+        console.print(f"[green]{msg}[/green]")
+    else:
+        console.print(f"[yellow]{msg}[/yellow]")
+        console.print("You can still proceed just start Ollama before running Little Lisa.")
+    return {}
+
+
+def _setup_step_openai() -> dict[str, str]:
+    """OpenAI setup step — collect and validate API key."""
+    console.print("\n[bold]OpenAI[/bold]")
+    api_key = console.input("Enter your OpenAI API key: ").strip()
+    if not api_key:
+        console.print("[red]API key is required.[/red]")
+        raise typer.Exit(code=1)
+    console.print("Validating...")
+    ok, msg = asyncio.run(_setup_validate_openai(api_key))
+    if ok:
+        console.print(f"[green]{msg}[/green]")
+    else:
+        console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(code=1)
+    return {"LITTLE_LISA_OPENAI_API_KEY": api_key}
+
+
+def _setup_step_azure() -> dict[str, str]:
+    """Azure OpenAI setup step — collect endpoint and API key, validate."""
+    console.print("\n[bold]Azure OpenAI[/bold]")
+    endpoint = console.input("Enter your Azure OpenAI endpoint URL: ").strip()
+    if not endpoint:
+        console.print("[red]Endpoint URL is required.[/red]")
+        raise typer.Exit(code=1)
+    api_key = console.input("Enter your Azure OpenAI API key: ").strip()
+    if not api_key:
+        console.print("[red]API key is required.[/red]")
+        raise typer.Exit(code=1)
+    console.print("Validating...")
+    ok, msg = asyncio.run(_setup_validate_azure(endpoint, api_key))
+    if ok:
+        console.print(f"[green]{msg}[/green]")
+    else:
+        console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(code=1)
+    return {
+        "LITTLE_LISA_AZURE_OPENAI_ENDPOINT": endpoint,
+        "LITTLE_LISA_AZURE_OPENAI_API_KEY": api_key,
+    }
+
+
+def _setup_step_anthropic() -> dict[str, str]:
+    """Anthropic setup step — collect and validate API key."""
+    console.print("\n[bold]Anthropic[/bold]")
+    api_key = console.input("Enter your Anthropic API key: ").strip()
+    if not api_key:
+        console.print("[red]API key is required.[/red]")
+        raise typer.Exit(code=1)
+    console.print("Validating...")
+    ok, msg = asyncio.run(_setup_validate_anthropic(api_key))
+    if ok:
+        console.print(f"[green]{msg}[/green]")
+    else:
+        console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(code=1)
+    return {"LITTLE_LISA_ANTHROPIC_API_KEY": api_key}
+
+
+def _setup_step_google() -> dict[str, str]:
+    """Google Gemini setup step — collect and validate API key."""
+    console.print("\n[bold]Google Gemini[/bold]")
+    api_key = console.input("Enter your Google API key: ").strip()
+    if not api_key:
+        console.print("[red]API key is required.[/red]")
+        raise typer.Exit(code=1)
+    console.print("Validating...")
+    ok, msg = asyncio.run(_setup_validate_google(api_key))
+    if ok:
+        console.print(f"[green]{msg}[/green]")
+    else:
+        console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(code=1)
+    return {"LITTLE_LISA_GOOGLE_API_KEY": api_key}
+
+
+_SETUP_PROVIDER_STEPS: dict[str, Callable[[], dict[str, str]]] = {
+    "ollama": _setup_step_ollama,
+    "openai": _setup_step_openai,
+    "azure_openai": _setup_step_azure,
+    "anthropic": _setup_step_anthropic,
+    "google": _setup_step_google,
+}
+
+_SETUP_PROVIDER_UPDATES: dict[str, dict[str, str]] = {}  # populated by steps at call time
 
 
 @app.command("modes", help="List supported Little Lisa modes.")
