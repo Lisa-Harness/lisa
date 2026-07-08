@@ -1,9 +1,43 @@
-"""Little Lisa a local terminal host for exercising Lisa framework packs without the private app.
+"""Little Lisa — a local terminal host for exercising Lisa framework packs.
 
 Little Lisa wires public content and operation catalogs, uses local tool callbacks
 and live model completion hooks, and stores generated Markdown artifacts on disk.
 It is useful for pack authors who want to verify routing and operation shape
 without Teams, Azure, or production Lisa services.
+
+Module Organisation
+-------------------
+This file is the **orchestration shell**: it owns the CLI entry points, the REPL
+loop, the front-door planner, provider routing (``_complete_live``), and the
+``handle_message`` command dispatcher.
+
+Pure, stateless logic has been extracted into focused submodules:
+
+- ``config.py`` — timezone / timeout / log-level / streaming / slice resolution
+  (all deterministic, no global state, no side effects).
+- ``token_accounting.py`` — token ledger accumulation and session-summary
+  Markdown generation (accepts the runtime state dict as a parameter).
+- ``model_runtime.py`` — model manifest loading and model resolution by
+  designation / alias / concrete ID.
+- ``model_manifest.py`` — manifest file discovery and loading from ``models.yaml``.
+- ``desktop.py`` — localhost web-host callbacks for the desktop UI.
+- ``tray.py`` — system-tray launcher managing the desktop host subprocess.
+
+Test Compatibility
+------------------
+Tests use ``monkeypatch.setattr(little_lisa, "_resolve_model", fake)`` and
+``monkeypatch.setitem(little_lisa._RUNTIME_STATE, key, value)`` to exercise
+individual functions and state.  To preserve these seams:
+
+- All test-visible function names remain on this module's surface (re-imported
+  from submodules or defined here as thin wrappers).
+- ``_RUNTIME_STATE`` stays a plain dict (not a typed dataclass) so tests can
+  mutate it directly.
+- Submodule imports use ``try: from .module import ... / except ImportError``
+  so this file also works as a standalone script (``python main.py --list-modes``).
+
+See ``docs/LITTLE_LISA_GUIDE.md`` → *Architecture* for the full module map and
+data-flow diagram.
 """
 
 from __future__ import annotations
@@ -191,163 +225,43 @@ _LITTLE_LISA_SLICE_EXPLICIT_ENV = "LITTLE_LISA_SLICE_EXPLICIT"
 _LITTLE_LISA_SLICE_BUDGET_MS_ENV = "LITTLE_LISA_SLICE_BUDGET_MS"
 _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV = "LITTLE_LISA_THREAD_MAX_ENTRIES"
 _LITTLE_LISA_MEMORY_MAX_RECORDS_ENV = "LITTLE_LISA_MEMORY_MAX_RECORDS"
-_DEFAULT_THREAD_MAX_ENTRIES = 50
-_DEFAULT_MEMORY_MAX_RECORDS = 200
-_THREAD_DIGEST_FILE_NAME = "thread_digest.md"
-_LOG_LEVEL_ORDER = {
-    "debug": 10,
-    "info": 20,
-    "warning": 30,
-    "error": 40,
-}
-_POSIX_ALIAS_MAP: dict[str, str] = {
-    "EST": "EST5EDT",
-    "EDT": "EST5EDT",
-    "CST": "CST6CDT",
-    "CDT": "CST6CDT",
-    "MST": "MST7MDT",
-    "MDT": "MST7MDT",
-    "PST": "PST8PDT",
-    "PDT": "PST8PDT",
-}
 
-_OS_TIMEZONE_ENV_CANDIDATES: dict[str, tuple[str, ...]] = {
-    "Windows": (
-        "TZ",
-        "TIMEZONE",
-        "LOCAL_TIMEZONE",
-        "APPSETTING_WEBSITE_TIME_ZONE",
-    ),
-    "Linux": (
-        "TZ",
-        "TIMEZONE",
-        "LOCAL_TIMEZONE",
-    ),
-    "Darwin": (
-        "TZ",
-        "TIMEZONE",
-        "LOCAL_TIMEZONE",
-        "SYSTEM_TIMEZONE",
-    ),
-}
-
-# Windows reports local tzinfo display names (e.g. "Eastern Daylight Time")
-# that are not IANA keys and are rejected by _normalize_timezone_name. Map the
-# common Windows zone display names to canonical IANA keys so the system-local
-# fallback resolves correctly instead of silently defaulting to UTC.
-_WINDOWS_TZ_DISPLAY_TO_IANA: dict[str, str] = {
-    "Dateline Standard Time": "Etc/GMT+12",
-    "UTC-11": "Etc/GMT+11",
-    "Aleutian Standard Time": "America/Adak",
-    "Hawaiian Standard Time": "Pacific/Honolulu",
-    "Alaskan Standard Time": "America/Anchorage",
-    "Pacific Standard Time": "America/Los_Angeles",
-    "Pacific Standard Time (Mexico)": "America/Tijuana",
-    "Mountain Standard Time": "America/Denver",
-    "Mountain Standard Time (Mexico)": "America/Mazatlan",
-    "US Mountain Standard Time": "America/Phoenix",
-    "Central Standard Time": "America/Chicago",
-    "Central Standard Time (Mexico)": "America/Mexico_City",
-    "Canada Central Standard Time": "America/Regina",
-    "Central America Standard Time": "America/Guatemala",
-    "Eastern Standard Time": "America/New_York",
-    "Eastern Standard Time (Mexico)": "America/Cancun",
-    "US Eastern Standard Time": "America/Indiana/Indianapolis",
-    "Paraguay Standard Time": "America/Asuncion",
-    "Atlantic Standard Time": "America/Halifax",
-    "Venezuela Standard Time": "America/Caracas",
-    "SA Pacific Standard Time": "America/Bogota",
-    "Greenland Standard Time": "America/Godthab",
-    "Montevideo Standard Time": "America/Montevideo",
-    "Bahia Standard Time": "America/Bahia",
-    "Argentina Standard Time": "America/Argentina/Buenos_Aires",
-    "SA Eastern Standard Time": "America/Cayenne",
-    "Magallanes Standard Time": "America/Punta_Arenas",
-    "Saint Pierre Standard Time": "America/Miquelon",
-    "Newfoundland Standard Time": "America/St_Johns",
-    "Azores Standard Time": "Atlantic/Azores",
-    "Cape Verde Standard Time": "Atlantic/Cape_Verde",
-    "GMT Standard Time": "Europe/London",
-    "Greenwich Standard Time": "Africa/Monrovia",
-    "W. Europe Standard Time": "Europe/Berlin",
-    "Central Europe Standard Time": "Europe/Budapest",
-    "Romance Standard Time": "Europe/Paris",
-    "Morocco Standard Time": "Africa/Casablanca",
-    "Sao Tome Standard Time": "Africa/Sao_Tome",
-    "Central European Standard Time": "Europe/Warsaw",
-    "GTB Standard Time": "Europe/Bucharest",
-    "Syria Standard Time": "Asia/Damascus",
-    "E. Europe Standard Time": "Europe/Chisinau",
-    "Turkey Standard Time": "Europe/Istanbul",
-    "Israel Standard Time": "Asia/Jerusalem",
-    "Jordan Standard Time": "Asia/Amman",
-    "Arabic Standard Time": "Asia/Baghdad",
-    "Arab Standard Time": "Asia/Riyadh",
-    "Russian Standard Time": "Europe/Kaliningrad",
-    "E. Africa Standard Time": "Africa/Nairobi",
-    "Iran Standard Time": "Asia/Tehran",
-    "Arabian Standard Time": "Asia/Dubai",
-    "Azerbaijan Standard Time": "Asia/Baku",
-    "Mauritius Standard Time": "Indian/Mauritius",
-    "Georgian Standard Time": "Asia/Tbilisi",
-    "Caucasus Standard Time": "Asia/Yerevan",
-    "Afghanistan Standard Time": "Asia/Kabul",
-    "West Asia Standard Time": "Asia/Tashkent",
-    "Pakistan Standard Time": "Asia/Karachi",
-    "India Standard Time": "Asia/Calcutta",
-    "Sri Lanka Standard Time": "Asia/Colombo",
-    "Nepal Standard Time": "Asia/Kathmandu",
-    "Central Asia Standard Time": "Asia/Almaty",
-    "Bangladesh Standard Time": "Asia/Dhaka",
-    "N. Central Asia Standard Time": "Asia/Novosibirsk",
-    "Myanmar Standard Time": "Asia/Yangon",
-    "SE Asia Standard Time": "Asia/Bangkok",
-    "North Asia Standard Time": "Asia/Krasnoyarsk",
-    "China Standard Time": "Asia/Shanghai",
-    "North Asia East Standard Time": "Asia/Irkutsk",
-    "Singapore Standard Time": "Asia/Singapore",
-    "W. Australia Standard Time": "Australia/Perth",
-    "Taipei Standard Time": "Asia/Taipei",
-    "Ulaanbaatar Standard Time": "Asia/Ulaanbaatar",
-    "Tokyo Standard Time": "Asia/Tokyo",
-    "Korea Standard Time": "Asia/Seoul",
-    "Yakutsk Standard Time": "Asia/Yakutsk",
-    "Cen. Australia Standard Time": "Australia/Adelaide",
-    "AUS Central Standard Time": "Australia/Darwin",
-    "E. Australia Standard Time": "Australia/Brisbane",
-    "AUS Eastern Standard Time": "Australia/Sydney",
-    "West Pacific Standard Time": "Pacific/Port_Moresby",
-    "Tasmania Standard Time": "Australia/Hobart",
-    "Vladivostok Standard Time": "Asia/Vladivostok",
-    "Magadan Standard Time": "Asia/Magadan",
-    "Central Pacific Standard Time": "Pacific/Guadalcanal",
-    "New Zealand Standard Time": "Pacific/Auckland",
-    "Fiji Standard Time": "Pacific/Fiji",
-    "Kamchatka Standard Time": "Asia/Kamchatka",
-    "Chatham Islands Standard Time": "Pacific/Chatham",
-    "Tonga Standard Time": "Pacific/Tongatapu",
-    "Samoa Standard Time": "Pacific/Apia",
-    "Line Islands Standard Time": "Pacific/Kiritimati",
-    "UTC": "UTC",
-    "Coordinated Universal Time": "UTC",
-}
-
-
-def _resolve_timezone_alias(value: str) -> str | None:
-    """Resolve a timezone alias to a canonical IANA key using stdlib zoneinfo.
-
-    Common US abbreviations (EST, EDT, CST, CDT, MST, MDT, PST, PDT) are mapped
-    to POSIX-style zoneinfo keys (EST5EDT, CST6CDT, etc.) that correctly handle
-    both standard and daylight time without maintaining a hard-coded alias table.
-    """
-    posix_key = _POSIX_ALIAS_MAP.get(value.upper())
-    if posix_key is None:
-        return None
-    try:
-        zi = ZoneInfo(posix_key)
-        return str(zi)
-    except ZoneInfoNotFoundError:
-        return None
+# Config-resolution logic (timezone, timeout, log-level, streaming, slice)
+# lives in the dedicated ``config`` module.  We import the names here so
+# that ``monkeypatch.setattr(little_lisa, "_resolve_timezone", ...)`` and
+# similar test seams continue to resolve on the ``main`` module surface.
+try:  # noqa: E402
+    from .config import (
+        _DEFAULT_MEMORY_MAX_RECORDS,
+        _DEFAULT_THREAD_MAX_ENTRIES,
+        _LOG_LEVEL_ORDER,
+        _LITTLE_LISA_TIMEZONE_ENV,
+        _THREAD_DIGEST_FILE_NAME,
+        _normalize_log_level,
+        _resolve_log_level,
+        _resolve_slice_tuning,
+        _resolve_timeout_profile,
+        _resolve_timezone,
+        context_slug_to_thread_name,
+        parse_streaming_option,
+        resolve_stream_enabled,
+    )
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from config import (  # type: ignore[no-redef]
+        _DEFAULT_MEMORY_MAX_RECORDS,
+        _DEFAULT_THREAD_MAX_ENTRIES,
+        _LOG_LEVEL_ORDER,
+        _LITTLE_LISA_TIMEZONE_ENV,
+        _THREAD_DIGEST_FILE_NAME,
+        _normalize_log_level,
+        _resolve_log_level,
+        _resolve_slice_tuning,
+        _resolve_timeout_profile,
+        _resolve_timezone,
+        context_slug_to_thread_name,
+        parse_streaming_option,
+        resolve_stream_enabled,
+    )
 
 
 _RUNTIME_STATE: dict[str, Any] = {
@@ -749,19 +663,17 @@ def configure_runtime() -> None:
 
 
 def _runtime_debug_enabled() -> bool:
+    """Return whether --debug mode is active."""
     return bool(_RUNTIME_STATE.get("debug", False))
 
 
-def _normalize_log_level(value: str) -> str | None:
-    normalized = value.strip().lower()
-    if normalized == "warn":
-        normalized = "warning"
-    if normalized in _LOG_LEVEL_ORDER:
-        return normalized
-    return None
+# _normalize_log_level is imported from .config (see import block above).
+# _runtime_log_level and _runtime_should_log below are thin state-reading
+# wrappers that use the imported normaliser.
 
 
 def _runtime_log_level() -> str:
+    """Return the effective log level, falling back to debug when --debug is on."""
     configured = _normalize_log_level(str(_RUNTIME_STATE.get("log_level") or ""))
     if configured is not None:
         return configured
@@ -769,6 +681,7 @@ def _runtime_log_level() -> str:
 
 
 def _runtime_should_log(level: str) -> bool:
+    """Return True when *level* is at or above the runtime log-level threshold."""
     normalized = _normalize_log_level(level) or "info"
     runtime_level = _runtime_log_level()
     return _LOG_LEVEL_ORDER[normalized] >= _LOG_LEVEL_ORDER[runtime_level]
@@ -902,64 +815,36 @@ def _runtime_next_model_id() -> str:
     return configured or "-"
 
 
-def resolve_stream_enabled(*, force_stream: bool, force_no_stream: bool, is_tty: bool) -> bool:
-    """Resolve whether terminal streaming should be active for this runtime."""
-
-    if force_stream:
-        return True
-    if force_no_stream:
-        return False
-    return is_tty
+# resolve_stream_enabled and parse_streaming_option are imported from .config
+# and re-exported here so tests using ``little_lisa.parse_streaming_option``
+# and ``little_lisa.resolve_stream_enabled`` continue to resolve.
 
 
 def _runtime_stream_enabled() -> bool:
+    """Streaming is active when the resolved streaming mode is not 'none'."""
     return _runtime_streaming_mode() != "none"
 
 
 def _runtime_stream_mode() -> str:
+    """Return the configured stream mode, defaulting to 'hybrid' when unset."""
     configured = _runtime_streaming_mode()
     return configured if configured in {"stage", "text", "hybrid"} else "hybrid"
 
 
 def _runtime_stream_char_delay_ms() -> int:
+    """Return the configured per-character streaming delay in milliseconds."""
     return _runtime_streaming_char_delay_ms()
 
 
 def _runtime_streaming_mode() -> str:
+    """Return the raw streaming mode from state ('none' when unset or invalid)."""
     configured = str(_RUNTIME_STATE.get("streaming_mode") or "").strip().lower()
     return configured if configured in {"none", "stage", "text", "hybrid"} else "none"
 
 
 def _runtime_streaming_char_delay_ms() -> int:
+    """Return the raw streaming char delay from state (clamped to >= 0)."""
     return max(0, int(_RUNTIME_STATE.get("streaming_char_delay_ms", 0) or 0))
-
-
-def parse_streaming_option(raw_value: str) -> tuple[str, int]:
-    """Parse one --streaming value into mode and optional char delay."""
-
-    value = raw_value.strip().lower()
-    if not value:
-        return "none", 0
-
-    if ":" in value:
-        mode, delay_raw = value.split(":", 1)
-        mode = mode.strip()
-        delay_raw = delay_raw.strip()
-        if mode not in {"none", "stage", "text", "hybrid"}:
-            raise ValueError("--streaming mode must be one of: none, stage, text, hybrid")
-        if not delay_raw:
-            raise ValueError("--streaming delay suffix must be a non-negative integer")
-        try:
-            delay_ms = int(delay_raw)
-        except ValueError as exc:
-            raise ValueError("--streaming delay suffix must be a non-negative integer") from exc
-        if delay_ms < 0:
-            raise ValueError("--streaming delay suffix must be a non-negative integer")
-        return mode, delay_ms
-
-    if value not in {"none", "stage", "text", "hybrid"}:
-        raise ValueError("--streaming mode must be one of: none, stage, text, hybrid")
-    return value, 0
 
 
 def _runtime_session_started_utc() -> datetime:
@@ -967,24 +852,42 @@ def _runtime_session_started_utc() -> datetime:
     return configured if isinstance(configured, datetime) else datetime.now(UTC)
 
 
-def _record_session_turn(*, succeeded: bool, latency_ms: float, mode_id: str | None = None) -> None:
-    _RUNTIME_STATE["session_turn_count"] = int(_RUNTIME_STATE.get("session_turn_count", 0)) + 1
-    if succeeded:
-        _RUNTIME_STATE["session_success_count"] = (
-            int(_RUNTIME_STATE.get("session_success_count", 0)) + 1
-        )
-    else:
-        _RUNTIME_STATE["session_error_count"] = (
-            int(_RUNTIME_STATE.get("session_error_count", 0)) + 1
-        )
-    total_latency = float(_RUNTIME_STATE.get("session_total_latency_ms", 0.0))
-    _RUNTIME_STATE["session_total_latency_ms"] = total_latency + max(0.0, latency_ms)
+# Token-accounting and session-summary logic lives in the dedicated
+# ``token_accounting`` module.  We import the pure helpers and wrap them
+# with thin state-reading adapters below so tests using
+# ``little_lisa._apply_turn_usage(...)`` and
+# ``little_lisa._format_session_exit_summary_lines()`` keep working.
+try:  # noqa: E402
+    from .token_accounting import (  # noqa: E402
+        apply_turn_usage as _ta_apply_turn_usage,
+        coerce_non_negative_int as _coerce_non_negative_int,
+        format_session_exit_summary_lines as _ta_format_summary_lines,
+        record_session_turn as _ta_record_session_turn,
+        top_session_mode as _ta_top_session_mode,
+    )
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from token_accounting import (  # type: ignore[no-redef]
+        apply_turn_usage as _ta_apply_turn_usage,
+        coerce_non_negative_int as _coerce_non_negative_int,
+        format_session_exit_summary_lines as _ta_format_summary_lines,
+        record_session_turn as _ta_record_session_turn,
+        top_session_mode as _ta_top_session_mode,
+    )
 
-    selected_mode = (mode_id or "").strip()
-    if selected_mode:
-        mode_counts = dict(_RUNTIME_STATE.get("session_mode_counts") or {})
-        mode_counts[selected_mode] = int(mode_counts.get(selected_mode, 0)) + 1
-        _RUNTIME_STATE["session_mode_counts"] = mode_counts
+
+def _record_session_turn(
+    *,
+    succeeded: bool,
+    latency_ms: float,
+    mode_id: str | None = None,
+) -> None:
+    """Increment session turn counters (thin wrapper over token_accounting)."""
+    _ta_record_session_turn(
+        _RUNTIME_STATE,
+        succeeded=succeeded,
+        latency_ms=latency_ms,
+        mode_id=mode_id,
+    )
 
 
 def _apply_turn_usage(
@@ -995,389 +898,43 @@ def _apply_turn_usage(
     stage_id: str = "",
     frontdoor_routing: dict[str, Any] | None = None,
 ) -> None:
-    """Persist turn and session token counters from one completed turn result.
+    """Persist turn and session token counters (thin wrapper over token_accounting).
 
-    Records a per-turn ledger entry with model/mode/stage attribution and
-    accumulates breakdown totals keyed by resolved model id (never designation),
-    mode id, and stage id. Sub-counters (``cached_tokens``,
-    ``reasoning_tokens``), ``duration_ms``, and ``latency_ms`` flow through
-    so time-based providers (e.g. Ollama local GPU time) can be billed
-    alongside token-based providers.
+    See :func:`token_accounting.apply_turn_usage` for the full semantics.
     """
-
-    # ── Input extraction ───────────────────────────────────────────────
-    main_prompt = _coerce_non_negative_int(result.prompt_tokens)
-    main_completion = _coerce_non_negative_int(result.completion_tokens)
-    main_total = _coerce_non_negative_int(result.total_tokens)
-    if main_total <= 0:
-        main_total = main_prompt + main_completion
-    main_cached = _coerce_non_negative_int(getattr(result, "cached_tokens", 0))
-    main_reasoning = _coerce_non_negative_int(getattr(result, "reasoning_tokens", 0))
-    main_duration_ms = _coerce_non_negative_float(getattr(result, "duration_ms", 0.0))
-    main_latency_ms = _coerce_non_negative_int(getattr(result, "latency_ms", 0))
-
-    fd_prompt = 0
-    fd_completion = 0
-    fd_total = 0
-    fd_cached = 0
-    fd_reasoning = 0
-    fd_duration_ms = 0.0
-    fd_latency_ms = 0
-    fd_model_id = ""
-    if isinstance(frontdoor_routing, dict):
-        fd_prompt = _coerce_non_negative_int(frontdoor_routing.get("planner_prompt_tokens"))
-        fd_completion = _coerce_non_negative_int(frontdoor_routing.get("planner_completion_tokens"))
-        fd_total = _coerce_non_negative_int(frontdoor_routing.get("planner_total_tokens"))
-        if fd_total <= 0:
-            fd_total = fd_prompt + fd_completion
-        fd_cached = _coerce_non_negative_int(frontdoor_routing.get("planner_cached_tokens"))
-        fd_reasoning = _coerce_non_negative_int(frontdoor_routing.get("planner_reasoning_tokens"))
-        fd_duration_ms = _coerce_non_negative_float(
-            frontdoor_routing.get("planner_duration_ms")
-        )
-        fd_latency_ms = _coerce_non_negative_int(
-            frontdoor_routing.get("planner_latency_ms")
-        )
-        fd_model_id = str(frontdoor_routing.get("resolved_model_id") or "").strip()
-
-    # ── Turn totals ────────────────────────────────────────────────────
-    turn_prompt = main_prompt + fd_prompt
-    turn_completion = main_completion + fd_completion
-    turn_total = main_total + fd_total
-    turn_cached = main_cached + fd_cached
-    turn_reasoning = main_reasoning + fd_reasoning
-    turn_duration_ms = main_duration_ms + fd_duration_ms
-    turn_latency_ms = main_latency_ms + fd_latency_ms
-
-    _RUNTIME_STATE["turn_prompt_tokens"] = turn_prompt
-    _RUNTIME_STATE["turn_completion_tokens"] = turn_completion
-    _RUNTIME_STATE["turn_total_tokens"] = turn_total
-    _RUNTIME_STATE["turn_cached_tokens"] = turn_cached
-    _RUNTIME_STATE["turn_reasoning_tokens"] = turn_reasoning
-    _RUNTIME_STATE["turn_duration_ms"] = turn_duration_ms
-    _RUNTIME_STATE["turn_latency_ms"] = turn_latency_ms
-
-    _RUNTIME_STATE["session_prompt_tokens"] = (
-        _coerce_non_negative_int(_RUNTIME_STATE.get("session_prompt_tokens", 0)) + turn_prompt
+    _ta_apply_turn_usage(
+        _RUNTIME_STATE,
+        result,
+        model_id=model_id,
+        mode_id=mode_id,
+        stage_id=stage_id,
+        frontdoor_routing=frontdoor_routing,
     )
-    _RUNTIME_STATE["session_completion_tokens"] = (
-        _coerce_non_negative_int(_RUNTIME_STATE.get("session_completion_tokens", 0))
-        + turn_completion
-    )
-    _RUNTIME_STATE["session_total_tokens"] = (
-        _coerce_non_negative_int(_RUNTIME_STATE.get("session_total_tokens", 0)) + turn_total
-    )
-    _RUNTIME_STATE["session_cached_tokens"] = (
-        _coerce_non_negative_int(_RUNTIME_STATE.get("session_cached_tokens", 0)) + turn_cached
-    )
-    _RUNTIME_STATE["session_reasoning_tokens"] = (
-        _coerce_non_negative_int(_RUNTIME_STATE.get("session_reasoning_tokens", 0))
-        + turn_reasoning
-    )
-    _RUNTIME_STATE["session_duration_ms"] = (
-        _coerce_non_negative_float(_RUNTIME_STATE.get("session_duration_ms", 0.0))
-        + turn_duration_ms
-    )
-    _RUNTIME_STATE["session_latency_ms"] = (
-        _coerce_non_negative_int(_RUNTIME_STATE.get("session_latency_ms", 0)) + turn_latency_ms
-    )
-
-    ledger: list[dict[str, Any]] = _RUNTIME_STATE.setdefault("session_token_ledger", [])
-    turn_index = len(ledger) + 1
-
-    # ── Front-door ledger and breakdowns (if applicable) ───────────────
-    if fd_total > 0 or fd_duration_ms > 0:
-        # Record front-door call first in the ledger
-        ledger.append(
-            {
-                "turn": turn_index,
-                "model_id": fd_model_id or "front-door",
-                "mode_id": "front-door",
-                "stage_id": "routing",
-                "prompt_tokens": fd_prompt,
-                "completion_tokens": fd_completion,
-                "total_tokens": fd_total,
-                "cached_tokens": fd_cached,
-                "reasoning_tokens": fd_reasoning,
-                "duration_ms": fd_duration_ms,
-                "latency_ms": fd_latency_ms,
-            }
-        )
-
-        model_key = fd_model_id or "front-door"
-        if model_key != "-":
-            model_totals: dict[str, dict[str, Any]] = _RUNTIME_STATE.setdefault(
-                "model_token_totals", {}
-            )
-            model_entry = _ensure_usage_entry(
-                model_totals.setdefault(
-                    model_key,
-                    {
-                        "prompt_tokens": 0,
-                        "completion_tokens": 0,
-                        "total_tokens": 0,
-                        "cached_tokens": 0,
-                        "reasoning_tokens": 0,
-                        "duration_ms": 0.0,
-                        "latency_ms": 0,
-                    },
-                )
-            )
-            model_entry["prompt_tokens"] += fd_prompt
-            model_entry["completion_tokens"] += fd_completion
-            model_entry["total_tokens"] += fd_total
-            model_entry["cached_tokens"] += fd_cached
-            model_entry["reasoning_tokens"] += fd_reasoning
-            model_entry["duration_ms"] += fd_duration_ms
-            model_entry["latency_ms"] += fd_latency_ms
-
-        mode_totals: dict[str, dict[str, Any]] = _RUNTIME_STATE.setdefault("mode_token_totals", {})
-        mode_entry = _ensure_usage_entry(
-            mode_totals.setdefault(
-                "front-door",
-                {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                    "cached_tokens": 0,
-                    "reasoning_tokens": 0,
-                    "duration_ms": 0.0,
-                    "latency_ms": 0,
-                },
-            )
-        )
-        mode_entry["prompt_tokens"] += fd_prompt
-        mode_entry["completion_tokens"] += fd_completion
-        mode_entry["total_tokens"] += fd_total
-        mode_entry["cached_tokens"] += fd_cached
-        mode_entry["reasoning_tokens"] += fd_reasoning
-        mode_entry["duration_ms"] += fd_duration_ms
-        mode_entry["latency_ms"] += fd_latency_ms
-
-    # ── Main execution ledger entry ────────────────────────────────────
-    ledger.append(
-        {
-            "turn": turn_index,
-            "model_id": (model_id or "-").strip(),
-            "mode_id": (mode_id or "-").strip(),
-            "stage_id": (stage_id or "-").strip(),
-            "prompt_tokens": main_prompt,
-            "completion_tokens": main_completion,
-            "total_tokens": main_total,
-            "cached_tokens": main_cached,
-            "reasoning_tokens": main_reasoning,
-            "duration_ms": main_duration_ms,
-            "latency_ms": main_latency_ms,
-        }
-    )
-
-    # ── Per-model breakdown ────────────────────────────────────────────
-    model_key = (model_id or "-").strip()
-    model_totals = _RUNTIME_STATE.setdefault("model_token_totals", {})
-    model_entry = _ensure_usage_entry(
-        model_totals.setdefault(
-            model_key,
-            {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-                "cached_tokens": 0,
-                "reasoning_tokens": 0,
-                "duration_ms": 0.0,
-                "latency_ms": 0,
-            },
-        )
-    )
-    model_entry["prompt_tokens"] += main_prompt
-    model_entry["completion_tokens"] += main_completion
-    model_entry["total_tokens"] += main_total
-    model_entry["cached_tokens"] += main_cached
-    model_entry["reasoning_tokens"] += main_reasoning
-    model_entry["duration_ms"] += main_duration_ms
-    model_entry["latency_ms"] += main_latency_ms
-
-    # ── Per-mode breakdown ─────────────────────────────────────────────
-    mode_key = (mode_id or "-").strip()
-    mode_totals = _RUNTIME_STATE.setdefault("mode_token_totals", {})
-    mode_entry = _ensure_usage_entry(
-        mode_totals.setdefault(
-            mode_key,
-            {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-                "cached_tokens": 0,
-                "reasoning_tokens": 0,
-                "duration_ms": 0.0,
-                "latency_ms": 0,
-            },
-        )
-    )
-    mode_entry["prompt_tokens"] += main_prompt
-    mode_entry["completion_tokens"] += main_completion
-    mode_entry["total_tokens"] += main_total
-    mode_entry["cached_tokens"] += main_cached
-    mode_entry["reasoning_tokens"] += main_reasoning
-    mode_entry["duration_ms"] += main_duration_ms
-    mode_entry["latency_ms"] += main_latency_ms
-
-    # ── Per-stage breakdown ────────────────────────────────────────────
-    stage_key = (stage_id or "-").strip()
-    stage_totals: dict[str, dict[str, Any]] = _RUNTIME_STATE.setdefault("stage_token_totals", {})
-    stage_entry = _ensure_usage_entry(
-        stage_totals.setdefault(
-            stage_key,
-            {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-                "cached_tokens": 0,
-                "reasoning_tokens": 0,
-                "duration_ms": 0.0,
-                "latency_ms": 0,
-            },
-        )
-    )
-    stage_entry["prompt_tokens"] += main_prompt
-    stage_entry["completion_tokens"] += main_completion
-    stage_entry["total_tokens"] += main_total
-    stage_entry["cached_tokens"] += main_cached
-    stage_entry["reasoning_tokens"] += main_reasoning
-    stage_entry["duration_ms"] += main_duration_ms
-    stage_entry["latency_ms"] += main_latency_ms
 
 
 def _top_session_mode() -> tuple[str, int] | None:
-    mode_counts = _RUNTIME_STATE.get("session_mode_counts")
-    if not isinstance(mode_counts, dict) or not mode_counts:
-        return None
-    best_mode = ""
-    best_count = 0
-    for mode, count in mode_counts.items():
-        mode_name = str(mode).strip()
-        if not mode_name:
-            continue
-        count_value = int(count)
-        if count_value > best_count:
-            best_mode = mode_name
-            best_count = count_value
-    if not best_mode:
-        return None
-    return best_mode, best_count
+    """Return ``(mode_id, count)`` for the most-used mode (thin wrapper)."""
+    return _ta_top_session_mode(_RUNTIME_STATE)
 
 
 def _format_session_exit_summary_lines() -> list[str]:
-    now_utc = datetime.now(UTC)
-    started_utc = _runtime_session_started_utc()
-    duration_seconds = max(0.0, (now_utc - started_utc).total_seconds())
+    """Build the Markdown session-summary lines (thin wrapper)."""
+    return _ta_format_summary_lines(
+        _RUNTIME_STATE,
+        session_started_utc=_runtime_session_started_utc(),
+    )
 
-    turn_count = int(_RUNTIME_STATE.get("session_turn_count", 0))
-    success_count = int(_RUNTIME_STATE.get("session_success_count", 0))
-    error_count = int(_RUNTIME_STATE.get("session_error_count", 0))
-    total_latency_ms = float(_RUNTIME_STATE.get("session_total_latency_ms", 0.0))
-    avg_latency_ms = (total_latency_ms / turn_count) if turn_count else 0.0
 
-    session_prompt = int(_RUNTIME_STATE.get("session_prompt_tokens", 0) or 0)
-    session_completion = int(_RUNTIME_STATE.get("session_completion_tokens", 0) or 0)
-    session_total = int(_RUNTIME_STATE.get("session_total_tokens", 0) or 0)
-    session_cached = int(_RUNTIME_STATE.get("session_cached_tokens", 0) or 0)
-    session_reasoning = int(_RUNTIME_STATE.get("session_reasoning_tokens", 0) or 0)
-    session_duration_ms = float(_RUNTIME_STATE.get("session_duration_ms", 0.0) or 0.0)
-    turn_prompt = int(_RUNTIME_STATE.get("turn_prompt_tokens", 0) or 0)
-    turn_completion = int(_RUNTIME_STATE.get("turn_completion_tokens", 0) or 0)
-    turn_total = int(_RUNTIME_STATE.get("turn_total_tokens", 0) or 0)
-    turn_cached = int(_RUNTIME_STATE.get("turn_cached_tokens", 0) or 0)
-    turn_reasoning = int(_RUNTIME_STATE.get("turn_reasoning_tokens", 0) or 0)
-    turn_duration_ms = float(_RUNTIME_STATE.get("turn_duration_ms", 0.0) or 0.0)
+# _apply_turn_usage is defined above as a thin wrapper over token_accounting.
 
-    avg_prompt = (session_prompt / turn_count) if turn_count else 0.0
-    avg_completion = (session_completion / turn_count) if turn_count else 0.0
-    avg_total_tokens = (session_total / turn_count) if turn_count else 0.0
-    avg_duration_ms = (session_duration_ms / turn_count) if turn_count else 0.0
 
-    lines = [
-        "## Session Summary",
-        f"- Duration: {duration_seconds:.1f}s",
-        f"- Turns: {turn_count} (ok: {success_count}, errors: {error_count})",
-        f"- Avg turn latency: {avg_latency_ms:.0f} ms",
-        f"- Provider time: {session_duration_ms:.0f} ms (avg {avg_duration_ms:.0f} ms/turn)",
-        "",
-        "### Token Totals",
-        "| Category | Prompt | Completion | Total | Cached | Reasoning |",
-        "| --- | --- | --- | --- | --- | --- |",
-        f"| Session | {session_prompt} | {session_completion} | {session_total} | "
-        f"{session_cached} | {session_reasoning} |",
-        f"| Last turn | {turn_prompt} | {turn_completion} | {turn_total} | "
-        f"{turn_cached} | {turn_reasoning} |",
-        f"| Avg/turn | {avg_prompt:.0f} | {avg_completion:.0f} | {avg_total_tokens:.0f} | "
-        f"{(session_cached / turn_count) if turn_count else 0:.0f} | "
-        f"{(session_reasoning / turn_count) if turn_count else 0:.0f} |",
-    ]
+def _top_session_mode() -> tuple[str, int] | None:
+    """Return ``(mode_id, count)`` for the most-used mode (thin wrapper)."""
+    return _ta_top_session_mode(_RUNTIME_STATE)
 
-    # ── Per-model breakdown ────────────────────────────────────────────
-    model_totals: dict[str, dict[str, Any]] = _RUNTIME_STATE.get("model_token_totals") or {}
-    if model_totals:
-        lines.extend(
-            [
-                "",
-                "### By Model",
-                "| Model | Prompt | Completion | Total | Cached | Reasoning | Duration ms |",
-                "| --- | --- | --- | --- | --- | --- | --- |",
-            ]
-        )
-        for model_key in sorted(model_totals):
-            entry = model_totals[model_key]
-            lines.append(
-                f"| {model_key} | {entry.get('prompt_tokens', 0)} | "
-                f"{entry.get('completion_tokens', 0)} | {entry.get('total_tokens', 0)} | "
-                f"{entry.get('cached_tokens', 0)} | {entry.get('reasoning_tokens', 0)} | "
-                f"{entry.get('duration_ms', 0.0):.0f} |"
-            )
 
-    # ── Per-mode breakdown ─────────────────────────────────────────────
-    mode_totals: dict[str, dict[str, Any]] = _RUNTIME_STATE.get("mode_token_totals") or {}
-    if mode_totals:
-        lines.extend(
-            [
-                "",
-                "### By Mode",
-                "| Mode | Prompt | Completion | Total | Cached | Reasoning | Duration ms |",
-                "| --- | --- | --- | --- | --- | --- | --- |",
-            ]
-        )
-        for mode_key in sorted(mode_totals):
-            entry = mode_totals[mode_key]
-            lines.append(
-                f"| {mode_key} | {entry.get('prompt_tokens', 0)} | "
-                f"{entry.get('completion_tokens', 0)} | {entry.get('total_tokens', 0)} | "
-                f"{entry.get('cached_tokens', 0)} | {entry.get('reasoning_tokens', 0)} | "
-                f"{entry.get('duration_ms', 0.0):.0f} |"
-            )
-
-    # ── Per-stage breakdown ────────────────────────────────────────────
-    stage_totals: dict[str, dict[str, Any]] = _RUNTIME_STATE.get("stage_token_totals") or {}
-    if stage_totals:
-        lines.extend(
-            [
-                "",
-                "### By Stage",
-                "| Stage | Prompt | Completion | Total | Cached | Reasoning | Duration ms |",
-                "| --- | --- | --- | --- | --- | --- | --- |",
-            ]
-        )
-        for stage_key in sorted(stage_totals):
-            entry = stage_totals[stage_key]
-            lines.append(
-                f"| {stage_key} | {entry.get('prompt_tokens', 0)} | "
-                f"{entry.get('completion_tokens', 0)} | {entry.get('total_tokens', 0)} | "
-                f"{entry.get('cached_tokens', 0)} | {entry.get('reasoning_tokens', 0)} | "
-                f"{entry.get('duration_ms', 0.0):.0f} |"
-            )
-
-    top_mode = _top_session_mode()
-    if top_mode is not None:
-        lines.append(f"- Most used mode: {top_mode[0]} ({top_mode[1]})")
-    return lines
+# _format_session_exit_summary_lines is defined above as a thin wrapper
+# over token_accounting.format_session_exit_summary_lines.
 
 
 def _render_session_exit_summary() -> None:
@@ -1496,162 +1053,13 @@ def _resolve_session_context(session_context: str) -> tuple[str, str, bool]:
     raise ValueError(f"Session context '{s}' was not found.")
 
 
-def context_slug_to_thread_name(slug: str) -> str:
-    """Convert a path or slug to a decent thread name if no front matter is present."""
-    p = Path(slug)
-    name = p.stem
-    if name.lower() == "session_context":
-        return "session_context"
-    return name
+# context_slug_to_thread_name, _normalize_timeout_profile, _resolve_timeout_profile,
+# _resolve_log_level, _normalize_slice_flag, and _resolve_slice_tuning are
+# imported from .config and re-exported here for test compatibility.
 
 
-def _normalize_timeout_profile(value: str) -> str | None:
-    normalized = value.strip().lower()
-    if normalized in {"fast", "balanced", "deep"}:
-        return normalized
-    return None
-
-
-def _resolve_timeout_profile(cli_timeout_profile: str) -> str:
-    cli_value = _normalize_timeout_profile(cli_timeout_profile)
-    if cli_value is not None:
-        return cli_value
-    env_value = _normalize_timeout_profile(os.getenv(_LITTLE_LISA_TIMEOUT_PROFILE_ENV, ""))
-    if env_value is not None:
-        return env_value
-    return "balanced"
-
-
-def _resolve_log_level(cli_log_level: str, *, debug_enabled: bool) -> str:
-    cli_value = _normalize_log_level(cli_log_level)
-    if cli_value is not None:
-        return cli_value
-
-    env_value = _normalize_log_level(os.getenv(_LITTLE_LISA_LOG_LEVEL_ENV, ""))
-    if env_value is not None:
-        return env_value
-
-    if debug_enabled:
-        return "debug"
-    return "info"
-
-
-def _normalize_slice_flag(value: str) -> bool | None:
-    """Parse a boolean-ish env var value for the slice trigger toggles.
-
-    Accepts ``1/true/yes/on`` (case-insensitive) as truthy, ``0/false/no/off``
-    as falsy, and empty string as ``None`` (i.e. let the default win).
-    """
-    cleaned = value.strip().lower()
-    if not cleaned:
-        return None
-    if cleaned in {"1", "true", "yes", "on"}:
-        return True
-    if cleaned in {"0", "false", "no", "off"}:
-        return False
-    return None
-
-
-def _resolve_slice_tuning() -> tuple[dict[str, object], int]:
-    """Resolve the host slice tuning from env vars.
-
-    Returns a tuple of ``(tuning_dict, explicit_budget_ms)``. The tuning dict
-    feeds directly into :meth:`SliceTuning.from_mapping`. The explicit
-    budget is the wall-clock ceiling for the explicit-slice escape hatch
-    (e.g. the ``/consolidate`` command); pre/post slices use the pressure
-    curve and ignore this number.
-    """
-    tuning: dict[str, object] = {}
-    pre = _normalize_slice_flag(os.getenv(_LITTLE_LISA_SLICE_PRE_TURN_ENV, ""))
-    if pre is not None:
-        tuning["pre_turn_enabled"] = pre
-    post = _normalize_slice_flag(os.getenv(_LITTLE_LISA_SLICE_POST_TURN_ENV, ""))
-    if post is not None:
-        tuning["post_turn_enabled"] = post
-    explicit = _normalize_slice_flag(os.getenv(_LITTLE_LISA_SLICE_EXPLICIT_ENV, ""))
-    if explicit is not None:
-        tuning["explicit_enabled"] = explicit
-    raw_budget = os.getenv(_LITTLE_LISA_SLICE_BUDGET_MS_ENV, "").strip()
-    explicit_budget_ms = 2000  # safe default for an explicit user-initiated slice
-    if raw_budget:
-        try:
-            explicit_budget_ms = max(50, min(int(raw_budget), 30_000))
-        except ValueError:
-            pass
-    return tuning, explicit_budget_ms
-
-
-def _normalize_timezone_name(value: str) -> str | None:
-    configured = value.strip()
-    if not configured:
-        return None
-    resolved_alias = _resolve_timezone_alias(configured)
-    if resolved_alias is not None:
-        return resolved_alias
-    if configured == "UTC":
-        return configured
-    if "/" not in configured:
-        return None
-    if any(char.isspace() for char in configured):
-        return None
-    return configured
-
-
-def _resolve_timezone(cli_timezone: str) -> tuple[str, str]:
-    cli_raw = cli_timezone.strip()
-    if cli_raw:
-        cli_value = _normalize_timezone_name(cli_raw)
-        if cli_value is None:
-            raise ValueError(
-                f"Timezone '{cli_raw}' from --timezone is not resolvable. "
-                "Use an IANA timezone such as 'UTC' or 'America/New_York'."
-            )
-        return cli_value, "cli"
-
-    explicit_env_raw = os.getenv(_LITTLE_LISA_TIMEZONE_ENV, "").strip()
-    if explicit_env_raw:
-        explicit_env = _normalize_timezone_name(explicit_env_raw)
-        if explicit_env is None:
-            raise ValueError(
-                f"Timezone '{explicit_env_raw}' from "
-                f"{_LITTLE_LISA_TIMEZONE_ENV} is not resolvable. "
-                "Use an IANA timezone such as 'UTC' or 'America/New_York'."
-            )
-        return explicit_env, f"env:{_LITTLE_LISA_TIMEZONE_ENV}"
-
-    os_candidates = _OS_TIMEZONE_ENV_CANDIDATES.get(platform.system(), ())
-    for env_name in os_candidates:
-        env_raw = os.getenv(env_name, "").strip()
-        if not env_raw:
-            continue
-        env_value = _normalize_timezone_name(env_raw)
-        if env_value is None:
-            raise ValueError(
-                f"Timezone '{env_raw}' from {env_name} is not resolvable. "
-                "Use an IANA timezone such as 'UTC' or 'America/New_York'."
-            )
-        return env_value, f"os-env:{env_name}"
-
-    local_tz = datetime.now().astimezone().tzinfo
-    if local_tz is not None:
-        local_name = str(local_tz).strip()
-        normalized_local = _normalize_timezone_name(local_name)
-        if normalized_local is None:
-            # Windows reports tzinfo display names (e.g. "Eastern Daylight Time")
-            # that are not IANA keys. The registry uses "Standard Time" suffixes,
-            # but the runtime string swaps in "Daylight Time" during DST, so try
-            # both the raw name and the standard-time form before falling back.
-            windows_iana = _WINDOWS_TZ_DISPLAY_TO_IANA.get(local_name)
-            if windows_iana is None and local_name.endswith(" Daylight Time"):
-                windows_iana = _WINDOWS_TZ_DISPLAY_TO_IANA.get(
-                    local_name.replace(" Daylight Time", " Standard Time")
-                )
-            if windows_iana is not None:
-                normalized_local = windows_iana
-        if normalized_local is not None:
-            return normalized_local, "system-local"
-
-    return "UTC", "default"
+# _normalize_timezone_name and _resolve_timezone are imported from .config
+# and re-exported here for test compatibility.
 
 
 def _load_selected_session_context_text() -> str:
@@ -3160,35 +2568,9 @@ def _extract_completion_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def _coerce_non_negative_int(value: Any) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _coerce_non_negative_float(value: Any) -> float:
-    try:
-        return max(0.0, float(value or 0.0))
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _ensure_usage_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    """Ensure one breakdown dict has every token/time field.
-
-    Pre-existing entries (from earlier sessions or tests with the old
-    3-key schema) are upgraded in place so the accumulator math never
-    raises ``KeyError`` on a missing ``cached_tokens`` etc.
-    """
-    entry.setdefault("prompt_tokens", 0)
-    entry.setdefault("completion_tokens", 0)
-    entry.setdefault("total_tokens", 0)
-    entry.setdefault("cached_tokens", 0)
-    entry.setdefault("reasoning_tokens", 0)
-    entry.setdefault("duration_ms", 0.0)
-    entry.setdefault("latency_ms", 0)
-    return entry
+# _coerce_non_negative_int, _coerce_non_negative_float, and _ensure_usage_entry
+# are imported from .token_accounting (see import block above) and re-exported
+# here for use by provider completion, front-door debug, and other callers.
 
 
 def _extract_usage_counts(

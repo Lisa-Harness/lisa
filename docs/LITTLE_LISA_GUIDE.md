@@ -248,6 +248,61 @@ When `--log <file>` is enabled, natural-language turns include:
 
 This is the check-of-record surface for proving whether a `default` route was intentionally chosen or forced by fallback.
 
+## Architecture
+
+Little Lisa is intentionally organised as a **thin orchestration shell** (`main.py`) backed by focused, single-responsibility modules.  The decomposition is designed to be instructional: each module has a clear purpose, a single dependency direction, and well-commented entry points.
+
+### Module Map
+
+| Module | Responsibility | Depends on |
+| --- | --- | --- |
+| `main.py` | CLI entry point, REPL loop, turn orchestration, provider routing, front-door planning, `handle_message` dispatch | `config`, `token_accounting`, `model_runtime`, `model_manifest`, `desktop`, `tray` |
+| `config.py` | Pure configuration resolution: timezone, timeout profile, log level, streaming mode, slice tuning — all deterministic, no side effects, no global state | stdlib only |
+| `token_accounting.py` | Token ledger accumulation, session counter roll-up, session-summary Markdown generation — accepts state dict as parameter, fully testable in isolation | stdlib only |
+| `model_runtime.py` | Model manifest loading, model resolution by designation/alias/concrete ID | kernel `model_manifest` |
+| `model_manifest.py` | Manifest file discovery and loading from `models.yaml` | kernel `model_manifest` |
+| `desktop.py` | Localhost web-host callbacks and token-auth for the desktop UI | kernel models |
+| `tray.py` | System-tray launcher that manages the desktop host subprocess | `desktop` |
+
+### Design Principles
+
+1. **Config is pure.** `config.py` contains only deterministic functions that map user input (CLI flags, env vars) to normalised values.  No global mutable state, no side effects.  Precedence rules (CLI > env > default) are explicit in each resolver's docstring.
+
+2. **Token accounting is stateless.** `token_accounting.py` functions accept the runtime state dict as an explicit parameter.  This makes the ledger logic independently testable without importing the full host.
+
+3. **Test seams are module-level.** Tests use `monkeypatch.setattr(little_lisa, "_resolve_model", fake)` to replace individual functions.  All test-visible names remain on the `main` module surface (re-imported from submodules) so monkeypatching works unchanged.
+
+4. **Direct-script fallback.** All submodule imports in `main.py` use `try: from .module import ... / except ImportError: from module import ...` so the file can be run as a standalone script (`python main.py --list-modes`) without package context.
+
+5. **Runtime state stays a dict.** `_RUNTIME_STATE` is a plain dict (not a typed dataclass) because tests directly mutate it via `monkeypatch.setitem`.  Accessor functions (`_runtime_debug_enabled()`, `_runtime_timezone()`, etc.) provide type-safe reads without changing the dict contract.
+
+### Data Flow
+
+```mermaid
+graph TD
+    CLI["CLI / Typer entry"] --> Init["_initialize_runtime"]
+    Init --> Config["config.py<br/>resolve timezone, timeout, streaming"]
+    Init --> State["_RUNTIME_STATE dict"]
+    REPL["REPL loop (_run_repl)"] --> Handle["handle_message"]
+    Handle --> Frontdoor["_plan_frontdoor_route"]
+    Frontdoor --> Complete["_complete_live<br/>(provider routing)"]
+    Handle --> TurnRunner["kernel.run_turn"]
+    TurnRunner --> Complete
+    TurnRunner --> TokenAccounting["token_accounting.py<br/>apply_turn_usage"]
+    TokenAccounting --> State
+    Handle --> Render["_render_response<br/>(terminal rendering)"]
+```
+
+### Adding a New Module
+
+When extracting a new concern from `main.py`:
+
+1. Create `examples/little_lisa/<concern>.py` with a module-level docstring describing its responsibility, dependency direction, and re-exported names.
+2. Write pure functions that accept state/config as parameters — avoid global state references.
+3. In `main.py`, import the new module's functions using the `try/except ImportError` fallback pattern.
+4. Keep thin wrapper functions in `main.py` for any name that tests monkeypatch directly.
+5. Run `uv run pytest examples/little_lisa/ -q` to verify zero regressions.
+
 ## Runtime Options
 
 - `--user <slug>` selects authored context from `content/user_contexts/<slug>.md` and controls local thread-log keying.
