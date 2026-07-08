@@ -18,7 +18,6 @@ dependencies = [
     "lisa-kernel",
     "lisa-sdk",
     "lisa-pack-core",
-    "lisa-pack-extras",
     "aiohttp>=3.10.0",
     "openai>=1.30.0",
     "pillow>=10.0.0",
