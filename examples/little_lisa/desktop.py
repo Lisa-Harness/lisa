@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import logging
 import secrets
 import webbrowser
 from collections.abc import Awaitable, Callable
@@ -9,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from aiohttp import web
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DESKTOP_HOST = "127.0.0.1"
 DEFAULT_DESKTOP_PORT = 8765
@@ -324,6 +327,7 @@ def _build_desktop_app(*, callbacks: DesktopCallbacks, token: str) -> web.Applic
     async def _index(request: web.Request) -> web.Response:
         expected_token = str(request.app["desktop_token"])
         if not _is_token_valid(request, expected_token):
+            logger.warning("desktop index unauthorized request from %s", request.remote)
             return web.Response(status=401, text="Unauthorized")
         html_page = build_desktop_index_html(token=expected_token)
         return web.Response(text=html_page, content_type="text/html")
@@ -334,6 +338,7 @@ def _build_desktop_app(*, callbacks: DesktopCallbacks, token: str) -> web.Applic
     async def _context(request: web.Request) -> web.Response:
         expected_token = str(request.app["desktop_token"])
         if not _is_token_valid(request, expected_token):
+            logger.warning("desktop context unauthorized request from %s", request.remote)
             return web.json_response({"error": "unauthorized"}, status=401)
         local_callbacks = request.app["callbacks"]
         assert isinstance(local_callbacks, DesktopCallbacks)
@@ -343,15 +348,18 @@ def _build_desktop_app(*, callbacks: DesktopCallbacks, token: str) -> web.Applic
     async def _chat(request: web.Request) -> web.Response:
         expected_token = str(request.app["desktop_token"])
         if not _is_token_valid(request, expected_token):
+            logger.warning("desktop chat unauthorized request from %s", request.remote)
             return web.json_response({"error": "unauthorized"}, status=401)
 
         try:
             payload = await request.json()
         except Exception:
+            logger.warning("desktop chat received invalid JSON body from %s", request.remote)
             return web.json_response({"error": "invalid json body"}, status=400)
 
         message = str(payload.get("message") or "").strip() if isinstance(payload, dict) else ""
         if not message:
+            logger.debug("desktop chat rejected empty message from %s", request.remote)
             return web.json_response({"error": "message is required"}, status=400)
 
         local_callbacks = request.app["callbacks"]
@@ -363,6 +371,7 @@ def _build_desktop_app(*, callbacks: DesktopCallbacks, token: str) -> web.Applic
             try:
                 response_text = await local_callbacks.handle_turn(message)
             except Exception as exc:  # pylint: disable=broad-except
+                logger.error("desktop chat turn failed: %s: %s", type(exc).__name__, exc)
                 return web.json_response(
                     {"error": f"{type(exc).__name__}: {exc}"},
                     status=500,
@@ -395,6 +404,7 @@ def run_desktop_server(
 
     app = _build_desktop_app(callbacks=callbacks, token=token)
     launch_url = desktop_url(host=host, port=port, token=token)
+    logger.info("starting desktop server on %s:%d", host, port)
 
     if open_browser:
 

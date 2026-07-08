@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,8 @@ try:
     from .model_manifest import load_model_manifest
 except ImportError:  # pragma: no cover - direct script execution fallback
     from model_manifest import load_model_manifest  # type: ignore[no-redef]
+
+logger = logging.getLogger(__name__)
 
 MANIFEST_ENV = "LITTLE_LISA_MODELS_FILE"
 _DEFAULT_DESIGNATIONS = frozenset({"front-door", "default", "deep", "reasoning"})
@@ -62,6 +65,7 @@ def load_manifest(
 
     manifest = runtime_state.get(_MANIFEST_CACHE_KEY)
     if manifest is None:
+        logger.debug("manifest cache miss; loading from disk")
         manifest = load_model_manifest(manifest_path_from_env(env_var=env_var))
         runtime_state[_MANIFEST_CACHE_KEY] = manifest
     return manifest
@@ -74,6 +78,7 @@ def reload_manifest(
 ) -> ModelManifest:
     """Reload the manifest from disk and return the new snapshot."""
 
+    logger.debug("reloading model manifest from disk")
     manifest = load_model_manifest(manifest_path_from_env(env_var=env_var))
     runtime_state[_MANIFEST_CACHE_KEY] = manifest
     return manifest
@@ -88,6 +93,7 @@ def require_models_present(
 
     manifest = load_manifest(runtime_state, env_var=env_var)
     if not manifest.models:
+        logger.error("manifest has no models configured")
         raise ValueError("Little Lisa requires at least one model in models.yaml.")
 
 
@@ -106,19 +112,24 @@ def resolve_little_lisa_model(
     if normalized in _DEFAULT_DESIGNATIONS:
         designated = _designated_model(manifest, normalized)
         if designated is not None:
+            logger.debug("resolved designation %r -> %s", normalized, designated.model_id)
             return _to_stub_model_definition(designated)
         if normalized == "default":
             first_model = manifest.models[0]
+            logger.debug("no 'default' designation; using first model %s", first_model.model_id)
             return _to_stub_model_definition(first_model)
+        logger.error("manifest missing designation %r", normalized)
         raise ValueError(f"Little Lisa manifest is missing the '{normalized}' designation.")
 
     resolved = _find_model(manifest, requested)
     if resolved is None:
         known_models = ", ".join(model.model_id for model in manifest.models)
+        logger.error("model %r not in manifest (configured: %s)", requested, known_models)
         raise ValueError(
             f"Model '{requested}' is not in the Little Lisa manifest. "
             f"Configured models: {known_models}"
         )
+    logger.debug("resolved model id %r -> %s", requested, resolved.model_id)
     return _to_stub_model_definition(resolved)
 
 

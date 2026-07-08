@@ -34,8 +34,11 @@ Re-exported names (wrapped in main.py for backward test compatibility)
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # ── Coercion helpers ──────────────────────────────────────────────────
 
@@ -252,6 +255,13 @@ def apply_turn_usage(
 
     # ── Front-door ledger and breakdowns (if applicable) ───────────
     if fd_total > 0 or fd_duration_ms > 0:
+        logger.debug(
+            "recording front-door ledger entry: model=%s prompt=%d completion=%d total=%d",
+            fd_model_id or "front-door",
+            fd_prompt,
+            fd_completion,
+            fd_total,
+        )
         ledger.append(
             {
                 "turn": turn_index,
@@ -297,6 +307,13 @@ def apply_turn_usage(
         )
 
     # ── Main execution ledger entry ────────────────────────────────
+    logger.debug(
+        "recording turn ledger entry: model=%s mode=%s stage=%s total_tokens=%d",
+        (model_id or "-").strip(),
+        (mode_id or "-").strip(),
+        (stage_id or "-").strip(),
+        main_total,
+    )
     ledger.append(
         {
             "turn": turn_index,
@@ -369,6 +386,7 @@ def record_session_turn(
         state["session_error_count"] = (
             int(state.get("session_error_count", 0)) + 1
         )
+        logger.warning("turn failed (mode=%s, latency_ms=%.0f)", mode_id or "-", latency_ms)
     total_latency = float(state.get("session_total_latency_ms", 0.0))
     state["session_total_latency_ms"] = total_latency + max(0.0, latency_ms)
 
@@ -377,6 +395,13 @@ def record_session_turn(
         mode_counts = dict(state.get("session_mode_counts") or {})
         mode_counts[selected_mode] = int(mode_counts.get(selected_mode, 0)) + 1
         state["session_mode_counts"] = mode_counts
+    logger.debug(
+        "session turn recorded: total=%d ok=%d errors=%d latency_ms=%.0f",
+        int(state.get("session_turn_count", 0)),
+        int(state.get("session_success_count", 0)),
+        int(state.get("session_error_count", 0)),
+        latency_ms,
+    )
 
 
 def top_session_mode(state: dict[str, Any]) -> tuple[str, int] | None:

@@ -23,10 +23,13 @@ Public surface (re-exported by ``main.py`` for backward compatibility)
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+logger = logging.getLogger(__name__)
 
 # ── Environment-variable name constants ──────────────────────────────
 # Centralised here so config functions and main.py share a single source
@@ -214,6 +217,7 @@ def _resolve_timezone_alias(value: str) -> str | None:
         zi = ZoneInfo(posix_key)
         return str(zi)
     except ZoneInfoNotFoundError:
+        logger.debug("unresolvable POSIX timezone alias %r", posix_key)
         return None
 
 
@@ -261,21 +265,25 @@ def _resolve_timezone(cli_timezone: str) -> tuple[str, str]:
     if cli_raw:
         cli_value = _normalize_timezone_name(cli_raw)
         if cli_value is None:
+            logger.warning("unresolvable --timezone value %r", cli_raw)
             raise ValueError(
                 f"Timezone '{cli_raw}' from --timezone is not resolvable. "
                 "Use an IANA timezone such as 'UTC' or 'America/New_York'."
             )
+        logger.debug("timezone resolved from CLI: %s", cli_value)
         return cli_value, "cli"
 
     explicit_env_raw = os.getenv(_LITTLE_LISA_TIMEZONE_ENV, "").strip()
     if explicit_env_raw:
         explicit_env = _normalize_timezone_name(explicit_env_raw)
         if explicit_env is None:
+            logger.warning("unresolvable %s value %r", _LITTLE_LISA_TIMEZONE_ENV, explicit_env_raw)
             raise ValueError(
                 f"Timezone '{explicit_env_raw}' from "
                 f"{_LITTLE_LISA_TIMEZONE_ENV} is not resolvable. "
                 "Use an IANA timezone such as 'UTC' or 'America/New_York'."
             )
+        logger.debug("timezone resolved from %s: %s", _LITTLE_LISA_TIMEZONE_ENV, explicit_env)
         return explicit_env, f"env:{_LITTLE_LISA_TIMEZONE_ENV}"
 
     os_candidates = _OS_TIMEZONE_ENV_CANDIDATES.get(platform.system(), ())
@@ -285,10 +293,12 @@ def _resolve_timezone(cli_timezone: str) -> tuple[str, str]:
             continue
         env_value = _normalize_timezone_name(env_raw)
         if env_value is None:
+            logger.warning("unresolvable OS env timezone %s=%r", env_name, env_raw)
             raise ValueError(
                 f"Timezone '{env_raw}' from {env_name} is not resolvable. "
                 "Use an IANA timezone such as 'UTC' or 'America/New_York'."
             )
+        logger.debug("timezone resolved from OS env %s: %s", env_name, env_value)
         return env_value, f"os-env:{env_name}"
 
     local_tz = datetime.now().astimezone().tzinfo
@@ -308,7 +318,9 @@ def _resolve_timezone(cli_timezone: str) -> tuple[str, str]:
             if windows_iana is not None:
                 normalized_local = windows_iana
         if normalized_local is not None:
+            logger.debug("timezone resolved from system-local: %s", normalized_local)
             return normalized_local, "system-local"
+        logger.debug("system-local timezone unresolvable; falling back to UTC")
 
     return "UTC", "default"
 
@@ -328,6 +340,7 @@ def _normalize_log_level(value: str) -> str | None:
         normalized = "warning"
     if normalized in _LOG_LEVEL_ORDER:
         return normalized
+    logger.debug("unrecognised log-level value %r", value)
     return None
 
 
@@ -339,13 +352,16 @@ def _resolve_log_level(cli_log_level: str, *, debug_enabled: bool) -> str:
     """
     cli_value = _normalize_log_level(cli_log_level)
     if cli_value is not None:
+        logger.debug("log level resolved from CLI: %s", cli_value)
         return cli_value
 
     env_value = _normalize_log_level(os.getenv(_LITTLE_LISA_LOG_LEVEL_ENV, ""))
     if env_value is not None:
+        logger.debug("log level resolved from %s: %s", _LITTLE_LISA_LOG_LEVEL_ENV, env_value)
         return env_value
 
     if debug_enabled:
+        logger.debug("log level defaulting to debug because --debug is set")
         return "debug"
     return "info"
 
@@ -358,6 +374,7 @@ def _normalize_timeout_profile(value: str) -> str | None:
     normalized = value.strip().lower()
     if normalized in {"fast", "balanced", "deep"}:
         return normalized
+    logger.debug("unrecognised timeout-profile value %r", value)
     return None
 
 
@@ -365,9 +382,11 @@ def _resolve_timeout_profile(cli_timeout_profile: str) -> str:
     """Resolve the timeout profile with CLI > env > default precedence."""
     cli_value = _normalize_timeout_profile(cli_timeout_profile)
     if cli_value is not None:
+        logger.debug("timeout profile resolved from CLI: %s", cli_value)
         return cli_value
     env_value = _normalize_timeout_profile(os.getenv(_LITTLE_LISA_TIMEOUT_PROFILE_ENV, ""))
     if env_value is not None:
+        logger.debug("timeout profile resolved from %s: %s", _LITTLE_LISA_TIMEOUT_PROFILE_ENV, env_value)
         return env_value
     return "balanced"
 
@@ -438,6 +457,7 @@ def _normalize_slice_flag(value: str) -> bool | None:
         return True
     if cleaned in {"0", "false", "no", "off"}:
         return False
+    logger.debug("unrecognised slice flag value %r", value)
     return None
 
 
@@ -466,7 +486,7 @@ def _resolve_slice_tuning() -> tuple[dict[str, object], int]:
         try:
             explicit_budget_ms = max(50, min(int(raw_budget), 30_000))
         except ValueError:
-            pass
+            logger.warning("invalid %s value %r; using default %d ms", _LITTLE_LISA_SLICE_BUDGET_MS_ENV, raw_budget, explicit_budget_ms)
     return tuning, explicit_budget_ms
 
 

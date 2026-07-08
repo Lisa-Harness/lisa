@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
@@ -14,6 +15,8 @@ try:
     from .desktop import desktop_url
 except ImportError:  # pragma: no cover - direct script execution fallback
     from desktop import desktop_url  # type: ignore[no-redef]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -41,26 +44,33 @@ class _DesktopProcess:
 
     def start(self) -> None:
         if self._process is not None and self._process.poll() is None:
+            logger.debug("desktop process already running; skip start")
             return
         command = _desktop_subprocess_command(self._config.desktop_args)
+        logger.info("starting desktop subprocess: %s", " ".join(command))
         self._process = subprocess.Popen(command)
         _wait_for_health(self._config.host, self._config.port)
 
     def stop(self) -> None:
         if self._process is None:
+            logger.debug("desktop process already stopped; skip stop")
             return
         if self._process.poll() is not None:
+            logger.debug("desktop process already exited; clearing handle")
             self._process = None
             return
+        logger.info("stopping desktop subprocess")
         self._process.terminate()
         try:
             self._process.wait(timeout=4)
         except subprocess.TimeoutExpired:
+            logger.warning("desktop subprocess did not exit within 4s; killing")
             self._process.kill()
         finally:
             self._process = None
 
     def restart(self) -> None:
+        logger.info("restarting desktop subprocess")
         self.stop()
         self.start()
 
@@ -80,10 +90,12 @@ def _wait_for_health(host: str, port: int, timeout_seconds: float = 10.0) -> Non
             with httpx.Client(timeout=0.5) as client:
                 response = client.get(url)
                 if response.status_code == 200:
+                    logger.debug("desktop health check passed at %s", url)
                     return
         except Exception:
             pass
         time.sleep(0.2)
+    logger.error("desktop health check timed out after %.1fs at %s", timeout_seconds, url)
 
 
 def _open_logs_dir(path: Path) -> None:
@@ -110,10 +122,12 @@ def run_tray(config: TrayConfig) -> None:
     try:
         import pystray
     except Exception as exc:
+        logger.error("pystray import failed: %s: %s", type(exc).__name__, exc)
         raise RuntimeError(
             "pystray is required for tray mode. Install 'pystray' and 'pillow'."
         ) from exc
 
+    logger.info("starting tray (host=%s port=%d open_on_start=%s)", config.host, config.port, config.open_on_start)
     desktop = _DesktopProcess(config)
     desktop.start()
     if config.open_on_start:
@@ -149,3 +163,4 @@ def run_tray(config: TrayConfig) -> None:
         icon.run()
     finally:
         desktop.stop()
+        logger.info("tray stopped; desktop subprocess cleaned up")

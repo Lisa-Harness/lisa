@@ -25,9 +25,12 @@ Public surface (re-exported by ``main.py`` for backward test compatibility)
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 # ── LogContext type ──────────────────────────────────────────────────
@@ -296,6 +299,9 @@ def write_log_record(record: dict[str, Any], log_path: Path | None) -> None:
     """
     if log_path is None:
         return
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+    except OSError as exc:
+        logger.error("failed to write log record to %s: %s: %s", log_path, type(exc).__name__, exc)
