@@ -262,10 +262,22 @@ def test_compile_cwd_workspace_without_root() -> None:
 # ── compile_mcp_config ──────────────────────────────────────────────────────
 
 
-def test_compile_mcp_config_requires_data_dir() -> None:
-    spec = MCPServerSpec(server_id="t", runtime_kind=RuntimeKind.PYTHON, module="pkg.server")
-    with pytest.raises(ValueError, match="data_dir is required"):
-        compile_mcp_config(spec)
+def test_compile_mcp_config_without_data_dir_is_optional() -> None:
+    """data_dir is now optional — a spec without it compiles without injection.
+
+    Third-party servers that manage their own storage (e.g. Mem0 via npx)
+    set data_dir_arg=None and never receive a data-dir flag.
+    """
+    spec = MCPServerSpec(
+        server_id="t",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="pkg.server",
+        data_dir_arg=None,
+    )
+    config = compile_mcp_config(spec)
+    assert config.server_id == "t"
+    assert "--data-dir" not in config.args
+    assert config.data_dir_path is None
 
 
 def test_compile_mcp_config_builds_cli_args() -> None:
@@ -334,6 +346,112 @@ def test_compile_registry_injects_workspace_root() -> None:
     )
     configs = compile_registry(registry, data_dir="/data", workspace_root="/ws")
     assert any("--workspace-root" in c.args for c in configs)
+
+
+# ── data-dir adaptation ─────────────────────────────────────────────────────
+
+
+def test_compile_mcp_config_data_dir_subdir_injects_namespaced_path() -> None:
+    """data_dir_subdir appends a namespaced subfolder to the injected path."""
+    spec = MCPServerSpec(
+        server_id="t",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="pkg.server",
+        data_dir="/data",
+        data_dir_subdir="mem0",
+    )
+    config = compile_mcp_config(spec)
+    assert "--data-dir" in config.args
+    idx = config.args.index("--data-dir")
+    assert config.args[idx + 1].endswith("mem0")
+    assert "mem0" in config.args[idx + 1]
+
+
+def test_compile_mcp_config_custom_data_dir_arg() -> None:
+    """data_dir_arg overrides the flag name injected for third-party servers."""
+    spec = MCPServerSpec(
+        server_id="t",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="pkg.server",
+        data_dir="/data",
+        data_dir_arg="--store-dir",
+    )
+    config = compile_mcp_config(spec)
+    assert "--store-dir" in config.args
+    assert "--data-dir" not in config.args
+    assert "/data" in config.args
+
+
+def test_compile_mcp_config_null_data_dir_arg_omits_injection() -> None:
+    """data_dir_arg=None means the server manages its own storage — no flag."""
+    spec = MCPServerSpec(
+        server_id="t",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="pkg.server",
+        data_dir="/data",
+        data_dir_arg=None,
+    )
+    config = compile_mcp_config(spec)
+    assert "--data-dir" not in config.args
+    assert "/data" not in config.args
+
+
+def test_compile_mcp_config_ensure_data_dir_sets_pool_fields() -> None:
+    """ensure_data_dir stamps data_dir_path/ensure_data_dir for the pool to mkdir."""
+    spec = MCPServerSpec(
+        server_id="t",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="pkg.server",
+        data_dir="/data",
+        data_dir_subdir="mem0",
+        ensure_data_dir=True,
+    )
+    config = compile_mcp_config(spec)
+    assert config.ensure_data_dir is True
+    assert config.data_dir_path is not None
+    assert config.data_dir_path.endswith("mem0")
+
+
+def test_compile_mcp_config_ensure_data_dir_without_subdir_uses_plain_data_dir() -> None:
+    spec = MCPServerSpec(
+        server_id="t",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="pkg.server",
+        data_dir="/data",
+        ensure_data_dir=True,
+    )
+    config = compile_mcp_config(spec)
+    assert config.ensure_data_dir is True
+    assert config.data_dir_path == "/data"
+
+
+def test_compile_mcp_config_ensure_data_dir_false_does_not_stamp_path() -> None:
+    """When ensure_data_dir is False, the pool does not receive a path to mkdir."""
+    spec = MCPServerSpec(
+        server_id="t",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="pkg.server",
+        data_dir="/data",
+    )
+    config = compile_mcp_config(spec)
+    assert config.ensure_data_dir is False
+    assert config.data_dir_path is None
+
+
+def test_compile_mcp_config_first_party_default_preserves_behavior() -> None:
+    """Default data_dir_arg='--data-dir' keeps first-party behavior unchanged."""
+    spec = MCPServerSpec(
+        server_id="lisa-context",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="lisa_context.server",
+        data_dir="/data",
+    )
+    config = compile_mcp_config(spec)
+    assert "--data-dir" in config.args
+    idx = config.args.index("--data-dir")
+    assert config.args[idx + 1] == "/data"
+    assert config.data_dir_path is None
+    assert config.ensure_data_dir is False
 
 
 # ── filter_tools ─────────────────────────────────────────────────────────────

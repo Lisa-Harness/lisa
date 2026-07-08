@@ -132,6 +132,35 @@ class MCPServerSpec:
     cli_args: list[str] = field(default_factory=list)
     """Additional CLI args to pass after the standard contract args."""
 
+    data_dir_arg: str | None = "--data-dir"
+    """How to inject the host data-dir into the server's CLI.
+
+    - ``"--data-dir"`` (default): pass as ``--data-dir <path>`` (first-party contract).
+    - any other flag string (e.g. ``"--store-dir"``): pass as that flag + the resolved path.
+      Used for third-party servers that accept a data-directory flag under a
+      different name.
+    - ``None``: do not inject a data-dir flag at all. Used for servers that
+      manage their own storage (e.g. a hosted MCP server like Mem0 via npx).
+    """
+
+    data_dir_subdir: str | None = None
+    """Optional namespaced subfolder under the host data-dir this server owns.
+
+    When set, the actual directory passed to the server is
+    ``Path(data_dir) / data_dir_subdir``. Lets a server own a dedicated
+    subfolder of the host data-dir (possibly used destructively) without
+    colliding with other servers' storage.
+    """
+
+    ensure_data_dir: bool = False
+    """When True, the runtime creates the (sub)dir before spawning the server.
+
+    Useful when a server expects its storage directory to pre-exist, or when
+    the host wants to guarantee a managed subfolder is present before the
+    server owns it. The directory is created even when ``data_dir_arg`` is
+    ``None`` — a server may want a managed folder it discovers its own way.
+    """
+
     env_policy: EnvPolicy = field(default_factory=EnvPolicy)
     cwd_policy: CwdPolicy = field(default_factory=CwdPolicy)
     tool_policy: ToolPolicy = field(default_factory=ToolPolicy)
@@ -139,7 +168,8 @@ class MCPServerSpec:
 
     # Host-provided args injected at compile time
     data_dir: str | None = None
-    """Resolved data directory. The host sets this; the compiler passes it as --data-dir."""
+    """Resolved data directory. The host sets this; the compiler passes it as
+    ``--data-dir`` (or whatever ``data_dir_arg`` names)."""
 
     workspace_root: str | None = None
     """Resolved workspace root. Passed as --workspace-root when set."""

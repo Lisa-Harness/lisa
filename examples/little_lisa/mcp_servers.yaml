@@ -1,0 +1,65 @@
+---
+version: 1
+
+# Which registered server_id backs the generic memory aliases
+# (memory.add / memory.search / memory.list). When null/absent, the
+# first-party lisa-context server is the default.
+memory:
+  default_backend: mem0
+  # Tool-name mapping per backend. The generic aliases route through here.
+  backends:
+    lisa-context:
+      add: add_memory
+      search: search_memory
+      list: list_memories
+    mem0:
+      add: add_memories
+      search: search_memories
+      list: get_all_memories
+
+servers:
+  # Hosted Mem0 MCP server (managed API). Stores data server-side, so
+  # data_dir_arg is null — the host does not inject --data-dir. ensure_data_dir
+  # is off for the same reason.
+  - server_id: mem0
+    runtime_kind: npx
+    npx_package: "@mem0/mcp"
+    data_dir_arg: null
+    ensure_data_dir: false
+    env:
+      MEM0_API_KEY: "${MEM0_API_KEY}"
+      MEM0_ORG_ID: "${MEM0_ORG_ID}"
+      MEM0_PROJECT_ID: "${MEM0_PROJECT_ID}"
+    tool_policy:
+      # Deny destructive tools unless a mode explicitly needs them.
+      denied_tools: [delete_memory]
+    timeouts:
+      startup_seconds: 45
+      call_seconds: 90
+
+  # Letta — heavier memory-first agent runtime with its own MCP bridge.
+  # Registered but disabled by default; uncomment / flip to true to opt in.
+  - server_id: letta
+    runtime_kind: npx
+    npx_package: "@letta/mcp-server"
+    data_dir_arg: null
+    env:
+      LETTA_API_KEY: "${LETTA_API_KEY}"
+    disabled: true
+
+  # Self-hosted Mem0 (OSS) — no outbound calls, reuses the Ollama embeddings
+  # model already declared in models.yaml. Takes a server-specific store flag,
+  # namespaced under the host data-dir, and pre-creates the folder before
+  # spawning. Disabled by default; the hosted entry above is the default.
+  - server_id: mem0-selfhosted
+    runtime_kind: uv
+    package: mem0ai
+    module: mem0.server.mcp
+    data_dir_arg: "--store-dir"
+    data_dir_subdir: "mem0"
+    ensure_data_dir: true
+    env:
+      MEM0_EMBEDDING_MODEL: "ollama:gemma4:cloud"
+      MEM0_VECTOR_STORE: "qdrant"
+      MEM0_VECTOR_STORE_URL: "${QDRANT_URL}"
+    disabled: true

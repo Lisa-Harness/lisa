@@ -24,7 +24,7 @@ import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,14 @@ __all__ = [
     "MCPToolPool",
     "MCPToolResult",
     "MCPToolSpec",
+    "SyntheticToolSpec",
+    "SYNTHETIC_SERVER_ID",
 ]
+
+#: The ``server_id`` stamped on synthetic (host-owned) tool specs so the
+#: catalog can distinguish them from MCP-discovered tools. Synthetic tools
+#: are never routed to a subprocess — they dispatch to an in-process handler.
+SYNTHETIC_SERVER_ID = "__synthetic__"
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +70,14 @@ class MCPClientConfig:
             without that server's tools. Ignored when ``warm=False``;
             cold servers keep their existing swallow-and-warn behavior.
             Default False.
+        data_dir_path: The resolved data directory (post-subdir) the pool
+            should ensure exists before spawning the server. The compiler
+            sets this from ``MCPServerSpec.data_dir`` / ``data_dir_subdir``.
+            May be ``None`` for servers that manage their own storage.
+        ensure_data_dir: When True, the pool creates ``data_dir_path``
+            (with ``parents=True, exist_ok=True``) before spawning the
+            server. Lets a server own a managed subfolder that is guaranteed
+            to pre-exist. Default False.
     """
 
     server_id: str
@@ -73,6 +88,8 @@ class MCPClientConfig:
     tool_policy: Any = None
     warm: bool = False
     required: bool = False
+    data_dir_path: str | None = None
+    ensure_data_dir: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +104,29 @@ class MCPToolSpec:
     name: str
     description: str
     input_schema: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class SyntheticToolSpec:
+    """One host-owned tool exposed in the same catalog as MCP-discovered tools.
+
+    Synthetic tools are a **generic** mechanism: any well-known or made-up
+    call can be registered as a synthetic tool and dispatched in-process,
+    without an MCP server subprocess backing it. The canonical use case is
+    memory aliases (``memory.add`` / ``memory.search`` / ``memory.list``)
+    that route to whichever backend is wired as default — but the mechanism
+    is not memory-specific. A synthetic tool may also redirect to an MCP
+    server tool via :func:`kernel.tools.synthetic.mcp_alias_tool`.
+
+    On the wire to the model, a synthetic tool is indistinguishable from an
+    MCP-discovered tool: it flows through the same
+    ``mcp_tool_to_openai_function`` translator and ``call_tool`` dispatch.
+    """
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    handler: Callable[[dict[str, Any]], Awaitable[str]]
 
 
 @dataclass(slots=True)
@@ -147,6 +187,10 @@ class MCPToolPool:
         self._started = False
         self._warm_failed: set[str] = set()
         """Server ids of warm servers whose (re)start failed non-fatally."""
+        self._synthetic_handlers: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {}
+        """Host-owned in-process handlers keyed by tool name. Populated by
+        :meth:`add_synthetic_tools`. Synthetic tools dispatch through here
+        instead of routing to an MCP server subprocess."""
 
     @property
     def configs(self) -> list[MCPClientConfig]:
@@ -167,6 +211,77 @@ class MCPToolPool:
     def warm_failed_ids(self) -> list[str]:
         """Return ids of warm servers that failed (re)start and are down."""
         return sorted(self._warm_failed)
+
+    def add_synthetic_tools(self, tools: list[SyntheticToolSpec]) -> None:
+        """Register host-owned in-process tools into the merged catalog.
+
+        Synthetic tools appear alongside MCP-discovered tools in
+        :meth:`list_tools` and dispatch through :meth:`call_tool` to their
+        in-process handler — no subprocess backing them. The canonical use
+        case is memory aliases (``memory.add`` / ``memory.search`` /
+        ``memory.list``), but the mechanism is generic: any well-known or
+        made-up call can be registered as a synthetic tool.
+
+        Register synthetic tools **after** :meth:`start` so handlers that
+        redirect to an MCP server tool (see
+        :func:`kernel.tools.synthetic.mcp_alias_tool`) can close over the
+        live pool. Synthetic tools are preserved across
+        :meth:`refresh_tool_index` refreshes (they are host-owned, not
+        discovered from an MCP server).
+
+        Name collisions follow the same first-registered-wins policy as
+        MCP-discovered tools, with a warning logged. Synthetic tools are
+        registered after the MCP index is built, so a synthetic alias can
+        intentionally override a server-native name if desired — call
+        :meth:`refresh_tool_index` first to seed the MCP index, then
+        register synthetic tools.
+        """
+        for tool in tools:
+            if tool.name in self._synthetic_handlers or tool.name in self._tool_index:
+                existing = (
+                    "synthetic" if tool.name in self._synthetic_handlers
+                    else self._tool_index[tool.name][0]
+                )
+                logger.warning(
+                    "Synthetic tool name collision: %r already registered by %r; "
+                    "existing entry wins.",
+                    tool.name,
+                    existing,
+                )
+                continue
+            spec = MCPToolSpec(
+                server_id=SYNTHETIC_SERVER_ID,
+                name=tool.name,
+                description=tool.description,
+                input_schema=tool.input_schema,
+            )
+            self._synthetic_handlers[tool.name] = tool.handler
+            self._tool_index[tool.name] = (SYNTHETIC_SERVER_ID, spec)
+            self._tools.append(spec)
+
+    def _reindex_synthetic_tools(self) -> None:
+        """Re-register synthetic tool entries after a tool-index rebuild.
+
+        Called by :meth:`_refresh_tool_index` so host-owned synthetic tools
+        survive catalog refreshes (they are not rediscovered from MCP servers).
+        """
+        for name, _handler in self._synthetic_handlers.items():
+            # Reconstruct the MCPToolSpec and re-insert. Synthetic handlers are
+            # never dropped by a refresh — only by aclose().
+            if name in self._tool_index:
+                continue
+            # We stored no extra metadata beyond name/handler; rebuild a
+            # minimal spec. The original description/schema are recovered from
+            # the prior _tools list if present, else a minimal default.
+            prior = next((t for t in self._tools if t.name == name), None)
+            spec = MCPToolSpec(
+                server_id=SYNTHETIC_SERVER_ID,
+                name=name,
+                description=prior.description if prior else f"Synthetic tool {name}",
+                input_schema=prior.input_schema if prior else {"type": "object", "properties": {}},
+            )
+            self._tool_index[name] = (SYNTHETIC_SERVER_ID, spec)
+            self._tools.append(spec)
 
     async def __aenter__(self) -> MCPToolPool:
         await self.start()
@@ -257,6 +372,13 @@ class MCPToolPool:
         from mcp.client.session import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
+        # Optionally pre-create the data directory before spawning. A server
+        # may own a managed subfolder under the host data-dir and expect it to
+        # exist; the host guarantees it here so the server can use it (possibly
+        # destructively) without a pre-flight check of its own.
+        if config.ensure_data_dir and config.data_dir_path:
+            Path(config.data_dir_path).mkdir(parents=True, exist_ok=True)
+
         assert self._exit_stack is not None
         params = StdioServerParameters(
             command=config.command,
@@ -274,7 +396,11 @@ class MCPToolPool:
         self._sessions[config.server_id] = session
 
     async def _refresh_tool_index(self) -> None:
-        """Merge tool lists from all connected servers into one index."""
+        """Merge tool lists from all connected servers into one index.
+
+        Host-owned synthetic tools are preserved across refreshes (they are
+        not rediscovered from MCP servers) via :meth:`_reindex_synthetic_tools`.
+        """
 
         from kernel.mcp_launch.tool_filter import filter_tools
 
@@ -321,6 +447,11 @@ class MCPToolPool:
                     continue
                 self._tool_index[spec.name] = (config.server_id, spec)
                 self._tools.append(spec)
+
+        # Re-seed host-owned synthetic tools after the MCP index is rebuilt.
+        # Synthetic tools are not rediscovered from servers — they are owned
+        # by the host and must survive catalog refreshes.
+        self._reindex_synthetic_tools()
 
     async def refresh_tool_index(self) -> None:
         """Rebuild the merged tool catalog from connected sessions.
@@ -377,10 +508,26 @@ class MCPToolPool:
         return list(self._tools)
 
     async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> MCPToolResult:
-        """Route one tool call to the server that owns the tool."""
+        """Route one tool call to the server that owns the tool.
+
+        Host-owned synthetic tools (registered via :meth:`add_synthetic_tools`)
+        are dispatched to their in-process handler before any MCP server
+        routing — they have no subprocess backing them.
+        """
 
         if not self._started:
             await self.start()
+        synthetic_handler = self._synthetic_handlers.get(tool_id)
+        if synthetic_handler is not None:
+            try:
+                output_text = await synthetic_handler(arguments)
+            except Exception as exc:  # pylint: disable=broad-except
+                return MCPToolResult(
+                    tool_id=tool_id,
+                    output_text=f"Synthetic tool '{tool_id}' failed: {type(exc).__name__}: {exc}",
+                    is_error=True,
+                )
+            return MCPToolResult(tool_id=tool_id, output_text=output_text or "Done")
         entry = self._tool_index.get(tool_id)
         if entry is None:
             return MCPToolResult(
@@ -441,4 +588,5 @@ class MCPToolPool:
         self._exit_stack = None
         self._tool_index.clear()
         self._tools = []
+        self._synthetic_handlers.clear()
         self._started = False

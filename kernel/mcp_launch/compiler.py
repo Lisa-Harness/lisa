@@ -124,16 +124,26 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
     This is the only function that produces MCPClientConfig entries for
     MCPToolPool. The host calls this after registry approval.
     """
-    if not spec.data_dir:
-        raise ValueError(
-            f"Cannot compile MCP server '{spec.server_id}': data_dir is required. "
-            "The host must resolve --data-dir before compiling."
-        )
+    # Resolve the effective data directory, applying an optional namespaced
+    # subdir. A spec with data_dir=None (servers managing their own storage)
+    # compiles without any data-dir injection.
+    if spec.data_dir:
+        resolved_data_dir = spec.data_dir
+        if spec.data_dir_subdir:
+            resolved_data_dir = str(Path(spec.data_dir) / spec.data_dir_subdir)
+    else:
+        resolved_data_dir = None
 
     command, base_args = compile_command(spec)
 
-    # Build standard CLI contract args
-    cli_args: list[str] = ["--data-dir", spec.data_dir]
+    # Build standard CLI contract args. data-dir is injected only when the
+    # spec names a flag for it (data_dir_arg is not None) and a data dir was
+    # resolved. First-party servers keep data_dir_arg="--data-dir" as the
+    # default, preserving the original behavior. Third-party servers that
+    # manage their own storage set data_dir_arg=None.
+    cli_args: list[str] = []
+    if spec.data_dir_arg is not None and resolved_data_dir is not None:
+        cli_args.extend([spec.data_dir_arg, resolved_data_dir])
     if spec.workspace_root:
         cli_args.extend(["--workspace-root", spec.workspace_root])
     if spec.readonly:
@@ -151,6 +161,8 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
         env=env,
         cwd=cwd,
         tool_policy=spec.tool_policy,
+        data_dir_path=resolved_data_dir if spec.ensure_data_dir else None,
+        ensure_data_dir=spec.ensure_data_dir,
     )
 
 
