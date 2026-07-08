@@ -164,202 +164,219 @@ def apply_turn_usage(
     stage_id: str = "",
     frontdoor_routing: dict[str, Any] | None = None,
 ) -> None:
-    """Persist turn and session token counters from one completed turn result.
+    """Persist turn and session token counters from one completed turn result."""
+    main_tokens = _extract_main_tokens(result)
+    fd_tokens = _extract_frontdoor_tokens(frontdoor_routing)
 
-    Records a per-turn ledger entry with model/mode/stage attribution and
-    accumulates breakdown totals keyed by resolved model id (never designation),
-    mode id, and stage id. Sub-counters (``cached_tokens``,
-    ``reasoning_tokens``), ``duration_ms``, and ``latency_ms`` flow through
-    so time-based providers (e.g. Ollama local GPU time) can be billed
-    alongside token-based providers.
-    """
-    # ── Input extraction ───────────────────────────────────────────
-    main_prompt = coerce_non_negative_int(result.prompt_tokens)
-    main_completion = coerce_non_negative_int(result.completion_tokens)
-    main_total = coerce_non_negative_int(result.total_tokens)
-    if main_total <= 0:
-        main_total = main_prompt + main_completion
-    main_cached = coerce_non_negative_int(getattr(result, "cached_tokens", 0))
-    main_reasoning = coerce_non_negative_int(getattr(result, "reasoning_tokens", 0))
-    main_duration_ms = coerce_non_negative_float(getattr(result, "duration_ms", 0.0))
-    main_latency_ms = coerce_non_negative_int(getattr(result, "latency_ms", 0))
-
-    fd_prompt = 0
-    fd_completion = 0
-    fd_total = 0
-    fd_cached = 0
-    fd_reasoning = 0
-    fd_duration_ms = 0.0
-    fd_latency_ms = 0
-    fd_model_id = ""
-    if isinstance(frontdoor_routing, dict):
-        fd_prompt = coerce_non_negative_int(frontdoor_routing.get("planner_prompt_tokens"))
-        fd_completion = coerce_non_negative_int(frontdoor_routing.get("planner_completion_tokens"))
-        fd_total = coerce_non_negative_int(frontdoor_routing.get("planner_total_tokens"))
-        if fd_total <= 0:
-            fd_total = fd_prompt + fd_completion
-        fd_cached = coerce_non_negative_int(frontdoor_routing.get("planner_cached_tokens"))
-        fd_reasoning = coerce_non_negative_int(frontdoor_routing.get("planner_reasoning_tokens"))
-        fd_duration_ms = coerce_non_negative_float(frontdoor_routing.get("planner_duration_ms"))
-        fd_latency_ms = coerce_non_negative_int(frontdoor_routing.get("planner_latency_ms"))
-        fd_model_id = str(frontdoor_routing.get("resolved_model_id") or "").strip()
-
-    # ── Turn totals ────────────────────────────────────────────────
-    turn_prompt = main_prompt + fd_prompt
-    turn_completion = main_completion + fd_completion
-    turn_total = main_total + fd_total
-    turn_cached = main_cached + fd_cached
-    turn_reasoning = main_reasoning + fd_reasoning
-    turn_duration_ms = main_duration_ms + fd_duration_ms
-    turn_latency_ms = main_latency_ms + fd_latency_ms
-
-    state["turn_prompt_tokens"] = turn_prompt
-    state["turn_completion_tokens"] = turn_completion
-    state["turn_total_tokens"] = turn_total
-    state["turn_cached_tokens"] = turn_cached
-    state["turn_reasoning_tokens"] = turn_reasoning
-    state["turn_duration_ms"] = turn_duration_ms
-    state["turn_latency_ms"] = turn_latency_ms
-
-    state["session_prompt_tokens"] = (
-        coerce_non_negative_int(state.get("session_prompt_tokens", 0)) + turn_prompt
-    )
-    state["session_completion_tokens"] = (
-        coerce_non_negative_int(state.get("session_completion_tokens", 0)) + turn_completion
-    )
-    state["session_total_tokens"] = (
-        coerce_non_negative_int(state.get("session_total_tokens", 0)) + turn_total
-    )
-    state["session_cached_tokens"] = (
-        coerce_non_negative_int(state.get("session_cached_tokens", 0)) + turn_cached
-    )
-    state["session_reasoning_tokens"] = (
-        coerce_non_negative_int(state.get("session_reasoning_tokens", 0)) + turn_reasoning
-    )
-    state["session_duration_ms"] = (
-        coerce_non_negative_float(state.get("session_duration_ms", 0.0)) + turn_duration_ms
-    )
-    state["session_latency_ms"] = (
-        coerce_non_negative_int(state.get("session_latency_ms", 0)) + turn_latency_ms
-    )
+    turn_tokens = _combine_turn_tokens(main_tokens, fd_tokens)
+    _set_turn_state(state, turn_tokens)
+    _accumulate_session_state(state, turn_tokens)
 
     ledger: list[dict[str, Any]] = state.setdefault("session_token_ledger", [])
     turn_index = len(ledger) + 1
 
-    # ── Front-door ledger and breakdowns (if applicable) ───────────
-    if fd_total > 0 or fd_duration_ms > 0:
-        logger.debug(
-            "recording front-door ledger entry: model=%s prompt=%d completion=%d total=%d",
-            fd_model_id or "front-door",
-            fd_prompt,
-            fd_completion,
-            fd_total,
-        )
-        ledger.append(
-            {
-                "turn": turn_index,
-                "model_id": fd_model_id or "front-door",
-                "mode_id": "front-door",
-                "stage_id": "routing",
-                "prompt_tokens": fd_prompt,
-                "completion_tokens": fd_completion,
-                "total_tokens": fd_total,
-                "cached_tokens": fd_cached,
-                "reasoning_tokens": fd_reasoning,
-                "duration_ms": fd_duration_ms,
-                "latency_ms": fd_latency_ms,
-            }
-        )
+    _record_frontdoor_ledger(state, ledger, turn_index, fd_tokens)
+    _record_main_ledger(state, ledger, turn_index, main_tokens, model_id, mode_id, stage_id)
 
-        model_key = fd_model_id or "front-door"
-        if model_key != "-":
-            _accumulate_breakdown(
-                state,
-                "model_token_totals",
-                model_key,
-                prompt=fd_prompt,
-                completion=fd_completion,
-                total=fd_total,
-                cached=fd_cached,
-                reasoning=fd_reasoning,
-                duration_ms=fd_duration_ms,
-                latency_ms=fd_latency_ms,
-            )
 
-        _accumulate_breakdown(
-            state,
-            "mode_token_totals",
-            "front-door",
-            prompt=fd_prompt,
-            completion=fd_completion,
-            total=fd_total,
-            cached=fd_cached,
-            reasoning=fd_reasoning,
-            duration_ms=fd_duration_ms,
-            latency_ms=fd_latency_ms,
-        )
+def _extract_main_tokens(result: Any) -> dict[str, Any]:
+    """Extract token counts from a TurnResult."""
+    prompt = coerce_non_negative_int(result.prompt_tokens)
+    completion = coerce_non_negative_int(result.completion_tokens)
+    total = coerce_non_negative_int(result.total_tokens)
+    if total <= 0:
+        total = prompt + completion
+    return {
+        "prompt": prompt,
+        "completion": completion,
+        "total": total,
+        "cached": coerce_non_negative_int(getattr(result, "cached_tokens", 0)),
+        "reasoning": coerce_non_negative_int(getattr(result, "reasoning_tokens", 0)),
+        "duration_ms": coerce_non_negative_float(getattr(result, "duration_ms", 0.0)),
+        "latency_ms": coerce_non_negative_int(getattr(result, "latency_ms", 0)),
+    }
 
-    # ── Main execution ledger entry ────────────────────────────────
+
+def _extract_frontdoor_tokens(frontdoor_routing: dict[str, Any] | None) -> dict[str, Any]:
+    """Extract front-door planner token counts."""
+    tokens = {
+        "prompt": 0,
+        "completion": 0,
+        "total": 0,
+        "cached": 0,
+        "reasoning": 0,
+        "duration_ms": 0.0,
+        "latency_ms": 0,
+        "model_id": "",
+    }
+    if not isinstance(frontdoor_routing, dict):
+        return tokens
+    tokens["prompt"] = coerce_non_negative_int(frontdoor_routing.get("planner_prompt_tokens"))
+    tokens["completion"] = coerce_non_negative_int(
+        frontdoor_routing.get("planner_completion_tokens")
+    )
+    tokens["total"] = coerce_non_negative_int(frontdoor_routing.get("planner_total_tokens"))
+    if tokens["total"] <= 0:
+        tokens["total"] = tokens["prompt"] + tokens["completion"]
+    tokens["cached"] = coerce_non_negative_int(frontdoor_routing.get("planner_cached_tokens"))
+    tokens["reasoning"] = coerce_non_negative_int(frontdoor_routing.get("planner_reasoning_tokens"))
+    tokens["duration_ms"] = coerce_non_negative_float(frontdoor_routing.get("planner_duration_ms"))
+    tokens["latency_ms"] = coerce_non_negative_int(frontdoor_routing.get("planner_latency_ms"))
+    tokens["model_id"] = str(frontdoor_routing.get("resolved_model_id") or "").strip()
+    return tokens
+
+
+def _combine_turn_tokens(main: dict[str, Any], fd: dict[str, Any]) -> dict[str, Any]:
+    """Combine main and front-door token counts into turn totals."""
+    return {
+        "prompt": main["prompt"] + fd["prompt"],
+        "completion": main["completion"] + fd["completion"],
+        "total": main["total"] + fd["total"],
+        "cached": main["cached"] + fd["cached"],
+        "reasoning": main["reasoning"] + fd["reasoning"],
+        "duration_ms": main["duration_ms"] + fd["duration_ms"],
+        "latency_ms": main["latency_ms"] + fd["latency_ms"],
+    }
+
+
+def _set_turn_state(state: dict[str, Any], turn: dict[str, Any]) -> None:
+    """Set the per-turn token counters in state."""
+    state["turn_prompt_tokens"] = turn["prompt"]
+    state["turn_completion_tokens"] = turn["completion"]
+    state["turn_total_tokens"] = turn["total"]
+    state["turn_cached_tokens"] = turn["cached"]
+    state["turn_reasoning_tokens"] = turn["reasoning"]
+    state["turn_duration_ms"] = turn["duration_ms"]
+    state["turn_latency_ms"] = turn["latency_ms"]
+
+
+def _accumulate_session_state(state: dict[str, Any], turn: dict[str, Any]) -> None:
+    """Accumulate turn tokens into session totals."""
+    state["session_prompt_tokens"] = (
+        coerce_non_negative_int(state.get("session_prompt_tokens", 0)) + turn["prompt"]
+    )
+    state["session_completion_tokens"] = (
+        coerce_non_negative_int(state.get("session_completion_tokens", 0)) + turn["completion"]
+    )
+    state["session_total_tokens"] = (
+        coerce_non_negative_int(state.get("session_total_tokens", 0)) + turn["total"]
+    )
+    state["session_cached_tokens"] = (
+        coerce_non_negative_int(state.get("session_cached_tokens", 0)) + turn["cached"]
+    )
+    state["session_reasoning_tokens"] = (
+        coerce_non_negative_int(state.get("session_reasoning_tokens", 0)) + turn["reasoning"]
+    )
+    state["session_duration_ms"] = (
+        coerce_non_negative_float(state.get("session_duration_ms", 0.0)) + turn["duration_ms"]
+    )
+    state["session_latency_ms"] = (
+        coerce_non_negative_int(state.get("session_latency_ms", 0)) + turn["latency_ms"]
+    )
+
+
+def _record_frontdoor_ledger(
+    state: dict[str, Any],
+    ledger: list[dict[str, Any]],
+    turn_index: int,
+    fd: dict[str, Any],
+) -> None:
+    """Record front-door ledger entry and breakdowns if front-door tokens exist."""
+    if fd["total"] <= 0 and fd["duration_ms"] <= 0:
+        return
     logger.debug(
-        "recording turn ledger entry: model=%s mode=%s stage=%s total_tokens=%d",
-        (model_id or "-").strip(),
-        (mode_id or "-").strip(),
-        (stage_id or "-").strip(),
-        main_total,
+        "recording front-door ledger entry: model=%s prompt=%d completion=%d total=%d",
+        fd["model_id"] or "front-door",
+        fd["prompt"],
+        fd["completion"],
+        fd["total"],
     )
     ledger.append(
         {
             "turn": turn_index,
-            "model_id": (model_id or "-").strip(),
-            "mode_id": (mode_id or "-").strip(),
-            "stage_id": (stage_id or "-").strip(),
-            "prompt_tokens": main_prompt,
-            "completion_tokens": main_completion,
-            "total_tokens": main_total,
-            "cached_tokens": main_cached,
-            "reasoning_tokens": main_reasoning,
-            "duration_ms": main_duration_ms,
-            "latency_ms": main_latency_ms,
+            "model_id": fd["model_id"] or "front-door",
+            "mode_id": "front-door",
+            "stage_id": "routing",
+            "prompt_tokens": fd["prompt"],
+            "completion_tokens": fd["completion"],
+            "total_tokens": fd["total"],
+            "cached_tokens": fd["cached"],
+            "reasoning_tokens": fd["reasoning"],
+            "duration_ms": fd["duration_ms"],
+            "latency_ms": fd["latency_ms"],
         }
     )
+    model_key = fd["model_id"] or "front-door"
+    if model_key != "-":
+        _accumulate_breakdown(state, "model_token_totals", model_key, **_fd_breakdown_kwargs(fd))
+    _accumulate_breakdown(state, "mode_token_totals", "front-door", **_fd_breakdown_kwargs(fd))
 
-    # ── Per-model / mode / stage breakdowns ────────────────────────
-    _accumulate_breakdown(
-        state,
-        "model_token_totals",
-        (model_id or "-").strip(),
-        prompt=main_prompt,
-        completion=main_completion,
-        total=main_total,
-        cached=main_cached,
-        reasoning=main_reasoning,
-        duration_ms=main_duration_ms,
-        latency_ms=main_latency_ms,
+
+def _fd_breakdown_kwargs(fd: dict[str, Any]) -> dict[str, Any]:
+    """Convert front-door token dict to _accumulate_breakdown kwargs."""
+    return {
+        "prompt": fd["prompt"],
+        "completion": fd["completion"],
+        "total": fd["total"],
+        "cached": fd["cached"],
+        "reasoning": fd["reasoning"],
+        "duration_ms": fd["duration_ms"],
+        "latency_ms": fd["latency_ms"],
+    }
+
+
+def _record_main_ledger(
+    state: dict[str, Any],
+    ledger: list[dict[str, Any]],
+    turn_index: int,
+    main: dict[str, Any],
+    model_id: str,
+    mode_id: str,
+    stage_id: str,
+) -> None:
+    """Record the main execution ledger entry and per-model/mode/stage breakdowns."""
+    clean_model = (model_id or "-").strip()
+    clean_mode = (mode_id or "-").strip()
+    clean_stage = (stage_id or "-").strip()
+    logger.debug(
+        "recording turn ledger entry: model=%s mode=%s stage=%s total_tokens=%d",
+        clean_model,
+        clean_mode,
+        clean_stage,
+        main["total"],
     )
-    _accumulate_breakdown(
-        state,
-        "mode_token_totals",
-        (mode_id or "-").strip(),
-        prompt=main_prompt,
-        completion=main_completion,
-        total=main_total,
-        cached=main_cached,
-        reasoning=main_reasoning,
-        duration_ms=main_duration_ms,
-        latency_ms=main_latency_ms,
+    ledger.append(
+        {
+            "turn": turn_index,
+            "model_id": clean_model,
+            "mode_id": clean_mode,
+            "stage_id": clean_stage,
+            "prompt_tokens": main["prompt"],
+            "completion_tokens": main["completion"],
+            "total_tokens": main["total"],
+            "cached_tokens": main["cached"],
+            "reasoning_tokens": main["reasoning"],
+            "duration_ms": main["duration_ms"],
+            "latency_ms": main["latency_ms"],
+        }
     )
-    _accumulate_breakdown(
-        state,
-        "stage_token_totals",
-        (stage_id or "-").strip(),
-        prompt=main_prompt,
-        completion=main_completion,
-        total=main_total,
-        cached=main_cached,
-        reasoning=main_reasoning,
-        duration_ms=main_duration_ms,
-        latency_ms=main_latency_ms,
-    )
+    main_kwargs = _main_breakdown_kwargs(main)
+    _accumulate_breakdown(state, "model_token_totals", clean_model, **main_kwargs)
+    _accumulate_breakdown(state, "mode_token_totals", clean_mode, **main_kwargs)
+    _accumulate_breakdown(state, "stage_token_totals", clean_stage, **main_kwargs)
+
+
+def _main_breakdown_kwargs(main: dict[str, Any]) -> dict[str, Any]:
+    """Convert main token dict to _accumulate_breakdown kwargs."""
+    return {
+        "prompt": main["prompt"],
+        "completion": main["completion"],
+        "total": main["total"],
+        "cached": main["cached"],
+        "reasoning": main["reasoning"],
+        "duration_ms": main["duration_ms"],
+        "latency_ms": main["latency_ms"],
+    }
 
 
 def record_session_turn(

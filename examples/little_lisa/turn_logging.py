@@ -125,112 +125,35 @@ def build_turn_log_record(
     coerce_int: Any,
     preview_fn: Any,
 ) -> dict[str, Any]:
-    """Assemble the ``turn.completed`` log payload from a turn context.
-
-    Parameters
-    ----------
-    context
-        The turn context dict produced by ``_build_turn_context`` and
-        augmented with ``completion`` and ``frontdoor_debug`` fields.
-    response_text
-        The rendered response text for this turn.
-    coerce_int
-        A callable that coerces values to non-negative ints (typically
-        ``token_accounting.coerce_non_negative_int``).
-    preview_fn
-        A callable that produces a truncated preview string (typically
-        ``_preview_text``).
-
-    Returns
-    -------
-    dict
-        The ``payload`` dict suitable for passing to ``_append_log_event``.
-    """
+    """Assemble the ``turn.completed`` log payload from a turn context."""
     response_chars = len(response_text)
-    completion = context.get("completion") if isinstance(context, dict) else None
-    mode_model_payload = context.get("resolved_model") if isinstance(context, dict) else None
-    frontdoor_debug = context.get("frontdoor_debug") if isinstance(context, dict) else None
+    model_info = _extract_model_info(context)
+    frontdoor_info = _extract_frontdoor_info(context)
+    completion_info = _extract_completion_info(context, coerce_int)
 
-    mode_model_id = ""
-    mode_model_provider = ""
-    mode_reasoning_model = False
-    if isinstance(mode_model_payload, dict):
-        mode_model_id = str(mode_model_payload.get("model_id") or "")
-        mode_model_provider = str(mode_model_payload.get("provider") or "")
-        mode_reasoning_model = bool(mode_model_payload.get("reasoning_model", False))
-
-    frontdoor_model_payload: dict[str, Any] = {}
-    if isinstance(frontdoor_debug, dict):
-        candidate_payload = frontdoor_debug.get("resolved_model")
-        if isinstance(candidate_payload, dict):
-            frontdoor_model_payload = candidate_payload
-
-    frontdoor_model_id = str(frontdoor_model_payload.get("model_id") or "")
-    frontdoor_model_provider = str(frontdoor_model_payload.get("provider") or "")
-    frontdoor_reasoning_model = bool(frontdoor_model_payload.get("reasoning_model", False))
-
-    completion_tool_calls = 0
-    completion_iterations = 0
-    mode_prompt_tokens = 0
-    mode_completion_tokens = 0
-    mode_total_tokens = 0
-    if isinstance(completion, dict):
-        completion_tool_calls = coerce_int(completion.get("tool_call_count"))
-        completion_iterations = coerce_int(completion.get("iteration_count"))
-        mode_prompt_tokens = coerce_int(completion.get("prompt_tokens"))
-        mode_completion_tokens = coerce_int(completion.get("completion_tokens"))
-        mode_total_tokens = coerce_int(completion.get("total_tokens"))
-        if mode_total_tokens <= 0:
-            mode_total_tokens = mode_prompt_tokens + mode_completion_tokens
-
-    frontdoor_prompt_tokens = 0
-    frontdoor_completion_tokens = 0
-    frontdoor_total_tokens = 0
-    frontdoor_attempt_count = 0
-    if isinstance(frontdoor_debug, dict):
-        frontdoor_prompt_tokens = coerce_int(frontdoor_debug.get("planner_prompt_tokens"))
-        frontdoor_completion_tokens = coerce_int(frontdoor_debug.get("planner_completion_tokens"))
-        frontdoor_total_tokens = coerce_int(frontdoor_debug.get("planner_total_tokens"))
-        planner_attempts = frontdoor_debug.get("planner_completion_attempts")
-        if isinstance(planner_attempts, list):
-            frontdoor_attempt_count = len(planner_attempts)
-
-    mode_model = ""
-    if mode_model_provider and mode_model_id:
-        mode_model = f"{mode_model_provider}:{mode_model_id}"
-    elif mode_model_id:
-        mode_model = mode_model_id
-
-    frontdoor_model = ""
-    if frontdoor_model_provider and frontdoor_model_id:
-        frontdoor_model = f"{frontdoor_model_provider}:{frontdoor_model_id}"
-    elif frontdoor_model_id:
-        frontdoor_model = frontdoor_model_id
-
-    completion_tokens = {
-        "prompt_tokens": mode_prompt_tokens,
-        "completion_tokens": mode_completion_tokens,
-        "total_tokens": mode_total_tokens,
-    }
+    mode_model = _format_model_label(model_info["model_id"], model_info["model_provider"])
+    frontdoor_model = _format_model_label(
+        frontdoor_info["model_id"], frontdoor_info["model_provider"]
+    )
 
     return {
         "type": "little_lisa_turn",
         "context": context,
         "mode_model": mode_model,
-        "mode_model_id": mode_model_id,
-        "mode_model_provider": mode_model_provider,
-        "mode_reasoning_model": mode_reasoning_model,
+        "mode_model_id": model_info["model_id"],
+        "mode_model_provider": model_info["model_provider"],
+        "mode_reasoning_model": model_info["reasoning_model"],
         "frontdoor_model": frontdoor_model,
-        "frontdoor_model_id": frontdoor_model_id,
-        "frontdoor_model_provider": frontdoor_model_provider,
-        "frontdoor_reasoning_model": frontdoor_reasoning_model,
-        "mode_prompt_tokens": mode_prompt_tokens,
-        "mode_completion_tokens": mode_completion_tokens,
-        "mode_total_tokens": mode_total_tokens,
-        "frontdoor_prompt_tokens": frontdoor_prompt_tokens,
-        "frontdoor_completion_tokens": frontdoor_completion_tokens,
-        "frontdoor_total_tokens": frontdoor_total_tokens,
-        "frontdoor_completion_attempt_count": frontdoor_attempt_count,
+        "frontdoor_model_id": frontdoor_info["model_id"],
+        "frontdoor_model_provider": frontdoor_info["model_provider"],
+        "frontdoor_reasoning_model": frontdoor_info["reasoning_model"],
+        "mode_prompt_tokens": completion_info["prompt_tokens"],
+        "mode_completion_tokens": completion_info["completion_tokens"],
+        "mode_total_tokens": completion_info["total_tokens"],
+        "frontdoor_prompt_tokens": frontdoor_info["prompt_tokens"],
+        "frontdoor_completion_tokens": frontdoor_info["completion_tokens"],
+        "frontdoor_total_tokens": frontdoor_info["total_tokens"],
+        "frontdoor_completion_attempt_count": frontdoor_info["attempt_count"],
         "response": {
             "text": response_text,
             "chars": response_chars,
@@ -243,12 +166,109 @@ def build_turn_log_record(
             "deep_route": bool(context.get("deep_route", False)),
         },
         "completion_summary": {
-            "tool_call_count": completion_tool_calls,
-            "iteration_count": completion_iterations,
-            "tokens": completion_tokens,
+            "tool_call_count": completion_info["tool_call_count"],
+            "iteration_count": completion_info["iteration_count"],
+            "tokens": {
+                "prompt_tokens": completion_info["prompt_tokens"],
+                "completion_tokens": completion_info["completion_tokens"],
+                "total_tokens": completion_info["total_tokens"],
+            },
         },
         "response_preview": preview_fn(response_text, limit=320),
     }
+
+
+def _extract_model_info(context: dict[str, Any]) -> dict[str, Any]:
+    """Extract model_id, provider, and reasoning flag from context."""
+    mode_model_payload = context.get("resolved_model") if isinstance(context, dict) else None
+    model_id = ""
+    model_provider = ""
+    reasoning_model = False
+    if isinstance(mode_model_payload, dict):
+        model_id = str(mode_model_payload.get("model_id") or "")
+        model_provider = str(mode_model_payload.get("provider") or "")
+        reasoning_model = bool(mode_model_payload.get("reasoning_model", False))
+    return {
+        "model_id": model_id,
+        "model_provider": model_provider,
+        "reasoning_model": reasoning_model,
+    }
+
+
+def _extract_frontdoor_info(context: dict[str, Any]) -> dict[str, Any]:
+    """Extract frontdoor model and token info from context."""
+    frontdoor_debug = context.get("frontdoor_debug") if isinstance(context, dict) else None
+    model_id = ""
+    model_provider = ""
+    reasoning_model = False
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    attempt_count = 0
+
+    if isinstance(frontdoor_debug, dict):
+        candidate_payload = frontdoor_debug.get("resolved_model")
+        if isinstance(candidate_payload, dict):
+            model_id = str(candidate_payload.get("model_id") or "")
+            model_provider = str(candidate_payload.get("provider") or "")
+            reasoning_model = bool(candidate_payload.get("reasoning_model", False))
+        prompt_tokens = coerce_int_or_zero(frontdoor_debug, "planner_prompt_tokens")
+        completion_tokens = coerce_int_or_zero(frontdoor_debug, "planner_completion_tokens")
+        total_tokens = coerce_int_or_zero(frontdoor_debug, "planner_total_tokens")
+        planner_attempts = frontdoor_debug.get("planner_completion_attempts")
+        if isinstance(planner_attempts, list):
+            attempt_count = len(planner_attempts)
+
+    return {
+        "model_id": model_id,
+        "model_provider": model_provider,
+        "reasoning_model": reasoning_model,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "attempt_count": attempt_count,
+    }
+
+
+def _extract_completion_info(context: dict[str, Any], coerce_int: Any) -> dict[str, Any]:
+    """Extract completion token and tool-call counts from context."""
+    completion = context.get("completion") if isinstance(context, dict) else None
+    tool_call_count = 0
+    iteration_count = 0
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    if isinstance(completion, dict):
+        tool_call_count = coerce_int(completion.get("tool_call_count"))
+        iteration_count = coerce_int(completion.get("iteration_count"))
+        prompt_tokens = coerce_int(completion.get("prompt_tokens"))
+        completion_tokens = coerce_int(completion.get("completion_tokens"))
+        total_tokens = coerce_int(completion.get("total_tokens"))
+        if total_tokens <= 0:
+            total_tokens = prompt_tokens + completion_tokens
+    return {
+        "tool_call_count": tool_call_count,
+        "iteration_count": iteration_count,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _format_model_label(model_id: str, model_provider: str) -> str:
+    """Format a 'provider:model_id' label, or just model_id."""
+    if model_provider and model_id:
+        return f"{model_provider}:{model_id}"
+    return model_id
+
+
+def coerce_int_or_zero(data: dict[str, Any], key: str) -> int:
+    """Safely coerce a dict value to int, defaulting to 0."""
+    value = data.get(key)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def build_turn_log_debug_payload(

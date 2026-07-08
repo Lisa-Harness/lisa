@@ -281,7 +281,7 @@ def test_run_tray_raises_when_pystray_import_fails(
         tray.run_tray(config)
 
 
-def test_run_tray_starts_desktop_and_runs_icon(
+def test_run_tray_starts_desktop_and_runs_icon(  # noqa: C901 — integration test with many setup branches
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:

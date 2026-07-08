@@ -319,6 +319,7 @@ def _is_token_valid(request: web.Request, expected_token: str) -> bool:
 
 
 def _build_desktop_app(*, callbacks: DesktopCallbacks, token: str) -> web.Application:
+    """Build the aiohttp application with routes wired to desktop callbacks."""
     app = web.Application()
     app["callbacks"] = callbacks
     app["desktop_token"] = token
@@ -327,8 +328,9 @@ def _build_desktop_app(*, callbacks: DesktopCallbacks, token: str) -> web.Applic
     async def _index(request: web.Request) -> web.Response:
         expected_token = str(request.app["desktop_token"])
         if not _is_token_valid(request, expected_token):
-            logger.warning("desktop index unauthorized request from %s", request.remote)
-            return web.Response(status=401, text="Unauthorized")
+            return _unauthorized_response(
+                request, "index", web.Response(status=401, text="Unauthorized")
+            )
         html_page = build_desktop_index_html(token=expected_token)
         return web.Response(text=html_page, content_type="text/html")
 
@@ -336,60 +338,72 @@ def _build_desktop_app(*, callbacks: DesktopCallbacks, token: str) -> web.Applic
         return web.json_response({"ok": True})
 
     async def _context(request: web.Request) -> web.Response:
-        expected_token = str(request.app["desktop_token"])
-        if not _is_token_valid(request, expected_token):
-            logger.warning("desktop context unauthorized request from %s", request.remote)
-            return web.json_response({"error": "unauthorized"}, status=401)
+        if not _is_token_valid(request, str(request.app["desktop_token"])):
+            return _unauthorized_response(
+                request, "context", web.json_response({"error": "unauthorized"}, status=401)
+            )
         local_callbacks = request.app["callbacks"]
         assert isinstance(local_callbacks, DesktopCallbacks)
         context = local_callbacks.last_turn_context() or {}
         return web.json_response(context)
 
     async def _chat(request: web.Request) -> web.Response:
-        expected_token = str(request.app["desktop_token"])
-        if not _is_token_valid(request, expected_token):
-            logger.warning("desktop chat unauthorized request from %s", request.remote)
-            return web.json_response({"error": "unauthorized"}, status=401)
-
-        try:
-            payload = await request.json()
-        except Exception:
-            logger.warning("desktop chat received invalid JSON body from %s", request.remote)
-            return web.json_response({"error": "invalid json body"}, status=400)
-
-        message = str(payload.get("message") or "").strip() if isinstance(payload, dict) else ""
-        if not message:
-            logger.debug("desktop chat rejected empty message from %s", request.remote)
-            return web.json_response({"error": "message is required"}, status=400)
-
-        local_callbacks = request.app["callbacks"]
-        turn_lock = request.app["turn_lock"]
-        assert isinstance(local_callbacks, DesktopCallbacks)
-        assert isinstance(turn_lock, asyncio.Lock)
-
-        async with turn_lock:
-            try:
-                response_text = await local_callbacks.handle_turn(message)
-            except Exception as exc:  # pylint: disable=broad-except
-                logger.error("desktop chat turn failed: %s: %s", type(exc).__name__, exc)
-                return web.json_response(
-                    {"error": f"{type(exc).__name__}: {exc}"},
-                    status=500,
-                )
-            context = local_callbacks.last_turn_context() or {}
-
-        return web.json_response(
-            {
-                "response_text": response_text,
-                "last_turn_context": context,
-            }
-        )
+        if not _is_token_valid(request, str(request.app["desktop_token"])):
+            return _unauthorized_response(
+                request, "chat", web.json_response({"error": "unauthorized"}, status=401)
+            )
+        return await _handle_chat_request(request)
 
     app.router.add_get("/", _index)
     app.router.add_get("/health", _health)
     app.router.add_get("/api/context", _context)
     app.router.add_post("/api/chat", _chat)
     return app
+
+
+def _unauthorized_response(
+    request: web.Request, endpoint: str, response: web.Response
+) -> web.Response:
+    """Log and return an unauthorized response for a desktop endpoint."""
+    logger.warning("desktop %s unauthorized request from %s", endpoint, request.remote)
+    return response
+
+
+async def _handle_chat_request(request: web.Request) -> web.Response:
+    """Process a chat request after token validation passes."""
+    try:
+        payload = await request.json()
+    except Exception:
+        logger.warning("desktop chat received invalid JSON body from %s", request.remote)
+        return web.json_response({"error": "invalid json body"}, status=400)
+
+    message = str(payload.get("message") or "").strip() if isinstance(payload, dict) else ""
+    if not message:
+        logger.debug("desktop chat rejected empty message from %s", request.remote)
+        return web.json_response({"error": "message is required"}, status=400)
+
+    local_callbacks = request.app["callbacks"]
+    turn_lock = request.app["turn_lock"]
+    assert isinstance(local_callbacks, DesktopCallbacks)
+    assert isinstance(turn_lock, asyncio.Lock)
+
+    async with turn_lock:
+        try:
+            response_text = await local_callbacks.handle_turn(message)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error("desktop chat turn failed: %s: %s", type(exc).__name__, exc)
+            return web.json_response(
+                {"error": f"{type(exc).__name__}: {exc}"},
+                status=500,
+            )
+        context = local_callbacks.last_turn_context() or {}
+
+    return web.json_response(
+        {
+            "response_text": response_text,
+            "last_turn_context": context,
+        }
+    )
 
 
 def run_desktop_server(
