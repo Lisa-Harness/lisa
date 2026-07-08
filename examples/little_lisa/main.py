@@ -4250,7 +4250,7 @@ def _resolve_desktop_token(raw_token: str) -> str:
     return configured or generate_desktop_token()
 
 
-def _build_desktop_subprocess_args(  # noqa: PLR0912
+def _build_desktop_subprocess_args(
     *,
     host: str,
     port: int,
@@ -4269,6 +4269,7 @@ def _build_desktop_subprocess_args(  # noqa: PLR0912
     state_snapshot: str,
     streaming: str,
 ) -> list[str]:
+    """Build the CLI args for the desktop host subprocess."""
     args = [
         "desktop",
         "--host",
@@ -4281,31 +4282,27 @@ def _build_desktop_subprocess_args(  # noqa: PLR0912
     ]
     if debug:
         args.append("--debug")
-    if log_level.strip():
-        args.extend(["--log-level", log_level])
-    if log.strip():
-        args.extend(["--log", log])
+    _append_flag_args(args, log_level, "--log-level")
+    _append_flag_args(args, log, "--log")
     if no_log:
         args.append("--no-log")
-    if data_dir.strip():
-        args.extend(["--data-dir", data_dir])
-    if memory_db.strip():
-        args.extend(["--memory-db", memory_db])
-    if thread_dir.strip():
-        args.extend(["--thread-dir", thread_dir])
+    _append_flag_args(args, data_dir, "--data-dir")
+    _append_flag_args(args, memory_db, "--memory-db")
+    _append_flag_args(args, thread_dir, "--thread-dir")
     if no_thread:
         args.append("--no-thread")
-    if session_context.strip():
-        args.extend(["--session-context", session_context])
-    if timeout_profile.strip():
-        args.extend(["--timeout-profile", timeout_profile])
-    if timezone.strip():
-        args.extend(["--timezone", timezone])
-    if state_snapshot.strip():
-        args.extend(["--state-snapshot", state_snapshot])
-    if streaming.strip():
-        args.extend(["--streaming", streaming])
+    _append_flag_args(args, session_context, "--session-context")
+    _append_flag_args(args, timeout_profile, "--timeout-profile")
+    _append_flag_args(args, timezone, "--timezone")
+    _append_flag_args(args, state_snapshot, "--state-snapshot")
+    _append_flag_args(args, streaming, "--streaming")
     return args
+
+
+def _append_flag_args(args: list[str], value: str, flag: str) -> None:
+    """Append a flag+value pair to args if value is non-empty."""
+    if value.strip():
+        args.extend([flag, value])
 
 
 def _run_desktop_host(
@@ -4420,6 +4417,7 @@ def _run_default_no_args_mode(
 
 
 async def _run_repl() -> None:
+    """Run the interactive REPL loop."""
     _print_startup_banner()
     console.print(
         Panel(
@@ -4432,49 +4430,69 @@ async def _run_repl() -> None:
     prompt_session = _build_repl_prompt_session()
     if prompt_session is None:
         console.print(f"[{STYLE_TEXT_MUTED}]prompt_toolkit unavailable; using basic input mode.[/]")
+    await _run_repl_loop(prompt_session)
+
+
+async def _run_repl_loop(prompt_session: PromptSession[str] | None) -> None:
+    """Process REPL turns until the user quits or sends EOF."""
     while True:
-        try:
-            _render_status_line()
-            if prompt_session is not None:
-                message = (await prompt_session.prompt_async("> ")).strip()
-            else:
-                message = console.input(f"[{STYLE_PROMPT}]> [/]").strip()
-        except KeyboardInterrupt:
-            console.print()
-            continue
-        except EOFError:
-            console.print(Rule(style=STYLE_RULE))
+        message = await _read_repl_input(prompt_session)
+        if message is None:
             _render_session_exit_summary()
             return
         if not message:
             continue
-        if message.lower() in {"exit", "quit", "/exit", "/quit"}:
-            console.print(Rule(style=STYLE_RULE))
+        if _is_repl_quit_command(message):
             _render_session_exit_summary()
             console.print(f"[{STYLE_TEXT_MUTED}]Session closed.[/]")
             return
-        turn_start = time.perf_counter()
-        try:
-            response = await handle_message(message)
-        except Exception as exc:  # pylint: disable=broad-except
-            elapsed_ms = (time.perf_counter() - turn_start) * 1000.0
-            _record_session_turn(succeeded=False, latency_ms=elapsed_ms)
-            logger.error("REPL turn failed: %s: %s", type(exc).__name__, exc)
-            _render_runtime_error(exc, title="Turn Error")
-            console.print(Rule(style=STYLE_RULE))
-            continue
-        elapsed_ms = (time.perf_counter() - turn_start) * 1000.0
-        _record_session_turn(
-            succeeded=True,
-            latency_ms=elapsed_ms,
-            mode_id=_runtime_current_mode_id(),
-        )
-        if _runtime_debug_enabled():
-            context = _last_turn_context()
-            if context is not None:
-                _render_turn_context(context)
-        await _render_response(response)
+        await _process_repl_turn(message)
+
+
+async def _read_repl_input(prompt_session: PromptSession[str] | None) -> str | None:
+    """Read one line of REPL input, returning None on EOF."""
+    try:
+        _render_status_line()
+        if prompt_session is not None:
+            return (await prompt_session.prompt_async("> ")).strip()
+        return console.input(f"[{STYLE_PROMPT}]> [/]").strip()
+    except KeyboardInterrupt:
+        console.print()
+        return ""
+    except EOFError:
         console.print(Rule(style=STYLE_RULE))
+        return None
+
+
+def _is_repl_quit_command(message: str) -> bool:
+    """Return True if the message is a quit/exit command."""
+    return message.lower() in {"exit", "quit", "/exit", "/quit"}
+
+
+async def _process_repl_turn(message: str) -> None:
+    """Execute one REPL turn: call handle_message, render response, record metrics."""
+    turn_start = time.perf_counter()
+    try:
+        response = await handle_message(message)
+    except Exception as exc:  # pylint: disable=broad-except
+        elapsed_ms = (time.perf_counter() - turn_start) * 1000.0
+        _record_session_turn(succeeded=False, latency_ms=elapsed_ms)
+        logger.error("REPL turn failed: %s: %s", type(exc).__name__, exc)
+        _render_runtime_error(exc, title="Turn Error")
+        console.print(Rule(style=STYLE_RULE))
+        return
+    elapsed_ms = (time.perf_counter() - turn_start) * 1000.0
+    _record_session_turn(
+        succeeded=True,
+        latency_ms=elapsed_ms,
+        mode_id=_runtime_current_mode_id(),
+    )
+    if _runtime_debug_enabled():
+        context = _last_turn_context()
+        if context is not None:
+            _render_turn_context(context)
+    await _render_response(response)
+    console.print(Rule(style=STYLE_RULE))
 
 
 def _print_startup_banner() -> None:
