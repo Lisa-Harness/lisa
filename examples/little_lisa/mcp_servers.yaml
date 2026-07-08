@@ -1,65 +1,41 @@
 ---
 version: 1
 
-# Which registered server_id backs the generic memory aliases
-# (memory.add / memory.search / memory.list). When null/absent, the
-# first-party lisa-context server is the default.
+# Memory backends are declared as a peer list. Each entry has an id, a kind
+# (http | stdio), connection details, and tool_names mapping the generic
+# memory.add/search/list aliases to that backend's actual MCP tool names.
+# default_backend picks one by id; the host wires it behind the generic
+# memory.* synthetic tools. Adding a new backend is a YAML entry, not a
+# code change.
 memory:
   default_backend: mem0
-  # Tool-name mapping per backend. The generic aliases route through here.
   backends:
-    lisa-context:
-      add: add_memory
-      search: search_memory
-      list: list_memories
-    mem0:
-      add: add_memories
-      search: search_memories
-      list: get_all_memories
+    # Mem0 cloud — HTTP MCP, bearer-token auth. Stores data server-side.
+    - id: mem0
+      kind: http
+      url: https://mcp.mem0.ai/mcp
+      headers:
+        Authorization: "Bearer ${MEM0_API_KEY}"
+      agent_id: lisa
+      tool_names:
+        add: add_memory
+        search: search_memories
+        list: get_memories
 
-servers:
-  # Hosted Mem0 MCP server (managed API). Stores data server-side, so
-  # data_dir_arg is null — the host does not inject --data-dir. ensure_data_dir
-  # is off for the same reason.
-  - server_id: mem0
-    runtime_kind: npx
-    npx_package: "@mem0/mcp"
-    data_dir_arg: null
-    ensure_data_dir: false
-    env:
-      MEM0_API_KEY: "${MEM0_API_KEY}"
-      MEM0_ORG_ID: "${MEM0_ORG_ID}"
-      MEM0_PROJECT_ID: "${MEM0_PROJECT_ID}"
-    tool_policy:
-      # Deny destructive tools unless a mode explicitly needs them.
-      denied_tools: [delete_memory]
-    timeouts:
-      startup_seconds: 45
-      call_seconds: 90
+    # lisa-context — first-party stdio MCP server. Available as a peer so it
+    # can be swapped in as the default or used directly via router.backend().
+    - id: lisa-context
+      kind: stdio
+      command: "${LISA_MCP_COMMAND}"
+      args:
+        - --data-dir
+        - "${LISA_DATA_DIR}"
+      tool_names:
+        add: add_memory
+        search: search_memory
+        list: list_memories
 
-  # Letta — heavier memory-first agent runtime with its own MCP bridge.
-  # Registered but disabled by default; uncomment / flip to true to opt in.
-  - server_id: letta
-    runtime_kind: npx
-    npx_package: "@letta/mcp-server"
-    data_dir_arg: null
-    env:
-      LETTA_API_KEY: "${LETTA_API_KEY}"
-    disabled: true
-
-  # Self-hosted Mem0 (OSS) — no outbound calls, reuses the Ollama embeddings
-  # model already declared in models.yaml. Takes a server-specific store flag,
-  # namespaced under the host data-dir, and pre-creates the folder before
-  # spawning. Disabled by default; the hosted entry above is the default.
-  - server_id: mem0-selfhosted
-    runtime_kind: uv
-    package: mem0ai
-    module: mem0.server.mcp
-    data_dir_arg: "--store-dir"
-    data_dir_subdir: "mem0"
-    ensure_data_dir: true
-    env:
-      MEM0_EMBEDDING_MODEL: "ollama:gemma4:cloud"
-      MEM0_VECTOR_STORE: "qdrant"
-      MEM0_VECTOR_STORE_URL: "${QDRANT_URL}"
-    disabled: true
+# No standalone MCP servers are declared here; all first-party MCP servers
+# Little Lisa uses are registered in code (examples/little_lisa/main.py
+# _compile_mcp_configs). Memory backends live above under memory.backends.
+servers: []

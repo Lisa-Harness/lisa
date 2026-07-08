@@ -42,14 +42,23 @@ version: 1
 memory:
   default_backend: mem0
   backends:
-    lisa-context:
-      add: add_memory
-      search: search_memory
-    mem0:
-      add: add_memories
-      search: search_memories
+    - id: mem0
+      kind: http
+      url: https://mcp.mem0.ai/mcp
+      headers:
+        Authorization: "Bearer ${MEM0_API_KEY_TEST}"
+      tool_names:
+        add: add_memory
+        search: search_memories
+    - id: lisa-context
+      kind: stdio
+      command: "${LISA_MCP_COMMAND}"
+      args: ["--data-dir", "/data"]
+      tool_names:
+        add: add_memory
+        search: search_memory
 servers:
-  - server_id: mem0
+  - server_id: mem0-stdio
     runtime_kind: npx
     npx_package: "@mem0/mcp"
     data_dir_arg: null
@@ -66,17 +75,25 @@ servers:
     )
     specs, mem = load_mcp_server_manifest(manifest)
     assert len(specs) == 1  # letta is disabled
-    assert specs[0].server_id == "mem0"
+    assert specs[0].server_id == "mem0-stdio"
     assert specs[0].runtime_kind is RuntimeKind.NPX
     assert specs[0].npx_package == "@mem0/mcp"
     # data_dir_arg null → no injection
     assert specs[0].data_dir_arg is None
     # tool policy carried through
     assert specs[0].tool_policy.denied_tools == ["delete_memory"]
-    # memory backend config
+    # memory backend config — peer list, two backends
     assert mem.default_backend == "mem0"
-    assert mem.tool_names["mem0"]["search"] == "search_memories"
-    assert mem.tool_names["lisa-context"]["add"] == "add_memory"
+    backend_ids = [b.id for b in mem.backends]
+    assert backend_ids == ["mem0", "lisa-context"]
+    mem0_backend = next(b for b in mem.backends if b.id == "mem0")
+    assert mem0_backend.kind == "http"
+    assert mem0_backend.url == "https://mcp.mem0.ai/mcp"
+    assert mem0_backend.tool_names["search"] == "search_memories"
+    lisa_backend = next(b for b in mem.backends if b.id == "lisa-context")
+    assert lisa_backend.kind == "stdio"
+    assert lisa_backend.command == "${LISA_MCP_COMMAND}"  # expansion is at host time
+    assert lisa_backend.tool_names["add"] == "add_memory"
 
 
 def test_load_manifest_expands_env_vars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

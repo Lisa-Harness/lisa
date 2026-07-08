@@ -150,40 +150,64 @@ class MCPMemoryClient:
         )
 
 
-class Mem0MemoryClient:
-    """MemoryStore backed by the Mem0 MCP server.
+class MCPHttpMemoryClient:
+    """Generic MemoryStore backed by any HTTP MCP memory server.
 
     Same :class:`~kernel.memory_protocol.MemoryStore` surface as
-    :class:`MCPMemoryClient`, but calls Mem0's tool names
-    (``add_memories`` / ``search_memories`` / ``get_all_memories``) and
-    maps between Lisa's :class:`MemoryRecord` / :class:`MemoryWriteRequest`
-    shapes and Mem0's flatter content/metadata model.
+    :class:`MCPMemoryClient`, but speaks to a remote MCP endpoint over the
+    streamable-HTTP transport. Backend-agnostic: the tool names for
+    add/search/list are passed in by the caller (from the manifest), so this
+    client works for Mem0 cloud, any future HTTP memory server, or a
+    self-hosted endpoint without code changes. No backend-specific knowledge
+    lives here.
 
-    Scoped by ``user_id`` (mapped from ``user_slug``) and ``agent_id`` so
-    multi-user / multi-agent isolation works the same way it does for
-    lisa-context.
-
-    Like ``MCPMemoryClient``, each call opens a fresh MCP stdio session to
-    the Mem0 server subprocess. The host owns the subprocess lifecycle
-    when Mem0 is a warm :class:`MCPToolPool` member; this client is used
-    by the memory seam (operations, turn hooks) which needs the typed
-    :class:`MemoryStore` surface rather than the raw tool catalog.
+    Each call opens a fresh MCP HTTP session; the host owns no long-lived
+    subprocess (there is none — the endpoint is remote). Scoped by
+    ``user_id`` (mapped from ``user_slug``) so multi-user isolation works
+    the same way it does for lisa-context.
     """
 
     def __init__(
         self,
-        command: str,
-        args: list[str],
+        url: str,
         *,
-        env: dict[str, str] | None = None,
-        cwd: str | Path | None = None,
+        headers: dict[str, str] | None = None,
+        tool_names: dict[str, str] | None = None,
+        agent_id: str = "lisa",
     ) -> None:
-        self.server_params = StdioServerParameters(
-            command=command,
-            args=args,
-            env=env,
-            cwd=cwd,
+        self._url = url
+        self._agent_id = agent_id
+        self._headers = dict(headers or {})
+        # Tool names default to the generic aliases themselves so a manifest
+        # that doesn't override them still works against a server whose tools
+        # are literally named add/search/list.
+        self._tool_names = {
+            "add": "add_memory",
+            "search": "search_memories",
+            "list": "get_memories",
+        }
+        if tool_names:
+            self._tool_names.update(tool_names)
+
+    async def _session(self) -> tuple[Any, Any]:
+        """Open a streamable-HTTP MCP session to the endpoint.
+
+        Returns ``(session, stack)`` so the caller can drive the session and
+        then close everything via ``stack.aclose()`` in a ``finally`` block.
+        The stack bundles the streamable_http_client + ClientSession lifetimes.
+        """
+        from contextlib import AsyncExitStack
+
+        from mcp.client.session import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        stack = AsyncExitStack()
+        read, write, _ = await stack.enter_async_context(
+            streamablehttp_client(self._url, headers=self._headers)
         )
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        return session, stack
 
     async def record_memory(self, request: MemoryWriteRequest | Any) -> MemoryRecord:
         write = (
@@ -191,29 +215,30 @@ class Mem0MemoryClient:
             if isinstance(request, MemoryWriteRequest)
             else MemoryWriteRequest.model_validate(request)
         )
-        async with stdio_client(self.server_params) as (read, write_stream):
-            async with ClientSession(read, write_stream) as session:
-                await session.initialize()
-                await session.call_tool(
-                    "add_memories",
-                    arguments={
-                        "content": write.content,
-                        "user_id": write.user_slug,
-                        "agent_id": write.agent_id or "lisa",
-                        "metadata": {
-                            "memory_scope": write.memory_scope,
-                            "workspace_id": write.workspace_id,
-                            "surface_id": write.surface_id,
-                            "operation_id": write.operation_id,
-                            "instruction_id": write.instruction_id,
-                            "memory_tier": write.memory_tier,
-                            "memory_kind": write.memory_kind,
-                            "salience": write.salience,
-                        },
+        session, stack = await self._session()
+        try:
+            await session.call_tool(
+                self._tool_names["add"],
+                arguments={
+                    "content": write.content,
+                    "user_id": write.user_slug,
+                    "agent_id": self._agent_id,
+                    "metadata": {
+                        "memory_scope": write.memory_scope,
+                        "workspace_id": write.workspace_id,
+                        "surface_id": write.surface_id,
+                        "operation_id": write.operation_id,
+                        "instruction_id": write.instruction_id,
+                        "memory_tier": write.memory_tier,
+                        "memory_kind": write.memory_kind,
+                        "salience": write.salience,
                     },
-                )
-        # Mem0 stores its own IDs; echo a MemoryRecord back so the kernel's
-        # downstream typing (MemoryStore Protocol) does not change.
+                },
+            )
+        finally:
+            await stack.aclose()
+        # The server stores its own IDs; echo a MemoryRecord back so the
+        # kernel's downstream typing (MemoryStore Protocol) does not change.
         return MemoryRecord(
             id=0,
             user_slug=write.user_slug,
@@ -225,7 +250,7 @@ class Mem0MemoryClient:
             created_at="now",
             memory_tier=write.memory_tier,
             salience=write.salience,
-            agent_id=write.agent_id,
+            agent_id=self._agent_id,
             source_user_id="",
             source_user_slug="",
             operation_id=write.operation_id,
@@ -240,20 +265,21 @@ class Mem0MemoryClient:
     async def recall(self, query: str, **kwargs: Any) -> str:
         user_slug = str(kwargs.get("user_slug") or "").strip() or "default"
         limit = int(kwargs.get("limit", 5) or 5)
-        async with stdio_client(self.server_params) as (read, write_stream):
-            async with ClientSession(read, write_stream) as session:
-                await session.initialize()
-                result = await session.call_tool(
-                    "search_memories",
-                    arguments={
-                        "query": query,
-                        "user_id": user_slug,
-                        "limit": limit,
-                    },
-                )
-                if result.content and len(result.content) > 0:
-                    return result.content[0].text
-                return ""
+        session, stack = await self._session()
+        try:
+            result = await session.call_tool(
+                self._tool_names["search"],
+                arguments={
+                    "query": query,
+                    "user_id": user_slug,
+                    "limit": limit,
+                },
+            )
+        finally:
+            await stack.aclose()
+        if result.content and len(result.content) > 0:
+            return result.content[0].text
+        return ""
 
     async def list_memories(
         self,
@@ -264,51 +290,52 @@ class Mem0MemoryClient:
         surface_id: str = "",
         limit: int = 20,
     ) -> list[MemoryRecord]:
-        async with stdio_client(self.server_params) as (read, write_stream):
-            async with ClientSession(read, write_stream) as session:
-                await session.initialize()
-                result = await session.call_tool(
-                    "get_all_memories",
-                    arguments={"user_id": user_slug, "limit": limit},
-                )
-                if not (result.content and len(result.content) > 0):
-                    return []
-                import json as _json
+        session, stack = await self._session()
+        try:
+            result = await session.call_tool(
+                self._tool_names["list"],
+                arguments={"user_id": user_slug, "limit": limit},
+            )
+        finally:
+            await stack.aclose()
+        if not (result.content and len(result.content) > 0):
+            return []
+        import json as _json
 
-                text = result.content[0].text
-                try:
-                    data = _json.loads(text) if isinstance(text, str) else text
-                except (json.JSONDecodeError, TypeError):
-                    return []
-                if not isinstance(data, list):
-                    return []
-                records: list[MemoryRecord] = []
-                for index, item in enumerate(data):
-                    if not isinstance(item, dict):
-                        continue
-                    metadata = item.get("metadata") or {}
-                    records.append(
-                        MemoryRecord(
-                            id=int(item.get("id") or index),
-                            user_slug=user_slug,
-                            content=str(item.get("memory") or item.get("content") or ""),
-                            content_json=dict(metadata),
-                            memory_scope=str(metadata.get("memory_scope", memory_scope)),
-                            workspace_id=str(metadata.get("workspace_id", workspace_id)),
-                            surface_id=str(metadata.get("surface_id", surface_id)),
-                            created_at=str(item.get("created_at") or "now"),
-                            memory_tier=str(metadata.get("memory_tier", "daily")),
-                            salience=float(metadata.get("salience", 0.0)),
-                            agent_id=str(item.get("agent_id") or "mem0"),
-                            source_user_id="",
-                            source_user_slug="",
-                            operation_id=str(metadata.get("operation_id", "")),
-                            instruction_id=str(metadata.get("instruction_id", "")),
-                            memory_kind="episodic",
-                            confidence=1.0,
-                            evidence_ids=[],
-                            supersedes_id=None,
-                            valid_until=None,
-                        )
-                    )
-                return records
+        text = result.content[0].text
+        try:
+            data = _json.loads(text) if isinstance(text, str) else text
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        records: list[MemoryRecord] = []
+        for index, item in enumerate(data):
+            if not isinstance(item, dict):
+                continue
+            metadata = item.get("metadata") or {}
+            records.append(
+                MemoryRecord(
+                    id=int(item.get("id") or index),
+                    user_slug=user_slug,
+                    content=str(item.get("memory") or item.get("content") or ""),
+                    content_json=dict(metadata),
+                    memory_scope=str(metadata.get("memory_scope", memory_scope)),
+                    workspace_id=str(metadata.get("workspace_id", workspace_id)),
+                    surface_id=str(metadata.get("surface_id", surface_id)),
+                    created_at=str(item.get("created_at") or "now"),
+                    memory_tier=str(metadata.get("memory_tier", "daily")),
+                    salience=float(metadata.get("salience", 0.0)),
+                    agent_id=str(item.get("agent_id") or self._agent_id),
+                    source_user_id="",
+                    source_user_slug="",
+                    operation_id=str(metadata.get("operation_id", "")),
+                    instruction_id=str(metadata.get("instruction_id", "")),
+                    memory_kind="episodic",
+                    confidence=1.0,
+                    evidence_ids=[],
+                    supersedes_id=None,
+                    valid_until=None,
+                )
+            )
+        return records

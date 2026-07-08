@@ -4714,45 +4714,65 @@ def _build_memory_router() -> Any:
 
     from kernel.memory_router import MemoryStoreRouter  # noqa: PLC0415
 
-    # lisa-context client — always available as a backend. Same command/args
-    # the turn hooks use directly elsewhere.
-    mcp_command = os.getenv(
-        "LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")
-    )
-    mcp_args = [*os.getenv("LISA_MCP_ARGS", "").split(), *_mcp_server_extra_args()]
-    lisa_context_client = MCPMemoryClient(mcp_command, mcp_args)
-
-    backends: dict[str, Any] = {"lisa-context": lisa_context_client}
     memory_config = _RUNTIME_STATE.get("memory_config")
+    backends: dict[str, Any] = {}
     default_backend_id = getattr(memory_config, "default_backend", None)
 
-    default_store: Any = lisa_context_client
-    if default_backend_id and default_backend_id != "lisa-context":
-        # Find the compiled MCPClientConfig for the named default backend so
-        # we can build a client that speaks its launch command + args.
-        warm = _RUNTIME_STATE.get("mcp_tool_pool")
-        cold = _RUNTIME_STATE.get("mcp_cold_configs") or []
-        all_configs: list[Any] = []
-        if warm is not None:
-            all_configs.extend(warm.configs)
-        all_configs.extend(cold)
-        target = next((c for c in all_configs if c.server_id == default_backend_id), None)
-        if target is not None:
-            from kernel.mcp_client import Mem0MemoryClient  # noqa: PLC0415
+    # Build one client per declared backend. Each backend is a peer; the
+    # manifest declares its kind + connection details + tool names, so the
+    # host builds the right generic client without backend-specific code.
+    declared = getattr(memory_config, "backends", ()) or ()
+    for spec in declared:
+        backend_id = spec.id
+        if spec.kind == "http":
+            from kernel.mcp_client import MCPHttpMemoryClient  # noqa: PLC0415
 
-            mem0_client = Mem0MemoryClient(
-                target.command, list(target.args), env=target.env, cwd=target.cwd
+            backends[backend_id] = MCPHttpMemoryClient(
+                spec.url,
+                headers=dict(spec.headers),
+                tool_names=dict(spec.tool_names),
+                agent_id=spec.agent_id,
             )
-            backends[default_backend_id] = mem0_client
-            default_store = mem0_client
+        elif spec.kind == "stdio":
+            backends[backend_id] = MCPMemoryClient(
+                spec.command, list(spec.args), env=dict(spec.env) or None, cwd=spec.cwd
+            )
         else:
-            # Named backend not compiled (e.g. disabled in the manifest, or
-            # npx unavailable). Fall back to lisa-context loudly.
+            _append_log_event(
+                level="warning",
+                event="memory.backend_unknown_kind",
+                payload={"backend": backend_id, "kind": spec.kind},
+            )
+
+    # If no backends were declared, fall back to the built-in lisa-context
+    # client so the memory seam always has somewhere to read/write.
+    if not backends:
+        mcp_command = os.getenv(
+            "LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")
+        )
+        mcp_args = [*os.getenv("LISA_MCP_ARGS", "").split(), *_mcp_server_extra_args()]
+        backends["lisa-context"] = MCPMemoryClient(mcp_command, mcp_args)
+
+    # Resolve the default. If the named default isn't built, fall back loudly
+    # to whichever backend was declared first (or the built-in above).
+    default_store: Any
+    if default_backend_id and default_backend_id in backends:
+        default_store = backends[default_backend_id]
+    elif backends:
+        default_store = next(iter(backends.values()))
+        if default_backend_id:
             _append_log_event(
                 level="warning",
                 event="memory.default_backend_unavailable",
-                payload={"default_backend": default_backend_id, "fallback": "lisa-context"},
+                payload={"default_backend": default_backend_id, "fallback": next(iter(backends))},
             )
+    else:
+        default_store = MCPMemoryClient(
+            os.getenv(
+                "LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")
+            ),
+            [*os.getenv("LISA_MCP_ARGS", "").split(), *_mcp_server_extra_args()],
+        )
 
     router = MemoryStoreRouter(default=default_store, backends=backends)
     _RUNTIME_STATE["memory_router"] = router

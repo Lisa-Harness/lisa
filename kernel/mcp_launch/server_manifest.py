@@ -46,6 +46,7 @@ from kernel.mcp_launch.policy import (
 
 __all__ = [
     "MemoryBackendConfig",
+    "MemoryBackendSpec",
     "MCPServerManifestError",
     "load_mcp_server_manifest",
 ]
@@ -56,22 +57,45 @@ class MCPServerManifestError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryBackendConfig:
-    """Which server_id backs the generic memory aliases, plus per-backend tool-name mapping.
+class MemoryBackendSpec:
+    """One declared memory backend — a peer in the memory.backends list.
 
-    The host uses ``default_backend`` to decide which client to inject as
-    the default :class:`~kernel.memory_protocol.MemoryStore`, and
-    ``tool_names`` to map generic alias calls (``add`` / ``search`` /
-    ``list``) to a backend's actual MCP tool names — so the generic
-    ``memory.search`` synthetic tool can route to either
-    ``search_memory`` (lisa-context) or ``search_memories`` (Mem0) based
-    on the wired default.
+    Each backend is provider-agnostic: it declares its connection ``kind``
+    (http, stdio) plus the tool names the generic aliases route to. The host
+    builds the right client per ``kind`` and wires it behind the generic
+    ``memory.add`` / ``memory.search`` / ``memory.list`` synthetic aliases.
+    No backend-specific knowledge lives in the schema — adding a new backend
+    is a YAML entry, not a code change.
+    """
+
+    id: str
+    kind: str  # "http" | "stdio"
+    tool_names: dict[str, str] = field(default_factory=dict)
+    # http connection details (kind="http")
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    # stdio connection details (kind="stdio")
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    cwd: str | None = None
+    agent_id: str = "lisa"
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryBackendConfig:
+    """Memory backend configuration: which backend is default + the backends list.
+
+    The host uses ``default_backend`` to decide which
+    :class:`~kernel.memory_protocol.MemoryStore` to inject as the default,
+    and ``backends`` to build each one. Each backend in the list is a peer
+    (lisa-context, mem0, a future backend, …); the default picks one by id.
+    Chaining (fan-out writes / merged reads across backends) is a future
+    extension — the router already holds a ``backends`` dict keyed by id.
     """
 
     default_backend: str | None = None
-    tool_names: dict[str, dict[str, str]] = field(default_factory=dict)
-    # e.g. {"mem0": {"add": "add_memories", "search": "search_memories",
-    #                "list": "get_all_memories"}}
+    backends: tuple[MemoryBackendSpec, ...] = ()
 
 
 def _expand_env_value(raw: Any) -> str:
@@ -122,20 +146,100 @@ def _parse_memory_section(raw: Any) -> MemoryBackendConfig:
     default_backend = raw.get("default_backend")
     if default_backend is not None:
         default_backend = str(default_backend).strip() or None
-    backends_raw = raw.get("backends") or {}
-    if not isinstance(backends_raw, dict):
-        raise MCPServerManifestError("'memory.backends' must be a mapping of backend_id -> tool map")
-    tool_names: dict[str, dict[str, str]] = {}
-    for backend_id, mapping in backends_raw.items():
-        if not isinstance(mapping, dict):
+    backends_raw = raw.get("backends") or []
+    backends = _parse_memory_backends(backends_raw)
+    return MemoryBackendConfig(default_backend=default_backend, backends=backends)
+
+
+def _parse_memory_backends(raw: Any) -> tuple[MemoryBackendSpec, ...]:
+    """Parse the memory.backends list into MemoryBackendSpec entries.
+
+    Each entry is a peer: an id, a kind (http | stdio), connection details,
+    and tool_names mapping the generic aliases to that backend's tools.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise MCPServerManifestError("'memory.backends' must be a list of backend entries")
+    specs: list[MemoryBackendSpec] = []
+    seen_ids: set[str] = set()
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise MCPServerManifestError(f"memory.backends[{index}] must be a mapping")
+        backend_id = str(entry.get("id") or "").strip()
+        if not backend_id:
+            raise MCPServerManifestError(f"memory.backends[{index}]: 'id' is required")
+        if backend_id in seen_ids:
+            raise MCPServerManifestError(f"memory.backends[{index}]: duplicate backend id {backend_id!r}")
+        seen_ids.add(backend_id)
+        kind = str(entry.get("kind") or "").strip()
+        if kind not in {"http", "stdio"}:
             raise MCPServerManifestError(
-                f"'memory.backends.{backend_id}' must be a mapping of alias -> tool name"
+                f"memory.backends[{index}] {backend_id!r}: 'kind' must be 'http' or 'stdio'"
             )
-        tool_names[str(backend_id)] = {
-            str(alias): str(tool_name)
-            for alias, tool_name in mapping.items()
-        }
-    return MemoryBackendConfig(default_backend=default_backend, tool_names=tool_names)
+        tool_names_raw = entry.get("tool_names") or {}
+        if not isinstance(tool_names_raw, dict):
+            raise MCPServerManifestError(
+                f"memory.backends[{index}] {backend_id!r}: 'tool_names' must be a mapping"
+            )
+        tool_names = {str(alias): str(tool) for alias, tool in tool_names_raw.items()}
+        agent_id = str(entry.get("agent_id") or "lisa")
+        if kind == "http":
+            url = str(entry.get("url") or "").strip()
+            if not url:
+                raise MCPServerManifestError(
+                    f"memory.backends[{index}] {backend_id!r}: 'url' is required for kind=http"
+                )
+            headers_raw = entry.get("headers") or {}
+            if not isinstance(headers_raw, dict):
+                raise MCPServerManifestError(
+                    f"memory.backends[{index}] {backend_id!r}: 'headers' must be a mapping"
+                )
+            headers = {str(k): _expand_env_value(v) for k, v in headers_raw.items()}
+            specs.append(
+                MemoryBackendSpec(
+                    id=backend_id,
+                    kind=kind,
+                    tool_names=tool_names,
+                    url=url,
+                    headers=headers,
+                    agent_id=agent_id,
+                )
+            )
+        else:  # stdio
+            command = str(entry.get("command") or "").strip()
+            if not command:
+                raise MCPServerManifestError(
+                    f"memory.backends[{index}] {backend_id!r}: 'command' is required for kind=stdio"
+                )
+            args_raw = entry.get("args") or []
+            if not isinstance(args_raw, list):
+                raise MCPServerManifestError(
+                    f"memory.backends[{index}] {backend_id!r}: 'args' must be a list"
+                )
+            args = [_expand_env_value(a) for a in args_raw]
+            env_raw = entry.get("env") or {}
+            if not isinstance(env_raw, dict):
+                raise MCPServerManifestError(
+                    f"memory.backends[{index}] {backend_id!r}: 'env' must be a mapping"
+                )
+            env = {str(k): _expand_env_value(v) for k, v in env_raw.items()}
+            cwd = entry.get("cwd")
+            if cwd is not None:
+                cwd = str(cwd) or None
+            specs.append(
+                MemoryBackendSpec(
+                    id=backend_id,
+                    kind=kind,
+                    tool_names=tool_names,
+                    command=command,
+                    args=args,
+                    env=env,
+                    cwd=cwd,
+                    agent_id=agent_id,
+                )
+            )
+    return tuple(specs)
 
 
 def _parse_server_entries(raw_servers: Any, path: Path) -> list[MCPServerSpec]:
