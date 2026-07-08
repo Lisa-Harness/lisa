@@ -2,7 +2,7 @@
 
 ## Status
 
-**In progress** — 2026-07-08. Module created (`turn_hooks.py`), lint-clean. Integration into `main.py` pending.
+**Complete** — 2026-07-08. Module created (`turn_hooks.py`), lint-clean, integrated into `main.py`. C901 18, 51 stmts → resolved. `_on_turn_complete` and `_execute_operation` remain as thin closures in `main.py` (not in the class) — they depend on main.py-specific helpers. Zero test regressions.
 
 ## Problem
 

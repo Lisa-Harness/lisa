@@ -2,7 +2,7 @@
 
 ## Status
 
-**In progress** — 2026-07-08. Module created (`frontdoor_routing.py`), lint-clean. Integration into `main.py` pending.
+**Complete** — 2026-07-08. Module created (`frontdoor_routing.py`), lint-clean, integrated into `main.py`. C901 17+12 → resolved. Zero test regressions.
 
 ## Problem
 
