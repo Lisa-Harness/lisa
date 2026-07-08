@@ -89,7 +89,7 @@ def _wait_for_health(host: str, port: int, timeout_seconds: float = 10.0) -> Non
         try:
             with httpx.Client(timeout=0.5) as client:
                 response = client.get(url)
-                if response.status_code == 200:
+                if response.status_code == httpx.codes.OK:
                     logger.debug("desktop health check passed at %s", url)
                     return
         except Exception:
