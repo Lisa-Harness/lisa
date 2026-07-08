@@ -502,7 +502,7 @@ def _resolve_slice_tuning() -> tuple[dict[str, object], int]:
 
 def context_slug_to_thread_name(slug: str) -> str:
     """Convert a path or slug to a decent thread name if no front matter is present."""
-    from pathlib import Path  # local import to keep module lightweight
+    from pathlib import Path  # noqa: PLC0415 — local import to keep module lightweight
 
     p = Path(slug)
     name = p.stem

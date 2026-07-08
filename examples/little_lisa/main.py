@@ -824,13 +824,11 @@ async def _publish_token_usage(
 
 
 def _runtime_user_slug() -> str:
-    configured = str(_RUNTIME_STATE.get("user_slug") or "").strip()
-    return configured
+    return str(_RUNTIME_STATE.get("user_slug") or "").strip()
 
 
 def _runtime_session_context_ref() -> str:
-    configured = str(_RUNTIME_STATE.get("session_context_ref") or "").strip()
-    return configured
+    return str(_RUNTIME_STATE.get("session_context_ref") or "").strip()
 
 
 def _runtime_next_model_provider() -> str:
@@ -1092,7 +1090,8 @@ def _resolve_session_context(session_context: str) -> tuple[str, str, bool]:
     Resolution order:
     1. If empty: check for 'session_context.md' or 'session_context/' in current dir.
     2. Literal path: if it's a file or directory.
-    3. artifacts/ suffix: if 'artifacts/{session_context}.md' or 'artifacts/{session_context}/' exists.
+    3. artifacts/ suffix: if 'artifacts/{session_context}.md'
+       or 'artifacts/{session_context}/' exists.
     4. user_contexts/ slug: if 'user_contexts/{session_context}.md' exists.
     """
     s = session_context.strip()
@@ -3366,10 +3365,7 @@ class LittleLisaStateProvider:
         if digest_path.is_file():
             existing = digest_path.read_text(encoding="utf-8").strip()
         new_block = "\n".join(digest_parts)
-        if existing:
-            digest_text = f"{existing}\n\n{new_block}"
-        else:
-            digest_text = new_block
+        digest_text = f"{existing}\n\n{new_block}" if existing else new_block
         digest_path.write_text(digest_text, encoding="utf-8")
 
         remaining_lines = lines[overflow_count:]
@@ -3516,7 +3512,7 @@ def _build_mcp_tool_servers() -> list[Any]:
         ("lisa-content", "lisa_content.server", False),
     ]
 
-    for server_id, module, supports_readonly in first_party_servers:
+    for server_id, _module, _supports_readonly in first_party_servers:
         # lisa-operations exposes every operation as a tool, including
         # web_search. lisa-search already owns web_search, so deny it
         # from lisa-operations to avoid a tool-name collision.
@@ -3619,7 +3615,7 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         mcp_command,
         mcp_args,
     )
-    slice_tuning_dict, explicit_budget_ms = _resolve_slice_tuning()
+    slice_tuning_dict, _explicit_budget_ms = _resolve_slice_tuning()
     slice_tuning = SliceTuning.from_mapping(slice_tuning_dict)
     state_provider = LittleLisaStateProvider(
         thread_path=_runtime_thread_path(),
@@ -3961,8 +3957,7 @@ async def handle_message(message: str) -> str:  # noqa: PLR0911, PLR0912, PLR091
         return response_text
 
     if lowered in {"/consolidate", "consolidate", "/slice", "slice"}:
-        response_text = await _run_explicit_slice_command(message=message)
-        return response_text
+        return await _run_explicit_slice_command(message=message)
 
     if lowered.startswith("/debug"):
         subcommand = stripped[6:].strip().lower()

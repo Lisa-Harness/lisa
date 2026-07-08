@@ -205,7 +205,7 @@ def test_wait_for_health_retries_after_exception(monkeypatch: pytest.MonkeyPatch
             return _FakeResponse()
 
     monkeypatch.setattr(tray.httpx, "Client", _FakeClient)
-    monkeypatch.setattr(tray.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr(tray.time, "sleep", sleep_calls.append)  # type: ignore[arg-type]
 
     tray._wait_for_health("127.0.0.1", 8765, timeout_seconds=0.5)
 
@@ -342,8 +342,8 @@ def test_run_tray_starts_desktop_and_runs_icon(
         return True
 
     monkeypatch.setattr(tray, "_DesktopProcess", _FakeDesktopProcess)
-    monkeypatch.setattr(tray, "_build_tray_icon_image", lambda: object())
-    monkeypatch.setattr(tray, "_open_logs_dir", lambda path: opened_log_paths.append(path))
+    monkeypatch.setattr(tray, "_build_tray_icon_image", lambda: object())  # noqa: PLW0108
+    monkeypatch.setattr(tray, "_open_logs_dir", opened_log_paths.append)  # type: ignore[arg-type]
     monkeypatch.setattr(tray.webbrowser, "open", _fake_open)
     monkeypatch.setitem(sys.modules, "pystray", fake_pystray)
 

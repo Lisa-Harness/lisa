@@ -107,7 +107,7 @@ def _open_logs_dir(path: Path) -> None:
 
 
 def _build_tray_icon_image() -> object:
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw  # noqa: PLC0415 — optional dep, deferred import
 
     image = Image.new("RGBA", (64, 64), (20, 34, 52, 255))
     draw = ImageDraw.Draw(image)
@@ -120,7 +120,7 @@ def run_tray(config: TrayConfig) -> None:
     """Run the Little Lisa tray process and manage the desktop subprocess."""
 
     try:
-        import pystray
+        import pystray  # noqa: PLC0415 — optional dep, deferred import
     except Exception as exc:
         logger.error("pystray import failed: %s: %s", type(exc).__name__, exc)
         raise RuntimeError(
