@@ -210,6 +210,8 @@ try:
     from .provider_completions import (
         _normalize_google_base_url as _normalize_google_base_url_helper,
     )
+    from . import frontdoor_routing  # noqa: E402 — after env loading
+    from . import turn_hooks as turn_hooks_module  # noqa: E402 — after env loading
     from .tray import TrayConfig, run_tray
 except ImportError:  # pragma: no cover - direct script execution fallback
     from desktop import (  # type: ignore[no-redef]
@@ -1625,206 +1627,16 @@ async def _plan_frontdoor_route(
     raw_message: str,
     conversation_excerpt_markdown: str,
 ) -> FrontDoorRouteDecision:
-    """Plan the front-door route for a natural-language turn.
-
-    This function:
-    1. Resolves the front-door planner model from the manifest.
-    2. Builds a completion adapter that records attempts and handles
-       structured-output retry logic.
-    3. Delegates to ``shared_frontdoor.plan_frontdoor_route`` for the
-       actual routing decision.
-    4. Assembles a debug payload and stores it for ``/debug frontdoor``.
-
-    On any failure (model resolution, completion error, validation error),
-    the function falls back to a deterministic ``default`` route and
-    records the failure reason in the debug dict.
-    """
-    frontdoor_alias = _frontdoor_model_alias()
-    fallback = FrontDoorRouteDecision(
-        selected_mode_id="default",
-        normalized_query=raw_message.strip(),
-        reasoning="Front-door planner fallback to default route.",
-        confidence_score=0.0,
-    )
-    frontdoor_debug: dict[str, Any] = {
-        "timestamp_utc": datetime.now(UTC).isoformat(),
-        "model_alias": frontdoor_alias,
-        "resolved_model": {},
-        "raw_message": raw_message,
-        "system_prompt_chars": 0,
-        "user_prompt_chars": 0,
-        "conversation_excerpt_chars": len(conversation_excerpt_markdown),
-        "user_prompt_preview": "",
-        "planner_prompt_tokens": 0,
-        "planner_completion_tokens": 0,
-        "planner_total_tokens": 0,
-        "planner_completion_attempts": [],
-        "structured_output_retry_used": False,
-        "structured_output_retry_succeeded": False,
-    }
-
-    try:
-        model_def = _resolve_model(frontdoor_alias)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("frontdoor planner model resolution failed: %s: %s", type(exc).__name__, exc)
-        frontdoor_debug["planner_model_resolution_error"] = f"{type(exc).__name__}: {exc}"
-        frontdoor_debug.update(
-            {
-                "fallback_used": True,
-                "fallback_reason": "planner_model_resolution_error",
-                "planner_reasoning": fallback.reasoning,
-                "selected_mode_id": fallback.selected_mode_id,
-                "normalized_query": fallback.normalized_query,
-                "confidence_score": fallback.confidence_score,
-            }
-        )
-        _set_last_frontdoor_debug(frontdoor_debug)
-        return fallback
-
-    frontdoor_debug["resolved_model"] = {
-        "model_id": model_def.model_id,
-        "provider": model_def.provider,
-        "reasoning_model": model_def.reasoning_model,
-    }
-
-    is_default_executor = False
-    try:
-        default_alias = _model_alias_for_mode("default")
-        default_model_def = _resolve_model(default_alias)
-        is_default_executor = model_def.model_id == default_model_def.model_id
-    except Exception:  # pylint: disable=broad-except
-        pass
-
-    # ── Completion adapter ────────────────────────────────────────────
-    # This closure wraps _complete_live with:
-    #   - prompt-shape capture for debugging
-    #   - per-attempt token recording
-    #   - structured-output retry logic (fallback to plain text + JSON parse)
-    # The nested _retry_without_response_format handles the retry path when
-    # the first structured-output call either errors or fails validation.
-
-    async def _complete_frontdoor_planner(**kwargs: Any) -> StubCompletion:
-        response_format = kwargs.get("response_format")
-        messages = kwargs.get("messages")
-        if isinstance(messages, list):
-            _capture_prompt_shape(
-                messages,
-                frontdoor_debug=frontdoor_debug,
-                preview_fn=_preview_text,
-            )
-
-        async def _retry_without_response_format(*, attempt: str) -> StubCompletion:
-            assert response_format is not None
-            retry_messages = list(messages or [])
-            if retry_messages:
-                retry_system = dict(retry_messages[0])
-                retry_system["content"] = (
-                    f"{retry_system.get('content') or ''!s}\n\n"
-                    f"Return only one valid JSON object matching {response_format.__name__}. "
-                    "Do not include Markdown fences, prose, or comments."
-                )
-                retry_messages[0] = retry_system
-            retry_completion = await _complete_live(
-                messages=retry_messages,
-                model_def=model_def,
-                max_tokens=int(kwargs.get("max_tokens") or 0),
-                temperature=float(kwargs.get("temperature") or 0.0),
-                response_format=None,
-            )
-            _record_frontdoor_completion(
-                retry_completion,
-                attempt=attempt,
-                frontdoor_debug=frontdoor_debug,
-                coerce_int=_coerce_non_negative_int,
-            )
-            frontdoor_debug["structured_output_retry_used"] = True
-            frontdoor_debug["structured_output_retry_succeeded"] = True
-            retry_text = _extract_json_object(retry_completion.content)
-            parsed = response_format.model_validate_json(retry_text)
-            frontdoor_debug["raw_completion_preview"] = _preview_text(retry_completion.content)
-            return StubCompletion(
-                content=parsed.model_dump_json(),
-                tool_calls=retry_completion.tool_calls,
-                prompt_tokens=retry_completion.prompt_tokens,
-                completion_tokens=retry_completion.completion_tokens,
-                total_tokens=retry_completion.total_tokens,
-            )
-
-        try:
-            completion = await _complete_live(**kwargs)
-            attempt = (
-                "fast_path_structured"
-                if response_format is not FrontDoorRouteDecision
-                else "primary_structured"
-            )
-            _record_frontdoor_completion(
-                completion,
-                attempt=attempt,
-                frontdoor_debug=frontdoor_debug,
-                coerce_int=_coerce_non_negative_int,
-            )
-        except Exception as exc:  # pylint: disable=broad-except
-            if response_format is None:
-                raise
-            logger.warning("frontdoor planner completion error: %s: %s", type(exc).__name__, exc)
-            frontdoor_debug["planner_completion_error"] = f"{type(exc).__name__}: {exc}"
-            try:
-                return await _retry_without_response_format(attempt="retry_after_completion_error")
-            except ValidationError as retry_exc:
-                frontdoor_debug["planner_retry_validation_error"] = (
-                    f"{type(retry_exc).__name__}: {retry_exc}"
-                )
-            except Exception as retry_exc:  # pylint: disable=broad-except
-                frontdoor_debug["planner_retry_error"] = f"{type(retry_exc).__name__}: {retry_exc}"
-            frontdoor_debug["structured_output_retry_succeeded"] = False
-            frontdoor_debug["fallback_reason"] = "planner_completion_error"
-            raise RuntimeError("frontdoor planner completion failed") from exc
-
-        if response_format is None:
-            return completion
-
-        try:
-            parsed = response_format.model_validate_json(_extract_json_object(completion.content))
-        except ValidationError as exc:
-            logger.warning(
-                "frontdoor planner output validation failed: %s: %s",
-                type(exc).__name__,
-                exc,
-            )
-            frontdoor_debug["planner_output_validation_error"] = f"{type(exc).__name__}: {exc}"
-            frontdoor_debug["raw_completion_preview"] = _preview_text(completion.content)
-            try:
-                return await _retry_without_response_format(attempt="retry_after_validation_error")
-            except ValidationError as retry_exc:
-                frontdoor_debug["planner_retry_validation_error"] = (
-                    f"{type(retry_exc).__name__}: {retry_exc}"
-                )
-            except Exception as retry_exc:  # pylint: disable=broad-except
-                frontdoor_debug["planner_retry_error"] = f"{type(retry_exc).__name__}: {retry_exc}"
-            frontdoor_debug["structured_output_retry_succeeded"] = False
-            frontdoor_debug["fallback_reason"] = "planner_output_validation_error"
-            raise RuntimeError("frontdoor planner validation failed") from exc
-
-        frontdoor_debug["raw_completion_preview"] = _preview_text(completion.content)
-        return StubCompletion(
-            content=parsed.model_dump_json(),
-            tool_calls=completion.tool_calls,
-            prompt_tokens=completion.prompt_tokens,
-            completion_tokens=completion.completion_tokens,
-            total_tokens=completion.total_tokens,
-        )
-
-    decision = await shared_frontdoor.plan_frontdoor_route(
-        user_message=raw_message,
-        current_route_mode="default",
-        surface_context=SurfaceContext(
-            surface_type="personal_dm",
-            surface_id="little-lisa-console",
-            memory_scope="personal",
-        ),
-        preferred_mode_id="default",
+    """Thin wrapper — delegates to frontdoor_routing.plan_frontdoor_route."""
+    return await frontdoor_routing.plan_frontdoor_route(
+        raw_message=raw_message,
         conversation_excerpt_markdown=conversation_excerpt_markdown,
-        catalog=get_workflow_catalog(),
+        frontdoor_alias=_frontdoor_model_alias(),
+        resolve_model=_resolve_model,
+        complete_live=_complete_live,
+        model_alias_for_mode=_model_alias_for_mode,
+        coerce_int=_coerce_non_negative_int,
+        preview_fn=_preview_text,
         load_route_prompt=lambda: "\n\n".join(
             part
             for part in (
@@ -1834,45 +1646,11 @@ async def _plan_frontdoor_route(
             if part.strip()
         ),
         load_fast_path_verifier_prompt=_load_frontdoor_fast_path_verifier_prompt,
-        resolve_planner_model=lambda: model_def,
-        complete=_complete_frontdoor_planner,
         mode_supported=_frontdoor_mode_supported,
         build_user_prompt=_build_frontdoor_user_prompt,
-        model_bounded_max_tokens=512,
-        is_default_executor=is_default_executor,
+        get_workflow_catalog=get_workflow_catalog,
+        set_last_frontdoor_debug=_set_last_frontdoor_debug,
     )
-
-    fallback_reason = str(frontdoor_debug.get("fallback_reason") or "")
-    if (
-        not fallback_reason
-        and decision.planner_source == "deterministic"
-        and decision.reasoning == fallback.reasoning
-    ):
-        fallback_reason = "planner_fallback"
-
-    if fallback_reason:
-        logger.info("frontdoor planner fell back to default (reason=%s)", fallback_reason)
-    else:
-        logger.debug(
-            "frontdoor routed to mode=%s confidence=%.2f",
-            decision.selected_mode_id,
-            decision.confidence_score,
-        )
-
-    frontdoor_debug.update(
-        {
-            "fallback_used": bool(fallback_reason),
-            "fallback_reason": fallback_reason,
-            "selected_mode_id": decision.selected_mode_id,
-            "normalized_query": decision.normalized_query,
-            "planner_reasoning": decision.reasoning.strip(),
-            "confidence_score": decision.confidence_score,
-            "clarification_needed": decision.clarification_needed,
-            "coerced_to_default_reason": "",
-        }
-    )
-    _set_last_frontdoor_debug(frontdoor_debug)
-    return decision
 
 
 def _extract_markdown_section(content: str, heading: str) -> str:

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-07-08
+**In progress** — 2026-07-08. Module created (`frontdoor_routing.py`), lint-clean. Integration into `main.py` pending.
 
 ## Problem
 
