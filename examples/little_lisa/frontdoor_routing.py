@@ -18,7 +18,10 @@ from kernel.models import RouteDecision as FrontDoorRouteDecision
 from kernel.models import SurfaceContext
 from pydantic import ValidationError
 
-from .model_runtime import StubCompletion, StubModelDefinition
+try:
+    from .model_runtime import StubCompletion, StubModelDefinition
+except ImportError:  # pragma: no cover — direct script execution fallback
+    from model_runtime import StubCompletion, StubModelDefinition  # type: ignore[no-redef]
 
 logger = logging.getLogger(__name__)
 

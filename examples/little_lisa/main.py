@@ -240,6 +240,8 @@ except ImportError:  # pragma: no cover - direct script execution fallback
     from provider_completions import (
         _normalize_google_base_url as _normalize_google_base_url_helper,
     )
+    import frontdoor_routing  # type: ignore[no-redef]
+    import turn_hooks as turn_hooks_module  # type: ignore[no-redef]
     from tray import TrayConfig, run_tray  # type: ignore[no-redef]
 
 CORE_PACK_ROOT = FRAMEWORK_ROOT / "sdk_packs" / "core"
@@ -3378,21 +3380,19 @@ def _build_workshop_context_bundle(
 
 
 def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
-    """Build TurnHooks wired to Little Lisa callbacks and memory operations."""
+    """Build TurnHooks wired to Little Lisa callbacks and memory operations.
 
-    from kernel.slice import SlicePolicy, SliceTuning  # noqa: PLC0415
+    Delegates to ``LittleLisaTurnHooks`` in ``turn_hooks.py`` which holds
+    shared state as instance attributes instead of capturing it via closures.
+    """
+    from kernel.slice import SliceTuning  # noqa: PLC0415
 
-    # MCP Client wiring — memory stays on MCPMemoryClient (v1);
-    # tool servers go through MCPToolPool via the compiled registry.
     mcp_command = os.getenv(
         "LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")
     )
     mcp_args = os.getenv("LISA_MCP_ARGS", "").split()
     mcp_args = [*mcp_args, *_mcp_server_extra_args()]
-    memory_store = MCPMemoryClient(
-        mcp_command,
-        mcp_args,
-    )
+    memory_store = MCPMemoryClient(mcp_command, mcp_args)
     slice_tuning_dict, _explicit_budget_ms = _resolve_slice_tuning()
     slice_tuning = SliceTuning.from_mapping(slice_tuning_dict)
     state_provider = LittleLisaStateProvider(
@@ -3412,127 +3412,21 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         if isinstance(raw, (int, float)):
             persisted_last_slice_finished_at = float(raw)
 
-    async def _post_turn_slice(
-        policy: SlicePolicy,
-    ) -> Any:
-        return await state_provider.slice(ctx=None, policy=policy)
-
-    async def _pre_turn_slice(policy: SlicePolicy) -> Any:
-        return await state_provider.slice(ctx=None, policy=policy)
-
-    async def _explicit_slice(policy: SlicePolicy) -> Any:
-        return await state_provider.slice(ctx=None, policy=policy)
-
-    async def _answer_memory_recall(
-        *,
-        query: str,
-        user_slug: str,
-        workspace_id: str,
-        memory_scope: str = "personal",
-        surface_id: str = "",
-        limit: int = 5,
-        **_kwargs: Any,
-    ) -> MemoryRecallAnswer:
-        records = await memory_store.list_memories(
-            user_slug=user_slug,
-            workspace_id=workspace_id,
-            memory_scope=memory_scope,
-            surface_id=surface_id,
-            limit=max(1, min(int(limit or 1), 20)),
-        )
-        if not records:
-            return MemoryRecallAnswer(
-                query=query,
-                found=False,
-                answer=f"No memory matches found for: {query}",
-            )
-
-        query_tokens = _tokenize(query)
-        ranked: list[tuple[float, MemoryRecord]] = []
-        for record in records:
-            haystack = f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
-            overlap = len(query_tokens.intersection(_tokenize(haystack)))
-            if overlap <= 0 and query_tokens:
-                continue
-            lexical_score = overlap / max(len(query_tokens), 1) if query_tokens else 1.0
-            combined = min(1.0, lexical_score + max(0.0, record.salience) * 0.2)
-            ranked.append((combined, record))
-
-        ranked.sort(key=lambda item: (item[0], item[1].id), reverse=True)
-        top = ranked[: max(1, min(int(limit or 1), 8))]
-        if not top:
-            return MemoryRecallAnswer(
-                query=query,
-                found=False,
-                answer=f"No memory matches found for: {query}",
-            )
-
-        evidence: list[MemoryRecallEvidence] = []
-        for score, record in top:
-            evidence.append(
-                MemoryRecallEvidence(
-                    memory_id=record.id,
-                    created_at=record.created_at,
-                    content=record.content,
-                    memory_scope=record.memory_scope,
-                    surface_id=record.surface_id,
-                    source_user_slug=record.source_user_slug,
-                    operation_id=record.operation_id,
-                    memory_tier=record.memory_tier,
-                    salience=record.salience,
-                    combined_score=round(score, 3),
-                    lexical_score=round(score, 3),
-                    recency_score=1.0,
-                    match_reasons=["lexical overlap"],
-                )
-            )
-
-        summary = evidence[0].content
-        confidence = evidence[0].combined_score if evidence else 0.0
-        return MemoryRecallAnswer(
-            query=query,
-            found=True,
-            answer=summary,
-            confidence=round(confidence, 3),
-            used_semantic_search=False,
-            auto_deep_used=False,
-            evidence=evidence,
-        )
-
-    def _base_operation_context(
-        *,
-        query: str,
-        mode_id: str,
-        memory_scope: str,
-    ) -> OperationExecutionContext:
-        user_slug = _runtime_user_slug() or "system"
-        return OperationExecutionContext(
-            workspace_id="little-lisa",
-            user_id=user_slug,
-            user_slug=user_slug,
-            user_name=user_slug,
-            conversation_id="little-lisa-console",
-            surface_type="personal_dm",
-            surface_id="little-lisa-console",
-            memory_scope=memory_scope,
-            mode_id=mode_id,
-            query=query,
-            model_id="default",
-            complete_fn=_complete_live,
-            resolve_model_fn=_resolve_model,
-            execute_tool_fn=_execute_tool,
-            execute_operation_fn=_execute_operation,
-            memory_store=memory_store,
-            answer_memory_recall_fn=_answer_memory_recall,
-            memory_recall_default_limit=8,
-        )
+    provider = turn_hooks_module.LittleLisaTurnHooks(
+        memory_store=memory_store,
+        state_provider=state_provider,
+        complete_live=_complete_live,
+        resolve_model=_resolve_model,
+        execute_tool=_execute_tool,
+    )
 
     async def _execute_operation(
         operation_id: str,
         ctx: OperationExecutionContext,
     ) -> OperationResult:
+        """Execute an operation with memory store wiring."""
         ctx.memory_store = memory_store
-        ctx.answer_memory_recall_fn = _answer_memory_recall
+        ctx.answer_memory_recall_fn = provider.answer_memory_recall
         ctx.memory_recall_default_limit = 8
         return await execute_operation(operation_id, ctx)
 
@@ -3542,15 +3436,13 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         response_text: str,
         messages: list[dict[str, Any]],
     ) -> None:
+        """Update the context dict with turn completion metadata."""
         if context is None:
             return
         turn_input_summary = _summarize_turn_messages(messages)
-        assistant_message_count = 0
-        for message in messages:
-            role = str(message.get("role") or "").strip().lower()
-            if role == "assistant":
-                assistant_message_count += 1
-
+        assistant_message_count = sum(
+            1 for msg in messages if str(msg.get("role") or "").strip().lower() == "assistant"
+        )
         context["turn_input"] = turn_input_summary
         context["completion"] = {
             "mode_id": mode_id,
@@ -3564,17 +3456,17 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         }
 
     return TurnHooks(
-        resolve_model=_resolve_model,
-        complete=_complete_live,
+        resolve_model=provider.resolve_model_hook,
+        complete=provider.complete,
         mcp_tool_servers=_build_mcp_tool_servers(),
         execute_operation=_execute_operation,
         assemble_system_prompt=_assemble_system_prompt,
         assemble_user_context=_assemble_dynamic_user_context,
         on_turn_complete=_on_turn_complete,
         slice_tuning=slice_tuning,
-        pre_turn_slice=_pre_turn_slice,
-        post_turn_slice=_post_turn_slice,
-        explicit_slice=_explicit_slice,
+        pre_turn_slice=provider.pre_turn_slice,
+        post_turn_slice=provider.post_turn_slice,
+        explicit_slice=provider.explicit_slice,
         last_slice_finished_at=persisted_last_slice_finished_at,
         workflow_turn_runner=_run_workflow_turn,
         workflow_session_factory=create_workflow_session,
