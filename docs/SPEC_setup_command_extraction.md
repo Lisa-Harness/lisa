@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-07-08
+**Complete** — 2026-07-08. Decomposed into 5 provider step functions with dispatch table. C901=19 → resolved. Zero test regressions.
 
 ## Problem
 
