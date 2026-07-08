@@ -100,4 +100,3 @@ async def _setup_command() -> None:
 - Changing the provider list or validation logic.
 - Adding new providers.
 - Making the wizard non-interactive.
-
