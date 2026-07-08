@@ -4492,19 +4492,41 @@ def _initialize_runtime(
     state_snapshot_path: str,
     streaming: str = "",
 ) -> None:
-    """Initialize Little Lisa runtime before each command entry point.
+    """Initialize Little Lisa runtime before each command entry point."""
+    _init_core(debug=debug, log_level=log_level)
+    _init_paths(
+        data_dir=data_dir,
+        log_path=log_path,
+        no_log=no_log,
+        memory_db=memory_db,
+    )
+    normalized_user, context_ref, context_active = _init_session_context_and_threads(
+        user_slug=user_slug,
+        thread_dir=thread_dir,
+        no_thread=no_thread,
+    )
+    _init_timeout_and_timezone(timeout_profile=timeout_profile, timezone=timezone)
+    _init_state_snapshot(state_snapshot_path=state_snapshot_path)
+    _init_streaming(streaming=streaming)
+    _log_runtime_initialized(
+        normalized_user=normalized_user,
+        context_ref=context_ref,
+        context_active=context_active,
+    )
+    reload_model_manifest()
 
-    The model manifest is always reloaded from disk at startup so the runtime
-    reflects the latest models.yaml without requiring a manual flag.
-    """
 
+def _init_core(*, debug: bool, log_level: str) -> None:
+    """Set up framework, configure runtime, and resolve debug/log-level."""
     _load_local_env_file()
     setup_framework()
     configure_runtime()
     _RUNTIME_STATE["debug"] = debug
     _RUNTIME_STATE["log_level"] = _resolve_log_level(log_level, debug_enabled=debug)
 
-    # Configure artifacts, memory, and thread log directories
+
+def _init_paths(*, data_dir: str, log_path: str, no_log: bool, memory_db: str) -> None:
+    """Resolve and set data-dir, log-path, memory-db, and thread-dir paths."""
     data_from_cli = Path(data_dir).expanduser() if data_dir.strip() else None
     data_from_env = (
         Path(os.getenv(_LITTLE_LISA_DATA_DIR_ENV, "")).expanduser()
@@ -4513,8 +4535,6 @@ def _initialize_runtime(
     )
     _RUNTIME_STATE["data_dir"] = data_from_cli or data_from_env or _DEFAULT_DATA_DIR
 
-    # Resolve turn log path: --no-log disables; --log overrides; default is
-    # turns.jsonl inside the resolved artifacts directory.
     if no_log:
         _RUNTIME_STATE["log_path"] = None
     elif log_path.strip():
@@ -4532,6 +4552,14 @@ def _initialize_runtime(
         memory_from_cli or memory_from_env or _runtime_data_dir() / "memory.json"
     )
 
+
+def _init_session_context_and_threads(
+    *,
+    user_slug: str,
+    thread_dir: str,
+    no_thread: bool,
+) -> tuple[str, str, bool]:
+    """Resolve session context and thread strategy, set runtime state."""
     thread_from_cli = Path(thread_dir).expanduser() if thread_dir.strip() else None
     thread_from_env = (
         Path(os.getenv(_LITTLE_LISA_THREAD_DIR_ENV, "")).expanduser()
@@ -4539,16 +4567,10 @@ def _initialize_runtime(
         else None
     )
 
-    # Resolve session context: prefer explicit CLI `--session-context` when
-    # provided. Otherwise, check for session_context metadata in artifacts.
-    if str(user_slug).strip():
-        normalized_user, context_ref, context_active = _resolve_session_context(user_slug)
-    else:
-        # Check artifacts for 'session_context' file or folder
-        normalized_user, context_ref, context_active = _resolve_session_context("")
+    slug = str(user_slug).strip()
+    normalized_user, context_ref, context_active = _resolve_session_context(slug or "")
 
-    # Determine thread strategy
-    thread_dir, thread_path = _resolve_runtime_thread_strategy(
+    resolved_thread_dir, thread_path = _resolve_runtime_thread_strategy(
         no_thread=no_thread,
         context_active=context_active,
         context_ref=context_ref,
@@ -4557,15 +4579,17 @@ def _initialize_runtime(
         thread_from_env=thread_from_env,
         data_dir=_runtime_data_dir(),
     )
-    _RUNTIME_STATE["thread_dir"] = thread_dir
+    _RUNTIME_STATE["thread_dir"] = resolved_thread_dir
     _RUNTIME_STATE["thread_path"] = thread_path
-
     _RUNTIME_STATE["user_slug"] = normalized_user
     _RUNTIME_STATE["session_context_ref"] = context_ref
     _RUNTIME_STATE["session_context_active"] = context_active
+    return normalized_user, context_ref, context_active
 
+
+def _init_timeout_and_timezone(*, timeout_profile: str, timezone: str) -> None:
+    """Resolve and set timeout profile, timezone, and session counters."""
     _RUNTIME_STATE["timeout_profile"] = _resolve_timeout_profile(timeout_profile)
-
     _RUNTIME_STATE["session_started_utc"] = datetime.now(UTC)
     _RUNTIME_STATE["session_turn_count"] = 0
     _RUNTIME_STATE["session_success_count"] = 0
@@ -4582,10 +4606,18 @@ def _initialize_runtime(
         mode_id=default_mode_id,
         preferred_model_id=_model_alias_for_mode(default_mode_id),
     )
+
+
+def _init_state_snapshot(state_snapshot_path: str) -> None:
+    """Load and set the state snapshot from the given path."""
     _RUNTIME_STATE["state_snapshot_path"] = (
         Path(state_snapshot_path).expanduser() if state_snapshot_path.strip() else None
     )
     _RUNTIME_STATE["state_snapshot"] = _load_state_snapshot(state_snapshot_path)
+
+
+def _init_streaming(streaming: str) -> None:
+    """Resolve and set streaming mode and char delay."""
     stream_mode = "none"
     stream_char_delay_ms = 0
     if streaming.strip():
@@ -4609,6 +4641,14 @@ def _initialize_runtime(
     )
     _RUNTIME_STATE["streaming_char_delay_ms"] = _RUNTIME_STATE["stream_char_delay_ms"]
 
+
+def _log_runtime_initialized(
+    *,
+    normalized_user: str,
+    context_ref: str,
+    context_active: bool,
+) -> None:
+    """Log the runtime.initialized event."""
     _append_log_event(
         level="info",
         event="runtime.initialized",
@@ -4616,8 +4656,8 @@ def _initialize_runtime(
             "session_context": normalized_user or "none",
             "session_context_ref": context_ref,
             "session_context_active": context_active,
-            "timezone": resolved_timezone,
-            "timezone_source": timezone_source,
+            "timezone": _runtime_timezone(),
+            "timezone_source": _runtime_timezone_source(),
             "timeout_profile": _runtime_timeout_profile(),
             "log_path": str(_runtime_log_path() or ""),
             "streaming_mode": _runtime_streaming_mode(),
@@ -4629,8 +4669,6 @@ def _initialize_runtime(
             "state_snapshot_loaded": isinstance(_RUNTIME_STATE.get("state_snapshot"), dict),
         },
     )
-
-    reload_model_manifest()
 
 
 def _normalize_legacy_cli_args(raw_args: list[str]) -> list[str]:
