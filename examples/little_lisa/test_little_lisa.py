@@ -31,7 +31,6 @@ def test_list_modes_separates_supported_from_host_required_modes() -> None:
 
     assert "Supported Little Lisa modes:" in output
     assert "- search (action):" in output
-    assert "- markdown (action):" in output
     assert "- thinkabout (workflow):" in output
     assert "- thinkabout: requires" not in output
 
@@ -106,9 +105,10 @@ async def test_simple_help_reports_only_wired_capabilities() -> None:
 
         output = await little_lisa.handle_message("/help")
 
-    assert "/search <query>" in output
-    assert "/markdown <request>" in output
-    assert "Live web search is available when WEB_SEARCH_API_KEY is configured." in output
+    assert "/search <request>" in output
+    assert "/discuss <request>" in output
+    assert "/help capabilities" in output
+    assert "/markdown" not in output
 
 
 @pytest.mark.asyncio

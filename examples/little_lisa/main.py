@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import platform
 import re
@@ -58,6 +59,8 @@ from importlib.metadata import version as _package_version
 from pathlib import Path
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+logger = logging.getLogger(__name__)
 
 import httpx
 import typer
@@ -90,6 +93,8 @@ _LITTLE_LISA_ENV_FILE = Path(__file__).resolve().parent / ".env"
 
 def _load_local_env_file() -> None:
     """Load the Little Lisa local .env without overriding explicit process env vars."""
+    if _LITTLE_LISA_ENV_FILE.exists():
+        logger.debug("loading .env from %s", _LITTLE_LISA_ENV_FILE)
     load_dotenv(dotenv_path=_LITTLE_LISA_ENV_FILE, override=False)
 
 
@@ -492,24 +497,38 @@ _STATUS_TIME_PADDING_WIDTH = 2
 _REPL_HISTORY_FILE_NAME = "repl_history.txt"
 _DEFAULT_DESKTOP_OPEN_ON_START = True
 _DEFAULT_DESKTOP_NO_ARGS_MODE = "tray"
-_REPL_COMMAND_HINTS: tuple[str, ...] = (
+# Host-only REPL shortcuts that are not catalog modes. These are the only
+# hardcoded command surface; everything else is derived from the mode catalog
+# at help-render time. Keep this list minimal and host-specific.
+_HOST_REPL_SHORTCUTS: tuple[str, ...] = (
     "/help",
     "/help capabilities",
     "/settings",
     "/tokens",
     "/debug context",
     "/debug frontdoor",
-    "/search ",
-    "/markdown ",
+    "/consolidate",
     "/deep ",
-    "/discuss ",
     "/quit",
 )
+
+
+def _repl_command_hints() -> tuple[str, ...]:
+    """Build REPL completion hints from host shortcuts plus catalog mode commands."""
+    catalog = get_workflow_catalog()
+    mode_hints: list[str] = []
+    for mode_id, mode in sorted(catalog.items()):
+        if _mode_support_gap(mode) is not None:
+            continue
+        if mode.command_pattern and mode_id != "default":
+            mode_hints.append(f"/{mode_id} ")
+    return (*_HOST_REPL_SHORTCUTS, *mode_hints)
+
+
 _MODE_MODEL_ALIAS_MAP = {
     "default": "default",
     "discuss": "default",
     "search": "default",
-    "markdown": "default",
     "deep": "deep",
 }
 
@@ -994,6 +1013,13 @@ def _set_runtime_route_preview(*, mode_id: str, preferred_model_id: str) -> None
     _RUNTIME_STATE["current_stage_id"] = stage_id or "-"
     _RUNTIME_STATE["next_model_id"] = model_id
     _RUNTIME_STATE["next_model_provider"] = provider
+    logger.debug(
+        "route preview set: mode=%s stage=%s model=%s provider=%s",
+        mode_id,
+        stage_id or "-",
+        model_id,
+        provider,
+    )
 
 
 def _resolve_session_context(session_context: str) -> tuple[str, str, bool]:
@@ -1559,6 +1585,7 @@ async def _plan_frontdoor_route(
     try:
         model_def = _resolve_model(frontdoor_alias)
     except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("frontdoor planner model resolution failed: %s: %s", type(exc).__name__, exc)
         frontdoor_debug["planner_model_resolution_error"] = f"{type(exc).__name__}: {exc}"
         frontdoor_debug.update(
             {
@@ -1658,6 +1685,7 @@ async def _plan_frontdoor_route(
         except Exception as exc:  # pylint: disable=broad-except
             if response_format is None:
                 raise
+            logger.warning("frontdoor planner completion error: %s: %s", type(exc).__name__, exc)
             frontdoor_debug["planner_completion_error"] = f"{type(exc).__name__}: {exc}"
             try:
                 return await _retry_without_response_format(attempt="retry_after_completion_error")
@@ -1677,6 +1705,11 @@ async def _plan_frontdoor_route(
         try:
             parsed = response_format.model_validate_json(_extract_json_object(completion.content))
         except ValidationError as exc:
+            logger.warning(
+                "frontdoor planner output validation failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             frontdoor_debug["planner_output_validation_error"] = f"{type(exc).__name__}: {exc}"
             frontdoor_debug["raw_completion_preview"] = _preview_text(completion.content)
             try:
@@ -1735,6 +1768,15 @@ async def _plan_frontdoor_route(
         and decision.reasoning == fallback.reasoning
     ):
         fallback_reason = "planner_fallback"
+
+    if fallback_reason:
+        logger.info("frontdoor planner fell back to default (reason=%s)", fallback_reason)
+    else:
+        logger.debug(
+            "frontdoor routed to mode=%s confidence=%.2f",
+            decision.selected_mode_id,
+            decision.confidence_score,
+        )
 
     frontdoor_debug.update(
         {
@@ -2258,10 +2300,13 @@ def _load_state_snapshot(path: str) -> dict[str, Any] | None:
         return None
     file_path = Path(configured).expanduser()
     if not file_path.exists():
+        logger.error("state snapshot file not found: %s", file_path)
         raise ValueError(f"State snapshot file not found: {file_path}")
     decoded = json.loads(file_path.read_text(encoding="utf-8"))
     if not isinstance(decoded, dict):
+        logger.error("state snapshot file must contain a JSON object: %s", file_path)
         raise ValueError("State snapshot file must contain a JSON object.")
+    logger.info("loaded state snapshot from %s (%d keys)", file_path, len(decoded))
     return decoded
 
 
@@ -3194,15 +3239,18 @@ async def _execute_tool(tool_id: str, ctx: Any) -> ToolResult:
             getattr(ctx, "parameters", {}).get("query") or getattr(ctx, "query", "")
         ).strip()
         if not web_search_is_configured():
+            logger.debug("web_search tool invoked but not configured")
             return ToolResult(
                 tool_id=tool_id,
                 error="Web search is not configured. Set WEB_SEARCH_API_KEY to enable it.",
             )
         if not query:
+            logger.debug("web_search tool invoked with empty query")
             return ToolResult(tool_id=tool_id, error="web_search requires a query.")
         try:
             response = await web_search(query)
         except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("web_search tool failed: %s: %s", type(exc).__name__, exc)
             return ToolResult(
                 tool_id=tool_id,
                 error=f"Web search failed: {type(exc).__name__}: {exc}",
@@ -3211,6 +3259,7 @@ async def _execute_tool(tool_id: str, ctx: Any) -> ToolResult:
             tool_id=tool_id,
             output_json={"response": response.model_dump(mode="json")},
         )
+    logger.debug("tool %s is stubbed in Little Lisa", tool_id)
     return ToolResult(tool_id=tool_id, output_text=f"{tool_id} is stubbed in Little Lisa.")
 
 
@@ -3287,46 +3336,68 @@ def format_models() -> Table:
 
 
 def _format_help() -> str:
-    """Return a capability-accurate help message for Little Lisa."""
+    """Compose a capability-accurate help message for Little Lisa.
 
-    return "\n".join(
+    Mode commands are derived from the live workflow catalog: every supported
+    mode with a ``command_pattern`` gets a ``/<mode>`` line built from its
+    authored ``description``. Only host-only shortcuts (``/help``, ``/settings``,
+    ``/tokens``, ``/debug``, ``/consolidate``, ``/deep``, ``/quit``) and the
+    runtime entry-point summary are hardcoded — everything else reflects the
+    packs actually installed at startup.
+    """
+
+    catalog = get_workflow_catalog()
+    lines: list[str] = ["Little Lisa", "", "Supported commands:"]
+
+    # Mode commands — derived from the catalog, not hardcoded.
+    mode_lines: list[str] = []
+    default_mode = catalog.get("default")
+    for mode_id, mode in sorted(catalog.items()):
+        if _mode_support_gap(mode) is not None or mode_id == "default":
+            continue
+        if not mode.command_pattern:
+            continue
+        summary = (mode.description or "").strip()
+        if not summary:
+            summary = f"{mode_id} mode"
+        mode_lines.append(f"- /{mode_id} <request> — {summary}")
+    if mode_lines:
+        lines.extend(mode_lines)
+
+    # Host-only shortcuts — the minimal hardcoded surface.
+    lines.extend(
         [
-            "Little Lisa",
-            "",
-            "Supported commands:",
-            "- /search <query> runs the prompt-authored search operation.",
-            "- /markdown <request> writes a local Markdown artifact.",
-            "- /deep <request> routes through default mode using the deep-designated model.",
-            "- /discuss <topic> parses discuss mode and runs its optional pre-turn briefing.",
+            "- /deep <request> routes through default mode on the deep-designated model.",
             "- Natural-language turns pass through the front-door route planner first.",
             "- /help capabilities shows the runtime capability snapshot.",
             "- /settings shows effective profile/timezone/debug/log-level runtime settings.",
             "- /tokens shows detailed session token breakdown by model, mode, and stage.",
             "- /debug context|capabilities|self|frontdoor shows local diagnostics.",
+            "- /consolidate (or /slice) runs the explicit thread/memory compaction slice.",
             "- /quit exits the interactive console loop.",
-            "- Action and chat modes added through SDK_CONTENT_ROOTS run when they only need "
-            "Little Lisa callbacks.",
-            "- Any other text uses default chat parsing.",
-            "",
-            "Model manifest: configure lisa_framework/examples/little_lisa/models.yaml with",
-            "designations 'front-door', 'default', and optional 'deep'.",
-            "Set LITTLE_LISA_MODELS_FILE to override the manifest path.",
-            "Set LITTLE_LISA_TIMEOUT_PROFILE or --timeout-profile to tune budgets.",
-            "Set LITTLE_LISA_TIMEZONE or --timezone to pin local status time.",
-            "Use --session-context <name> to select content/user_contexts/<name>.md; "
-            "or pass a full .md file path. Omit it to skip session context.",
-            "Use --timeout-profile fast|balanced|deep for per-mode operation budgets.",
-            "Use --state-snapshot <file.json> to inject compact local state context.",
-            "Run `little-lisa cli` for terminal REPL.",
-            "Run `little-lisa desktop` for localhost web UI.",
-            "Run `little-lisa` with no args for tray-first desktop launch.",
-            "Live web search is available when WEB_SEARCH_API_KEY is configured.",
-            "Not included: reminders, image generation, surf, "
-            "proactive delivery, Teams, Azure, or production Lisa services.",
-            "Memory recall is auto-injected before each turn from the local "
-            "memory store; the recall_memory operation is also available.",
         ]
     )
+
+    default_description = (
+        (default_mode.description or "general conversation").strip()
+        if default_mode is not None
+        else "general conversation"
+    )
+    lines.append(f"- Any other text uses default chat ({default_description}).")
+
+    lines.extend(
+        [
+            "",
+            "Modes and operations added through SDK_CONTENT_ROOTS run when they only "
+            "need Little Lisa callbacks.",
+            "",
+            "Run `little-lisa cli` for terminal REPL, `little-lisa desktop` for the "
+            "localhost web UI, or `little-lisa` with no args for tray-first launch.",
+            "Run `little-lisa --help` for the full CLI flag reference.",
+            "Run `/help capabilities` for the live mode/operation/tool/model inventory.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _format_unsupported_mode(mode: WorkflowModeConfig) -> str:
@@ -4173,6 +4244,11 @@ async def handle_message(message: str) -> str:  # noqa: PLR0911, PLR0912, PLR091
     )
     _set_runtime_route_preview(mode_id=mode.mode_id, preferred_model_id=preview_model_id)
     if _mode_support_gap(mode) is not None:
+        logger.info(
+            "unsupported mode %s in Little Lisa (gap=%s)",
+            mode.mode_id,
+            _mode_support_gap(mode),
+        )
         unsupported_context = {
             "timestamp_utc": datetime.now(UTC).isoformat(),
             "raw_message": message,
@@ -4315,6 +4391,7 @@ async def _run_once(message: str) -> None:
     try:
         response = await handle_message(message)
     except Exception as exc:  # pylint: disable=broad-except
+        logger.error("_run_once turn failed: %s: %s", type(exc).__name__, exc)
         _render_runtime_error(exc, title="Turn Error")
         return
     if _runtime_debug_enabled():
@@ -4420,7 +4497,7 @@ def _build_repl_prompt_session() -> PromptSession[str] | None:
     history_path.parent.mkdir(parents=True, exist_ok=True)
     return PromptSession(
         history=FileHistory(str(history_path)),
-        completer=WordCompleter(list(_REPL_COMMAND_HINTS), ignore_case=True),
+        completer=WordCompleter(list(_repl_command_hints()), ignore_case=True),
         complete_while_typing=True,
         multiline=False,
     )
@@ -4547,6 +4624,7 @@ async def _run_repl() -> None:
         except Exception as exc:  # pylint: disable=broad-except
             elapsed_ms = (time.perf_counter() - turn_start) * 1000.0
             _record_session_turn(succeeded=False, latency_ms=elapsed_ms)
+            logger.error("REPL turn failed: %s: %s", type(exc).__name__, exc)
             _render_runtime_error(exc, title="Turn Error")
             console.print(Rule(style=STYLE_RULE))
             continue
@@ -4780,6 +4858,7 @@ async def _render_response(response_text: str) -> None:
 
 def _render_runtime_error(exc: Exception, *, title: str = "Error") -> None:
     error_text = f"{type(exc).__name__}: {exc}"
+    logger.error("%s: %s: %s", title, type(exc).__name__, exc)
     _append_log_event(
         level="error",
         event="runtime.error",
