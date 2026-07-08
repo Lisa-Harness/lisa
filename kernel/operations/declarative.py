@@ -22,6 +22,12 @@ from kernel.models import (
     ToolExecutionContext,
     ToolResult,
 )
+from kernel.operations.structured_output import (
+    is_structured_output_unsupported,
+    json_only_instruction,
+    json_only_retry_messages,
+    parse_structured_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,70 +103,12 @@ def _stringify_tool_result(result: ToolResult | str) -> str:
     return "Done"
 
 
-def _is_structured_output_unsupported(exc: Exception) -> bool:
-    """Return whether the provider rejected native structured output for this request."""
-    text = f"{type(exc).__name__}: {exc}".lower()
-    if "unsupported" not in text:
-        return False
-    return any(
-        marker in text
-        for marker in (
-            "requested operation",
-            "response_format",
-            "structured output",
-            "chat.completions.parse",
-        )
-    )
-
-
-def _extract_json_object(text: str) -> str:
-    """Extract the first likely JSON object from a model response."""
-    normalized = str(text or "").strip()
-    if normalized.startswith("```json"):
-        normalized = normalized[7:]
-    elif normalized.startswith("```"):
-        normalized = normalized[3:]
-    if normalized.endswith("```"):
-        normalized = normalized[:-3]
-    normalized = normalized.strip()
-
-    if normalized.startswith("{") and normalized.endswith("}"):
-        return normalized
-
-    start = normalized.find("{")
-    end = normalized.rfind("}")
-    if start >= 0 and end > start:
-        return normalized[start : end + 1]
-    return normalized
-
-
-def _build_json_only_instruction(response_format_model: type[BaseModel]) -> str:
-    """Return a compact JSON-only instruction for response-format fallbacks."""
-    schema = response_format_model.model_json_schema()
-    properties = schema.get("properties") or {}
-    keys = [str(key) for key in properties.keys()]
-    key_list = ", ".join(keys) if keys else "the declared schema"
-    return (
-        "Return one JSON object only. Do not wrap it in markdown fences or prose. "
-        f"Populate these top-level keys: {key_list}."
-    )
-
-
-def _parse_structured_payload(
-    response_format_model: type[BaseModel],
-    content: str,
-) -> BaseModel:
-    """Parse structured output, tolerating fenced JSON and wrapper prose."""
-    try:
-        return response_format_model.model_validate_json(content)
-    except ValidationError as direct_exc:
-        extracted_json = _extract_json_object(content)
-        if extracted_json == content:
-            raise
-        try:
-            return response_format_model.model_validate_json(extracted_json)
-        except ValidationError as extracted_exc:
-            raise direct_exc from extracted_exc
+# Structured-output helpers (extraction, tolerant parse, json-only retry) live in
+# kernel.operations.structured_output and are re-exported here so legacy callers
+# keep working. Prefer importing from structured_output directly in new code.
+_is_structured_output_unsupported = is_structured_output_unsupported
+_build_json_only_instruction = json_only_instruction
+_parse_structured_payload = parse_structured_payload
 
 
 def _build_operation_result_from_structured_payload(
@@ -304,13 +252,7 @@ async def execute_declarative_operation(
             should_retry_for_json_only = True
         if should_retry_for_json_only and response_format_model is not None:
             completion = await ctx.complete_fn(
-                messages=[
-                    *messages,
-                    {
-                        "role": "user",
-                        "content": _build_json_only_instruction(response_format_model),
-                    },
-                ],
+                messages=json_only_retry_messages(messages, response_format_model),
                 model_def=model_def,
                 max_tokens=completion_max_tokens,
                 temperature=completion_temperature,

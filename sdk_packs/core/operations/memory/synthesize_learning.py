@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import cast
 
 from pydantic import BaseModel, Field, ValidationError
 
 from kernel.models import MemoryWriteRequest, OperationExecutionContext, OperationResult
+from kernel.operations.structured_output import parse_structured_payload
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +48,6 @@ class DistilledLearning(BaseModel):
     )
 
 
-def _extract_json_object(text: str) -> str:
-    """Extract one JSON object from wrapper prose when present."""
-    normalized = text.strip()
-    start = normalized.find("{")
-    end = normalized.rfind("}")
-    if start >= 0 and end > start:
-        return normalized[start : end + 1]
-    return normalized
-
-
 def _parse_distilled_learning(content: str) -> DistilledLearning:
     """Parse structured output with a bullet-list fallback for non-JSON providers."""
     normalized = (content or "").strip()
@@ -63,15 +55,8 @@ def _parse_distilled_learning(content: str) -> DistilledLearning:
         raise ValueError("empty distillation output")
 
     try:
-        return DistilledLearning.model_validate_json(normalized)
+        return cast(DistilledLearning, parse_structured_payload(DistilledLearning, normalized))
     except ValidationError as direct_exc:
-        extracted_json = _extract_json_object(normalized)
-        if extracted_json != normalized:
-            try:
-                return DistilledLearning.model_validate_json(extracted_json)
-            except ValidationError:
-                pass
-
         bullet_pattern = re.compile(r"^(?:[-*\u2022]|\d+[\.)\]])\s+(?P<fact>.+)$")
         facts: list[str] = []
         for line in normalized.splitlines():
