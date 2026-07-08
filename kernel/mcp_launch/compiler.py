@@ -13,6 +13,7 @@ resolved ``data_dir`` (and optional ``workspace_root``) becomes a concrete
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -82,6 +83,16 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
             args.extend(["--directory", spec.uv_directory])
         args.extend(["--package", spec.package, "python", "-m", spec.module])
         return "uv", args
+
+    if spec.runtime_kind == RuntimeKind.VENV_BIN:
+        if not spec.venv_dir:
+            raise ValueError(f"VENV_BIN runtime requires 'venv_dir' for server '{spec.server_id}'")
+        entry_point = spec.entry_point or spec.server_id
+        if sys.platform == "win32":
+            command_path = str(Path(spec.venv_dir) / "Scripts" / f"{entry_point}.exe")
+        else:
+            command_path = str(Path(spec.venv_dir) / "bin" / entry_point)
+        return command_path, []
 
     if spec.runtime_kind == RuntimeKind.NODE:
         if not spec.command_path or not spec.script_path:

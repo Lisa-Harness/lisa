@@ -156,6 +156,38 @@ def test_compile_command_uv_requires_package_and_module() -> None:
         compile_command(spec)
 
 
+def test_compile_command_venv_bin() -> None:
+    spec = MCPServerSpec(
+        server_id="lisa-context",
+        runtime_kind=RuntimeKind.VENV_BIN,
+        venv_dir="/path/to/.venv",
+    )
+    cmd, args = compile_command(spec)
+    # Path resolves to <venv_dir>/Scripts/<entry_point>.exe on Windows
+    # or <venv_dir>/bin/<entry_point> on POSIX.
+    assert "lisa-context" in cmd
+    assert "Scripts" in cmd or "bin" in cmd
+    assert args == []
+
+
+def test_compile_command_venv_bin_custom_entry_point() -> None:
+    spec = MCPServerSpec(
+        server_id="ctx",
+        runtime_kind=RuntimeKind.VENV_BIN,
+        entry_point="lisa-context",
+        venv_dir="/path/to/.venv",
+    )
+    cmd, args = compile_command(spec)
+    assert "lisa-context" in cmd
+    assert args == []
+
+
+def test_compile_command_venv_bin_requires_venv_dir() -> None:
+    spec = MCPServerSpec(server_id="t", runtime_kind=RuntimeKind.VENV_BIN)
+    with pytest.raises(ValueError, match="venv_dir"):
+        compile_command(spec)
+
+
 # ── compile_env ──────────────────────────────────────────────────────────────
 
 

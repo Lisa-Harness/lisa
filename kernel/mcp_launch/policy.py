@@ -31,6 +31,7 @@ class RuntimeKind(str, Enum):
 
     PYTHON = "python"       # python -m package.server
     UV = "uv"                # uv run --package mcp-server python -m package.server
+    VENV_BIN = "venv_bin"    # .venv/Scripts/lisa-context.exe (console_scripts entry point)
     NODE = "node"            # node server.js
     NPX = "npx"              # npx -y @scope/server
     BINARY = "binary"        # /usr/local/bin/server
@@ -106,6 +107,15 @@ class MCPServerSpec:
 
     package: str | None = None
     """uv package name for runtime_kind=UV (e.g. 'mcp-server')."""
+
+    entry_point: str | None = None
+    """Console_scripts entry point name for runtime_kind=VENV_BIN (e.g. 'lisa-context').
+    Defaults to server_id when not set."""
+
+    venv_dir: str | None = None
+    """Path to the virtual environment root for runtime_kind=VENV_BIN.
+    The entry point is resolved as ``<venv_dir>/Scripts/<entry_point>`` on Windows
+    or ``<venv_dir>/bin/<entry_point>`` on POSIX."""
 
     command_path: str | None = None
     """Explicit command path for runtime_kind=BINARY or NODE."""

@@ -260,6 +260,7 @@ from typing import Any
 class RuntimeKind(str, Enum):
     PYTHON = "python"       # python -m package.server
     UV = "uv"                # uv run --package mcp-server python -m package.server
+    VENV_BIN = "venv_bin"    # .venv/Scripts/lisa-context.exe (console_scripts entry point)
     NODE = "node"            # node server.js
     NPX = "npx"              # npx -y @scope/server
     BINARY = "binary"        # /usr/local/bin/server
@@ -334,6 +335,15 @@ class MCPServerSpec:
 
     package: str | None = None
     """uv package name for runtime_kind=UV (e.g. 'mcp-server')."""
+
+    entry_point: str | None = None
+    """Console_scripts entry point name for runtime_kind=VENV_BIN (e.g. 'lisa-context').
+    Defaults to server_id when not set."""
+
+    venv_dir: str | None = None
+    """Path to the virtual environment root for runtime_kind=VENV_BIN.
+    The entry point is resolved as ``<venv_dir>/Scripts/<entry_point>`` on Windows
+    or ``<venv_dir>/bin/<entry_point>`` on POSIX."""
 
     command_path: str | None = None
     """Explicit command path for runtime_kind=BINARY or NODE."""
@@ -448,6 +458,16 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
         if not spec.package or not spec.module:
             raise ValueError(f"UV runtime requires 'package' and 'module' for server '{spec.server_id}'")
         return "uv", ["run", "--package", spec.package, "python", "-m", spec.module]
+
+    if spec.runtime_kind == RuntimeKind.VENV_BIN:
+        if not spec.venv_dir:
+            raise ValueError(f"VENV_BIN runtime requires 'venv_dir' for server '{spec.server_id}'")
+        entry_point = spec.entry_point or spec.server_id
+        if sys.platform == "win32":
+            command_path = str(Path(spec.venv_dir) / "Scripts" / f"{entry_point}.exe")
+        else:
+            command_path = str(Path(spec.venv_dir) / "bin" / entry_point)
+        return command_path, []
 
     if spec.runtime_kind == RuntimeKind.NODE:
         if not spec.command_path or not spec.script_path:
@@ -751,16 +771,14 @@ from kernel.mcp_launch.compiler import compile_registry
 registry = MCPServerRegistry()
 registry.register(MCPServerSpec(
     server_id="lisa-context",
-    runtime_kind=RuntimeKind.UV,
-    package="mcp-server",
-    module="lisa_context.server",
+    runtime_kind=RuntimeKind.VENV_BIN,
+    venv_dir="/path/to/.venv",
     env_policy=EnvPolicy(inherit_parent=True, forced_overrides={"WEB_SEARCH_API_KEY": "..."}),
 ))
 registry.register(MCPServerSpec(
     server_id="lisa-guard",
-    runtime_kind=RuntimeKind.UV,
-    package="mcp-server",
-    module="lisa_guard.server",
+    runtime_kind=RuntimeKind.VENV_BIN,
+    venv_dir="/path/to/.venv",
 ))
 # ... more servers
 
