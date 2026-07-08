@@ -38,7 +38,7 @@ Key principles:
 | Module | Responsibility |
 | --- | --- |
 | `content_roots.py` | Discovers pack and extension roots from `lisa.extensions.content_roots` entry points and `SDK_CONTENT_ROOTS` env var. |
-| `model_manifest.py` | Loads and validates model manifests (YAML/JSON). Resolves models by designation (`front-door`, `default`, `deep`) and per-mode overrides. |
+| `model_manifest.py` | Loads and validates model manifests (YAML/JSON). Resolves models by designation (`front-door`, `default`, `deep`, `reasoning`) and per-mode overrides. |
 | `config.py` | Kernel-owned settings: surf, web search, and workshop budgets. Loads from environment. |
 
 ### Built-in Capabilities

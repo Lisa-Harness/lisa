@@ -2,6 +2,17 @@
 
 Extensions add integration-specific capabilities through typed packages and entry points. They should be deterministic by default, host-neutral, and easy to validate without live services.
 
+## Architectural Role: Extensions vs. MCP vs. Packs
+
+As the kernel transitions to an MCP-native architecture, extensions complement MCP and Packs by serving a fundamentally different purpose:
+
+- **Passive Intake vs. Active RPC**: MCP is active and client-driven (the model explicitly calls an MCP tool or reads an MCP resource during a turn). Extensions (`SignalConnectors` and `DataSources`) are passive and opportunistic. They run in the background via the pressure-driven `slice.py` budget, pulling ambient state (e.g., GitHub PRs, Stripe billing) without waiting for a user query, and injecting it into the `heartbeat_context` or `digest_sections`. MCP cannot natively orchestrate this passive background loop.
+- **Deep Pipeline Hooks**: MCP stops at the tool and resource boundary. Extensions hook directly into the framework's internal intelligence pipeline (`lisa.extensions.context_evidence`, `lisa.extensions.anomaly_detectors`, `lisa.extensions.heartbeat_context`). These require strongly-typed Python objects and tight coupling with the kernel's state loops, which isn't suited for generic JSON-RPC over stdio.
+- **Separation of Concerns**:
+  - **MCP Servers**: Own *actions* and *storage* (client-invoked tools, file access, search, memory).
+  - **Packs**: Own *workflow* and *personality* (`_mode.md` routing, allowed operations, prompt templates).
+  - **Extensions**: Own *ambient telemetry* (background data collection and context injection).
+
 ## Package Shape
 
 Each extension package should include:

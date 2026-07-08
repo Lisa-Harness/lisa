@@ -69,10 +69,11 @@ Little Lisa keeps model selection intentionally small and explicit.
 - Default manifest path: `examples/little_lisa/models.yaml`.
 - Override path with `LITTLE_LISA_MODELS_FILE`.
 - Supported provider values: `azure_openai`, `openai`, `anthropic`, `ollama`.
-- Supported designations: `front-door`, `default`, `deep`.
+- Supported designations: `front-door`, `default`, `deep`, `reasoning`.
 - Natural-language chat uses `front-door`.
 - Explicit routed commands use `default`.
 - `/deep <query>` routes through default mode using `deep`.
+- Workshop panels resolve through `reasoning` (the pack default panel model alias).
 
 Example manifest:
 
