@@ -51,6 +51,7 @@ uv run little-lisa verify
 - `imp:` — non-breaking improvement
 - `docs:` — documentation only
 - `infra:` — CI/CD, build, or tooling
+- `copilot:` — agent-related changes
 
 ## Questions?
 
