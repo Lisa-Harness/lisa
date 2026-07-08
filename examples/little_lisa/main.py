@@ -1082,8 +1082,7 @@ def _set_runtime_route_preview(*, mode_id: str, preferred_model_id: str) -> None
 
 
 def _resolve_session_context(session_context: str) -> tuple[str, str, bool]:
-    """
-    Resolve the session context source and return (thread_name, source_path, is_active).
+    """Resolve the session context source and return (thread_name, source_path, is_active).
 
     Resolution order:
     1. If empty: check for 'session_context.md' or 'session_context/' in current dir.
@@ -1093,71 +1092,79 @@ def _resolve_session_context(session_context: str) -> tuple[str, str, bool]:
     """
     s = session_context.strip()
 
-    # 1. auto-discovery
     if not s:
-        # Check current directory
-        p = Path("session_context.md")
-        if p.is_file():
-            tn = _extract_front_matter_thread_name(p) or "session_context"
-            return tn, str(p.absolute()), True
-        p = Path("session_context")
-        if p.is_dir():
-            return "session_context", str(p.absolute()), True
+        return _resolve_session_context_auto()
+    if (result := _resolve_session_context_literal_path(s)) is not None:
+        return result
+    if (result := _resolve_session_context_artifacts(s)) is not None:
+        return result
+    if (result := _resolve_session_context_user_contexts(s)) is not None:
+        return result
+    raise ValueError(f"Session context '{s}' was not found.")
 
-        # Check data directory
-        dd = _runtime_data_dir()
-        p = dd / "session_context.md"
-        if p.is_file():
-            tn = _extract_front_matter_thread_name(p) or "session_context"
-            return tn, str(p.absolute()), True
-        p = dd / "session_context"
-        if p.is_dir():
-            return "session_context", str(p.absolute()), True
 
-        return "", "", False
+def _resolve_session_context_auto() -> tuple[str, str, bool]:
+    """Auto-discover session_context.md or session_context/ in cwd and data dir."""
+    for base in (Path("."), _runtime_data_dir()):
+        md_path = base / "session_context.md"
+        if md_path.is_file():
+            tn = _extract_front_matter_thread_name(md_path) or "session_context"
+            return tn, str(md_path.absolute()), True
+        dir_path = base / "session_context"
+        if dir_path.is_dir():
+            return "session_context", str(dir_path.absolute()), True
+    return "", "", False
 
-    # 2. literal path
+
+def _resolve_session_context_literal_path(s: str) -> tuple[str, str, bool] | None:
+    """Resolve a literal file or directory path."""
     p = Path(s).expanduser()
-    if p.exists():
-        if p.is_dir():
-            return "session_context", str(p.absolute()), True
-        tn = _extract_front_matter_thread_name(p) or context_slug_to_thread_name(s)
-        return tn, str(p.absolute()), True
-
-    # 3. artifacts/ relative
-    dd = _runtime_data_dir()
-    p = dd / f"{s}.md"
-    if p.is_file():
-        tn = _extract_front_matter_thread_name(p) or context_slug_to_thread_name(s)
-        return tn, str(p.absolute()), True
-    p = dd / s
+    if not p.exists():
+        return None
     if p.is_dir():
         return "session_context", str(p.absolute()), True
+    tn = _extract_front_matter_thread_name(p) or context_slug_to_thread_name(s)
+    return tn, str(p.absolute()), True
 
-    # special case for session_context/ or .md specifically in artifacts
+
+def _resolve_session_context_artifacts(s: str) -> tuple[str, str, bool] | None:
+    """Resolve a session context relative to the data directory (artifacts/)."""
+    dd = _runtime_data_dir()
+    md_path = dd / f"{s}.md"
+    if md_path.is_file():
+        tn = _extract_front_matter_thread_name(md_path) or context_slug_to_thread_name(s)
+        return tn, str(md_path.absolute()), True
+    dir_path = dd / s
+    if dir_path.is_dir():
+        return "session_context", str(dir_path.absolute()), True
     if s == "session_context":
-        p = dd / "session_context.md"
-        if p.is_file():
-            tn = _extract_front_matter_thread_name(p) or "session_context"
-            return tn, str(p.absolute()), True
-        p = dd / "session_context"
-        if p.is_dir():
-            return "session_context", str(p.absolute()), True
+        return _resolve_session_context_artifacts_session_context(dd)
+    return None
 
-    # 4. user_contexts/ slug (legacy)
-    context_name = s
-    if s.lower().endswith(".md"):
-        context_name = s[:-3]
 
+def _resolve_session_context_artifacts_session_context(
+    dd: Path,
+) -> tuple[str, str, bool] | None:
+    """Special-case resolution for 'session_context' slug in the data dir."""
+    md_path = dd / "session_context.md"
+    if md_path.is_file():
+        tn = _extract_front_matter_thread_name(md_path) or "session_context"
+        return tn, str(md_path.absolute()), True
+    dir_path = dd / "session_context"
+    if dir_path.is_dir():
+        return "session_context", str(dir_path.absolute()), True
+    return None
+
+
+def _resolve_session_context_user_contexts(s: str) -> tuple[str, str, bool] | None:
+    """Resolve a user_contexts/ slug (legacy path)."""
+    context_name = s[:-3] if s.lower().endswith(".md") else s
     relative_path = f"user_contexts/{context_name}.md"
     try:
-        # Check if the text is authorable (we don't want to use absolute paths here)
         _read_authored_text(relative_path)
-        return context_name, relative_path, False
     except FileNotFoundError:
-        pass
-
-    raise ValueError(f"Session context '{s}' was not found.")
+        return None
+    return context_name, relative_path, False
 
 
 # context_slug_to_thread_name, _normalize_timeout_profile, _resolve_timeout_profile,
@@ -1170,44 +1177,56 @@ def _resolve_session_context(session_context: str) -> tuple[str, str, bool]:
 
 
 def _load_selected_session_context_text() -> str:
+    """Load the active session context text, filtering by applies_to front matter."""
     context_ref = _runtime_session_context_ref()
     if not context_ref:
         return ""
-    current_mode = _runtime_current_mode_id()
     if bool(_RUNTIME_STATE.get("session_context_active", False)):
-        path = Path(context_ref)
-        if path.is_dir():
-            parts: list[str] = []
-            for child in sorted(path.iterdir()):
-                if child.is_file():
-                    try:
-                        text = child.read_text(encoding="utf-8")
-                    except Exception:
-                        continue
-                    front_matter, body = parse_front_matter(text)
-                    applies_to = front_matter.get("applies_to")
-                    if applies_to is not None:
-                        if not isinstance(applies_to, list):
-                            applies_to = [applies_to]
-                        if current_mode not in applies_to:
-                            continue
-                    parts.append(body)
-            return "\n\n".join(parts)
-        try:
-            text = path.read_text(encoding="utf-8")
-        except Exception:
-            return ""
-        front_matter, body = parse_front_matter(text)
-        applies_to = front_matter.get("applies_to")
-        if applies_to is not None:
-            if not isinstance(applies_to, list):
-                applies_to = [applies_to]
-            if current_mode not in applies_to:
-                return ""
-        return body
-    # For authored (packaged) context we do not filter by front-matter;
-    # pack authors control scope via pack selection instead.
+        return _load_active_session_context_text(context_ref)
     return _read_authored_text(context_ref)
+
+
+def _load_active_session_context_text(context_ref: str) -> str:
+    """Load session context from a file path or directory, filtering by applies_to."""
+    path = Path(context_ref)
+    current_mode = _runtime_current_mode_id()
+    if path.is_dir():
+        return _load_session_context_directory(path, current_mode)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    front_matter, body = parse_front_matter(text)
+    if not _applies_to_mode(front_matter, current_mode):
+        return ""
+    return body
+
+
+def _load_session_context_directory(path: Path, current_mode: str) -> str:
+    """Load and concatenate session context files from a directory."""
+    parts: list[str] = []
+    for child in sorted(path.iterdir()):
+        if not child.is_file():
+            continue
+        try:
+            text = child.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        front_matter, body = parse_front_matter(text)
+        if not _applies_to_mode(front_matter, current_mode):
+            continue
+        parts.append(body)
+    return "\n\n".join(parts)
+
+
+def _applies_to_mode(front_matter: dict[str, Any], current_mode: str) -> bool:
+    """Return True if the front matter applies_to includes the current mode."""
+    applies_to = front_matter.get("applies_to")
+    if applies_to is None:
+        return True
+    if not isinstance(applies_to, list):
+        applies_to = [applies_to]
+    return current_mode in applies_to
 
 
 def _runtime_data_dir() -> Path:
