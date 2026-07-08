@@ -16,6 +16,17 @@ Every **module**, **class**, and **public function/method** gets a docstring bef
 - Private helpers (`_leading_underscore`) still get a one-line docstring; skip the `Args:`/`Returns:` sections only when they are genuinely trivial.
 - Keep docstrings imperative and terse — describe what the callable does, not the type signature (the signature already says that).
 
+## Logging — best practices
+
+Every Python module must import the `logging` module and define a module-level logger:
+
+```python
+import logging
+logger = logging.getLogger(__name__)
+```
+
+Use `logger.debug()`, `logger.info()`, `logger.warning()`, and `logger.error()` to record key logic branches, state changes, warnings, and errors respectively. Choose the appropriate level to reflect the message’s severity.
+
 ## Linter — zero new warnings
 
 The workspace is configured in the root `pyproject.toml`: `ruff` with `select = ["E","F","I","UP","B","SIM","PL"]` (only `PLR0913` ignored), `line-length = 100`, `target-version = "py311"`, plus `mypy >= 1.10`.
