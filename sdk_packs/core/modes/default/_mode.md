@@ -2,7 +2,6 @@
 mode_id: default
 start_stage_id: none
 mode_kind: chat
-default_model: gpt-chat-latest
 frontdoor_routable: true
 frontdoor_priority: 10
 frontdoor_route_hints:

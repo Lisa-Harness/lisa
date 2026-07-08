@@ -17,10 +17,12 @@ workshop_panels:
   - panel_id: analysis
     title: Strongest Case
     mode_id: thinkabout
+    model_alias: reasoning
     query_prefix: "Build the strongest operator-grade case for this proposal."
   - panel_id: challenge
     title: Risk Review
     mode_id: thinkabout
+    model_alias: reasoning
     query_prefix: "Stress-test this proposal and identify the strongest risks."
 command_pattern: "^(?:/)?workshop(?:[\\s,:;]+(?P<query>.+))?$"
 description: "Fan out a problem into a small workshop panel with curated context and delegated workflow execution."

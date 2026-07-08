@@ -34,6 +34,7 @@ from kernel.models import (
     WorkshopPlan,
     WorkshopRenderConfig,
 )
+from kernel.operations.structured_output import run_structured_completion_with_retry
 from lisa_sdk.workshop_execution import (
     WorkshopChildExecutionRequest,
     WorkshopExecutionParentContext,
@@ -42,8 +43,12 @@ from lisa_sdk.workshop_execution import (
 
 logger = logging.getLogger(__name__)
 
+# Deterministic fallbacks used only when a mode has no authored workshop_panels.
+# The model alias is a manifest designation (resolved by the host's model
+# manifest), not a hard-coded model ID. Hosts must register a "reasoning"
+# designation in their model manifest for workshop panels to resolve.
 _PANEL_MODE_ID = "thinkabout"
-_PANEL_MODEL_ALIAS = "o3"
+_DEFAULT_PANEL_MODEL_ALIAS = "reasoning"
 _PLANNER_PROMPT_FALLBACK = (
     "Use your mode's native analytical style to evaluate the user's problem. "
     "Deliver one panel-quality answer that is concrete, evidence-aware, "
@@ -53,8 +58,6 @@ _SYNTHESIS_PROMPT_FALLBACK = (
     "You are the workshop coordinator. Synthesize panel outputs into one answer. "
     "Resolve disagreements, surface converging signal, and finish with concrete next moves."
 )
-
-# TODO: clean that sh*t up ☝️
 
 
 class WorkshopSynthesis(BaseModel):
@@ -165,12 +168,14 @@ def _deterministic_default_panels() -> list[WorkshopPanelModeConfig]:
             panel_id="analysis",
             title="Strongest Case",
             mode_id=_PANEL_MODE_ID,
+            model_alias=_DEFAULT_PANEL_MODEL_ALIAS,
             query_prefix="Build the strongest operator-grade case for this proposal.",
         ),
         WorkshopPanelModeConfig(
             panel_id="challenge",
             title="Risk Review",
             mode_id=_PANEL_MODE_ID,
+            model_alias=_DEFAULT_PANEL_MODEL_ALIAS,
             query_prefix="Stress-test this proposal and identify the strongest risks.",
         ),
     ]
@@ -245,7 +250,7 @@ def _build_plan_from_roster(ctx: OperationExecutionContext, query: str) -> Works
                 title=panel.title.strip() or panel.mode_id,
                 mode_id=panel.mode_id,
                 query=_panel_query(query, panel, mode_root),
-                model_alias=panel.model_alias.strip() or _PANEL_MODEL_ALIAS,
+                model_alias=panel.model_alias.strip() or _DEFAULT_PANEL_MODEL_ALIAS,
                 panel_kind="analysis",
             )
         )
@@ -258,7 +263,7 @@ def _build_plan_from_roster(ctx: OperationExecutionContext, query: str) -> Works
                     title=panel.title,
                     mode_id=panel.mode_id,
                     query=_panel_query(query, panel, mode_root),
-                    model_alias=panel.model_alias.strip() or _PANEL_MODEL_ALIAS,
+                    model_alias=panel.model_alias.strip() or _DEFAULT_PANEL_MODEL_ALIAS,
                     panel_kind="analysis",
                 )
             )
@@ -286,7 +291,20 @@ def _completion_payload_text(result: object) -> str:
 
 
 def _is_reasoning_plan(plan: WorkshopPlan) -> bool:
-    return any((panel.model_alias or "").lower().startswith("o") for panel in plan.panel_specs)
+    """Return whether any panel targets a reasoning-capable model.
+
+    The model alias is a manifest designation (e.g. "reasoning") or a concrete
+    model id. A panel is reasoning-capable when its alias is the "reasoning"
+    designation or when the resolved model definition reports
+    ``reasoning_model=True``. The designation check is deterministic and does
+    not require a model resolution round-trip.
+    """
+
+    for panel in plan.panel_specs:
+        alias = (panel.model_alias or "").strip().lower()
+        if alias == "reasoning":
+            return True
+    return False
 
 
 def _resolve_state(ctx: OperationExecutionContext) -> UnifiedState | None:
@@ -332,10 +350,18 @@ def _render_panel_user_block(
 def _resolve_child_model(ctx: OperationExecutionContext, panel: WorkshopPanelContext) -> object | None:
     if ctx.resolve_model_fn is None:
         return None
-    for candidate in (panel.model_alias, ctx.model_id, _PANEL_MODEL_ALIAS):
+    # Candidates are tried in priority order. The panel's authored model
+    # alias wins, then the parent turn's model id, then the pack default
+    # designation. ``resolve_model_fn`` may raise ValueError for unknown model
+    # ids (e.g. a model id that is not in the host manifest); catch and fall
+    # through to the next candidate instead of failing the whole workshop.
+    for candidate in (panel.model_alias, ctx.model_id, _DEFAULT_PANEL_MODEL_ALIAS):
         if not candidate:
             continue
-        resolved = ctx.resolve_model_fn(candidate)
+        try:
+            resolved = ctx.resolve_model_fn(candidate)
+        except ValueError:
+            continue
         if resolved is not None:
             return cast(object, resolved)
     return None
@@ -429,7 +455,7 @@ async def _synthesize_workshop(
     if ctx.complete_fn is None or ctx.resolve_model_fn is None:
         return _fallback_synthesis_text(plan, execution_summary, rendering), {}
 
-    synthesis_model = ctx.resolve_model_fn(ctx.model_id or "gpt-5.4")
+    synthesis_model = ctx.resolve_model_fn(ctx.model_id or "default")
     if synthesis_model is None:
         return _fallback_synthesis_text(plan, execution_summary, rendering), {}
 
@@ -443,31 +469,36 @@ async def _synthesize_workshop(
             panel_report_lines.append(f"error: {result.error_message.strip()}")
         panel_report_lines.append("")
 
+    synthesis_messages: list[dict[str, object]] = [
+        {
+            "role": "system",
+            "content": _synthesis_prompt(mode),
+        },
+        {
+            "role": "user",
+            "content": "\n\n".join(
+                [
+                    f"User question: {plan.query}",
+                    f"Workshop title: {plan.title}",
+                    f"Shared brief:\n{bundle.shared_context_markdown}",
+                    "\n".join(panel_report_lines),
+                ]
+            ),
+        },
+    ]
     try:
-        completion = await ctx.complete_fn(
-            messages=[
-                {
-                    "role": "system",
-                    "content": _synthesis_prompt(mode),
-                },
-                {
-                    "role": "user",
-                    "content": "\n\n".join(
-                        [
-                            f"User question: {plan.query}",
-                            f"Workshop title: {plan.title}",
-                            f"Shared brief:\n{bundle.shared_context_markdown}",
-                            "\n".join(panel_report_lines),
-                        ]
-                    ),
-                },
-            ],
-            model_def=synthesis_model,
-            max_tokens=workshop_budget.synthesis_max_tokens,
-            temperature=0.2,
-            response_format=WorkshopSynthesis,
+        synthesis = cast(
+            WorkshopSynthesis,
+            await run_structured_completion_with_retry(
+                complete_fn=ctx.complete_fn,
+                messages=synthesis_messages,
+                model_def=synthesis_model,
+                response_format_model=WorkshopSynthesis,
+                max_tokens=workshop_budget.synthesis_max_tokens,
+                temperature=0.2,
+                completion_content_fn=_completion_payload_text,
+            ),
         )
-        synthesis = WorkshopSynthesis.model_validate_json(_completion_payload_text(completion))
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning(
             "workshop synthesis failed, falling back to deterministic rendering: %s",

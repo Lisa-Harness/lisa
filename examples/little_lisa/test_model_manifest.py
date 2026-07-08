@@ -16,11 +16,9 @@ def test_load_manifest_reads_designations_and_models() -> None:
     assert len(manifest.models) >= _MIN_EXPECTED_MODELS
     assert manifest.designated("front-door") is not None
     assert manifest.designated("default") is not None
-    assert manifest.designated("deep") is not None
-    assert manifest.model_for_mode("default").model_id == "gpt-chat-latest"
-    assert manifest.model_for_mode("discuss").model_id == "gpt-5.4"
-    assert manifest.model_for_mode("markdown").model_id == "gpt-5.4-mini"
-    assert manifest.model_for_mode("search").model_id == "gpt-5.4"
+    assert manifest.designated("reasoning") is not None
+    assert manifest.model_for_mode("thinkabout").model_id == "deepseek-v4-pro:cloud"
+    assert manifest.model_for_mode("search").model_id == "deepseek-v4-flash:cloud"
 
 
 def test_load_manifest_rejects_duplicate_designation(tmp_path: Path) -> None:

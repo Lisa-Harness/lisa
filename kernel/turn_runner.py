@@ -308,6 +308,31 @@ class TurnHooks:
     shipped under ``kernel.context``; the production app overrides any of
     them with its own."""
 
+    # ── Workshop child-workflow execution ──────────────────────────────────
+    workflow_turn_runner: Any | None = None
+    """Callable matching ``WorkflowTurnRunner`` protocol for workshop child
+    workflow execution. When set, injected into ``OperationExecutionContext``
+    so workshop operations can fan out child turns. Default: None (workshop
+    operations will report the runner is missing)."""
+
+    workflow_session_factory: Any | None = None
+    """Callable matching ``(user_id, user_slug, mode_id) -> WorkflowSessionState``
+    for creating isolated child workflow sessions. When set, injected into
+    ``OperationExecutionContext`` so workshop operations can create child
+    sessions. Default: None."""
+
+    # ── Host state provider ───────────────────────────────────────────────
+    state_provider: Any | None = None
+    """Callable returning a ``UnifiedState`` for the current host session.
+    When set, injected into ``OperationExecutionContext`` so operations that
+    need cached runtime state (e.g. workshop) can access it. Default: None."""
+
+    # ── Workshop context bundle builder ────────────────────────────────────
+    build_workshop_context_bundle_fn: Any | None = None
+    """Callable building a ``WorkshopContextBundle`` from a plan and state.
+    When set, injected into ``OperationExecutionContext`` so the workshop
+    operation can curate per-panel context bundles. Default: None."""
+
 
 # ── Streaming adapter ──────────────────────────────────────────────────────
 
@@ -635,6 +660,10 @@ async def _run_turn_inner(
             complete_fn=complete,
             execute_tool_fn=_mcp_tool_executor,
             execute_operation_fn=exec_op,
+            workflow_turn_runner=hooks.workflow_turn_runner,
+            workflow_session_factory=hooks.workflow_session_factory,
+            state_provider=hooks.state_provider,
+            build_workshop_context_bundle_fn=hooks.build_workshop_context_bundle_fn,
         )
         result = await run_mode_entry_operations(mode_id, ctx)
         return TurnResult(
@@ -651,6 +680,10 @@ async def _run_turn_inner(
         complete_fn=complete,
         execute_tool_fn=_mcp_tool_executor,
         execute_operation_fn=exec_op,
+        workflow_turn_runner=hooks.workflow_turn_runner,
+        workflow_session_factory=hooks.workflow_session_factory,
+        state_provider=hooks.state_provider,
+        build_workshop_context_bundle_fn=hooks.build_workshop_context_bundle_fn,
     )
     pre_result = await run_mode_pre_turn_operations(mode_id, ctx)
     pre_briefing = _extract_pre_turn_briefing(pre_result)
@@ -926,6 +959,10 @@ def _build_minimal_context(
     complete_fn: Any,
     execute_tool_fn: Any,
     execute_operation_fn: Any,
+    workflow_turn_runner: Any = None,
+    workflow_session_factory: Any = None,
+    state_provider: Any = None,
+    build_workshop_context_bundle_fn: Any = None,
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for the turn runner."""
     return OperationExecutionContext(
@@ -944,6 +981,10 @@ def _build_minimal_context(
         resolve_model_fn=resolve_model_fn,
         execute_tool_fn=execute_tool_fn,
         execute_operation_fn=execute_operation_fn,
+        workflow_turn_runner=workflow_turn_runner,
+        workflow_session_factory=workflow_session_factory,
+        state_provider=state_provider,
+        build_workshop_context_bundle_fn=build_workshop_context_bundle_fn,
     )
 
 

@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover - direct script execution fallback
     from model_manifest import load_model_manifest  # type: ignore[no-redef]
 
 MANIFEST_ENV = "LITTLE_LISA_MODELS_FILE"
-_DEFAULT_DESIGNATIONS = frozenset({"front-door", "default", "deep"})
+_DEFAULT_DESIGNATIONS = frozenset({"front-door", "default", "deep", "reasoning"})
 _MANIFEST_CACHE_KEY = "manifest"
 
 

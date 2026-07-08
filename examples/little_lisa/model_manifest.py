@@ -6,8 +6,8 @@ from typing import Literal
 from kernel.model_manifest import ModelManifest
 from kernel.model_manifest import load_model_manifest as load_shared_model_manifest
 
-SimpleModelDesignation = Literal["front-door", "default", "deep"]
-_SUPPORTED_DESIGNATIONS: set[str] = {"front-door", "default", "deep"}
+SimpleModelDesignation = Literal["front-door", "default", "deep", "reasoning"]
+_SUPPORTED_DESIGNATIONS: set[str] = {"front-door", "default", "deep", "reasoning"}
 
 
 def default_manifest_path() -> Path:
