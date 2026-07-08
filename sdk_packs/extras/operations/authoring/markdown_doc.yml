@@ -1,4 +1,0 @@
-operation_id: generate_markdown_doc
-description: Generate a complete markdown document from a natural-language request.
-mode_allowlist: [markdown]
-preferred_model_id: gpt-5.4-mini

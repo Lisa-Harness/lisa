@@ -1,4 +1,0 @@
-operation_id: surf_browse
-description: Drive one iterative surf workflow turn by loading the durable surf session, navigating when needed, and returning a structured page briefing.
-tool_ids: [surf_browser, surf_session_flush]
-mode_allowlist: [surf]
