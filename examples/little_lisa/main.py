@@ -17,6 +17,8 @@ Pure, stateless logic has been extracted into focused submodules:
   (all deterministic, no global state, no side effects).
 - ``token_accounting.py`` — token ledger accumulation and session-summary
   Markdown generation (accepts the runtime state dict as a parameter).
+- ``turn_logging.py`` — JSONL log-record assembly and turn-log payload
+  construction (accepts a resolved context dict, pure and testable).
 - ``model_runtime.py`` — model manifest loading and model resolution by
   designation / alias / concrete ID.
 - ``model_manifest.py`` — manifest file discovery and loading from ``models.yaml``.
@@ -874,6 +876,26 @@ except ImportError:  # pragma: no cover - direct script execution fallback
         top_session_mode as _ta_top_session_mode,
     )
 
+# Structured-logging record assembly lives in the dedicated ``turn_logging``
+# module.  We import the assemblers here so the thin wrappers below
+# (_append_log_event, _append_turn_log, etc.) can delegate to them.
+try:  # noqa: E402
+    from .turn_logging import (  # noqa: E402
+        build_log_record as _log_build_log_record,
+        build_runtime_log_metadata as _log_build_runtime_log_metadata,
+        build_turn_log_debug_payload as _log_build_turn_debug_payload,
+        build_turn_log_record as _log_build_turn_log_record,
+        write_log_record as _log_write_log_record,
+    )
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from turn_logging import (  # type: ignore[no-redef]
+        build_log_record as _log_build_log_record,
+        build_runtime_log_metadata as _log_build_runtime_log_metadata,
+        build_turn_log_debug_payload as _log_build_turn_debug_payload,
+        build_turn_log_record as _log_build_turn_log_record,
+        write_log_record as _log_write_log_record,
+    )
+
 
 def _record_session_turn(
     *,
@@ -1417,11 +1439,99 @@ async def _retry_validation_failure(
     return (retry_completion, True, retry_decision)
 
 
+def _record_frontdoor_completion(
+    completion_result: StubCompletion,
+    *,
+    attempt: str,
+    frontdoor_debug: dict[str, Any],
+    coerce_int: Any,
+) -> None:
+    """Record one front-door planner completion attempt into the debug dict.
+
+    Accumulates token counts across attempts and appends a summary entry to
+    ``planner_completion_attempts``.
+
+    Parameters
+    ----------
+    completion_result
+        The completion returned by the provider call.
+    attempt
+        A label identifying which pass produced this completion
+        (e.g. ``"primary_structured"``, ``"retry_after_validation_error"``).
+    frontdoor_debug
+        The mutable debug-dict that accumulates planner diagnostics.
+    coerce_int
+        A callable that coerces values to non-negative ints (typically
+        ``token_accounting.coerce_non_negative_int``).
+    """
+    prompt_tokens = coerce_int(completion_result.prompt_tokens)
+    completion_tokens = coerce_int(completion_result.completion_tokens)
+    total_tokens = coerce_int(completion_result.total_tokens)
+    if total_tokens <= 0:
+        total_tokens = prompt_tokens + completion_tokens
+
+    frontdoor_debug["planner_prompt_tokens"] = (
+        coerce_int(frontdoor_debug.get("planner_prompt_tokens")) + prompt_tokens
+    )
+    frontdoor_debug["planner_completion_tokens"] = (
+        coerce_int(frontdoor_debug.get("planner_completion_tokens"))
+        + completion_tokens
+    )
+    frontdoor_debug["planner_total_tokens"] = (
+        coerce_int(frontdoor_debug.get("planner_total_tokens")) + total_tokens
+    )
+
+    attempts = frontdoor_debug.get("planner_completion_attempts")
+    if not isinstance(attempts, list):
+        attempts = []
+    attempts.append(
+        {
+            "attempt": attempt,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "content_chars": len(completion_result.content),
+            "tool_call_count": len(completion_result.tool_calls),
+        }
+    )
+    frontdoor_debug["planner_completion_attempts"] = attempts
+
+
+def _capture_prompt_shape(
+    messages: list[dict[str, Any]],
+    *,
+    frontdoor_debug: dict[str, Any],
+    preview_fn: Any,
+) -> None:
+    """Capture system/user prompt shape into the front-door debug dict."""
+    if not messages:
+        return
+    system_text = str(messages[0].get("content") or "")
+    user_text = str(messages[1].get("content") or "") if len(messages) > 1 else ""
+    frontdoor_debug["system_prompt_chars"] = len(system_text)
+    frontdoor_debug["user_prompt_chars"] = len(user_text)
+    frontdoor_debug["user_prompt_preview"] = preview_fn(user_text, limit=240)
+
+
 async def _plan_frontdoor_route(
     *,
     raw_message: str,
     conversation_excerpt_markdown: str,
 ) -> FrontDoorRouteDecision:
+    """Plan the front-door route for a natural-language turn.
+
+    This function:
+    1. Resolves the front-door planner model from the manifest.
+    2. Builds a completion adapter that records attempts and handles
+       structured-output retry logic.
+    3. Delegates to ``shared_frontdoor.plan_frontdoor_route`` for the
+       actual routing decision.
+    4. Assembles a debug payload and stores it for ``/debug frontdoor``.
+
+    On any failure (model resolution, completion error, validation error),
+    the function falls back to a deterministic ``default`` route and
+    records the failure reason in the debug dict.
+    """
     frontdoor_alias = _frontdoor_model_alias()
     fallback = FrontDoorRouteDecision(
         selected_mode_id="default",
@@ -1477,57 +1587,23 @@ async def _plan_frontdoor_route(
     except Exception:  # pylint: disable=broad-except
         pass
 
-    def _record_frontdoor_completion(
-        completion_result: StubCompletion,
-        *,
-        attempt: str,
-    ) -> None:
-        prompt_tokens = _coerce_non_negative_int(completion_result.prompt_tokens)
-        completion_tokens = _coerce_non_negative_int(completion_result.completion_tokens)
-        total_tokens = _coerce_non_negative_int(completion_result.total_tokens)
-        if total_tokens <= 0:
-            total_tokens = prompt_tokens + completion_tokens
-
-        frontdoor_debug["planner_prompt_tokens"] = (
-            _coerce_non_negative_int(frontdoor_debug.get("planner_prompt_tokens")) + prompt_tokens
-        )
-        frontdoor_debug["planner_completion_tokens"] = (
-            _coerce_non_negative_int(frontdoor_debug.get("planner_completion_tokens"))
-            + completion_tokens
-        )
-        frontdoor_debug["planner_total_tokens"] = (
-            _coerce_non_negative_int(frontdoor_debug.get("planner_total_tokens")) + total_tokens
-        )
-
-        attempts = frontdoor_debug.get("planner_completion_attempts")
-        if not isinstance(attempts, list):
-            attempts = []
-        attempts.append(
-            {
-                "attempt": attempt,
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-                "content_chars": len(completion_result.content),
-                "tool_call_count": len(completion_result.tool_calls),
-            }
-        )
-        frontdoor_debug["planner_completion_attempts"] = attempts
-
-    def _capture_prompt_shape(messages: list[dict[str, Any]]) -> None:
-        if not messages:
-            return
-        system_text = str(messages[0].get("content") or "")
-        user_text = str(messages[1].get("content") or "") if len(messages) > 1 else ""
-        frontdoor_debug["system_prompt_chars"] = len(system_text)
-        frontdoor_debug["user_prompt_chars"] = len(user_text)
-        frontdoor_debug["user_prompt_preview"] = _preview_text(user_text, limit=240)
+    # ── Completion adapter ────────────────────────────────────────────
+    # This closure wraps _complete_live with:
+    #   - prompt-shape capture for debugging
+    #   - per-attempt token recording
+    #   - structured-output retry logic (fallback to plain text + JSON parse)
+    # The nested _retry_without_response_format handles the retry path when
+    # the first structured-output call either errors or fails validation.
 
     async def _complete_frontdoor_planner(**kwargs: Any) -> StubCompletion:
         response_format = kwargs.get("response_format")
         messages = kwargs.get("messages")
         if isinstance(messages, list):
-            _capture_prompt_shape(messages)
+            _capture_prompt_shape(
+                messages,
+                frontdoor_debug=frontdoor_debug,
+                preview_fn=_preview_text,
+            )
 
         async def _retry_without_response_format(*, attempt: str) -> StubCompletion:
             assert response_format is not None
@@ -1547,7 +1623,12 @@ async def _plan_frontdoor_route(
                 temperature=float(kwargs.get("temperature") or 0.0),
                 response_format=None,
             )
-            _record_frontdoor_completion(retry_completion, attempt=attempt)
+            _record_frontdoor_completion(
+                retry_completion,
+                attempt=attempt,
+                frontdoor_debug=frontdoor_debug,
+                coerce_int=_coerce_non_negative_int,
+            )
             frontdoor_debug["structured_output_retry_used"] = True
             frontdoor_debug["structured_output_retry_succeeded"] = True
             retry_text = _extract_json_object(retry_completion.content)
@@ -1568,7 +1649,12 @@ async def _plan_frontdoor_route(
                 if response_format is not FrontDoorRouteDecision
                 else "primary_structured"
             )
-            _record_frontdoor_completion(completion, attempt=attempt)
+            _record_frontdoor_completion(
+                completion,
+                attempt=attempt,
+                frontdoor_debug=frontdoor_debug,
+                coerce_int=_coerce_non_negative_int,
+            )
         except Exception as exc:  # pylint: disable=broad-except
             if response_format is None:
                 raise
@@ -1808,8 +1894,13 @@ def _assemble_dynamic_user_context(mode_id: str, query: str, pre_turn_briefing: 
 
 
 def _runtime_log_metadata() -> dict[str, Any]:
-    return {
-        "runtime": {
+    """Build the nested runtime-metadata block for log records.
+
+    Thin wrapper over :func:`logging.build_runtime_log_metadata` that
+    assembles the context dict from runtime-state accessors.
+    """
+    return _log_build_runtime_log_metadata(
+        {
             "log_level": _runtime_log_level(),
             "debug": _runtime_debug_enabled(),
             "timeout_profile": _runtime_timeout_profile(),
@@ -1818,26 +1909,18 @@ def _runtime_log_metadata() -> dict[str, Any]:
             "session_context": _runtime_user_slug() or "none",
             "mode_id": _runtime_current_mode_id(),
             "stage_id": _runtime_current_stage_id(),
-            "next_model": {
-                "provider": _runtime_next_model_provider(),
-                "model_id": _runtime_next_model_id(),
-            },
-            "streaming": {
-                "enabled": _runtime_stream_enabled(),
-                "mode": _runtime_streaming_mode(),
-                "char_delay_ms": _runtime_streaming_char_delay_ms(),
-            },
+            "next_model_provider": _runtime_next_model_provider(),
+            "next_model_id": _runtime_next_model_id(),
+            "stream_enabled": _runtime_stream_enabled(),
+            "streaming_mode": _runtime_streaming_mode(),
+            "streaming_char_delay_ms": _runtime_streaming_char_delay_ms(),
         }
-    }
+    )
 
 
 def _write_log_record(record: dict[str, Any]) -> None:
-    log_path = _runtime_log_path()
-    if log_path is None:
-        return
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+    """Write one JSONL record to the configured log path."""
+    _log_write_log_record(record, _runtime_log_path())
 
 
 def _append_log_event(
@@ -1847,166 +1930,54 @@ def _append_log_event(
     payload: dict[str, Any],
     debug_payload: dict[str, Any] | None = None,
 ) -> None:
+    """Append one structured JSONL log record if the level passes the threshold."""
     normalized_level = _normalize_log_level(level) or "info"
     if not _runtime_should_log(normalized_level):
         return
 
-    record: dict[str, Any] = {
-        "logged_at_utc": datetime.now(UTC).isoformat(),
-        "level": normalized_level,
-        "event": event,
-        **payload,
+    ctx = {
+        "log_level": _runtime_log_level(),
+        "debug": _runtime_debug_enabled(),
+        "timeout_profile": _runtime_timeout_profile(),
+        "timezone": _runtime_timezone(),
+        "timezone_source": _runtime_timezone_source(),
+        "session_context": _runtime_user_slug() or "none",
+        "mode_id": _runtime_current_mode_id(),
+        "stage_id": _runtime_current_stage_id(),
+        "next_model_provider": _runtime_next_model_provider(),
+        "next_model_id": _runtime_next_model_id(),
+        "stream_enabled": _runtime_stream_enabled(),
+        "streaming_mode": _runtime_streaming_mode(),
+        "streaming_char_delay_ms": _runtime_streaming_char_delay_ms(),
     }
-    record.update(_runtime_log_metadata())
-
-    if _runtime_log_level() == "debug":
-        debug_data = dict(debug_payload or {})
-        if "last_frontdoor_debug" not in debug_data:
-            latest_frontdoor_debug = _last_frontdoor_debug()
-            if isinstance(latest_frontdoor_debug, dict):
-                debug_data["last_frontdoor_debug"] = latest_frontdoor_debug
-        if debug_data:
-            record["debug"] = debug_data
-
-    _write_log_record(record)
+    record = _log_build_log_record(
+        level=normalized_level,
+        event=event,
+        payload=payload,
+        ctx=ctx,
+        debug_payload=debug_payload,
+        last_frontdoor_debug=_last_frontdoor_debug(),
+    )
+    if record is not None:
+        _write_log_record(record)
 
 
 def _append_turn_log(*, context: dict[str, Any], response_text: str) -> None:
-    response_chars = len(response_text)
-    completion = context.get("completion") if isinstance(context, dict) else None
-    mode_model_payload = context.get("resolved_model") if isinstance(context, dict) else None
-    frontdoor_debug = context.get("frontdoor_debug") if isinstance(context, dict) else None
-
-    mode_model_id = ""
-    mode_model_provider = ""
-    mode_reasoning_model = False
-    if isinstance(mode_model_payload, dict):
-        mode_model_id = str(mode_model_payload.get("model_id") or "")
-        mode_model_provider = str(mode_model_payload.get("provider") or "")
-        mode_reasoning_model = bool(mode_model_payload.get("reasoning_model", False))
-
-    frontdoor_model_payload = {}
-    if isinstance(frontdoor_debug, dict):
-        candidate_payload = frontdoor_debug.get("resolved_model")
-        if isinstance(candidate_payload, dict):
-            frontdoor_model_payload = candidate_payload
-
-    frontdoor_model_id = str(frontdoor_model_payload.get("model_id") or "")
-    frontdoor_model_provider = str(frontdoor_model_payload.get("provider") or "")
-    frontdoor_reasoning_model = bool(frontdoor_model_payload.get("reasoning_model", False))
-
-    completion_tool_calls = 0
-    completion_iterations = 0
-    mode_prompt_tokens = 0
-    mode_completion_tokens = 0
-    mode_total_tokens = 0
-    if isinstance(completion, dict):
-        completion_tool_calls = _coerce_non_negative_int(completion.get("tool_call_count"))
-        completion_iterations = _coerce_non_negative_int(completion.get("iteration_count"))
-        mode_prompt_tokens = _coerce_non_negative_int(completion.get("prompt_tokens"))
-        mode_completion_tokens = _coerce_non_negative_int(completion.get("completion_tokens"))
-        mode_total_tokens = _coerce_non_negative_int(completion.get("total_tokens"))
-        if mode_total_tokens <= 0:
-            mode_total_tokens = mode_prompt_tokens + mode_completion_tokens
-
-    frontdoor_prompt_tokens = 0
-    frontdoor_completion_tokens = 0
-    frontdoor_total_tokens = 0
-    frontdoor_attempt_count = 0
-    if isinstance(frontdoor_debug, dict):
-        frontdoor_prompt_tokens = _coerce_non_negative_int(
-            frontdoor_debug.get("planner_prompt_tokens")
-        )
-        frontdoor_completion_tokens = _coerce_non_negative_int(
-            frontdoor_debug.get("planner_completion_tokens")
-        )
-        frontdoor_total_tokens = _coerce_non_negative_int(
-            frontdoor_debug.get("planner_total_tokens")
-        )
-        planner_attempts = frontdoor_debug.get("planner_completion_attempts")
-        if isinstance(planner_attempts, list):
-            frontdoor_attempt_count = len(planner_attempts)
-
-    mode_model = ""
-    if mode_model_provider and mode_model_id:
-        mode_model = f"{mode_model_provider}:{mode_model_id}"
-    elif mode_model_id:
-        mode_model = mode_model_id
-
-    frontdoor_model = ""
-    if frontdoor_model_provider and frontdoor_model_id:
-        frontdoor_model = f"{frontdoor_model_provider}:{frontdoor_model_id}"
-    elif frontdoor_model_id:
-        frontdoor_model = frontdoor_model_id
-
-    completion_tokens = {
-        "prompt_tokens": mode_prompt_tokens,
-        "completion_tokens": mode_completion_tokens,
-        "total_tokens": mode_total_tokens,
-    }
-
-    record = {
-        "type": "little_lisa_turn",
-        "context": context,
-        "mode_model": mode_model,
-        "mode_model_id": mode_model_id,
-        "mode_model_provider": mode_model_provider,
-        "mode_reasoning_model": mode_reasoning_model,
-        "frontdoor_model": frontdoor_model,
-        "frontdoor_model_id": frontdoor_model_id,
-        "frontdoor_model_provider": frontdoor_model_provider,
-        "frontdoor_reasoning_model": frontdoor_reasoning_model,
-        "mode_prompt_tokens": mode_prompt_tokens,
-        "mode_completion_tokens": mode_completion_tokens,
-        "mode_total_tokens": mode_total_tokens,
-        "frontdoor_prompt_tokens": frontdoor_prompt_tokens,
-        "frontdoor_completion_tokens": frontdoor_completion_tokens,
-        "frontdoor_total_tokens": frontdoor_total_tokens,
-        "frontdoor_completion_attempt_count": frontdoor_attempt_count,
-        "response": {
-            "text": response_text,
-            "chars": response_chars,
-        },
-        "route": {
-            "mode_id": str(context.get("mode_id") or ""),
-            "mode_kind": str(context.get("mode_kind") or ""),
-            "query_chars": len(str(context.get("query") or "")),
-            "handoff": str(context.get("handoff") or ""),
-            "deep_route": bool(context.get("deep_route", False)),
-        },
-        "completion_summary": {
-            "tool_call_count": completion_tool_calls,
-            "iteration_count": completion_iterations,
-            "tokens": completion_tokens,
-        },
-        "response_preview": _preview_text(response_text, limit=320),
-    }
-    debug_payload = {
-        "context_keys": sorted(context.keys()),
-        "turn_input": context.get("turn_input"),
-        "completion": completion,
-        "response_full_text": response_text,
-        "thread_dir": str(_runtime_thread_dir() or ""),
-        "state_snapshot_loaded": isinstance(_runtime_state_snapshot(), dict),
-        "session_tokens": {
-            "turn_prompt_tokens": _coerce_non_negative_int(
-                _RUNTIME_STATE.get("turn_prompt_tokens")
-            ),
-            "turn_completion_tokens": _coerce_non_negative_int(
-                _RUNTIME_STATE.get("turn_completion_tokens")
-            ),
-            "turn_total_tokens": _coerce_non_negative_int(_RUNTIME_STATE.get("turn_total_tokens")),
-            "session_prompt_tokens": _coerce_non_negative_int(
-                _RUNTIME_STATE.get("session_prompt_tokens")
-            ),
-            "session_completion_tokens": _coerce_non_negative_int(
-                _RUNTIME_STATE.get("session_completion_tokens")
-            ),
-            "session_total_tokens": _coerce_non_negative_int(
-                _RUNTIME_STATE.get("session_total_tokens")
-            ),
-        },
-    }
+    """Append a ``turn.completed`` JSONL record with flattened model/token fields."""
+    record = _log_build_turn_log_record(
+        context=context,
+        response_text=response_text,
+        coerce_int=_coerce_non_negative_int,
+        preview_fn=_preview_text,
+    )
+    debug_payload = _log_build_turn_debug_payload(
+        context=context,
+        response_text=response_text,
+        state=_RUNTIME_STATE,
+        coerce_int=_coerce_non_negative_int,
+        thread_dir=str(_runtime_thread_dir() or ""),
+        state_snapshot_loaded=isinstance(_runtime_state_snapshot(), dict),
+    )
     _append_log_event(
         level="info",
         event="turn.completed",

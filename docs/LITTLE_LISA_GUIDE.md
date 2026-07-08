@@ -256,9 +256,10 @@ Little Lisa is intentionally organised as a **thin orchestration shell** (`main.
 
 | Module | Responsibility | Depends on |
 | --- | --- | --- |
-| `main.py` | CLI entry point, REPL loop, turn orchestration, provider routing, front-door planning, `handle_message` dispatch | `config`, `token_accounting`, `model_runtime`, `model_manifest`, `desktop`, `tray` |
+| `main.py` | CLI entry point, REPL loop, turn orchestration, provider routing, front-door planning, `handle_message` dispatch | `config`, `token_accounting`, `turn_logging`, `model_runtime`, `model_manifest`, `desktop`, `tray` |
 | `config.py` | Pure configuration resolution: timezone, timeout profile, log level, streaming mode, slice tuning — all deterministic, no side effects, no global state | stdlib only |
 | `token_accounting.py` | Token ledger accumulation, session counter roll-up, session-summary Markdown generation — accepts state dict as parameter, fully testable in isolation | stdlib only |
+| `turn_logging.py` | JSONL log-record assembly and turn-log payload construction — accepts a resolved context dict so it's pure and testable without the full host | stdlib only |
 | `model_runtime.py` | Model manifest loading, model resolution by designation/alias/concrete ID | kernel `model_manifest` |
 | `model_manifest.py` | Manifest file discovery and loading from `models.yaml` | kernel `model_manifest` |
 | `desktop.py` | Localhost web-host callbacks and token-auth for the desktop UI | kernel models |
@@ -290,6 +291,8 @@ graph TD
     TurnRunner --> Complete
     TurnRunner --> TokenAccounting["token_accounting.py<br/>apply_turn_usage"]
     TokenAccounting --> State
+    Handle --> TurnLog["turn_logging.py<br/>build_turn_log_record"]
+    TurnLog --> LogWrite["_write_log_record<br/>(JSONL file I/O)"]
     Handle --> Render["_render_response<br/>(terminal rendering)"]
 ```
 
