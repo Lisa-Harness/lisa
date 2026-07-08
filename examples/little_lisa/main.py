@@ -370,6 +370,8 @@ _RUNTIME_STATE: dict[str, Any] = {
     "stream_enabled": False,
     "stream_mode": "hybrid",
     "stream_char_delay_ms": 0,
+    "memory_config": None,
+    "memory_router": None,
 }
 
 console = Console()
@@ -427,6 +429,16 @@ NoLogOption = Annotated[
     typer.Option(
         "--no-log",
         help="Disable turn logging entirely.",
+    ),
+]
+HostLogOption = Annotated[
+    str,
+    typer.Option(
+        "--host-log",
+        help=(
+            "Stdlib host log file (kernel/lisa_sdk startup and runtime logs). "
+            "Default: <data-dir>/host.log"
+        ),
     ),
 ]
 DataDirOption = Annotated[
@@ -749,6 +761,57 @@ def _runtime_should_log(level: str) -> bool:
 def _runtime_log_path() -> Path | None:
     configured = _RUNTIME_STATE.get("log_path")
     return configured if isinstance(configured, Path) else None
+
+
+def _runtime_host_log_path() -> Path:
+    """Return the durable stdlib host-log path under the data dir.
+
+    Distinct from ``_runtime_log_path()`` (the JSONL turn log). The stdlib
+    ``logging`` stream from ``kernel.*``, ``examples.little_lisa.*``, and any
+    third-party library lands here in plain-text form. Honors an explicit
+    ``--host-log`` when set, otherwise defaults to ``<data_dir>/host.log``.
+    """
+    configured = _RUNTIME_STATE.get("host_log_path")
+    if isinstance(configured, Path):
+        return configured
+    return _runtime_data_dir() / "host.log"
+
+
+def _configure_root_logging() -> None:
+    """Own the stdlib root logger so FastMCP's RichHandler stops spamming stderr.
+
+    ``FastMCP.__init__`` (imported eagerly via ``lisa_sdk.lisa_search`` etc.)
+    calls ``configure_logging``, which installs a ``RichHandler`` on the
+    root logger at INFO with a stderr console. That makes every
+    ``logger.info(...)`` in the host process render to stderr with Rich's
+    ``[time] INFO  message  file:line`` format — including ``registry.py``
+    and ``model_manifest.py`` startup messages.
+
+    We strip every existing root handler (the RichHandler included) and
+    install one ``FileHandler`` pointed at ``_runtime_host_log_path()``
+    at the resolved runtime log level. Must run after ``_RUNTIME_STATE``
+    has ``log_level`` and the data-dir / ``host_log_path`` resolved.
+    """
+    import logging as _logging  # noqa: PLC0415
+
+    target = _runtime_host_log_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    root = _logging.getLogger()
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+        with contextlib.suppress(Exception):
+            handler.close()
+
+    file_handler = _logging.FileHandler(target, encoding="utf-8")
+    file_handler.setFormatter(
+        _logging.Formatter(
+            fmt="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    root.addHandler(file_handler)
+    root.setLevel(_runtime_log_level().upper())
 
 
 def _runtime_token_usage_path() -> Path:
@@ -3286,6 +3349,11 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
     ``lisa-content`` and ``lisa-context`` are warm; both are load-bearing
     for every turn, so they are ``required=True`` (startup failure fails
     the turn loudly after bounded retry).
+
+    External servers declared in ``mcp_servers.yaml`` are loaded here and
+    registered alongside first-party specs. The manifest's memory-backend
+    designation (which server_id backs the generic ``memory.*`` aliases)
+    is stashed on runtime state for ``_build_turn_hooks`` to consume.
     """
     from dataclasses import replace  # noqa: PLC0415
 
@@ -3297,6 +3365,7 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
         RuntimeKind,
         ToolPolicy,
     )
+    from kernel.mcp_launch.server_manifest import load_mcp_server_manifest  # noqa: PLC0415
 
     registry = MCPServerRegistry()
     data_dir = str(_runtime_data_dir())
@@ -3333,6 +3402,17 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
                 tool_policy=tool_policy,
             )
         )
+
+    # External servers from mcp_servers.yaml (Mem0, Letta, …). These are
+    # registered into the same approval registry so the launch policy layer
+    # gates them identically to first-party servers. The manifest also
+    # carries the memory-backend designation used by _build_turn_hooks.
+    external_specs, memory_config = load_mcp_server_manifest(
+        FRAMEWORK_ROOT / "examples" / "little_lisa" / "mcp_servers.yaml"
+    )
+    for spec in external_specs:
+        registry.register(spec)
+    _RUNTIME_STATE["memory_config"] = memory_config
 
     compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
     warm_ids = {"lisa-context", "lisa-content"}
@@ -3413,15 +3493,15 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
 
     Delegates to ``LittleLisaTurnHooks`` in ``turn_hooks.py`` which holds
     shared state as instance attributes instead of capturing it via closures.
+
+    The memory seam (state provider, turn hooks, operations) holds a
+    reference to the MemoryStoreRouter, not a raw MCPMemoryClient — so the
+    generic ``memory.*`` synthetic tools and the operation-layer memory
+    calls route to whichever backend ``mcp_servers.yaml`` wired as default.
     """
     from kernel.slice import SliceTuning  # noqa: PLC0415
 
-    mcp_command = os.getenv(
-        "LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")
-    )
-    mcp_args = os.getenv("LISA_MCP_ARGS", "").split()
-    mcp_args = [*mcp_args, *_mcp_server_extra_args()]
-    memory_store = MCPMemoryClient(mcp_command, mcp_args)
+    memory_store = _build_memory_router()
     slice_tuning_dict, _explicit_budget_ms = _resolve_slice_tuning()
     slice_tuning = SliceTuning.from_mapping(slice_tuning_dict)
     state_provider = LittleLisaStateProvider(
@@ -3549,15 +3629,7 @@ async def _run_explicit_slice_command(*, message: str) -> str:
     _, explicit_budget_ms = _resolve_slice_tuning()
     provider = LittleLisaStateProvider(
         thread_path=_runtime_thread_path(),
-        memory_store=MCPMemoryClient(
-            os.getenv(
-                "LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")
-            ),
-            [
-                *os.getenv("LISA_MCP_ARGS", "").split(),
-                *_mcp_server_extra_args(),
-            ],
-        ),
+        memory_store=_build_memory_router(),
         max_thread_entries=_resolve_int_env(
             _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES
         ),
@@ -4027,6 +4099,7 @@ def _build_desktop_subprocess_args(
     timezone: str,
     state_snapshot: str,
     streaming: str,
+    host_log: str,
 ) -> list[str]:
     """Build the CLI args for the desktop host subprocess."""
     args = [
@@ -4055,6 +4128,7 @@ def _build_desktop_subprocess_args(
     _append_flag_args(args, timezone, "--timezone")
     _append_flag_args(args, state_snapshot, "--state-snapshot")
     _append_flag_args(args, streaming, "--streaming")
+    _append_flag_args(args, host_log, "--host-log")
     return args
 
 
@@ -4111,6 +4185,7 @@ def _run_default_no_args_mode(
     timezone: str,
     state_snapshot: str,
     streaming: str,
+    host_log: str,
     desktop_host: str,
     desktop_port: int,
     desktop_token: str,
@@ -4134,6 +4209,7 @@ def _run_default_no_args_mode(
             timezone=timezone,
             state_snapshot=state_snapshot,
             streaming=streaming,
+            host_log=host_log,
         )
         logs_dir = str(_resolved_data_dir_path(data_dir))
         try:
@@ -4168,6 +4244,7 @@ def _run_default_no_args_mode(
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
+        host_log_path=host_log,
     )
     _run_desktop_host(
         host=desktop_host,
@@ -4555,15 +4632,25 @@ def _initialize_runtime(
     timezone: str = "",
     state_snapshot_path: str,
     streaming: str = "",
+    host_log_path: str = "",
 ) -> None:
-    """Initialize Little Lisa runtime before each command entry point."""
-    _init_core(debug=debug, log_level=log_level)
+    """Initialize Little Lisa runtime before each command entry point.
+
+    Order matters: log-level, data-dir, and host-log-path are resolved and
+    the stdlib root logger is reconfigured **before** ``setup_framework()``
+    runs, so the ``registry.py`` "Loaded operation module" INFO lines land
+    in ``host.log`` instead of FastMCP's stderr RichHandler.
+    """
+    _init_core_state(debug=debug, log_level=log_level)
     _init_paths(
         data_dir=data_dir,
         log_path=log_path,
         no_log=no_log,
         memory_db=memory_db,
     )
+    _init_host_log(host_log_path=host_log_path)
+    _configure_root_logging()
+    _init_core_framework()
     normalized_user, context_ref, context_active = _init_session_context_and_threads(
         user_slug=user_slug,
         thread_dir=thread_dir,
@@ -4607,6 +4694,162 @@ def _build_warm_mcp_pool() -> None:
     _RUNTIME_STATE["mcp_cold_configs"] = cold_configs
 
 
+def _build_memory_router() -> Any:
+    """Build the MemoryStoreRouter from mcp_servers.yaml's memory config.
+
+    The router is the single thing the memory seam (operations, turn hooks)
+    holds a reference to. It delegates generic ``record_memory`` / ``recall`` /
+    ``list_memories`` calls to whichever backend the manifest wired as
+    default — lisa-context (in-process MCPMemoryClient) by default, or Mem0
+    (Mem0MemoryClient) when ``memory.default_backend`` names a registered
+    external server.
+
+    The router is cached on runtime state so ``_build_turn_hooks`` and the
+    explicit-slice path share the same backend. Returns the router (typed
+    as Any here to avoid importing MemoryStoreRouter at module top level).
+    """
+    cached = _RUNTIME_STATE.get("memory_router")
+    if cached is not None:
+        return cached
+
+    from kernel.memory_router import MemoryStoreRouter  # noqa: PLC0415
+
+    # lisa-context client — always available as a backend. Same command/args
+    # the turn hooks use directly elsewhere.
+    mcp_command = os.getenv(
+        "LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")
+    )
+    mcp_args = [*os.getenv("LISA_MCP_ARGS", "").split(), *_mcp_server_extra_args()]
+    lisa_context_client = MCPMemoryClient(mcp_command, mcp_args)
+
+    backends: dict[str, Any] = {"lisa-context": lisa_context_client}
+    memory_config = _RUNTIME_STATE.get("memory_config")
+    default_backend_id = getattr(memory_config, "default_backend", None)
+
+    default_store: Any = lisa_context_client
+    if default_backend_id and default_backend_id != "lisa-context":
+        # Find the compiled MCPClientConfig for the named default backend so
+        # we can build a client that speaks its launch command + args.
+        warm = _RUNTIME_STATE.get("mcp_tool_pool")
+        cold = _RUNTIME_STATE.get("mcp_cold_configs") or []
+        all_configs: list[Any] = []
+        if warm is not None:
+            all_configs.extend(warm.configs)
+        all_configs.extend(cold)
+        target = next((c for c in all_configs if c.server_id == default_backend_id), None)
+        if target is not None:
+            from kernel.mcp_client import Mem0MemoryClient  # noqa: PLC0415
+
+            mem0_client = Mem0MemoryClient(
+                target.command, list(target.args), env=target.env, cwd=target.cwd
+            )
+            backends[default_backend_id] = mem0_client
+            default_store = mem0_client
+        else:
+            # Named backend not compiled (e.g. disabled in the manifest, or
+            # npx unavailable). Fall back to lisa-context loudly.
+            _append_log_event(
+                level="warning",
+                event="memory.default_backend_unavailable",
+                payload={"default_backend": default_backend_id, "fallback": "lisa-context"},
+            )
+
+    router = MemoryStoreRouter(default=default_store, backends=backends)
+    _RUNTIME_STATE["memory_router"] = router
+    return router
+
+
+def _register_memory_synthetic_tools(pool: Any) -> None:
+    """Register the generic memory.* synthetic tools on a started pool.
+
+    The three generic aliases (``memory.add`` / ``memory.search`` /
+    ``memory.list``) route through the MemoryStoreRouter, so modes and
+    operations (and the model) get whichever backend the host wired as
+    default without knowing its concrete tool names. Power users can still
+    call a specific server's tools directly (e.g. ``mem0.search_memories``)
+    since those are also in the catalog.
+
+    Call this after ``pool.start()`` — the handlers close over the live
+    router, not the pool, so they work whether the default backend is an
+    in-process client (lisa-context) or an MCP server (mem0).
+    """
+    from kernel.models import MemoryWriteRequest  # noqa: PLC0415
+    from kernel.tools.mcp_client import SyntheticToolSpec  # noqa: PLC0415
+
+    router = _build_memory_router()
+
+    async def _add_handler(arguments: dict[str, Any]) -> str:
+        request = MemoryWriteRequest.model_validate(arguments)
+        record = await router.record_memory(request)
+        return f"Memory stored: {getattr(record, 'id', '?')}"
+
+    async def _search_handler(arguments: dict[str, Any]) -> str:
+        query = str(arguments.get("query") or "")
+        user_slug = str(arguments.get("user_slug") or "default")
+        limit = int(arguments.get("limit", 5) or 5)
+        return await router.recall(query, user_slug=user_slug, limit=limit)
+
+    async def _list_handler(arguments: dict[str, Any]) -> str:
+        import json as _json  # noqa: PLC0415
+
+        records = await router.list_memories(
+            user_slug=str(arguments.get("user_slug") or "default"),
+            workspace_id=str(arguments.get("workspace_id", "default")),
+            memory_scope=str(arguments.get("memory_scope", "personal")),
+            surface_id=str(arguments.get("surface_id", "")),
+            limit=int(arguments.get("limit", 20) or 20),
+        )
+        return _json.dumps([r.model_dump(mode="json") for r in records], default=str)
+
+    add_schema = {
+        "type": "object",
+        "properties": {
+            "content": {"type": "string", "description": "Memory content to store."},
+            "user_slug": {"type": "string", "default": "default"},
+            "memory_scope": {"type": "string", "default": "personal"},
+            "memory_tier": {"type": "string", "default": "daily"},
+        },
+        "required": ["content"],
+    }
+    search_schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "user_slug": {"type": "string", "default": "default"},
+            "limit": {"type": "integer", "default": 5},
+        },
+        "required": ["query"],
+    }
+    list_schema = {
+        "type": "object",
+        "properties": {
+            "user_slug": {"type": "string", "default": "default"},
+            "limit": {"type": "integer", "default": 20},
+        },
+    }
+
+    pool.add_synthetic_tools([
+        SyntheticToolSpec(
+            name="memory.add",
+            description="Persist a memory record via the default memory backend.",
+            input_schema=add_schema,
+            handler=_add_handler,
+        ),
+        SyntheticToolSpec(
+            name="memory.search",
+            description="Recall memories matching a free-text query via the default backend.",
+            input_schema=search_schema,
+            handler=_search_handler,
+        ),
+        SyntheticToolSpec(
+            name="memory.list",
+            description="List recent memory records for a user scope via the default backend.",
+            input_schema=list_schema,
+            handler=_list_handler,
+        ),
+    ])
+
+
 async def astart_warm_mcp_pool() -> None:
     """Eagerly start the warm MCP pool inside the host's event loop.
 
@@ -4623,6 +4866,10 @@ async def astart_warm_mcp_pool() -> None:
     except MCPConnectionError as exc:
         _render_runtime_error(exc, title="MCP Startup Error")
         raise typer.Exit(code=2) from exc
+    # Register host-owned synthetic tools (generic memory aliases) on the
+    # now-live pool. Done after start() so handlers can close over the live
+    # router; the aliases dispatch in-process via MemoryStoreRouter.
+    _register_memory_synthetic_tools(pool)
     _append_log_event(
         level="info",
         event="mcp.warm_pool.started",
@@ -4652,13 +4899,36 @@ async def aclose_warm_mcp_pool() -> None:
         logger.debug("warm MCP pool close failed: %s: %s", type(exc).__name__, exc)
 
 
-def _init_core(*, debug: bool, log_level: str) -> None:
-    """Set up framework, configure runtime, and resolve debug/log-level."""
+def _init_core_state(*, debug: bool, log_level: str) -> None:
+    """Resolve debug flag and log level before any framework code runs.
+
+    Runs first so ``_configure_root_logging`` can install the FileHandler at
+    the resolved level before ``setup_framework()`` emits INFO lines.
+    """
     _load_local_env_file()
-    setup_framework()
-    configure_runtime()
     _RUNTIME_STATE["debug"] = debug
     _RUNTIME_STATE["log_level"] = _resolve_log_level(log_level, debug_enabled=debug)
+
+
+def _init_core_framework() -> None:
+    """Register content/operation roots and reset provider clients.
+
+    Runs **after** ``_configure_root_logging`` so the ``registry.py`` INFO
+    lines it triggers land in ``host.log``, not FastMCP's stderr RichHandler.
+    """
+    setup_framework()
+    configure_runtime()
+
+
+def _init_core(*, debug: bool, log_level: str) -> None:
+    """Set up framework, configure runtime, and resolve debug/log-level.
+
+    Legacy single-call seam; retained for any external caller. New code
+    should use ``_init_core_state`` + ``_init_core_framework`` so logging
+    can be wedged between them.
+    """
+    _init_core_state(debug=debug, log_level=log_level)
+    _init_core_framework()
 
 
 def _init_paths(*, data_dir: str, log_path: str, no_log: bool, memory_db: str) -> None:
@@ -4687,6 +4957,19 @@ def _init_paths(*, data_dir: str, log_path: str, no_log: bool, memory_db: str) -
     _RUNTIME_STATE["memory_db_path"] = (
         memory_from_cli or memory_from_env or _runtime_data_dir() / "memory.json"
     )
+
+
+def _init_host_log(*, host_log_path: str) -> None:
+    """Resolve and set the stdlib host-log path (distinct from the JSONL turn log).
+
+    ``--host-log`` wins; otherwise the host log defaults to
+    ``<data_dir>/host.log``. Must run after ``_init_paths`` has set
+    ``data_dir``.
+    """
+    if host_log_path.strip():
+        _RUNTIME_STATE["host_log_path"] = Path(host_log_path).expanduser()
+    else:
+        _RUNTIME_STATE["host_log_path"] = _runtime_data_dir() / "host.log"
 
 
 def _init_session_context_and_threads(
@@ -4887,6 +5170,7 @@ def _cli_callback(
         help="Optional fixed localhost token for desktop API auth.",
     ),
     streaming: StreamingOption = "none",
+    host_log: HostLogOption = "",
 ) -> None:
     if version:
         console.print(f"little-lisa v{_get_version()}")
@@ -4907,6 +5191,7 @@ def _cli_callback(
         timezone=timezone,
         state_snapshot=state_snapshot,
         streaming=streaming,
+        host_log=host_log,
         desktop_host=desktop_host,
         desktop_port=desktop_port,
         desktop_token=desktop_token,
@@ -4928,6 +5213,7 @@ def _cli_command(
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
+    host_log: HostLogOption = "",
 ) -> None:
     _initialize_runtime_or_exit(
         debug=debug,
@@ -4943,6 +5229,7 @@ def _cli_command(
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
+        host_log_path=host_log,
     )
     asyncio.run(_run_repl())
 
@@ -4984,6 +5271,7 @@ def _desktop_command(
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
+    host_log: HostLogOption = "",
 ) -> None:
     _initialize_runtime_or_exit(
         debug=debug,
@@ -4999,6 +5287,7 @@ def _desktop_command(
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
+        host_log_path=host_log,
     )
     _run_desktop_host(
         host=host,
@@ -5220,6 +5509,7 @@ def _verify_command(
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
+    host_log: HostLogOption = "",
 ) -> None:
     """Run verification checks of the Little Lisa environment.
 
@@ -5240,6 +5530,7 @@ def _verify_command(
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
+        host_log_path=host_log,
     )
     checks: list[tuple[str, str, str]] = [
         ("Python", *_verify_check_python()),
@@ -5536,6 +5827,7 @@ def _modes_command(
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
+    host_log: HostLogOption = "",
 ) -> None:
     _initialize_runtime_or_exit(
         debug=debug,
@@ -5551,6 +5843,7 @@ def _modes_command(
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
+        host_log_path=host_log,
     )
     console.print(format_modes())
 
@@ -5570,6 +5863,7 @@ def _models_command(
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
+    host_log: HostLogOption = "",
 ) -> None:
     _initialize_runtime_or_exit(
         debug=debug,
@@ -5585,6 +5879,7 @@ def _models_command(
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
+        host_log_path=host_log,
     )
     console.print(format_models())
 
@@ -5605,6 +5900,7 @@ def _once_command(
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
+    host_log: HostLogOption = "",
 ) -> None:
     _initialize_runtime_or_exit(
         debug=debug,
@@ -5620,6 +5916,7 @@ def _once_command(
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
+        host_log_path=host_log,
     )
     asyncio.run(_run_once_with_teardown(message))
 

@@ -77,6 +77,7 @@ def test_build_desktop_subprocess_args_forwards_runtime_settings() -> None:
         timezone="UTC",
         state_snapshot="artifacts/state.json",
         streaming="hybrid:4",
+        host_log="artifacts/custom-host.log",
     )
 
     assert args[:7] == [
@@ -96,6 +97,8 @@ def test_build_desktop_subprocess_args_forwards_runtime_settings() -> None:
     assert "adam" in args
     assert "--streaming" in args
     assert "hybrid:4" in args
+    assert "--host-log" in args
+    assert "artifacts/custom-host.log" in args
 
 
 @pytest.mark.asyncio
