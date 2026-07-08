@@ -1,17 +1,13 @@
 ---
 version: 1
 mode_models:
-  search: deepseek-v4-flash:cloud
-  thinkabout: deepseek-v4-pro:cloud
-  workshop: deepseek-v4-pro:cloud
+  search: gemma4:cloud
+  workshop: glm-5.2:cloud
 models:
-  - model_id: deepseek-v4-pro:cloud
-    provider: ollama
-    designations: [reasoning]
-
-  - model_id: deepseek-v4-flash:cloud
-    provider: ollama
-
   - model_id: gemma4:cloud
     provider: ollama
     designations: [default, front-door]
+
+  - model_id: glm-5.2:cloud
+    provider: ollama
+    designations: [deep, reasoning]
