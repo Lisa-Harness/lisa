@@ -26,7 +26,7 @@ from lisa_sdk.lisa_surf.surf_workflow import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["mcp", "main"]
+__all__ = ["main", "mcp"]
 
 
 mcp = FastMCP("Lisa Surf Server")

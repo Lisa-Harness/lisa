@@ -10,10 +10,8 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -23,7 +21,9 @@ from kernel.seams.protocols import BlobIO, ContentRegistry, GuardResult, InputGu
 from kernel.tools.mcp_client import MCPClientConfig
 
 
-def _make_config(server_id: str = "test", command: str = "python", args: list[str] | None = None) -> MCPClientConfig:
+def _make_config(
+    server_id: str = "test", command: str = "python", args: list[str] | None = None
+) -> MCPClientConfig:
     return MCPClientConfig(
         server_id=server_id,
         command=command,
@@ -64,7 +64,9 @@ def test_mcp_content_registry_satisfies_protocol() -> None:
 def test_parse_guard_response_allowed() -> None:
     from kernel.context.mcp_guard import _parse_guard_response
 
-    text = json.dumps({"allowed": True, "blocked_reason": None, "sanitized_text": None, "annotations": {}})
+    text = json.dumps(
+        {"allowed": True, "blocked_reason": None, "sanitized_text": None, "annotations": {}}
+    )
     result = _parse_guard_response(text)
     assert isinstance(result, GuardResult)
     assert result.allowed is True
@@ -74,12 +76,14 @@ def test_parse_guard_response_allowed() -> None:
 def test_parse_guard_response_blocked() -> None:
     from kernel.context.mcp_guard import _parse_guard_response
 
-    text = json.dumps({
-        "allowed": False,
-        "blocked_reason": "toxicity",
-        "sanitized_text": "***",
-        "annotations": {"score": 0.9},
-    })
+    text = json.dumps(
+        {
+            "allowed": False,
+            "blocked_reason": "toxicity",
+            "sanitized_text": "***",
+            "annotations": {"score": 0.9},
+        }
+    )
     result = _parse_guard_response(text)
     assert result.allowed is False
     assert result.blocked_reason == "toxicity"
@@ -149,8 +153,10 @@ async def test_mcp_input_guard_integration(tmp_path: Path) -> None:
         server_id="lisa-guard-test",
         command=sys.executable,
         args=[
-            "-m", "lisa_guard.server",
-            "--data-dir", str(tmp_path),
+            "-m",
+            "lisa_guard.server",
+            "--data-dir",
+            str(tmp_path),
         ],
     )
     guard = MCPInputGuard(cfg)
@@ -169,8 +175,10 @@ async def test_mcp_output_guard_integration(tmp_path: Path) -> None:
         server_id="lisa-guard-test",
         command=sys.executable,
         args=[
-            "-m", "lisa_guard.server",
-            "--data-dir", str(tmp_path),
+            "-m",
+            "lisa_guard.server",
+            "--data-dir",
+            str(tmp_path),
         ],
     )
     guard = MCPOutputGuard(cfg)
@@ -188,8 +196,10 @@ def test_mcp_content_registry_integration(tmp_path: Path) -> None:
         server_id="lisa-content-test",
         command=sys.executable,
         args=[
-            "-m", "lisa_content.server",
-            "--data-dir", str(tmp_path),
+            "-m",
+            "lisa_content.server",
+            "--data-dir",
+            str(tmp_path),
         ],
     )
     registry = MCPContentRegistry(cfg)

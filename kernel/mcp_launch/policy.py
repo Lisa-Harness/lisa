@@ -16,25 +16,25 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 __all__ = [
-    "RuntimeKind",
-    "EnvPolicy",
     "CwdPolicy",
-    "ToolPolicy",
+    "EnvPolicy",
     "LaunchTimeouts",
-    "MCPServerSpec",
     "MCPServerRegistry",
+    "MCPServerSpec",
+    "RuntimeKind",
+    "ToolPolicy",
 ]
 
 
 class RuntimeKind(str, Enum):
     """How to launch an MCP server subprocess."""
 
-    PYTHON = "python"       # python -m package.server
-    UV = "uv"                # uv run --package mcp-server python -m package.server
-    VENV_BIN = "venv_bin"    # .venv/Scripts/lisa-context.exe (console_scripts entry point)
-    NODE = "node"            # node server.js
-    NPX = "npx"              # npx -y @scope/server
-    BINARY = "binary"        # /usr/local/bin/server
+    PYTHON = "python"  # python -m package.server
+    UV = "uv"  # uv run --package mcp-server python -m package.server
+    VENV_BIN = "venv_bin"  # .venv/Scripts/lisa-context.exe (console_scripts entry point)
+    NODE = "node"  # node server.js
+    NPX = "npx"  # npx -y @scope/server
+    BINARY = "binary"  # /usr/local/bin/server
 
 
 @dataclass(frozen=True, slots=True)

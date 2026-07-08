@@ -12,6 +12,7 @@ which handles retries, timing, and error classification.
 
 TypeVar SnapshotT is the Pydantic model returned by each connector's collect() method.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

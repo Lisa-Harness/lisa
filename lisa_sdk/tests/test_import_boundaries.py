@@ -32,7 +32,9 @@ def _collect_violations(
                 for alias in node.names:
                     name = alias.name
                     if any(name.startswith(prefix) for prefix in forbidden_prefixes):
-                        if allowed_prefixes and any(name.startswith(prefix) for prefix in allowed_prefixes):
+                        if allowed_prefixes and any(
+                            name.startswith(prefix) for prefix in allowed_prefixes
+                        ):
                             continue
                         violations.append((str(py_file), node.lineno, f"import {name}"))
             elif isinstance(node, ast.ImportFrom):
@@ -40,12 +42,12 @@ def _collect_violations(
                 if module is None:
                     continue
                 if any(module.startswith(prefix) for prefix in forbidden_prefixes):
-                    if allowed_prefixes and any(module.startswith(prefix) for prefix in allowed_prefixes):
+                    if allowed_prefixes and any(
+                        module.startswith(prefix) for prefix in allowed_prefixes
+                    ):
                         continue
                     names = ", ".join(alias.name for alias in node.names)
-                    violations.append(
-                        (str(py_file), node.lineno, f"from {module} import {names}")
-                    )
+                    violations.append((str(py_file), node.lineno, f"from {module} import {names}"))
     return violations
 
 

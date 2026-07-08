@@ -29,7 +29,7 @@ def build_strict_openai_function_tool(
     parameters_schema: type[BaseModel] | None = None,
 ) -> dict[str, Any]:
     """Return one function-tool schema compatible with SDK auto-parsing.
-    
+
     Uses structured outputs (`strict=True`) unless the schema explicitly
     requires arbitrary object keys (`additionalProperties: True`), which
     OpenAI strict mode forbids.
@@ -40,8 +40,8 @@ def build_strict_openai_function_tool(
         name=name,
         description=description,
     )
-    
+
     if _has_additional_properties_true(tool.get("function", {}).get("parameters", {})):
         tool["function"]["strict"] = False
-        
+
     return cast(dict[str, Any], tool)

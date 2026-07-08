@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import base64
 import json
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -100,18 +99,29 @@ async def test_storage_lists_all_blobio_tools(storage_env: Path) -> None:
     names = {t.name for t in tools}
     # All 23 BlobIO protocol methods
     expected = {
-        "read_unified_state", "write_unified_state",
-        "read_blob_bytes", "write_blob_bytes",
-        "read_blob_text", "write_blob_text",
-        "read_surf_workflow_session", "write_surf_workflow_session",
+        "read_unified_state",
+        "write_unified_state",
+        "read_blob_bytes",
+        "write_blob_bytes",
+        "read_blob_text",
+        "write_blob_text",
+        "read_surf_workflow_session",
+        "write_surf_workflow_session",
         "delete_surf_workflow_session",
-        "read_surf_screenshot", "write_surf_trace",
-        "read_user_context_overlays", "write_user_context_overlays",
-        "read_surface_context_overlays", "write_surface_context_overlays",
-        "read_proactive_recipients", "write_proactive_recipients",
-        "read_user_reminders", "write_user_reminders",
-        "read_thread_state", "write_thread_state",
-        "read_memory_snapshot", "write_memory_snapshot",
+        "read_surf_screenshot",
+        "write_surf_trace",
+        "read_user_context_overlays",
+        "write_user_context_overlays",
+        "read_surface_context_overlays",
+        "write_surface_context_overlays",
+        "read_proactive_recipients",
+        "write_proactive_recipients",
+        "read_user_reminders",
+        "write_user_reminders",
+        "read_thread_state",
+        "write_thread_state",
+        "read_memory_snapshot",
+        "write_memory_snapshot",
     }
     assert expected <= names, f"Missing tools: {expected - names}"
 
@@ -124,9 +134,7 @@ async def test_storage_blob_text_round_trip(storage_env: Path) -> None:
         "write_blob_text",
         {"container": "test", "blob_path": "a.txt", "payload": "hello world"},
     )
-    result = await mcp.call_tool(
-        "read_blob_text", {"container": "test", "blob_path": "a.txt"}
-    )
+    result = await mcp.call_tool("read_blob_text", {"container": "test", "blob_path": "a.txt"})
     assert _tool_text(result) == "hello world"
 
 
@@ -139,9 +147,7 @@ async def test_storage_blob_bytes_round_trip(storage_env: Path) -> None:
         "write_blob_bytes",
         {"container": "test", "blob_path": "b.bin", "payload_b64": payload},
     )
-    result = await mcp.call_tool(
-        "read_blob_bytes", {"container": "test", "blob_path": "b.bin"}
-    )
+    result = await mcp.call_tool("read_blob_bytes", {"container": "test", "blob_path": "b.bin"})
     assert base64.b64decode(_tool_text(result)) == b"binary data"
 
 
@@ -149,9 +155,7 @@ async def test_storage_blob_bytes_round_trip(storage_env: Path) -> None:
 async def test_storage_read_absent_returns_null(storage_env: Path) -> None:
     from lisa_sdk.lisa_storage.server import mcp
 
-    result = await mcp.call_tool(
-        "read_blob_text", {"container": "test", "blob_path": "absent.txt"}
-    )
+    result = await mcp.call_tool("read_blob_text", {"container": "test", "blob_path": "absent.txt"})
     assert _tool_text(result) == "null"
 
 
@@ -160,9 +164,7 @@ async def test_storage_path_traversal_blocked(storage_env: Path) -> None:
     from lisa_sdk.lisa_storage.server import mcp
 
     with pytest.raises(Exception):
-        await mcp.call_tool(
-            "read_blob_text", {"container": "test", "blob_path": "../escape.txt"}
-        )
+        await mcp.call_tool("read_blob_text", {"container": "test", "blob_path": "../escape.txt"})
 
 
 @pytest.mark.asyncio
@@ -216,9 +218,7 @@ async def test_content_lists_three_tools(content_setup: None) -> None:
 async def test_content_read_absent_returns_empty(content_setup: None) -> None:
     from lisa_sdk.lisa_content.server import mcp
 
-    result = await mcp.call_tool(
-        "read_authored_text", {"relative_path": "nonexistent/file.md"}
-    )
+    result = await mcp.call_tool("read_authored_text", {"relative_path": "nonexistent/file.md"})
     assert _tool_text(result) == ""
 
 

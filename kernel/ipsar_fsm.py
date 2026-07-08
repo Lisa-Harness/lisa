@@ -41,6 +41,7 @@ from kernel.content_roots import (
     discover_installed_content_roots,
     resolve_content_subdir_roots,
 )
+from kernel.intake.connector_discovery import discover_installed_signal_connectors
 from kernel.models import (
     DefaultIntentBridge,
     ModeKind,
@@ -56,7 +57,6 @@ from kernel.models import (
     WorkshopRenderConfig,
 )
 from kernel.openai_function_tools import build_strict_openai_function_tool
-from kernel.intake.connector_discovery import discover_installed_signal_connectors
 
 logger = logging.getLogger(__name__)
 
@@ -435,14 +435,12 @@ def load_catalog_from_disk(
         for idx, raw_pattern in enumerate(frontdoor_fast_path_patterns_raw):
             if not isinstance(raw_pattern, str):
                 raise WorkflowValidationError(
-                    "frontdoor_fast_path_patterns"
-                    f"[{idx}] must be a string in {mode_config_path}"
+                    f"frontdoor_fast_path_patterns[{idx}] must be a string in {mode_config_path}"
                 )
             pattern = raw_pattern.strip()
             if not pattern:
                 raise WorkflowValidationError(
-                    "frontdoor_fast_path_patterns"
-                    f"[{idx}] cannot be empty in {mode_config_path}"
+                    f"frontdoor_fast_path_patterns[{idx}] cannot be empty in {mode_config_path}"
                 )
             try:
                 re.compile(pattern, re.IGNORECASE)
@@ -968,7 +966,7 @@ def validate_workflow_mode(mode: WorkflowModeConfig) -> None:
 def _validate_mode_operation_bindings(mode: WorkflowModeConfig) -> None:
     """Validate that all operation IDs referenced by one mode exist in the operation catalog."""
     from kernel.operations.registry import is_known_tool
-    
+
     catalog = _get_operation_catalog()
     referenced_operation_ids = (
         mode.entry_operation_ids

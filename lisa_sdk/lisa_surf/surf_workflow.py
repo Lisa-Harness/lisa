@@ -17,13 +17,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from kernel.models import SurfaceContext
+from lisa_sdk.config import settings
 from lisa_sdk.models import (
     SurfCommentaryEntry,
     SurfLinkCandidate,
     SurfPageCapture,
     SurfSessionState,
 )
-from lisa_sdk.config import settings
 
 _LINK_FILLER_WORDS = frozenset(
     {"a", "an", "the", "page", "pages", "link", "links", "tab", "section", "site", "please"}
@@ -43,10 +43,7 @@ def _isoformat(value: datetime) -> str:
 def _current_page_label(page: SurfPageCapture) -> str:
     """Return a human-readable label for one visited surf page."""
     return (
-        page.trace.page_title
-        or page.trace.final_url
-        or page.trace.requested_url
-        or "Untitled page"
+        page.trace.page_title or page.trace.final_url or page.trace.requested_url or "Untitled page"
     )
 
 
@@ -107,8 +104,7 @@ def build_surf_session_summary(session: SurfSessionState) -> str:
 
     current_page = session.pages[-1]
     summary = (
-        f"Visited {len(session.pages)} page(s). "
-        f"Current page: {_current_page_label(current_page)}."
+        f"Visited {len(session.pages)} page(s). Current page: {_current_page_label(current_page)}."
     )
 
     if len(session.pages) > 1:

@@ -6,8 +6,8 @@ execution path and returns the normalized UnifiedState payload.
 
 from __future__ import annotations
 
-from kernel.models import ToolExecutionContext, ToolResult
 from kernel.intake.connector_discovery import discover_installed_signal_connectors
+from kernel.models import ToolExecutionContext, ToolResult
 
 TOOL_ID = "signal_refresh"
 TOOL_DESCRIPTION = "Refresh external signal connectors and return the hot UnifiedState snapshot."

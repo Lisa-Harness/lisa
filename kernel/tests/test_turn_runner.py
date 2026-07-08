@@ -42,7 +42,7 @@ class _StubCompletion:
     tool_calls: list[dict[str, Any]] | None = None
 
 
-def _make_stub_complete(response: str, tool_calls: list[dict[str, Any]] | None = None):  # noqa: D401
+def _make_stub_complete(response: str, tool_calls: list[dict[str, Any]] | None = None):
     """Return an async complete stub that returns the given response."""
 
     async def stub(**kwargs: Any) -> _StubCompletion:
@@ -267,7 +267,7 @@ async def test_run_turn_includes_non_empty_structured_pre_turn_briefing(
     ) -> OperationResult:
         _ = (mode_id, ctx)
         return OperationResult(
-            output_text="{\"output_text\": \"fallback json dump\"}",
+            output_text='{"output_text": "fallback json dump"}',
             output_json={
                 "output_text": "Fresh web context for this discussion:\n- grounded point",
                 "briefing_points": ["grounded point"],

@@ -34,7 +34,7 @@ from lisa_sdk.lisa_context.context_broker import (
     select_ranked_context,
 )
 
-__all__ = ["mcp", "main", "get_store"]
+__all__ = ["get_store", "main", "mcp"]
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +50,7 @@ DEFAULT_TTL_DAYS: dict[str, int | None] = {
 class EmbeddingProvider(Protocol):
     """Generate embeddings for text content."""
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        ...
+    async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 
 def _now_iso() -> str:
@@ -160,7 +159,9 @@ class SqliteMemoryStore:
 
     async def record_memory(self, request: MemoryWriteRequest | Any) -> MemoryRecord:
         write = (
-            request if isinstance(request, MemoryWriteRequest) else MemoryWriteRequest.model_validate(request)
+            request
+            if isinstance(request, MemoryWriteRequest)
+            else MemoryWriteRequest.model_validate(request)
         )
         assert self._conn is not None
         entry_id = _entry_id()

@@ -20,13 +20,12 @@ import json
 import logging
 import os
 import sys
-from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["mcp", "main", "init_backend"]
+__all__ = ["init_backend", "main", "mcp"]
 
 mcp = FastMCP("Lisa Guard Server")
 
@@ -74,19 +73,23 @@ async def validate_input(
     "sanitized_text": str|null, "annotations": {}}``.
     """
     if _backend == "passthrough":
-        return json.dumps({
+        return json.dumps(
+            {
+                "allowed": True,
+                "blocked_reason": None,
+                "sanitized_text": None,
+                "annotations": {},
+            }
+        )
+    # Future backends (azure_content_safety, etc.) plug in here.
+    return json.dumps(
+        {
             "allowed": True,
             "blocked_reason": None,
             "sanitized_text": None,
-            "annotations": {},
-        })
-    # Future backends (azure_content_safety, etc.) plug in here.
-    return json.dumps({
-        "allowed": True,
-        "blocked_reason": None,
-        "sanitized_text": None,
-        "annotations": {"backend": _backend},
-    })
+            "annotations": {"backend": _backend},
+        }
+    )
 
 
 @mcp.tool()
@@ -102,18 +105,22 @@ async def validate_output(
     Returns the same JSON shape as ``validate_input``.
     """
     if _backend == "passthrough":
-        return json.dumps({
+        return json.dumps(
+            {
+                "allowed": True,
+                "blocked_reason": None,
+                "sanitized_text": None,
+                "annotations": {},
+            }
+        )
+    return json.dumps(
+        {
             "allowed": True,
             "blocked_reason": None,
             "sanitized_text": None,
-            "annotations": {},
-        })
-    return json.dumps({
-        "allowed": True,
-        "blocked_reason": None,
-        "sanitized_text": None,
-        "annotations": {"backend": _backend},
-    })
+            "annotations": {"backend": _backend},
+        }
+    )
 
 
 @mcp.tool()

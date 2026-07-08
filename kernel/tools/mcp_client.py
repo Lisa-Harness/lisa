@@ -111,7 +111,7 @@ class MCPToolPool:
     def configs(self) -> list[MCPClientConfig]:
         return list(self._configs)
 
-    async def __aenter__(self) -> "MCPToolPool":
+    async def __aenter__(self) -> MCPToolPool:
         await self.start()
         return self
 

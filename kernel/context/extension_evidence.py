@@ -15,8 +15,8 @@ class NoOpExtensionEvidenceBuilder:
 
     def build_extension_context_evidence(
         self,
-        runtime_context: Any,  # noqa: ARG002
-        state: Any,  # noqa: ARG002
+        runtime_context: Any,
+        state: Any,
     ) -> list[Any]:
         """Return an empty list. Both arguments are accepted for protocol parity."""
 

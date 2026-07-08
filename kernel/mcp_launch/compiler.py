@@ -29,9 +29,9 @@ if TYPE_CHECKING:
     from kernel.mcp_launch.policy import MCPServerRegistry
 
 __all__ = [
-    "compile_env",
-    "compile_cwd",
     "compile_command",
+    "compile_cwd",
+    "compile_env",
     "compile_mcp_config",
     "compile_registry",
 ]
@@ -77,7 +77,9 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
 
     if spec.runtime_kind == RuntimeKind.UV:
         if not spec.package or not spec.module:
-            raise ValueError(f"UV runtime requires 'package' and 'module' for server '{spec.server_id}'")
+            raise ValueError(
+                f"UV runtime requires 'package' and 'module' for server '{spec.server_id}'"
+            )
         args: list[str] = ["run"]
         if spec.uv_directory:
             args.extend(["--directory", spec.uv_directory])
@@ -96,7 +98,9 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
 
     if spec.runtime_kind == RuntimeKind.NODE:
         if not spec.command_path or not spec.script_path:
-            raise ValueError(f"NODE runtime requires 'command_path' and 'script_path' for server '{spec.server_id}'")
+            raise ValueError(
+                f"NODE runtime requires 'command_path' and 'script_path' for server '{spec.server_id}'"
+            )
         return spec.command_path, [spec.script_path]
 
     if spec.runtime_kind == RuntimeKind.NPX:
@@ -106,7 +110,9 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
 
     if spec.runtime_kind == RuntimeKind.BINARY:
         if not spec.command_path:
-            raise ValueError(f"BINARY runtime requires 'command_path' for server '{spec.server_id}'")
+            raise ValueError(
+                f"BINARY runtime requires 'command_path' for server '{spec.server_id}'"
+            )
         return spec.command_path, []
 
     raise ValueError(f"Unknown runtime kind '{spec.runtime_kind}' for server '{spec.server_id}'")
@@ -149,7 +155,7 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
 
 
 def compile_registry(
-    registry: "MCPServerRegistry",
+    registry: MCPServerRegistry,
     *,
     data_dir: str,
     workspace_root: str | None = None,

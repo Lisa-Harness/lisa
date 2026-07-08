@@ -386,7 +386,9 @@ def _resolve_timeout_profile(cli_timeout_profile: str) -> str:
         return cli_value
     env_value = _normalize_timeout_profile(os.getenv(_LITTLE_LISA_TIMEOUT_PROFILE_ENV, ""))
     if env_value is not None:
-        logger.debug("timeout profile resolved from %s: %s", _LITTLE_LISA_TIMEOUT_PROFILE_ENV, env_value)
+        logger.debug(
+            "timeout profile resolved from %s: %s", _LITTLE_LISA_TIMEOUT_PROFILE_ENV, env_value
+        )
         return env_value
     return "balanced"
 
@@ -486,7 +488,12 @@ def _resolve_slice_tuning() -> tuple[dict[str, object], int]:
         try:
             explicit_budget_ms = max(50, min(int(raw_budget), 30_000))
         except ValueError:
-            logger.warning("invalid %s value %r; using default %d ms", _LITTLE_LISA_SLICE_BUDGET_MS_ENV, raw_budget, explicit_budget_ms)
+            logger.warning(
+                "invalid %s value %r; using default %d ms",
+                _LITTLE_LISA_SLICE_BUDGET_MS_ENV,
+                raw_budget,
+                explicit_budget_ms,
+            )
     return tuning, explicit_budget_ms
 
 

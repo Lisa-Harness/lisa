@@ -5,6 +5,7 @@ routing is driven by the workflow catalog loaded from content/instructions/ at
 startup.  Adding a new folder with a valid _mode.md makes that mode detectable
 here without changing Python code.
 """
+
 from __future__ import annotations
 
 import logging

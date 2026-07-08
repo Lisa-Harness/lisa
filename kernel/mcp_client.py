@@ -34,17 +34,20 @@ class MCPMemoryClient:
             write = request
         else:
             write = MemoryWriteRequest.model_validate(request)
-        
+
         async with stdio_client(self.server_params) as (read, write_stream):
             async with ClientSession(read, write_stream) as session:
                 await session.initialize()
-                result = await session.call_tool("add_memory", arguments={
-                    "user_slug": write.user_slug,
-                    "content": write.content,
-                    "memory_scope": write.memory_scope,
-                    "workspace_id": write.workspace_id,
-                    "surface_id": write.surface_id,
-                })
+                result = await session.call_tool(
+                    "add_memory",
+                    arguments={
+                        "user_slug": write.user_slug,
+                        "content": write.content,
+                        "memory_scope": write.memory_scope,
+                        "workspace_id": write.workspace_id,
+                        "surface_id": write.surface_id,
+                    },
+                )
                 # The MCP server right now returns a string "Memory stored with ID X".
                 # For compatibility, we can mock the rest of the MemoryRecord if needed.
                 return MemoryRecord(
@@ -67,7 +70,7 @@ class MCPMemoryClient:
                     confidence=1.0,
                     evidence_ids=[],
                     supersedes_id=0,
-                    valid_until=""
+                    valid_until="",
                 )
 
     async def recall(self, query: str, **kwargs: Any) -> str:
@@ -76,18 +79,21 @@ class MCPMemoryClient:
         memory_scope = str(kwargs.get("memory_scope") or "personal").strip() or "personal"
         surface_id = str(kwargs.get("surface_id") or "").strip()
         limit = int(kwargs.get("limit", 5) or 5)
-        
+
         async with stdio_client(self.server_params) as (read, write_stream):
             async with ClientSession(read, write_stream) as session:
                 await session.initialize()
-                result = await session.call_tool("search_memory", arguments={
-                    "user_slug": user_slug,
-                    "query": query,
-                    "memory_scope": memory_scope,
-                    "workspace_id": workspace_id,
-                    "surface_id": surface_id,
-                    "limit": limit
-                })
+                result = await session.call_tool(
+                    "search_memory",
+                    arguments={
+                        "user_slug": user_slug,
+                        "query": query,
+                        "memory_scope": memory_scope,
+                        "workspace_id": workspace_id,
+                        "surface_id": surface_id,
+                        "limit": limit,
+                    },
+                )
                 if result.content and len(result.content) > 0:
                     return result.content[0].text
                 return ""
@@ -104,15 +110,19 @@ class MCPMemoryClient:
         async with stdio_client(self.server_params) as (read, write_stream):
             async with ClientSession(read, write_stream) as session:
                 await session.initialize()
-                result = await session.call_tool("list_memories", arguments={
-                    "user_slug": user_slug,
-                    "memory_scope": memory_scope,
-                    "workspace_id": workspace_id,
-                    "surface_id": surface_id,
-                    "limit": limit
-                })
+                result = await session.call_tool(
+                    "list_memories",
+                    arguments={
+                        "user_slug": user_slug,
+                        "memory_scope": memory_scope,
+                        "workspace_id": workspace_id,
+                        "surface_id": surface_id,
+                        "limit": limit,
+                    },
+                )
                 if result.content and len(result.content) > 0:
                     import json
+
                     text = result.content[0].text
                     data = json.loads(text)
                     return [MemoryRecord.model_validate(r) for r in data]

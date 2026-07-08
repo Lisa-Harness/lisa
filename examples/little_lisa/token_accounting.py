@@ -200,12 +200,8 @@ def apply_turn_usage(
             fd_total = fd_prompt + fd_completion
         fd_cached = coerce_non_negative_int(frontdoor_routing.get("planner_cached_tokens"))
         fd_reasoning = coerce_non_negative_int(frontdoor_routing.get("planner_reasoning_tokens"))
-        fd_duration_ms = coerce_non_negative_float(
-            frontdoor_routing.get("planner_duration_ms")
-        )
-        fd_latency_ms = coerce_non_negative_int(
-            frontdoor_routing.get("planner_latency_ms")
-        )
+        fd_duration_ms = coerce_non_negative_float(frontdoor_routing.get("planner_duration_ms"))
+        fd_latency_ms = coerce_non_negative_int(frontdoor_routing.get("planner_latency_ms"))
         fd_model_id = str(frontdoor_routing.get("resolved_model_id") or "").strip()
 
     # ── Turn totals ────────────────────────────────────────────────
@@ -229,8 +225,7 @@ def apply_turn_usage(
         coerce_non_negative_int(state.get("session_prompt_tokens", 0)) + turn_prompt
     )
     state["session_completion_tokens"] = (
-        coerce_non_negative_int(state.get("session_completion_tokens", 0))
-        + turn_completion
+        coerce_non_negative_int(state.get("session_completion_tokens", 0)) + turn_completion
     )
     state["session_total_tokens"] = (
         coerce_non_negative_int(state.get("session_total_tokens", 0)) + turn_total
@@ -239,12 +234,10 @@ def apply_turn_usage(
         coerce_non_negative_int(state.get("session_cached_tokens", 0)) + turn_cached
     )
     state["session_reasoning_tokens"] = (
-        coerce_non_negative_int(state.get("session_reasoning_tokens", 0))
-        + turn_reasoning
+        coerce_non_negative_int(state.get("session_reasoning_tokens", 0)) + turn_reasoning
     )
     state["session_duration_ms"] = (
-        coerce_non_negative_float(state.get("session_duration_ms", 0.0))
-        + turn_duration_ms
+        coerce_non_negative_float(state.get("session_duration_ms", 0.0)) + turn_duration_ms
     )
     state["session_latency_ms"] = (
         coerce_non_negative_int(state.get("session_latency_ms", 0)) + turn_latency_ms
@@ -379,13 +372,9 @@ def record_session_turn(
     """Increment turn counters and mode-frequency counts in *state*."""
     state["session_turn_count"] = int(state.get("session_turn_count", 0)) + 1
     if succeeded:
-        state["session_success_count"] = (
-            int(state.get("session_success_count", 0)) + 1
-        )
+        state["session_success_count"] = int(state.get("session_success_count", 0)) + 1
     else:
-        state["session_error_count"] = (
-            int(state.get("session_error_count", 0)) + 1
-        )
+        state["session_error_count"] = int(state.get("session_error_count", 0)) + 1
         logger.warning("turn failed (mode=%s, latency_ms=%.0f)", mode_id or "-", latency_ms)
     total_latency = float(state.get("session_total_latency_ms", 0.0))
     state["session_total_latency_ms"] = total_latency + max(0.0, latency_ms)

@@ -110,9 +110,7 @@ def build_log_record(
 
     if ctx.get("log_level") == "debug":
         debug_data = dict(debug_payload or {})
-        if "last_frontdoor_debug" not in debug_data and isinstance(
-            last_frontdoor_debug, dict
-        ):
+        if "last_frontdoor_debug" not in debug_data and isinstance(last_frontdoor_debug, dict):
             debug_data["last_frontdoor_debug"] = last_frontdoor_debug
         if debug_data:
             record["debug"] = debug_data
@@ -190,15 +188,9 @@ def build_turn_log_record(
     frontdoor_total_tokens = 0
     frontdoor_attempt_count = 0
     if isinstance(frontdoor_debug, dict):
-        frontdoor_prompt_tokens = coerce_int(
-            frontdoor_debug.get("planner_prompt_tokens")
-        )
-        frontdoor_completion_tokens = coerce_int(
-            frontdoor_debug.get("planner_completion_tokens")
-        )
-        frontdoor_total_tokens = coerce_int(
-            frontdoor_debug.get("planner_total_tokens")
-        )
+        frontdoor_prompt_tokens = coerce_int(frontdoor_debug.get("planner_prompt_tokens"))
+        frontdoor_completion_tokens = coerce_int(frontdoor_debug.get("planner_completion_tokens"))
+        frontdoor_total_tokens = coerce_int(frontdoor_debug.get("planner_total_tokens"))
         planner_attempts = frontdoor_debug.get("planner_completion_attempts")
         if isinstance(planner_attempts, list):
             frontdoor_attempt_count = len(planner_attempts)

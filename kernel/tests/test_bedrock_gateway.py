@@ -23,11 +23,12 @@ from kernel.provider_core import (
     CompletionResult,
 )
 
-
 # ── Test helpers ──────────────────────────────────────────────────────
 
 
-def _model_def(provider: str = "aws", model_id: str = "us.anthropic.claude-sonnet-4-20250514-v1:0") -> Any:
+def _model_def(
+    provider: str = "aws", model_id: str = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+) -> Any:
     return SimpleNamespace(
         provider=provider,
         model_id=model_id,
@@ -56,7 +57,9 @@ def _request(
 class _StubBedrockClient:
     """Stub boto3 bedrock-runtime client."""
 
-    def __init__(self, converse_response: dict[str, Any], invoke_response: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, converse_response: dict[str, Any], invoke_response: dict[str, Any] | None = None
+    ) -> None:
         self._converse_response = converse_response
         self._invoke_response = invoke_response or {}
         self.captured_kwargs: dict[str, Any] = {}
@@ -81,11 +84,7 @@ def _gateway(response: dict[str, Any]) -> tuple[BedrockGateway, _StubBedrockClie
 @pytest.mark.asyncio
 async def test_text_only_response() -> None:
     response = {
-        "output": {
-            "message": {
-                "content": [{"text": "hello world"}]
-            }
-        },
+        "output": {"message": {"content": [{"text": "hello world"}]}},
         "usage": {"inputTokens": 10, "outputTokens": 20, "totalTokens": 30},
     }
     gateway, _ = _gateway(response)
@@ -106,7 +105,13 @@ async def test_tool_use_response() -> None:
             "message": {
                 "content": [
                     {"text": "Let me check."},
-                    {"toolUse": {"toolUseId": "call_1", "name": "get_weather", "input": {"city": "Seattle"}}},
+                    {
+                        "toolUse": {
+                            "toolUseId": "call_1",
+                            "name": "get_weather",
+                            "input": {"city": "Seattle"},
+                        }
+                    },
                 ]
             }
         }
@@ -178,9 +183,7 @@ async def test_tools_translated_to_bedrock_format() -> None:
             "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
         },
     }
-    await gateway.complete(
-        _request([{"role": "user", "content": "hi"}], tools=[openai_tool])
-    )
+    await gateway.complete(_request([{"role": "user", "content": "hi"}], tools=[openai_tool]))
     assert "toolConfig" in client.captured_kwargs
     tools = client.captured_kwargs["toolConfig"]["tools"]
     assert tools[0]["toolSpec"]["name"] == "get_weather"

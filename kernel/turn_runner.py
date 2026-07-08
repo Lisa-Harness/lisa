@@ -29,8 +29,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from kernel.ipsar_fsm import (
     get_mode_system_intro,
@@ -58,16 +59,15 @@ from kernel.seams.protocols import (
     OutputGuard,
     ProviderGatewayProvider,
 )
-from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
-from kernel.tools.schema_translator import mcp_tool_to_openai_function, openai_tool_call_to_mcp
 from kernel.slice import (
     SliceMode,
     SliceOutcome,
     SlicePolicy,
-    SliceTuning,
     build_policy_for_trigger,
     resolve_mode_for_trigger,
 )
+from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
+from kernel.tools.schema_translator import mcp_tool_to_openai_function, openai_tool_call_to_mcp
 
 logger = logging.getLogger(__name__)
 
@@ -347,7 +347,7 @@ class StreamedCompletionAdapter:
     full ``CompletionResult``.
     """
 
-    __slots__ = ("content", "tool_calls", "usage", "_aggregated")
+    __slots__ = ("_aggregated", "content", "tool_calls", "usage")
 
     def __init__(self, aggregated: StreamedCompletion) -> None:
         self._aggregated = aggregated
@@ -414,7 +414,7 @@ async def _default_slice(_policy: SlicePolicy) -> SliceOutcome:
 
 async def _fire_slice(
     *,
-    hooks: "TurnHooks",
+    hooks: TurnHooks,
     trigger: SliceMode,
     slice_outcomes: list[SliceOutcome],
 ) -> SliceOutcome | None:
@@ -490,15 +490,14 @@ async def _fire_slice(
             work_items_completed=0,
             elapsed_ms=(time.monotonic() - started) * 1000.0,
         )
-    else:
-        # Backfill elapsed_ms if the host didn't measure.
-        if outcome.elapsed_ms <= 0:
-            outcome = SliceOutcome(
-                work_items_completed=outcome.work_items_completed,
-                elapsed_ms=(time.monotonic() - started) * 1000.0,
-                last_item=outcome.last_item,
-                notes=outcome.notes,
-            )
+    # Backfill elapsed_ms if the host didn't measure.
+    elif outcome.elapsed_ms <= 0:
+        outcome = SliceOutcome(
+            work_items_completed=outcome.work_items_completed,
+            elapsed_ms=(time.monotonic() - started) * 1000.0,
+            last_item=outcome.last_item,
+            notes=outcome.notes,
+        )
     slice_outcomes.append(outcome)
     return outcome
 
@@ -612,7 +611,7 @@ async def _run_turn_inner(
     *,
     mode_id: str,
     query: str,
-    hooks: "TurnHooks",
+    hooks: TurnHooks,
     pool: MCPToolPool,
     resolve_model: Callable[[str], Any],
     complete: Callable[..., Awaitable[Any]],
@@ -697,9 +696,7 @@ async def _run_turn_inner(
         memory_scope="personal",
         thread_owner_id="lite-user",
     )
-    input_guard_result = await hooks.context_seams.input_guard.validate(
-        query, guard_surface
-    )
+    input_guard_result = await hooks.context_seams.input_guard.validate(query, guard_surface)
     if not input_guard_result.allowed:
         blocked_reason = input_guard_result.blocked_reason or "Input blocked by safety policy."
         _log.warning("Input guard blocked turn for mode=%s: %s", mode_id, blocked_reason)
@@ -890,9 +887,7 @@ async def _run_turn_inner(
     # Output guard runs before on_complete/store_mem so the persisted and
     # delivered text is the sanitized/safe-fallback version. Blocked
     # outputs emit a guardrail.audit event and skip the post-turn slice.
-    output_guard_result = await hooks.context_seams.output_guard.validate(
-        content, guard_surface
-    )
+    output_guard_result = await hooks.context_seams.output_guard.validate(content, guard_surface)
     turn_blocked = False
     if not output_guard_result.allowed:
         original_len = len(content)
@@ -1063,12 +1058,8 @@ def _extract_completion_usage(
             getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", None)
         )
         usage_total = _coerce_non_negative_int(getattr(usage, "total_tokens", None))
-        usage_cached = _coerce_non_negative_int(
-            getattr(usage, "cached_tokens", None)
-        )
-        usage_reasoning = _coerce_non_negative_int(
-            getattr(usage, "reasoning_tokens", None)
-        )
+        usage_cached = _coerce_non_negative_int(getattr(usage, "cached_tokens", None))
+        usage_reasoning = _coerce_non_negative_int(getattr(usage, "reasoning_tokens", None))
 
     prompt = prompt_tokens or usage_prompt
     completion_value = completion_tokens or usage_completion

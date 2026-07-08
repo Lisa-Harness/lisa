@@ -437,7 +437,7 @@ async def list_tree(
             if normalized_root:
                 if raw_path == normalized_root or not raw_path.startswith(prefix):
                     continue
-                remaining = raw_path[len(prefix):]
+                remaining = raw_path[len(prefix) :]
             else:
                 remaining = raw_path
             if not remaining:

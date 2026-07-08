@@ -53,8 +53,7 @@ class WorkflowTurnRunner(Protocol):
         run_post_turn_operations: bool = True,
         include_model_badge: bool = True,
         delegation_depth: int = 0,
-    ) -> TextResponse:
-        ...
+    ) -> TextResponse: ...
 
 
 @dataclass(slots=True)

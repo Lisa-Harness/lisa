@@ -3,6 +3,7 @@
 Pure analysis utilities — no I/O.  Can be imported by heartbeat anomaly checks,
 skill renderers, and stats rolls without pulling in the full connector.
 """
+
 from __future__ import annotations
 
 import re
@@ -286,9 +287,7 @@ def _build_business_notes(
             f" ({signals['quick_backs']} total)."
         )
     if signals["js_errors"] or signals["script_errors"]:
-        notes.append(
-            "Technical friction is present, so UX confusion may not be the only problem."
-        )
+        notes.append("Technical friction is present, so UX confusion may not be the only problem.")
     if not notes:
         notes.append("No standout Clarity spikes were detected in the cached snapshot.")
     return notes[:4]
@@ -313,9 +312,7 @@ def _build_next_actions(
             "Check whether the first screen on the affected path matches visitor intent."
         )
     if signals["js_errors"] or signals["script_errors"]:
-        actions.append(
-            "Check client-side logs and recent frontend changes for runtime failures."
-        )
+        actions.append("Check client-side logs and recent frontend changes for runtime failures.")
     if not actions:
         actions.append("Keep watching for more sessions before making a product change.")
     return actions[:3]

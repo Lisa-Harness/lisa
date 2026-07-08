@@ -5,6 +5,7 @@ that fetch, aggregate, and enrich external data over time. Because they often
 need to compare current state with historical state (e.g. rolling windows),
 they are permitted to maintain stateful caches across execution cycles.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

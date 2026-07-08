@@ -31,6 +31,7 @@ Threshold tuning notes (based on customer incident history):
 
 API timeouts: all Cloudflare API calls use external_signal_timeout_seconds (typically 15s).
 """
+
 from __future__ import annotations
 
 import logging
@@ -180,6 +181,7 @@ class CloudflareSignalConnector(SignalConnector[CloudflareMetrics]):
         - CLOUDFLARE_ZONE_ID (str env var): zone ID to monitor
         - CLOUDFLARE_ACCOUNT_ID (str env var, optional): account ID for worker script inventory
     """
+
     connector_id = "cloudflare"
     display_name = "Cloudflare"
 
@@ -261,7 +263,7 @@ class CloudflareSignalConnector(SignalConnector[CloudflareMetrics]):
         # (Cloudflare hourly analytics can have up to ~5 min ingestion lag; using
         # the previous complete hour avoids false "0 requests" readings.)
         now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
-        end = now - timedelta(hours=1)       # top of last completed hour
+        end = now - timedelta(hours=1)  # top of last completed hour
         one_hour_ago = end - timedelta(hours=1)  # start of that same hour
 
         response = await client.post(
@@ -469,20 +471,12 @@ class CloudflareSignalConnector(SignalConnector[CloudflareMetrics]):
         )
         waf_total_events_1h = sum(waf_events_1h.values())
 
-        top_paths = [
-            row
-            for row in request_shape.get("top_paths", [])
-            if isinstance(row, dict)
-        ]
+        top_paths = [row for row in request_shape.get("top_paths", []) if isinstance(row, dict)]
         top_agents = [
-            row
-            for row in request_shape.get("top_user_agents", [])
-            if isinstance(row, dict)
+            row for row in request_shape.get("top_user_agents", []) if isinstance(row, dict)
         ]
         sampled_paths = [
-            str(row.get("path") or "")
-            for row in top_paths
-            if str(row.get("path") or "")
+            str(row.get("path") or "") for row in top_paths if str(row.get("path") or "")
         ]
         sampled_agents = [
             str(row.get("user_agent") or "")
@@ -678,8 +672,8 @@ class CloudflareSignalConnector(SignalConnector[CloudflareMetrics]):
                 action = str(dimensions.get("action") or "unknown").strip().lower()
                 if not action:
                     action = "unknown"
-                action_counts[action] = (
-                    action_counts.get(action, 0) + _to_int(group.get("count", 0))
+                action_counts[action] = action_counts.get(action, 0) + _to_int(
+                    group.get("count", 0)
                 )
             return action_counts
         except Exception as exc:  # pylint: disable=broad-except
@@ -1118,9 +1112,7 @@ class CloudflareSignalConnector(SignalConnector[CloudflareMetrics]):
         """
         notes: list[str] = []
         if requests == 0:
-            notes.append(
-                "No traffic observed in the last complete hour from Cloudflare analytics."
-            )
+            notes.append("No traffic observed in the last complete hour from Cloudflare analytics.")
 
         if get_cloudflare_connector_settings().account_id == "":
             notes.append(
@@ -1176,9 +1168,7 @@ class CloudflareSignalConnector(SignalConnector[CloudflareMetrics]):
             latest_status = str(project.get("latest_status") or "").lower()
             if latest_status in {"failure", "failed"}:
                 project_name = str(project.get("name") or "unknown")
-                notes.append(
-                    f"Pages project '{project_name}' has a failing latest deployment."
-                )
+                notes.append(f"Pages project '{project_name}' has a failing latest deployment.")
 
         for database in d1_databases:
             if not isinstance(database, dict):

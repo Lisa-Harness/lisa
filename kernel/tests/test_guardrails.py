@@ -96,7 +96,7 @@ class _BlockingInputGuard:
     def __init__(self, reason: str = "Blocked by test policy") -> None:
         self._reason = reason
 
-    async def validate(self, query: str, surface: SurfaceContext) -> GuardResult:  # noqa: ARG002
+    async def validate(self, query: str, surface: SurfaceContext) -> GuardResult:
         return GuardResult(allowed=False, blocked_reason=self._reason)
 
 
@@ -106,7 +106,7 @@ class _SanitizingInputGuard:
     def __init__(self, sanitized: str = "sanitized query") -> None:
         self._sanitized = sanitized
 
-    async def validate(self, query: str, surface: SurfaceContext) -> GuardResult:  # noqa: ARG002
+    async def validate(self, query: str, surface: SurfaceContext) -> GuardResult:
         return GuardResult(allowed=True, sanitized_text=self._sanitized)
 
 
@@ -159,7 +159,7 @@ class _BlockingOutputGuard:
     def __init__(self, reason: str = "Unsafe output") -> None:
         self._reason = reason
 
-    async def validate(self, text: str, surface: SurfaceContext) -> GuardResult:  # noqa: ARG002
+    async def validate(self, text: str, surface: SurfaceContext) -> GuardResult:
         return GuardResult(allowed=False, blocked_reason=self._reason)
 
 
@@ -169,7 +169,7 @@ class _SanitizingOutputGuard:
     def __init__(self, sanitized: str = "sanitized output") -> None:
         self._sanitized = sanitized
 
-    async def validate(self, text: str, surface: SurfaceContext) -> GuardResult:  # noqa: ARG002
+    async def validate(self, text: str, surface: SurfaceContext) -> GuardResult:
         return GuardResult(allowed=True, sanitized_text=self._sanitized)
 
 

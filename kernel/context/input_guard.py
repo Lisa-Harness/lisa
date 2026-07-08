@@ -17,8 +17,8 @@ class PassThroughInputGuard:
 
     async def validate(
         self,
-        query: str,  # noqa: ARG002
-        surface: SurfaceContext,  # noqa: ARG002
+        query: str,
+        surface: SurfaceContext,
     ) -> GuardResult:
         """Return an allow result with no sanitized text."""
 

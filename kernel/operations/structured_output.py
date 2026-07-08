@@ -20,7 +20,8 @@ operation execution context. They are intentionally host-agnostic: the host's
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -28,10 +29,10 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "extract_json_object",
-    "parse_structured_payload",
+    "is_structured_output_unsupported",
     "json_only_instruction",
     "json_only_retry_messages",
-    "is_structured_output_unsupported",
+    "parse_structured_payload",
     "run_structured_completion_with_retry",
 ]
 

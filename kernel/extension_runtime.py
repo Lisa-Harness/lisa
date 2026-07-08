@@ -6,7 +6,6 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from kernel.seams.protocols import BlobIO, StateProvider
 from kernel.models import (
     AnomalyAlert,
     ContextEvidence,
@@ -15,6 +14,7 @@ from kernel.models import (
     IntelSynthesis,
     UnifiedState,
 )
+from kernel.seams.protocols import BlobIO, StateProvider
 
 ExtensionJobTrigger = Literal["interval", "cron"]
 

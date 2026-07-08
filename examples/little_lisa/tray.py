@@ -127,7 +127,12 @@ def run_tray(config: TrayConfig) -> None:
             "pystray is required for tray mode. Install 'pystray' and 'pillow'."
         ) from exc
 
-    logger.info("starting tray (host=%s port=%d open_on_start=%s)", config.host, config.port, config.open_on_start)
+    logger.info(
+        "starting tray (host=%s port=%d open_on_start=%s)",
+        config.host,
+        config.port,
+        config.open_on_start,
+    )
     desktop = _DesktopProcess(config)
     desktop.start()
     if config.open_on_start:

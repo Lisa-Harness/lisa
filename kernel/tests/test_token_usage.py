@@ -8,7 +8,6 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-from kernel.models import TokenUsageEvent
 from kernel.token_usage import TokenUsageTelemetryHandler, build_token_usage_event
 
 

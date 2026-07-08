@@ -28,6 +28,7 @@ API endpoints:
 
 Timeout: all GitHub API calls use external_signal_timeout_seconds (typically 15s).
 """
+
 from __future__ import annotations
 
 import httpx
@@ -51,6 +52,7 @@ class GitHubSignalConnector(SignalConnector[GitHubStatus]):
         - GITHUB_TOKEN (SecretStr env var): personal access token with repo read access
         - GITHUB_REPO (str env var): repository identifier (format: owner/repo)
     """
+
     connector_id = "github"
     display_name = "GitHub"
 

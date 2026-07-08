@@ -21,7 +21,6 @@ from kernel.provider_core import (
     ModelDescriptor,
 )
 
-
 # ── Test helpers ──────────────────────────────────────────────────────
 
 
@@ -192,9 +191,7 @@ async def test_tools_translated_to_anthropic_format() -> None:
             "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
         },
     }
-    await gateway.complete(
-        _request([{"role": "user", "content": "hi"}], tools=[openai_tool])
-    )
+    await gateway.complete(_request([{"role": "user", "content": "hi"}], tools=[openai_tool]))
     assert "tools" in captured
     assert captured["tools"] == [
         {
@@ -262,9 +259,7 @@ async def test_assistant_tool_calls_translated_to_anthropic() -> None:
 async def test_temperature_passed_when_set() -> None:
     captured: dict[str, Any] = {}
     gateway = _gateway(_response([_text_block("ok")]), captured)
-    await gateway.complete(
-        _request([{"role": "user", "content": "hi"}], temperature=0.7)
-    )
+    await gateway.complete(_request([{"role": "user", "content": "hi"}], temperature=0.7))
     assert captured["temperature"] == 0.7
 
 
@@ -272,9 +267,7 @@ async def test_temperature_passed_when_set() -> None:
 async def test_temperature_omitted_when_zero() -> None:
     captured: dict[str, Any] = {}
     gateway = _gateway(_response([_text_block("ok")]), captured)
-    await gateway.complete(
-        _request([{"role": "user", "content": "hi"}], temperature=0.0)
-    )
+    await gateway.complete(_request([{"role": "user", "content": "hi"}], temperature=0.0))
     assert "temperature" not in captured
 
 

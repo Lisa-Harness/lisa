@@ -16,7 +16,6 @@ import base64
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -25,7 +24,7 @@ from lisa_sdk.models import SurfSessionState
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["mcp", "main", "init_storage"]
+__all__ = ["init_storage", "main", "mcp"]
 
 mcp = FastMCP("Lisa Storage Server")
 
@@ -159,9 +158,7 @@ async def write_blob_text(
 @mcp.tool()
 async def read_surf_workflow_session(workspace_id: str, surface_id: str) -> str:
     """Read a surf session state JSON, or ``null`` if absent."""
-    target = _resolve_container_path(
-        "surf_sessions", f"{workspace_id}/{surface_id}.json"
-    )
+    target = _resolve_container_path("surf_sessions", f"{workspace_id}/{surface_id}.json")
     if not target.is_file():
         return "null"
     return target.read_text(encoding="utf-8")
@@ -185,9 +182,7 @@ async def delete_surf_workflow_session(workspace_id: str, surface_id: str) -> st
     """Delete a surf session. Returns ``{"ok": true}`` even if absent."""
     if _readonly:
         return _readonly_error()
-    target = _resolve_container_path(
-        "surf_sessions", f"{workspace_id}/{surface_id}.json"
-    )
+    target = _resolve_container_path("surf_sessions", f"{workspace_id}/{surface_id}.json")
     if target.is_file():
         target.unlink()
     return json.dumps({"ok": True})
@@ -222,9 +217,7 @@ async def write_surf_trace(
     trace_target.write_text(trace_json, encoding="utf-8")
     screenshots = json.loads(screenshots_json)
     for name, b64 in screenshots.items():
-        shot_target = _resolve_container_path(
-            "surf_screenshots", f"{artifact_prefix}/{name}"
-        )
+        shot_target = _resolve_container_path("surf_screenshots", f"{artifact_prefix}/{name}")
         shot_target.write_bytes(base64.b64decode(b64))
     return json.dumps({"ok": True})
 

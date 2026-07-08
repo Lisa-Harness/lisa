@@ -56,8 +56,7 @@ def validate_intelligence_spec(spec: ExtensionIntelligenceSpec) -> tuple[str, ..
 
     if not spec.signal_connector_ids and not spec.data_source_ids:
         errors.append(
-            "must declare at least one collector "
-            "(signal_connector_ids or data_source_ids)"
+            "must declare at least one collector (signal_connector_ids or data_source_ids)"
         )
 
     normalized_scopes = [scope.strip().lower() for scope in spec.collection_scopes if scope.strip()]
@@ -76,9 +75,7 @@ def validate_intelligence_spec(spec: ExtensionIntelligenceSpec) -> tuple[str, ..
         seen_stage_ids.add(stage.stage_id)
 
         if not stage.stage_id.startswith(f"{spec.extension_id}."):
-            errors.append(
-                f"stage_id '{stage.stage_id}' must start with '{spec.extension_id}.'"
-            )
+            errors.append(f"stage_id '{stage.stage_id}' must start with '{spec.extension_id}.'")
         if len(stage.specialization.strip()) < 8:
             errors.append(
                 f"stage '{stage.stage_id}' must declare a specialization of at least 8 characters"

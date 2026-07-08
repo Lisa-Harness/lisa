@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import cast
-from typing import Any
+from typing import Any, cast
 
 from mcp.server.fastmcp import FastMCP
 
@@ -19,7 +18,7 @@ from kernel.operations.registry import execute_operation, get_operation_catalog
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["mcp", "main", "build_tool_catalog", "call_operation"]
+__all__ = ["build_tool_catalog", "call_operation", "main", "mcp"]
 
 
 mcp = FastMCP("Lisa Operations Server")
@@ -31,7 +30,7 @@ def _schema_to_json(schema: type[Any] | None) -> dict[str, Any]:
         return {"type": "object", "properties": {}}
     try:
         return schema.model_json_schema()
-    except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-exception-caught
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.warning("Failed to serialize schema for operation: %s", exc)
         return {"type": "object", "properties": {}}
 
@@ -81,15 +80,11 @@ def _register_operation_tools() -> None:
                     return f"Error executing '{op_id}': arguments_json must decode to an object"
                 try:
                     result = await call_operation(op_id, kwargs)
-                except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-exception-caught
+                except Exception as exc:  # pylint: disable=broad-exception-caught
                     return f"Error executing '{op_id}': {exc}"
                 if result.output_json:
                     payload = json.dumps(result.output_json, default=str)
-                    return "\n".join(
-                        part
-                        for part in [result.output_text, payload]
-                        if part
-                    )
+                    return "\n".join(part for part in [result.output_text, payload] if part)
                 return result.output_text
 
             _operation_tool.__name__ = f"op_{op_id.replace('-', '_').replace('.', '_')}"

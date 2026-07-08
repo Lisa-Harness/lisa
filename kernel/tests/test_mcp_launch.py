@@ -17,8 +17,8 @@ import os
 import pytest
 
 from kernel.mcp_launch.compiler import (
-    compile_cwd,
     compile_command,
+    compile_cwd,
     compile_env,
     compile_mcp_config,
     compile_registry,
@@ -26,14 +26,12 @@ from kernel.mcp_launch.compiler import (
 from kernel.mcp_launch.policy import (
     CwdPolicy,
     EnvPolicy,
-    LaunchTimeouts,
     MCPServerRegistry,
     MCPServerSpec,
     RuntimeKind,
     ToolPolicy,
 )
-from kernel.tools.mcp_client import MCPClientConfig, MCPToolSpec
-
+from kernel.tools.mcp_client import MCPToolSpec
 
 # ── Registry ────────────────────────────────────────────────────────────────
 
@@ -114,9 +112,7 @@ def test_compile_command_uv_with_directory() -> None:
 
 
 def test_compile_command_npx() -> None:
-    spec = MCPServerSpec(
-        server_id="t", runtime_kind=RuntimeKind.NPX, npx_package="@scope/server"
-    )
+    spec = MCPServerSpec(server_id="t", runtime_kind=RuntimeKind.NPX, npx_package="@scope/server")
     cmd, args = compile_command(spec)
     assert cmd == "npx"
     assert "-y" in args
@@ -222,9 +218,7 @@ def test_compile_env_allowed_keys() -> None:
     os.environ["TEST_MCP_KEEP"] = "keep"
     os.environ["TEST_MCP_DROP"] = "drop"
     try:
-        env = compile_env(
-            EnvPolicy(inherit_parent=True, allowed_keys=["TEST_MCP_KEEP"])
-        )
+        env = compile_env(EnvPolicy(inherit_parent=True, allowed_keys=["TEST_MCP_KEEP"]))
         assert env["TEST_MCP_KEEP"] == "keep"
         assert "TEST_MCP_DROP" not in env
     finally:
@@ -269,9 +263,7 @@ def test_compile_cwd_workspace_without_root() -> None:
 
 
 def test_compile_mcp_config_requires_data_dir() -> None:
-    spec = MCPServerSpec(
-        server_id="t", runtime_kind=RuntimeKind.PYTHON, module="pkg.server"
-    )
+    spec = MCPServerSpec(server_id="t", runtime_kind=RuntimeKind.PYTHON, module="pkg.server")
     with pytest.raises(ValueError, match="data_dir is required"):
         compile_mcp_config(spec)
 

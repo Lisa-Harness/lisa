@@ -120,7 +120,6 @@ from kernel.models import (  # noqa: E402
     MemoryRecallAnswer,
     MemoryRecallEvidence,
     MemoryRecord,
-    MemoryWriteRequest,
     OperationExecutionContext,
     OperationResult,
     RouteDecision,
@@ -146,7 +145,7 @@ from kernel.turn_runner import TurnHooks, TurnResult, run_turn  # noqa: E402
 from lisa_sdk.lisa_search.web_search import is_configured as web_search_is_configured  # noqa: E402
 from lisa_sdk.lisa_search.web_search import search as web_search  # noqa: E402
 
-try:  # noqa: E402
+try:
     from .model_manifest import load_model_manifest
     from .model_runtime import (
         StubCompletion,
@@ -183,7 +182,7 @@ except ImportError:  # pragma: no cover - direct script execution fallback
         resolve_little_lisa_model as _resolve_little_lisa_model_runtime,
     )
 
-try:  # noqa: E402
+try:
     from .desktop import (
         DEFAULT_DESKTOP_HOST,
         DEFAULT_DESKTOP_PORT,
@@ -237,12 +236,12 @@ _LITTLE_LISA_MEMORY_MAX_RECORDS_ENV = "LITTLE_LISA_MEMORY_MAX_RECORDS"
 # lives in the dedicated ``config`` module.  We import the names here so
 # that ``monkeypatch.setattr(little_lisa, "_resolve_timezone", ...)`` and
 # similar test seams continue to resolve on the ``main`` module surface.
-try:  # noqa: E402
+try:
     from .config import (
         _DEFAULT_MEMORY_MAX_RECORDS,
         _DEFAULT_THREAD_MAX_ENTRIES,
-        _LOG_LEVEL_ORDER,
         _LITTLE_LISA_TIMEZONE_ENV,
+        _LOG_LEVEL_ORDER,
         _THREAD_DIGEST_FILE_NAME,
         _normalize_log_level,
         _resolve_log_level,
@@ -258,7 +257,6 @@ except ImportError:  # pragma: no cover - direct script execution fallback
         _DEFAULT_MEMORY_MAX_RECORDS,
         _DEFAULT_THREAD_MAX_ENTRIES,
         _LOG_LEVEL_ORDER,
-        _LITTLE_LISA_TIMEZONE_ENV,
         _THREAD_DIGEST_FILE_NAME,
         _normalize_log_level,
         _resolve_log_level,
@@ -556,15 +554,11 @@ def _authored_content_roots() -> list[Path]:
 
 
 def _sdk_mode_roots() -> list[Path]:
-    return _unique_paths(
-        resolve_content_subdir_roots(_sdk_content_roots(), "modes")
-    )
+    return _unique_paths(resolve_content_subdir_roots(_sdk_content_roots(), "modes"))
 
 
 def _sdk_operation_roots() -> list[Path]:
-    return _unique_paths(
-        resolve_content_subdir_roots(_sdk_content_roots(), "operations")
-    )
+    return _unique_paths(resolve_content_subdir_roots(_sdk_content_roots(), "operations"))
 
 
 FrontDoorRouteDecision = RouteDecision
@@ -878,40 +872,72 @@ def _runtime_session_started_utc() -> datetime:
 # with thin state-reading adapters below so tests using
 # ``little_lisa._apply_turn_usage(...)`` and
 # ``little_lisa._format_session_exit_summary_lines()`` keep working.
-try:  # noqa: E402
-    from .token_accounting import (  # noqa: E402
+try:
+    from .token_accounting import (
         apply_turn_usage as _ta_apply_turn_usage,
+    )
+    from .token_accounting import (
         coerce_non_negative_int as _coerce_non_negative_int,
+    )
+    from .token_accounting import (
         format_session_exit_summary_lines as _ta_format_summary_lines,
+    )
+    from .token_accounting import (
         record_session_turn as _ta_record_session_turn,
+    )
+    from .token_accounting import (
         top_session_mode as _ta_top_session_mode,
     )
 except ImportError:  # pragma: no cover - direct script execution fallback
     from token_accounting import (  # type: ignore[no-redef]
         apply_turn_usage as _ta_apply_turn_usage,
+    )
+    from token_accounting import (
         coerce_non_negative_int as _coerce_non_negative_int,
+    )
+    from token_accounting import (
         format_session_exit_summary_lines as _ta_format_summary_lines,
+    )
+    from token_accounting import (
         record_session_turn as _ta_record_session_turn,
+    )
+    from token_accounting import (
         top_session_mode as _ta_top_session_mode,
     )
 
 # Structured-logging record assembly lives in the dedicated ``turn_logging``
 # module.  We import the assemblers here so the thin wrappers below
 # (_append_log_event, _append_turn_log, etc.) can delegate to them.
-try:  # noqa: E402
-    from .turn_logging import (  # noqa: E402
+try:
+    from .turn_logging import (
         build_log_record as _log_build_log_record,
+    )
+    from .turn_logging import (
         build_runtime_log_metadata as _log_build_runtime_log_metadata,
+    )
+    from .turn_logging import (
         build_turn_log_debug_payload as _log_build_turn_debug_payload,
+    )
+    from .turn_logging import (
         build_turn_log_record as _log_build_turn_log_record,
+    )
+    from .turn_logging import (
         write_log_record as _log_write_log_record,
     )
 except ImportError:  # pragma: no cover - direct script execution fallback
     from turn_logging import (  # type: ignore[no-redef]
         build_log_record as _log_build_log_record,
+    )
+    from turn_logging import (
         build_runtime_log_metadata as _log_build_runtime_log_metadata,
+    )
+    from turn_logging import (
         build_turn_log_debug_payload as _log_build_turn_debug_payload,
+    )
+    from turn_logging import (
         build_turn_log_record as _log_build_turn_log_record,
+    )
+    from turn_logging import (
         write_log_record as _log_write_log_record,
     )
 
@@ -1500,8 +1526,7 @@ def _record_frontdoor_completion(
         coerce_int(frontdoor_debug.get("planner_prompt_tokens")) + prompt_tokens
     )
     frontdoor_debug["planner_completion_tokens"] = (
-        coerce_int(frontdoor_debug.get("planner_completion_tokens"))
-        + completion_tokens
+        coerce_int(frontdoor_debug.get("planner_completion_tokens")) + completion_tokens
     )
     frontdoor_debug["planner_total_tokens"] = (
         coerce_int(frontdoor_debug.get("planner_total_tokens")) + total_tokens
@@ -1638,7 +1663,7 @@ async def _plan_frontdoor_route(
             if retry_messages:
                 retry_system = dict(retry_messages[0])
                 retry_system["content"] = (
-                    f"{str(retry_system.get('content') or '')}\n\n"
+                    f"{retry_system.get('content') or ''!s}\n\n"
                     f"Return only one valid JSON object matching {response_format.__name__}. "
                     "Do not include Markdown fences, prose, or comments."
                 )
@@ -2226,7 +2251,7 @@ def _render_debug_context() -> str:
     # System prompt summary
     system_prompt_info = turn_input.get("system_prompt")
     if isinstance(system_prompt_info, dict):
-        lines.append(f"\n### system_prompt")
+        lines.append("\n### system_prompt")
         lines.append(f"- chars: {system_prompt_info.get('chars', 0)}")
         lines.append(f"- preview: {system_prompt_info.get('preview', '(empty)')}")
         if system_prompt_info.get("omitted_for_brevity"):
@@ -2237,7 +2262,7 @@ def _render_debug_context() -> str:
     # Session context
     session_ref = _runtime_session_context_ref()
     session_active = bool(_RUNTIME_STATE.get("session_context_active", False))
-    lines.append(f"\n### session_context")
+    lines.append("\n### session_context")
     lines.append(f"- ref: {session_ref or '(none)'}")
     lines.append(f"- active: {'true' if session_active else 'false'}")
 
@@ -2613,8 +2638,7 @@ def _extract_usage_counts(
         )
         total_tokens = _coerce_non_negative_int(usage_payload.get("total_tokens"))
         cached_tokens = _coerce_non_negative_int(
-            usage_payload.get("cached_tokens")
-            or usage_payload.get("cache_read_input_tokens")
+            usage_payload.get("cached_tokens") or usage_payload.get("cache_read_input_tokens")
         )
         reasoning_tokens = _coerce_non_negative_int(
             usage_payload.get("reasoning_tokens")
@@ -3555,8 +3579,8 @@ class LittleLisaStateProvider:
             return 0, "", ""
         if not hasattr(self._memory_store, "_records"):
             return 0, "", "eviction skipped: store is an external MCP client"
-            
-        records = getattr(self._memory_store, "_records", [])  # noqa: SLF001
+
+        records = getattr(self._memory_store, "_records", [])
         if len(records) <= self._max_memory_records:
             return 0, "", ""
 
@@ -3571,10 +3595,8 @@ class LittleLisaStateProvider:
         if not to_evict:
             return 0, "", ""
         evict_ids = {record.id for record in to_evict}
-        self._memory_store._records = [  # noqa: SLF001
-            record for record in records if record.id not in evict_ids
-        ]
-        self._memory_store._save()  # noqa: SLF001
+        self._memory_store._records = [record for record in records if record.id not in evict_ids]
+        self._memory_store._save()
 
         note = f"evicted {len(to_evict)} low-salience episodic memories"
         return len(to_evict), f"memory:{len(to_evict)} evicted", note
@@ -3718,8 +3740,8 @@ def _build_workshop_context_bundle(
     curated evidence.
     """
     from datetime import UTC, datetime  # noqa: PLC0415
+
     from kernel.models import (  # noqa: PLC0415
-        ContextEvidence,
         ContextPacket,
         WorkshopContextBundle,
         WorkshopPanelContext,
@@ -3773,7 +3795,9 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
 
     # MCP Client wiring — memory stays on MCPMemoryClient (v1);
     # tool servers go through MCPToolPool via the compiled registry.
-    mcp_command = os.getenv("LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe"))
+    mcp_command = os.getenv(
+        "LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")
+    )
     mcp_args = os.getenv("LISA_MCP_ARGS", "").split()
     mcp_args = [*mcp_args, *_mcp_server_extra_args()]
     memory_store = MCPMemoryClient(
@@ -3809,7 +3833,6 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
 
     async def _explicit_slice(policy: SlicePolicy) -> Any:
         return await state_provider.slice(ctx=None, policy=policy)
-
 
     async def _answer_memory_recall(
         *,
@@ -3988,7 +4011,9 @@ async def _run_explicit_slice_command(*, message: str) -> str:
     provider = LittleLisaStateProvider(
         thread_path=_runtime_thread_path(),
         memory_store=MCPMemoryClient(
-            os.getenv("LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")),
+            os.getenv(
+                "LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")
+            ),
             [
                 *os.getenv("LISA_MCP_ARGS", "").split(),
                 *_mcp_server_extra_args(),

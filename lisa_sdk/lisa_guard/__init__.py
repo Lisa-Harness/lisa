@@ -12,4 +12,4 @@ guard blocks, the server logs a structured audit record to stderr.
 
 from __future__ import annotations
 
-__all__ = ["mcp", "main"]
+__all__ = ["main", "mcp"]

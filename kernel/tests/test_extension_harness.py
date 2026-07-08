@@ -69,8 +69,7 @@ def test_list_extension_entries_reports_signal_connector_metadata(monkeypatch) -
     assert [entry.entry_id for entry in entries] == ["hello_world"]
     assert entries[0].kind == "connector"
     assert (
-        entries[0].import_path
-        == "sdk_extensions.hello_world.connector:HelloWorldSignalConnector"
+        entries[0].import_path == "sdk_extensions.hello_world.connector:HelloWorldSignalConnector"
     )
 
 

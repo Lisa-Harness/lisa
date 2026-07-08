@@ -24,7 +24,7 @@ from kernel.slice import SliceOutcome, SlicePolicy
 
 
 @dataclass(slots=True)
-class BlankStateProvider:  # noqa: D401  (no public docstring needed)
+class BlankStateProvider:
     """State provider with no state and no work items.
 
     The slice machinery still fires (the turn runner calls ``slice()``
@@ -35,7 +35,7 @@ class BlankStateProvider:  # noqa: D401  (no public docstring needed)
     richer provider without touching the turn runner.
     """
 
-    def __call__(self) -> Any:  # noqa: D401
+    def __call__(self) -> Any:
         return None
 
     async def recall(  # pragma: no cover  (intentional no-op)

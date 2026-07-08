@@ -45,9 +45,7 @@ def test_server_requires_data_dir(module: str, server_name: str, supports_readon
         f"{module} should exit with code 2 when --data-dir is missing, "
         f"got {result.returncode}. stderr: {result.stderr}"
     )
-    assert "--data-dir" in result.stderr, (
-        f"{module} should mention --data-dir in the error message"
-    )
+    assert "--data-dir" in result.stderr, f"{module} should mention --data-dir in the error message"
 
 
 @pytest.mark.parametrize("module,server_name,supports_readonly", ALL_SERVERS)
@@ -60,8 +58,7 @@ def test_server_accepts_standard_args(
     # code 2 for unknown args. We use --help which exits with code 0.
     result = _run_server(module, "--help")
     assert result.returncode == 0, (
-        f"{module} --help should exit 0, got {result.returncode}. "
-        f"stderr: {result.stderr}"
+        f"{module} --help should exit 0, got {result.returncode}. stderr: {result.stderr}"
     )
     assert "--data-dir" in result.stdout
     assert "--transport" in result.stdout
@@ -74,9 +71,7 @@ def test_server_help_lists_server_name(
 ) -> None:
     """The --help output should show the server name as prog."""
     result = _run_server(module, "--help")
-    assert server_name in result.stdout, (
-        f"{module} --help should show '{server_name}' as prog name"
-    )
+    assert server_name in result.stdout, f"{module} --help should show '{server_name}' as prog name"
 
 
 def test_guard_server_has_backend_arg() -> None:
@@ -102,7 +97,6 @@ def test_context_server_has_readonly_arg() -> None:
 
 def test_no_env_var_path_fallback_in_source() -> None:
     """No first-party server source should reference removed env vars."""
-    import ast
 
     src_root = Path(__file__).resolve().parents[1] / "src"
     forbidden = {"LISA_MCP_DB_PATH", "LISA_MEMORY_DB_PATH", "LISA_STORAGE_ROOT", "LISA_DATA_DIR"}
@@ -116,6 +110,4 @@ def test_no_env_var_path_fallback_in_source() -> None:
             if var in source:
                 violations.append(f"{py_file}: contains '{var}'")
 
-    assert not violations, (
-        "Removed env vars found in server source:\n" + "\n".join(violations)
-    )
+    assert not violations, "Removed env vars found in server source:\n" + "\n".join(violations)

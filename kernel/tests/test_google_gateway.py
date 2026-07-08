@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
 import pytest
 
 from kernel.context.provider_gateway_provider import KernelProviderGatewayProvider
@@ -18,7 +17,6 @@ from kernel.provider_core import (
     CompletionResult,
     GoogleGeminiGateway,
 )
-
 
 # ── Test helpers ──────────────────────────────────────────────────────
 
@@ -193,9 +191,7 @@ async def test_tools_translated_to_gemini_format() -> None:
             "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
         },
     }
-    await gateway.complete(
-        _request([{"role": "user", "content": "hi"}], tools=[openai_tool])
-    )
+    await gateway.complete(_request([{"role": "user", "content": "hi"}], tools=[openai_tool]))
     assert "tools" in client.captured_json
     tools = client.captured_json["tools"]
     assert tools[0]["functionDeclarations"][0]["name"] == "get_weather"

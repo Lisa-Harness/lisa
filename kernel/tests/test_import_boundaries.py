@@ -38,9 +38,7 @@ def _collect_violations(
                     continue
                 if any(module.startswith(prefix) for prefix in forbidden_prefixes):
                     names = ", ".join(alias.name for alias in node.names)
-                    violations.append(
-                        (str(py_file), node.lineno, f"from {module} import {names}")
-                    )
+                    violations.append((str(py_file), node.lineno, f"from {module} import {names}"))
     return violations
 
 

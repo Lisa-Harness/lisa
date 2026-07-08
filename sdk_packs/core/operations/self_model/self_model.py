@@ -123,19 +123,19 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 def build_self_model_vibe(artifact: LisaSelfModelArtifact) -> str:
     """Extract a compact (~500 char) vibe string for prompt injection."""
 
-    mode_list = ", ".join(
-        entry.title for entry in artifact.capabilities if entry.title
-    )[:12] or "none"
+    mode_list = (
+        ", ".join(entry.title for entry in artifact.capabilities if entry.title)[:12] or "none"
+    )
     if len(artifact.capabilities) > 12:
         mode_list += f" (+{len(artifact.capabilities) - 12} more)"
 
-    limitation_preview = ", ".join(
-        entry.title for entry in artifact.limitations[:3] if entry.title
-    ) or "none"
+    limitation_preview = (
+        ", ".join(entry.title for entry in artifact.limitations[:3] if entry.title) or "none"
+    )
 
-    known_unknown_preview = ", ".join(
-        entry.title for entry in artifact.known_unknowns[:3] if entry.title
-    ) or "none"
+    known_unknown_preview = (
+        ", ".join(entry.title for entry in artifact.known_unknowns[:3] if entry.title) or "none"
+    )
 
     vibe = (
         f"## Self Model\n"
@@ -146,7 +146,7 @@ def build_self_model_vibe(artifact: LisaSelfModelArtifact) -> str:
         f"{artifact.grounding_summary}"
     )
     if len(vibe) > _VIBE_MAX_CHARS:
-        vibe = vibe[:_VIBE_MAX_CHARS - 3] + "..."
+        vibe = vibe[: _VIBE_MAX_CHARS - 3] + "..."
     return vibe
 
 
@@ -353,9 +353,7 @@ def _build_architecture_entries(now_iso: str) -> list[SelfKnowledgeEntry]:
     ]
 
 
-def _build_memory_entries(
-    ctx: OperationExecutionContext, now_iso: str
-) -> list[SelfKnowledgeEntry]:
+def _build_memory_entries(ctx: OperationExecutionContext, now_iso: str) -> list[SelfKnowledgeEntry]:
     has_memory = ctx.memory_store is not None
     return [
         SelfKnowledgeEntry(

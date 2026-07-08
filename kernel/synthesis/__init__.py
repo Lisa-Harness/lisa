@@ -16,10 +16,10 @@ from kernel.synthesis.spec import (
 
 __all__ = [
     "ExtensionIntelligenceSpec",
+    "IntelligenceStageKind",
+    "IntelligenceStageSpec",
     "StageExecuteContext",
     "StageExecutionHostHooks",
     "StageResult",
-    "IntelligenceStageKind",
-    "IntelligenceStageSpec",
     "validate_intelligence_spec",
 ]

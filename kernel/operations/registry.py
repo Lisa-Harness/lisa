@@ -84,6 +84,7 @@ def is_known_tool(tool_id: str) -> bool:
         return False
     return tool_id in _get_tool_catalog_fn()
 
+
 def register_tool_catalog_callback(get_tool_catalog_fn: Callable[[], dict[str, Any]]) -> None:
     """Inject the tool catalog callback used for operation validation and tool schemas."""
     global _get_tool_catalog_fn  # noqa: PLW0603
@@ -168,7 +169,9 @@ def _require_list_field(data: dict[str, Any], field: str, source: Path) -> list[
         )
     raw = data.get(field)
     if not isinstance(raw, list):
-        raise OperationValidationError(f"Front-matter field '{field}' in '{source}' must be a list.")
+        raise OperationValidationError(
+            f"Front-matter field '{field}' in '{source}' must be a list."
+        )
     return [str(item) for item in raw]
 
 
@@ -346,7 +349,7 @@ def _resolve_module_path(
             ),
         ),
     ]
-    for sdk_root in (_injected_sdk_roots or [_PRIMARY_SDK_OPERATIONS_ROOT]):
+    for sdk_root in _injected_sdk_roots or [_PRIMARY_SDK_OPERATIONS_ROOT]:
         # Derive the Python package base_parts from the root path.
         # Walk up collecting all __init__.py-backed package directories so that
         # nested namespace packages (e.g. sdk_packs/example) produce the
@@ -392,7 +395,9 @@ def _load_operation_module(*, module_path: str, source: Path) -> ModuleType:
 
 def _load_markdown_operation_definition(markdown_path: Path) -> OperationDefinition:
     """Load one markdown-authored declarative operation definition."""
-    metadata, body = _parse_operation_markdown(markdown_path.read_text(encoding="utf-8"), markdown_path)
+    metadata, body = _parse_operation_markdown(
+        markdown_path.read_text(encoding="utf-8"), markdown_path
+    )
     operation_id = _require_str_field(metadata, "operation_id", markdown_path)
     description = _require_str_field(metadata, "description", markdown_path)
     tool_ids = [str(tool_id) for tool_id in (metadata.get("tool_ids") or [])]
@@ -401,9 +406,9 @@ def _load_markdown_operation_definition(markdown_path: Path) -> OperationDefinit
         str(metadata["preferred_model_id"]) if "preferred_model_id" in metadata else None
     )
     response_format_model_path = str(metadata.get("response_format_model_path") or "").strip()
-    response_output_text_field = str(
-        metadata.get("response_output_text_field") or "output_text"
-    ).strip() or "output_text"
+    response_output_text_field = (
+        str(metadata.get("response_output_text_field") or "output_text").strip() or "output_text"
+    )
     response_output_json_passthrough = _parse_string_mapping_field(
         metadata,
         "response_output_json_passthrough",
@@ -513,7 +518,9 @@ def _wrap_declarative_tool_executor(
     return _execute_allowed_tool
 
 
-def load_operation_catalog_from_disk(operations_dir: Path | None = None) -> dict[str, OperationDefinition]:
+def load_operation_catalog_from_disk(
+    operations_dir: Path | None = None,
+) -> dict[str, OperationDefinition]:
     """Discover and load all internal operations from one operations module tree."""
     root = operations_dir or _OPERATIONS_ROOT
     if not root.exists():
@@ -536,7 +543,9 @@ def load_operation_catalog_from_disk(operations_dir: Path | None = None) -> dict
             )
             continue
 
-        metadata = _parse_operation_metadata(metadata_path.read_text(encoding="utf-8"), metadata_path)
+        metadata = _parse_operation_metadata(
+            metadata_path.read_text(encoding="utf-8"), metadata_path
+        )
         operation_id = _require_str_field(metadata, "operation_id", metadata_path)
         if operation_id in catalog:
             if catalog[operation_id].execution_kind == "prompt":
@@ -785,15 +794,11 @@ async def execute_operation(
     ctx.execute_tool_fn = _wrap_declarative_tool_executor(definition, ctx.execute_tool_fn)
     module = definition.implementation_module
     if module is None:
-        raise OperationExecutionError(
-            f"Operation '{operation_id}' has no implementation module."
-        )
+        raise OperationExecutionError(f"Operation '{operation_id}' has no implementation module.")
 
     execute_fn = getattr(module, "execute", None)
     if execute_fn is None:
-        raise OperationExecutionError(
-            f"Operation '{operation_id}' is missing async execute(ctx)."
-        )
+        raise OperationExecutionError(f"Operation '{operation_id}' is missing async execute(ctx).")
 
     with _OPERATION_TRACER.start_as_current_span("operation.execute") as span:
         set_span_attributes(

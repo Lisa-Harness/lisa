@@ -15,7 +15,7 @@ from lisa_sdk.lisa_search import web_search as _web_search
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["mcp", "main"]
+__all__ = ["main", "mcp"]
 
 
 mcp = FastMCP("Lisa Search Server")
@@ -32,7 +32,7 @@ async def web_search(query: str, count: int = 5) -> str:
         response = await _web_search.search(query)
     except RuntimeError as exc:
         return f"Web search not configured: {exc}"
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("web_search failed: %s", exc)
         return f"Search error: {exc}"
     return response.model_dump_json()

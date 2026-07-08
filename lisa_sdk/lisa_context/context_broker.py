@@ -12,7 +12,11 @@ import re
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
+from kernel.config import settings
+from kernel.context.context_frames import render_ranked_evidence_namespace_frame
+from kernel.context.extension_evidence import NoOpExtensionEvidenceBuilder
 from kernel.extension_runtime import ExtensionRuntimeContext
+from kernel.intake.connector_discovery import discover_installed_signal_connectors
 from kernel.models import (
     ContextConflictRisk,
     ContextEvidence,
@@ -22,11 +26,6 @@ from kernel.models import (
     IntelCollection,
     UnifiedState,
 )
-from kernel.intake.connector_discovery import discover_installed_signal_connectors
-
-from kernel.config import settings
-from kernel.context.context_frames import render_ranked_evidence_namespace_frame
-from kernel.context.extension_evidence import NoOpExtensionEvidenceBuilder
 from kernel.seams.protocols import ExtensionEvidenceBuilder
 
 # Module-level extension-evidence builder. Hosts override via

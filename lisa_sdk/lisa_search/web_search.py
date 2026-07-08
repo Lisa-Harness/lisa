@@ -17,8 +17,8 @@ from datetime import UTC, datetime
 
 import httpx
 
-from lisa_sdk.models import WebSearchResponse, WebSearchResult
 from lisa_sdk.config import settings
+from lisa_sdk.models import WebSearchResponse, WebSearchResult
 
 __all__ = [
     "is_configured",
@@ -43,10 +43,7 @@ async def search(query: str, client: httpx.AsyncClient | None = None) -> WebSear
     """
     api_key = settings.web_search_api_key.get_secret_value()
     if not api_key:
-        raise RuntimeError(
-            "Web search is not configured. "
-            "Set WEB_SEARCH_API_KEY to enable it."
-        )
+        raise RuntimeError("Web search is not configured. Set WEB_SEARCH_API_KEY to enable it.")
 
     params: dict[str, str] = {
         "q": query,

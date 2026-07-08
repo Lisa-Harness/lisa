@@ -137,13 +137,19 @@ def test_streamed_completion_adapter_fields() -> None:
 class _StubStreamEvent:
     """Simulates one SSE event from OpenAI streaming."""
 
-    def __init__(self, delta_content: str = "", finish_reason: str | None = None, usage_obj: Any = None) -> None:
-        self.choices = [
-            SimpleNamespace(
-                delta=SimpleNamespace(content=delta_content or None),
-                finish_reason=finish_reason,
-            )
-        ] if (delta_content or finish_reason) else []
+    def __init__(
+        self, delta_content: str = "", finish_reason: str | None = None, usage_obj: Any = None
+    ) -> None:
+        self.choices = (
+            [
+                SimpleNamespace(
+                    delta=SimpleNamespace(content=delta_content or None),
+                    finish_reason=finish_reason,
+                )
+            ]
+            if (delta_content or finish_reason)
+            else []
+        )
         self.usage = usage_obj
 
 
@@ -227,7 +233,7 @@ class _StubAnthropicStreamContext:
         self._events = events
         self._final_message = final_message
 
-    async def __aenter__(self) -> "_StubAnthropicStreamContext":
+    async def __aenter__(self) -> _StubAnthropicStreamContext:
         return self
 
     async def __aexit__(self, *args: Any) -> None:

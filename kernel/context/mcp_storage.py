@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import base64
 import json
-from pathlib import Path
 from typing import Any
 
 from mcp.client.session import ClientSession
@@ -168,9 +167,7 @@ class MCPBlobIO:
 
     # ── Surf workflow sessions ─────────────────────────────────────────────
 
-    def read_surf_workflow_session(
-        self, workspace_id: str, surface_id: str
-    ) -> Any:
+    def read_surf_workflow_session(self, workspace_id: str, surface_id: str) -> Any:
         import asyncio
 
         from lisa_sdk.models import SurfSessionState
@@ -212,9 +209,7 @@ class MCPBlobIO:
     def read_surf_screenshot(self, blob_path: str) -> bytes | None:
         import asyncio
 
-        text = asyncio.run(
-            self._call("read_surf_screenshot", {"blob_path": blob_path})
-        )
+        text = asyncio.run(self._call("read_surf_screenshot", {"blob_path": blob_path}))
         if not text or text == "null":
             return None
         return base64.b64decode(text)
@@ -263,9 +258,7 @@ class MCPBlobIO:
     def read_surface_context_overlays(self) -> dict[str, Any] | None:
         import asyncio
 
-        return _parse_json_or_none(
-            asyncio.run(self._call("read_surface_context_overlays", {}))
-        )
+        return _parse_json_or_none(asyncio.run(self._call("read_surface_context_overlays", {})))
 
     def write_surface_context_overlays(self, overlays: dict[str, Any]) -> bool:
         import asyncio
@@ -322,9 +315,7 @@ class MCPBlobIO:
     def write_thread_state(self, state: dict[str, Any]) -> bool:
         import asyncio
 
-        text = asyncio.run(
-            self._call("write_thread_state", {"state_json": json.dumps(state)})
-        )
+        text = asyncio.run(self._call("write_thread_state", {"state_json": json.dumps(state)}))
         return _parse_ok(text)
 
     def read_memory_snapshot(self) -> dict[str, Any] | None:

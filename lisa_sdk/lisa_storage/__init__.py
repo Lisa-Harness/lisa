@@ -6,4 +6,4 @@ wire. Structured types serialize as JSON strings.
 
 from __future__ import annotations
 
-__all__ = ["mcp", "main", "init_storage"]
+__all__ = ["init_storage", "main", "mcp"]

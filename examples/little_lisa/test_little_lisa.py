@@ -12,9 +12,9 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from kernel.model_manifest import ModelManifest
-from lisa_sdk.models import WebSearchResponse, WebSearchResult
 from kernel.operations.registry import OperationExecutionError
 from kernel.turn_runner import TurnResult
+from lisa_sdk.models import WebSearchResponse, WebSearchResult
 from pydantic import BaseModel
 from sdk_packs.core.operations.memory import synthesize_learning
 
@@ -1840,7 +1840,6 @@ async def test_build_turn_hooks_wires_recall_hook() -> None:
     `recall_memory` operation for explicit model calls.
     """
     hooks = little_lisa._build_turn_hooks({"mode_id": "default"})
-
 
 
 @pytest.mark.asyncio

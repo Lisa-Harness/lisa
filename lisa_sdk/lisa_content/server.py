@@ -30,7 +30,7 @@ from kernel.content_roots import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["mcp", "main", "init_content"]
+__all__ = ["init_content", "main", "mcp"]
 
 mcp = FastMCP("Lisa Content Server")
 

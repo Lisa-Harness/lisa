@@ -22,7 +22,7 @@ import logging
 import os
 from pathlib import Path
 
-__all__ = ["build_parser", "resolve_data_dir", "configure_logging"]
+__all__ = ["build_parser", "configure_logging", "resolve_data_dir"]
 
 
 def build_parser(server_name: str, *, supports_readonly: bool = False) -> argparse.ArgumentParser:

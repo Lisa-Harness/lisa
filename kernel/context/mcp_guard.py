@@ -12,7 +12,6 @@ v1 uses per-call stdio sessions (open → call → close), matching the
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from mcp.client.session import ClientSession

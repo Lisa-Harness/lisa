@@ -41,9 +41,7 @@ def _build_user_message(ctx: OperationExecutionContext) -> str:
     if ctx.user_block.strip():
         sections.append(f"User Context:\n{ctx.user_block.strip()}")
     if ctx.conversation_excerpt_markdown.strip():
-        sections.append(
-            f"Conversation Excerpt:\n{ctx.conversation_excerpt_markdown.strip()}"
-        )
+        sections.append(f"Conversation Excerpt:\n{ctx.conversation_excerpt_markdown.strip()}")
     if ctx.response.strip():
         sections.append(f"Prior Response:\n{ctx.response.strip()}")
     if ctx.params:

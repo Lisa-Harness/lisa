@@ -19,7 +19,6 @@ Design notes:
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -59,7 +58,7 @@ class TokenUsageTelemetryHandler:
         self,
         path: Path,
         *,
-        filter_fn: "Any | None" = None,
+        filter_fn: Any | None = None,
     ) -> None:
         self._path = path
         self._filter_fn = filter_fn

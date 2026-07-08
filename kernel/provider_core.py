@@ -7,9 +7,9 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
+import httpx
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 from pydantic import BaseModel as PydanticBaseModel
-import httpx
 
 ChatMessages = list[dict[str, Any]]
 ProviderStreamEvent = dict[str, Any]
@@ -1000,9 +1000,7 @@ class AnthropicGateway:
                         "id": getattr(block, "id", ""),
                         "type": "function",
                         "name": getattr(block, "name", ""),
-                        "arguments": _normalize_openai_tool_arguments(
-                            getattr(block, "input", {})
-                        ),
+                        "arguments": _normalize_openai_tool_arguments(getattr(block, "input", {})),
                     }
                 )
         request_id = extract_request_id(response)
@@ -1154,7 +1152,13 @@ class GoogleGeminiGateway:
         if system_text:
             body["systemInstruction"] = {"parts": [{"text": system_text}]}
         if request.tools:
-            body["tools"] = [{"functionDeclarations": [_openai_tool_to_gemini_function(t) for t in request.tools]}]
+            body["tools"] = [
+                {
+                    "functionDeclarations": [
+                        _openai_tool_to_gemini_function(t) for t in request.tools
+                    ]
+                }
+            ]
         url = f"{self._base_url}/{self._api_version}/models/{request.model_def.model_id}:generateContent?key={self._api_key}"
         await self._emit(
             {
@@ -1275,7 +1279,9 @@ def _build_gemini_contents(messages: list[dict[str, Any]]) -> list[dict[str, Any
             if text:
                 parts.append({"text": str(text)})
             for tc in msg["tool_calls"]:
-                function_payload = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                function_payload = (
+                    tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                )
                 raw_args = function_payload.get("arguments", "{}")
                 if isinstance(raw_args, str):
                     try:
@@ -1309,7 +1315,9 @@ def _build_gemini_contents(messages: list[dict[str, Any]]) -> list[dict[str, Any
 def _openai_tool_to_gemini_function(tool: dict[str, Any]) -> dict[str, Any]:
     """Convert one OpenAI-format tool to Gemini ``functionDeclarations`` entry."""
 
-    function_payload: dict[str, Any] = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    function_payload: dict[str, Any] = (
+        tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    )
     return {
         "name": str(function_payload.get("name", "")),
         "description": str(function_payload.get("description", "")),
@@ -1400,11 +1408,10 @@ class BedrockGateway:
         self._event_emitter = event_emitter
         if client is None:
             try:
-                import boto3  # noqa: WPS433
+                import boto3
             except ImportError as exc:
                 raise ImportError(
-                    "boto3 is required for BedrockGateway. "
-                    "Install it with: pip install boto3"
+                    "boto3 is required for BedrockGateway. Install it with: pip install boto3"
                 ) from exc
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
@@ -1484,7 +1491,11 @@ class BedrockGateway:
             )
         except Exception as exc:
             raise embedding_gateway_error_from_exception(request, exc) from exc
-        response_body = json.loads(response.get("body", "{}").read() if hasattr(response.get("body", b""), "read") else response.get("body", b"{}"))
+        response_body = json.loads(
+            response.get("body", "{}").read()
+            if hasattr(response.get("body", b""), "read")
+            else response.get("body", b"{}")
+        )
         embedding = response_body.get("embedding", [])
         return EmbeddingResult(
             embeddings=[embedding] if embedding else [],
@@ -1501,7 +1512,7 @@ class BedrockGateway:
     def _get_client(self) -> Any:
         if self._client is not None:
             return self._client
-        import boto3  # noqa: WPS433
+        import boto3
 
         self._client = boto3.client(
             "bedrock-runtime",
@@ -1553,7 +1564,9 @@ def _build_bedrock_messages(messages: list[dict[str, Any]]) -> list[dict[str, An
             if text:
                 content_blocks.append({"text": str(text)})
             for tc in msg["tool_calls"]:
-                function_payload = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                function_payload = (
+                    tc.get("function") if isinstance(tc.get("function"), dict) else tc
+                )
                 raw_args = function_payload.get("arguments", "{}")
                 if isinstance(raw_args, str):
                     try:
@@ -1587,7 +1600,9 @@ def _build_bedrock_messages(messages: list[dict[str, Any]]) -> list[dict[str, An
 def _openai_tool_to_bedrock_tool(tool: dict[str, Any]) -> dict[str, Any]:
     """Convert one OpenAI-format tool to Bedrock Converse ``toolConfig`` entry."""
 
-    function_payload: dict[str, Any] = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    function_payload: dict[str, Any] = (
+        tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    )
     return {
         "toolSpec": {
             "name": str(function_payload.get("name", "")),
@@ -1608,13 +1623,19 @@ def _extract_bedrock_response(response: Any) -> tuple[list[str], list[dict[str, 
 
     text_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
-    output = response.get("output") if isinstance(response, dict) else getattr(response, "output", None)
+    output = (
+        response.get("output") if isinstance(response, dict) else getattr(response, "output", None)
+    )
     if output is None:
         return text_parts, tool_calls
-    message = output.get("message") if isinstance(output, dict) else getattr(output, "message", None)
+    message = (
+        output.get("message") if isinstance(output, dict) else getattr(output, "message", None)
+    )
     if message is None:
         return text_parts, tool_calls
-    content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+    content = (
+        message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+    )
     if not content:
         return text_parts, tool_calls
     for block in content:
@@ -1637,17 +1658,25 @@ def _extract_bedrock_response(response: Any) -> tuple[list[str], list[dict[str, 
 def _extract_bedrock_usage(response: Any) -> CompletionUsage | None:
     """Extract normalized usage from a Bedrock Converse response."""
 
-    raw_usage = response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
+    raw_usage = (
+        response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
+    )
     if raw_usage is None:
         return None
     prompt_tokens = _coerce_usage_int(
-        raw_usage.get("inputTokens") if isinstance(raw_usage, dict) else getattr(raw_usage, "inputTokens", None)
+        raw_usage.get("inputTokens")
+        if isinstance(raw_usage, dict)
+        else getattr(raw_usage, "inputTokens", None)
     )
     completion_tokens = _coerce_usage_int(
-        raw_usage.get("outputTokens") if isinstance(raw_usage, dict) else getattr(raw_usage, "outputTokens", None)
+        raw_usage.get("outputTokens")
+        if isinstance(raw_usage, dict)
+        else getattr(raw_usage, "outputTokens", None)
     )
     total_tokens = _coerce_usage_int(
-        raw_usage.get("totalTokens") if isinstance(raw_usage, dict) else getattr(raw_usage, "totalTokens", None)
+        raw_usage.get("totalTokens")
+        if isinstance(raw_usage, dict)
+        else getattr(raw_usage, "totalTokens", None)
     )
     if total_tokens <= 0:
         total_tokens = prompt_tokens + completion_tokens
@@ -1708,7 +1737,9 @@ def _openai_tool_to_anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
         {"name": ..., "description": ..., "input_schema": <JSON-Schema>}
     """
 
-    function_payload: dict[str, Any] = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    function_payload: dict[str, Any] = (
+        tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    )
     return {
         "name": str(function_payload.get("name", "")),
         "description": str(function_payload.get("description", "")),
@@ -1746,7 +1777,11 @@ def _build_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, 
             if text:
                 content_blocks.append({"type": "text", "text": str(text)})
             for tool_call in message["tool_calls"]:
-                function_payload = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else tool_call
+                function_payload = (
+                    tool_call.get("function")
+                    if isinstance(tool_call.get("function"), dict)
+                    else tool_call
+                )
                 raw_input = function_payload.get("arguments", "{}")
                 if isinstance(raw_input, str):
                     try:

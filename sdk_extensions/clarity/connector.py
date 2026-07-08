@@ -17,6 +17,7 @@ Configuration:
 - CLARITY_PROJECT_ID: Clarity project ID to query
 - CLARITY_BASE_URL: base URL override (default: https://www.clarity.ms/export-data/api/v1)
 """
+
 from __future__ import annotations
 
 import logging
@@ -58,9 +59,7 @@ def _build_summary_bullets(metrics: list[ClarityMetricRow]) -> list[str]:
     if not metrics:
         return ["Clarity snapshot returned no aggregated metric rows."]
     ranked = sorted(metrics, key=lambda row: len(row.information), reverse=True)
-    top_metrics = ", ".join(
-        f"{row.metric_name} ({len(row.information)})" for row in ranked[:3]
-    )
+    top_metrics = ", ".join(f"{row.metric_name} ({len(row.information)})" for row in ranked[:3])
     return [
         f"Clarity snapshot contains {len(metrics)} aggregated metrics.",
         f"Top Clarity metrics: {top_metrics}",

@@ -27,6 +27,7 @@ concurrent trials or active subscriptions per 3-minute collection window.
 
 Timeout: all Stripe API calls use external_signal_timeout_seconds (typically 15s).
 """
+
 from __future__ import annotations
 
 import httpx
@@ -54,6 +55,7 @@ class StripeSignalConnector(SignalConnector[StripeMetrics]):
         This is safe as long as you have fewer than 100 active subscriptions or trials
         at any given time. Scale this threshold if needed.
     """
+
     connector_id = "stripe"
     display_name = "Stripe"
 

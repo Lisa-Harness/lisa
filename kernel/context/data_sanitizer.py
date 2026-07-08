@@ -11,7 +11,7 @@ from __future__ import annotations
 class PassThroughSanitizer:
     """Identity sanitizer — returns input unchanged."""
 
-    def redact(self, text: str, *, scope: str) -> str:  # noqa: ARG002
+    def redact(self, text: str, *, scope: str) -> str:
         """Return ``text`` unchanged. ``scope`` is accepted for protocol parity."""
 
         return text

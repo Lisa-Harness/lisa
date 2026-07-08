@@ -76,6 +76,7 @@ _ResolvePlannerModel = Callable[[], Any]
 _CompleteFn = Callable[..., Awaitable[Any]]
 _UserPromptBuilder = Callable[..., str]
 
+
 class _FastPathVerification(BaseModel):
     """Bounded verifier output for one high-precision front-door candidate."""
 

@@ -91,7 +91,7 @@ class SlicePolicy:
     pre_turn_share: float = 0.3
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def split_for_trigger(self, *, has_pre_turn: bool, has_post_turn: bool) -> "SlicePolicy":
+    def split_for_trigger(self, *, has_pre_turn: bool, has_post_turn: bool) -> SlicePolicy:
         """Return a new policy with ``budget_ms`` adjusted for the trigger pair.
 
         When both pre_turn and post_turn are wired, the pre_turn slice
@@ -157,7 +157,7 @@ class SliceTuning:
     explicit_enabled: bool = False
 
     @classmethod
-    def from_mapping(cls, mapping: dict[str, Any] | None) -> "SliceTuning":
+    def from_mapping(cls, mapping: dict[str, Any] | None) -> SliceTuning:
         """Build a tuning from a host config dict. Unknown keys are ignored."""
         if not mapping:
             return cls()
@@ -287,8 +287,8 @@ def build_policy_for_trigger(
 
 __all__ = [
     "SliceMode",
-    "SlicePolicy",
     "SliceOutcome",
+    "SlicePolicy",
     "SliceTuning",
     "build_policy_for_trigger",
     "compute_budget_ms",

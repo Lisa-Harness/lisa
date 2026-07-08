@@ -17,7 +17,9 @@ from kernel.model_manifest import ModelManifest, load_model_manifest
 class ManifestModelPolicy:
     """Resolve model aliases and availability from a loaded model manifest."""
 
-    def __init__(self, manifest: ModelManifest | None = None, *, manifest_path: Path | None = None) -> None:
+    def __init__(
+        self, manifest: ModelManifest | None = None, *, manifest_path: Path | None = None
+    ) -> None:
         self._manifest = manifest or (load_model_manifest(manifest_path) if manifest_path else None)
 
     def _resolve_entry(self, reference: str) -> Any | None:

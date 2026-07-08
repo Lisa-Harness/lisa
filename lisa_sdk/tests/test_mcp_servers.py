@@ -7,8 +7,6 @@ lisa-search, and lisa-surf using FastMCP's in-process ``call_tool`` API.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +26,7 @@ def _tool_text(result: Any) -> str:
         if blocks:
             return str(blocks[0])
     return str(result)
+
 
 # ── lisa_context ───────────────────────────────────────────────────────────
 
@@ -150,8 +149,8 @@ def test_operations_build_tool_catalog(operations_setup: None) -> None:
 
 @pytest.mark.asyncio
 async def test_operations_registers_operation_tools(operations_setup: None) -> None:
-    from lisa_sdk.lisa_operations.server import mcp
     from kernel.operations.registry import get_operation_catalog
+    from lisa_sdk.lisa_operations.server import mcp
 
     tools = await mcp.list_tools()
     tool_names = {tool.name for tool in tools}
@@ -170,8 +169,8 @@ async def test_operations_call_unknown_tool_fails(operations_setup: None) -> Non
 
 @pytest.mark.asyncio
 async def test_operations_call_registered_operation(operations_setup: None) -> None:
-    from lisa_sdk.lisa_operations.server import mcp
     from kernel.operations.registry import get_operation_catalog
+    from lisa_sdk.lisa_operations.server import mcp
 
     operation_id = next(iter(get_operation_catalog().keys()))
     result = await mcp.call_tool(operation_id, {})
@@ -185,8 +184,8 @@ async def test_operations_call_registered_operation(operations_setup: None) -> N
 
 @pytest.mark.asyncio
 async def test_search_web_search_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    from lisa_sdk.lisa_search import web_search as ws
     from lisa_sdk.lisa_search import server as search_server
+    from lisa_sdk.lisa_search import web_search as ws
 
     monkeypatch.setattr(ws, "is_configured", lambda: False)
 
@@ -203,8 +202,8 @@ async def test_search_web_search_not_configured(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.asyncio
 async def test_search_configured_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    from lisa_sdk.lisa_search import web_search as ws
     from lisa_sdk.lisa_search import server as search_server
+    from lisa_sdk.lisa_search import web_search as ws
 
     monkeypatch.setattr(ws, "is_configured", lambda: True)
     monkeypatch.setattr(search_server, "_web_search", ws)

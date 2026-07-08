@@ -347,7 +347,9 @@ def _render_panel_user_block(
     return "\n\n".join(section for section in sections if section)
 
 
-def _resolve_child_model(ctx: OperationExecutionContext, panel: WorkshopPanelContext) -> object | None:
+def _resolve_child_model(
+    ctx: OperationExecutionContext, panel: WorkshopPanelContext
+) -> object | None:
     if ctx.resolve_model_fn is None:
         return None
     # Candidates are tried in priority order. The panel's authored model
@@ -614,7 +616,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
     query = (ctx.query or ctx.params.get("query", "")).strip()
     if not query:
-        return OperationResult(output_text="⛔ Workshop mode needs a problem statement or question.")
+        return OperationResult(
+            output_text="⛔ Workshop mode needs a problem statement or question."
+        )
     if ctx.workflow_turn_runner is None:
         return OperationResult(
             output_text="⛔ Workshop runner was not injected into the operation context."
@@ -622,7 +626,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
     state = _resolve_state(ctx)
     if state is None:
-        return OperationResult(output_text="⛔ Workshop mode could not load the cached runtime state.")
+        return OperationResult(
+            output_text="⛔ Workshop mode could not load the cached runtime state."
+        )
 
     plan = _build_plan_from_roster(ctx, query)
     mode = _active_mode_config(ctx)
@@ -643,9 +649,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     child_requests = _build_child_requests(ctx, bundle, planner_subprompt)
     if child_requests is None:
         return OperationResult(
-            output_text=(
-                "⛔ Workshop mode could not resolve a model for one or more child panels."
-            )
+            output_text=("⛔ Workshop mode could not resolve a model for one or more child panels.")
         )
 
     parent_context = WorkshopExecutionParentContext(
