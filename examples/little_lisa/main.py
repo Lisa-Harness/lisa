@@ -67,6 +67,7 @@ from kernel.content_roots import (  # noqa: E402
 )
 from kernel.ipsar import parse_route  # noqa: E402
 from kernel.ipsar_fsm import (  # noqa: E402
+    create_workflow_session,
     get_workflow_catalog,
     parse_front_matter,
     register_content_roots,
@@ -101,8 +102,8 @@ from kernel.token_usage import (  # noqa: E402
     build_token_usage_event,
 )
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn  # noqa: E402
-from kernel.web_search import is_configured as web_search_is_configured  # noqa: E402
-from kernel.web_search import search as web_search  # noqa: E402
+from lisa_sdk.lisa_search.web_search import is_configured as web_search_is_configured  # noqa: E402
+from lisa_sdk.lisa_search.web_search import search as web_search  # noqa: E402
 
 try:  # noqa: E402
     from .model_manifest import load_model_manifest
@@ -161,7 +162,6 @@ except ImportError:  # pragma: no cover - direct script execution fallback
     from tray import TrayConfig, run_tray  # type: ignore[no-redef]
 
 CORE_PACK_ROOT = FRAMEWORK_ROOT / "sdk_packs" / "core"
-EXTRAS_PACK_ROOT = FRAMEWORK_ROOT / "sdk_packs" / "extras"
 
 _DEFAULT_DATA_DIR = FRAMEWORK_ROOT / "examples" / "little_lisa" / "artifacts"
 _DEFAULT_GOOGLE_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -611,11 +611,8 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
 
 
 def _sdk_content_roots() -> list[Path]:
-    roots = [EXTRAS_PACK_ROOT, *discover_configured_content_roots()]
-    filtered = [
-        root for root in roots if root.is_dir() and root not in {CORE_PACK_ROOT, EXTRAS_PACK_ROOT}
-    ]
-    return _unique_paths([EXTRAS_PACK_ROOT, *filtered])
+    roots = discover_configured_content_roots()
+    return _unique_paths([root for root in roots if root.is_dir()])
 
 
 def _authored_content_roots() -> list[Path]:
@@ -625,16 +622,13 @@ def _authored_content_roots() -> list[Path]:
 
 def _sdk_mode_roots() -> list[Path]:
     return _unique_paths(
-        [EXTRAS_PACK_ROOT / "modes", *resolve_content_subdir_roots(_sdk_content_roots(), "modes")]
+        resolve_content_subdir_roots(_sdk_content_roots(), "modes")
     )
 
 
 def _sdk_operation_roots() -> list[Path]:
     return _unique_paths(
-        [
-            EXTRAS_PACK_ROOT / "operations",
-            *resolve_content_subdir_roots(_sdk_content_roots(), "operations"),
-        ]
+        resolve_content_subdir_roots(_sdk_content_roots(), "operations")
     )
 
 
@@ -3886,7 +3880,7 @@ def _read_authored_text(relative_path: str) -> str:
 def _mode_support_gap(_mode: WorkflowModeConfig) -> str | None:
     """Return the missing host capability for modes Little Lisa cannot run.
 
-    Little Lisa only loads core and extras packs. Modes that require
+    Little Lisa only loads the core pack. Modes that require
     app-level wiring (workshop, vibecheck) live in the cloudservers pack
     and are not visible here.
     """
@@ -4170,6 +4164,55 @@ def _slice_budget_expired(policy: Any, started: float) -> bool:
     return (time.monotonic() - started) * 1000.0 >= budget_ms
 
 
+async def _run_workflow_turn(
+    *,
+    session: Any,
+    slug: str,
+    clean_message: str,
+    model_def: object,
+    user_block: str,
+    user_id: str,
+    user_name: str,
+    principal_key: str,
+    thread_user_id: str,
+    session_key: str,
+    conversation_id: str,
+    workspace_id: str,
+    surface_context: Any,
+    event_bus: Any = None,
+    persist_session_state: bool = True,
+    run_post_turn_operations: bool = True,
+    include_model_badge: bool = True,
+    delegation_depth: int = 0,
+) -> Any:
+    """Adapter from WorkflowTurnRunner protocol to run_turn for workshop children.
+
+    Each workshop child runs a full turn via run_turn with the same hooks
+    the parent uses, but with a child-scoped session key and mode_id.
+    """
+    child_mode_id = getattr(session, "mode_id", "default")
+    child_result = await run_turn(
+        mode_id=child_mode_id,
+        query=clean_message,
+        hooks=_build_turn_hooks(),
+        preferred_model_id=None,
+    )
+    return TurnResultAdapter(child_result)
+
+
+class TurnResultAdapter:
+    """Minimal adapter so TurnResult satisfies the TextResponse protocol."""
+
+    __slots__ = ("_result",)
+
+    def __init__(self, result: Any) -> None:
+        self._result = result
+
+    @property
+    def text(self) -> str:
+        return getattr(self._result, "response_text", "") or ""
+
+
 def _build_mcp_tool_servers() -> list[Any]:
     """Build the approved MCP server registry and compile it to configs.
 
@@ -4179,6 +4222,10 @@ def _build_mcp_tool_servers() -> list[Any]:
 
     v1 keeps ``MCPMemoryClient`` for the memory seam; the servers compiled
     here go through ``MCPToolPool`` for tool discovery and dispatch.
+
+    All first-party servers use ``VENV_BIN`` runtime — they run as native
+    console_scripts entry points (``.venv/Scripts/lisa-*.exe``) with zero
+    subprocess overhead. No ``uv`` resolution needed.
     """
     from kernel.mcp_launch.compiler import compile_registry  # noqa: PLC0415
     from kernel.mcp_launch.policy import (  # noqa: PLC0415
@@ -4193,9 +4240,10 @@ def _build_mcp_tool_servers() -> list[Any]:
     data_dir = str(_runtime_data_dir())
     workspace_root = str(FRAMEWORK_ROOT)
 
-    # All first-party servers run via uv from the framework root.
-    uv_directory = str(FRAMEWORK_ROOT.absolute())
-    package = "mcp-server"
+    # All first-party servers run as console_scripts entry points from the
+    # project venv. The entry_point defaults to server_id (e.g. "lisa-context"),
+    # which matches the [project.scripts] name in mcp_server/pyproject.toml.
+    venv_dir = str(FRAMEWORK_ROOT / ".venv")
 
     first_party_servers = [
         ("lisa-context", "lisa_context.server", True),
@@ -4217,16 +4265,81 @@ def _build_mcp_tool_servers() -> list[Any]:
         registry.register(
             MCPServerSpec(
                 server_id=server_id,
-                runtime_kind=RuntimeKind.UV,
-                package=package,
-                module=module,
-                uv_directory=uv_directory,
+                runtime_kind=RuntimeKind.VENV_BIN,
+                venv_dir=venv_dir,
                 env_policy=EnvPolicy(inherit_parent=True),
                 tool_policy=tool_policy,
             )
         )
 
     return compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
+
+
+def _build_workshop_context_bundle(
+    *,
+    state: Any,
+    plan: Any,
+    workspace_id: str,
+    user_id: str,
+    user_slug: str,
+    surface_context: Any,
+    workshop_budget: Any,
+    reasoning_model: bool = False,
+) -> Any:
+    """Build a minimal WorkshopContextBundle for Little Lisa workshop runs.
+
+    Little Lisa has no context broker, so each panel gets an empty evidence
+    packet. The shared context packet is also empty. This is sufficient for
+    workshop operations that rely on the model's own knowledge rather than
+    curated evidence.
+    """
+    from datetime import UTC, datetime  # noqa: PLC0415
+    from kernel.models import (  # noqa: PLC0415
+        ContextEvidence,
+        ContextPacket,
+        WorkshopContextBundle,
+        WorkshopPanelContext,
+    )
+
+    compiled_at = datetime.now(UTC).isoformat()
+    empty_packet = ContextPacket(
+        compiled_at=compiled_at,
+        query=getattr(plan, "query", ""),
+        selected_evidence=[],
+    )
+    panel_contexts: list[WorkshopPanelContext] = []
+    for spec in getattr(plan, "panel_specs", []) or []:
+        panel_contexts.append(
+            WorkshopPanelContext(
+                panel_id=spec.panel_id,
+                title=spec.title or spec.panel_id,
+                mode_id=spec.mode_id,
+                query=spec.query,
+                model_alias=spec.model_alias or "",
+                panel_kind=spec.panel_kind,
+                connectors=list(spec.connectors or []),
+                runtime_prefetch_views=list(spec.runtime_prefetch_views or []),
+                setup_instructions=spec.setup_instructions or "",
+                surface_context=surface_context,
+                compiled_at=compiled_at,
+                context_packet=empty_packet.model_copy(deep=True),
+                context_markdown="",
+            )
+        )
+
+    return WorkshopContextBundle(
+        workshop_id=getattr(plan, "workshop_id", ""),
+        title=getattr(plan, "title", ""),
+        query=getattr(plan, "query", ""),
+        workspace_id=workspace_id,
+        user_id=user_id,
+        user_slug=user_slug,
+        surface_context=surface_context,
+        compiled_at=compiled_at,
+        shared_context_packet=empty_packet.model_copy(deep=True),
+        shared_context_markdown="",
+        panel_contexts=panel_contexts,
+    )
 
 
 def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
@@ -4236,11 +4349,8 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
 
     # MCP Client wiring — memory stays on MCPMemoryClient (v1);
     # tool servers go through MCPToolPool via the compiled registry.
-    mcp_command = os.getenv("LISA_MCP_COMMAND", "uv")
-    mcp_args = os.getenv(
-        "LISA_MCP_ARGS",
-        f"run --directory {FRAMEWORK_ROOT.absolute()} --package mcp-server python -m lisa_context.server"
-    ).split()
+    mcp_command = os.getenv("LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe"))
+    mcp_args = os.getenv("LISA_MCP_ARGS", "").split()
     mcp_args = [*mcp_args, *_mcp_server_extra_args()]
     memory_store = MCPMemoryClient(
         mcp_command,
@@ -4430,6 +4540,10 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         post_turn_slice=_post_turn_slice,
         explicit_slice=_explicit_slice,
         last_slice_finished_at=persisted_last_slice_finished_at,
+        workflow_turn_runner=_run_workflow_turn,
+        workflow_session_factory=create_workflow_session,
+        state_provider=_state_provider,
+        build_workshop_context_bundle_fn=_build_workshop_context_bundle,
     )
 
 
@@ -4450,12 +4564,9 @@ async def _run_explicit_slice_command(*, message: str) -> str:
     provider = LittleLisaStateProvider(
         thread_path=_runtime_thread_path(),
         memory_store=MCPMemoryClient(
-            os.getenv("LISA_MCP_COMMAND", "uv"),
+            os.getenv("LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")),
             [
-                *os.getenv(
-                    "LISA_MCP_ARGS",
-                    "run --package mcp-server python -m lisa_context.server",
-                ).split(),
+                *os.getenv("LISA_MCP_ARGS", "").split(),
                 *_mcp_server_extra_args(),
             ],
         ),
