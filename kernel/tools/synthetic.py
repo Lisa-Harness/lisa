@@ -35,6 +35,7 @@ def mcp_alias_tool(
     target_tool: str,
     input_schema: dict[str, Any] | None = None,
     arg_map: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    target_server_id: str | None = None,
 ) -> SyntheticToolSpec:
     """Build a synthetic tool that redirects to an MCP server tool.
 
@@ -63,11 +64,22 @@ def mcp_alias_tool(
             Use this to adapt a generic argument shape (e.g.
             ``{"query": ...}``) to a server-specific shape (e.g.
             ``{"query": ..., "user_id": "default"}``).
+        target_server_id: Optional server id pinning dispatch to that server.
+            When set, the call bypasses the pool's merged bare-name index
+            (which is first-registered-wins) and routes to this server's own
+            tool index — so the alias can target a backend whose tool name
+            collides with another server's (e.g. ``mem0``'s ``add_memory`` vs
+            ``lisa-memory``'s ``add_memory``). When ``None``, dispatch falls
+            back to the merged bare-name index (the legacy behavior).
     """
 
     async def handler(arguments: dict[str, Any]) -> str:
         mapped = arg_map(arguments) if arg_map is not None else arguments
-        result = await pool.call_tool(target_tool, mapped)
+        result = await pool.call_tool(
+            target_tool,
+            mapped,
+            server_id=target_server_id,
+        )
         return result.output_text
 
     return SyntheticToolSpec(

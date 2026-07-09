@@ -188,6 +188,12 @@ class MCPToolPool:
         self._sessions: dict[str, Any] = {}
         self._exit_stack: AsyncExitStack | None = None
         self._tool_index: dict[str, tuple[str, MCPToolSpec]] = {}
+        # Per-server tool index: server_id -> {tool_name -> spec}. Unlike
+        # _tool_index (first-registered-wins across the whole pool), this keeps
+        # every server's tools even when names collide across servers. Used by
+        # server-scoped dispatch (call_tool(..., server_id=...)) so an alias can
+        # pin a call to a specific backend regardless of bare-name collisions.
+        self._tool_index_by_server: dict[str, dict[str, MCPToolSpec]] = {}
         self._tools: list[MCPToolSpec] = []
         self._started = False
         self._warm_failed: set[str] = set()
@@ -436,6 +442,7 @@ class MCPToolPool:
 
         self._tools = []
         self._tool_index = {}
+        self._tool_index_by_server = {}
         for config in self._configs:
             session = self._sessions.get(config.server_id)
             if session is None:
@@ -464,7 +471,10 @@ class MCPToolPool:
             ]
             if config.tool_policy is not None:
                 server_tools = filter_tools(server_tools, config.tool_policy)
+            server_index: dict[str, MCPToolSpec] = {}
             for spec in server_tools:
+                # Per-server index keeps every tool, collisions or not.
+                server_index[spec.name] = spec
                 if spec.name in self._tool_index:
                     existing_server = self._tool_index[spec.name][0]
                     logger.warning(
@@ -477,6 +487,7 @@ class MCPToolPool:
                     continue
                 self._tool_index[spec.name] = (config.server_id, spec)
                 self._tools.append(spec)
+            self._tool_index_by_server[config.server_id] = server_index
 
         # Re-seed host-owned synthetic tools after the MCP index is rebuilt.
         # Synthetic tools are not rediscovered from servers — they are owned
@@ -537,12 +548,29 @@ class MCPToolPool:
             await self.start()
         return list(self._tools)
 
-    async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> MCPToolResult:
+    async def call_tool(
+        self,
+        tool_id: str,
+        arguments: dict[str, Any],
+        *,
+        server_id: str | None = None,
+    ) -> MCPToolResult:
         """Route one tool call to the server that owns the tool.
 
         Host-owned synthetic tools (registered via :meth:`add_synthetic_tools`)
         are dispatched to their in-process handler before any MCP server
         routing — they have no subprocess backing them.
+
+        When ``server_id`` is provided, dispatch is **server-scoped**: the
+        tool is looked up in that server's own index
+        (:attr:`_tool_index_by_server`) instead of the merged bare-name index,
+        and the call is routed to that server's session. This bypasses the
+        first-registered-wins collision policy so an alias can pin a call to
+        a specific backend (e.g. ``memory.add`` → ``mem0``'s ``add_memory``
+        even when ``lisa-memory`` also exposes ``add_memory``). If the target
+        server is not connected, it is lazily started (cold servers) or
+        restarted (warm servers) once before failing; no bare-name fallback
+        occurs when ``server_id`` is set.
         """
 
         if not self._started:
@@ -558,6 +586,10 @@ class MCPToolPool:
                     is_error=True,
                 )
             return MCPToolResult(tool_id=tool_id, output_text=output_text or "Done")
+
+        if server_id is not None:
+            return await self._call_tool_scoped(tool_id, arguments, server_id)
+
         entry = self._tool_index.get(tool_id)
         if entry is None:
             return MCPToolResult(
@@ -594,6 +626,87 @@ class MCPToolPool:
                 output_text=f"MCP tool '{tool_id}' failed: {type(exc).__name__}: {exc}",
                 is_error=True,
             )
+        return self._build_result(tool_id, result)
+
+    async def _call_tool_scoped(
+        self,
+        tool_id: str,
+        arguments: dict[str, Any],
+        server_id: str,
+    ) -> MCPToolResult:
+        """Dispatch a tool call pinned to a specific server.
+
+        Used by server-scoped aliases (e.g. ``memory.add`` → the default
+        memory backend) to bypass the merged bare-name index. The target
+        server is lazily started if not connected: cold servers are connected
+        on first call, warm servers are restarted once. No bare-name fallback.
+        """
+        config = next((c for c in self._configs if c.server_id == server_id), None)
+        if config is None:
+            return MCPToolResult(
+                tool_id=tool_id,
+                output_text=f"Unknown MCP server '{server_id}'.",
+                is_error=True,
+            )
+        session = self._sessions.get(server_id)
+        if session is None:
+            # Lazily start the target server. Cold servers are connected on
+            # first scoped call; warm servers get one restart attempt.
+            try:
+                if config.warm:
+                    await self._connect_warm(config)
+                else:
+                    await self._connect(config)
+                    # New session: refresh so this server's tools are indexed.
+                    await self._refresh_tool_index()
+            except Exception as exc:  # pylint: disable=broad-except
+                return MCPToolResult(
+                    tool_id=tool_id,
+                    output_text=(
+                        f"MCP server '{server_id}' for tool '{tool_id}' failed to "
+                        f"start: {type(exc).__name__}: {exc}"
+                    ),
+                    is_error=True,
+                )
+            session = self._sessions.get(server_id)
+            if session is None:
+                return MCPToolResult(
+                    tool_id=tool_id,
+                    output_text=(
+                        f"MCP server '{server_id}' for tool '{tool_id}' is not connected."
+                    ),
+                    is_error=True,
+                )
+        # Look up the tool in the target server's own index AFTER ensuring the
+        # session is connected (a cold server's index is empty until started).
+        server_index = self._tool_index_by_server.get(server_id, {})
+        if tool_id not in server_index:
+            return MCPToolResult(
+                tool_id=tool_id,
+                output_text=(
+                    f"Tool '{tool_id}' is not registered on server '{server_id}'."
+                ),
+                is_error=True,
+            )
+        try:
+            result = await session.call_tool(tool_id, arguments=arguments)
+        except Exception as exc:  # pylint: disable=broad-except
+            if config.warm:
+                try:
+                    await self.restart_warm(server_id)
+                except MCPConnectionError:
+                    if config.required:
+                        raise
+            return MCPToolResult(
+                tool_id=tool_id,
+                output_text=f"MCP tool '{tool_id}' failed: {type(exc).__name__}: {exc}",
+                is_error=True,
+            )
+        return self._build_result(tool_id, result)
+
+    @staticmethod
+    def _build_result(tool_id: str, result: Any) -> MCPToolResult:
+        """Convert an MCP session call result into an MCPToolResult."""
         text_parts: list[str] = []
         for content_block in result.content or []:
             text = getattr(content_block, "text", None)
@@ -617,6 +730,7 @@ class MCPToolPool:
                 logger.debug("MCP exit stack close failed", exc_info=True)
         self._exit_stack = None
         self._tool_index.clear()
+        self._tool_index_by_server.clear()
         self._tools = []
         self._synthetic_handlers.clear()
         self._started = False

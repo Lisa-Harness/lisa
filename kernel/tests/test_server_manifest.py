@@ -55,7 +55,7 @@ memory:
         add: add_memory
         search: search_memory
 servers:
-  - server_id: mem0-stdio
+  - server_id: mem0
     runtime_kind: npx
     npx_package: "@mem0/mcp"
     data_dir_arg: null
@@ -72,7 +72,7 @@ servers:
     )
     specs, mem = load_mcp_server_manifest(manifest)
     assert len(specs) == 1  # letta is disabled
-    assert specs[0].server_id == "mem0-stdio"
+    assert specs[0].server_id == "mem0"
     assert specs[0].runtime_kind is RuntimeKind.NPX
     assert specs[0].npx_package == "@mem0/mcp"
     # data_dir_arg null → no injection
@@ -199,3 +199,104 @@ servers:
     )
     with pytest.raises(Exception, match="url"):
         load_mcp_server_manifest(manifest)
+
+
+# ── Default-backend / server-id consistency ─────────────────────────────────
+
+
+def test_default_backend_not_in_backends_raises(tmp_path: Path) -> None:
+    """default_backend must reference a declared memory.backends id."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+memory:
+  default_backend: mem0
+  backends:
+    - id: lisa_memory
+      kind: stdio
+      command: lisa-memory
+      args: []
+      tool_names: {add: add_memory}
+servers: []
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(Exception, match="not in memory.backends"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_default_backend_no_matching_server_id_raises(tmp_path: Path) -> None:
+    """default_backend must match a servers[] server_id (so scoped dispatch
+    can route). A backend id with no matching server is a manifest error."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+memory:
+  default_backend: mem0
+  backends:
+    - id: mem0
+      kind: http
+      url: https://mcp.mem0.ai/mcp
+      headers: {Authorization: "Bearer x"}
+      tool_names: {add: add_memory}
+servers:
+  - server_id: letta
+    runtime_kind: http
+    url: https://letta.example/mcp
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(Exception, match="no matching server_id"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_default_backend_lisa_memory_allowed_without_server_entry(tmp_path: Path) -> None:
+    """The first-party lisa_memory backend is registered in code, not in the
+    manifest's servers list, so it's allowed as default without a servers entry."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+memory:
+  default_backend: lisa_memory
+  backends:
+    - id: lisa_memory
+      kind: stdio
+      command: lisa-memory
+      args: []
+      tool_names: {add: add_memory}
+servers: []
+""",
+        encoding="utf-8",
+    )
+    specs, mem = load_mcp_server_manifest(manifest)
+    assert mem.default_backend == "lisa_memory"
+    assert specs == []
+
+
+def test_default_backend_matching_server_id_loads(tmp_path: Path) -> None:
+    """default_backend whose id matches a servers[] server_id loads cleanly."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+memory:
+  default_backend: mem0
+  backends:
+    - id: mem0
+      kind: http
+      url: https://mcp.mem0.ai/mcp
+      headers: {Authorization: "Bearer x"}
+      tool_names: {add: add_memory}
+servers:
+  - server_id: mem0
+    runtime_kind: http
+    url: https://mcp.mem0.ai/mcp
+""",
+        encoding="utf-8",
+    )
+    specs, mem = load_mcp_server_manifest(manifest)
+    assert mem.default_backend == "mem0"
+    assert specs[0].server_id == "mem0"

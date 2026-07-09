@@ -14,7 +14,7 @@ version: 1
 # tools (e.g. Mem0's update_memory, delete_memory, list_entities) are
 # directly callable by name from any mode that allows them.
 memory:
-  default_backend: lisa_memory
+  default_backend: mem0
   backends:
     # lisa-memory — first-party stdio MCP server. The minimal built-in: three
     # core memory calls backed by local SQLite. Default backend for memory.*.

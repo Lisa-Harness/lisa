@@ -146,7 +146,44 @@ def load_mcp_server_manifest(
 
     memory_config = _parse_memory_section(raw.get("memory") or {})
     specs = _parse_server_entries(raw.get("servers") or [], path)
+    _validate_default_backend_server(memory_config, specs, path)
     return specs, memory_config
+
+
+def _validate_default_backend_server(
+    memory_config: MemoryBackendConfig,
+    specs: list[MCPServerSpec],
+    path: Path,
+) -> None:
+    """Ensure the default memory backend's id matches a registered server.
+
+    The host pins memory-alias dispatch to ``default_backend`` by id (see
+    ``_register_memory_synthetic_tools``); that id must equal a
+    ``server_id`` in the pool so the scoped call resolves. HTTP backends are
+    also registered as tool servers, so this is required for any default
+    backend kind. A mismatch is a manifest error, not a silent fallback.
+    """
+    if memory_config.default_backend is None:
+        return
+    declared_ids = {s.id for s in memory_config.backends}
+    if memory_config.default_backend not in declared_ids:
+        raise MCPServerManifestError(
+            f"memory.default_backend {memory_config.default_backend!r} is not in "
+            f"memory.backends {sorted(declared_ids)} in {path}"
+        )
+    server_ids = {s.server_id for s in specs}
+    if memory_config.default_backend not in server_ids:
+        # The first-party backends (lisa_memory in the manifest, lisa-memory in
+        # the pool) are registered in code, not in the manifest's servers
+        # list, so allow them through. Any other id must have a matching
+        # servers entry to be routable as the default.
+        if memory_config.default_backend in {"lisa-memory", "lisa_memory"}:
+            return
+        raise MCPServerManifestError(
+            f"memory.default_backend {memory_config.default_backend!r} has no matching "
+            f"server_id in the servers list {sorted(server_ids)} in {path} — the host "
+            "pins alias dispatch to this id, so it must match a registered server."
+        )
 
 
 def _parse_memory_section(raw: Any) -> MemoryBackendConfig:

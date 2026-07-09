@@ -4643,7 +4643,14 @@ def _build_warm_mcp_pool() -> None:
     state for the per-turn fallback pool.
     """
     warm_configs, cold_configs = _compile_mcp_configs()
-    pool = MCPToolPool(warm_configs)
+    # Build the long-lived pool with ALL configs (warm + cold). The ``warm``
+    # flag on each config controls eager-vs-lazy start inside pool.start():
+    # warm servers connect eagerly with retry; cold servers (e.g. mem0) connect
+    # best-effort at start and, if that fails (no MEM0_API_KEY), stay down until
+    # a server-scoped alias (memory.add → mem0) lazily starts them on first call.
+    # Keeping cold configs in the pool is required so server-scoped dispatch
+    # (_call_tool_scoped) can resolve ``server_id="mem0"`` against _configs.
+    pool = MCPToolPool([*warm_configs, *cold_configs])
     _RUNTIME_STATE["mcp_tool_pool"] = pool
     _RUNTIME_STATE["mcp_cold_configs"] = cold_configs
 
@@ -4749,12 +4756,26 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
     default_backend_id = getattr(memory_config, "default_backend", None)
     declared = getattr(memory_config, "backends", ()) or ()
     default_spec = next((s for s in declared if s.id == default_backend_id), None)
+    # Map the manifest's memory-backend id to the pool's server_id. The
+    # first-party lisa_memory backend (underscore in the manifest) is the
+    # lisa-memory server (hyphen) in the pool; external backends' ids must
+    # match a servers[] server_id (validated at manifest load).
+    _BACKEND_ID_TO_SERVER_ID = {"lisa_memory": "lisa-memory"}
     if default_spec is None:
         # No external default declared: lisa-memory is the first-party default.
         # Its tool names are the generic aliases themselves.
         tool_names = {"add": "add_memory", "search": "search_memory", "list": "list_memories"}
+        # Pin dispatch to lisa-memory explicitly so the alias routes to it
+        # even if another server in the pool also exposes the same tool names.
+        target_server_id = "lisa-memory"
     else:
         tool_names = dict(default_spec.tool_names)
+        # Pin dispatch to the declared default backend's server. This
+        # bypasses the pool's first-registered-wins bare-name index so the
+        # default backend serves the alias even when its tool name collides
+        # with another server's (e.g. mem0's add_memory vs lisa-memory's
+        # add_memory).
+        target_server_id = _BACKEND_ID_TO_SERVER_ID.get(default_spec.id, default_spec.id)
 
     add_schema = {
         "type": "object",
@@ -4790,6 +4811,7 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
             pool=pool,
             target_tool=tool_names["add"],
             input_schema=add_schema,
+            target_server_id=target_server_id,
         ),
         mcp_alias_tool(
             name="memory.search",
@@ -4797,6 +4819,7 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
             pool=pool,
             target_tool=tool_names["search"],
             input_schema=search_schema,
+            target_server_id=target_server_id,
         ),
         mcp_alias_tool(
             name="memory.list",
@@ -4804,6 +4827,7 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
             pool=pool,
             target_tool=tool_names["list"],
             input_schema=list_schema,
+            target_server_id=target_server_id,
         ),
     ])
 
