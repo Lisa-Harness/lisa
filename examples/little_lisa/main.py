@@ -4694,6 +4694,29 @@ def _build_warm_mcp_pool() -> None:
     _RUNTIME_STATE["mcp_cold_configs"] = cold_configs
 
 
+def _is_empty_auth_header(value: str) -> bool:
+    """True when an Authorization header is a Bearer token whose value is empty.
+
+    The manifest expands ``"Bearer ${MEM0_API_KEY}"`` via
+    :func:`_expand_env_value` at load time; an unset variable yields
+    ``"Bearer "`` (trailing space, no token). That produces a 401 from the
+    remote server, which inside MCP's streamable-HTTP transport cascades
+    into a cross-task anyio cancel-scope RuntimeError. Detect it here so the
+    host can refuse to wire the backend instead of crashing opaquely.
+
+    Uses ``lstrip`` (not ``strip``) so the trailing space survives —
+    ``"Bearer ".strip()`` becomes ``"Bearer"`` and would hide the empty token.
+    """
+    if not isinstance(value, str):
+        return False
+    # Case-insensitive "Bearer " prefix, then the token after it.
+    lowered = value.lstrip().lower()
+    if not lowered.startswith("bearer "):
+        return False
+    token = value.lstrip()[len("bearer "):].strip()
+    return token == ""
+
+
 def _build_memory_router() -> Any:
     """Build the MemoryStoreRouter from mcp_servers.yaml's memory config.
 
@@ -4721,12 +4744,34 @@ def _build_memory_router() -> Any:
     # Build one client per declared backend. Each backend is a peer; the
     # manifest declares its kind + connection details + tool names, so the
     # host builds the right generic client without backend-specific code.
+    # Skip an HTTP backend whose auth header expanded to empty (e.g.
+    # ``Bearer ${MEM0_API_KEY}`` with MEM0_API_KEY unset) — sending
+    # ``Authorization: Bearer `` yields a 401 from the server and, because
+    # the 401 fires inside streamable_http_client's anyio task group,
+    # cascades into a cross-task cancel-scope RuntimeError that masks the
+    # real cause. Better to refuse to wire it and fall back.
     declared = getattr(memory_config, "backends", ()) or ()
     for spec in declared:
         backend_id = spec.id
         if spec.kind == "http":
             from kernel.mcp_client import MCPHttpMemoryClient  # noqa: PLC0415
 
+            missing_auth = any(
+                _is_empty_auth_header(value) for value in spec.headers.values()
+            )
+            if missing_auth:
+                _append_log_event(
+                    level="error",
+                    event="memory.backend_auth_missing",
+                    payload={
+                        "backend": backend_id,
+                        "hint": (
+                            "An Authorization header contains an empty ${VAR} — "
+                            "set the env var (e.g. MEM0_API_KEY) in .env or the shell."
+                        ),
+                    },
+                )
+                continue
             backends[backend_id] = MCPHttpMemoryClient(
                 spec.url,
                 headers=dict(spec.headers),
@@ -4744,8 +4789,9 @@ def _build_memory_router() -> Any:
                 payload={"backend": backend_id, "kind": spec.kind},
             )
 
-    # If no backends were declared, fall back to the built-in lisa-context
-    # client so the memory seam always has somewhere to read/write.
+    # If no backends were built (none declared, or all http backends were
+    # dropped for empty auth), fall back to the built-in lisa-context client
+    # so the memory seam always has somewhere to read/write.
     if not backends:
         mcp_command = os.getenv(
             "LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")
@@ -5422,6 +5468,43 @@ def _verify_check_ollama() -> tuple[str, str]:
         return _VERIFY_WARN, f"Ollama check failed: {exc}"
 
 
+def _verify_check_memory_backend() -> tuple[str, str]:
+    """Check the active memory backend's required env vars are set.
+
+    The default backend from ``mcp_servers.yaml`` is what the memory seam
+    actually talks to. An HTTP backend with an empty ``${VAR}`` in its
+    Authorization header (the common MEM0_API_KEY-not-set case) is a hard
+    failure: it would 401 at runtime. Surface it here so ``verify`` catches
+    it before the user runs into the anyio cascade.
+    """
+    memory_config = _RUNTIME_STATE.get("memory_config")
+    default_backend_id = getattr(memory_config, "default_backend", None)
+    declared = getattr(memory_config, "backends", ()) or ()
+    if not default_backend_id or not declared:
+        return _VERIFY_PASS, "Memory backend: built-in lisa-context (default)"
+
+    default_spec = next((s for s in declared if s.id == default_backend_id), None)
+    if default_spec is None:
+        return _VERIFY_WARN, (
+            f"default_backend={default_backend_id!r} not declared; will fall back"
+        )
+
+    if default_spec.kind == "http":
+        for value in default_spec.headers.values():
+            if _is_empty_auth_header(value):
+                return _VERIFY_FAIL, (
+                    f"Memory backend {default_backend_id!r}: Authorization header "
+                    "has an empty ${VAR} — set the env var (e.g. MEM0_API_KEY) in .env"
+                )
+        return _VERIFY_PASS, f"Memory backend: {default_backend_id!r} (http)"
+    if default_spec.kind == "stdio":
+        return _VERIFY_PASS, f"Memory backend: {default_backend_id!r} (stdio)"
+    return _VERIFY_WARN, (
+        f"Memory backend: {default_backend_id!r} "
+        f"(unknown kind {default_spec.kind!r})"
+    )
+
+
 def _verify_check_web_search() -> tuple[str, str]:
     """Check web search is configured (optional)."""
     if web_search_is_configured():
@@ -5561,6 +5644,7 @@ def _verify_command(
         ("Provider keys", *_verify_check_provider_keys()),
         ("Ollama", *_verify_check_ollama()),
         ("Web search", *_verify_check_web_search()),
+        ("Memory backend", *_verify_check_memory_backend()),
         ("Paths", *_verify_check_paths()),
     ]
 
