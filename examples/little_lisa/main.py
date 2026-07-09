@@ -5095,69 +5095,14 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
         # with another server's (e.g. mem0's add_memory vs lisa-memory's
         # add_memory).
         target_server_id = _BACKEND_ID_TO_SERVER_ID.get(default_spec.id, default_spec.id)
-        # Per-backend arg translation: the generic aliases expose a stable
-        # shape (content/user_slug/memory_scope/...) but each backend's MCP
-        # tools expect their own argument names. Mem0's tools require user_id
-        # (not user_slug) and ignore memory_scope/memory_tier; lisa-memory
-        # takes the generic shape directly.
-        if default_spec.id == "mem0":
-            # Mem0's add_memory tool requires `text` (not `content`) and
-            # scopes memory by user_id / agent_id / app_id / run_id. The
-            # generic memory.* alias exposes a stable shape (content /
-            # user_slug / memory_scope / memory_tier); the arg map translates
-            # it to Mem0's surface and injects ambient scope (mode_id,
-            # surface_id, workspace_id) so the model can never accidentally
-            # store or search outside the current turn's boundary.
-            #
-            # Map Lisa → Mem0:
-            #   user_slug   → user_id       (user isolation)
-            #   mode_id     → agent_id      (which mode created the memory)
-            #   surface_id  → app_id        (teams, desktop, CLI, etc.)
-            #   workspace_id→ metadata      (workspace scope)
-            #   memory_scope→ metadata      (personal / team)
-            #   memory_tier → metadata      (daily / weekly / long_term)
-            add_arg_map = lambda a: {
-                "text": a.get("content", ""),
-                "user_id": _runtime_user_slug() or "default",
-                "agent_id": _runtime_current_mode_id() or "default",
-                "app_id": "little-lisa",
-                "metadata": {
-                    "workspace_id": a.get("workspace_id", "default"),
-                    "memory_scope": a.get("memory_scope", "personal"),
-                    "memory_tier": a.get("memory_tier", "daily"),
-                },
-            }
-            # search_memories supports structured AND filters. Inject
-            # ambient scope boundaries (user_id, agent_id, app_id) so every
-            # search is automatically confined to the current mode and
-            # surface — the model never sees or controls these boundaries.
-            search_arg_map = lambda a: {
-                "query": a.get("query", ""),
-                "filters": {
-                    "AND": [
-                        {"user_id": _runtime_user_slug() or "default"},
-                        {"agent_id": _runtime_current_mode_id() or "default"},
-                        {"app_id": "little-lisa"},
-                    ]
-                },
-                "limit": a.get("limit", 5),
-            }
-            # get_memories uses the same filter shape; inject ambient scope.
-            list_arg_map = lambda a: {
-                "filters": {
-                    "AND": [
-                        {"user_id": _runtime_user_slug() or "default"},
-                        {"agent_id": _runtime_current_mode_id() or "default"},
-                        {"app_id": "little-lisa"},
-                    ]
-                },
-                "page": 1,
-                "page_size": a.get("limit", 20),
-            }
-        else:
-            add_arg_map = None
-            search_arg_map = None
-            list_arg_map = None
+        # Build arg maps generically from the backend's declarative
+        # arg_translation config (or None when the backend takes the generic
+        # shape natively). No backend-specific knowledge lives here — the
+        # translation rules are declared in mcp_servers.yaml and parsed into
+        # MemoryBackendSpec.arg_translation by the manifest loader.
+        add_arg_map, search_arg_map, list_arg_map = _build_memory_arg_maps(
+            default_spec.arg_translation,
+        )
 
     add_schema = {
         "type": "object",
@@ -5216,6 +5161,120 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
             arg_map=list_arg_map,
         ),
     ])
+
+    # When the default backend declares arg_translation, the model can also
+    # call the backend's native tools directly. Register the same arg maps as
+    # dispatch-time overrides keyed by the namespaced tool names so the ambient
+    # scope boundaries are injected identically whether the model goes through
+    # the ``memory.*`` synthetic alias or calls the native tool directly. The
+    # tool names come from the spec — no backend id is hardcoded here.
+    if default_spec is not None and default_spec.arg_translation is not None:
+        pool.register_dispatch_arg_map(
+            f"{target_server_id}.{tool_names['add']}", add_arg_map,
+        )
+        pool.register_dispatch_arg_map(
+            f"{target_server_id}.{tool_names['search']}", search_arg_map,
+        )
+        pool.register_dispatch_arg_map(
+            f"{target_server_id}.{tool_names['list']}", list_arg_map,
+        )
+
+
+def _build_memory_arg_maps(
+    translation: Any,
+) -> tuple[
+    "Callable[[dict[str, Any]], dict[str, Any]] | None",
+    "Callable[[dict[str, Any]], dict[str, Any]] | None",
+    "Callable[[dict[str, Any]], dict[str, Any]] | None",
+]:
+    """Build the three memory arg maps from a declarative ArgTranslation spec.
+
+    Returns ``(None, None, None)`` when ``translation`` is None (the backend
+    takes the generic shape natively — no translation needed). Otherwise
+    builds add / search / list arg maps that:
+
+    - rename generic fields to native field names (``field_map``)
+    - inject ambient runtime scope the model cannot override (``ambient``)
+    - stuff extra generic fields into a nested ``metadata`` sub-dict
+      (``metadata_fields``)
+    - use structured ``filters.AND`` for search/list when configured
+      (``structured_filters``)
+    - use ``page``/``page_size`` for list when configured (``paginated_list``)
+
+    No backend-specific knowledge lives here — every rule comes from the
+    YAML-declared ``arg_translation`` block on the backend entry.
+    """
+    if translation is None:
+        return None, None, None
+
+    def _ambient_value(source: str) -> str:
+        if source == "user_id":
+            return _runtime_user_slug() or "default"
+        if source == "agent_id":
+            return _runtime_current_mode_id() or "default"
+        # app_id — resolved from the configured surface; "little-lisa" is
+        # the canonical app id for this host.
+        return "little-lisa"
+
+    def _ambient_pairs() -> dict[str, str]:
+        return {
+            native_field: _ambient_value(source)
+            for native_field, source in translation.ambient.items()
+        }
+
+    def _metadata(args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            meta_key: args.get(generic_field, "")
+            for generic_field, meta_key in translation.metadata_fields.items()
+        }
+
+    def _add_map(a: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        # Pass-through fields with optional renaming.
+        for generic_field in ("content", "user_slug", "memory_scope", "memory_tier"):
+            if generic_field not in a:
+                continue
+            native = translation.field_map.get(generic_field, generic_field)
+            result[native] = a[generic_field]
+        # Ambient injected fields override anything the model passed.
+        result.update(_ambient_pairs())
+        if translation.metadata_fields:
+            result["metadata"] = _metadata(a)
+        return result
+
+    def _search_map(a: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for generic_field in ("query",):
+            if generic_field in a:
+                native = translation.field_map.get(generic_field, generic_field)
+                result[native] = a[generic_field]
+        if translation.structured_filters:
+            result["filters"] = {"AND": [
+                {native_field: value}
+                for native_field, value in _ambient_pairs().items()
+            ]}
+        else:
+            result.update(_ambient_pairs())
+        result["limit"] = a.get("limit", 5)
+        return result
+
+    def _list_map(a: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if translation.structured_filters:
+            result["filters"] = {"AND": [
+                {native_field: value}
+                for native_field, value in _ambient_pairs().items()
+            ]}
+        else:
+            result.update(_ambient_pairs())
+        if translation.paginated_list:
+            result["page"] = 1
+            result["page_size"] = a.get("limit", 20)
+        else:
+            result["limit"] = a.get("limit", 20)
+        return result
+
+    return _add_map, _search_map, _list_map
 
 
 async def astart_warm_mcp_pool() -> None:

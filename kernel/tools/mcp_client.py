@@ -231,6 +231,12 @@ class MCPToolPool:
         """Host-owned in-process handlers keyed by tool name. Populated by
         :meth:`add_synthetic_tools`. Synthetic tools dispatch through here
         instead of routing to an MCP server subprocess."""
+        self._dispatch_arg_maps: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
+        """Per-tool arg maps keyed by namespaced tool name (e.g.
+        ``mem0.search_memories``). Applied by :meth:`call_tool` before
+        forwarding to the MCP session, so direct calls to native server
+        tools get the same ambient-metadata injection as synthetic aliases.
+        Populated by :meth:`register_dispatch_arg_map`."""
 
     @property
     def configs(self) -> list[MCPClientConfig]:
@@ -298,6 +304,47 @@ class MCPToolPool:
             self._synthetic_handlers[tool.name] = tool.handler
             self._tool_index[tool.name] = (SYNTHETIC_SERVER_ID, spec)
             self._tools.append(spec)
+
+    def register_dispatch_arg_map(
+        self,
+        namespaced_tool_name: str,
+        arg_map: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> None:
+        """Register an arg map applied to direct MCP dispatch for one tool.
+
+        When the model calls a native server tool by its namespaced name
+        (e.g. ``mem0.search_memories``), the host applies ``arg_map`` to
+        the model-supplied arguments before forwarding them to the MCP
+        session. This gives the host a single chokepoint to inject
+        ambient scope boundaries (user_id, agent_id, app_id, …) that the
+        model cannot escape — the same enforcement the synthetic
+        ``memory.*`` aliases already apply via their own arg maps.
+
+        Synthetic alias tools that already apply their own arg map in their
+        in-process handler are unaffected — they dispatch before the MCP
+        routing path, so this registry is never consulted for them.
+        """
+        self._dispatch_arg_maps[namespaced_tool_name] = arg_map
+
+    def _apply_dispatch_arg_map(
+        self,
+        tool_id: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Apply the registered dispatch arg map for ``tool_id`` if any."""
+        arg_map = self._dispatch_arg_maps.get(tool_id)
+        if arg_map is None:
+            return arguments
+        try:
+            return arg_map(arguments)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "Dispatch arg map for %r failed (%s: %s); passing raw arguments.",
+                tool_id,
+                type(exc).__name__,
+                exc,
+            )
+            return arguments
 
     def _reindex_synthetic_tools(self) -> None:
         """Re-register synthetic tool entries after a tool-index rebuild.
@@ -724,8 +771,9 @@ class MCPToolPool:
         # but the MCP session expects the bare tool name.  Strip the
         # namespace prefix before calling the server.
         bare_name = bare_tool_name(tool_id)
+        mapped = self._apply_dispatch_arg_map(tool_id, arguments)
         try:
-            result = await session.call_tool(bare_name, arguments=arguments)
+            result = await session.call_tool(bare_name, arguments=mapped)
         except Exception as exc:  # pylint: disable=broad-except
             # Session may have died mid-call; attempt one warm restart.
             if config is not None and config.warm:
@@ -794,8 +842,10 @@ class MCPToolPool:
                 ),
                 is_error=True,
             )
+        namespaced = namespaced_tool_name(server_id, tool_id)
+        mapped = self._apply_dispatch_arg_map(namespaced, arguments)
         try:
-            result = await session.call_tool(tool_id, arguments=arguments)
+            result = await session.call_tool(tool_id, arguments=mapped)
         except Exception as exc:  # pylint: disable=broad-except
             if config.warm:
                 try:

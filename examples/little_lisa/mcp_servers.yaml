@@ -49,6 +49,32 @@ memory:
         add: add_memory
         search: search_memories
         list: get_memories
+      # Declarative argument translation: the generic memory.* aliases
+      # expose a stable shape (content / user_slug / memory_scope / …);
+      # this block tells the host how to translate that shape to Mem0's
+      # native argument names and which fields are ambient-injected from
+      # the host runtime so the model cannot escape the privacy boundary.
+      # No backend-specific code in the host — adding a new backend is a
+      # YAML edit.
+      arg_translation:
+        # Rename generic fields to Mem0's native parameter names.
+        field_map:
+          content: text
+        # Inject these fields from the host runtime, not from model args.
+        # The model cannot override them.
+        ambient:
+          user_id: user_id      # ← _runtime_user_slug()
+          agent_id: agent_id    # ← _runtime_current_mode_id()
+          app_id: app_id        # ← "little-lisa"
+        # Stuff these generic fields into a nested metadata sub-dict.
+        metadata_fields:
+          workspace_id: workspace_id
+          memory_scope: memory_scope
+          memory_tier: memory_tier
+        # Mem0's search_memories / get_memories use structured AND filters.
+        structured_filters: true
+        # get_memories uses page/page_size, not a flat limit.
+        paginated_list: true
 
 # ──────────────────────────────────────────────────────────────────────────
 # MCP tool servers
