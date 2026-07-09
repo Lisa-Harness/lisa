@@ -16,7 +16,6 @@ from kernel.context.input_guard import PassThroughInputGuard
 from kernel.context.mcp_catalog import MCPModeCatalog, MCPOperationCatalog
 from kernel.context.mcp_content_registry import MCPContentRegistry
 from kernel.context.mcp_guard import MCPInputGuard, MCPOutputGuard
-from kernel.context.mcp_storage import MCPBlobIO
 from kernel.context.model_policy import ManifestModelPolicy
 from kernel.context.output_guard import PassThroughOutputGuard
 from kernel.context.provider_gateway_provider import KernelProviderGatewayProvider
@@ -24,7 +23,6 @@ from kernel.context.provider_gateway_provider import KernelProviderGatewayProvid
 __all__ = [
     "InProcessEventBus",
     "KernelProviderGatewayProvider",
-    "MCPBlobIO",
     "MCPContentRegistry",
     "MCPInputGuard",
     "MCPModeCatalog",

@@ -6,8 +6,8 @@ Owner: Architecture
 This document specifies the controlled launch contract for all MCP servers
 (first-party and third-party), the standard CLI argument surface, the
 environment-variable philosophy, the runtime-agnostic subprocess launcher, and
-the implementation plan for the three Tier 1 MCP servers (`lisa-guard`,
-`lisa-storage`, `lisa-content`).
+the implementation plan for the two Tier 1 MCP servers (`lisa-guard`,
+`lisa-content`).
 
 It is self-contained: a new implementation thread can execute this spec without
 prior conversation context.
@@ -74,8 +74,8 @@ or written to. Those are CLI args.
    Env vars are the primary source. CLI args may override env for debugging
    (e.g. `--log-level DEBUG` overrides `LOG_LEVEL=INFO`).
 3. **Derived paths**: Servers derive subpaths from `--data-dir` using
-   server-specific conventions (e.g. `lisa-storage` uses
-   `{data_dir}/storage/`, `lisa-context` uses `{data_dir}/memory.db`).
+   server-specific conventions (e.g. `lisa-context` uses
+   `{data_dir}/memory.db`).
    These derived paths are never configurable via env — only the root
    `--data-dir` is passed, and the server owns the subpath layout.
 
@@ -607,51 +607,6 @@ Env vars (behavioral):
 | `AZURE_AI_CONTENT_SAFETY_KEY` | (none) | API key for Azure backend (future). |
 | `AZURE_AI_CONTENT_SAFETY_ENDPOINT` | (none) | Endpoint for Azure backend (future). |
 
-### `lisa-storage` — blob I/O server
-
-**Package**: `mcp_server/src/lisa_storage/`
-**Entry point**: `lisa_storage.server:main`
-**Script**: `lisa-storage`
-
-Tools (22, one per `BlobIO` method):
-
-| Tool | Args | Returns |
-| --- | --- | --- |
-| `read_unified_state` | (none) | JSON `UnifiedState` or `null` |
-| `write_unified_state` | `state_json: str` | `{"ok": bool}` |
-| `read_blob_bytes` | `container: str`, `blob_path: str` | Base64 string or `null` |
-| `write_blob_bytes` | `container: str`, `blob_path: str`, `payload_b64: str`, `content_type: str` | `{"ok": bool}` |
-| `read_blob_text` | `container: str`, `blob_path: str` | Text or `null` |
-| `write_blob_text` | `container: str`, `blob_path: str`, `payload: str`, `content_type: str` | `{"ok": bool}` |
-| `read_surf_workflow_session` | `workspace_id: str`, `surface_id: str` | JSON `SurfSessionState` or `null` |
-| `write_surf_workflow_session` | `session_json: str` | `{"ok": bool}` |
-| `delete_surf_workflow_session` | `workspace_id: str`, `surface_id: str` | `{"ok": bool}` |
-| `read_surf_screenshot` | `blob_path: str` | Base64 string or `null` |
-| `write_surf_trace` | `trace_json: str`, `screenshots_json: str`, `artifact_prefix: str` | `{"ok": bool}` |
-| `read_user_context_overlays` | (none) | JSON or `null` |
-| `write_user_context_overlays` | `overlays_json: str` | `{"ok": bool}` |
-| `read_surface_context_overlays` | (none) | JSON or `null` |
-| `write_surface_context_overlays` | `overlays_json: str` | `{"ok": bool}` |
-| `read_proactive_recipients` | (none) | JSON or `null` |
-| `write_proactive_recipients` | `registry_json: str` | `{"ok": bool}` |
-| `read_user_reminders` | (none) | JSON or `null` |
-| `write_user_reminders` | `registry_json: str` | `{"ok": bool}` |
-| `read_thread_state` | (none) | JSON or `null` |
-| `write_thread_state` | `state_json: str` | `{"ok": bool}` |
-| `read_memory_snapshot` | (none) | JSON or `null` |
-| `write_memory_snapshot` | `snapshot_json: str` | `{"ok": bool}` |
-
-Behavior:
-
-- Filesystem-backed. Root: `{data_dir}/storage/`.
-- Container subdirectories under root. Path-safe resolution (no `..` traversal).
-- Bytes use base64 encoding over the wire.
-- Structured types (`UnifiedState`, `SurfSessionState`, overlays, etc.) serialize
-  as JSON strings, deserialized via `model_validate` on the adapter side.
-- `--readonly` disables all write tools (they return `{"ok": false, "error": "readonly"}`).
-
-Env vars: none (all config is via CLI args).
-
 ### `lisa-content` — content registry server
 
 **Package**: `mcp_server/src/lisa_content/`
@@ -952,8 +907,7 @@ All existing first-party servers must adopt the shared CLI contract.
    `allowed_keys` filters to allowlist. `forced_overrides` wins.
 6. **Tool filtering**: `filter_tools` respects allow/deny lists.
 7. **Data-dir propagation**: Host `--data-dir /tmp/test` causes
-   `lisa-storage` to write to `/tmp/test/storage/` and `lisa-context` to write
-   to `/tmp/test/memory.db`.
+   `lisa-context` to write to `/tmp/test/memory.db`.
 8. **Existing tests**: `kernel/tests/test_guardrails.py` passes unchanged
    (in-process defaults are not modified).
 9. **Import boundaries**: `kernel/tests/test_context_import_boundaries.py`

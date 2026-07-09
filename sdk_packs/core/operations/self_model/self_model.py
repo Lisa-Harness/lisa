@@ -104,21 +104,10 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
     vibe = build_self_model_vibe(artifact)
 
-    # Persist the full artifact via blob_io when available
-    artifact_path = ""
-    if ctx.blob_io is not None:
-        try:
-            payload = artifact.model_dump_json(indent=2)
-            ctx.blob_io.write_blob_text("self_model", "self_model.json", payload)
-            artifact_path = str(ctx.blob_io.blob_path("self_model", "self_model.json"))
-        except Exception:
-            logger.debug("Failed to persist self-model artifact", exc_info=True)
-
     return OperationResult(
         output_text=vibe,
         output_json=artifact.model_dump(mode="json"),
         extra={
-            "artifact_path": artifact_path,
             "entry_counts": {
                 "identity": len(identity_entries),
                 "capabilities": len(capability_entries),

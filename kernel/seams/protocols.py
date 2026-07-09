@@ -1,4 +1,4 @@
-"""Kernel seams — host-injection protocols for blob, browser, state, and memory.
+"""Kernel seams — host-injection protocols for state, and memory.
 
 These Protocols define the dependency-inversion surface between the
 runtime-neutral kernel and host applications. Hosts implement these
@@ -16,55 +16,6 @@ from kernel.models import (
     SurfaceContext,
     UnifiedState,
 )
-
-
-@runtime_checkable
-class BlobIO(Protocol):
-    """Protocol for host blob/object-storage I/O operations.
-
-    Host apps implement this protocol and inject
-    it into ``ToolExecutionContext.blob_io`` and ``OperationExecutionContext.blob_io``.
-    """
-
-    def read_unified_state(self) -> UnifiedState | None: ...
-    def write_unified_state(self, state: UnifiedState) -> bool: ...
-
-    def read_blob_bytes(self, container: str, blob_path: str) -> bytes | None: ...
-    def write_blob_bytes(
-        self,
-        container: str,
-        blob_path: str,
-        payload: bytes,
-        *,
-        content_type: str | None = None,
-    ) -> bool: ...
-    def read_blob_text(self, container: str, blob_path: str) -> str | None: ...
-    def write_blob_text(
-        self,
-        container: str,
-        blob_path: str,
-        payload: str,
-        *,
-        content_type: str | None = None,
-    ) -> bool: ...
-
-    def read_user_context_overlays(self) -> dict[str, Any] | None: ...
-    def write_user_context_overlays(self, overlays: dict[str, Any]) -> bool: ...
-
-    def read_surface_context_overlays(self) -> dict[str, Any] | None: ...
-    def write_surface_context_overlays(self, overlays: dict[str, Any]) -> bool: ...
-
-    def read_proactive_recipients(self) -> dict[str, Any] | None: ...
-    def write_proactive_recipients(self, registry: dict[str, Any]) -> bool: ...
-
-    def read_user_reminders(self) -> dict[str, Any] | None: ...
-    def write_user_reminders(self, registry: dict[str, Any]) -> bool: ...
-
-    def read_thread_state(self) -> dict[str, Any] | None: ...
-    def write_thread_state(self, state: dict[str, Any]) -> bool: ...
-
-    def read_memory_snapshot(self) -> dict[str, Any] | None: ...
-    def write_memory_snapshot(self, snapshot: dict[str, Any]) -> bool: ...
 
 
 @runtime_checkable
@@ -230,7 +181,6 @@ class DataSourceHooks(Protocol):
     contexts while keeping host-owned services behind explicit protocols.
     """
 
-    blob_io: BlobIO | None
     outbox_reader: OutboxReader | None
     state_provider: StateProvider | None
     memory_store: MemoryStore
@@ -246,7 +196,6 @@ class DataSourceHookSet:
     instead of relying on ``SimpleNamespace``-style dynamic objects.
     """
 
-    blob_io: BlobIO | None
     state_provider: StateProvider | None
     memory_store: MemoryStore
     thread_store: ThreadStore

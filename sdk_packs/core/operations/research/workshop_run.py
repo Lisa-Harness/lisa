@@ -23,7 +23,6 @@ from kernel.models import (
     SurfaceContext,
     UnifiedState,
     WorkflowModeConfig,
-    WorkshopArtifactRefs,
     WorkshopBudgetConfig,
     WorkshopContextBundle,
     WorkshopExecutionSummary,
@@ -534,26 +533,6 @@ async def _synthesize_workshop(
     return "\n".join(lines), synthesis.model_dump(mode="json")
 
 
-def _persist_workshop_bundle(
-    ctx: OperationExecutionContext,
-    bundle: WorkshopContextBundle,
-) -> WorkshopArtifactRefs | None:
-    if ctx.blob_io is None:
-        return None
-
-    write_fn = getattr(ctx.blob_io, "write_workshop_context_bundle", None)
-    if not callable(write_fn):
-        return None
-
-    try:
-        persisted = write_fn(bundle)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("workshop bundle persistence failed: %s", exc)
-        return None
-
-    return WorkshopArtifactRefs.model_validate(persisted)
-
-
 def _build_context_bundle(
     ctx: OperationExecutionContext,
     *,
@@ -584,7 +563,6 @@ def _result_payload(
     bundle: WorkshopContextBundle,
     execution_summary: WorkshopExecutionSummary,
     synthesis_payload: dict[str, object],
-    artifact_refs: WorkshopArtifactRefs | None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "workshop_id": plan.workshop_id,
@@ -606,8 +584,6 @@ def _result_payload(
         "execution_summary": execution_summary.model_dump(mode="json"),
         "synthesis": synthesis_payload,
     }
-    if artifact_refs is not None:
-        payload["artifact_refs"] = artifact_refs.model_dump(mode="json")
     return payload
 
 
@@ -645,7 +621,6 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         return OperationResult(
             output_text=f"⛔ Workshop mode could not build panel context: {type(exc).__name__}: {exc}"
         )
-    artifact_refs = _persist_workshop_bundle(ctx, bundle)
     child_requests = _build_child_requests(ctx, bundle, planner_subprompt)
     if child_requests is None:
         return OperationResult(
@@ -689,15 +664,11 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             bundle,
             execution_summary,
             synthesis_payload,
-            artifact_refs,
         ),
         extra={
             "workshop_id": plan.workshop_id,
             "workshop_child_statuses": {
                 result.panel_id: result.status for result in execution_summary.results
             },
-            "workshop_artifact_refs": (
-                artifact_refs.model_dump(mode="json") if artifact_refs is not None else {}
-            ),
         },
     )

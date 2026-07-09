@@ -166,6 +166,7 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
         env=env,
         cwd=cwd,
         tool_policy=spec.tool_policy,
+        proxy_policy=spec.proxy_policy,
         data_dir_path=resolved_data_dir if spec.ensure_data_dir else None,
         ensure_data_dir=spec.ensure_data_dir,
         url=spec.url,

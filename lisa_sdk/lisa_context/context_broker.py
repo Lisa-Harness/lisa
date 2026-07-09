@@ -324,7 +324,7 @@ def _new_evidence(
 
 
 def _build_extension_evidence(state: UnifiedState) -> list[ContextEvidence]:
-    runtime_context = ExtensionRuntimeContext(blob_io=None, state_provider=None)
+    runtime_context = ExtensionRuntimeContext(state_provider=None)
     return _extension_evidence_builder.build_extension_context_evidence(runtime_context, state)
 
 

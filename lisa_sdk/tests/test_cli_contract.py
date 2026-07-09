@@ -21,7 +21,6 @@ ALL_SERVERS: list[tuple[str, str, bool]] = [
     ("lisa_sdk.lisa_memory.server", "lisa-memory", True),
     ("lisa_sdk.lisa_search.server", "lisa-search", False),
     ("lisa_sdk.lisa_guard.server", "lisa-guard", False),
-    ("lisa_sdk.lisa_storage.server", "lisa-storage", True),
     ("lisa_sdk.lisa_content.server", "lisa-content", False),
 ]
 
@@ -80,13 +79,6 @@ def test_guard_server_has_backend_arg() -> None:
     assert "--backend" in result.stdout
 
 
-def test_storage_server_has_readonly_arg() -> None:
-    """lisa-storage should accept --readonly."""
-    result = _run_server("lisa_sdk.lisa_storage.server", "--help")
-    assert result.returncode == 0
-    assert "--readonly" in result.stdout
-
-
 def test_context_server_has_readonly_arg() -> None:
     """lisa-context should accept --readonly."""
     result = _run_server("lisa_sdk.lisa_context.server", "--help")
@@ -98,7 +90,7 @@ def test_no_env_var_path_fallback_in_source() -> None:
     """No first-party server source should reference removed env vars."""
 
     src_root = Path(__file__).resolve().parents[1] / "src"
-    forbidden = {"LISA_MCP_DB_PATH", "LISA_MEMORY_DB_PATH", "LISA_STORAGE_ROOT", "LISA_DATA_DIR"}
+    forbidden = {"LISA_MCP_DB_PATH", "LISA_MEMORY_DB_PATH", "LISA_DATA_DIR"}
     violations: list[str] = []
 
     for py_file in src_root.rglob("*.py"):

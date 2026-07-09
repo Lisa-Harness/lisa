@@ -6,7 +6,6 @@ requires-python = ">=3.11"
 dependencies = [
     "lisa-kernel",
     "lisa-sdk",
-    "lisa-ext-clarity",
     "lisa-ext-cloudflare",
     "lisa-ext-github",
     "lisa-ext-stripe",
@@ -35,7 +34,6 @@ package = false
 members = [
     "kernel",
     "lisa_sdk",
-    "sdk_extensions/clarity",
     "sdk_extensions/cloudflare",
     "sdk_extensions/github",
     "sdk_extensions/stripe",
@@ -46,7 +44,6 @@ members = [
 [tool.uv.sources]
 lisa-kernel = { workspace = true }
 lisa-sdk = { workspace = true }
-lisa-ext-clarity = { workspace = true }
 lisa-ext-cloudflare = { workspace = true }
 lisa-ext-github = { workspace = true }
 lisa-ext-stripe = { workspace = true }

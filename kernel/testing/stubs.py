@@ -71,7 +71,6 @@ class NullEventBus:
 
 def make_data_source_hooks(
     *,
-    blob_io: Any = None,
     outbox_reader: Any = None,
     state: Any | None = None,
     state_provider: Callable[[], Any | None] | None = None,
@@ -82,7 +81,6 @@ def make_data_source_hooks(
     """Build one hook bundle compatible with kernel.seams.protocols.DataSourceHooks."""
     resolved_state_provider = state_provider or StaticStateProvider(state)
     return DataSourceHookSet(
-        blob_io=blob_io,
         state_provider=resolved_state_provider,
         memory_store=memory_store or NullMemoryStore(),
         thread_store=thread_store or NullThreadStore(),

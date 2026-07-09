@@ -278,7 +278,6 @@ external clients (and to itself when a host wants to run them out-of-process):
 | `lisa-search` | `mcp_server/src/lisa_search/` | `web_search` (wraps `kernel.web_search`) |
 | `lisa-surf` | `mcp_server/src/lisa_surf/` | `surf_url`, `flush_session` |
 | `lisa-guard` | `mcp_server/src/lisa_guard/` | `validate_input`, `validate_output`, `guard_configured` |
-| `lisa-storage` | `mcp_server/src/lisa_storage/` | 23 BlobIO tools (text/bytes read/write, overlays, metadata) |
 | `lisa-content` | `mcp_server/src/lisa_content/` | `read_authored_text`, `list_content_roots`, `invalidate_cache` |
 
 A host can either wire these as in-process Protocols (default, zero subprocesses) or

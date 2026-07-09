@@ -28,9 +28,6 @@ lisa_sdk.lisa_search.server.main  # noqa: Vulture
 # reason: console_script target — lisa-guard MCP server
 lisa_sdk.lisa_guard.server.main  # noqa: Vulture
 
-# reason: console_script target — lisa-storage MCP server
-lisa_sdk.lisa_storage.server.main  # noqa: Vulture
-
 # reason: console_script target — lisa-content MCP server
 lisa_sdk.lisa_content.server.main  # noqa: Vulture
 
@@ -42,15 +39,6 @@ lisa_sdk.get_content_root  # noqa: Vulture
 
 # reason: lisa.extensions.content_roots entry-point target
 sdk_packs.core.get_content_root  # noqa: Vulture
-
-# reason: lisa.extensions.signal_connectors entry-point target (clarity)
-sdk_extensions.clarity.connector.ClaritySignalConnector  # noqa: Vulture
-
-# reason: lisa.extensions.scheduled_jobs entry-point target (clarity)
-sdk_extensions.clarity.jobs.build_clarity_jobs  # noqa: Vulture
-
-# reason: lisa.extensions.debug_context entry-point target (clarity)
-sdk_extensions.clarity.diagnostics.build_debug_context_fragments  # noqa: Vulture
 
 # reason: lisa.extensions.signal_connectors entry-point target (cloudflare)
 sdk_extensions.cloudflare.connector.CloudflareSignalConnector  # noqa: Vulture

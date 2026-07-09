@@ -319,7 +319,6 @@ async def execute_declarative_operation(
                             query=_resolve_tool_query(ctx.query, tool_arguments),
                             parameters=tool_arguments,
                             event_bus=ctx.event_bus,
-                            blob_io=ctx.blob_io,
                             state_provider=ctx.state_provider,
                         ),
                     )

@@ -156,7 +156,6 @@ class ToolExecutionContext(BaseModel):
     query: str = ""
     parameters: dict[str, Any] = Field(default_factory=dict)
     event_bus: Any = Field(default=None, exclude=True)
-    blob_io: Any = Field(default=None, exclude=True)
     state_provider: Any = Field(default=None, exclude=True)
 
 
@@ -216,7 +215,6 @@ class OperationExecutionContext(BaseModel):
     execute_tool_fn: Any = Field(default=None, exclude=True)
     execute_operation_fn: Any = Field(default=None, exclude=True)
     memory_recall_default_limit: int | None = Field(default=None, exclude=True)
-    blob_io: Any = Field(default=None, exclude=True)
     state_provider: Any = Field(default=None, exclude=True)
     workflow_turn_runner: Any = Field(default=None, exclude=True)
     workflow_session_factory: Any = Field(default=None, exclude=True)
@@ -899,18 +897,12 @@ class UnifiedState(BaseModel):
     context_evidence_catalog: list[ContextEvidence] = Field(default_factory=list)
     context_markdown: str = ""  # pre-rendered markdown context for prompt injection
     thinking_vibe: str = ""
-    thinking_artifact_path: str = ""
     strategy_vibe: str = ""
-    strategy_artifact_path: str = ""
     # Compact runtime capability and architecture pointers for help/routing context.
     capability_manifest_summary: str = ""
-    capability_manifest_artifact_path: str = ""
     architecture_vibe: str = ""
-    architecture_atlas_artifact_path: str = ""
     self_model_vibe: str = ""
-    self_model_artifact_path: str = ""
     reflection_vibe: str = ""
-    reflection_artifact_path: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -1320,15 +1312,6 @@ class WorkshopContextBundle(BaseModel):
     shared_context_markdown: str = ""
     panel_contexts: list[WorkshopPanelContext] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class WorkshopArtifactRefs(BaseModel):
-    """Persisted blob references for one workshop context bundle."""
-
-    workshop_id: str
-    artifact_prefix: str = ""
-    bundle_blob_name: str = ""
-    panel_blob_names: dict[str, str] = Field(default_factory=dict)
 
 
 class WorkshopChildResult(BaseModel):
@@ -1935,7 +1918,6 @@ class IntelAnalysisRefreshedEvent(BusEvent):
     event_type: BusEventType = "intel_analysis_refreshed"
     collection_scope: str = "market"
     vibe_markdown: str = ""
-    detailed_artifact_path: str = ""
 
 
 class ThinkingRequestedEvent(BusEvent):
@@ -1951,5 +1933,4 @@ class ThinkingRefreshedEvent(BusEvent):
 
     event_type: BusEventType = "thinking_refreshed"
     thinking_vibe: str = ""
-    synth_artifact_path: str = ""
     candidate_count: int = 0

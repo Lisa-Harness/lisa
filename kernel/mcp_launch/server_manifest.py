@@ -37,10 +37,12 @@ from typing import Any
 import yaml
 
 from kernel.mcp_launch.policy import (
+    AmbientSource,
     CwdPolicy,
     EnvPolicy,
     LaunchTimeouts,
     MCPServerSpec,
+    ProxyPolicy,
     RuntimeKind,
     ToolPolicy,
 )
@@ -432,6 +434,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
     forced = {str(k): _expand_env_value(v) for k, v in env_raw.items()}
 
     tool_policy = _parse_tool_policy(entry.get("tool_policy"), server_id, index, path)
+    proxy_policy = _parse_proxy_policy(entry.get("proxy_policy"), server_id, index, path)
     timeouts = _parse_timeouts(entry.get("timeouts"))
     cwd_policy = _parse_cwd_policy(entry.get("cwd"), server_id, index, path)
 
@@ -481,6 +484,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         env_policy=EnvPolicy(inherit_parent=True, forced_overrides=forced),
         cwd_policy=cwd_policy,
         tool_policy=tool_policy,
+        proxy_policy=proxy_policy,
         timeouts=timeouts,
         url=url,
         headers=headers,
@@ -512,6 +516,49 @@ def _parse_tool_policy(
     return ToolPolicy(
         allowed_tools=[str(t) for t in allowed] if allowed is not None else None,
         denied_tools=[str(t) for t in denied],
+    )
+
+
+def _parse_proxy_policy(
+    raw: Any, server_id: str, index: int, path: Path
+) -> ProxyPolicy:
+    """Parse the optional ``proxy_policy`` block on a server entry.
+
+    Returns a default (empty) :class:`ProxyPolicy` when absent — the proxy
+    passes schemas and arguments through unchanged. When present, the
+    ``ambient`` mapping tells the proxy which native argument fields are
+    host-injected (stripped from the model's schema, injected from runtime
+    at dispatch time).
+    """
+    if raw is None:
+        return ProxyPolicy()
+    if not isinstance(raw, dict):
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}' in {path}: 'proxy_policy' must be a mapping"
+        )
+
+    ambient_raw = raw.get("ambient") or {}
+    if not isinstance(ambient_raw, dict):
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': 'proxy_policy.ambient' must be a mapping"
+        )
+    ambient: dict[str, AmbientSource] = {}
+    for native_field, source_str in ambient_raw.items():
+        source_str = str(source_str or "").strip()
+        try:
+            ambient[str(native_field)] = AmbientSource(source_str)
+        except ValueError as exc:
+            valid = ", ".join(s.value for s in AmbientSource)
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': 'proxy_policy.ambient.{native_field}' "
+                f"must be one of [{valid}], got {source_str!r}"
+            ) from exc
+
+    structured_filters = bool(raw.get("structured_filters", False))
+
+    return ProxyPolicy(
+        ambient=ambient,
+        structured_filters=structured_filters,
     )
 
 

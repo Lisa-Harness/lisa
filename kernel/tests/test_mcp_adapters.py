@@ -1,10 +1,9 @@
 """Tests for the kernel MCP-client adapters.
 
 Covers:
-- Protocol compliance (MCPInputGuard, MCPOutputGuard, MCPBlobIO,
+- Protocol compliance (MCPInputGuard, MCPOutputGuard,
   MCPContentRegistry satisfy their respective Protocols)
-- Response parsing helpers (_parse_guard_response, _parse_ok,
-  _parse_json_or_none)
+- Response parsing helpers (_parse_guard_response)
 - Integration: MCPInputGuard.validate via a spawned lisa-guard server
 """
 
@@ -15,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from kernel.context import MCPBlobIO, MCPContentRegistry, MCPInputGuard, MCPOutputGuard
+from kernel.context import MCPContentRegistry, MCPInputGuard, MCPOutputGuard
 from kernel.models import SurfaceContext
-from kernel.seams.protocols import BlobIO, ContentRegistry, GuardResult, InputGuard, OutputGuard
+from kernel.seams.protocols import ContentRegistry, GuardResult, InputGuard, OutputGuard
 from kernel.tools.mcp_client import MCPClientConfig
 
 
@@ -44,12 +43,6 @@ def test_mcp_output_guard_satisfies_protocol() -> None:
     cfg = _make_config()
     guard = MCPOutputGuard(cfg)
     assert isinstance(guard, OutputGuard)
-
-
-def test_mcp_blob_io_satisfies_protocol() -> None:
-    cfg = _make_config()
-    blob = MCPBlobIO(cfg)
-    assert isinstance(blob, BlobIO)
 
 
 def test_mcp_content_registry_satisfies_protocol() -> None:
@@ -103,42 +96,6 @@ def test_parse_guard_response_invalid_json_defaults_to_allowed() -> None:
 
     result = _parse_guard_response("not json")
     assert result.allowed is True
-
-
-def test_parse_ok_true() -> None:
-    from kernel.context.mcp_storage import _parse_ok
-
-    assert _parse_ok(json.dumps({"ok": True})) is True
-
-
-def test_parse_ok_false() -> None:
-    from kernel.context.mcp_storage import _parse_ok
-
-    assert _parse_ok(json.dumps({"ok": False})) is False
-
-
-def test_parse_ok_empty() -> None:
-    from kernel.context.mcp_storage import _parse_ok
-
-    assert _parse_ok("") is False
-
-
-def test_parse_json_or_none_valid() -> None:
-    from kernel.context.mcp_storage import _parse_json_or_none
-
-    assert _parse_json_or_none(json.dumps({"key": "value"})) == {"key": "value"}
-
-
-def test_parse_json_or_none_null() -> None:
-    from kernel.context.mcp_storage import _parse_json_or_none
-
-    assert _parse_json_or_none("null") is None
-
-
-def test_parse_json_or_none_empty() -> None:
-    from kernel.context.mcp_storage import _parse_json_or_none
-
-    assert _parse_json_or_none("") is None
 
 
 # ── Integration: MCPInputGuard via spawned lisa-guard ───────────────────────

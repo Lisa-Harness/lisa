@@ -14,7 +14,7 @@ from kernel.models import (
     IntelSynthesis,
     UnifiedState,
 )
-from kernel.seams.protocols import BlobIO, StateProvider
+from kernel.seams.protocols import StateProvider
 
 ExtensionJobTrigger = Literal["interval", "cron"]
 
@@ -50,8 +50,7 @@ class StageChainExecutor(Protocol):
 class ExtensionRuntimeContext:
     """Host services injected into extension-owned jobs and consumers."""
 
-    blob_io: BlobIO | None
-    state_provider: StateProvider | None
+    state_provider: StateProvider | None = None
     http_client: Any = None
     event_bus: Any = None
     openai_client: Any = None

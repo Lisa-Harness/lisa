@@ -103,8 +103,6 @@ def test_build_desktop_subprocess_args_forwards_runtime_settings() -> None:
 @pytest.mark.asyncio
 async def test_simple_help_reports_only_wired_capabilities() -> None:
     with TemporaryDirectory() as temp_dir:
-        _blob_io = little_lisa.LocalBlobIO(Path(temp_dir))
-
         output = await little_lisa.handle_message("/help")
 
     assert "/search <request>" in output
@@ -116,7 +114,6 @@ async def test_simple_help_reports_only_wired_capabilities() -> None:
 @pytest.mark.asyncio
 async def test_help_capabilities_returns_capability_snapshot() -> None:
     with TemporaryDirectory() as temp_dir:
-        _blob_io = little_lisa.LocalBlobIO(Path(temp_dir))
         output = await little_lisa.handle_message("/help capabilities")
 
     assert "Capability Snapshot" in output
@@ -137,7 +134,6 @@ async def test_debug_context_reports_last_turn_sections() -> None:
     }
 
     with TemporaryDirectory() as temp_dir:
-        little_lisa.LocalBlobIO(Path(temp_dir))
         output = await little_lisa.handle_message("/debug context")
 
     assert "Last Turn Context" in output
@@ -154,7 +150,6 @@ async def test_debug_frontdoor_reports_last_planner_payload() -> None:
     }
 
     with TemporaryDirectory() as temp_dir:
-        little_lisa.LocalBlobIO(Path(temp_dir))
         output = await little_lisa.handle_message("/debug frontdoor")
 
     assert "Front-Door Debug" in output
@@ -445,7 +440,6 @@ async def test_handle_message_uses_frontdoor_route_planner_for_natural_language(
     monkeypatch.setattr(little_lisa, "run_turn", _fake_run_turn)
 
     with TemporaryDirectory() as temp_dir:
-        little_lisa.LocalBlobIO(Path(temp_dir))
         output = await little_lisa.handle_message("find cloud costs")
 
     assert output == "search"
@@ -739,7 +733,6 @@ async def test_handle_message_surfaces_frontdoor_and_mode_token_context(
     )
 
     with TemporaryDirectory() as temp_dir:
-        little_lisa.LocalBlobIO(Path(temp_dir))
         output = await little_lisa.handle_message("hello")
 
     assert output == "ok"
@@ -1386,7 +1379,6 @@ async def test_handle_message_uses_explicit_frontdoor_model_override(
     monkeypatch.setattr(little_lisa, "run_turn", _fake_run_turn)
 
     with TemporaryDirectory() as temp_dir:
-        little_lisa.LocalBlobIO(Path(temp_dir))
         output = await little_lisa.handle_message("hello there")
 
     assert output == "frontdoor"
@@ -1406,7 +1398,6 @@ async def test_handle_message_does_not_force_frontdoor_model_for_explicit_mode(
     monkeypatch.setattr(little_lisa, "run_turn", _fake_run_turn)
 
     with TemporaryDirectory() as temp_dir:
-        little_lisa.LocalBlobIO(Path(temp_dir))
         output = await little_lisa.handle_message("/search cloud cost")
 
     assert output == "search"
@@ -1426,7 +1417,6 @@ async def test_handle_message_deep_route_uses_deep_designation(
     monkeypatch.setattr(little_lisa, "run_turn", _fake_run_turn)
 
     with TemporaryDirectory() as temp_dir:
-        little_lisa.LocalBlobIO(Path(temp_dir))
         output = await little_lisa.handle_message("/deep evaluate this")
 
     assert output == "deep"
@@ -1446,7 +1436,6 @@ async def test_handle_message_returns_operation_error_instead_of_raising(
     monkeypatch.setattr(little_lisa, "run_turn", _failing_run_turn)
 
     with TemporaryDirectory() as temp_dir:
-        little_lisa.LocalBlobIO(Path(temp_dir))
         output = await little_lisa.handle_message("/search cloud cost")
 
     assert "Operation 'web_search' timed out" in output
@@ -1779,7 +1768,6 @@ def test_format_session_exit_summary_lines_includes_useful_stats() -> None:
 @pytest.mark.asyncio
 async def test_settings_command_reports_effective_runtime_settings() -> None:
     with TemporaryDirectory() as temp_dir:
-        little_lisa.LocalBlobIO(Path(temp_dir))
         output = await little_lisa.handle_message("/settings")
 
     assert "Runtime Settings" in output
@@ -1795,7 +1783,6 @@ async def test_handle_message_requires_models_before_running_turn(
     monkeypatch.setattr(little_lisa, "_load_manifest", lambda: empty_manifest)
 
     with TemporaryDirectory() as temp_dir:
-        little_lisa.LocalBlobIO(Path(temp_dir))
         with pytest.raises(ValueError, match="requires at least one model"):
             await little_lisa.handle_message("hello")
 

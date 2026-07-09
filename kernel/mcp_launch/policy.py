@@ -16,11 +16,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 __all__ = [
+    "AmbientSource",
     "CwdPolicy",
     "EnvPolicy",
     "LaunchTimeouts",
     "MCPServerRegistry",
     "MCPServerSpec",
+    "ProxyPolicy",
     "RuntimeKind",
     "ToolPolicy",
 ]
@@ -75,6 +77,68 @@ class ToolPolicy:
 
     denied_tools: list[str] = field(default_factory=list)
     """Denylist of tool names to strip from the catalog."""
+
+
+class AmbientSource(str, Enum):
+    """Runtime sources the proxy can resolve ambient field values from.
+
+    The host registers a resolver callable for each source; the proxy
+    calls it at dispatch time to inject the current value. The model
+    never sees or controls these fields.
+    """
+
+    USER_SLUG = "user_slug"
+    """The current user's slug (user isolation)."""
+
+    MODE_ID = "mode_id"
+    """The current mode's id (agent identity)."""
+
+    APP_ID = "app_id"
+    """The host's application id (surface boundary)."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProxyPolicy:
+    """Controls how the MCP proxy transforms tool schemas and arguments.
+
+    The :class:`~kernel.tools.mcp_client.MCPToolPool` is a proxy between
+    the LLM and N external MCP servers. A ``ProxyPolicy`` on a server's
+    config tells the proxy to enforce ambient scope boundaries: fields
+    the model must not see or set (user identity, agent identity, app
+    identity) are **stripped from the tool schema** before it reaches the
+    model and **injected into the arguments** before they reach the
+    server. The model cannot escape the boundary because it never knows
+    the fields exist.
+
+    Declared per-server in ``mcp_servers.yaml`` under ``proxy_policy:``.
+    The manifest compiler carries it onto :class:`~kernel.tools.mcp_client.MCPClientConfig`;
+    the pool applies it at two chokepoints:
+
+    1. **Schema projection** (catalog → model): ambient fields are removed
+       from ``input_schema.properties`` and ``required`` so the model's tool
+       schema shows only the fields it controls.
+    2. **Arg injection** (model → server): ambient fields are injected
+       from the host runtime resolver, overriding any value the model
+       might have sent (defense in depth — the schema already hides them).
+    """
+
+    ambient: dict[str, AmbientSource] = field(default_factory=dict)
+    """Maps native argument names to runtime sources. The proxy resolves
+    each source at dispatch time and injects the value into the outgoing
+    arguments. Keys are the server's native parameter names (e.g.
+    ``user_id``, ``agent_id``, ``app_id``); values are
+    :class:`AmbientSource` members."""
+
+    structured_filters: bool = False
+    """When True, ambient fields for search/list tools are injected as
+    ``{"key": value}`` entries inside a ``filters.AND`` list (Mem0's
+    structured filter syntax). When False, they are top-level arguments.
+    The proxy determines which tools are "search-like" by checking for a
+    ``filters`` parameter in the tool's input schema."""
+
+    def ambient_field_names(self) -> set[str]:
+        """Return the set of native field names that are ambient-injected."""
+        return set(self.ambient.keys())
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +229,7 @@ class MCPServerSpec:
     env_policy: EnvPolicy = field(default_factory=EnvPolicy)
     cwd_policy: CwdPolicy = field(default_factory=CwdPolicy)
     tool_policy: ToolPolicy = field(default_factory=ToolPolicy)
+    proxy_policy: ProxyPolicy = field(default_factory=ProxyPolicy)
     timeouts: LaunchTimeouts = field(default_factory=LaunchTimeouts)
 
     # Host-provided args injected at compile time

@@ -9,7 +9,7 @@ Design — MCP at the edges, Protocols in the middle:
 
     MCP is a wire protocol. The kernel uses it to cross process boundaries
     (external tool servers, external memory servers, kernel-owned servers
-    running out-of-process). In-process seams (MemoryStore, BlobIO, etc.)
+    running out-of-process). In-process seams (MemoryStore, StateProvider, etc.)
     stay as typed Protocols; they do not go through MCP.
 
     The ``MCPToolPool`` owns the subprocess lifecycle: spawn, health check,
@@ -115,6 +115,7 @@ class MCPClientConfig:
     env: dict[str, str] | None = None
     cwd: str | Path | None = None
     tool_policy: Any = None
+    proxy_policy: Any = None
     warm: bool = False
     required: bool = False
     data_dir_path: str | None = None
@@ -237,6 +238,14 @@ class MCPToolPool:
         forwarding to the MCP session, so direct calls to native server
         tools get the same ambient-metadata injection as synthetic aliases.
         Populated by :meth:`register_dispatch_arg_map`."""
+        self._ambient_resolvers: dict[str, Callable[[], str]] = {}
+        """Runtime resolvers for :class:`~kernel.mcp_launch.policy.AmbientSource`
+        values. The host registers one callable per source (``user_slug``,
+        ``mode_id``, ``app_id``) via :meth:`set_ambient_resolver`. The proxy
+        calls them at dispatch time to inject current ambient values into
+        outgoing arguments. When a source has no resolver, the proxy uses
+        a sensible default (``"default"`` for user_slug/mode_id, ``"lisa"``
+        for app_id)."""
 
     @property
     def configs(self) -> list[MCPClientConfig]:
@@ -345,6 +354,146 @@ class MCPToolPool:
                 exc,
             )
             return arguments
+
+    def set_ambient_resolver(
+        self,
+        source: str,
+        resolver: Callable[[], str],
+    ) -> None:
+        """Register a runtime resolver for one :class:`AmbientSource`.
+
+        The proxy calls the resolver at dispatch time to inject the current
+        ambient value into outgoing arguments. Sources without a registered
+        resolver fall back to a sensible default (``"default"`` for
+        ``user_slug`` / ``mode_id``, ``"lisa"`` for ``app_id``).
+
+        Called by the host after pool construction, before the first turn.
+        """
+        self._ambient_resolvers[source] = resolver
+
+    def _resolve_ambient(self, source: str) -> str:
+        """Resolve one ambient source to its current runtime value."""
+        resolver = self._ambient_resolvers.get(source)
+        if resolver is not None:
+            try:
+                return str(resolver() or "").strip() or self._default_ambient(source)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning(
+                    "Ambient resolver for %r failed (%s: %s); using default.",
+                    source,
+                    type(exc).__name__,
+                    exc,
+                )
+        return self._default_ambient(source)
+
+    @staticmethod
+    def _default_ambient(source: str) -> str:
+        if source == "app_id":
+            return "lisa"
+        return "default"
+
+    def _proxy_policy_for(self, server_id: str) -> Any:
+        """Return the ProxyPolicy for a server, or None when not configured."""
+        config = next((c for c in self._configs if c.server_id == server_id), None)
+        if config is None:
+            return None
+        policy = getattr(config, "proxy_policy", None)
+        if policy is None:
+            return None
+        # An empty policy (no ambient fields) is equivalent to no policy.
+        if not getattr(policy, "ambient", None):
+            return None
+        return policy
+
+    def _strip_ambient_from_schema(
+        self,
+        schema: dict[str, Any],
+        policy: Any,
+    ) -> dict[str, Any]:
+        """Remove ambient fields from a tool's input schema.
+
+        The model never sees fields the proxy will inject at dispatch time.
+        Strips them from ``properties`` and ``required``. Returns a copy;
+        the original schema is not mutated.
+        """
+        ambient_fields = policy.ambient_field_names()
+        if not ambient_fields:
+            return schema
+        stripped = dict(schema)
+        props = dict(schema.get("properties") or {})
+        for field_name in ambient_fields:
+            props.pop(field_name, None)
+        stripped["properties"] = props
+        required = schema.get("required")
+        if isinstance(required, list):
+            stripped["required"] = [r for r in required if r not in ambient_fields]
+        return stripped
+
+    def _inject_ambient_args(
+        self,
+        arguments: dict[str, Any],
+        policy: Any,
+        input_schema: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Inject ambient field values into outgoing arguments.
+
+        For tools that use structured ``filters.AND`` syntax (detected via
+        ``structured_filters=True`` on the policy AND a ``filters`` parameter
+        in the tool's input schema), ambient fields are injected as
+        ``{"key": value}`` entries inside the AND list — idempotently
+        (existing ambient entries are replaced, model-supplied filters
+        preserved). For other tools, they are top-level argument overrides.
+        """
+        ambient = policy.ambient
+        if not ambient:
+            return arguments
+        resolved = {
+            native_field: self._resolve_ambient(source.value if hasattr(source, "value") else str(source))
+            for native_field, source in ambient.items()
+        }
+        use_structured = bool(policy.structured_filters) and (
+            input_schema is not None
+            and "filters" in (input_schema.get("properties") or {})
+        )
+        if use_structured:
+            return self._merge_ambient_filters(arguments, resolved)
+        merged = dict(arguments)
+        merged.update(resolved)
+        return merged
+
+    @staticmethod
+    def _merge_ambient_filters(
+        arguments: dict[str, Any],
+        resolved: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Inject ambient values into ``filters.AND`` idempotently.
+
+        Existing AND entries whose key matches an ambient field are dropped
+        (replaced by the resolved values); all other entries (model-supplied
+        content filters, etc.) are preserved.
+        """
+        ambient_keys = set(resolved.keys())
+        merged = dict(arguments)
+        existing_and = list((arguments.get("filters") or {}).get("AND") or [])
+        non_ambient = [
+            entry for entry in existing_and
+            if not any(k in ambient_keys for k in entry)
+        ]
+        ambient_entries = [{k: v} for k, v in resolved.items()]
+        merged["filters"] = {"AND": [*ambient_entries, *non_ambient]}
+        return merged
+
+    def _apply_proxy_policy_for_server(
+        self,
+        server_id: str,
+        arguments: dict[str, Any],
+        input_schema: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Apply the server's proxy policy ambient injection to arguments."""
+        policy = self._proxy_policy_for(server_id)
+        if policy is None:
+            return arguments
+        return self._inject_ambient_args(arguments, policy, input_schema)
 
     def _reindex_synthetic_tools(self) -> None:
         """Re-register synthetic tool entries after a tool-index rebuild.
@@ -544,6 +693,22 @@ class MCPToolPool:
             ]
             if config.tool_policy is not None:
                 server_tools = filter_tools(server_tools, config.tool_policy)
+            # Proxy policy: strip ambient fields from the tool schema so the
+            # model never sees parameters it cannot control (user_id,
+            # agent_id, app_id, …). The proxy injects them at dispatch time.
+            proxy_policy = getattr(config, "proxy_policy", None)
+            if proxy_policy is not None and getattr(proxy_policy, "ambient", None):
+                server_tools = [
+                    MCPToolSpec(
+                        server_id=spec.server_id,
+                        name=spec.name,
+                        description=spec.description,
+                        input_schema=self._strip_ambient_from_schema(
+                            spec.input_schema, proxy_policy
+                        ),
+                    )
+                    for spec in server_tools
+                ]
             server_index: dict[str, MCPToolSpec] = {}
             for spec in server_tools:
                 # Per-server index keeps every tool keyed by bare name,
@@ -772,6 +937,15 @@ class MCPToolPool:
         # namespace prefix before calling the server.
         bare_name = bare_tool_name(tool_id)
         mapped = self._apply_dispatch_arg_map(tool_id, arguments)
+        # Proxy policy: inject ambient scope (user_id, agent_id, app_id, …)
+        # from the host runtime after the dispatch arg map. This closes the
+        # privacy boundary for direct native-tool calls — the model cannot
+        # escape because the schema already hides these fields (stripped in
+        # _refresh_tool_index), and the values are overridden here even if
+        # the model somehow sends them.
+        server_spec = self._tool_index_by_server.get(server_id, {}).get(bare_name)
+        input_schema = server_spec.input_schema if server_spec else None
+        mapped = self._apply_proxy_policy_for_server(server_id, mapped, input_schema)
         try:
             result = await session.call_tool(bare_name, arguments=mapped)
         except Exception as exc:  # pylint: disable=broad-except
@@ -844,6 +1018,13 @@ class MCPToolPool:
             )
         namespaced = namespaced_tool_name(server_id, tool_id)
         mapped = self._apply_dispatch_arg_map(namespaced, arguments)
+        # Proxy policy: inject ambient scope from the host runtime. Same
+        # enforcement as the non-scoped path — the alias already translated
+        # generic→native, and this injects the ambient boundary values
+        # idempotently (existing ambient entries in filters.AND are replaced).
+        scoped_spec = server_index.get(tool_id)
+        scoped_schema = scoped_spec.input_schema if scoped_spec else None
+        mapped = self._apply_proxy_policy_for_server(server_id, mapped, scoped_schema)
         try:
             result = await session.call_tool(tool_id, arguments=mapped)
         except Exception as exc:  # pylint: disable=broad-except

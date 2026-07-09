@@ -636,69 +636,6 @@ def _sdk_operation_roots() -> list[Path]:
 FrontDoorRouteDecision = RouteDecision
 
 
-class LocalBlobIO:
-    """File-backed subset of the host blob protocol used by simple examples."""
-
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        self.root.mkdir(parents=True, exist_ok=True)
-
-    def upload_markdown_doc(self, markdown_text: str, *, blob_name: str) -> str:
-        """Persist one generated Markdown document and return a local path."""
-
-        target_dir = self.root / "markdown"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / blob_name
-        target.write_text(markdown_text, encoding="utf-8")
-        return str(target)
-
-    def read_unified_state(self) -> UnifiedState | None:
-        return None
-
-    def write_unified_state(self, state: UnifiedState) -> bool:
-        payload = state.model_dump_json(indent=2)
-        self.write_blob_text("state", "unified-state.json", payload)
-        return True
-
-    def read_blob_bytes(self, container: str, blob_path: str) -> bytes | None:
-        path = self._resolve(container, blob_path)
-        return path.read_bytes() if path.exists() else None
-
-    def write_blob_bytes(
-        self,
-        container: str,
-        blob_path: str,
-        payload: bytes,
-        content_type: str = "application/octet-stream",
-    ) -> bool:
-        _ = content_type
-        path = self._resolve(container, blob_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(payload)
-        return True
-
-    def read_blob_text(self, container: str, blob_path: str) -> str | None:
-        path = self._resolve(container, blob_path)
-        return path.read_text(encoding="utf-8") if path.exists() else None
-
-    def write_blob_text(
-        self,
-        container: str,
-        blob_path: str,
-        payload: str,
-        content_type: str = "text/plain; charset=utf-8",
-    ) -> bool:
-        _ = content_type
-        path = self._resolve(container, blob_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(payload, encoding="utf-8")
-        return True
-
-    def _resolve(self, container: str, blob_path: str) -> Path:
-        safe_parts = [part for part in Path(blob_path).parts if part not in {"..", ""}]
-        return self.root / container / Path(*safe_parts)
-
-
 def _tool_catalog() -> dict[str, ToolDefinition]:
     """Return stub tool definitions required to validate installed public operations."""
 
@@ -4700,6 +4637,14 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
     Call this after ``pool.start()`` so the alias handlers forward to live
     server sessions. The default backend's tool names come from the
     manifest's ``memory.tool_names`` mapping.
+
+    Ambient scope (user_id, agent_id, app_id) is injected by the proxy
+    layer (:class:`~kernel.mcp_launch.policy.ProxyPolicy` on the server's
+    config), not by these aliases. The aliases only do generic→native
+    field renaming (e.g. ``content``→``text`` for mem0). The proxy strips
+    ambient fields from the schema the model sees and injects them at
+    dispatch time — covering both the alias path and direct native-tool
+    calls (``mem0.get_memories``) from the same chokepoint.
     """
     from kernel.tools.mcp_client import SyntheticToolSpec  # noqa: PLC0415
     from kernel.tools.synthetic import mcp_alias_tool  # noqa: PLC0415
@@ -4721,7 +4666,10 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
         # even if another server in the pool also exposes the same tool names.
         target_server_id = "lisa-memory"
         # lisa-memory's tools take the generic shape (user_slug, memory_scope,
-        # memory_tier) natively — no arg translation needed.
+        # memory_tier) natively — no field renaming needed. Ambient scope
+        # is not proxy-enforced for lisa-memory (it has no proxy_policy),
+        # so the generic user_slug field is passed through and the model
+        # controls it (lisa-memory is local SQLite, no cross-user risk).
         add_arg_map = None
         search_arg_map = None
         list_arg_map = None
@@ -4733,65 +4681,29 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
         # with another server's (e.g. mem0's add_memory vs lisa-memory's
         # add_memory).
         target_server_id = _BACKEND_ID_TO_SERVER_ID.get(default_spec.id, default_spec.id)
-        # Per-backend arg translation: the generic aliases expose a stable
+        # Per-backend field renaming: the generic aliases expose a stable
         # shape (content/user_slug/memory_scope/...) but each backend's MCP
-        # tools expect their own argument names. Mem0's tools require user_id
-        # (not user_slug) and ignore memory_scope/memory_tier; lisa-memory
-        # takes the generic shape directly.
+        # tools may expect different argument names. Mem0's add_memory
+        # requires `text` (not `content`). Ambient scope injection (user_id,
+        # agent_id, app_id) is handled by the proxy layer — the alias only
+        # renames fields, it does not inject ambient values.
         if default_spec.id == "mem0":
-            # Mem0's add_memory tool requires `text` (not `content`) and
-            # scopes memory by user_id / agent_id / app_id / run_id. The
-            # generic memory.* alias exposes a stable shape (content /
-            # user_slug / memory_scope / memory_tier); the arg map translates
-            # it to Mem0's surface and injects ambient scope (mode_id,
-            # surface_id, workspace_id) so the model can never accidentally
-            # store or search outside the current turn's boundary.
-            #
-            # Map Lisa → Mem0:
-            #   user_slug   → user_id       (user isolation)
-            #   mode_id     → agent_id      (which mode created the memory)
-            #   surface_id  → app_id        (teams, desktop, CLI, etc.)
-            #   workspace_id→ metadata      (workspace scope)
-            #   memory_scope→ metadata      (personal / team)
-            #   memory_tier → metadata      (daily / weekly / long_term)
+            # Mem0 add_memory: content → text. The proxy injects user_id /
+            # agent_id / app_id from the runtime; we only rename content→text
+            # and pass through the rest (user_slug is kept for the alias's
+            # generic schema; the proxy overrides user_id at dispatch time).
             add_arg_map = lambda a: {
-                "text": a.get("content", ""),
-                "user_id": a.get("user_slug", "default"),
-                "agent_id": a.get("mode_id", _runtime_current_mode_id()) or "default",
-                "app_id": a.get("surface_id", "little-lisa") or "little-lisa",
-                "metadata": {
-                    "workspace_id": a.get("workspace_id", "default"),
+                k: v for k, v in {
+                    "text": a.get("content", ""),
+                    "user_slug": a.get("user_slug", "default"),
                     "memory_scope": a.get("memory_scope", "personal"),
                     "memory_tier": a.get("memory_tier", "daily"),
-                },
+                }.items() if v is not None
             }
-            # search_memories supports structured AND filters. Inject
-            # ambient scope boundaries (user_id, agent_id, app_id) so every
-            # search is automatically confined to the current mode and
-            # surface — the model never sees or controls these boundaries.
-            search_arg_map = lambda a: {
-                "query": a.get("query", ""),
-                "filters": {
-                    "AND": [
-                        {"user_id": a.get("user_slug", _runtime_user_slug() or "default")},
-                        {"agent_id": _runtime_current_mode_id() or "default"},
-                        {"app_id": "little-lisa"},
-                    ]
-                },
-                "limit": a.get("limit", 5),
-            }
-            # get_memories uses the same filter shape; inject ambient scope.
-            list_arg_map = lambda a: {
-                "filters": {
-                    "AND": [
-                        {"user_id": a.get("user_slug", _runtime_user_slug() or "default")},
-                        {"agent_id": _runtime_current_mode_id() or "default"},
-                        {"app_id": "little-lisa"},
-                    ]
-                },
-                "page": 1,
-                "page_size": a.get("limit", 20),
-            }
+            # search_memories / get_memories: query + limit pass through.
+            # The proxy injects the filters.AND with ambient scope.
+            search_arg_map = lambda a: {k: v for k, v in a.items() if k != "user_slug"}
+            list_arg_map = lambda a: {k: v for k, v in a.items() if k != "user_slug"}
         else:
             add_arg_map = None
             search_arg_map = None
@@ -4871,9 +4783,16 @@ async def astart_warm_mcp_pool() -> None:
     except MCPConnectionError as exc:
         _render_runtime_error(exc, title="MCP Startup Error")
         raise typer.Exit(code=2) from exc
+    # Register ambient resolvers so the proxy layer can inject runtime
+    # scope (user_slug, mode_id, app_id) into tool arguments at dispatch
+    # time. The proxy strips these fields from the schema the model sees
+    # and injects the resolved values before forwarding to the MCP server.
+    pool.set_ambient_resolver("user_slug", _runtime_user_slug)
+    pool.set_ambient_resolver("mode_id", _runtime_current_mode_id)
+    pool.set_ambient_resolver("app_id", lambda: "little-lisa")
     # Register host-owned synthetic tools (generic memory aliases) on the
     # now-live pool. Done after start() so handlers can close over the live
-    # router; the aliases dispatch in-process via MemoryStoreRouter.
+    # router; the aliases dispatch in-process via the pool.
     _register_memory_synthetic_tools(pool)
     _append_log_event(
         level="info",
