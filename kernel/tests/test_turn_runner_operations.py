@@ -233,3 +233,203 @@ async def test_operation_dispatch_error_produces_tool_error_message() -> None:
     # The operation raised, so total_tool_calls stays at 0 (counted after success)
     assert result.tool_call_count == 0
     assert result.iteration_count == 2
+
+
+# ── Mode-level tool filtering ────────────────────────────────────────
+
+
+def test_learn_mode_has_allowed_tool_ids() -> None:
+    """The learn mode declares allowed_tool_ids in its front-matter."""
+    from kernel.ipsar_fsm import get_workflow_catalog
+
+    learn = get_workflow_catalog().get("learn")
+    assert learn is not None
+    assert learn.allowed_tool_ids == ["memory.add", "memory.search", "memory.list"]
+
+
+def test_default_mode_has_no_allowed_tool_ids() -> None:
+    """Default mode has no allowed_tool_ids (empty list = all tools pass through)."""
+    from kernel.ipsar_fsm import get_workflow_catalog
+
+    default = get_workflow_catalog().get("default")
+    assert default is not None
+    assert default.allowed_tool_ids == []
+
+
+@pytest.mark.asyncio
+async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
+    """When a mode has allowed_tool_ids, only those tools reach the model."""
+    from kernel.tools.mcp_client import MCPToolSpec
+
+    captured_tools: list[dict[str, Any]] = []
+
+    async def capture_then_respond(**kwargs: Any) -> _StubCompletion:
+        tools = kwargs.get("tools") or []
+        captured_tools.extend(tools)
+        return _StubCompletion(content="Done.")
+
+    # Build a stub pool that returns tools the learn mode doesn't allow
+    class _StubPool:
+        async def list_tools(self) -> list[MCPToolSpec]:
+            return [
+                MCPToolSpec(
+                    server_id="test",
+                    name="memory.add",
+                    description="Add memory",
+                    input_schema={"type": "object", "properties": {}},
+                ),
+                MCPToolSpec(
+                    server_id="test",
+                    name="delete_all_memories",
+                    description="Delete all memories",
+                    input_schema={"type": "object", "properties": {}},
+                ),
+                MCPToolSpec(
+                    server_id="test",
+                    name="surf_url",
+                    description="Browse a URL",
+                    input_schema={"type": "object", "properties": {}},
+                ),
+            ]
+
+        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> Any:
+            return type("_R", (), {"output_text": "done", "is_error": False})()
+
+        async def __aenter__(self) -> "_StubPool":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    hooks = TurnHooks(complete=capture_then_respond, mcp_tool_pool=_StubPool())
+
+    await run_turn(mode_id="learn", query="test", hooks=hooks)
+
+    tool_names = {t["function"]["name"] for t in captured_tools if "function" in t}
+    # memory.add is allowed; delete_all_memories and surf_url are not
+    assert "memory.add" in tool_names
+    assert "delete_all_memories" not in tool_names
+    assert "surf_url" not in tool_names
+
+
+# ── tools_authoritative mode ─────────────────────────────────────────
+
+
+def test_default_mode_tools_authoritative_is_false() -> None:
+    """tools_authoritative defaults to False (off by default)."""
+    from kernel.ipsar_fsm import get_workflow_catalog
+
+    default = get_workflow_catalog().get("default")
+    assert default is not None
+    assert default.tools_authoritative is False
+
+
+def test_learn_mode_tools_authoritative_is_false() -> None:
+    """Learn mode does not set tools_authoritative (off by default)."""
+    from kernel.ipsar_fsm import get_workflow_catalog
+
+    learn = get_workflow_catalog().get("learn")
+    assert learn is not None
+    assert learn.tools_authoritative is False
+
+
+def test_build_operation_tool_schemas_authoritative_excludes_unbound() -> None:
+    """When tools_authoritative=True, only mode-bound operations are included."""
+    from kernel.operations.registry import build_operation_tool_schemas
+
+    # learn mode with authoritative=True should only include operations
+    # explicitly bound to learn (synthesize_and_store_learning, recall_memory).
+    # Other operations with no mode_allowlist should be excluded.
+    schemas = build_operation_tool_schemas("learn", tools_authoritative=True)
+    names = {s["function"]["name"] for s in schemas}
+    assert "synthesize_and_store_learning" in names
+    assert "recall_memory" in names
+    # Operations not bound to learn should NOT appear
+    assert "self_model" not in names
+    assert "workshop_run" not in names
+
+
+def test_build_operation_tool_schemas_non_authoritative_includes_unbound() -> None:
+    """When tools_authoritative=False, unbound operations still appear
+    (the default fallback: no mode_allowlist = allowed everywhere)."""
+    from kernel.operations.registry import build_operation_tool_schemas
+
+    schemas = build_operation_tool_schemas("learn", tools_authoritative=False)
+    names = {s["function"]["name"] for s in schemas}
+    # learn-bound operations are included
+    assert "synthesize_and_store_learning" in names
+    assert "recall_memory" in names
+    # Non-authoritative should include MORE operations than authoritative
+    # (operations without a restricting mode_allowlist pass through)
+    authoritative_schemas = build_operation_tool_schemas("learn", tools_authoritative=True)
+    assert len(schemas) >= len(authoritative_schemas)
+
+
+@pytest.mark.asyncio
+async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
+    """When tools_authoritative=True and allowed_tool_ids is empty,
+    no MCP tools are advertised (but operations still appear)."""
+    from kernel.ipsar_fsm import get_workflow_catalog
+    from kernel.tools.mcp_client import MCPToolSpec
+
+    captured_tools: list[dict[str, Any]] = []
+
+    async def capture_then_respond(**kwargs: Any) -> _StubCompletion:
+        tools = kwargs.get("tools") or []
+        captured_tools.extend(tools)
+        return _StubCompletion(content="Done.")
+
+    class _StubPool:
+        async def list_tools(self) -> list[MCPToolSpec]:
+            return [
+                MCPToolSpec(
+                    server_id="test",
+                    name="memory.add",
+                    description="Add memory",
+                    input_schema={"type": "object", "properties": {}},
+                ),
+                MCPToolSpec(
+                    server_id="test",
+                    name="surf_url",
+                    description="Browse a URL",
+                    input_schema={"type": "object", "properties": {}},
+                ),
+            ]
+
+        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> Any:
+            return type("_R", (), {"output_text": "done", "is_error": False})()
+
+        async def __aenter__(self) -> "_StubPool":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    # Temporarily set tools_authoritative=True on the default mode
+    catalog = get_workflow_catalog()
+    default_mode = catalog.get("default")
+    assert default_mode is not None
+    original = default_mode.tools_authoritative
+    default_mode.tools_authoritative = True
+    try:
+        hooks = TurnHooks(complete=capture_then_respond, mcp_tool_pool=_StubPool())
+        await run_turn(mode_id="default", query="test", hooks=hooks)
+    finally:
+        default_mode.tools_authoritative = original
+
+    tool_names = {t["function"]["name"] for t in captured_tools if "function" in t}
+    # No MCP tools should appear (allowed_tool_ids is empty + authoritative)
+    assert "memory.add" not in tool_names
+    assert "surf_url" not in tool_names

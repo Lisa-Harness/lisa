@@ -772,7 +772,49 @@ def _is_operation_allowed_for_mode(
     return True
 
 
-def build_operation_tool_schemas(mode_id: str) -> list[dict[str, Any]]:
+def _is_operation_bound_to_mode(
+    *,
+    operation_id: str,
+    definition: OperationDefinition,
+    mode_id: str,
+) -> bool:
+    """Return whether an operation is explicitly bound to the given mode.
+
+    Stricter than :func:`_is_operation_allowed_for_mode`: only returns True
+    when the operation is in the mode's bound operation IDs or the
+    operation's own ``mode_allowlist``. The default fallback (operations
+    with no ``mode_allowlist`` are allowed everywhere) is suppressed.
+
+    Used when the mode's ``tools_authoritative`` flag is True.
+    """
+    if not mode_id:
+        return True
+
+    if definition.mode_allowlist and mode_id in definition.mode_allowlist:
+        return True
+
+    # pylint: disable=import-outside-toplevel
+    from kernel.ipsar_fsm import get_workflow_catalog
+
+    mode = get_workflow_catalog().get(mode_id)
+    if mode:
+        mode_bound_operation_ids = set(
+            mode.entry_operation_ids
+            + mode.pre_turn_operation_ids
+            + mode.post_turn_operation_ids
+            + mode.allowed_operation_ids
+        )
+        if operation_id in mode_bound_operation_ids:
+            return True
+
+    return False
+
+
+def build_operation_tool_schemas(
+    mode_id: str,
+    *,
+    tools_authoritative: bool = False,
+) -> list[dict[str, Any]]:
     """Build OpenAI tool schemas for every operation allowed in the given mode.
 
     Operations are advertised to the LLM directly from the in-process catalog
@@ -783,11 +825,25 @@ def build_operation_tool_schemas(mode_id: str) -> list[dict[str, Any]]:
 
     Returns an empty list if the catalog is empty or no operations are
     allowed for the mode.
+
+    When ``tools_authoritative`` is True, only operations explicitly bound
+    to the mode (via ``allowed_operation_ids``, ``entry_operation_ids``,
+    ``pre_turn_operation_ids``, or ``post_turn_operation_ids``) or listed
+    in the operation's own ``mode_allowlist`` are advertised. The default
+    fallback (operations with no ``mode_allowlist`` are allowed everywhere)
+    is suppressed.
     """
     catalog = get_operation_catalog()
     schemas: list[dict[str, Any]] = []
     for operation_id, definition in catalog.items():
-        if not _is_operation_allowed_for_mode(
+        if tools_authoritative:
+            if not _is_operation_bound_to_mode(
+                operation_id=operation_id,
+                definition=definition,
+                mode_id=mode_id,
+            ):
+                continue
+        elif not _is_operation_allowed_for_mode(
             operation_id=operation_id,
             definition=definition,
             mode_id=mode_id,

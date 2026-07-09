@@ -1104,6 +1104,11 @@ class WorkflowModeConfig(BaseModel):
     pre_turn_operation_ids: list[str] = Field(default_factory=list)
     post_turn_operation_ids: list[str] = Field(default_factory=list)
     allowed_operation_ids: list[str] = Field(default_factory=list)
+    allowed_tool_ids: list[str] = Field(default_factory=list)
+    # When True, the mode's allowed_tool_ids and allowed_operation_ids are
+    # authoritative: empty means no tools/operations are advertised to the
+    # LLM. When False (default), empty means all pass through.
+    tools_authoritative: bool = False
     workshop_panels: list[WorkshopPanelModeConfig] = Field(default_factory=list)
     workshop_budget: WorkshopBudgetConfig = Field(default_factory=WorkshopBudgetConfig)
     workshop_planner_prompt_file: str = ""

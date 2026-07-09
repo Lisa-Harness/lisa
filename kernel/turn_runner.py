@@ -783,6 +783,12 @@ async def _run_turn_inner(
     # from a subprocess). Both are dispatched in-process: MCP tools via
     # pool.call_tool, operations via hooks.execute_operation.
     mcp_tools = await pool.list_tools()
+    # Apply mode-level tool allowlist.
+    # When tools_authoritative is True, empty allowed_tool_ids means no
+    # tools are advertised. When False (default), empty means all pass.
+    if mode_config and (mode_config.allowed_tool_ids or mode_config.tools_authoritative):
+        allowed = set(mode_config.allowed_tool_ids)
+        mcp_tools = [t for t in mcp_tools if t.name in allowed]
     tool_schemas: list[dict[str, Any]] = [
         mcp_tool_to_openai_function(
             name=spec.name,
@@ -792,7 +798,14 @@ async def _run_turn_inner(
         for spec in mcp_tools
     ]
     operation_catalog = get_operation_catalog()
-    tool_schemas.extend(build_operation_tool_schemas(mode_id))
+    tool_schemas.extend(
+        build_operation_tool_schemas(
+            mode_id,
+            tools_authoritative=bool(
+                mode_config and mode_config.tools_authoritative
+            ),
+        )
+    )
 
     # Resolve preferred model
     preferred_model_id = (

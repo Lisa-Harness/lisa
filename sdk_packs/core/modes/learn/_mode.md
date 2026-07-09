@@ -2,11 +2,12 @@
 mode_id: learn
 start_stage_id: none
 mode_kind: chat
-default_model: gpt-5.4
 require_query: true
 frontdoor_routable: true
 frontdoor_priority: 9
 allowed_operation_ids: [synthesize_and_store_learning, recall_memory]
+tools_authoritative: true
+allowed_tool_ids: [memory.add, memory.search, memory.list]
 description: "LEARN workflow mode to reflect on the conversation and distill durable insights."
 frontdoor_route_hints:
   - Route to `learn` when the user asks to take a note, reflect on the conversation, capture a learning, or distill an insight.

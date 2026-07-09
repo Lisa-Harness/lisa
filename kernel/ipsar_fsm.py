@@ -414,6 +414,11 @@ def load_catalog_from_disk(
             str(operation_id)
             for operation_id in (mode_front_matter.get("allowed_operation_ids") or [])
         ]
+        allowed_tool_ids = [
+            str(tool_id)
+            for tool_id in (mode_front_matter.get("allowed_tool_ids") or [])
+        ]
+        tools_authoritative = bool(mode_front_matter.get("tools_authoritative", False))
         frontdoor_routable = mode_front_matter.get("frontdoor_routable", False)
         if not isinstance(frontdoor_routable, bool):
             raise WorkflowValidationError(
@@ -612,6 +617,8 @@ def load_catalog_from_disk(
             pre_turn_operation_ids=pre_turn_operation_ids,
             post_turn_operation_ids=post_turn_operation_ids,
             allowed_operation_ids=allowed_operation_ids,
+            allowed_tool_ids=allowed_tool_ids,
+            tools_authoritative=tools_authoritative,
             workshop_panels=workshop_panels,
             workshop_budget=workshop_budget,
             workshop_planner_prompt_file=workshop_planner_prompt_file,
