@@ -4768,6 +4768,11 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
         # Pin dispatch to lisa-memory explicitly so the alias routes to it
         # even if another server in the pool also exposes the same tool names.
         target_server_id = "lisa-memory"
+        # lisa-memory's tools take the generic shape (user_slug, memory_scope,
+        # memory_tier) natively — no arg translation needed.
+        add_arg_map = None
+        search_arg_map = None
+        list_arg_map = None
     else:
         tool_names = dict(default_spec.tool_names)
         # Pin dispatch to the declared default backend's server. This
@@ -4776,6 +4781,29 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
         # with another server's (e.g. mem0's add_memory vs lisa-memory's
         # add_memory).
         target_server_id = _BACKEND_ID_TO_SERVER_ID.get(default_spec.id, default_spec.id)
+        # Per-backend arg translation: the generic aliases expose a stable
+        # shape (content/user_slug/memory_scope/...) but each backend's MCP
+        # tools expect their own argument names. Mem0's tools require user_id
+        # (not user_slug) and ignore memory_scope/memory_tier; lisa-memory
+        # takes the generic shape directly.
+        if default_spec.id == "mem0":
+            add_arg_map = lambda a: {
+                "content": a.get("content", ""),
+                "user_id": a.get("user_slug", "default"),
+            }
+            search_arg_map = lambda a: {
+                "query": a.get("query", ""),
+                "user_id": a.get("user_slug", "default"),
+                "limit": a.get("limit", 5),
+            }
+            list_arg_map = lambda a: {
+                "user_id": a.get("user_slug", "default"),
+                "limit": a.get("limit", 20),
+            }
+        else:
+            add_arg_map = None
+            search_arg_map = None
+            list_arg_map = None
 
     add_schema = {
         "type": "object",
@@ -4812,6 +4840,7 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
             target_tool=tool_names["add"],
             input_schema=add_schema,
             target_server_id=target_server_id,
+            arg_map=add_arg_map,
         ),
         mcp_alias_tool(
             name="memory.search",
@@ -4820,6 +4849,7 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
             target_tool=tool_names["search"],
             input_schema=search_schema,
             target_server_id=target_server_id,
+            arg_map=search_arg_map,
         ),
         mcp_alias_tool(
             name="memory.list",
@@ -4828,6 +4858,7 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
             target_tool=tool_names["list"],
             input_schema=list_schema,
             target_server_id=target_server_id,
+            arg_map=list_arg_map,
         ),
     ])
 
