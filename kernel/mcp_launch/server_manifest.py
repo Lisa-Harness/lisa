@@ -362,11 +362,11 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         module=entry.get("module"),
         package=entry.get("package"),
         entry_point=entry.get("entry_point"),
-        venv_dir=entry.get("venv_dir"),
-        command_path=entry.get("command_path"),
-        script_path=entry.get("script_path"),
+        venv_dir=_expand_env_value(entry.get("venv_dir")) if entry.get("venv_dir") else None,
+        command_path=_expand_env_value(entry.get("command_path")) if entry.get("command_path") else None,
+        script_path=_expand_env_value(entry.get("script_path")) if entry.get("script_path") else None,
         npx_package=entry.get("npx_package"),
-        uv_directory=entry.get("uv_directory"),
+        uv_directory=_expand_env_value(entry.get("uv_directory")) if entry.get("uv_directory") else None,
         cli_args=[str(a) for a in cli_args_raw],
         data_dir_arg=data_dir_arg,
         data_dir_subdir=data_dir_subdir,
@@ -377,6 +377,9 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         timeouts=timeouts,
         url=url,
         headers=headers,
+        warm=bool(entry.get("warm", False)),
+        required=bool(entry.get("required", False)),
+        disabled=False,
     )
 
 

@@ -186,6 +186,30 @@ class MCPServerSpec:
     """HTTP headers for runtime_kind=HTTP (e.g. Authorization bearer token).
     ${VAR} expansion happens in the manifest loader before the spec is built."""
 
+    warm: bool = False
+    """When True, this server is a candidate for the host-owned long-lived
+    pool: it is spawned eagerly at runtime init and kept alive across turns
+    (with bounded retry and event-driven restart on crash). When False
+    (default), the server is cold: it is **not** connected at pool
+    ``start()`` — it is lazily connected on first ``list_tools`` or
+    ``call_tool`` that needs it, and its tools are absent from the initial
+    catalog."""
+
+    required: bool = False
+    """Meaningful only when ``warm=True``. When True, startup failure (after
+    bounded retry-with-backoff) raises :class:`MCPConnectionError`,
+    propagating to the caller so a load-bearing warm server fails the turn
+    or startup loudly. When False, startup failure is logged and the pool
+    proceeds without that server's tools. Ignored when ``warm=False``."""
+
+    disabled: bool = False
+    """When True, the manifest loader skips this spec entirely — it is not
+    registered in the :class:`MCPServerRegistry` and cannot be compiled.
+    This is the config-only escape hatch for disabling a server without a
+    code change. The manifest loader also honors a YAML-level ``disabled:
+    true`` key on each entry, which short-circuits before spec
+    construction; this field is for programmatic registration paths."""
+
 
 @dataclass(frozen=True, slots=True)
 class MCPServerRegistry:

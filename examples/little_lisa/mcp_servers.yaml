@@ -1,12 +1,14 @@
 ---
 version: 1
 
-# Memory backends are declared as a peer list. Each entry has an id, a kind
-# (http | stdio), connection details, and tool_names mapping the generic
-# memory.add/search/list aliases to that backend's actual MCP tool names.
-# default_backend picks one by id; the host wires it behind the generic
-# memory.* synthetic tools. Adding a new backend is a YAML entry, not a
-# code change.
+# ──────────────────────────────────────────────────────────────────────────
+# Memory backends
+# ──────────────────────────────────────────────────────────────────────────
+# Each entry has an id, a kind (http | stdio), connection details, and
+# tool_names mapping the generic memory.add/search/list aliases to that
+# backend's actual MCP tool names. default_backend picks one by id; the
+# host wires it behind the generic memory.* synthetic tools. Adding a new
+# backend is a YAML entry, not a code change.
 #
 # Backends are ALSO registered as tool servers (below under `servers`) so
 # their full tool surface is available to modes that declare them. The
@@ -48,24 +50,72 @@ memory:
         search: search_memories
         list: get_memories
 
-# External MCP tool servers. Mem0 is registered but only the allowed_tools are
-# exposed directly in addition to the three core aliases above still route
-# through the default backend (lisa_memory unless overridden).
-# Disabled when MEM0_API_KEY is unset — the host's empty-header guard drops
-# it from the pool.
+# ──────────────────────────────────────────────────────────────────────────
+# MCP tool servers
+# ──────────────────────────────────────────────────────────────────────────
+# All servers (first-party and external) are declared here. The host loads
+# them via load_mcp_server_manifest and compiles them into MCPClientConfig
+# entries for MCPToolPool. Adding, removing, disabling, or changing the
+# launch policy (warm/cold/required) of any server is a YAML edit, not a
+# code change.
+#
+# Launch policy fields:
+#   warm: true  → spawned eagerly at pool.start(); kept alive across turns
+#                 with bounded retry and event-driven restart on crash.
+#   warm: false → (default) not connected at start; lazily connected on first
+#                 list_tools or call_tool that needs it.
+#   required: true  → (only with warm) startup failure raises
+#                     MCPConnectionError after bounded retry (fails the turn).
+#   required: false → (default) startup failure is logged; server's tools are
+#                     absent from the catalog.
+#   disabled: true  → skipped entirely by the manifest loader; not registered.
+#
 # tool_policy.allowed_tools/denied_tools list BARE tool names (per-server
-# filtering happens before namespacing).  The model sees them namespaced
-# as mem0.<tool_name>.
+# filtering happens before namespacing). The model sees them namespaced
+# as <server_id>.<tool_name>.
 servers:
+  # ── First-party servers (warm — always on, load-bearing) ──
+  - server_id: lisa-context
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    warm: true
+    required: true
+
+  - server_id: lisa-memory
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    warm: true
+    required: true
+
+  - server_id: lisa-content
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    warm: true
+    required: true
+
+  # ── First-party servers (cold — lazily connected on first use) ──
+  - server_id: lisa-search
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+
+  - server_id: lisa-guard
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+
+  - server_id: lisa-storage
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+
+  # ── External servers ──
+  # Mem0 cloud — HTTP MCP, bearer-token auth. Disabled when MEM0_API_KEY is
+  # unset; the host's empty-header guard drops it from the pool.
   - server_id: mem0
     runtime_kind: http
     url: https://mcp.mem0.ai/mcp
     headers:
       Authorization: "Bearer ${MEM0_API_KEY}"
     tool_policy:
-      allowed_tools:
-        - search_memories
-        - get_memories
       denied_tools:
-        - add_memory
+        - delete_all_memories
+        - delete_entitites
         - delete_memory

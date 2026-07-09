@@ -331,13 +331,17 @@ class MCPToolPool:
         await self.aclose()
 
     async def start(self) -> None:
-        """Spawn and initialize every configured MCP server.
+        """Spawn and initialize every **warm** MCP server.
 
         Warm servers (``config.warm=True``) are (re)started with bounded
         retry-with-backoff. A warm server with ``required=True`` whose
         retries are exhausted raises :class:`MCPConnectionError`; a
         non-required warm server is logged and skipped. Cold servers
-        keep the original swallow-and-warn behavior.
+        (``config.warm=False``) are **not** connected here — they are
+        lazily connected on first ``list_tools`` or ``call_tool`` that
+        needs them. This keeps servers like ``mem0`` (no API key) or
+        ``lisa-search`` (only needed in some modes) from spawning until
+        first use.
         """
 
         if self._started:
@@ -350,17 +354,10 @@ class MCPToolPool:
         for config in self._warm_configs:
             await self._connect_warm(config)
 
-        # Cold servers: best-effort, swallow startup errors.
-        for config in self._cold_configs:
-            try:
-                await self._connect(config)
-            except Exception as exc:  # pylint: disable=broad-except
-                logger.warning(
-                    "MCP server %r failed to start: %s: %s",
-                    config.server_id,
-                    type(exc).__name__,
-                    exc,
-                )
+        # Cold servers are NOT connected at start. They are lazily
+        # connected on first list_tools/call_tool that needs them (see
+        # _ensure_connected). Only the warm servers' tools are indexed
+        # here; cold tools are merged into the catalog lazily.
         await self._refresh_tool_index()
 
     async def _connect_warm(self, config: MCPClientConfig) -> None:
@@ -551,6 +548,60 @@ class MCPToolPool:
         """
         await self._refresh_tool_index()
 
+    async def _ensure_connected(self, config: MCPClientConfig) -> bool:
+        """Lazily connect a cold server if it is not yet connected.
+
+        Returns True when the server has a live session after the call
+        (was already connected, or was just connected). Returns False
+        when the cold server could not be started (the error is logged).
+
+        Warm servers are never lazily connected here — they are either
+        already up (connected at ``start`` or restarted via
+        ``restart_warm``) or in ``_warm_failed``. A warm server that is
+        down gets one restart attempt via ``_maybe_restart_warm``.
+        """
+        if config.server_id in self._sessions:
+            return True
+        if config.warm:
+            # Warm server that is down — try one restart.
+            await self._maybe_restart_warm(config)
+            return config.server_id in self._sessions
+        # Cold server — connect on demand, best-effort.
+        try:
+            await self._connect(config)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "Cold MCP server %r failed to start on demand: %s: %s",
+                config.server_id,
+                type(exc).__name__,
+                exc,
+            )
+            return False
+        # New session: refresh so this server's tools are indexed.
+        await self._refresh_tool_index()
+        return config.server_id in self._sessions
+
+    async def _ensure_all_cold_connected(self) -> None:
+        """Best-effort connect every cold server that is not yet connected.
+
+        Used by ``list_tools`` so the initial tool catalog reflects all
+        servers' tools. Cold servers that fail to start are skipped —
+        their tools are simply absent from the catalog.
+        """
+        for config in self._cold_configs:
+            if config.server_id in self._sessions:
+                continue
+            try:
+                await self._connect(config)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning(
+                    "Cold MCP server %r failed to start: %s: %s",
+                    config.server_id,
+                    type(exc).__name__,
+                    exc,
+                )
+        await self._refresh_tool_index()
+
     async def restart_warm(self, server_id: str) -> bool:
         """Re-spawn one warm server after a mid-session crash.
 
@@ -589,10 +640,20 @@ class MCPToolPool:
             )
 
     async def list_tools(self) -> list[MCPToolSpec]:
-        """Return the merged tool catalog from all connected servers."""
+        """Return the merged tool catalog from all connected servers.
+
+        Cold servers that have not yet been connected are lazily started
+        here so the catalog reflects their tool surface. Cold servers that
+        fail to start are skipped — their tools are absent from the catalog.
+        """
 
         if not self._started:
             await self.start()
+        # Lazily connect cold servers that have not been connected yet so
+        # the catalog reflects every server's tools. Warm servers are already
+        # up (or in _warm_failed); they are not touched here.
+        if any(c.server_id not in self._sessions for c in self._cold_configs):
+            await self._ensure_all_cold_connected()
         return list(self._tools)
 
     async def call_tool(
@@ -648,9 +709,10 @@ class MCPToolPool:
         config = next((c for c in self._configs if c.server_id == server_id), None)
         session = self._sessions.get(server_id)
         if session is None:
-            # Warm server may have crashed; try one restart before failing.
-            if config is not None and config.warm:
-                await self._maybe_restart_warm(config)
+            # Server is down. Warm servers get one restart attempt; cold
+            # servers are lazily connected on demand.
+            if config is not None:
+                await self._ensure_connected(config)
                 session = self._sessions.get(server_id)
             if session is None:
                 return MCPToolResult(
@@ -703,19 +765,12 @@ class MCPToolPool:
         if session is None:
             # Lazily start the target server. Cold servers are connected on
             # first scoped call; warm servers get one restart attempt.
-            try:
-                if config.warm:
-                    await self._connect_warm(config)
-                else:
-                    await self._connect(config)
-                    # New session: refresh so this server's tools are indexed.
-                    await self._refresh_tool_index()
-            except Exception as exc:  # pylint: disable=broad-except
+            connected = await self._ensure_connected(config)
+            if not connected:
                 return MCPToolResult(
                     tool_id=tool_id,
                     output_text=(
-                        f"MCP server '{server_id}' for tool '{tool_id}' failed to "
-                        f"start: {type(exc).__name__}: {exc}"
+                        f"MCP server '{server_id}' for tool '{tool_id}' is not connected."
                     ),
                     is_error=True,
                 )

@@ -131,14 +131,47 @@ async def test_start_warm_non_required_proceeds_without_server() -> None:
     await pool.aclose()
 
 
-# ── start: cold server keeps swallow-and-warn ──────────────────────────────
+# ── start: cold server is NOT connected at start (lazy) ─────────────────────
 
 
 @pytest.mark.asyncio
-async def test_start_cold_failure_is_logged_not_raised() -> None:
+async def test_start_cold_server_not_connected_at_start() -> None:
+    """Cold servers are not connected at pool.start() — they are lazily
+    connected on first list_tools or call_tool. _connect should never be
+    called for a cold server during start()."""
+    pool = MCPToolPool([_cold_config("c")])
+    # _connect should NOT be called during start for a cold server.
+    mock_connect = AsyncMock(side_effect=RuntimeError("should not be called"))
+    with patch.object(MCPToolPool, "_connect", new=mock_connect):
+        await pool.start()  # no raise, no connect
+        assert mock_connect.call_count == 0
+    assert "c" not in pool._sessions
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_list_tools_lazily_connects_cold_server() -> None:
+    """list_tools lazily connects cold servers so the catalog reflects
+    their tools. A cold server that fails to start is skipped."""
+    sessions: dict[str, Any] = {}
+    pool = MCPToolPool([_cold_config("c")])
+    with patch.object(MCPToolPool, "_connect", new=_stub_connect(sessions, "c")):
+        await pool.start()
+        assert "c" not in pool._sessions  # not connected at start
+        await pool.list_tools()  # triggers lazy connect
+        assert "c" in pool._sessions  # connected on demand
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_list_tools_skips_cold_server_that_fails_lazy_connect() -> None:
+    """A cold server that fails to lazily connect is skipped — its tools
+    are absent from the catalog but no error is raised."""
     pool = MCPToolPool([_cold_config("c")])
     with patch.object(MCPToolPool, "_connect", new=_failing_connect()):
-        await pool.start()  # no raise
+        await pool.start()
+        tools = await pool.list_tools()  # triggers lazy connect, fails, skips
+    assert tools == []
     assert "c" not in pool._sessions
     await pool.aclose()
 

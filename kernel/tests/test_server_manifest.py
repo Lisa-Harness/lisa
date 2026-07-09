@@ -300,3 +300,70 @@ servers:
     specs, mem = load_mcp_server_manifest(manifest)
     assert mem.default_backend == "mem0"
     assert specs[0].server_id == "mem0"
+
+
+# ── warm / required / disabled launch policy ────────────────────────────────
+
+
+def test_load_manifest_parses_warm_and_required(tmp_path: Path) -> None:
+    """warm and required fields are parsed onto the MCPServerSpec."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: lisa-context
+    runtime_kind: venv_bin
+    venv_dir: "/fake/venv"
+    warm: true
+    required: true
+  - server_id: lisa-search
+    runtime_kind: venv_bin
+    venv_dir: "/fake/venv"
+""",
+        encoding="utf-8",
+    )
+    specs, _ = load_mcp_server_manifest(manifest)
+    context = next(s for s in specs if s.server_id == "lisa-context")
+    assert context.warm is True
+    assert context.required is True
+    search = next(s for s in specs if s.server_id == "lisa-search")
+    assert search.warm is False
+    assert search.required is False
+
+
+def test_load_manifest_disabled_skips_entry(tmp_path: Path) -> None:
+    """disabled: true skips the entry entirely — it is not in the specs list."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: active
+    runtime_kind: python
+    module: active.server
+  - server_id: inactive
+    runtime_kind: python
+    module: inactive.server
+    disabled: true
+""",
+        encoding="utf-8",
+    )
+    specs, _ = load_mcp_server_manifest(manifest)
+    assert len(specs) == 1
+    assert specs[0].server_id == "active"
+
+
+def test_compile_mcp_config_passes_warm_required(tmp_path: Path) -> None:
+    """compile_mcp_config passes warm/required from the spec to the config."""
+    from kernel.mcp_launch.compiler import compile_mcp_config
+    from kernel.mcp_launch.policy import MCPServerSpec, RuntimeKind
+
+    spec = MCPServerSpec(
+        server_id="lisa-context",
+        runtime_kind=RuntimeKind.VENV_BIN,
+        venv_dir="/fake/venv",
+        warm=True,
+        required=True,
+    )
+    config = compile_mcp_config(spec)
+    assert config.warm is True
+    assert config.required is True

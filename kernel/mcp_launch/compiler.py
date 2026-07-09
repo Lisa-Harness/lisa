@@ -170,6 +170,8 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
         ensure_data_dir=spec.ensure_data_dir,
         url=spec.url,
         headers=dict(spec.headers),
+        warm=spec.warm,
+        required=spec.required,
     )
 
 

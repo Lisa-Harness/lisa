@@ -4743,18 +4743,58 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
         # (not user_slug) and ignore memory_scope/memory_tier; lisa-memory
         # takes the generic shape directly.
         if default_spec.id == "mem0":
+            # Mem0's add_memory tool requires `text` (not `content`) and
+            # scopes memory by user_id / agent_id / app_id / run_id. The
+            # generic memory.* alias exposes a stable shape (content /
+            # user_slug / memory_scope / memory_tier); the arg map translates
+            # it to Mem0's surface and injects ambient scope (mode_id,
+            # surface_id, workspace_id) so the model can never accidentally
+            # store or search outside the current turn's boundary.
+            #
+            # Map Lisa → Mem0:
+            #   user_slug   → user_id       (user isolation)
+            #   mode_id     → agent_id      (which mode created the memory)
+            #   surface_id  → app_id        (teams, desktop, CLI, etc.)
+            #   workspace_id→ metadata      (workspace scope)
+            #   memory_scope→ metadata      (personal / team)
+            #   memory_tier → metadata      (daily / weekly / long_term)
             add_arg_map = lambda a: {
-                "content": a.get("content", ""),
+                "text": a.get("content", ""),
                 "user_id": a.get("user_slug", "default"),
+                "agent_id": a.get("mode_id", _runtime_current_mode_id()) or "default",
+                "app_id": a.get("surface_id", "little-lisa") or "little-lisa",
+                "metadata": {
+                    "workspace_id": a.get("workspace_id", "default"),
+                    "memory_scope": a.get("memory_scope", "personal"),
+                    "memory_tier": a.get("memory_tier", "daily"),
+                },
             }
+            # search_memories supports structured AND filters. Inject
+            # ambient scope boundaries (user_id, agent_id, app_id) so every
+            # search is automatically confined to the current mode and
+            # surface — the model never sees or controls these boundaries.
             search_arg_map = lambda a: {
                 "query": a.get("query", ""),
-                "user_id": a.get("user_slug", "default"),
+                "filters": {
+                    "AND": [
+                        {"user_id": a.get("user_slug", _runtime_user_slug() or "default")},
+                        {"agent_id": _runtime_current_mode_id() or "default"},
+                        {"app_id": "little-lisa"},
+                    ]
+                },
                 "limit": a.get("limit", 5),
             }
+            # get_memories uses the same filter shape; inject ambient scope.
             list_arg_map = lambda a: {
-                "user_id": a.get("user_slug", "default"),
-                "limit": a.get("limit", 20),
+                "filters": {
+                    "AND": [
+                        {"user_id": a.get("user_slug", _runtime_user_slug() or "default")},
+                        {"agent_id": _runtime_current_mode_id() or "default"},
+                        {"app_id": "little-lisa"},
+                    ]
+                },
+                "page": 1,
+                "page_size": a.get("limit", 20),
             }
         else:
             add_arg_map = None
