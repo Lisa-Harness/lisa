@@ -1,6 +1,6 @@
 """Tests for the four Kernel-as-MCP servers (Part 4).
 
-Covers tool registration and dispatch for lisa-context, lisa-operations,
+Covers tool registration and dispatch for lisa-context, lisa-memory,
 lisa-search, and lisa-surf using FastMCP's in-process ``call_tool`` API.
 """
 
@@ -131,63 +131,6 @@ async def test_context_lists_broker_tool() -> None:
     names = {t.name for t in tools}
     assert "broker_context" in names
     assert "add_memory" not in names
-
-
-# ── lisa_operations ─────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def operations_setup(monkeypatch: pytest.MonkeyPatch) -> None:
-    from kernel.ipsar_fsm import register_content_roots, register_operation_callbacks
-    from kernel.operations.registry import execute_operation, get_operation_catalog
-
-    core_root = (Path(__file__).resolve().parents[2] / "sdk_packs" / "core").resolve()
-    register_content_roots(core_root)
-    register_operation_callbacks(get_operation_catalog, execute_operation)
-
-
-def test_operations_build_tool_catalog(operations_setup: None) -> None:
-    from lisa_sdk.lisa_operations.server import build_tool_catalog
-
-    catalog = build_tool_catalog()
-    assert isinstance(catalog, dict)
-    assert len(catalog) > 0
-    # Every entry has description and input_schema
-    for op_id, info in catalog.items():
-        assert "description" in info
-        assert "input_schema" in info
-
-
-@pytest.mark.asyncio
-async def test_operations_registers_operation_tools(operations_setup: None) -> None:
-    from kernel.operations.registry import get_operation_catalog
-    from lisa_sdk.lisa_operations.server import mcp
-
-    tools = await mcp.list_tools()
-    tool_names = {tool.name for tool in tools}
-    operation_ids = set(get_operation_catalog().keys())
-    assert operation_ids
-    assert operation_ids <= tool_names
-
-
-@pytest.mark.asyncio
-async def test_operations_call_unknown_tool_fails(operations_setup: None) -> None:
-    from lisa_sdk.lisa_operations.server import mcp
-
-    with pytest.raises(Exception):
-        await mcp.call_tool("nonexistent_op_xyz", {})
-
-
-@pytest.mark.asyncio
-async def test_operations_call_registered_operation(operations_setup: None) -> None:
-    from kernel.operations.registry import get_operation_catalog
-    from lisa_sdk.lisa_operations.server import mcp
-
-    operation_id = next(iter(get_operation_catalog().keys()))
-    result = await mcp.call_tool(operation_id, {})
-    # Registered operation tool should execute and return text (possibly an error string
-    # if required context/params are missing, but the MCP tool itself is callable).
-    assert isinstance(_tool_text(result), str)
 
 
 # ── lisa_search ─────────────────────────────────────────────────────────────

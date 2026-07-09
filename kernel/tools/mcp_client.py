@@ -499,7 +499,7 @@ class MCPToolPool:
 
         Public entry point for hosts that change a server's tool surface
         at runtime (e.g. after installing/uninstalling packs that affect a
-        cold server like ``lisa-operations``). Re-queries every connected
+        cold server whose tool surface may change). Re-queries every connected
         session and rebuilds the index.
         """
         await self._refresh_tool_index()

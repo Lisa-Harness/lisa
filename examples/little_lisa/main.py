@@ -3286,10 +3286,9 @@ def _build_mcp_tool_servers() -> list[Any]:
 
     Warm vs cold: ``lisa-content`` and ``lisa-context`` are marked
     ``warm=True, required=True`` so the host owns a long-lived pool for
-    them (spawned once at init, reused across turns). ``lisa-operations``
-    is intentionally NOT warmed — its tool surface changes when packs are
-    installed/uninstalled and a warm pool's cached tool index would go
-    stale. The other servers stay cold (per-turn spawn/teardown).
+    them (spawned once at init, reused across turns). The other servers
+    stay cold (per-turn spawn/teardown); their tool surface is discovered
+    fresh each time.
     """
     warm_configs, cold_configs = _compile_mcp_configs()
     return [*warm_configs, *cold_configs]
@@ -3334,7 +3333,6 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
     first_party_servers = [
         ("lisa-context", "lisa_context.server", True),
         ("lisa-memory", "lisa_memory.server", True),
-        ("lisa-operations", "lisa_operations.server", False),
         ("lisa-search", "lisa_search.server", False),
         ("lisa-surf", "lisa_surf.server", False),
         ("lisa-guard", "lisa_guard.server", False),
@@ -3343,12 +3341,7 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
     ]
 
     for server_id, _module, _supports_readonly in first_party_servers:
-        # lisa-operations exposes every operation as a tool, including
-        # web_search. lisa-search already owns web_search, so deny it
-        # from lisa-operations to avoid a tool-name collision.
         tool_policy = ToolPolicy()
-        if server_id == "lisa-operations":
-            tool_policy = ToolPolicy(denied_tools=["web_search"])
         registry.register(
             MCPServerSpec(
                 server_id=server_id,

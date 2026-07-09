@@ -45,6 +45,7 @@ from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "build_operation_tool_schemas",
     "execute_operation",
     "get_operation_catalog",
     "is_known_tool",
@@ -769,6 +770,39 @@ def _is_operation_allowed_for_mode(
     if definition.mode_allowlist:
         return False
     return True
+
+
+def build_operation_tool_schemas(mode_id: str) -> list[dict[str, Any]]:
+    """Build OpenAI tool schemas for every operation allowed in the given mode.
+
+    Operations are advertised to the LLM directly from the in-process catalog
+    (not through an MCP subprocess). Each schema is built with
+    :func:`build_strict_openai_function_tool` so the model sees the
+    operation's real ``Parameters`` Pydantic model — not an
+    ``arguments_json`` wrapper.
+
+    Returns an empty list if the catalog is empty or no operations are
+    allowed for the mode.
+    """
+    catalog = get_operation_catalog()
+    schemas: list[dict[str, Any]] = []
+    for operation_id, definition in catalog.items():
+        if not _is_operation_allowed_for_mode(
+            operation_id=operation_id,
+            definition=definition,
+            mode_id=mode_id,
+        ):
+            continue
+        if definition.parameters_schema is None:
+            continue
+        schemas.append(
+            build_strict_openai_function_tool(
+                name=operation_id,
+                description=definition.description or f"Execute {operation_id}.",
+                parameters_schema=definition.parameters_schema,
+            )
+        )
+    return schemas
 
 
 async def execute_operation(

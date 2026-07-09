@@ -126,10 +126,11 @@ flowchart TD
   subgraph MCP
     Mem[lisa-context MCP
       (SQLite memory + context broker)]
-    Ops[lisa-operations MCP
-      (pack-authored operations)]
     Tools[Other MCP tool servers]
   end
+  Ops[Operations
+    (in-process, dispatched via
+    hooks.execute_operation)]
 
   TR --> FD
   TR --> SLICE

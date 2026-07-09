@@ -26,7 +26,6 @@ dependencies = [
 [project.scripts]
 lisa-context = "lisa_sdk.lisa_context.server:main"
 lisa-memory = "lisa_sdk.lisa_memory.server:main"
-lisa-operations = "lisa_sdk.lisa_operations.server:main"
 lisa-search = "lisa_sdk.lisa_search.server:main"
 lisa-surf = "lisa_sdk.lisa_surf.server:main"
 lisa-guard = "lisa_sdk.lisa_guard.server:main"

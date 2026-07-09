@@ -46,7 +46,9 @@ from kernel.models import (
     ToolResult,
 )
 from kernel.operations.registry import (
+    build_operation_tool_schemas,
     execute_operation,
+    get_operation_catalog,
 )
 from kernel.provider_core import StreamedChunk, StreamedCompletion, _aggregate_streamed_chunks
 from kernel.seams.protocols import (
@@ -233,7 +235,7 @@ class TurnHooks:
     mcp_tool_servers: list[MCPClientConfig] = field(default_factory=list)
     """MCP server configurations to spawn for tool discovery and dispatch.
     Default: empty list (no external tools). The host declares which MCP
-    servers to run (e.g. ``lisa-context``, ``lisa-search``, ``lisa-operations``)
+    servers to run (e.g. ``lisa-context``, ``lisa-search``)
     and the kernel manages the subprocess lifecycle via ``MCPToolPool``.
 
     The kernel speaks MCP tool schema internally. At the provider edge,
@@ -261,9 +263,9 @@ class TurnHooks:
     delegates to `kernel.operations.registry.execute_operation`.
 
     Operations are internal kernel capabilities (pre-turn briefings, entry
-    actions, declarative prompts). They are not advertised to the model as
-    tools; if an operation should be LLM-callable, expose it through the
-    ``lisa-operations`` MCP server.
+    actions, declarative prompts). They are also advertised to the LLM as
+    tools directly from the in-process catalog and dispatched via this hook
+    so they receive full host callbacks (complete_fn, resolve_model_fn, etc.).
     """
 
     # ── Post-turn side effects ───────────────────────────────────────────
@@ -774,10 +776,12 @@ async def _run_turn_inner(
     user_content = "\n\n".join(user_parts)
     messages.append({"role": "user", "content": user_content})
 
-    # Build tool schemas for this turn — MCP tools translated to OpenAI format.
-    # Operations are no longer advertised as tools; they are internal kernel
-    # capabilities. If an operation should be LLM-callable, expose it through
-    # the lisa-operations MCP server.
+    # Build tool schemas for this turn — MCP tools + in-process operations.
+    # MCP tools are translated from the pool's discovered tool surface.
+    # Operations are advertised directly from the in-process catalog so the
+    # model sees their real Parameters schema (not an arguments_json wrapper
+    # from a subprocess). Both are dispatched in-process: MCP tools via
+    # pool.call_tool, operations via hooks.execute_operation.
     mcp_tools = await pool.list_tools()
     tool_schemas: list[dict[str, Any]] = [
         mcp_tool_to_openai_function(
@@ -787,6 +791,8 @@ async def _run_turn_inner(
         )
         for spec in mcp_tools
     ]
+    operation_catalog = get_operation_catalog()
+    tool_schemas.extend(build_operation_tool_schemas(mode_id))
 
     # Resolve preferred model
     preferred_model_id = (
@@ -877,7 +883,7 @@ async def _run_turn_inner(
             content = content.strip()
             break
 
-        # Dispatch MCP tool calls
+        # Dispatch tool calls — MCP tools via pool, operations in-process.
         tools_dispatched = False
         for tool_call in tool_calls:
             tool_name, tool_arguments = openai_tool_call_to_mcp(tool_call)
@@ -885,11 +891,22 @@ async def _run_turn_inner(
 
             tools_dispatched = True
             try:
-                mcp_result = await pool.call_tool(tool_name, tool_arguments)
-                tool_output = mcp_result.output_text or "Done"
+                if tool_name in operation_catalog:
+                    # Operation: dispatch in-process via the host's
+                    # execute_operation hook, which injects all host
+                    # callbacks (complete_fn, resolve_model_fn,
+                    # answer_memory_recall_fn, execute_tool_fn, etc.).
+                    op_ctx = ctx.model_copy(
+                        update={"operation_id": tool_name, "params": tool_arguments}
+                    )
+                    op_result = await exec_op(tool_name, op_ctx)
+                    tool_output = _stringify_result(op_result)
+                else:
+                    mcp_result = await pool.call_tool(tool_name, tool_arguments)
+                    tool_output = mcp_result.output_text or "Done"
                 total_tool_calls += 1
             except Exception as exc:  # pylint: disable=broad-except
-                _log.warning("MCP tool '%s' failed in turn runner: %s", tool_name, exc)
+                _log.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
                 tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
 
             if not tool_output.strip():

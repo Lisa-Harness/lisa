@@ -56,7 +56,7 @@ flowchart TD
 ### Layer 1 — Backends as tool servers
 
 A memory backend is an MCP server in the pool, no different from
-`lisa-search` or `lisa-operations`. Its full tool surface is discoverable by
+`lisa-search`. Its full tool surface is discoverable by
 any mode that declares the tools in its `allowed_operation_ids` or tool
 allowlist. There is no memory-specific gating.
 

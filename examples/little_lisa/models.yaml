@@ -1,19 +1,12 @@
 ---
 version: 1
 mode_models:
-  search: gemma4:cloud
-  workshop: glm-5.2:cloud
+  discuss: glm-5.2:cloud
 models:
   - model_id: gemma4:cloud
     provider: ollama
+    designations: [default, front-door]
 
   - model_id: glm-5.2:cloud
     provider: ollama
-
-  - model_id: gpt-5.4
-    provider: azure_openai
     designations: [deep, reasoning]
-
-  - model_id: gpt-chat-latest
-    provider: azure_openai
-    designations: [default, front-door]

@@ -274,7 +274,7 @@ external clients (and to itself when a host wants to run them out-of-process):
 | Server | Package | Tools |
 | --- | --- | --- |
 | `lisa-context` | `mcp_server/src/lisa_context/` | `add_memory`, `search_memory`, `list_memories`, `get_surface_context` |
-| `lisa-operations` | `mcp_server/src/lisa_operations/` | one tool per operation in the registry |
+
 | `lisa-search` | `mcp_server/src/lisa_search/` | `web_search` (wraps `kernel.web_search`) |
 | `lisa-surf` | `mcp_server/src/lisa_surf/` | `surf_url`, `flush_session` |
 | `lisa-guard` | `mcp_server/src/lisa_guard/` | `validate_input`, `validate_output`, `guard_configured` |
@@ -306,7 +306,7 @@ event bus.
 - `kernel/mcp_client.py` (memory-only) — replaced by `kernel/tools/mcp_client.py` (general)
 - `TurnHooks.build_extra_tool_schemas` — replaced by `mcp_tool_servers`
 - `TurnHooks.execute_tool` — replaced by `MCPToolPool.call_tool`
-- Operation-sourced OpenAI schemas in `kernel/operations/registry.py` — operations are not tools; if an operation should be LLM-callable, expose it through `lisa-operations` MCP server
+- Operation-sourced OpenAI schemas in `kernel/operations/registry.py` — operations are advertised to the LLM directly from the in-process catalog via `build_operation_tool_schemas` and dispatched through `hooks.execute_operation` in the turn runner
 
 ## Part 3 — Memory: discoverable external systems with fallback
 
@@ -456,7 +456,7 @@ Per the "no compat or migration" preference, this is one cutover, not a staged m
 
 ### Phase 4 — Kernel-owned MCP servers (1–2 days)
 
-1. Promote `mcp_server/` from memory-only to a small server family: `lisa-context`, `lisa-operations`, `lisa-search`, `lisa-surf`.
+1. Promote `mcp_server/` from memory-only to a small server family: `lisa-context`, `lisa-search`, `lisa-surf`.
 2. Each server wraps an existing kernel capability; no new business logic.
 3. Document the server configs in `docs/` and register them as entry points.
 
@@ -485,7 +485,7 @@ implemented when needed. OpenAI translation ships in Phase 2.
 2. **Streaming.** Out of scope. MCP tool calls are request/response. The kernel
    `CompletionResult` is non-streaming. Streaming is a separate, orthogonal change.
 3. **Operation-as-tool exposure.** All operations are tools and are always exposed
-   through `lisa-operations`. No opt-in flag. The operation registry's full catalog
+   through in-process dispatch in the turn runner. No opt-in flag. The operation registry's full catalog
    is surfaced as MCP tools.
 4. **mem0 as default.** mem0 can be installed as an alternative MCP memory server,
     but `lisa-context` remains the default. No kernel fallback.
