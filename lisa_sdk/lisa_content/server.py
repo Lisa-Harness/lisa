@@ -1,14 +1,17 @@
-"""Lisa Content MCP server — content registry over discovered content roots.
+"""Lisa Content MCP server — the sole content mediator for the kernel.
 
 Tools:
 - ``read_authored_text`` — read an authored text asset from merged roots
 - ``list_content_roots`` — list all discovered content root paths
-- ``invalidate_cache`` — clear the read cache
+- ``list_modes`` — return the full workflow mode catalog as JSON
+- ``list_operations`` — return the full operation catalog as JSON
+- ``invalidate_cache`` — clear the file-read cache
+- ``invalidate_catalog`` — clear the mode/operation catalog caches
 
 Uses ``kernel.content_roots.discover_installed_content_roots()`` +
 ``discover_configured_content_roots()`` to find content roots at startup.
-``read_authored_text`` searches all discovered roots, returns first match
-or empty string (same logic as ``DiskContentRegistry``).
+The kernel never touches the filesystem directly; it calls these tools
+and the server does all filesystem access.
 
 Env vars (behavioral):
 - ``SDK_CONTENT_ROOTS`` — additional content roots to scan (path-separated).
@@ -26,6 +29,12 @@ from mcp.server.fastmcp import FastMCP
 from kernel.content_roots import (
     discover_configured_content_roots,
     discover_installed_content_roots,
+)
+from lisa_sdk.lisa_content._catalog import (
+    build_mode_catalog_json,
+    build_operation_catalog_json,
+    resolve_mode_roots,
+    resolve_operation_roots,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,9 +94,44 @@ async def list_content_roots() -> str:
 
 
 @mcp.tool()
+async def list_modes() -> str:
+    """Return the full workflow mode catalog as JSON.
+
+    Scans all discovered content roots for ``modes/`` subdirectories, parses
+    front-matter from ``_mode.md`` and stage files, and returns a JSON object
+    mapping ``mode_id`` to a serializable mode config dict with nested
+    ``stages``.
+    """
+    mode_roots = resolve_mode_roots(_all_roots())
+    return build_mode_catalog_json(mode_roots)
+
+
+@mcp.tool()
+async def list_operations() -> str:
+    """Return the full operation catalog as JSON.
+
+    Scans all discovered content roots for ``operations/`` subdirectories,
+    discovers ``.operation.md`` (prompt) and ``.py``+``.yml`` (runtime)
+    operation definitions, and returns a JSON object mapping
+    ``operation_id`` to a serializable operation definition dict.
+    """
+    operation_roots = resolve_operation_roots(_all_roots())
+    return build_operation_catalog_json(operation_roots)
+
+
+@mcp.tool()
 async def invalidate_cache() -> str:
-    """Clear the read cache after content roots change."""
+    """Clear the file-read cache after content roots change."""
     read_authored_text.cache_clear()  # type: ignore[attr-defined]
+    return json.dumps({"ok": True})
+
+
+@mcp.tool()
+async def invalidate_catalog() -> str:
+    """Clear the mode/operation catalog caches after content roots change."""
+    # The catalog builders are not lru_cached (they scan fresh each call),
+    # but this tool exists so the kernel can signal a cache bust intentually.
+    # If caching is added later, this is where the clear goes.
     return json.dumps({"ok": True})
 
 

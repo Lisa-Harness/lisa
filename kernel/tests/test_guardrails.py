@@ -9,21 +9,14 @@ from typing import Any
 import pytest
 
 from kernel.context import PassThroughInputGuard, PassThroughOutputGuard
-from kernel.ipsar_fsm import register_content_roots, register_operation_callbacks
 from kernel.models import SurfaceContext
-from kernel.operations.registry import execute_operation, get_operation_catalog
 from kernel.seams.protocols import GuardResult
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn
 
-# ── Module-level setup ────────────────────────────────────────────────
+# ── Module-level setup ────────────────────────────────────────────
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk_packs" / "core").resolve()
 
-
-@pytest.fixture(scope="module", autouse=True)
-def _guardrails_setup() -> None:
-    """Wire the operation callbacks and content roots so run_turn works."""
-    register_content_roots(_CORE_ROOT)
-    register_operation_callbacks(get_operation_catalog, execute_operation)
+# The shared conftest fixture (_mcp_catalog_setup) handles all catalog wiring.
 
 
 # ── Test helpers ──────────────────────────────────────────────────────

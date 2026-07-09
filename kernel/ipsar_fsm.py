@@ -1,21 +1,22 @@
 """Workflow finite-state-machine loader and runtime for IPSAR mode progression.
 
 This module is a pure loader/router: it has zero hardcoded knowledge of specific
-modes or stages.  The workflow catalog is discovered from the filesystem at startup:
+modes or stages.  The workflow catalog is loaded from the ``lisa-content`` MCP
+server at startup; the kernel never touches the filesystem directly.
 
-    sdk_packs/core/modes/
     {mode_name}/
-    _mode.md         → YAML front-matter declares mode_id, start_stage_id,
-                 mode_kind, description, command_pattern, and operation
-                 bindings for the user-facing mode entry point
+      _mode.md         → YAML front-matter declares mode_id, start_stage_id,
+                         mode_kind, description, command_pattern, and operation
+                         bindings for the user-facing mode entry point
       {stage_id}.md    → YAML front-matter declares stage config; body text is
                          the instruction prose injected into AI prompts
 
 Adding a new workflow mode requires only a new folder with the appropriate files;
-no code changes are needed.
+no code changes are needed. The ``lisa-content`` server discovers and parses
+mode packs from content roots.
 
 Runtime functions (create_workflow_session, apply_transition, etc.) delegate to
-the catalog loaded by load_catalog_from_disk() at module import time.
+the catalog loaded by ``_ensure_catalog_loaded()`` on first access.
 
 Called by: host apps (session management, stage transitions, context injection)
            kernel.ipsar (parse_route for FSM mode detection)
@@ -25,26 +26,17 @@ Called by: host apps (session management, stage transitions, context injection)
 from __future__ import annotations
 
 import logging
-import re
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import yaml
 
 from kernel.config import settings
-from kernel.content_roots import (
-    discover_configured_content_roots,
-    discover_installed_content_roots,
-    resolve_content_subdir_roots,
-)
 from kernel.intake.connector_discovery import discover_installed_signal_connectors
 from kernel.models import (
-    DefaultIntentBridge,
-    ModeKind,
     OperationExecutionContext,
     OperationResult,
     UnifiedState,
@@ -53,18 +45,16 @@ from kernel.models import (
     WorkflowStageConfig,
     WorkflowTransitionRequest,
     WorkshopBudgetConfig,
-    WorkshopPanelModeConfig,
-    WorkshopRenderConfig,
 )
 from kernel.openai_function_tools import build_strict_openai_function_tool
+from kernel.tools.mcp_client import MCPClientConfig
 
 logger = logging.getLogger(__name__)
 
-_INSTRUCTIONS_ROOT = Path(__file__).parent.parent / "sdk_packs" / "core" / "modes"
-# Host-injected discovery roots.  Set by register_content_roots() at startup so
-# the kernel package does not hard-code paths relative to its install location.
-_injected_core_root: Path | None = None
-_injected_sdk_roots: list[Path] | None = None
+# The lisa-content MCP server config, injected by the host at startup.
+# When None, the kernel cannot load the mode catalog.
+_content_mcp_config: MCPClientConfig | None = None
+
 _EXIT_STAGE_ID = "exit"
 
 # Front-matter delimiter used in instruction markdown files.
@@ -112,24 +102,16 @@ def register_operation_callbacks(
     _execute_operation_fn = execute_operation_fn
 
 
-def register_content_roots(
-    core_root: Path,
-    sdk_roots: list[Path] | None = None,
-) -> None:
-    """Inject mode-discovery roots from the host app layer.
+def register_content_mcp(config: MCPClientConfig) -> None:
+    """Inject the ``lisa-content`` MCP server config for catalog loading.
 
     Must be called before the workflow catalog is first accessed (before any
-    call to get_workflow_catalog()).  Calling after the catalog is already
-    loaded has no effect; a process restart is required to pick up new roots.
-
-    The kernel package itself has no built-in content roots; the host app
-    supplies the baseline pack mode path (and optionally extra SDK roots) so that the
-    kernel can be installed and run independently of the host directory tree.
+    call to ``get_workflow_catalog()``). The kernel calls ``list_modes`` on the
+    server to discover and load all workflow modes. The server does all
+    filesystem access; the kernel never touches the filesystem directly.
     """
-    global _injected_core_root, _injected_sdk_roots  # noqa: PLW0603
-    _injected_core_root = core_root
-    if sdk_roots is not None:
-        _injected_sdk_roots = list(sdk_roots)
+    global _content_mcp_config  # noqa: PLW0603
+    _content_mcp_config = config
 
 
 def _known_connector_ids() -> frozenset[str]:
@@ -264,578 +246,8 @@ def parse_front_matter(text: str) -> tuple[dict[str, Any], str]:
 
 
 # ---------------------------------------------------------------------------
-# Disk-scanning catalog loader
+# Front-matter parsing (pure string function, no filesystem access)
 # ---------------------------------------------------------------------------
-
-
-def load_catalog_from_disk(
-    instructions_dir: Path | None = None,
-) -> dict[str, WorkflowModeConfig]:
-    """Discover and load all workflow modes from the instructions directory.
-
-    Scans `instructions_dir` (default: injected baseline mode root) for subdirectories.
-    Each subdirectory becomes one workflow mode.  The discovery contract is:
-
-    {mode_name}/_mode.md       — required; front-matter must include:
-                        mode_id, start_stage_id.  It may also
-                        declare mode_kind, command_pattern,
-                        require_query, and operation bindings.
-      {mode_name}/{stage_id}.md  — one file per stage; front-matter must include:
-                                    stage_id, terminal, allowed_next_stages,
-                                    allow_user_questions, required_connectors.
-
-    Stage files whose name starts with `_` are skipped (reserved for mode-level
-    config files like `_mode.md`).
-
-    The body text below each stage's front-matter delimiter is stored in
-    WorkflowStageConfig.instruction_body so runtime prompt injection never
-    needs a disk read after startup.
-
-    Args:
-        instructions_dir: Override the default scan root.  Useful in tests.
-
-    Returns:
-        Dict mapping mode_id -> WorkflowModeConfig, not yet validated.
-        Call validate_workflow_catalog() on the result before use.
-
-    Raises:
-        WorkflowValidationError: If a required front-matter field is missing
-            or if the YAML is malformed.
-    """
-    root = instructions_dir or _INSTRUCTIONS_ROOT
-    catalog: dict[str, WorkflowModeConfig] = {}
-
-    for mode_dir in sorted(root.iterdir()):
-        if not mode_dir.is_dir():
-            continue
-
-        mode_config_path = mode_dir / "_mode.md"
-        if not mode_config_path.exists():
-            logger.warning("Skipping instructions folder '%s': missing _mode.md", mode_dir.name)
-            continue
-
-        mode_front_matter, mode_body = parse_front_matter(
-            mode_config_path.read_text(encoding="utf-8")
-        )
-
-        mode_id = _require_str_field(mode_front_matter, "mode_id", mode_config_path)
-        start_stage_id = _require_str_field(mode_front_matter, "start_stage_id", mode_config_path)
-        mode_kind = cast(
-            ModeKind,
-            _require_str_field(mode_front_matter, "mode_kind", mode_config_path),
-        )
-        mode_description = _require_str_field(mode_front_matter, "description", mode_config_path)
-        # command_pattern can be empty for fallback chat modes (e.g. default),
-        # but the key must exist in front-matter for explicitness.
-        raw_pattern = _require_field(mode_front_matter, "command_pattern", mode_config_path)
-        command_pattern = str(raw_pattern)
-        require_query = bool(mode_front_matter.get("require_query", False))
-        mode_default_model = str(mode_front_matter.get("default_model", "") or "") or None
-        workshop_planner_prompt_file = _resolve_mode_relative_file(
-            mode_dir=mode_dir,
-            authored_path=str(mode_front_matter.get("workshop_planner_prompt_file", "") or ""),
-            mode_config_path=mode_config_path,
-            location="workshop_planner_prompt_file",
-        )
-        workshop_synthesis_prompt_file = _resolve_mode_relative_file(
-            mode_dir=mode_dir,
-            authored_path=str(mode_front_matter.get("workshop_synthesis_prompt_file", "") or ""),
-            mode_config_path=mode_config_path,
-            location="workshop_synthesis_prompt_file",
-        )
-        workshop_rendering = _parse_workshop_rendering(mode_front_matter, mode_config_path)
-
-        stages: dict[str, WorkflowStageConfig] = {}
-
-        for stage_path in sorted(mode_dir.glob("*.md")):
-            # Skip reserved files (e.g. _mode.md).
-            if stage_path.name.startswith("_"):
-                continue
-
-            stage_front_matter, stage_body = parse_front_matter(
-                stage_path.read_text(encoding="utf-8")
-            )
-
-            # Non-workflow modes may carry additional authored markdown assets
-            # (for example workshop planner/synthesis prompt blocks) that are
-            # not workflow stage definitions.
-            if "stage_id" not in stage_front_matter:
-                if mode_kind in {"chat", "action"}:
-                    continue
-                raise WorkflowValidationError(
-                    f"Front-matter in '{stage_path}' is missing required field 'stage_id'."
-                )
-
-            stage_id = _require_str_field(stage_front_matter, "stage_id", stage_path)
-            terminal = _require_bool_field(stage_front_matter, "terminal", stage_path)
-            allowed_next_stages = _require_list_field(
-                stage_front_matter,
-                "allowed_next_stages",
-                stage_path,
-            )
-            allow_user_questions = _require_bool_field(
-                stage_front_matter,
-                "allow_user_questions",
-                stage_path,
-            )
-            required_connectors = _require_list_field(
-                stage_front_matter,
-                "required_connectors",
-                stage_path,
-            )
-            stage_description = _require_str_field(stage_front_matter, "description", stage_path)
-            stage_default_model = str(stage_front_matter.get("default_model", "") or "") or None
-
-            stages[stage_id] = WorkflowStageConfig(
-                stage_id=stage_id,
-                instruction_markdown_path=str(stage_path),
-                instruction_body=stage_body,
-                description=stage_description,
-                default_model=stage_default_model,
-                required_connectors=required_connectors,
-                allowed_next_stages=allowed_next_stages,
-                allow_user_questions=allow_user_questions,
-                terminal=terminal,
-            )
-
-        entry_operation_ids = [
-            str(operation_id)
-            for operation_id in (mode_front_matter.get("entry_operation_ids") or [])
-        ]
-        pre_turn_operation_ids = [
-            str(operation_id)
-            for operation_id in (mode_front_matter.get("pre_turn_operation_ids") or [])
-        ]
-        post_turn_operation_ids = [
-            str(operation_id)
-            for operation_id in (mode_front_matter.get("post_turn_operation_ids") or [])
-        ]
-        allowed_operation_ids = [
-            str(operation_id)
-            for operation_id in (mode_front_matter.get("allowed_operation_ids") or [])
-        ]
-        allowed_tool_ids = [
-            str(tool_id)
-            for tool_id in (mode_front_matter.get("allowed_tool_ids") or [])
-        ]
-        tools_authoritative = bool(mode_front_matter.get("tools_authoritative", False))
-        frontdoor_routable = mode_front_matter.get("frontdoor_routable", False)
-        if not isinstance(frontdoor_routable, bool):
-            raise WorkflowValidationError(
-                f"frontdoor_routable must be a boolean in {mode_config_path}"
-            )
-        frontdoor_priority = mode_front_matter.get("frontdoor_priority", 0)
-        if isinstance(frontdoor_priority, bool) or not isinstance(frontdoor_priority, int):
-            raise WorkflowValidationError(
-                f"frontdoor_priority must be an integer in {mode_config_path}"
-            )
-        frontdoor_fast_path_patterns_raw = mode_front_matter.get("frontdoor_fast_path_patterns")
-        if frontdoor_fast_path_patterns_raw is None:
-            frontdoor_fast_path_patterns_raw = []
-        if not isinstance(frontdoor_fast_path_patterns_raw, list):
-            raise WorkflowValidationError(
-                f"frontdoor_fast_path_patterns must be a list in {mode_config_path}"
-            )
-        frontdoor_fast_path_patterns: list[str] = []
-        for idx, raw_pattern in enumerate(frontdoor_fast_path_patterns_raw):
-            if not isinstance(raw_pattern, str):
-                raise WorkflowValidationError(
-                    f"frontdoor_fast_path_patterns[{idx}] must be a string in {mode_config_path}"
-                )
-            pattern = raw_pattern.strip()
-            if not pattern:
-                raise WorkflowValidationError(
-                    f"frontdoor_fast_path_patterns[{idx}] cannot be empty in {mode_config_path}"
-                )
-            try:
-                re.compile(pattern, re.IGNORECASE)
-            except re.error as exc:
-                raise WorkflowValidationError(
-                    "frontdoor_fast_path_patterns"
-                    f"[{idx}] is not a valid regex in {mode_config_path}: {exc}"
-                ) from exc
-            frontdoor_fast_path_patterns.append(pattern)
-
-        frontdoor_route_hints_raw = mode_front_matter.get("frontdoor_route_hints")
-        if frontdoor_route_hints_raw is None:
-            frontdoor_route_hints_raw = []
-        if not isinstance(frontdoor_route_hints_raw, list):
-            raise WorkflowValidationError(
-                f"frontdoor_route_hints must be a list in {mode_config_path}"
-            )
-        frontdoor_route_hints: list[str] = []
-        for idx, raw_hint in enumerate(frontdoor_route_hints_raw):
-            if not isinstance(raw_hint, str):
-                raise WorkflowValidationError(
-                    f"frontdoor_route_hints[{idx}] must be a string in {mode_config_path}"
-                )
-            hint = raw_hint.strip()
-            if not hint:
-                raise WorkflowValidationError(
-                    f"frontdoor_route_hints[{idx}] cannot be empty in {mode_config_path}"
-                )
-            frontdoor_route_hints.append(hint)
-
-        frontdoor_examples_raw = mode_front_matter.get("frontdoor_examples")
-        if frontdoor_examples_raw is None:
-            frontdoor_examples_raw = []
-        if not isinstance(frontdoor_examples_raw, list):
-            raise WorkflowValidationError(
-                f"frontdoor_examples must be a list in {mode_config_path}"
-            )
-        frontdoor_examples: list[str] = []
-        for idx, raw_example in enumerate(frontdoor_examples_raw):
-            if not isinstance(raw_example, str):
-                raise WorkflowValidationError(
-                    f"frontdoor_examples[{idx}] must be a string in {mode_config_path}"
-                )
-            example = raw_example.strip()
-            if not example:
-                raise WorkflowValidationError(
-                    f"frontdoor_examples[{idx}] cannot be empty in {mode_config_path}"
-                )
-            frontdoor_examples.append(example)
-
-        workshop_budget = _parse_workshop_budget(mode_front_matter, mode_config_path)
-        workshop_panels: list[WorkshopPanelModeConfig] = []
-        workshop_panels_raw = mode_front_matter.get("workshop_panels") or []
-        if not isinstance(workshop_panels_raw, list):
-            raise WorkflowValidationError(
-                "workshop_panels must be a list, got "
-                f"{type(workshop_panels_raw).__name__} in {mode_config_path}"
-            )
-        for idx, panel_config in enumerate(workshop_panels_raw):
-            if not isinstance(panel_config, dict):
-                raise WorkflowValidationError(
-                    f"workshop_panels[{idx}] must be a dict, got "
-                    f"{type(panel_config).__name__} in {mode_config_path}"
-                )
-            mode_id_value = _require_str_field(
-                panel_config,
-                "mode_id",
-                mode_config_path,
-                location=f"workshop_panels[{idx}]",
-            )
-            panel_id_value = str(panel_config.get("panel_id", "") or "").strip()
-            title_value = str(panel_config.get("title", "") or "").strip()
-            model_alias_value = str(panel_config.get("model_alias", "") or "").strip()
-            query_prefix_value = str(panel_config.get("query_prefix", "") or "").strip()
-            query_prompt_file_value = _resolve_mode_relative_file(
-                mode_dir=mode_dir,
-                authored_path=str(panel_config.get("query_prompt_file", "") or ""),
-                mode_config_path=mode_config_path,
-                location=f"workshop_panels[{idx}].query_prompt_file",
-            )
-            workshop_panels.append(
-                WorkshopPanelModeConfig(
-                    panel_id=panel_id_value,
-                    title=title_value,
-                    mode_id=mode_id_value,
-                    model_alias=model_alias_value,
-                    query_prefix=query_prefix_value,
-                    query_prompt_file=query_prompt_file_value,
-                )
-            )
-
-        # Parse default_intent_bridges: list of bridge configs from mode front-matter.
-        default_intent_bridges = []
-        bridges_raw = mode_front_matter.get("default_intent_bridges") or []
-        if not isinstance(bridges_raw, list):
-            raise WorkflowValidationError(
-                "default_intent_bridges must be a list, got "
-                f"{type(bridges_raw).__name__} in {mode_config_path}"
-            )
-        for idx, bridge_config in enumerate(bridges_raw):
-            if not isinstance(bridge_config, dict):
-                raise WorkflowValidationError(
-                    f"default_intent_bridges[{idx}] must be a dict, got "
-                    f"{type(bridge_config).__name__} in {mode_config_path}"
-                )
-            target_mode_id = _require_str_field(
-                bridge_config,
-                "target_mode_id",
-                mode_config_path,
-                location=f"default_intent_bridges[{idx}]",
-            )
-            matcher_patterns = _require_list_field(
-                bridge_config,
-                "matcher_patterns",
-                mode_config_path,
-                location=f"default_intent_bridges[{idx}]",
-            )
-            matcher_patterns = [str(p) for p in matcher_patterns]
-            query_extraction_strategy = str(
-                bridge_config.get("query_extraction_strategy", "passthrough")
-            )
-            prerequisites = [str(p) for p in (bridge_config.get("prerequisites") or [])]
-            recent_handoff_source_modes = [
-                str(source_mode)
-                for source_mode in (bridge_config.get("recent_handoff_source_modes") or [])
-            ]
-            recent_handoff_required_artifact_keys = [
-                str(artifact_key)
-                for artifact_key in (
-                    bridge_config.get("recent_handoff_required_artifact_keys") or []
-                )
-            ]
-            recent_handoff_context_key = str(
-                bridge_config.get("recent_handoff_context_key", "") or ""
-            )
-            response_appendix = str(bridge_config.get("response_appendix", ""))
-
-            default_intent_bridges.append(
-                DefaultIntentBridge(
-                    target_mode_id=target_mode_id,
-                    matcher_patterns=matcher_patterns,
-                    query_extraction_strategy=query_extraction_strategy,
-                    prerequisites=prerequisites,
-                    recent_handoff_source_modes=recent_handoff_source_modes,
-                    recent_handoff_required_artifact_keys=recent_handoff_required_artifact_keys,
-                    recent_handoff_context_key=recent_handoff_context_key,
-                    response_appendix=response_appendix,
-                )
-            )
-
-        catalog[mode_id] = WorkflowModeConfig(
-            mode_id=mode_id,
-            start_stage_id=start_stage_id,
-            stages=stages,
-            mode_kind=mode_kind,
-            artifact_type=str(mode_front_matter.get("artifact_type", "workflow_summary")),
-            description=mode_description,
-            instruction_body=mode_body.strip(),
-            mode_markdown_path=str(mode_config_path),
-            default_model=mode_default_model,
-            frontdoor_routable=frontdoor_routable,
-            frontdoor_priority=frontdoor_priority,
-            frontdoor_fast_path_patterns=frontdoor_fast_path_patterns,
-            frontdoor_route_hints=frontdoor_route_hints,
-            frontdoor_examples=frontdoor_examples,
-            command_pattern=command_pattern,
-            require_query=require_query,
-            entry_operation_ids=entry_operation_ids,
-            pre_turn_operation_ids=pre_turn_operation_ids,
-            post_turn_operation_ids=post_turn_operation_ids,
-            allowed_operation_ids=allowed_operation_ids,
-            allowed_tool_ids=allowed_tool_ids,
-            tools_authoritative=tools_authoritative,
-            workshop_panels=workshop_panels,
-            workshop_budget=workshop_budget,
-            workshop_planner_prompt_file=workshop_planner_prompt_file,
-            workshop_synthesis_prompt_file=workshop_synthesis_prompt_file,
-            workshop_rendering=workshop_rendering,
-            default_intent_bridges=default_intent_bridges,
-        )
-
-    return catalog
-
-
-def _require_str_field(data: dict[str, Any], field: str, source: Path, location: str = "") -> str:
-    """Extract a required string field from a front-matter dict.
-
-    Args:
-        data: Parsed front-matter dictionary.
-        field: Field name that must be present and non-empty.
-        source: File path, used only in the error message for debugging.
-        location: Optional nested location (e.g. "default_intent_bridges[0]") for context.
-
-    Returns:
-        The string value for the given field.
-
-    Raises:
-        WorkflowValidationError: If the field is missing or empty.
-    """
-    value = data.get(field)
-    if not value:
-        loc_str = f" at {location}" if location else ""
-        raise WorkflowValidationError(
-            f"Front-matter in '{source}'{loc_str} is missing required field '{field}'."
-        )
-    return str(value)
-
-
-def _resolve_mode_relative_file(
-    *,
-    mode_dir: Path,
-    authored_path: str,
-    mode_config_path: Path,
-    location: str,
-) -> str:
-    """Validate a mode-authored relative file path and return normalized relative path."""
-
-    raw = authored_path.strip()
-    if not raw:
-        return ""
-
-    candidate = Path(raw)
-    if candidate.is_absolute():
-        raise WorkflowValidationError(
-            f"Front-matter field '{location}' in '{mode_config_path}' must be a relative path."
-        )
-
-    mode_root = mode_dir.resolve()
-    resolved = (mode_root / candidate).resolve()
-    if not resolved.is_relative_to(mode_root):
-        raise WorkflowValidationError(
-            f"Front-matter field '{location}' in '{mode_config_path}' "
-            "must stay within the mode folder."
-        )
-    if not resolved.is_file():
-        raise WorkflowValidationError(
-            f"Front-matter field '{location}' in '{mode_config_path}' "
-            f"points to a missing file '{candidate.as_posix()}'."
-        )
-    return resolved.relative_to(mode_root).as_posix()
-
-
-def _require_field(data: dict[str, Any], field: str, source: Path) -> Any:
-    """Extract one required front-matter field regardless of value type."""
-    if field not in data:
-        raise WorkflowValidationError(
-            f"Front-matter in '{source}' is missing required field '{field}'."
-        )
-    return data[field]
-
-
-def _require_bool_field(data: dict[str, Any], field: str, source: Path) -> bool:
-    """Extract one required boolean front-matter field."""
-    value = _require_field(data, field, source)
-    if not isinstance(value, bool):
-        raise WorkflowValidationError(
-            f"Front-matter field '{field}' in '{source}' must be a boolean."
-        )
-    return value
-
-
-def _require_list_field(
-    data: dict[str, Any], field: str, source: Path, location: str = ""
-) -> list[str]:
-    """Extract one required list[str] front-matter field."""
-    if field not in data:
-        loc_str = f" at {location}" if location else ""
-        raise WorkflowValidationError(
-            f"Front-matter in '{source}'{loc_str} is missing required field '{field}'."
-        )
-    raw = data[field]
-    if not isinstance(raw, list):
-        loc_str = f" at {location}" if location else ""
-        raise WorkflowValidationError(
-            f"Front-matter field '{field}' in '{source}'{loc_str} must be a list."
-        )
-    return [str(item) for item in raw]
-
-
-def _optional_int_field(
-    data: dict[str, Any],
-    field: str,
-    source: Path,
-    *,
-    location: str = "",
-    minimum: int = 0,
-) -> int | None:
-    """Extract one optional integer field with a minimum bound."""
-
-    if field not in data:
-        return None
-    value = data[field]
-    if not isinstance(value, int):
-        loc_str = f" at {location}" if location else ""
-        raise WorkflowValidationError(
-            f"Front-matter field '{field}' in '{source}'{loc_str} must be an integer."
-        )
-    if value < minimum:
-        loc_str = f" at {location}" if location else ""
-        raise WorkflowValidationError(
-            f"Front-matter field '{field}' in '{source}'{loc_str} must be >= {minimum}."
-        )
-    return value
-
-
-def _parse_workshop_budget(
-    mode_front_matter: dict[str, Any],
-    mode_config_path: Path,
-) -> WorkshopBudgetConfig:
-    """Parse one authored workshop budget block with host-backed defaults."""
-
-    workshop_budget_raw = mode_front_matter.get("workshop_budget") or {}
-    if not isinstance(workshop_budget_raw, dict):
-        raise WorkflowValidationError(
-            "workshop_budget must be a dict, got "
-            f"{type(workshop_budget_raw).__name__} in {mode_config_path}"
-        )
-
-    shared_context_tokens = _optional_int_field(
-        workshop_budget_raw,
-        "shared_context_tokens",
-        mode_config_path,
-        location="workshop_budget",
-        minimum=0,
-    )
-    per_panel_context_tokens = _optional_int_field(
-        workshop_budget_raw,
-        "per_panel_context_tokens",
-        mode_config_path,
-        location="workshop_budget",
-        minimum=1,
-    )
-    synthesis_max_tokens = _optional_int_field(
-        workshop_budget_raw,
-        "synthesis_max_tokens",
-        mode_config_path,
-        location="workshop_budget",
-        minimum=1,
-    )
-    max_parallel_panels = _optional_int_field(
-        workshop_budget_raw,
-        "max_parallel_panels",
-        mode_config_path,
-        location="workshop_budget",
-        minimum=1,
-    )
-
-    return WorkshopBudgetConfig(
-        shared_context_tokens=(
-            shared_context_tokens
-            if shared_context_tokens is not None
-            else settings.workshop_default_shared_context_tokens
-        ),
-        per_panel_context_tokens=(
-            per_panel_context_tokens
-            if per_panel_context_tokens is not None
-            else settings.workshop_default_per_panel_context_tokens
-        ),
-        synthesis_max_tokens=(
-            synthesis_max_tokens
-            if synthesis_max_tokens is not None
-            else settings.workshop_default_synthesis_max_tokens
-        ),
-        max_parallel_panels=(
-            max_parallel_panels
-            if max_parallel_panels is not None
-            else settings.workshop_default_max_parallel_panels
-        ),
-    )
-
-
-def _parse_workshop_rendering(
-    mode_front_matter: dict[str, Any],
-    mode_config_path: Path,
-) -> WorkshopRenderConfig:
-    """Parse optional workshop rendering preferences from mode front-matter."""
-
-    workshop_rendering_raw = mode_front_matter.get("workshop_rendering") or {}
-    if not isinstance(workshop_rendering_raw, dict):
-        raise WorkflowValidationError(
-            "workshop_rendering must be a dict, got "
-            f"{type(workshop_rendering_raw).__name__} in {mode_config_path}"
-        )
-
-    try:
-        return WorkshopRenderConfig.model_validate(workshop_rendering_raw)
-    except Exception as exc:  # pylint: disable=broad-except
-        raise WorkflowValidationError(
-            f"Invalid workshop_rendering in '{mode_config_path}': {exc}"
-        ) from exc
 
 
 def _derived_workshop_panel_limit(budget: WorkshopBudgetConfig) -> int:
@@ -991,7 +403,7 @@ def _validate_mode_operation_bindings(mode: WorkflowModeConfig) -> None:
 def validate_workflow_catalog(catalog: dict[str, WorkflowModeConfig]) -> None:
     """Validate all workflow modes in the catalog.
 
-    Called at startup after load_catalog_from_disk() to catch misconfigured
+    Called at startup after catalog loading to catch misconfigured
     modes before any user traffic arrives.
 
     Args:
@@ -1077,10 +489,10 @@ def _collect_reachable_stages(mode: WorkflowModeConfig) -> set[str]:
 def load_stage_instruction_markdown(stage: WorkflowStageConfig) -> str:
     """Return the instruction prose for a stage.
 
-    The body text is pre-loaded from disk into stage.instruction_body at startup
-    by load_catalog_from_disk(), so this function performs no I/O at runtime.
-    Falls back to reading the file from disk if instruction_body is empty (e.g.
-    for WorkflowStageConfig instances constructed directly in tests).
+    The body text is loaded by the ``lisa-content`` MCP server into
+    ``stage.instruction_body`` at catalog load time, so this function performs
+    no I/O. If ``instruction_body`` is empty (e.g. test-constructed configs
+    with no body), returns an empty string — no disk fallback.
 
     Args:
         stage: The WorkflowStageConfig for the current session stage.
@@ -1088,12 +500,7 @@ def load_stage_instruction_markdown(stage: WorkflowStageConfig) -> str:
     Returns:
         Instruction markdown string to inject into the AI prompt.
     """
-    if stage.instruction_body:
-        return stage.instruction_body
-    # Fallback for test-constructed configs that have a path but no body.
-    if stage.instruction_markdown_path:
-        return Path(stage.instruction_markdown_path).read_text(encoding="utf-8")
-    return ""
+    return stage.instruction_body
 
 
 def create_workflow_session(user_id: str, user_slug: str, mode_id: str) -> WorkflowSessionState:
@@ -1210,90 +617,37 @@ def get_transition_tool_schema() -> list[dict[str, object]]:
     ]
 
 
-def load_catalog_merged(
-    core_root: Path | None = None,
-    sdk_roots: list[Path] | None = None,
-) -> dict[str, WorkflowModeConfig]:
-    """Discover workflow modes from one core root and zero or more SDK roots.
-
-    The core root is always loaded first so that built-in modes are always
-    available.  Each SDK root is then merged in order; if two roots define the
-    same mode_id, the *last* one wins (SDK can override core).
-
-    Args:
-        core_root: Core modes directory.  Defaults to
-            the loaded mode root relative to the workspace root.
-        sdk_roots: Additional roots contributed by lisa_sdk or third-party
-            operation packages.  Loaded in list order after the core root.
-
-    Returns:
-        Merged dict mapping mode_id -> WorkflowModeConfig, not yet validated.
-        Call validate_workflow_catalog() on the result if needed.
-    """
-    merged: dict[str, WorkflowModeConfig] = {}
-    merged.update(load_catalog_from_disk(core_root))
-    for extra_root in sdk_roots or []:
-        merged.update(load_catalog_from_disk(extra_root))
-    return merged
-
-
-def _load_sdk_instructions_roots() -> list[Path]:
-    """Collect all SDK instruction roots via entry-points, in-repo lisa_sdk, and env config.
-
-    Discovery order (ascending precedence — later roots override earlier ones):
-    1. ``lisa.extensions.content_roots`` entry-points (installed packages).
-    2. In-repo ``lisa_sdk/modes`` (convenience for local dev/test).
-    3. ``SDK_CONTENT_ROOTS`` env var (explicit overrides).
-    """
-    roots = resolve_content_subdir_roots(discover_installed_content_roots(), "modes")
-    # 2. Auto-include the in-repo lisa_sdk modes directory when it exists.
-    repo_sdk = Path(__file__).parent.parent / "lisa_sdk" / "modes"
-    if repo_sdk.is_dir() and repo_sdk not in roots:
-        roots.append(repo_sdk)
-    # 2b. Auto-include in-repo SDK pack modes for local dev/test when entry
-    # points are not active in the current environment.
-    repo_sdk_packs_root = Path(__file__).parent.parent / "sdk_packs"
-    if repo_sdk_packs_root.is_dir():
-        for pack_dir in sorted(repo_sdk_packs_root.iterdir()):
-            candidate = pack_dir / "modes"
-            if candidate.is_dir() and candidate not in roots:
-                roots.append(candidate)
-    # 3. Env-configured overrides.
-    for candidate in resolve_content_subdir_roots(discover_configured_content_roots(), "modes"):
-        if candidate not in roots:
-            roots.append(candidate)
-    return roots
-
-
 _workflow_catalog: dict[str, WorkflowModeConfig] | None = None
 
 
 def _ensure_catalog_loaded() -> None:
-    """Lazy-load the workflow catalog on first access.
+    """Lazy-load the workflow catalog on first access via the lisa-content MCP server.
 
     Deferred from module-import time so the host app has a chance to register
-    operation callbacks and content roots before validation runs.
+    operation callbacks and the content MCP config before validation runs.
     """
     global _workflow_catalog  # noqa: PLW0603
     if _workflow_catalog is not None:
         return
-    # Prefer injected roots (set by register_content_roots at startup) so the
-    # kernel package is not forced to resolve siblings by relative path.
-    # None → load_catalog_from_disk falls back to _INSTRUCTIONS_ROOT
-    core_root = _injected_core_root
-    sdk_roots = (
-        _injected_sdk_roots if _injected_sdk_roots is not None else _load_sdk_instructions_roots()
-    )
-    _workflow_catalog = load_catalog_merged(core_root=core_root, sdk_roots=sdk_roots)
+    if _content_mcp_config is None:
+        raise RuntimeError(
+            "Content MCP config not registered. "
+            "Call register_content_mcp() at startup before using the workflow catalog."
+        )
+    from kernel.context.mcp_catalog import MCPModeCatalog
+
+    catalog_loader = MCPModeCatalog(_content_mcp_config)
+    _workflow_catalog = catalog_loader.get_workflow_catalog()
     validate_workflow_catalog(_workflow_catalog)
 
 
 def get_workflow_catalog() -> dict[str, WorkflowModeConfig]:
-    """Return the validated workflow mode catalog loaded at startup.
+    """Return the validated workflow mode catalog.
 
-    The catalog is populated lazily on first access so the host app can
-    register operation callbacks before validation runs. A restart is required
-    to pick up new or modified instruction folders.
+    The catalog is populated lazily on first access via the ``lisa-content`` MCP
+    server. The host must call ``register_content_mcp()`` at startup before any
+    code accesses the catalog. A restart is required to pick up new or modified
+    instruction folders.
     """
     _ensure_catalog_loaded()
     return _workflow_catalog  # type: ignore[return-value]

@@ -197,7 +197,7 @@ def test_mcp_content_registry_integration(tmp_path: Path) -> None:
         command=sys.executable,
         args=[
             "-m",
-            "lisa_content.server",
+            "lisa_sdk.lisa_content.server",
             "--data-dir",
             str(tmp_path),
         ],

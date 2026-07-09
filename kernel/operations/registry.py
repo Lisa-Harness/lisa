@@ -1,11 +1,12 @@
-"""Disk-backed registry for internal operation metadata.
+"""Registry for internal operation metadata.
 
 Modes are the only user-facing routing surface. Operations are reusable internal
-behaviors discovered from Python modules with colocated ``.yml`` metadata.
+behaviors discovered from content packs via the ``lisa-content`` MCP server.
 
-Primary discovery roots:
-1. shipped baseline operations under ``sdk_packs/core/operations/``
-2. additional SDK or pack operation roots such as ``lisa_sdk/operations/``
+The kernel never touches the filesystem directly. The ``lisa-content`` server
+scans ``operations/`` subdirectories in all discovered content roots, parses
+YAML/metadata, and returns the catalog as JSON. The kernel imports the
+implementation module locally using the ``module_path`` field.
 
 Called by: host agent loops (direct action-mode execution)
            kernel.ipsar_fsm (mode binding validation)
@@ -15,23 +16,11 @@ from __future__ import annotations
 
 # pylint: disable=global-statement
 import asyncio
-import importlib
-import importlib.metadata
 import logging
 import time
 from collections.abc import Callable
-from pathlib import Path
-from types import ModuleType
 from typing import Any, Literal
 
-import yaml
-from pydantic import BaseModel
-
-from kernel.content_roots import (
-    discover_configured_content_roots,
-    discover_installed_content_roots,
-    resolve_content_subdir_roots,
-)
 from kernel.models import (
     OperationDefinition,
     OperationExecutionContext,
@@ -39,8 +28,8 @@ from kernel.models import (
     ToolExecutionTelemetry,
 )
 from kernel.openai_function_tools import build_strict_openai_function_tool
-from kernel.operations.declarative import DeclarativeOperationModule
 from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
+from kernel.tools.mcp_client import MCPClientConfig
 
 logger = logging.getLogger(__name__)
 
@@ -49,25 +38,17 @@ __all__ = [
     "execute_operation",
     "get_operation_catalog",
     "is_known_tool",
-    "load_operation_catalog_merged",
-    "register_operation_roots",
+    "register_operation_mcp",
     "register_tool_catalog_callback",
 ]
 
 _OPERATION_TRACER = get_tracer("kernel.operations")
 
-_PRIMARY_OPERATIONS_ROOT = Path(__file__).parent.parent.parent / "app" / "operations"
-_OPERATIONS_ROOT = _PRIMARY_OPERATIONS_ROOT
-_PRIMARY_SDK_OPERATIONS_ROOT = Path(__file__).parent.parent.parent / "lisa_sdk" / "operations"
-_OPERATION_METADATA_SUFFIX = ".yml"
-_DECLARATIVE_OPERATION_FILENAME = "_operation.md"
-_DECLARATIVE_OPERATION_SUFFIX = ".operation.md"
 _FRONT_MATTER_DELIMITER = "---"
 
-# Host-injected discovery roots. Set by register_operation_roots() at startup so
-# the kernel package does not hard-code paths relative to its install location.
-_injected_primary_root: Path | None = None
-_injected_sdk_roots: list[Path] = []
+# The lisa-content MCP server config, injected by the host at startup.
+# When None, the operation catalog cannot be loaded.
+_operation_mcp_config: MCPClientConfig | None = None
 _get_tool_catalog_fn: Callable[[], dict[str, Any]] | None = None
 
 
@@ -93,389 +74,20 @@ def register_tool_catalog_callback(get_tool_catalog_fn: Callable[[], dict[str, A
     validate_operation_catalog(_OPERATION_CATALOG)
 
 
-def register_operation_roots(primary_root: Path, sdk_roots: list[Path]) -> None:
-    """Inject operation discovery roots from the host app layer and rebuild the catalog.
+def register_operation_mcp(config: MCPClientConfig) -> None:
+    """Inject the ``lisa-content`` MCP server config for operation catalog loading.
 
-    The kernel package itself has no built-in operation roots; the host app
-    supplies the baseline operations path plus zero or more sdk_roots so that
-    the kernel can be installed and run independently of the host directory tree.
-
-    Rebuilds and re-validates ``_OPERATION_CATALOG`` immediately so that operations
-    from entry-point-discovered roots (sdk_packs, lisa_sdk, etc.) are
-    available before any mode or operation execution begins.
+    Rebuilds and re-validates ``_OPERATION_CATALOG`` immediately by calling
+    ``list_operations`` on the server. The server does all filesystem access;
+    the kernel never touches the filesystem directly.
     """
-    global _injected_primary_root, _injected_sdk_roots, _OPERATION_CATALOG  # noqa: PLW0603
-    _injected_primary_root = primary_root
-    _injected_sdk_roots = list(sdk_roots)
-    _OPERATION_CATALOG = load_operation_catalog_merged(
-        core_roots=[primary_root] if primary_root else _load_core_operations_roots(),
-        sdk_roots=sdk_roots,
-    )
+    global _operation_mcp_config, _OPERATION_CATALOG  # noqa: PLW0603
+    _operation_mcp_config = config
+    from kernel.context.mcp_catalog import MCPOperationCatalog
+
+    catalog_loader = MCPOperationCatalog(config)
+    _OPERATION_CATALOG = catalog_loader.get_operation_catalog()
     validate_operation_catalog(_OPERATION_CATALOG)
-
-
-def _parse_operation_metadata(text: str, source: Path) -> dict[str, Any]:
-    """Parse one operation metadata YAML file into a mapping."""
-    try:
-        metadata = yaml.safe_load(text) or {}
-    except yaml.YAMLError as exc:
-        raise OperationValidationError(f"Invalid YAML in '{source}': {exc}") from exc
-
-    if not isinstance(metadata, dict):
-        raise OperationValidationError(
-            f"Operation metadata in '{source}' must be a YAML mapping, got {type(metadata).__name__}."
-        )
-    return metadata
-
-
-def _parse_operation_markdown(text: str, source: Path) -> tuple[dict[str, Any], str]:
-    """Parse one markdown-authored operation entrypoint into front matter and body."""
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != _FRONT_MATTER_DELIMITER:
-        raise OperationValidationError(
-            f"Declarative operation '{source}' must start with YAML front matter."
-        )
-
-    try:
-        close_idx = next(
-            idx
-            for idx, line in enumerate(lines[1:], start=1)
-            if line.strip() == _FRONT_MATTER_DELIMITER
-        )
-    except StopIteration as exc:
-        raise OperationValidationError(
-            f"Declarative operation '{source}' is missing a closing front-matter delimiter."
-        ) from exc
-
-    metadata = _parse_operation_metadata("\n".join(lines[1:close_idx]), source)
-    body = "\n".join(lines[close_idx + 1 :]).strip()
-    return metadata, body
-
-
-def _require_str_field(data: dict[str, Any], field: str, source: Path) -> str:
-    """Extract one required string field from an operation definition front-matter dict."""
-    value = data.get(field)
-    if not value:
-        raise OperationValidationError(
-            f"Front-matter in '{source}' is missing required field '{field}'."
-        )
-    return str(value)
-
-
-def _require_list_field(data: dict[str, Any], field: str, source: Path) -> list[str]:
-    """Extract one required list[str] field from an operation definition front-matter dict."""
-    if field not in data:
-        raise OperationValidationError(
-            f"Front-matter in '{source}' is missing required field '{field}'."
-        )
-    raw = data.get(field)
-    if not isinstance(raw, list):
-        raise OperationValidationError(
-            f"Front-matter field '{field}' in '{source}' must be a list."
-        )
-    return [str(item) for item in raw]
-
-
-def _parse_non_negative_int_field(
-    data: dict[str, Any],
-    field: str,
-    source: Path,
-    default: int,
-) -> int:
-    """Parse one optional non-negative integer front-matter field."""
-    raw = data.get(field, default)
-    try:
-        value = int(raw)
-    except (TypeError, ValueError) as exc:
-        raise OperationValidationError(
-            f"Front-matter field '{field}' in '{source}' must be an integer."
-        ) from exc
-    if value < 0:
-        raise OperationValidationError(
-            f"Front-matter field '{field}' in '{source}' must be non-negative."
-        )
-    return value
-
-
-def _parse_float_field(
-    data: dict[str, Any],
-    field: str,
-    source: Path,
-    default: float,
-) -> float:
-    """Parse one optional floating-point front-matter field."""
-    raw = data.get(field, default)
-    try:
-        return float(raw)
-    except (TypeError, ValueError) as exc:
-        raise OperationValidationError(
-            f"Front-matter field '{field}' in '{source}' must be a float."
-        ) from exc
-
-
-def _parse_string_mapping_field(
-    data: dict[str, Any],
-    field: str,
-    source: Path,
-) -> dict[str, str]:
-    """Parse one optional string-to-string mapping from front matter."""
-    raw = data.get(field) or {}
-    if raw is None:
-        return {}
-    if not isinstance(raw, dict):
-        raise OperationValidationError(
-            f"Front-matter field '{field}' in '{source}' must be a mapping."
-        )
-    parsed: dict[str, str] = {}
-    for key, value in raw.items():
-        key_text = str(key).strip()
-        value_text = str(value).strip()
-        if not key_text or not value_text:
-            raise OperationValidationError(
-                f"Front-matter field '{field}' in '{source}' must map non-empty strings."
-            )
-        parsed[key_text] = value_text
-    return parsed
-
-
-def _iter_operation_module_files(operations_dir: Path) -> list[Path]:
-    """Return sorted Python operation modules under one operations root.
-
-    Skips ``.py`` files that have a sibling ``<stem>.operation.md`` declarative
-    entrypoint: those modules hold the Pydantic response-format contract for a
-    prompt-authored operation, not a runtime ``execute(ctx)`` entrypoint, so
-    they must not be treated as runtime operations requiring a ``.yml`` file.
-    """
-    runtime_modules: list[Path] = []
-    for module_path in operations_dir.rglob("*.py"):
-        if module_path.name == "__init__.py" or "__pycache__" in module_path.parts:
-            continue
-        declarative_sibling = module_path.with_suffix(_DECLARATIVE_OPERATION_SUFFIX)
-        if declarative_sibling.exists():
-            continue
-        runtime_modules.append(module_path)
-    return sorted(runtime_modules)
-
-
-def _iter_operation_markdown_files(operations_dir: Path) -> list[Path]:
-    """Return sorted markdown-authored operation entrypoints under one operations root."""
-    return sorted(
-        path
-        for path in operations_dir.rglob("*.md")
-        if path.name == _DECLARATIVE_OPERATION_FILENAME
-        or path.name.endswith(_DECLARATIVE_OPERATION_SUFFIX)
-        if "__pycache__" not in path.parts
-    )
-
-
-def _resolve_model_class(model_path: str, source: Path) -> type[BaseModel]:
-    """Import and validate one Pydantic response-format model class."""
-    module_path, separator, attr_name = model_path.rpartition(".")
-    if not separator or not module_path or not attr_name:
-        raise OperationValidationError(
-            f"response_format_model_path in '{source}' must be 'package.module.ClassName'."
-        )
-    try:
-        module = importlib.import_module(module_path)
-    except Exception as exc:  # pylint: disable=broad-except
-        raise OperationValidationError(
-            f"Failed to import response_format module '{module_path}' from '{source}': {exc}"
-        ) from exc
-    model_class = getattr(module, attr_name, None)
-    if not isinstance(model_class, type) or not issubclass(model_class, BaseModel):
-        raise OperationValidationError(
-            f"response_format_model_path '{model_path}' in '{source}' must resolve to a Pydantic BaseModel subclass."
-        )
-    return model_class
-
-
-def _package_parts_for_dir(directory: Path) -> tuple[str, ...]:
-    """Walk up the directory tree collecting Python package names.
-
-    Ascends as long as ``__init__.py`` exists in each level, building the
-    fully-qualified dotted name for *directory*.  For example,
-    ``sdk_packs/example`` returns ``("sdk_packs", "example")``.
-    """
-    parts: list[str] = []
-    current = directory
-    while (current / "__init__.py").exists():
-        parts.append(current.name)
-        current = current.parent
-    return tuple(reversed(parts))
-
-
-def _build_module_path_from_root(
-    module_file: Path,
-    *,
-    base_root: Path,
-    base_parts: tuple[str, ...],
-) -> str:
-    """Build one import path from a known package root and module file."""
-    relative = module_file.relative_to(base_root).with_suffix("")
-    return ".".join((*base_parts, *relative.parts))
-
-
-def _base_parts_for_operations_root(
-    operations_root: Path,
-    *,
-    default_parts: tuple[str, ...],
-) -> tuple[str, ...]:
-    """Return the dotted import prefix for one discovered operations root."""
-
-    package_dir = operations_root.parent
-    if (package_dir / "__init__.py").exists():
-        return (*_package_parts_for_dir(package_dir), "operations")
-    return default_parts
-
-
-def _resolve_module_path(
-    module_file: Path,
-    *,
-    operations_root: Path,
-    metadata: dict[str, Any],
-    metadata_path: Path,
-) -> str:
-    """Resolve the import path for one discovered operation module."""
-    explicit_module_path = str(metadata.get("module_path") or "").strip()
-    if explicit_module_path:
-        return explicit_module_path
-
-    primary_root = _injected_primary_root or _PRIMARY_OPERATIONS_ROOT
-    known_roots: list[tuple[Path, tuple[str, ...]]] = [
-        (
-            primary_root,
-            _base_parts_for_operations_root(
-                primary_root,
-                default_parts=("app", "operations"),
-            ),
-        ),
-    ]
-    for sdk_root in _injected_sdk_roots or [_PRIMARY_SDK_OPERATIONS_ROOT]:
-        # Derive the Python package base_parts from the root path.
-        # Walk up collecting all __init__.py-backed package directories so that
-        # nested namespace packages (e.g. sdk_packs/example) produce the
-        # full dotted prefix sdk_packs.example rather than just example.
-        package_dir = sdk_root.parent
-        if (package_dir / "__init__.py").exists():
-            pkg_parts = _package_parts_for_dir(package_dir)
-            known_roots.append((sdk_root, (*pkg_parts, "operations")))
-        else:
-            known_roots.append((sdk_root, (sdk_root.name,)))
-    for root, base_parts in known_roots:
-        try:
-            return _build_module_path_from_root(module_file, base_root=root, base_parts=base_parts)
-        except ValueError:
-            continue
-
-    package_root = operations_root.parent
-    if (package_root / "__init__.py").exists():
-        pkg_parts = _package_parts_for_dir(package_root)
-        return _build_module_path_from_root(
-            module_file,
-            base_root=package_root,
-            base_parts=pkg_parts,
-        )
-
-    raise OperationValidationError(
-        f"Could not infer module path for '{module_file}' from metadata '{metadata_path}'. "
-        "Add 'module_path' to the YAML or make the operations root's parent a Python package."
-    )
-
-
-def _load_operation_module(*, module_path: str, source: Path) -> ModuleType:
-    """Import and return one operation implementation module."""
-    try:
-        module = importlib.import_module(module_path)
-        logger.info("Loaded operation module '%s' from '%s'", module_path, source)
-        return module
-    except Exception as exc:  # pylint: disable=broad-except
-        raise OperationValidationError(
-            f"Failed to import configured module '{module_path}' from '{source}': {exc}"
-        ) from exc
-
-
-def _load_markdown_operation_definition(markdown_path: Path) -> OperationDefinition:
-    """Load one markdown-authored declarative operation definition."""
-    metadata, body = _parse_operation_markdown(
-        markdown_path.read_text(encoding="utf-8"), markdown_path
-    )
-    operation_id = _require_str_field(metadata, "operation_id", markdown_path)
-    description = _require_str_field(metadata, "description", markdown_path)
-    tool_ids = [str(tool_id) for tool_id in (metadata.get("tool_ids") or [])]
-    mode_allowlist = _require_list_field(metadata, "mode_allowlist", markdown_path)
-    preferred_model_id = (
-        str(metadata["preferred_model_id"]) if "preferred_model_id" in metadata else None
-    )
-    response_format_model_path = str(metadata.get("response_format_model_path") or "").strip()
-    response_output_text_field = (
-        str(metadata.get("response_output_text_field") or "output_text").strip() or "output_text"
-    )
-    response_output_json_passthrough = _parse_string_mapping_field(
-        metadata,
-        "response_output_json_passthrough",
-        markdown_path,
-    )
-    timeout_seconds = _parse_non_negative_int_field(
-        metadata,
-        "timeout_seconds",
-        markdown_path,
-        default=60,
-    )
-    max_calls_per_turn = _parse_non_negative_int_field(
-        metadata,
-        "max_calls_per_turn",
-        markdown_path,
-        default=3,
-    )
-    completion_max_tokens = _parse_non_negative_int_field(
-        metadata,
-        "completion_max_tokens",
-        markdown_path,
-        default=1500,
-    )
-    completion_temperature = _parse_float_field(
-        metadata,
-        "completion_temperature",
-        markdown_path,
-        default=0.2,
-    )
-    response_format_model = (
-        _resolve_model_class(response_format_model_path, markdown_path)
-        if response_format_model_path
-        else None
-    )
-    if not body:
-        raise OperationValidationError(f"Declarative operation '{markdown_path}' must have a body.")
-
-    return OperationDefinition(
-        operation_id=operation_id,
-        description=description,
-        execution_kind="prompt",
-        response_format_model=response_format_model,
-        response_format_model_path=response_format_model_path,
-        response_output_text_field=response_output_text_field,
-        response_output_json_passthrough=response_output_json_passthrough,
-        preferred_model_id=preferred_model_id,
-        tool_ids=tool_ids,
-        mode_allowlist=mode_allowlist,
-        timeout_seconds=timeout_seconds,
-        max_calls_per_turn=max_calls_per_turn,
-        completion_max_tokens=completion_max_tokens,
-        completion_temperature=completion_temperature,
-        instruction_markdown_path=str(markdown_path),
-        instruction_body=body,
-        implementation_module=DeclarativeOperationModule(
-            operation_id=operation_id,
-            instruction_markdown_path=str(markdown_path),
-            instruction_body=body,
-            max_calls_per_turn=max_calls_per_turn,
-            response_format_model=response_format_model,
-            response_output_text_field=response_output_text_field,
-            response_output_json_passthrough=response_output_json_passthrough,
-            completion_max_tokens=completion_max_tokens,
-            completion_temperature=completion_temperature,
-        ),
-    )
 
 
 def _build_tool_schemas(tool_ids: list[str]) -> list[dict[str, Any]]:
@@ -517,95 +129,6 @@ def _wrap_declarative_tool_executor(
         return await execute_tool_fn(tool_id, ctx)
 
     return _execute_allowed_tool
-
-
-def load_operation_catalog_from_disk(
-    operations_dir: Path | None = None,
-) -> dict[str, OperationDefinition]:
-    """Discover and load all internal operations from one operations module tree."""
-    root = operations_dir or _OPERATIONS_ROOT
-    if not root.exists():
-        return {}
-
-    catalog: dict[str, OperationDefinition] = {}
-    for markdown_path in _iter_operation_markdown_files(root):
-        definition = _load_markdown_operation_definition(markdown_path)
-        if definition.operation_id in catalog:
-            raise OperationValidationError(
-                f"Duplicate operation_id '{definition.operation_id}' discovered in '{markdown_path}'."
-            )
-        catalog[definition.operation_id] = definition
-
-    for module_file in _iter_operation_module_files(root):
-        metadata_path = module_file.with_suffix(_OPERATION_METADATA_SUFFIX)
-        if not metadata_path.exists():
-            logger.warning(
-                "Skipping operation module '%s': missing '%s'", module_file, metadata_path.name
-            )
-            continue
-
-        metadata = _parse_operation_metadata(
-            metadata_path.read_text(encoding="utf-8"), metadata_path
-        )
-        operation_id = _require_str_field(metadata, "operation_id", metadata_path)
-        if operation_id in catalog:
-            if catalog[operation_id].execution_kind == "prompt":
-                logger.info(
-                    "Skipping legacy Python operation '%s' because prompt entrypoint '%s' takes precedence.",
-                    module_file,
-                    catalog[operation_id].instruction_markdown_path,
-                )
-                continue
-            raise OperationValidationError(
-                f"Duplicate operation_id '{operation_id}' discovered in '{metadata_path}'."
-            )
-
-        description = _require_str_field(metadata, "description", metadata_path)
-        tool_ids = [str(tool_id) for tool_id in (metadata.get("tool_ids") or [])]
-        mode_allowlist = _require_list_field(metadata, "mode_allowlist", metadata_path)
-        preferred_model_id = (
-            str(metadata["preferred_model_id"]) if "preferred_model_id" in metadata else None
-        )
-        timeout_seconds = _parse_non_negative_int_field(
-            metadata,
-            "timeout_seconds",
-            metadata_path,
-            default=60,
-        )
-        max_calls_per_turn = _parse_non_negative_int_field(
-            metadata,
-            "max_calls_per_turn",
-            metadata_path,
-            default=3,
-        )
-        module_path = _resolve_module_path(
-            module_file,
-            operations_root=root,
-            metadata=metadata,
-            metadata_path=metadata_path,
-        )
-
-        impl_module = _load_operation_module(module_path=module_path, source=metadata_path)
-        execute_fn = getattr(impl_module, "execute", None)
-        if execute_fn is None:
-            raise OperationValidationError(
-                f"Operation '{operation_id}' implementation is missing execute(ctx)."
-            )
-        parameters_schema = getattr(impl_module, "Parameters", None) if impl_module else None
-
-        catalog[operation_id] = OperationDefinition(
-            operation_id=operation_id,
-            description=description,
-            execution_kind="runtime",
-            preferred_model_id=preferred_model_id,
-            tool_ids=tool_ids,
-            mode_allowlist=mode_allowlist,
-            timeout_seconds=timeout_seconds,
-            max_calls_per_turn=max_calls_per_turn,
-            parameters_schema=parameters_schema,
-            implementation_module=impl_module,
-        )
-    return catalog
 
 
 def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
@@ -659,76 +182,16 @@ def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
                     )
 
 
-def load_operation_catalog_merged(
-    core_root: Path | None = None,
-    core_roots: list[Path] | None = None,
-    sdk_roots: list[Path] | None = None,
-) -> dict[str, OperationDefinition]:
-    """Discover operations from core roots and zero or more SDK roots.
-
-    Core roots are merged in order; if two roots define the same operation_id, the
-    *last* one wins. SDK roots are then merged in order with the same rule.
-
-    Args:
-        core_root: One core operations directory for backward compatibility with
-            callers that only pass a single path.
-        core_roots: Ordered list of core operation-definition roots.
-        sdk_roots: Additional operation roots contributed by lisa_sdk or
-            third-party operation packages.
-
-    Returns:
-        Merged dict mapping operation_id -> OperationDefinition, ready for use.
-    """
-    merged: dict[str, OperationDefinition] = {}
-    if core_roots is not None:
-        for root in core_roots:
-            merged.update(load_operation_catalog_from_disk(root))
-    else:
-        merged.update(load_operation_catalog_from_disk(core_root))
-    for extra_root in sdk_roots or []:
-        merged.update(load_operation_catalog_from_disk(extra_root))
-    return merged
-
-
-def _load_core_operations_roots() -> list[Path]:
-    """Collect core operation module roots in ascending precedence order."""
-    roots: list[Path] = []
-    if _PRIMARY_OPERATIONS_ROOT.is_dir():
-        roots.append(_PRIMARY_OPERATIONS_ROOT)
-    return roots
-
-
-def _load_sdk_operations_roots() -> list[Path]:
-    """Collect SDK operation module roots via entry-points, in-repo lisa_sdk, and env config.
-
-    Discovery order (ascending precedence — later roots override earlier ones):
-    1. ``lisa.extensions.content_roots`` entry-points (installed packages).
-    2. In-repo ``lisa_sdk/operations`` (convenience for local dev/test).
-    3. ``SDK_CONTENT_ROOTS`` env var (explicit overrides).
-    """
-    roots = resolve_content_subdir_roots(discover_installed_content_roots(), "operations")
-    # 2. Auto-include the in-repo lisa_sdk operations directory.
-    if _PRIMARY_SDK_OPERATIONS_ROOT.is_dir() and _PRIMARY_SDK_OPERATIONS_ROOT not in roots:
-        roots.append(_PRIMARY_SDK_OPERATIONS_ROOT)
-    # 3. Env-configured overrides.
-    for candidate in resolve_content_subdir_roots(
-        discover_configured_content_roots(),
-        "operations",
-    ):
-        if candidate not in roots:
-            roots.append(candidate)
-    return roots
-
-
-_OPERATION_CATALOG = load_operation_catalog_merged(
-    core_roots=_load_core_operations_roots(),
-    sdk_roots=_load_sdk_operations_roots(),
-)
-validate_operation_catalog(_OPERATION_CATALOG)
+_OPERATION_CATALOG: dict[str, OperationDefinition] = {}
 
 
 def get_operation_catalog() -> dict[str, OperationDefinition]:
-    """Return the validated internal operation catalog loaded at startup."""
+    """Return the internal operation catalog.
+
+    The catalog is populated by ``register_operation_mcp()`` at startup. If
+    it has not been registered, returns an empty dict — callers that need
+    operations should ensure the host called ``register_operation_mcp()``.
+    """
     return _OPERATION_CATALOG
 
 

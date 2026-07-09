@@ -48,6 +48,21 @@ class MCPContentRegistry:
                     result = await session.call_tool(tool, arguments=arguments)
                     return _extract_text(result)
 
+        # Check for a running event loop BEFORE constructing the coroutine
+        # to avoid the "coroutine was never awaited" RuntimeWarning.
+        try:
+            asyncio.get_running_loop()
+            in_loop = True
+        except RuntimeError:
+            in_loop = False
+
+        if in_loop:
+            # Already inside a running event loop — create a new one in a thread.
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(asyncio.run, _run())
+                return future.result()
         return asyncio.run(_run())
 
     def read_authored_text(self, relative_path: str) -> str:

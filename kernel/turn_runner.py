@@ -102,12 +102,6 @@ class TurnResult:
     with a safe fallback and emit a ``guardrail.audit`` event."""
 
 
-def _lazy_content_registry() -> ContentRegistry:
-    from kernel.context import DiskContentRegistry
-
-    return DiskContentRegistry()
-
-
 def _lazy_model_policy() -> ModelPolicy:
     from kernel.context import ManifestModelPolicy
 
@@ -160,7 +154,7 @@ class ContextSeams:
     overrides any of them with its own without a shim layer.
     """
 
-    content_registry: ContentRegistry = field(default_factory=_lazy_content_registry)
+    content_registry: ContentRegistry = field(default=None)  # type: ignore[assignment]
     model_policy: ModelPolicy = field(default_factory=_lazy_model_policy)
     provider_gateways: ProviderGatewayProvider = field(default_factory=_lazy_provider_gateways)
     event_bus: EventBus = field(default_factory=_lazy_event_bus)

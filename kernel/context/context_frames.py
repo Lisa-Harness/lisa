@@ -5,7 +5,6 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from kernel.context.content_registry import DiskContentRegistry
 from kernel.models import ContextEvidenceNamespace
 from kernel.seams.protocols import ContentRegistry
 
@@ -40,10 +39,9 @@ CONTEXT_FRAME_IDS: tuple[ContextFrameId, ...] = (
 _FRAME_ASSET_PREFIX = "prompts/context_frames"
 _RANKED_EVIDENCE_NAMESPACE_PREFIX = "prompts/context_frames/ranked_evidence"
 
-# Module-level content registry. Hosts override via ``set_content_registry``
-# when they need a custom registry; the default reads from discovered
-# content roots.
-_content_registry: ContentRegistry = DiskContentRegistry()
+# Module-level content registry. Hosts MUST inject one via
+# ``set_content_registry`` before any frame is read. No disk-based default.
+_content_registry: ContentRegistry | None = None
 
 
 def set_content_registry(registry: ContentRegistry) -> None:
@@ -59,6 +57,10 @@ def set_content_registry(registry: ContentRegistry) -> None:
 def read_context_frame(frame_id: ContextFrameId) -> str:
     """Load one authored context frame from the merged content registry."""
 
+    if _content_registry is None:
+        raise RuntimeError(
+            "Content registry not set. Call set_content_registry() before reading frames."
+        )
     return _content_registry.read_authored_text(f"{_FRAME_ASSET_PREFIX}/{frame_id}.md").strip()
 
 
@@ -78,6 +80,10 @@ def render_context_frame(frame_id: ContextFrameId, body: str) -> str:
 def read_ranked_evidence_namespace_frame(namespace: ContextEvidenceNamespace) -> str:
     """Load the authored consumption frame for one ranked-evidence namespace."""
 
+    if _content_registry is None:
+        raise RuntimeError(
+            "Content registry not set. Call set_content_registry() before reading frames."
+        )
     return _content_registry.read_authored_text(
         f"{_RANKED_EVIDENCE_NAMESPACE_PREFIX}/{namespace}.md"
     ).strip()

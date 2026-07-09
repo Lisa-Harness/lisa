@@ -966,7 +966,7 @@ ModeKind = Literal["workflow", "chat", "action"]
 class WorkflowStageConfig(BaseModel):
     """Defines one stage in a mode-specific workflow finite state machine.
 
-    Loaded at startup by ipsar_fsm.load_catalog_from_disk() from YAML front-matter
+    Loaded at startup via the ``lisa-content`` MCP server from YAML front-matter
     blocks in discovered mode-root `{mode}/{stage_id}.md` files.  The instruction_body
     field holds the body text below the front-matter delimiter so that runtime
     prompt injection never needs a disk read.
@@ -1061,7 +1061,7 @@ class WorkshopRenderConfig(BaseModel):
 class WorkflowModeConfig(BaseModel):
     """Defines all stage metadata for a single workflow mode.
 
-    Loaded at startup by ipsar_fsm.load_catalog_from_disk() from a _mode.md file
+    Loaded at startup via the ``lisa-content`` MCP server from a _mode.md file
     at the root of each discovered mode folder. Adding a new mode
     requires only a new folder — no code changes.
 

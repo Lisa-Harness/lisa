@@ -222,14 +222,7 @@ def test_pool_splits_warm_and_cold_configs() -> None:
 @pytest.mark.asyncio
 async def test_run_turn_uses_host_warm_pool(monkeypatch: MonkeyPatch) -> None:
     """When ``hooks.mcp_tool_pool`` is set, run_turn must not start/aclose it."""
-    from pathlib import Path
-
-    from kernel.ipsar_fsm import register_content_roots, register_operation_callbacks
-    from kernel.operations.registry import execute_operation, get_operation_catalog
-
-    sdk_root = Path(__file__).resolve().parents[2] / "sdk_packs" / "core"
-    register_content_roots(sdk_root)
-    register_operation_callbacks(get_operation_catalog, execute_operation)
+    # The shared conftest fixture handles all catalog wiring.
 
     async def stub_complete(**kwargs: Any) -> Any:
         class _R:

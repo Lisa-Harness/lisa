@@ -113,7 +113,7 @@ from kernel.ipsar_fsm import (  # noqa: E402
     create_workflow_session,
     get_workflow_catalog,
     parse_front_matter,
-    register_content_roots,
+    register_content_mcp,
     register_operation_callbacks,
 )
 from kernel.model_manifest import ModelManifest  # noqa: E402
@@ -131,7 +131,7 @@ from kernel.operations.registry import (  # noqa: E402
     OperationExecutionError,
     execute_operation,
     get_operation_catalog,
-    register_operation_roots,
+    register_operation_mcp,
     register_tool_catalog_callback,
 )
 from kernel.slice import SliceOutcome  # noqa: E402
@@ -140,6 +140,7 @@ from kernel.token_usage import (  # noqa: E402
     build_token_usage_event,
 )
 from kernel.tools.mcp_client import (  # noqa: E402
+    MCPClientConfig,
     MCPConnectionError,
     MCPToolPool,
 )
@@ -698,19 +699,55 @@ def get_little_lisa_tool_catalog() -> dict[str, ToolDefinition]:
     return _tool_catalog()
 
 
-def setup_framework() -> None:
-    """Wire public content roots, operation roots, and stub tools."""
+def _build_content_mcp_config() -> MCPClientConfig:
+    """Build an MCPClientConfig that spawns lisa-content with the core pack root.
 
-    register_content_roots(
-        core_root=CORE_PACK_ROOT / "modes",
-        sdk_roots=_sdk_mode_roots(),
+    The kernel calls ``list_modes``, ``list_operations``, and
+    ``read_authored_text`` on this server to discover and load all content
+    packs. The server does all filesystem access; the kernel never touches
+    the filesystem directly.
+
+    ``SDK_CONTENT_ROOTS`` includes both the pack root (for modes/operations
+    discovery) and the ``content/`` subdirectory (so ``read_authored_text``
+    can resolve authored text assets like ``frontdoor/route.md`` without a
+    ``content/`` prefix).
+    """
+    content_root = CORE_PACK_ROOT / "content"
+    return MCPClientConfig(
+        server_id="lisa-content",
+        command=sys.executable,
+        args=[
+            "-m",
+            "lisa_sdk.lisa_content.server",
+            "--data-dir",
+            str(CORE_PACK_ROOT),
+        ],
+        env={"SDK_CONTENT_ROOTS": f"{CORE_PACK_ROOT};{content_root}"},
     )
-    register_operation_roots(
-        primary_root=CORE_PACK_ROOT / "operations",
-        sdk_roots=_sdk_operation_roots(),
-    )
+
+
+def setup_framework() -> None:
+    """Wire the lisa-content MCP server for content discovery and stub tools.
+
+    All content (modes, operations, authored text) is loaded through the
+    ``lisa-content`` MCP server. The kernel never touches the filesystem
+    directly — it calls ``list_modes``, ``list_operations``, and
+    ``read_authored_text`` on the server, which does all scanning and
+    front-matter parsing.
+    """
+    content_config = _build_content_mcp_config()
+    # Order matters: operation MCP first, then operation callbacks, then
+    # content MCP. validate_workflow_catalog calls _validate_mode_operation_bindings
+    # which needs the operation callbacks registered before it can validate.
+    register_operation_mcp(content_config)
     register_tool_catalog_callback(_tool_catalog)
     register_operation_callbacks(get_operation_catalog, execute_operation)
+    register_content_mcp(content_config)
+    # Wire the MCPContentRegistry as the content registry for context frames.
+    from kernel.context.mcp_content_registry import MCPContentRegistry  # noqa: PLC0415
+    from kernel.context.context_frames import set_content_registry  # noqa: PLC0415
+
+    set_content_registry(MCPContentRegistry(content_config))
 
 
 def configure_runtime() -> None:
@@ -2943,13 +2980,18 @@ async def execute_little_lisa_tool(tool_id: str, ctx: Any) -> ToolResult:
 
 
 def _read_authored_text(relative_path: str) -> str:
-    """Load authored pack content by relative path from public content roots."""
+    """Load authored pack content by relative path via the lisa-content MCP server.
 
-    for root in reversed(_authored_content_roots()):
-        candidate = root / relative_path
-        if candidate.exists():
-            return candidate.read_text(encoding="utf-8")
-    raise FileNotFoundError(relative_path)
+    All filesystem access is mediated through the ``lisa-content`` MCP server;
+    the host never touches the filesystem directly for content loading.
+    """
+    from kernel.context.context_frames import _content_registry  # noqa: PLC0415
+
+    if _content_registry is None:
+        raise RuntimeError(
+            "Content registry not set. Call setup_framework() before reading authored text."
+        )
+    return _content_registry.read_authored_text(relative_path)
 
 
 def _mode_support_gap(_mode: WorkflowModeConfig) -> str | None:
