@@ -12,7 +12,11 @@ version: 1
 # their full tool surface is available to modes that declare them. The
 # three core aliases route to the default backend; the backend's other
 # tools (e.g. Mem0's update_memory, delete_memory, list_entities) are
-# directly callable by name from any mode that allows them.
+# directly callable by their namespaced name (server_id.tool_name, e.g.
+# mem0.search_memories) from any mode that allows them.  Both backends'
+# tools appear in the catalog without collision — namespacing eliminates
+# the cross-server name clash (e.g. lisa-memory.add_memory vs
+# mem0.add_memory) by construction.
 memory:
   default_backend: mem0
   backends:
@@ -44,14 +48,24 @@ memory:
         search: search_memories
         list: get_memories
 
-# External MCP tool servers. Mem0 is registered here so its full 11-tool
-# surface is discoverable by modes that declare the tools; the three core
-# aliases above still route through the default backend (lisa_memory unless
-# overridden). Disabled when MEM0_API_KEY is unset — the host's empty-header
-# guard drops it from the pool.
+# External MCP tool servers. Mem0 is registered but only the allowed_tools are
+# exposed directly in addition to the three core aliases above still route
+# through the default backend (lisa_memory unless overridden).
+# Disabled when MEM0_API_KEY is unset — the host's empty-header guard drops
+# it from the pool.
+# tool_policy.allowed_tools/denied_tools list BARE tool names (per-server
+# filtering happens before namespacing).  The model sees them namespaced
+# as mem0.<tool_name>.
 servers:
   - server_id: mem0
     runtime_kind: http
     url: https://mcp.mem0.ai/mcp
     headers:
       Authorization: "Bearer ${MEM0_API_KEY}"
+    tool_policy:
+      allowed_tools:
+        - search_memories
+        - get_memories
+      denied_tools:
+        - add_memory
+        - delete_memory

@@ -36,12 +36,41 @@ __all__ = [
     "MCPToolSpec",
     "SyntheticToolSpec",
     "SYNTHETIC_SERVER_ID",
+    "namespaced_tool_name",
+    "bare_tool_name",
 ]
 
 #: The ``server_id`` stamped on synthetic (host-owned) tool specs so the
 #: catalog can distinguish them from MCP-discovered tools. Synthetic tools
 #: are never routed to a subprocess — they dispatch to an in-process handler.
 SYNTHETIC_SERVER_ID = "__synthetic__"
+
+
+def namespaced_tool_name(server_id: str, tool_name: str) -> str:
+    """Build the model-facing namespaced tool name: ``server_id.tool_name``.
+
+    Every MCP-discovered tool is advertised to the LLM under a namespaced
+    name so that two servers exposing the same bare tool name (e.g.
+    ``lisa-memory`` and ``mem0`` both serving ``add_memory``) never collide
+    in the merged catalog.  Synthetic (host-owned) tools are **not**
+    namespaced — they keep their well-known bare names (``memory.add``,
+    ``memory.search``, …) which form their own implicit namespace.
+
+    The dot separator is chosen for OpenAI function-name compatibility
+    (colons are rejected by the API).  Server ids in this codebase use
+    hyphens, never dots, so ``split('.', 1)`` is unambiguous.
+    """
+    return f"{server_id}.{tool_name}"
+
+
+def bare_tool_name(tool_id: str) -> str:
+    """Extract the bare MCP tool name from a namespaced ``server_id.tool`` id.
+
+    For unnamespaced (synthetic) ids, returns the id unchanged.
+    """
+    if "." in tool_id:
+        return tool_id.split(".", 1)[1]
+    return tool_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -473,25 +502,43 @@ class MCPToolPool:
                 server_tools = filter_tools(server_tools, config.tool_policy)
             server_index: dict[str, MCPToolSpec] = {}
             for spec in server_tools:
-                # Per-server index keeps every tool, collisions or not.
+                # Per-server index keeps every tool keyed by bare name,
+                # collisions or not.  Used by server-scoped dispatch
+                # (_call_tool_scoped) which receives the bare tool name.
                 server_index[spec.name] = spec
-                if spec.name in self._tool_index:
-                    existing_server = self._tool_index[spec.name][0]
+                # Merged index is keyed by the namespaced name
+                # (``server_id.tool_name``).  This eliminates cross-server
+                # collisions by construction — two servers exposing the
+                # same bare name (e.g. lisa-memory and mem0 both serving
+                # add_memory) land under different namespaces and both
+                # appear in the catalog.
+                namespaced = namespaced_tool_name(spec.server_id, spec.name)
+                namespaced_spec = MCPToolSpec(
+                    server_id=spec.server_id,
+                    name=namespaced,
+                    description=spec.description,
+                    input_schema=spec.input_schema,
+                )
+                if namespaced in self._tool_index:
+                    # Same server listing the same tool name twice — a
+                    # genuine server-side duplicate, not a cross-server
+                    # collision.  First-registered-wins with a warning.
                     logger.warning(
-                        "MCP tool name collision: %r defined by %r and %r; %r wins.",
-                        spec.name,
-                        existing_server,
+                        "MCP tool name collision within namespace %r: "
+                        "server %r lists duplicate tool %r; first entry wins.",
+                        namespaced,
                         spec.server_id,
-                        existing_server,
+                        spec.name,
                     )
                     continue
-                self._tool_index[spec.name] = (config.server_id, spec)
-                self._tools.append(spec)
+                self._tool_index[namespaced] = (config.server_id, namespaced_spec)
+                self._tools.append(namespaced_spec)
             self._tool_index_by_server[config.server_id] = server_index
 
         # Re-seed host-owned synthetic tools after the MCP index is rebuilt.
         # Synthetic tools are not rediscovered from servers — they are owned
-        # by the host and must survive catalog refreshes.
+        # by the host and must survive catalog refreshes.  They keep their
+        # bare (unnamespaced) names — ``memory.add``, ``memory.search``, etc.
         self._reindex_synthetic_tools()
 
     async def refresh_tool_index(self) -> None:
@@ -611,8 +658,12 @@ class MCPToolPool:
                     output_text=f"MCP server '{server_id}' for tool '{tool_id}' is not connected.",
                     is_error=True,
                 )
+        # The merged index is keyed by namespaced names (server_id.tool),
+        # but the MCP session expects the bare tool name.  Strip the
+        # namespace prefix before calling the server.
+        bare_name = bare_tool_name(tool_id)
         try:
-            result = await session.call_tool(tool_id, arguments=arguments)
+            result = await session.call_tool(bare_name, arguments=arguments)
         except Exception as exc:  # pylint: disable=broad-except
             # Session may have died mid-call; attempt one warm restart.
             if config is not None and config.warm:

@@ -65,12 +65,14 @@ def mcp_alias_tool(
             ``{"query": ...}``) to a server-specific shape (e.g.
             ``{"query": ..., "user_id": "default"}``).
         target_server_id: Optional server id pinning dispatch to that server.
-            When set, the call bypasses the pool's merged bare-name index
-            (which is first-registered-wins) and routes to this server's own
-            tool index — so the alias can target a backend whose tool name
-            collides with another server's (e.g. ``mem0``'s ``add_memory`` vs
-            ``lisa-memory``'s ``add_memory``). When ``None``, dispatch falls
-            back to the merged bare-name index (the legacy behavior).
+            When set, the call bypasses the pool's merged namespaced index
+            and routes to this server's own tool index — so the alias can
+            target a specific backend even when multiple servers expose the
+            same bare tool name (e.g. ``mem0``'s ``add_memory`` vs
+            ``lisa-memory``'s ``add_memory`` both appear in the catalog as
+            ``mem0.add_memory`` and ``lisa-memory.add_memory`` respectively,
+            but the alias pins to one). When ``None``, dispatch falls back
+            to the merged namespaced index.
     """
 
     async def handler(arguments: dict[str, Any]) -> str:

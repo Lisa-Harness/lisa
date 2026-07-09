@@ -268,25 +268,27 @@ async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
         captured_tools.extend(tools)
         return _StubCompletion(content="Done.")
 
-    # Build a stub pool that returns tools the learn mode doesn't allow
+    # Build a stub pool that returns tools the learn mode doesn't allow.
+    # MCP-discovered tools are namespaced (server_id.tool_name); synthetic
+    # aliases keep their bare names (memory.add, etc.).
     class _StubPool:
         async def list_tools(self) -> list[MCPToolSpec]:
             return [
                 MCPToolSpec(
-                    server_id="test",
+                    server_id="__synthetic__",
                     name="memory.add",
                     description="Add memory",
                     input_schema={"type": "object", "properties": {}},
                 ),
                 MCPToolSpec(
                     server_id="test",
-                    name="delete_all_memories",
+                    name="test.delete_all_memories",
                     description="Delete all memories",
                     input_schema={"type": "object", "properties": {}},
                 ),
                 MCPToolSpec(
                     server_id="test",
-                    name="surf_url",
+                    name="test.surf_url",
                     description="Browse a URL",
                     input_schema={"type": "object", "properties": {}},
                 ),
@@ -312,10 +314,10 @@ async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
     await run_turn(mode_id="learn", query="test", hooks=hooks)
 
     tool_names = {t["function"]["name"] for t in captured_tools if "function" in t}
-    # memory.add is allowed; delete_all_memories and surf_url are not
+    # memory.add (synthetic) is allowed; namespaced MCP tools are not
     assert "memory.add" in tool_names
-    assert "delete_all_memories" not in tool_names
-    assert "surf_url" not in tool_names
+    assert "test.delete_all_memories" not in tool_names
+    assert "test.surf_url" not in tool_names
 
 
 # ── tools_authoritative mode ─────────────────────────────────────────
@@ -389,14 +391,14 @@ async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
         async def list_tools(self) -> list[MCPToolSpec]:
             return [
                 MCPToolSpec(
-                    server_id="test",
+                    server_id="__synthetic__",
                     name="memory.add",
                     description="Add memory",
                     input_schema={"type": "object", "properties": {}},
                 ),
                 MCPToolSpec(
                     server_id="test",
-                    name="surf_url",
+                    name="test.surf_url",
                     description="Browse a URL",
                     input_schema={"type": "object", "properties": {}},
                 ),
@@ -432,4 +434,4 @@ async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
     tool_names = {t["function"]["name"] for t in captured_tools if "function" in t}
     # No MCP tools should appear (allowed_tool_ids is empty + authoritative)
     assert "memory.add" not in tool_names
-    assert "surf_url" not in tool_names
+    assert "test.surf_url" not in tool_names

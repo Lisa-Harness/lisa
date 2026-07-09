@@ -6,7 +6,7 @@ Covers:
 - call_tool() dispatches synthetic tools to their in-process handler.
 - Synthetic tools survive refresh_tool_index() (they are host-owned).
 - aclose() clears synthetic handlers.
-- Name collisions follow first-registered-wins (with a synthetic entry).
+- Synthetic tools and namespaced server tools coexist without collision.
 - mcp_alias_tool() redirects a synthetic name to an MCP server tool.
 - Handler exceptions surface as error results.
 
@@ -26,6 +26,7 @@ from kernel.tools.mcp_client import (
     MCPToolSpec,
     SYNTHETIC_SERVER_ID,
     SyntheticToolSpec,
+    namespaced_tool_name,
 )
 from kernel.tools.synthetic import mcp_alias_tool
 
@@ -57,7 +58,9 @@ def _patch_refresh_with(
     """Replace _refresh_tool_index with one that seeds from a static map.
 
     server_tools maps server_id -> list of (name, description, input_schema).
-    Synthetic tools are re-seeded after the MCP index is built.
+    The merged index is keyed by namespaced names (server_id.tool_name);
+    the per-server index is keyed by bare names.  Synthetic tools are
+    re-seeded after the MCP index is built.
     """
 
     async def fake_refresh(self: MCPToolPool) -> None:
@@ -67,16 +70,23 @@ def _patch_refresh_with(
         for config in self._configs:
             server_index: dict[str, MCPToolSpec] = {}
             for name, description, input_schema in server_tools.get(config.server_id, []):
-                spec = MCPToolSpec(
+                bare_spec = MCPToolSpec(
                     server_id=config.server_id,
                     name=name,
                     description=description,
                     input_schema=input_schema,
                 )
-                server_index[name] = spec
-                if name not in self._tool_index:
-                    self._tool_index[name] = (config.server_id, spec)
-                    self._tools.append(spec)
+                server_index[name] = bare_spec
+                namespaced = namespaced_tool_name(config.server_id, name)
+                namespaced_spec = MCPToolSpec(
+                    server_id=config.server_id,
+                    name=namespaced,
+                    description=description,
+                    input_schema=input_schema,
+                )
+                if namespaced not in self._tool_index:
+                    self._tool_index[namespaced] = (config.server_id, namespaced_spec)
+                    self._tools.append(namespaced_spec)
             self._tool_index_by_server[config.server_id] = server_index
         self._reindex_synthetic_tools()
 
@@ -160,7 +170,10 @@ async def test_synthetic_aclose_clears_handlers(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
-async def test_synthetic_collision_first_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_synthetic_and_namespaced_server_tool_coexist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A synthetic tool with the same bare name as a server tool does NOT
+    collide because server tools are namespaced (s.shared) while synthetics
+    keep their bare name (shared). Both appear in the catalog."""
     _patch_connect(monkeypatch)
     _patch_refresh_with(monkeypatch, {"s": [("shared", "from server", {})]})
 
@@ -170,12 +183,14 @@ async def test_synthetic_collision_first_wins(monkeypatch: pytest.MonkeyPatch) -
     async def synthetic_handler(args: dict[str, Any]) -> str:
         return "synthetic"
 
-    # The server's "shared" tool is already in the index; synthetic loses.
+    # The server's tool is indexed as "s.shared"; the synthetic "shared" is
+    # a different key — no collision, both coexist.
     pool.add_synthetic_tools([
         SyntheticToolSpec(name="shared", description="d", input_schema={}, handler=synthetic_handler)
     ])
-    # "shared" should route to the server, not the synthetic handler.
-    assert "shared" not in pool._synthetic_handlers
+    assert "shared" in pool._synthetic_handlers
+    assert "s.shared" in pool._tool_index
+    assert "shared" in pool._tool_index
     await pool.aclose()
 
 
@@ -206,6 +221,7 @@ async def test_mcp_alias_tool_redirects_to_server_tool(monkeypatch: pytest.Monke
         description="generic alias",
         pool=pool,
         target_tool="real_search",
+        target_server_id="s",
         arg_map=lambda a: {**a, "user_id": "default"},
     )
     pool.add_synthetic_tools([alias])
@@ -251,12 +267,13 @@ def _config_named(server_id: str) -> MCPClientConfig:
 
 @pytest.mark.asyncio
 async def test_call_tool_scoped_routes_to_named_server(monkeypatch: pytest.MonkeyPatch) -> None:
-    """call_tool(server_id=...) bypasses bare-name collision and routes to
-    the named server, even when another server registered the same tool name
-    first in the merged index."""
+    """call_tool(server_id=...) bypasses the merged namespaced index and
+    routes to the named server, even when another server exposes the same
+    bare tool name.  Both servers' tools appear in the catalog under their
+    own namespace (lisa-memory.add_memory, mem0.add_memory) — no collision."""
     _patch_connect(monkeypatch)
-    # Both servers expose "add_memory"; first-registered ("lisa-memory") wins
-    # the bare-name index. Scoped dispatch must still reach "mem0".
+    # Both servers expose "add_memory"; they land in the merged index under
+    # separate namespaces.  Scoped dispatch still routes to the named server.
     _patch_refresh_with(
         monkeypatch,
         {
@@ -285,15 +302,15 @@ async def test_call_tool_scoped_routes_to_named_server(monkeypatch: pytest.Monke
     pool._sessions["lisa-memory"] = _FakeSession("lisa-memory")  # type: ignore[assignment]
     pool._sessions["mem0"] = _FakeSession("mem0")  # type: ignore[assignment]
 
-    # Bare-name call hits lisa-memory (first-registered-wins).
-    await pool.call_tool("add_memory", {})
+    # Namespaced call hits lisa-memory (the namespaced key resolves to it).
+    await pool.call_tool("lisa-memory.add_memory", {})
     assert seen == ["lisa-memory"]
 
-    # Scoped call to mem0 bypasses the collision and routes there.
+    # Scoped call to mem0 bypasses the merged index and routes there.
     await pool.call_tool("add_memory", {}, server_id="mem0")
     assert seen == ["lisa-memory", "mem0"]
 
-    # Scoped call to lisa-memory also routes there despite losing nothing.
+    # Scoped call to lisa-memory also routes there.
     await pool.call_tool("add_memory", {}, server_id="lisa-memory")
     assert seen == ["lisa-memory", "mem0", "lisa-memory"]
     await pool.aclose()
@@ -349,16 +366,23 @@ async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.Mo
             result = await session.list_tools()
             server_index: dict[str, MCPToolSpec] = {}
             for tool in result.tools:
-                spec = MCPToolSpec(
+                bare_spec = MCPToolSpec(
                     server_id=config.server_id,
                     name=tool.name,
                     description=tool.description or "",
                     input_schema=tool.inputSchema or {},
                 )
-                server_index[spec.name] = spec
-                if spec.name not in self._tool_index:
-                    self._tool_index[spec.name] = (config.server_id, spec)
-                    self._tools.append(spec)
+                server_index[tool.name] = bare_spec
+                namespaced = namespaced_tool_name(config.server_id, tool.name)
+                namespaced_spec = MCPToolSpec(
+                    server_id=config.server_id,
+                    name=namespaced,
+                    description=tool.description or "",
+                    input_schema=tool.inputSchema or {},
+                )
+                if namespaced not in self._tool_index:
+                    self._tool_index[namespaced] = (config.server_id, namespaced_spec)
+                    self._tools.append(namespaced_spec)
             self._tool_index_by_server[config.server_id] = server_index
         self._reindex_synthetic_tools()
 
