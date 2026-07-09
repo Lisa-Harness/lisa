@@ -11,7 +11,7 @@ performs 7 distinct initialization phases in one function body:
 
 1. Resolve and set debug/log-level.
 2. Resolve and set data-dir, memory-db, thread-dir paths.
-3. Resolve and set timeout profile and timezone.
+3. Resolve and set timezone.
 4. Load state snapshot (if provided).
 5. Resolve streaming mode and char delay.
 6. Resolve session context (if provided).
@@ -30,7 +30,7 @@ independently testable and the orchestrator stays under 50 statements.
 | --- | --- |
 | `_init_debug_and_log_level` | Resolve debug flag and log level, set in `_RUNTIME_STATE`. |
 | `_init_paths` | Resolve data-dir, memory-db, thread-dir, set in `_RUNTIME_STATE`. |
-| `_init_timeout_and_timezone` | Resolve timeout profile and timezone, set in `_RUNTIME_STATE`. |
+| `_init_timezone` | Resolve timezone, set in `_RUNTIME_STATE`. |
 | `_init_state_snapshot` | Load state snapshot from path, set in `_RUNTIME_STATE`. |
 | `_init_streaming` | Resolve streaming mode and char delay, set in `_RUNTIME_STATE`. |
 | `_init_session_context` | Resolve session context, set thread path and session flags. |
@@ -49,7 +49,6 @@ def _initialize_runtime(
     thread_dir: str = "",
     no_thread: bool = False,
     user_slug: str,
-    timeout_profile: str,
     timezone: str = "",
     state_snapshot_path: str,
     streaming: str = "",
@@ -57,7 +56,7 @@ def _initialize_runtime(
     """Initialize runtime state from CLI args and env vars."""
     _init_debug_and_log_level(debug=debug, log_level=log_level, log_path=log_path, no_log=no_log)
     _init_paths(data_dir=data_dir, memory_db=memory_db, thread_dir=thread_dir, no_thread=no_thread)
-    _init_timeout_and_timezone(timeout_profile=timeout_profile, timezone=timezone)
+    _init_timezone(timezone=timezone)
     _init_state_snapshot(state_snapshot_path=state_snapshot_path)
     _init_streaming(streaming=streaming)
 
@@ -71,8 +70,8 @@ def _initialize_runtime(
         no_thread=no_thread,
     )
     logger.info(
-        "runtime initialized: user=%s timeout=%s tz=%s(%s) stream=%s",
-        user_slug, _runtime_timeout_profile(), _runtime_timezone(),
+        "runtime initialized: user=%s tz=%s(%s) stream=%s",
+        user_slug, _runtime_timezone(),
         _runtime_timezone_source(), _runtime_streaming_mode(),
     )
 ```

@@ -41,7 +41,6 @@ logger = logging.getLogger(__name__)
 REQUIRED_LOG_CONTEXT_KEYS = (
     "log_level",
     "debug",
-    "timeout_profile",
     "timezone",
     "timezone_source",
     "session_context",
@@ -64,7 +63,6 @@ def build_runtime_log_metadata(ctx: dict[str, Any]) -> dict[str, Any]:
         "runtime": {
             "log_level": ctx.get("log_level", "info"),
             "debug": ctx.get("debug", False),
-            "timeout_profile": ctx.get("timeout_profile", "balanced"),
             "timezone": ctx.get("timezone", "UTC"),
             "timezone_source": ctx.get("timezone_source", "default"),
             "session_context": ctx.get("session_context") or "none",

@@ -1,7 +1,7 @@
 """Configuration resolution for Little Lisa.
 
 This module centralises all *pure* configuration resolution logic: timezone
-normalisation, timeout-profile selection, log-level resolution, streaming-mode
+normalisation, log-level resolution, streaming-mode
 parsing, and slice-tuning env-var reading.  Each function is a deterministic
 mapping from user input (CLI flags / env vars) to a normalised value with no
 side effects on the global ``_RUNTIME_STATE`` dict.
@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 # Centralised here so config functions and main.py share a single source
 # of truth.  Main.py re-imports the names it needs for _initialize_runtime.
 
-_LITTLE_LISA_TIMEOUT_PROFILE_ENV = "LITTLE_LISA_TIMEOUT_PROFILE"
 _LITTLE_LISA_TIMEZONE_ENV = "LITTLE_LISA_TIMEZONE"
 _LITTLE_LISA_LOG_LEVEL_ENV = "LITTLE_LISA_LOG_LEVEL"
 _LITTLE_LISA_SLICE_PRE_TURN_ENV = "LITTLE_LISA_SLICE_PRE_TURN"
@@ -390,33 +389,6 @@ def _resolve_log_level(cli_log_level: str, *, debug_enabled: bool) -> str:
         logger.debug("log level defaulting to debug because --debug is set")
         return "debug"
     return "info"
-
-
-# ── Timeout-profile resolution ────────────────────────────────────────
-
-
-def _normalize_timeout_profile(value: str) -> str | None:
-    """Return one of ``"fast"``, ``"balanced"``, ``"deep"`` or ``None``."""
-    normalized = value.strip().lower()
-    if normalized in {"fast", "balanced", "deep"}:
-        return normalized
-    logger.debug("unrecognised timeout-profile value %r", value)
-    return None
-
-
-def _resolve_timeout_profile(cli_timeout_profile: str) -> str:
-    """Resolve the timeout profile with CLI > env > default precedence."""
-    cli_value = _normalize_timeout_profile(cli_timeout_profile)
-    if cli_value is not None:
-        logger.debug("timeout profile resolved from CLI: %s", cli_value)
-        return cli_value
-    env_value = _normalize_timeout_profile(os.getenv(_LITTLE_LISA_TIMEOUT_PROFILE_ENV, ""))
-    if env_value is not None:
-        logger.debug(
-            "timeout profile resolved from %s: %s", _LITTLE_LISA_TIMEOUT_PROFILE_ENV, env_value
-        )
-        return env_value
-    return "balanced"
 
 
 # ── Streaming-mode resolution ──────────────────────────────────────────

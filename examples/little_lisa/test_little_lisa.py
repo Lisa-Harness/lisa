@@ -73,7 +73,6 @@ def test_build_desktop_subprocess_args_forwards_runtime_settings() -> None:
         thread_dir="artifacts/threads",
         no_thread=True,
         session_context="adam",
-        timeout_profile="deep",
         timezone="UTC",
         state_snapshot="artifacts/state.json",
         streaming="hybrid:4",
@@ -1464,7 +1463,6 @@ def test_initialize_runtime_applies_user_timeout_and_state_snapshot(tmp_path: Pa
     little_lisa._initialize_runtime(
         debug=True,
         user_slug="system",
-        timeout_profile="deep",
         timezone="UTC",
         state_snapshot_path=str(snapshot_path),
     )
@@ -1472,7 +1470,6 @@ def test_initialize_runtime_applies_user_timeout_and_state_snapshot(tmp_path: Pa
     assert little_lisa._RUNTIME_STATE["user_slug"] == "system"
     assert little_lisa._RUNTIME_STATE["session_context_ref"] == "user_contexts/system.md"
     assert little_lisa._RUNTIME_STATE["session_context_active"] is False
-    assert little_lisa._RUNTIME_STATE["timeout_profile"] == "deep"
     assert little_lisa._RUNTIME_STATE["timezone"] == "UTC"
     assert little_lisa._RUNTIME_STATE["timezone_source"] == "cli"
     assert little_lisa._RUNTIME_STATE["log_level"] == "debug"
@@ -1514,7 +1511,6 @@ def test_initialize_runtime_applies_stream_configuration() -> None:
     little_lisa._initialize_runtime(
         debug=False,
         user_slug="",
-        timeout_profile="",
         timezone="UTC",
         state_snapshot_path="",
         streaming=f"stage:{stream_delay_ms}",
@@ -1525,22 +1521,6 @@ def test_initialize_runtime_applies_stream_configuration() -> None:
     assert little_lisa._RUNTIME_STATE["stream_char_delay_ms"] == stream_delay_ms
 
 
-def test_initialize_runtime_uses_timeout_profile_env_when_cli_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("LITTLE_LISA_TIMEOUT_PROFILE", "fast")
-
-    little_lisa._initialize_runtime(
-        debug=False,
-        user_slug="",
-        timeout_profile="",
-        timezone="UTC",
-        state_snapshot_path="",
-    )
-
-    assert little_lisa._RUNTIME_STATE["timeout_profile"] == "fast"
-
-
 def test_initialize_runtime_uses_log_level_env_when_cli_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1549,7 +1529,6 @@ def test_initialize_runtime_uses_log_level_env_when_cli_missing(
     little_lisa._initialize_runtime(
         debug=False,
         user_slug="",
-        timeout_profile="",
         timezone="UTC",
         state_snapshot_path="",
     )
@@ -1566,7 +1545,6 @@ def test_initialize_runtime_prefers_cli_log_level_over_env(
         debug=False,
         log_level="info",
         user_slug="",
-        timeout_profile="",
         timezone="UTC",
         state_snapshot_path="",
     )
@@ -1582,7 +1560,6 @@ def test_initialize_runtime_uses_timezone_env_when_cli_missing(
     little_lisa._initialize_runtime(
         debug=False,
         user_slug="",
-        timeout_profile="",
         timezone="",
         state_snapshot_path="",
     )
@@ -1596,7 +1573,6 @@ def test_initialize_runtime_fails_when_timezone_unresolvable() -> None:
         little_lisa._initialize_runtime(
             debug=False,
             user_slug="",
-            timeout_profile="",
             timezone="Not/AZone Value",
             state_snapshot_path="",
         )
@@ -1606,7 +1582,6 @@ def test_initialize_runtime_accepts_timezone_alias() -> None:
     little_lisa._initialize_runtime(
         debug=False,
         user_slug="",
-        timeout_profile="",
         timezone="EDT",
         state_snapshot_path="",
     )
@@ -1620,7 +1595,6 @@ def test_initialize_runtime_fails_when_user_context_missing() -> None:
         little_lisa._initialize_runtime(
             debug=False,
             user_slug="adam",
-            timeout_profile="",
             timezone="UTC",
             state_snapshot_path="",
         )
@@ -1633,7 +1607,6 @@ def test_initialize_runtime_accepts_session_context_file_path(tmp_path: Path) ->
     little_lisa._initialize_runtime(
         debug=False,
         user_slug=str(context_file),
-        timeout_profile="",
         timezone="UTC",
         state_snapshot_path="",
     )
@@ -1651,7 +1624,6 @@ def test_initialize_runtime_rejects_session_context_path_without_md(tmp_path: Pa
         little_lisa._initialize_runtime(
             debug=False,
             user_slug=str(context_file),
-            timeout_profile="",
             timezone="UTC",
             state_snapshot_path="",
         )
@@ -1737,18 +1709,12 @@ def test_status_segments_show_profile_model_without_prefix_and_token_badge(
     monkeypatch.setitem(little_lisa._RUNTIME_STATE, "turn_total_tokens", 128)
     monkeypatch.setitem(little_lisa._RUNTIME_STATE, "session_total_tokens", 1024)
 
-    monkeypatch.setitem(little_lisa._RUNTIME_STATE, "timeout_profile", "balanced")
     balanced_labels = [label for label, _ in little_lisa._status_segments()]
-    assert any(label.startswith("⚖ balanced") for label in balanced_labels)
     assert any(label == "ollama:deepseek-v4" for label in balanced_labels)
     assert not any(
         label.startswith("model ") or label.startswith("m ") for label in balanced_labels
     )
     assert any(label == "tokens 128/1024" for label in balanced_labels)
-
-    monkeypatch.setitem(little_lisa._RUNTIME_STATE, "timeout_profile", "fast")
-    fast_labels = [label for label, _ in little_lisa._status_segments()]
-    assert any(label.startswith("⚡ fast") for label in fast_labels)
 
 
 def test_status_segments_minimal_uses_tc_token_badge(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1817,7 +1783,6 @@ async def test_settings_command_reports_effective_runtime_settings() -> None:
         output = await little_lisa.handle_message("/settings")
 
     assert "Runtime Settings" in output
-    assert "timeout_profile:" in output
     assert "timezone:" in output
     assert "log_level:" in output
 
@@ -2042,7 +2007,6 @@ def test_initialize_runtime_prefers_artifact_session_context(tmp_path: Path) -> 
         thread_dir="",
         no_thread=False,
         user_slug="",
-        timeout_profile="balanced",
         timezone="",
         state_snapshot_path="",
         streaming="none",

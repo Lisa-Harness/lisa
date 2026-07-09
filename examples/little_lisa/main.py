@@ -291,7 +291,6 @@ _LITTLE_LISA_OLLAMA_HOST_ENV = "LITTLE_LISA_OLLAMA_HOST"
 _LITTLE_LISA_OLLAMA_API_KEY_ENV = "LITTLE_LISA_OLLAMA_API_KEY"
 _LITTLE_LISA_GOOGLE_API_KEY_ENV = "LITTLE_LISA_GOOGLE_API_KEY"
 _LITTLE_LISA_GOOGLE_API_BASE_URL_ENV = "LITTLE_LISA_GOOGLE_API_BASE_URL"
-_LITTLE_LISA_TIMEOUT_PROFILE_ENV = "LITTLE_LISA_TIMEOUT_PROFILE"
 _LITTLE_LISA_TIMEZONE_ENV = "LITTLE_LISA_TIMEZONE"
 _LITTLE_LISA_LOG_LEVEL_ENV = "LITTLE_LISA_LOG_LEVEL"
 _LITTLE_LISA_SLICE_PRE_TURN_ENV = "LITTLE_LISA_SLICE_PRE_TURN"
@@ -301,7 +300,7 @@ _LITTLE_LISA_SLICE_BUDGET_MS_ENV = "LITTLE_LISA_SLICE_BUDGET_MS"
 _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV = "LITTLE_LISA_THREAD_MAX_ENTRIES"
 _LITTLE_LISA_MEMORY_MAX_RECORDS_ENV = "LITTLE_LISA_MEMORY_MAX_RECORDS"
 
-# Config-resolution logic (timezone, timeout, log-level, streaming, slice)
+# Config-resolution logic (timezone, log-level, streaming, slice)
 # lives in the dedicated ``config`` module.  We import the names here so
 # that ``monkeypatch.setattr(little_lisa, "_resolve_timezone", ...)`` and
 # similar test seams continue to resolve on the ``main`` module surface.
@@ -314,7 +313,6 @@ try:
         _normalize_log_level,
         _resolve_log_level,
         _resolve_slice_tuning,
-        _resolve_timeout_profile,
         _resolve_timezone,
         context_slug_to_thread_name,
         parse_streaming_option,
@@ -329,7 +327,6 @@ except ImportError:  # pragma: no cover - direct script execution fallback
         _normalize_log_level,
         _resolve_log_level,
         _resolve_slice_tuning,
-        _resolve_timeout_profile,
         _resolve_timezone,
         context_slug_to_thread_name,
         parse_streaming_option,
@@ -352,7 +349,6 @@ _RUNTIME_STATE: dict[str, Any] = {
     "user_slug": "",
     "session_context_ref": "",
     "session_context_active": False,
-    "timeout_profile": "balanced",
     "timezone": "UTC",
     "timezone_source": "default",
     "current_mode_id": "default",
@@ -511,16 +507,6 @@ SessionContextOption = Annotated[
             "User context source: a slug name (content/user_contexts/<name>.md), "
             "a full .md file path, or a directory (all files concatenated). "
             "Omit to skip session context."
-        ),
-    ),
-]
-TimeoutProfileOption = Annotated[
-    str,
-    typer.Option(
-        "--timeout-profile",
-        help=(
-            "Operation timeout profile: fast, balanced, or deep. "
-            "Overrides LITTLE_LISA_TIMEOUT_PROFILE."
         ),
     ),
 ]
@@ -957,11 +943,6 @@ def _runtime_next_model_provider() -> str:
     return configured or "-"
 
 
-def _runtime_timeout_profile() -> str:
-    configured = str(_RUNTIME_STATE.get("timeout_profile") or "").strip().lower()
-    return configured if configured in {"fast", "balanced", "deep"} else "balanced"
-
-
 def _runtime_timezone() -> str:
     configured = str(_RUNTIME_STATE.get("timezone") or "").strip()
     return configured or "UTC"
@@ -1292,8 +1273,8 @@ def _resolve_session_context_user_contexts(s: str) -> tuple[str, str, bool] | No
     return context_name, relative_path, False
 
 
-# context_slug_to_thread_name, _normalize_timeout_profile, _resolve_timeout_profile,
-# _resolve_log_level, _normalize_slice_flag, and _resolve_slice_tuning are
+# context_slug_to_thread_name, _resolve_log_level, _normalize_slice_flag,
+# and _resolve_slice_tuning are
 # imported from .config and re-exported here for test compatibility.
 
 
@@ -1856,7 +1837,6 @@ def _assemble_dynamic_user_context(mode_id: str, query: str, pre_turn_briefing: 
         f"- mode_kind: {mode_kind}",
         f"- query_chars: {len(query)}",
         f"- pre_turn_briefing_present: {'true' if bool(pre_turn_briefing.strip()) else 'false'}",
-        f"- timeout_profile: {_runtime_timeout_profile()}",
         "- host: little_lisa",
     ]
     user_slug = _runtime_user_slug()
@@ -1929,7 +1909,6 @@ def _runtime_log_metadata() -> dict[str, Any]:
         {
             "log_level": _runtime_log_level(),
             "debug": _runtime_debug_enabled(),
-            "timeout_profile": _runtime_timeout_profile(),
             "timezone": _runtime_timezone(),
             "timezone_source": _runtime_timezone_source(),
             "session_context": _runtime_user_slug() or "none",
@@ -1964,7 +1943,6 @@ def _append_log_event(
     ctx = {
         "log_level": _runtime_log_level(),
         "debug": _runtime_debug_enabled(),
-        "timeout_profile": _runtime_timeout_profile(),
         "timezone": _runtime_timezone(),
         "timezone_source": _runtime_timezone_source(),
         "session_context": _runtime_user_slug() or "none",
@@ -2188,7 +2166,6 @@ def _build_capability_snapshot() -> dict[str, Any]:
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "user_slug": _runtime_user_slug(),
-        "timeout_profile": _runtime_timeout_profile(),
         "timezone": _runtime_timezone(),
         "timezone_source": _runtime_timezone_source(),
         "supported_modes": supported_modes,
@@ -2216,7 +2193,6 @@ def _render_capability_help() -> str:
         [
             "## Capability Snapshot",
             f"- User context: {snapshot['user_slug']}",
-            f"- Timeout profile: {snapshot['timeout_profile']}",
             f"- Timezone: {snapshot['timezone']} ({snapshot['timezone_source']})",
             f"- Supported modes ({len(snapshot['supported_modes'])}): {mode_preview}",
             f"- Operations: {len(snapshot['operations'])}",
@@ -2356,7 +2332,6 @@ def _render_runtime_settings() -> str:
     return "\n".join(
         [
             "## Runtime Settings",
-            f"- timeout_profile: {_runtime_timeout_profile()}",
             f"- timezone: {_runtime_timezone()}",
             f"- timezone_source: {_runtime_timezone_source()}",
             f"- session_context: {_runtime_user_slug() or 'none'}",
@@ -2380,40 +2355,6 @@ def _load_state_snapshot(path: str) -> dict[str, Any] | None:
         raise ValueError("State snapshot file must contain a JSON object.")
     logger.info("loaded state snapshot from %s (%d keys)", file_path, len(decoded))
     return decoded
-
-
-def _mode_timeout_seconds(mode_id: str) -> int | None:
-    profile = _runtime_timeout_profile()
-    profile_map = {
-        "fast": {"default": 30, "discuss": 30, "search": 45, "thinkabout": 60},
-        "balanced": {"default": 60, "discuss": 60, "search": 120, "thinkabout": 120},
-        "deep": {"default": 120, "discuss": 120, "search": 240, "thinkabout": 240},
-    }
-    return profile_map.get(profile, {}).get(mode_id)
-
-
-def _apply_mode_timeout_profile(mode_id: str) -> list[tuple[str, int]]:
-    timeout_seconds = _mode_timeout_seconds(mode_id)
-    if timeout_seconds is None:
-        return []
-    updated: list[tuple[str, int]] = []
-    for operation_id, definition in get_operation_catalog().items():
-        if definition.mode_allowlist and mode_id not in definition.mode_allowlist:
-            continue
-        previous = int(definition.timeout_seconds)
-        definition.timeout_seconds = timeout_seconds
-        updated.append((operation_id, previous))
-    return updated
-
-
-def _restore_mode_timeouts(applied: list[tuple[str, int]]) -> None:
-    if not applied:
-        return
-    catalog = get_operation_catalog()
-    for operation_id, previous in applied:
-        definition = catalog.get(operation_id)
-        if definition is not None:
-            definition.timeout_seconds = previous
 
 
 def _load_manifest() -> ModelManifest:
@@ -4238,11 +4179,6 @@ async def _execute_mode_turn(
     _set_last_turn_context(run_context)
 
     hooks = _build_turn_hooks(run_context)
-    applied_timeouts = _apply_mode_timeout_profile(mode.mode_id)
-    run_context["applied_operation_timeouts"] = {
-        "profile": _runtime_timeout_profile(),
-        "count": len(applied_timeouts),
-    }
     try:
         result: TurnResult = await run_turn(
             mode_id=mode.mode_id,
@@ -4276,8 +4212,6 @@ async def _execute_mode_turn(
             response_text=response_text,
         )
         return response_text
-    finally:
-        _restore_mode_timeouts(applied_timeouts)
 
     _apply_turn_usage(
         result,
@@ -4362,7 +4296,6 @@ def _build_desktop_subprocess_args(
     thread_dir: str,
     no_thread: bool,
     session_context: str,
-    timeout_profile: str,
     timezone: str,
     state_snapshot: str,
     streaming: str,
@@ -4391,7 +4324,6 @@ def _build_desktop_subprocess_args(
     if no_thread:
         args.append("--no-thread")
     _append_flag_args(args, session_context, "--session-context")
-    _append_flag_args(args, timeout_profile, "--timeout-profile")
     _append_flag_args(args, timezone, "--timezone")
     _append_flag_args(args, state_snapshot, "--state-snapshot")
     _append_flag_args(args, streaming, "--streaming")
@@ -4448,7 +4380,6 @@ def _run_default_no_args_mode(
     thread_dir: str,
     no_thread: bool,
     session_context: str,
-    timeout_profile: str,
     timezone: str,
     state_snapshot: str,
     streaming: str,
@@ -4472,7 +4403,6 @@ def _run_default_no_args_mode(
             thread_dir=thread_dir,
             no_thread=no_thread,
             session_context=session_context,
-            timeout_profile=timeout_profile,
             timezone=timezone,
             state_snapshot=state_snapshot,
             streaming=streaming,
@@ -4507,7 +4437,6 @@ def _run_default_no_args_mode(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
-        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -4616,9 +4545,6 @@ def _print_startup_banner() -> None:
 
 
 def _status_segments(compact_level: int = _STATUS_COMPACT_FULL) -> list[tuple[str, str]]:
-    profile = _runtime_timeout_profile()
-    profile_emoji = {"fast": "⚡", "balanced": "⚖", "deep": "🧠"}.get(profile, "⏱")
-    profile_badge = f"{profile_emoji} {profile}"
     user = _runtime_user_slug().strip()
     user_segment = (f"👤 {user}", STYLE_STATUS_INFO) if user else None
     mode_id = _runtime_current_mode_id()
@@ -4635,7 +4561,6 @@ def _status_segments(compact_level: int = _STATUS_COMPACT_FULL) -> list[tuple[st
     if compact_level <= _STATUS_COMPACT_FULL:
         return _finalize_status_segments(
             segments=[
-                (profile_badge, STYLE_STATUS_INFO),
                 (mode_badge, STYLE_STATUS_METRIC),
                 (model_badge, STYLE_STATUS_METRIC),
                 (token_badge, STYLE_STATUS_METRIC),
@@ -4647,7 +4572,6 @@ def _status_segments(compact_level: int = _STATUS_COMPACT_FULL) -> list[tuple[st
     if compact_level == _STATUS_COMPACT_ABBREVIATED:
         return _finalize_status_segments(
             segments=[
-                (profile_badge, STYLE_STATUS_INFO),
                 (mode_badge_short, STYLE_STATUS_METRIC),
                 (model_badge, STYLE_STATUS_METRIC),
                 (token_badge_short, STYLE_STATUS_METRIC),
@@ -4659,7 +4583,6 @@ def _status_segments(compact_level: int = _STATUS_COMPACT_FULL) -> list[tuple[st
     if compact_level == _STATUS_COMPACT_TRIMMED:
         return _finalize_status_segments(
             segments=[
-                (profile_badge, STYLE_STATUS_INFO),
                 (mode_badge_short, STYLE_STATUS_METRIC),
                 (model_badge, STYLE_STATUS_METRIC),
                 (token_badge_short, STYLE_STATUS_METRIC),
@@ -4895,7 +4818,6 @@ def _initialize_runtime(
     thread_dir: str = "",
     no_thread: bool = False,
     user_slug: str,
-    timeout_profile: str,
     timezone: str = "",
     state_snapshot_path: str,
     streaming: str = "",
@@ -4923,7 +4845,7 @@ def _initialize_runtime(
         thread_dir=thread_dir,
         no_thread=no_thread,
     )
-    _init_timeout_and_timezone(timeout_profile=timeout_profile, timezone=timezone)
+    _init_timezone(timezone=timezone)
     _init_state_snapshot(state_snapshot_path=state_snapshot_path)
     _init_streaming(streaming=streaming)
     _build_warm_mcp_pool()
@@ -5433,9 +5355,8 @@ def _init_session_context_and_threads(
     return normalized_user, context_ref, context_active
 
 
-def _init_timeout_and_timezone(*, timeout_profile: str, timezone: str) -> None:
-    """Resolve and set timeout profile, timezone, and session counters."""
-    _RUNTIME_STATE["timeout_profile"] = _resolve_timeout_profile(timeout_profile)
+def _init_timezone(*, timezone: str) -> None:
+    """Resolve and set timezone and session counters."""
     _RUNTIME_STATE["session_started_utc"] = datetime.now(UTC)
     _RUNTIME_STATE["session_turn_count"] = 0
     _RUNTIME_STATE["session_success_count"] = 0
@@ -5504,7 +5425,6 @@ def _log_runtime_initialized(
             "session_context_active": context_active,
             "timezone": _runtime_timezone(),
             "timezone_source": _runtime_timezone_source(),
-            "timeout_profile": _runtime_timeout_profile(),
             "log_path": str(_runtime_log_path() or ""),
             "streaming_mode": _runtime_streaming_mode(),
             "streaming_enabled": _runtime_stream_enabled(),
@@ -5576,7 +5496,6 @@ def _cli_callback(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
-    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     desktop_host: str = typer.Option(
@@ -5614,7 +5533,6 @@ def _cli_callback(
         thread_dir=thread_dir,
         no_thread=no_thread,
         session_context=session_context,
-        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot=state_snapshot,
         streaming=streaming,
@@ -5636,7 +5554,6 @@ def _cli_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
-    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -5652,7 +5569,6 @@ def _cli_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
-        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -5694,7 +5610,6 @@ def _desktop_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
-    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -5710,7 +5625,6 @@ def _desktop_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
-        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -5969,7 +5883,6 @@ def _verify_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
-    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -5990,7 +5903,6 @@ def _verify_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
-        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -6288,7 +6200,6 @@ def _modes_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
-    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -6304,7 +6215,6 @@ def _modes_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
-        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -6324,7 +6234,6 @@ def _models_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
-    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -6340,7 +6249,6 @@ def _models_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
-        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -6361,7 +6269,6 @@ def _once_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
-    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -6377,7 +6284,6 @@ def _once_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
-        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,

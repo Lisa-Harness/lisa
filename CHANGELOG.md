@@ -158,7 +158,7 @@ All notable changes to the Lisa Framework will be documented in this file.
 - Runtime introspection commands: `/help capabilities`, `/settings`, `/debug context`, `/debug capabilities`, `/debug self`.
 - File-backed thread persistence with `--thread-dir` and `--no-thread` options.
 - Configurable artifacts root via `--data-dir` and memory store path via `--memory-db`.
-- `--user`, `--session-context`, `--timeout-profile`, `--timezone`, and `--state-snapshot` runtime options.
+- `--user`, `--session-context`, `--timezone`, and `--state-snapshot` runtime options.
 - `prompt_toolkit` integration for command history and slash-command completion in CLI mode.
 - MCP-backed memory via `lisa-context` with `--memory-db` override.
 - `LittleLisaStateProvider` with bounded thread compaction and memory eviction via the slice system.

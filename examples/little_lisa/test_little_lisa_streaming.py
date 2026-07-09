@@ -30,7 +30,6 @@ def test_initialize_runtime_applies_streaming_mode_and_delay() -> None:
         debug=False,
         log_path="",
         user_slug="",
-        timeout_profile="",
         state_snapshot_path="",
         streaming=f"hybrid:{delay_ms}",
     )

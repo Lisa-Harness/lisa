@@ -43,7 +43,6 @@ Key CLI options:
 
 - `--streaming none|stage|text|hybrid[:delay]` controls terminal streaming mode.
 - `--user <slug>` selects authored user context and controls thread-log keying.
-- `--timeout-profile fast|balanced|deep` tunes per-mode operation timeout budgets.
 - `--timezone <IANA>` pins status-line local time and timezone display.
 - `--log-level debug|info|warning|error` controls JSONL verbosity.
 - `--log <file>` appends structured JSONL turn records.

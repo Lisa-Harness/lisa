@@ -424,7 +424,6 @@ def _build_grounding_entries(
 ) -> list[SelfKnowledgeEntry]:
     extra = ctx.extra or {}
     tz = _resolve_timezone(ctx)
-    timeout_profile = extra.get("timeout_profile") or "balanced"
     return [
         SelfKnowledgeEntry(
             entry_id=_make_entry_id("grounding", 0),
@@ -434,16 +433,6 @@ def _build_grounding_entries(
             confidence=1.0,
             source_refs=["ctx.extra.timezone"],
             tags=["timezone"],
-            updated_at=now_iso,
-        ),
-        SelfKnowledgeEntry(
-            entry_id=_make_entry_id("grounding", 1),
-            category="grounding",
-            title="Timeout profile",
-            body=f"Timeout profile: {timeout_profile}.",
-            confidence=1.0,
-            source_refs=["ctx.extra.timeout_profile"],
-            tags=["timeout"],
             updated_at=now_iso,
         ),
     ]

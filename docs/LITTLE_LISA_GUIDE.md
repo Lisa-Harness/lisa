@@ -123,7 +123,6 @@ $env:LITTLE_LISA_AZURE_OPENAI_API_VERSION = "2024-10-21"
 $env:LITTLE_LISA_OPENAI_API_KEY = "<openai-key>"  # only needed for provider: openai
 $env:LITTLE_LISA_ANTHROPIC_API_KEY = "<anthropic-key>"  # only needed for provider: anthropic
 $env:LITTLE_LISA_OLLAMA_HOST = "127.0.0.1:11434"  # only needed for provider: ollama
-$env:LITTLE_LISA_TIMEOUT_PROFILE = "balanced"  # optional: fast|balanced|deep
 $env:LITTLE_LISA_TIMEZONE = "America/New_York"  # optional: IANA timezone
 $env:LITTLE_LISA_LOG_LEVEL = "info"  # optional: debug|info|warning|error
 ```
@@ -178,7 +177,6 @@ no TTL.  Use `app/memory_store.py` for production.
 - Installed but unsupported modes return an explicit host-wiring gap instead of pretending to run.
 - Workflow modes run when they only rely on shared turn-runner callbacks; modes that require app-only workflow fan-out behavior still report an explicit gap.
 - Local thread continuity is persisted to `examples/little_lisa/artifacts/threads/<user>.jsonl` and used for lightweight ranked-context hints.
-- `--timeout-profile fast|balanced|deep` applies per-mode operation timeout presets in the local host.
 - `--timezone <IANA>` pins status-line local time and timezone display.
 - `--state-snapshot <file.json>` injects compact local snapshot context into prompt assembly.
 - `--user <slug>` selects authored context from `content/user_contexts/<slug>.md` and controls local thread-log keying.
@@ -257,7 +255,7 @@ Little Lisa is intentionally organised as a **thin orchestration shell** (`main.
 | Module | Responsibility | Depends on |
 | --- | --- | --- |
 | `main.py` | CLI entry point, REPL loop, turn orchestration, provider routing, front-door planning, `handle_message` dispatch | `config`, `token_accounting`, `turn_logging`, `model_runtime`, `model_manifest`, `desktop`, `tray` |
-| `config.py` | Pure configuration resolution: timezone, timeout profile, log level, streaming mode, slice tuning — all deterministic, no side effects, no global state | stdlib only |
+| `config.py` | Pure configuration resolution: timezone, log level, streaming mode, slice tuning — all deterministic, no side effects, no global state | stdlib only |
 | `token_accounting.py` | Token ledger accumulation, session counter roll-up, session-summary Markdown generation — accepts state dict as parameter, fully testable in isolation | stdlib only |
 | `turn_logging.py` | JSONL log-record assembly and turn-log payload construction — accepts a resolved context dict so it's pure and testable without the full host | stdlib only |
 | `model_runtime.py` | Model manifest loading, model resolution by designation/alias/concrete ID | kernel `model_manifest` |
@@ -310,7 +308,6 @@ When extracting a new concern from `main.py`:
 
 - `--user <slug>` selects authored context from `content/user_contexts/<slug>.md` and controls local thread-log keying.
 - Omit `--user` to skip authored user context entirely.
-- `--timeout-profile fast|balanced|deep` tunes local operation timeout budgets by mode.
 - `--timezone <IANA>` sets runtime timezone used for status-line local time.
 - `--state-snapshot <file.json>` loads one local JSON object for compact state-context hints.
 - `--log-level debug|info|warning|error` sets the JSONL logging threshold.
@@ -326,10 +323,10 @@ When extracting a new concern from `main.py`:
 
 Settings precedence:
 
-1. CLI flags (`--timeout-profile`, `--timezone`, `--log-level`)
-2. Explicit Little Lisa env vars (`LITTLE_LISA_TIMEOUT_PROFILE`, `LITTLE_LISA_TIMEZONE`, `LITTLE_LISA_LOG_LEVEL`)
+1. CLI flags (`--timezone`, `--log-level`)
+2. Explicit Little Lisa env vars (`LITTLE_LISA_TIMEZONE`, `LITTLE_LISA_LOG_LEVEL`)
 3. OS timezone env vars when present (`TZ`, `TIMEZONE`, `LOCAL_TIMEZONE`, `APPSETTING_WEBSITE_TIME_ZONE`) for timezone only
-4. Built-in defaults (`balanced`, `UTC`, and `info` log level, unless `--debug` is set)
+4. Built-in defaults (`UTC`, and `info` log level, unless `--debug` is set)
 
 ## Hello World Pack Smoke
 
