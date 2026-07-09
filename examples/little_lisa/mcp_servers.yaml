@@ -7,10 +7,32 @@ version: 1
 # default_backend picks one by id; the host wires it behind the generic
 # memory.* synthetic tools. Adding a new backend is a YAML entry, not a
 # code change.
+#
+# Backends are ALSO registered as tool servers (below under `servers`) so
+# their full tool surface is available to modes that declare them. The
+# three core aliases route to the default backend; the backend's other
+# tools (e.g. Mem0's update_memory, delete_memory, list_entities) are
+# directly callable by name from any mode that allows them.
 memory:
-  default_backend: mem0
+  default_backend: lisa_memory
   backends:
-    # Mem0 cloud — HTTP MCP, bearer-token auth. Stores data server-side.
+    # lisa-memory — first-party stdio MCP server. The minimal built-in: three
+    # core memory calls backed by local SQLite. Default backend for memory.*.
+    - id: lisa_memory
+      kind: stdio
+      command: "${LISA_MCP_COMMAND:lisa-memory}"
+      args:
+        - --data-dir
+        - "${LISA_DATA_DIR}"
+      tool_names:
+        add: add_memory
+        search: search_memory
+        list: list_memories
+
+    # Mem0 cloud — HTTP MCP, bearer-token auth. Serves the three core calls
+    # (so it can be swapped in as the default) plus its full surface
+    # (update/delete/get/entities/events) as a tool server. Set
+    # default_backend: mem0 and provide MEM0_API_KEY to make it the default.
     - id: mem0
       kind: http
       url: https://mcp.mem0.ai/mcp
@@ -22,20 +44,14 @@ memory:
         search: search_memories
         list: get_memories
 
-    # lisa-context — first-party stdio MCP server. Available as a peer so it
-    # can be swapped in as the default or used directly via router.backend().
-    - id: lisa-context
-      kind: stdio
-      command: "${LISA_MCP_COMMAND}"
-      args:
-        - --data-dir
-        - "${LISA_DATA_DIR}"
-      tool_names:
-        add: add_memory
-        search: search_memory
-        list: list_memories
-
-# No standalone MCP servers are declared here; all first-party MCP servers
-# Little Lisa uses are registered in code (examples/little_lisa/main.py
-# _compile_mcp_configs). Memory backends live above under memory.backends.
-servers: []
+# External MCP tool servers. Mem0 is registered here so its full 11-tool
+# surface is discoverable by modes that declare the tools; the three core
+# aliases above still route through the default backend (lisa_memory unless
+# overridden). Disabled when MEM0_API_KEY is unset — the host's empty-header
+# guard drops it from the pool.
+servers:
+  - server_id: mem0
+    runtime_kind: http
+    url: https://mcp.mem0.ai/mcp
+    headers:
+      Authorization: "Bearer ${MEM0_API_KEY}"

@@ -115,6 +115,11 @@ def compile_command(spec: MCPServerSpec) -> tuple[str, list[str]]:
             )
         return spec.command_path, []
 
+    if spec.runtime_kind == RuntimeKind.HTTP:
+        if not spec.url:
+            raise ValueError(f"HTTP runtime requires 'url' for server '{spec.server_id}'")
+        return "", []
+
     raise ValueError(f"Unknown runtime kind '{spec.runtime_kind}' for server '{spec.server_id}'")
 
 
@@ -163,6 +168,8 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
         tool_policy=spec.tool_policy,
         data_dir_path=resolved_data_dir if spec.ensure_data_dir else None,
         ensure_data_dir=spec.ensure_data_dir,
+        url=spec.url,
+        headers=dict(spec.headers),
     )
 
 

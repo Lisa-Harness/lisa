@@ -1850,9 +1850,8 @@ async def test_build_turn_hooks_routes_memory_through_operations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When the model calls `recall_memory` via the operation surface, the
-    operation context it receives still has the memory store and recall
-    function injected (the operation dispatch, not the hook, is the right
-    surface for that).
+    operation context it receives has the recall ranker hook injected (the
+    operation dispatch, not an in-process store, is the surface for that).
     """
     captured: dict[str, object] = {}
 
@@ -1863,7 +1862,6 @@ async def test_build_turn_hooks_routes_memory_through_operations(
         captured["operation_id"] = operation_id
         captured["mode_id"] = ctx.mode_id
         captured["query"] = ctx.query
-        captured["has_memory_store"] = ctx.memory_store is not None
         captured["has_recall_fn"] = callable(ctx.answer_memory_recall_fn)
         captured["default_limit"] = ctx.memory_recall_default_limit
         return little_lisa.OperationResult(output_text="ok")
@@ -1878,7 +1876,6 @@ async def test_build_turn_hooks_routes_memory_through_operations(
     assert captured["operation_id"] == "recall_memory"
     assert captured["mode_id"] == "default"
     assert captured["query"] == "hello"
-    assert captured["has_memory_store"] is True
     assert captured["has_recall_fn"] is True
     assert captured["default_limit"] == 8
 
@@ -1894,7 +1891,6 @@ async def test_turn_hook_execute_operation_injects_memory_dependencies(
         ctx: little_lisa.OperationExecutionContext,
     ) -> little_lisa.OperationResult:
         captured["operation_id"] = operation_id
-        captured["has_memory_store"] = ctx.memory_store is not None
         captured["has_recall_fn"] = callable(ctx.answer_memory_recall_fn)
         captured["default_limit"] = ctx.memory_recall_default_limit
         return little_lisa.OperationResult(output_text="ok")
@@ -1907,7 +1903,6 @@ async def test_turn_hook_execute_operation_injects_memory_dependencies(
 
     assert result.output_text == "ok"
     assert captured["operation_id"] == "recall_memory"
-    assert captured["has_memory_store"] is True
     assert captured["has_recall_fn"] is True
     assert captured["default_limit"] == 8
 
@@ -1918,10 +1913,10 @@ async def test_synthesize_learning_prompt_mentions_json(
 ) -> None:
     captured: dict[str, object] = {}
 
-    class _FakeMemoryStore:
-        async def record_memory(self, request: object) -> object:
-            captured["request"] = request
-            return SimpleNamespace()
+    async def _fake_execute_tool_fn(tool_id: str, ctx: object) -> object:
+        captured["tool_id"] = tool_id
+        captured["tool_params"] = getattr(ctx, "parameters", {})
+        return little_lisa.ToolResult(tool_id=tool_id, output_text="Memory stored: 1")
 
     async def _fake_complete_fn(**kwargs: object) -> object:
         captured["messages"] = kwargs["messages"]
@@ -1942,7 +1937,7 @@ async def test_synthesize_learning_prompt_mentions_json(
         params={"content": "Test learning content"},
         complete_fn=_fake_complete_fn,
         resolve_model_fn=_fake_resolve_model_fn,
-        memory_store=_FakeMemoryStore(),
+        execute_tool_fn=_fake_execute_tool_fn,
         preferred_model_id="gpt-chat-latest",
     )
 
@@ -1951,6 +1946,7 @@ async def test_synthesize_learning_prompt_mentions_json(
     assert result.output_text.startswith("✅ Learning stored:")
     assert "json" in str(captured["messages"][0]["content"]).lower()
     assert captured["response_format"] is synthesize_learning.DistilledLearning
+    assert captured["tool_id"] == "memory.add"
 
 
 def test_little_lisa_discovers_and_runs_hello_world_pack_from_sdk_content_roots(

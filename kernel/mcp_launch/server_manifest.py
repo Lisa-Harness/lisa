@@ -29,6 +29,7 @@ owns), and ``ensure_data_dir`` (pre-create the dir before spawning).
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,11 @@ __all__ = [
     "MCPServerManifestError",
     "load_mcp_server_manifest",
 ]
+
+#: Matches ``${VAR}`` references for in-place env expansion. Supports both
+#: whole-string refs (``"${MEM0_API_KEY}"``) and embedded refs
+#: (``"Bearer ${MEM0_API_KEY}"``).
+_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 class MCPServerManifestError(ValueError):
@@ -102,14 +108,17 @@ def _expand_env_value(raw: Any) -> str:
     """Expand ${VAR} references against the parent environment at load time.
 
     A value like ``"${MEM0_API_KEY}"`` becomes the value of ``MEM0_API_KEY``
-    (or empty string when unset). Literal values pass through unchanged.
+    (or empty string when unset). Embedded refs like
+    ``"Bearer ${MEM0_API_KEY}"`` are expanded in place. Literal values pass
+    through unchanged.
     """
     if not isinstance(raw, str):
         return str(raw)
-    if raw.startswith("${") and raw.endswith("}") and len(raw) > 3:
-        var_name = raw[2:-1]
-        return os.getenv(var_name, "")
-    return raw
+
+    def _replace(match: "re.Match[str]") -> str:
+        return os.getenv(match.group(1), "")
+
+    return _ENV_REF_RE.sub(_replace, raw)
 
 
 def load_mcp_server_manifest(
@@ -295,6 +304,21 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
     if not isinstance(cli_args_raw, list):
         raise MCPServerManifestError(f"servers[{index}] '{server_id}': 'cli_args' must be a list")
 
+    url: str | None = None
+    headers: dict[str, str] = {}
+    if runtime_kind is RuntimeKind.HTTP:
+        url = str(entry.get("url") or "").strip()
+        if not url:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': 'url' is required for runtime_kind=http"
+            )
+        headers_raw = entry.get("headers") or {}
+        if not isinstance(headers_raw, dict):
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': 'headers' must be a mapping"
+            )
+        headers = {str(k): _expand_env_value(v) for k, v in headers_raw.items()}
+
     return MCPServerSpec(
         server_id=server_id,
         runtime_kind=runtime_kind,
@@ -314,6 +338,8 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         cwd_policy=cwd_policy,
         tool_policy=tool_policy,
         timeouts=timeouts,
+        url=url,
+        headers=headers,
     )
 
 

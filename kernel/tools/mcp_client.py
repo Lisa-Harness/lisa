@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -90,6 +90,11 @@ class MCPClientConfig:
     required: bool = False
     data_dir_path: str | None = None
     ensure_data_dir: bool = False
+    # HTTP transport (runtime_kind=HTTP). When url is set, the pool connects
+    # via streamable-HTTP instead of spawning a subprocess. command/args/env
+    # are ignored for HTTP configs.
+    url: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,6 +377,11 @@ class MCPToolPool:
         from mcp.client.session import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
+        assert self._exit_stack is not None
+        if config.url is not None:
+            await self._connect_http(config)
+            return
+
         # Optionally pre-create the data directory before spawning. A server
         # may own a managed subfolder under the host data-dir and expect it to
         # exist; the host guarantees it here so the server can use it (possibly
@@ -379,7 +389,6 @@ class MCPToolPool:
         if config.ensure_data_dir and config.data_dir_path:
             Path(config.data_dir_path).mkdir(parents=True, exist_ok=True)
 
-        assert self._exit_stack is not None
         params = StdioServerParameters(
             command=config.command,
             args=config.args,
@@ -391,6 +400,27 @@ class MCPToolPool:
         # breaks cancel-scope tracking; AsyncExitStack preserves the correct
         # nesting and ensures cleanup on failure.
         read, write = await self._exit_stack.enter_async_context(stdio_client(params))
+        session = await self._exit_stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        self._sessions[config.server_id] = session
+
+    async def _connect_http(self, config: MCPClientConfig) -> None:
+        """Connect one streamable-HTTP MCP server.
+
+        Uses the same AsyncExitStack discipline as stdio so the
+        ``streamable_http_client`` + ``ClientSession`` cancel scopes live in
+        the pool's own long-lived stack (entered once in ``start()``), not a
+        throwaway loop. This avoids the anyio cross-task cancel-scope error
+        that per-call ``asyncio.run`` caused for the old memory HTTP client.
+        """
+        from mcp.client.session import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        assert self._exit_stack is not None
+        assert config.url is not None
+        read, write, _ = await self._exit_stack.enter_async_context(
+            streamablehttp_client(config.url, headers=config.headers)
+        )
         session = await self._exit_stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         self._sessions[config.server_id] = session

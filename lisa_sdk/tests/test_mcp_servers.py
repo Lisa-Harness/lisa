@@ -28,24 +28,22 @@ def _tool_text(result: Any) -> str:
     return str(result)
 
 
-# ── lisa_context ───────────────────────────────────────────────────────────
+# ── lisa_memory ────────────────────────────────────────────────────────────
 
 
 @pytest.fixture
-def context_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    data_dir = tmp_path / "ctx_data"
+def memory_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    data_dir = tmp_path / "mem_data"
     data_dir.mkdir(parents=True, exist_ok=True)
-    # Initialize the module-level store from the resolved data directory.
-    # The server derives memory.db from --data-dir; no env-var fallback.
-    from lisa_sdk.lisa_context import server as ctx_server
+    from lisa_sdk.lisa_memory import server as mem_server
 
-    ctx_server.init_store(data_dir)
+    mem_server.init_store(data_dir)
     return data_dir / "memory.db"
 
 
 @pytest.mark.asyncio
-async def test_context_add_memory(context_env: Path) -> None:
-    from lisa_sdk.lisa_context.server import mcp
+async def test_memory_add(memory_env: Path) -> None:
+    from lisa_sdk.lisa_memory.server import mcp
 
     result = await mcp.call_tool(
         "add_memory",
@@ -55,8 +53,8 @@ async def test_context_add_memory(context_env: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_search_memory(context_env: Path) -> None:
-    from lisa_sdk.lisa_context.server import mcp
+async def test_memory_search(memory_env: Path) -> None:
+    from lisa_sdk.lisa_memory.server import mcp
 
     await mcp.call_tool(
         "add_memory",
@@ -70,8 +68,8 @@ async def test_context_search_memory(context_env: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_search_no_match(context_env: Path) -> None:
-    from lisa_sdk.lisa_context.server import mcp
+async def test_memory_search_no_match(memory_env: Path) -> None:
+    from lisa_sdk.lisa_memory.server import mcp
 
     result = await mcp.call_tool(
         "search_memory",
@@ -81,8 +79,8 @@ async def test_context_search_no_match(context_env: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_list_memories_json(context_env: Path) -> None:
-    from lisa_sdk.lisa_context.server import mcp
+async def test_memory_list_memories_json(memory_env: Path) -> None:
+    from lisa_sdk.lisa_memory.server import mcp
 
     await mcp.call_tool(
         "add_memory",
@@ -99,8 +97,8 @@ async def test_context_list_memories_json(context_env: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_get_surface_context(context_env: Path) -> None:
-    from lisa_sdk.lisa_context.server import mcp
+async def test_memory_get_surface_context(memory_env: Path) -> None:
+    from lisa_sdk.lisa_memory.server import mcp
 
     await mcp.call_tool(
         "add_memory",
@@ -114,12 +112,25 @@ async def test_context_get_surface_context(context_env: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_lists_four_tools() -> None:
-    from lisa_sdk.lisa_context.server import mcp
+async def test_memory_lists_four_tools() -> None:
+    from lisa_sdk.lisa_memory.server import mcp
 
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
     assert {"add_memory", "search_memory", "list_memories", "get_surface_context"} <= names
+
+
+# ── lisa_context (broker only) ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_context_lists_broker_tool() -> None:
+    from lisa_sdk.lisa_context.server import mcp
+
+    tools = await mcp.list_tools()
+    names = {t.name for t in tools}
+    assert "broker_context" in names
+    assert "add_memory" not in names
 
 
 # ── lisa_operations ─────────────────────────────────────────────────────────

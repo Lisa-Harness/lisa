@@ -17,13 +17,14 @@ import pytest
 # All first-party servers that must follow the CLI contract.
 # (module, server_name, supports_readonly)
 ALL_SERVERS: list[tuple[str, str, bool]] = [
-    ("lisa_context.server", "lisa-context", True),
-    ("lisa_operations.server", "lisa-operations", False),
-    ("lisa_search.server", "lisa-search", False),
-    ("lisa_surf.server", "lisa-surf", False),
-    ("lisa_guard.server", "lisa-guard", False),
-    ("lisa_storage.server", "lisa-storage", True),
-    ("lisa_content.server", "lisa-content", False),
+    ("lisa_sdk.lisa_context.server", "lisa-context", True),
+    ("lisa_sdk.lisa_memory.server", "lisa-memory", True),
+    ("lisa_sdk.lisa_operations.server", "lisa-operations", False),
+    ("lisa_sdk.lisa_search.server", "lisa-search", False),
+    ("lisa_sdk.lisa_surf.server", "lisa-surf", False),
+    ("lisa_sdk.lisa_guard.server", "lisa-guard", False),
+    ("lisa_sdk.lisa_storage.server", "lisa-storage", True),
+    ("lisa_sdk.lisa_content.server", "lisa-content", False),
 ]
 
 
@@ -76,21 +77,21 @@ def test_server_help_lists_server_name(
 
 def test_guard_server_has_backend_arg() -> None:
     """lisa-guard should accept --backend in addition to standard args."""
-    result = _run_server("lisa_guard.server", "--help")
+    result = _run_server("lisa_sdk.lisa_guard.server", "--help")
     assert result.returncode == 0
     assert "--backend" in result.stdout
 
 
 def test_storage_server_has_readonly_arg() -> None:
     """lisa-storage should accept --readonly."""
-    result = _run_server("lisa_storage.server", "--help")
+    result = _run_server("lisa_sdk.lisa_storage.server", "--help")
     assert result.returncode == 0
     assert "--readonly" in result.stdout
 
 
 def test_context_server_has_readonly_arg() -> None:
     """lisa-context should accept --readonly."""
-    result = _run_server("lisa_context.server", "--help")
+    result = _run_server("lisa_sdk.lisa_context.server", "--help")
     assert result.returncode == 0
     assert "--readonly" in result.stdout
 

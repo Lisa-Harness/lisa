@@ -116,7 +116,6 @@ from kernel.ipsar_fsm import (  # noqa: E402
     register_content_roots,
     register_operation_callbacks,
 )
-from kernel.mcp_client import MCPMemoryClient  # noqa: E402
 from kernel.model_manifest import ModelManifest  # noqa: E402
 from kernel.models import (  # noqa: E402
     OperationExecutionContext,
@@ -371,7 +370,6 @@ _RUNTIME_STATE: dict[str, Any] = {
     "stream_mode": "hybrid",
     "stream_char_delay_ms": 0,
     "memory_config": None,
-    "memory_router": None,
 }
 
 console = Console()
@@ -3109,41 +3107,36 @@ def _resolve_int_env(env_var: str, default: int) -> int:
 
 
 class LittleLisaStateProvider:
-    """File-only digest + consolidation provider for Little Lisa.
+    """File-only digest provider for Little Lisa.
 
-    Replaces BlankStateProvider with two deterministic, no-LLM operations
-    that run inside the existing slice budget:
+    Runs one deterministic, no-LLM operation inside the existing slice
+    budget:
 
     1. Thread digest: when the thread JSONL exceeds max_thread_entries,
        compact the oldest overflow entries into a thread_digest.md
        sidecar and truncate the JSONL to the most recent entries.
-    2. Memory consolidation: when the memory store exceeds
-       max_memory_records, evict the oldest daily episodic records with
-       the lowest salience.
 
-    Both operations are pure file I/O — no model calls, no background
-    scheduler, no new dependencies. They run inside the existing
-    /consolidate command and the optional post-turn slice.
+    Memory eviction is no longer host-side: ``lisa-memory``'s SQLite store
+    enforces TTL via its ``expires_at`` column (daily/weekly/long_term),
+    so there is nothing for the slice to do. The former ``_consolidate_memory``
+    reached into the in-process MCPMemoryClient's private ``_records`` /
+    ``_save`` — impossible across the MCP boundary, and redundant with TTL.
     """
 
     def __init__(
         self,
         *,
         thread_path: Path | None,
-        memory_store: MCPMemoryClient,
         max_thread_entries: int = _DEFAULT_THREAD_MAX_ENTRIES,
-        max_memory_records: int = _DEFAULT_MEMORY_MAX_RECORDS,
     ) -> None:
         self._thread_path = thread_path
-        self._memory_store = memory_store
         self._max_thread_entries = max(1, max_thread_entries)
-        self._max_memory_records = max(1, max_memory_records)
 
     def __call__(self) -> Any:
         return None
 
     async def slice(self, ctx: Any, policy: Any) -> SliceOutcome:
-        """Run bounded thread compaction + memory eviction."""
+        """Run bounded thread compaction."""
         del ctx
         started = time.monotonic()
         work_items = 0
@@ -3155,12 +3148,6 @@ class LittleLisaStateProvider:
             work_items += thread_compacted[0]
             last_item = thread_compacted[1]
             notes.append(thread_compacted[2])
-
-        memory_evicted = self._consolidate_memory(policy, started)
-        if memory_evicted[0] > 0:
-            work_items += memory_evicted[0]
-            last_item = memory_evicted[1]
-            notes.append(memory_evicted[2])
 
         elapsed_ms = (time.monotonic() - started) * 1000.0
         return SliceOutcome(
@@ -3221,41 +3208,6 @@ class LittleLisaStateProvider:
 
         note = f"compacted {overflow_count} thread entries into digest"
         return overflow_count, f"thread:{overflow_count} entries", note
-
-    def _consolidate_memory(
-        self,
-        policy: Any,
-        started: float,
-    ) -> tuple[int, str, str]:
-        """Evict low-salience episodic daily memories under the cap.
-
-        Returns ``(records_evicted, last_item, note)``.
-        """
-        if _slice_budget_expired(policy, started):
-            return 0, "", ""
-        if not hasattr(self._memory_store, "_records"):
-            return 0, "", "eviction skipped: store is an external MCP client"
-
-        records = getattr(self._memory_store, "_records", [])
-        if len(records) <= self._max_memory_records:
-            return 0, "", ""
-
-        evict_count = len(records) - self._max_memory_records
-        candidates = [
-            record
-            for record in records
-            if record.memory_tier == "daily" and record.memory_kind == "episodic"
-        ]
-        candidates.sort(key=lambda r: (r.salience, r.id))
-        to_evict = candidates[:evict_count]
-        if not to_evict:
-            return 0, "", ""
-        evict_ids = {record.id for record in to_evict}
-        self._memory_store._records = [record for record in records if record.id not in evict_ids]
-        self._memory_store._save()
-
-        note = f"evicted {len(to_evict)} low-salience episodic memories"
-        return len(to_evict), f"memory:{len(to_evict)} evicted", note
 
 
 def _slice_budget_expired(policy: Any, started: float) -> bool:
@@ -3318,12 +3270,15 @@ class TurnResultAdapter:
 def _build_mcp_tool_servers() -> list[Any]:
     """Build the approved MCP server registry and compile it to configs.
 
-    Registers all first-party MCP servers (context, operations, search, surf,
-    guard, storage, content) with the launch policy registry, then compiles
-    them into ``MCPClientConfig`` entries for ``MCPToolPool``.
+    Registers all first-party MCP servers (context, memory, operations,
+    search, surf, guard, storage, content) with the launch policy registry,
+    then compiles them into ``MCPClientConfig`` entries for ``MCPToolPool``.
 
-    v1 keeps ``MCPMemoryClient`` for the memory seam; the servers compiled
-    here go through ``MCPToolPool`` for tool discovery and dispatch.
+    Memory is now an MCP feature: ``lisa-memory`` serves the three core
+    memory calls, Mem0 (or any other HTTP/stdio memory server) serves the
+    same three plus its full surface, and the generic ``memory.*`` synthetic
+    aliases route to the default backend via the pool. No in-process memory
+    seam remains.
 
     All first-party servers use ``VENV_BIN`` runtime — they run as native
     console_scripts entry points (``.venv/Scripts/lisa-*.exe``) with zero
@@ -3378,6 +3333,7 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
 
     first_party_servers = [
         ("lisa-context", "lisa_context.server", True),
+        ("lisa-memory", "lisa_memory.server", True),
         ("lisa-operations", "lisa_operations.server", False),
         ("lisa-search", "lisa_search.server", False),
         ("lisa-surf", "lisa_surf.server", False),
@@ -3415,7 +3371,7 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
     _RUNTIME_STATE["memory_config"] = memory_config
 
     compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
-    warm_ids = {"lisa-context", "lisa-content"}
+    warm_ids = {"lisa-context", "lisa-memory", "lisa-content"}
     warm = [replace(c, warm=True, required=True) for c in compiled if c.server_id in warm_ids]
     cold = [c for c in compiled if c.server_id not in warm_ids]
     return warm, cold
@@ -3494,24 +3450,21 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
     Delegates to ``LittleLisaTurnHooks`` in ``turn_hooks.py`` which holds
     shared state as instance attributes instead of capturing it via closures.
 
-    The memory seam (state provider, turn hooks, operations) holds a
-    reference to the MemoryStoreRouter, not a raw MCPMemoryClient — so the
-    generic ``memory.*`` synthetic tools and the operation-layer memory
-    calls route to whichever backend ``mcp_servers.yaml`` wired as default.
+    Memory is now an MCP feature, not a kernel seam: the ``memory.list``
+    synthetic alias routes through the warm MCP tool pool to the default
+    backend (``lisa-memory``), and the host-side ranker
+    (``answer_memory_recall``) parses the JSON records it returns. The
+    ranker is the one preserved host-side hook (it is host policy, not
+    backend semantics); storage is just an MCP tool call.
     """
     from kernel.slice import SliceTuning  # noqa: PLC0415
 
-    memory_store = _build_memory_router()
     slice_tuning_dict, _explicit_budget_ms = _resolve_slice_tuning()
     slice_tuning = SliceTuning.from_mapping(slice_tuning_dict)
     state_provider = LittleLisaStateProvider(
         thread_path=_runtime_thread_path(),
-        memory_store=memory_store,
         max_thread_entries=_resolve_int_env(
             _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES
-        ),
-        max_memory_records=_resolve_int_env(
-            _LITTLE_LISA_MEMORY_MAX_RECORDS_ENV, _DEFAULT_MEMORY_MAX_RECORDS
         ),
     )
 
@@ -3522,7 +3475,7 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
             persisted_last_slice_finished_at = float(raw)
 
     provider = turn_hooks_module.LittleLisaTurnHooks(
-        memory_store=memory_store,
+        memory_list_fn=_memory_list_fn,
         state_provider=state_provider,
         complete_live=_complete_live,
         resolve_model=_resolve_model,
@@ -3533,8 +3486,13 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         operation_id: str,
         ctx: OperationExecutionContext,
     ) -> OperationResult:
-        """Execute an operation with memory store wiring."""
-        ctx.memory_store = memory_store
+        """Execute an operation with the memory recall ranker wired.
+
+        Memory storage is just an MCP tool call (``memory.add``); operations
+        reach it via ``ctx.execute_tool_fn`` like any other tool. Only the
+        host-side recall ranker is injected here — it is host policy, not
+        backend semantics.
+        """
         ctx.answer_memory_recall_fn = provider.answer_memory_recall
         ctx.memory_recall_default_limit = 8
         return await execute_operation(operation_id, ctx)
@@ -3629,12 +3587,8 @@ async def _run_explicit_slice_command(*, message: str) -> str:
     _, explicit_budget_ms = _resolve_slice_tuning()
     provider = LittleLisaStateProvider(
         thread_path=_runtime_thread_path(),
-        memory_store=_build_memory_router(),
         max_thread_entries=_resolve_int_env(
             _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES
-        ),
-        max_memory_records=_resolve_int_env(
-            _LITTLE_LISA_MEMORY_MAX_RECORDS_ENV, _DEFAULT_MEMORY_MAX_RECORDS
         ),
     )
     policy = SlicePolicy(
@@ -4717,155 +4671,90 @@ def _is_empty_auth_header(value: str) -> bool:
     return token == ""
 
 
-def _build_memory_router() -> Any:
-    """Build the MemoryStoreRouter from mcp_servers.yaml's memory config.
+def _memory_list_fn(
+    *,
+    user_slug: str,
+    workspace_id: str = "default",
+    memory_scope: str = "personal",
+    surface_id: str = "",
+    limit: int = 20,
+) -> Any:
+    """Return an awaitable that lists memory records via the warm MCP pool.
 
-    The router is the single thing the memory seam (operations, turn hooks)
-    holds a reference to. It delegates generic ``record_memory`` / ``recall`` /
-    ``list_memories`` calls to whichever backend the manifest wired as
-    default — lisa-context (in-process MCPMemoryClient) by default, or Mem0
-    (Mem0MemoryClient) when ``memory.default_backend`` names a registered
-    external server.
+    The host-side recall ranker (``LittleLisaTurnHooks.answer_memory_recall``)
+    needs parsed :class:`~kernel.models.MemoryRecord` objects to score. This
+    helper calls the ``memory.list`` synthetic alias through the warm pool
+    (which routes to the default memory backend — ``lisa-memory`` or ``mem0``)
+    and parses the JSON array it returns into ``MemoryRecord`` instances.
 
-    The router is cached on runtime state so ``_build_turn_hooks`` and the
-    explicit-slice path share the same backend. Returns the router (typed
-    as Any here to avoid importing MemoryStoreRouter at module top level).
+    Returns a coroutine; callers ``await`` it. The pool is read from runtime
+    state (set by ``astart_warm_mcp_pool``).
     """
-    cached = _RUNTIME_STATE.get("memory_router")
-    if cached is not None:
-        return cached
+    from kernel.models import MemoryRecord  # noqa: PLC0415
 
-    from kernel.memory_router import MemoryStoreRouter  # noqa: PLC0415
-
-    memory_config = _RUNTIME_STATE.get("memory_config")
-    backends: dict[str, Any] = {}
-    default_backend_id = getattr(memory_config, "default_backend", None)
-
-    # Build one client per declared backend. Each backend is a peer; the
-    # manifest declares its kind + connection details + tool names, so the
-    # host builds the right generic client without backend-specific code.
-    # Skip an HTTP backend whose auth header expanded to empty (e.g.
-    # ``Bearer ${MEM0_API_KEY}`` with MEM0_API_KEY unset) — sending
-    # ``Authorization: Bearer `` yields a 401 from the server and, because
-    # the 401 fires inside streamable_http_client's anyio task group,
-    # cascades into a cross-task cancel-scope RuntimeError that masks the
-    # real cause. Better to refuse to wire it and fall back.
-    declared = getattr(memory_config, "backends", ()) or ()
-    for spec in declared:
-        backend_id = spec.id
-        if spec.kind == "http":
-            from kernel.mcp_client import MCPHttpMemoryClient  # noqa: PLC0415
-
-            missing_auth = any(
-                _is_empty_auth_header(value) for value in spec.headers.values()
-            )
-            if missing_auth:
-                _append_log_event(
-                    level="error",
-                    event="memory.backend_auth_missing",
-                    payload={
-                        "backend": backend_id,
-                        "hint": (
-                            "An Authorization header contains an empty ${VAR} — "
-                            "set the env var (e.g. MEM0_API_KEY) in .env or the shell."
-                        ),
-                    },
-                )
+    async def _list() -> list[MemoryRecord]:
+        pool = _RUNTIME_STATE.get("mcp_tool_pool")
+        if pool is None:
+            return []
+        result = await pool.call_tool(
+            "memory.list",
+            {
+                "user_slug": user_slug,
+                "limit": limit,
+            },
+        )
+        if not result.output_text or result.is_error:
+            return []
+        try:
+            data = json.loads(result.output_text)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        records: list[MemoryRecord] = []
+        for item in data:
+            if not isinstance(item, dict):
                 continue
-            backends[backend_id] = MCPHttpMemoryClient(
-                spec.url,
-                headers=dict(spec.headers),
-                tool_names=dict(spec.tool_names),
-                agent_id=spec.agent_id,
-            )
-        elif spec.kind == "stdio":
-            backends[backend_id] = MCPMemoryClient(
-                spec.command, list(spec.args), env=dict(spec.env) or None, cwd=spec.cwd
-            )
-        else:
-            _append_log_event(
-                level="warning",
-                event="memory.backend_unknown_kind",
-                payload={"backend": backend_id, "kind": spec.kind},
-            )
+            try:
+                records.append(MemoryRecord.model_validate(item))
+            except (ValidationError, TypeError):
+                continue
+        return records
 
-    # If no backends were built (none declared, or all http backends were
-    # dropped for empty auth), fall back to the built-in lisa-context client
-    # so the memory seam always has somewhere to read/write.
-    if not backends:
-        mcp_command = os.getenv(
-            "LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")
-        )
-        mcp_args = [*os.getenv("LISA_MCP_ARGS", "").split(), *_mcp_server_extra_args()]
-        backends["lisa-context"] = MCPMemoryClient(mcp_command, mcp_args)
-
-    # Resolve the default. If the named default isn't built, fall back loudly
-    # to whichever backend was declared first (or the built-in above).
-    default_store: Any
-    if default_backend_id and default_backend_id in backends:
-        default_store = backends[default_backend_id]
-    elif backends:
-        default_store = next(iter(backends.values()))
-        if default_backend_id:
-            _append_log_event(
-                level="warning",
-                event="memory.default_backend_unavailable",
-                payload={"default_backend": default_backend_id, "fallback": next(iter(backends))},
-            )
-    else:
-        default_store = MCPMemoryClient(
-            os.getenv(
-                "LISA_MCP_COMMAND", str(FRAMEWORK_ROOT / ".venv" / "Scripts" / "lisa-context.exe")
-            ),
-            [*os.getenv("LISA_MCP_ARGS", "").split(), *_mcp_server_extra_args()],
-        )
-
-    router = MemoryStoreRouter(default=default_store, backends=backends)
-    _RUNTIME_STATE["memory_router"] = router
-    return router
+    return _list()
 
 
 def _register_memory_synthetic_tools(pool: Any) -> None:
     """Register the generic memory.* synthetic tools on a started pool.
 
     The three generic aliases (``memory.add`` / ``memory.search`` /
-    ``memory.list``) route through the MemoryStoreRouter, so modes and
-    operations (and the model) get whichever backend the host wired as
-    default without knowing its concrete tool names. Power users can still
-    call a specific server's tools directly (e.g. ``mem0.search_memories``)
-    since those are also in the catalog.
+    ``memory.list``) route through the pool to whichever MCP server the
+    manifest wired as the default memory backend (``lisa-memory`` by
+    default, ``mem0`` when its HTTP endpoint is configured). Modes and
+    operations (and the model) get the default backend's three core tools
+    without knowing their concrete MCP tool names. Modes that want a
+    backend's full surface (e.g. Mem0's ``update_memory`` /
+    ``delete_memory`` / ``list_entities``) declare those tools directly —
+    they are in the catalog because the backend is also registered as a
+    tool server.
 
-    Call this after ``pool.start()`` — the handlers close over the live
-    router, not the pool, so they work whether the default backend is an
-    in-process client (lisa-context) or an MCP server (mem0).
+    Call this after ``pool.start()`` so the alias handlers forward to live
+    server sessions. The default backend's tool names come from the
+    manifest's ``memory.tool_names`` mapping.
     """
-    from kernel.models import MemoryWriteRequest  # noqa: PLC0415
     from kernel.tools.mcp_client import SyntheticToolSpec  # noqa: PLC0415
+    from kernel.tools.synthetic import mcp_alias_tool  # noqa: PLC0415
 
-    router = _build_memory_router()
-
-    async def _add_handler(arguments: dict[str, Any]) -> str:
-        request = MemoryWriteRequest.model_validate(arguments)
-        record = await router.record_memory(request)
-        return f"Memory stored: {getattr(record, 'id', '?')}"
-
-    async def _search_handler(arguments: dict[str, Any]) -> str:
-        query = str(arguments.get("query") or "")
-        user_slug = str(arguments.get("user_slug") or "default")
-        limit = int(arguments.get("limit", 5) or 5)
-        return await router.recall(query, user_slug=user_slug, limit=limit)
-
-    async def _list_handler(arguments: dict[str, Any]) -> str:
-        import json as _json  # noqa: PLC0415
-
-        records = await router.list_memories(
-            user_slug=str(arguments.get("user_slug") or "default"),
-            workspace_id=str(arguments.get("workspace_id", "default")),
-            memory_scope=str(arguments.get("memory_scope", "personal")),
-            surface_id=str(arguments.get("surface_id", "")),
-            limit=int(arguments.get("limit", 20) or 20),
-        )
-        return _json.dumps([r.model_dump(mode="json") for r in records], default=str)
+    memory_config = _RUNTIME_STATE.get("memory_config")
+    default_backend_id = getattr(memory_config, "default_backend", None)
+    declared = getattr(memory_config, "backends", ()) or ()
+    default_spec = next((s for s in declared if s.id == default_backend_id), None)
+    if default_spec is None:
+        # No external default declared: lisa-memory is the first-party default.
+        # Its tool names are the generic aliases themselves.
+        tool_names = {"add": "add_memory", "search": "search_memory", "list": "list_memories"}
+    else:
+        tool_names = dict(default_spec.tool_names)
 
     add_schema = {
         "type": "object",
@@ -4895,23 +4784,26 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
     }
 
     pool.add_synthetic_tools([
-        SyntheticToolSpec(
+        mcp_alias_tool(
             name="memory.add",
             description="Persist a memory record via the default memory backend.",
+            pool=pool,
+            target_tool=tool_names["add"],
             input_schema=add_schema,
-            handler=_add_handler,
         ),
-        SyntheticToolSpec(
+        mcp_alias_tool(
             name="memory.search",
             description="Recall memories matching a free-text query via the default backend.",
+            pool=pool,
+            target_tool=tool_names["search"],
             input_schema=search_schema,
-            handler=_search_handler,
         ),
-        SyntheticToolSpec(
+        mcp_alias_tool(
             name="memory.list",
             description="List recent memory records for a user scope via the default backend.",
+            pool=pool,
+            target_tool=tool_names["list"],
             input_schema=list_schema,
-            handler=_list_handler,
         ),
     ])
 
@@ -5481,7 +5373,7 @@ def _verify_check_memory_backend() -> tuple[str, str]:
     default_backend_id = getattr(memory_config, "default_backend", None)
     declared = getattr(memory_config, "backends", ()) or ()
     if not default_backend_id or not declared:
-        return _VERIFY_PASS, "Memory backend: built-in lisa-context (default)"
+        return _VERIFY_PASS, "Memory backend: lisa-memory (default)"
 
     default_spec = next((s for s in declared if s.id == default_backend_id), None)
     if default_spec is None:

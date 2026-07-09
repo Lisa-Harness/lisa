@@ -23,12 +23,10 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kernel.mcp_client import MCPMemoryClient
 from kernel.models import (
     MemoryRecallAnswer,
     MemoryRecallEvidence,
     MemoryRecord,
-    MemoryWriteRequest,
     ToolResult,
 )
 from kernel.slice import SlicePolicy, SliceTuning
@@ -59,21 +57,22 @@ class LittleLisaTurnHooks:
     """Holds shared turn state and provides ``TurnHooks`` callback methods.
 
     Each method corresponds to one of the closures previously nested inside
-    ``_build_turn_hooks``. Shared dependencies (memory store, state provider,
-    completion/model/tool callables) are stored as instance attributes so the
-    callbacks remain independently testable without closure capture.
+    ``_build_turn_hooks``. Shared dependencies (memory list callable, state
+    provider, completion/model/tool callables) are stored as instance
+    attributes so the callbacks remain independently testable without closure
+    capture.
     """
 
     def __init__(
         self,
         *,
-        memory_store: MCPMemoryClient,
+        memory_list_fn: "Callable[..., Awaitable[list[MemoryRecord]]]",
         state_provider: LittleLisaStateProvider,
         complete_live: Callable[..., Awaitable[StubCompletion]],
         resolve_model: Callable[[str], StubModelDefinition],
         execute_tool: Callable[[str, Any], Awaitable[ToolResult]],
     ) -> None:
-        self._memory_store = memory_store
+        self._memory_list_fn = memory_list_fn
         self._state_provider = state_provider
         self._complete_live = complete_live
         self._resolve_model = resolve_model
@@ -112,7 +111,7 @@ class LittleLisaTurnHooks:
         content + ``content_json``, combined with a small salience bonus,
         and sorted by score then record id.
         """
-        records = await self._memory_store.list_memories(
+        records = await self._memory_list_fn(
             user_slug=user_slug,
             workspace_id=workspace_id,
             memory_scope=memory_scope,
@@ -178,30 +177,6 @@ class LittleLisaTurnHooks:
             evidence=evidence,
         )
 
-    # ── Memory writes ─────────────────────────────────────────────────────
-    async def write_memory(self, request: MemoryWriteRequest) -> MemoryRecord:
-        """Persist one memory record through the MCP memory client."""
-        return await self._memory_store.record_memory(request)
-
-    # ── Memory listing ────────────────────────────────────────────────────
-    async def list_memory_records(
-        self,
-        *,
-        user_slug: str,
-        workspace_id: str = "default",
-        memory_scope: str = "personal",
-        surface_id: str = "",
-        limit: int = 20,
-    ) -> list[MemoryRecord]:
-        """List memory records for a user scope from the MCP memory client."""
-        return await self._memory_store.list_memories(
-            user_slug=user_slug,
-            workspace_id=workspace_id,
-            memory_scope=memory_scope,
-            surface_id=surface_id,
-            limit=limit,
-        )
-
     # ── Completion / model / tool delegation ──────────────────────────────
     async def complete(self, **kwargs: Any) -> StubCompletion:
         """Delegate to the live completion callable."""
@@ -245,44 +220,3 @@ class LittleLisaTurnHooks:
         if isinstance(raw, (int, float)):
             return float(raw)
         return None
-
-
-def _build_memory_and_state_provider(
-    *,
-    mcp_command: str,
-    mcp_args: list[str],
-    thread_path: Path | None,
-    max_thread_entries: int,
-    max_memory_records: int,
-    slice_tuning_dict: dict[str, Any] | None,
-    state_provider_factory: Callable[..., LittleLisaStateProvider],
-) -> tuple[MCPMemoryClient, LittleLisaStateProvider, SliceTuning]:
-    """Construct the MCP memory client, state provider, and slice tuning.
-
-    All inputs are passed explicitly; this helper does not read
-    ``_RUNTIME_STATE`` or ``os.getenv``. The caller resolves environment and
-    runtime values before invoking it.
-
-    Args:
-        mcp_command: Command used to launch the MCP Context Server.
-        mcp_args: CLI args passed to the MCP Context Server subprocess.
-        thread_path: Path to the thread JSONL (or ``None`` when unset).
-        max_thread_entries: Cap on retained thread JSONL entries.
-        max_memory_records: Cap on retained memory records.
-        slice_tuning_dict: Host slice-tuning config mapping (or ``None``).
-        state_provider_factory: Callable building a ``LittleLisaStateProvider``
-            from keyword args (``thread_path``, ``memory_store``,
-            ``max_thread_entries``, ``max_memory_records``).
-
-    Returns:
-        A ``(memory_store, state_provider, slice_tuning)`` triple.
-    """
-    memory_store = MCPMemoryClient(mcp_command, mcp_args)
-    slice_tuning = SliceTuning.from_mapping(slice_tuning_dict)
-    state_provider = state_provider_factory(
-        thread_path=thread_path,
-        memory_store=memory_store,
-        max_thread_entries=max_thread_entries,
-        max_memory_records=max_memory_records,
-    )
-    return memory_store, state_provider, slice_tuning

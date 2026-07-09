@@ -35,6 +35,7 @@ class RuntimeKind(str, Enum):
     NODE = "node"  # node server.js
     NPX = "npx"  # npx -y @scope/server
     BINARY = "binary"  # /usr/local/bin/server
+    HTTP = "http"  # streamable-HTTP MCP endpoint (no subprocess)
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +177,14 @@ class MCPServerSpec:
 
     readonly: bool = False
     """When True, passes --readonly to servers that support it."""
+
+    url: str | None = None
+    """Endpoint URL for runtime_kind=HTTP (streamable-HTTP MCP).
+    None for all subprocess-based runtimes."""
+
+    headers: dict[str, str] = field(default_factory=dict)
+    """HTTP headers for runtime_kind=HTTP (e.g. Authorization bearer token).
+    ${VAR} expansion happens in the manifest loader before the spec is built."""
 
 
 @dataclass(frozen=True, slots=True)

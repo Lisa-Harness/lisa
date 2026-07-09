@@ -354,19 +354,19 @@ def _build_architecture_entries(now_iso: str) -> list[SelfKnowledgeEntry]:
 
 
 def _build_memory_entries(ctx: OperationExecutionContext, now_iso: str) -> list[SelfKnowledgeEntry]:
-    has_memory = ctx.memory_store is not None
+    has_memory = callable(getattr(ctx, "execute_tool_fn", None))
     return [
         SelfKnowledgeEntry(
             entry_id=_make_entry_id("memory", 0),
             category="memory",
             title="Memory store",
             body=(
-                "Memory store is wired and available."
+                "Memory tools available via MCP."
                 if has_memory
-                else "Memory store is not wired (MCP-only memory)."
+                else "Memory tools not wired."
             ),
             confidence=1.0,
-            source_refs=["ctx.memory_store"],
+            source_refs=["ctx.execute_tool_fn"],
             tags=["memory"],
             updated_at=now_iso,
         ),

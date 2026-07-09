@@ -136,10 +136,6 @@ def _lazy_extension_evidence_builder() -> ExtensionEvidenceBuilder:
     return NoOpExtensionEvidenceBuilder()
 
 
-def _lazy_memory_store() -> Any:
-    return None
-
-
 def _lazy_input_guard() -> InputGuard:
     from kernel.context import PassThroughInputGuard
 
@@ -170,8 +166,6 @@ class ContextSeams:
     extension_evidence_builder: ExtensionEvidenceBuilder = field(
         default_factory=_lazy_extension_evidence_builder
     )
-    memory_store: Any = field(default_factory=_lazy_memory_store)
-    """Durable conversation memory. Default: None (memory is MCP-only)."""
     input_guard: InputGuard = field(default_factory=_lazy_input_guard)
     """Validates user input before the model call (Phase 1). Default:
     ``PassThroughInputGuard`` allows everything. Hosts override with a real

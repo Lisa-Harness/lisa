@@ -16,7 +16,7 @@ from typing import cast
 
 from pydantic import BaseModel, Field, ValidationError
 
-from kernel.models import MemoryWriteRequest, OperationExecutionContext, OperationResult
+from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
 from kernel.operations.structured_output import parse_structured_payload
 
 logger = logging.getLogger(__name__)
@@ -143,35 +143,38 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                 )
                 distilled_text = raw_content
 
-    # Step 2: Persist to memory store
+    # Step 2: Persist via the memory.add MCP tool (default memory backend).
     content_json: dict[str, object] = {"query": ctx.query, "model": ctx.model_id}
     if "had_briefing" in ctx.extra:
         content_json["had_chase_briefing"] = ctx.extra["had_briefing"]
 
-    record_memory_fn = getattr(ctx.memory_store, "record_memory", None)
-    if not callable(record_memory_fn):
+    if not callable(ctx.execute_tool_fn):
         return OperationResult(
-            output_text="Learning storage unavailable: memory store not injected."
+            output_text="Learning storage unavailable: tool execution not injected."
         )
 
-    await record_memory_fn(
-        MemoryWriteRequest(
+    tool_result = await ctx.execute_tool_fn(
+        "memory.add",
+        ToolExecutionContext(
+            tool_id="memory.add",
             workspace_id=ctx.workspace_id,
             user_id=ctx.user_id,
             user_slug=ctx.user_slug,
-            memory_scope=ctx.memory_scope,
             surface_id=ctx.surface_id,
-            source_user_id=ctx.user_id,
-            source_user_slug=ctx.user_slug,
-            agent_id=f"{memory_operation_id}-agent",
-            operation_id=memory_operation_id,
-            instruction_id=f"{memory_operation_id}.v1",
-            memory_tier=memory_tier,
-            content=distilled_text,
-            content_json=content_json,
-            salience=salience,
-        )
+            memory_scope=ctx.memory_scope,
+            mode_id=ctx.mode_id,
+            parameters={
+                "content": distilled_text,
+                "user_slug": ctx.user_slug,
+                "memory_scope": ctx.memory_scope,
+                "memory_tier": memory_tier,
+            },
+        ),
     )
+    if getattr(tool_result, "error", None):
+        return OperationResult(
+            output_text=f"⛔ Learning storage failed: {tool_result.error}"
+        )
 
     preview = distilled_text[:80]
     return OperationResult(

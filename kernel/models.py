@@ -216,7 +216,6 @@ class OperationExecutionContext(BaseModel):
     build_workshop_context_bundle_fn: Any = Field(default=None, exclude=True)
     execute_tool_fn: Any = Field(default=None, exclude=True)
     execute_operation_fn: Any = Field(default=None, exclude=True)
-    memory_store: Any = Field(default=None, exclude=True)
     memory_recall_default_limit: int | None = Field(default=None, exclude=True)
     blob_io: Any = Field(default=None, exclude=True)
     state_provider: Any = Field(default=None, exclude=True)
