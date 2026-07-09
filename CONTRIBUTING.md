@@ -24,10 +24,13 @@ uv run ruff check kernel lisa_sdk sdk_extensions sdk_packs examples
 # 3. Type check (strict, all public packages)
 uv run mypy kernel lisa_sdk sdk_extensions sdk_packs
 
-# 4. Tests (no live API calls)
+# 4. Dead code check
+uv run vulture kernel lisa_sdk sdk_extensions sdk_packs examples/little_lisa vulture_allowlist.py
+
+# 5. Tests (no live API calls)
 uv run pytest -m "not live" --tb=short -v
 
-# 5. Smoke test
+# 6. Smoke test
 uv run little-lisa verify
 ```
 
@@ -36,6 +39,7 @@ uv run little-lisa verify
 - [ ] `ruff format --check` passes for touched files.
 - [ ] `ruff check` passes with zero new violations for touched files.
 - [ ] `mypy` passes with zero new errors for touched packages.
+- [ ] `vulture` passes with zero new reports for touched files.
 - [ ] All non-live tests pass (`pytest -m "not live"`).
 - [ ] `little-lisa verify` exits 0.
 - [ ] New public APIs have docstrings (module, class, function/method).

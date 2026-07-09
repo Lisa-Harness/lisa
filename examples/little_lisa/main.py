@@ -88,7 +88,7 @@ except ImportError:  # pragma: no cover - optional dependency for richer REPL UX
     History = None
 
 
-class _SurrogateSafeFileHistory(FileHistory):
+class _SurrogateSafeFileHistory(History):
     """FileHistory wrapper that sanitises unpaired surrogates before persisting.
 
     On Windows, the console can emit unpaired surrogate characters for emoji
@@ -96,19 +96,25 @@ class _SurrogateSafeFileHistory(FileHistory):
     prompt_toolkit's FileHistory.store_string.  This wrapper strips them.
     """
 
+    def __init__(self, filename: str) -> None:
+        self._inner = FileHistory(filename)
+
+    def load_history_strings(self) -> list[str]:
+        return self._inner.load_history_strings()
+
     def store_string(self, string: str) -> None:
         # Replace unpaired surrogates with the Unicode replacement character
         # so the string is always valid UTF-8.
         safe = string.encode("utf-8", errors="surrogateescape").decode(
             "utf-8", errors="replace"
         )
-        super().store_string(safe)
+        self._inner.store_string(safe)
 
     def append_string(self, string: str) -> None:
         safe = string.encode("utf-8", errors="surrogateescape").decode(
             "utf-8", errors="replace"
         )
-        super().append_string(safe)
+        self._inner.append_string(safe)
 
 FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
 if str(FRAMEWORK_ROOT) not in sys.path:
@@ -291,6 +297,7 @@ _LITTLE_LISA_OLLAMA_HOST_ENV = "LITTLE_LISA_OLLAMA_HOST"
 _LITTLE_LISA_OLLAMA_API_KEY_ENV = "LITTLE_LISA_OLLAMA_API_KEY"
 _LITTLE_LISA_GOOGLE_API_KEY_ENV = "LITTLE_LISA_GOOGLE_API_KEY"
 _LITTLE_LISA_GOOGLE_API_BASE_URL_ENV = "LITTLE_LISA_GOOGLE_API_BASE_URL"
+_LITTLE_LISA_TIMEOUT_PROFILE_ENV = "LITTLE_LISA_TIMEOUT_PROFILE"
 _LITTLE_LISA_TIMEZONE_ENV = "LITTLE_LISA_TIMEZONE"
 _LITTLE_LISA_LOG_LEVEL_ENV = "LITTLE_LISA_LOG_LEVEL"
 _LITTLE_LISA_SLICE_PRE_TURN_ENV = "LITTLE_LISA_SLICE_PRE_TURN"
@@ -300,7 +307,7 @@ _LITTLE_LISA_SLICE_BUDGET_MS_ENV = "LITTLE_LISA_SLICE_BUDGET_MS"
 _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV = "LITTLE_LISA_THREAD_MAX_ENTRIES"
 _LITTLE_LISA_MEMORY_MAX_RECORDS_ENV = "LITTLE_LISA_MEMORY_MAX_RECORDS"
 
-# Config-resolution logic (timezone, log-level, streaming, slice)
+# Config-resolution logic (timezone, timeout, log-level, streaming, slice)
 # lives in the dedicated ``config`` module.  We import the names here so
 # that ``monkeypatch.setattr(little_lisa, "_resolve_timezone", ...)`` and
 # similar test seams continue to resolve on the ``main`` module surface.
@@ -313,6 +320,7 @@ try:
         _normalize_log_level,
         _resolve_log_level,
         _resolve_slice_tuning,
+        _resolve_timeout_profile,
         _resolve_timezone,
         context_slug_to_thread_name,
         parse_streaming_option,
@@ -327,6 +335,7 @@ except ImportError:  # pragma: no cover - direct script execution fallback
         _normalize_log_level,
         _resolve_log_level,
         _resolve_slice_tuning,
+        _resolve_timeout_profile,
         _resolve_timezone,
         context_slug_to_thread_name,
         parse_streaming_option,
@@ -349,6 +358,7 @@ _RUNTIME_STATE: dict[str, Any] = {
     "user_slug": "",
     "session_context_ref": "",
     "session_context_active": False,
+    "timeout_profile": "balanced",
     "timezone": "UTC",
     "timezone_source": "default",
     "current_mode_id": "default",
@@ -510,6 +520,16 @@ SessionContextOption = Annotated[
         ),
     ),
 ]
+TimeoutProfileOption = Annotated[
+    str,
+    typer.Option(
+        "--timeout-profile",
+        help=(
+            "Operation timeout profile: fast, balanced, or deep. "
+            "Overrides LITTLE_LISA_TIMEOUT_PROFILE."
+        ),
+    ),
+]
 TimezoneOption = Annotated[
     str,
     typer.Option(
@@ -568,7 +588,6 @@ _HOST_REPL_SHORTCUTS: tuple[str, ...] = (
     "/help capabilities",
     "/settings",
     "/tokens",
-    "/self",
     "/debug context",
     "/debug frontdoor",
     "/consolidate",
@@ -943,6 +962,11 @@ def _runtime_next_model_provider() -> str:
     return configured or "-"
 
 
+def _runtime_timeout_profile() -> str:
+    configured = str(_RUNTIME_STATE.get("timeout_profile") or "").strip().lower()
+    return configured if configured in {"fast", "balanced", "deep"} else "balanced"
+
+
 def _runtime_timezone() -> str:
     configured = str(_RUNTIME_STATE.get("timezone") or "").strip()
     return configured or "UTC"
@@ -1273,8 +1297,8 @@ def _resolve_session_context_user_contexts(s: str) -> tuple[str, str, bool] | No
     return context_name, relative_path, False
 
 
-# context_slug_to_thread_name, _resolve_log_level, _normalize_slice_flag,
-# and _resolve_slice_tuning are
+# context_slug_to_thread_name, _normalize_timeout_profile, _resolve_timeout_profile,
+# _resolve_log_level, _normalize_slice_flag, and _resolve_slice_tuning are
 # imported from .config and re-exported here for test compatibility.
 
 
@@ -1837,6 +1861,7 @@ def _assemble_dynamic_user_context(mode_id: str, query: str, pre_turn_briefing: 
         f"- mode_kind: {mode_kind}",
         f"- query_chars: {len(query)}",
         f"- pre_turn_briefing_present: {'true' if bool(pre_turn_briefing.strip()) else 'false'}",
+        f"- timeout_profile: {_runtime_timeout_profile()}",
         "- host: little_lisa",
     ]
     user_slug = _runtime_user_slug()
@@ -1872,12 +1897,6 @@ def _assemble_dynamic_user_context(mode_id: str, query: str, pre_turn_briefing: 
     if snapshot_section:
         sections.append(snapshot_section)
 
-    self_model_vibe, reflection_vibe = _load_self_model_vibes()
-    if self_model_vibe:
-        sections.append(self_model_vibe)
-    if reflection_vibe:
-        sections.append(f"## Current Assessment\n\n{reflection_vibe}")
-
     query_lower = query.lower()
     capability_keywords = (
         "capability",
@@ -1909,6 +1928,7 @@ def _runtime_log_metadata() -> dict[str, Any]:
         {
             "log_level": _runtime_log_level(),
             "debug": _runtime_debug_enabled(),
+            "timeout_profile": _runtime_timeout_profile(),
             "timezone": _runtime_timezone(),
             "timezone_source": _runtime_timezone_source(),
             "session_context": _runtime_user_slug() or "none",
@@ -1943,6 +1963,7 @@ def _append_log_event(
     ctx = {
         "log_level": _runtime_log_level(),
         "debug": _runtime_debug_enabled(),
+        "timeout_profile": _runtime_timeout_profile(),
         "timezone": _runtime_timezone(),
         "timezone_source": _runtime_timezone_source(),
         "session_context": _runtime_user_slug() or "none",
@@ -2113,43 +2134,6 @@ def _build_state_snapshot_context() -> str:
     return "\n".join(lines)
 
 
-def _load_self_model_vibes() -> tuple[str, str]:
-    """Load the persisted self-model and reflection vibes from blob storage.
-
-    Returns ``(self_model_vibe, reflection_vibe)``. Either is empty string
-    when the artifact doesn't exist or can't be parsed. The self-model vibe
-    is the compact ~500 char string built by ``build_self_model_vibe``. The
-    reflection vibe is the ``health_reasoning`` paragraph from the
-    reflection artifact.
-    """
-    blob_io = LocalBlobIO(_runtime_data_dir())
-    self_model_vibe = ""
-    reflection_vibe = ""
-
-    try:
-        sm_json = blob_io.read_blob_text("self_model", "self_model.json")
-        if sm_json:
-            import json as _json
-
-            artifact_dict = _json.loads(sm_json)
-            from kernel.models import LisaSelfModelArtifact
-            from sdk_packs.core.operations.self_model.self_model import build_self_model_vibe
-
-            artifact = LisaSelfModelArtifact.model_validate(artifact_dict)
-            self_model_vibe = build_self_model_vibe(artifact)
-    except Exception:
-        logger.debug("failed to load self-model vibe for context", exc_info=True)
-
-    try:
-        ref_text = blob_io.read_blob_text("self_model", "reflection.json")
-        if ref_text:
-            reflection_vibe = str(ref_text).strip()[:500]
-    except Exception:
-        logger.debug("failed to load reflection vibe for context", exc_info=True)
-
-    return self_model_vibe, reflection_vibe
-
-
 def _build_capability_snapshot() -> dict[str, Any]:
     catalog = get_workflow_catalog()
     manifest = _load_manifest()
@@ -2166,6 +2150,7 @@ def _build_capability_snapshot() -> dict[str, Any]:
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "user_slug": _runtime_user_slug(),
+        "timeout_profile": _runtime_timeout_profile(),
         "timezone": _runtime_timezone(),
         "timezone_source": _runtime_timezone_source(),
         "supported_modes": supported_modes,
@@ -2193,6 +2178,7 @@ def _render_capability_help() -> str:
         [
             "## Capability Snapshot",
             f"- User context: {snapshot['user_slug']}",
+            f"- Timeout profile: {snapshot['timeout_profile']}",
             f"- Timezone: {snapshot['timezone']} ({snapshot['timezone_source']})",
             f"- Supported modes ({len(snapshot['supported_modes'])}): {mode_preview}",
             f"- Operations: {len(snapshot['operations'])}",
@@ -2251,74 +2237,23 @@ def _render_debug_context() -> str:
 
 
 def _render_debug_self() -> str:
-    """Render the persisted self-model artifact and reflection for /debug self.
-
-    Falls back to a flat capability snapshot when the artifacts don't exist
-    yet (e.g. before the first slice has run).
-    """
-    blob_io = LocalBlobIO(_runtime_data_dir())
-    parts: list[str] = ["## Self Model"]
-
-    sm_loaded = False
-    try:
-        import json as _json
-
-        sm_json = blob_io.read_blob_text("self_model", "self_model.json")
-        if sm_json:
-            from kernel.models import LisaSelfModelArtifact
-
-            artifact = LisaSelfModelArtifact.model_validate(_json.loads(sm_json))
-            parts.append(f"- identity: {artifact.identity_summary}")
-            parts.append(f"- grounding: {artifact.grounding_summary}")
-            parts.append(f"- capabilities: {len(artifact.capabilities)} entries")
-            parts.append(f"- limitations: {len(artifact.limitations)} entries")
-            parts.append(f"- known_unknowns: {len(artifact.known_unknowns)} entries")
-            if artifact.uptime_seconds > 0 or artifact.asyncio_tasks > 0:
-                parts.append("")
-                parts.append("### Live Telemetry")
-                parts.append(f"- uptime_seconds: {int(artifact.uptime_seconds)}")
-                parts.append(f"- asyncio_tasks: {artifact.asyncio_tasks}")
-                parts.append(f"- python_threads: {artifact.python_threads}")
-                parts.append(f"- process_rss_mb: {artifact.process_rss_mb:.1f}")
-                if artifact.mcp_pool_health:
-                    parts.append("- mcp_pool_health:")
-                    for sid, health in sorted(artifact.mcp_pool_health.items()):
-                        parts.append(f"  - {sid}: {health.status}")
-                if artifact.token_usage_24h:
-                    tu = artifact.token_usage_24h
-                    parts.append(
-                        f"- token_usage_24h: cost=${tu.total_cost_estimate:.4f}, "
-                        f"tokens={tu.total_tokens}, top_model={tu.top_model}, "
-                        f"events={tu.event_count}"
-                    )
-                if artifact.recent_log_errors:
-                    parts.append(f"- recent_log_errors: {len(artifact.recent_log_errors)} entries")
-                    for err in artifact.recent_log_errors[:5]:
-                        parts.append(f"  - [{err.level}] {err.event}: {err.message[:80]}")
-            parts.append(f"- generated_at: {artifact.generated_at}")
-            sm_loaded = True
-    except Exception:
-        logger.debug("failed to render persisted self-model", exc_info=True)
-
-    if not sm_loaded:
-        snapshot = _build_capability_snapshot()
-        parts.append(f"- user_slug: {snapshot['user_slug']}")
-        parts.append(f"- supported_modes: {len(snapshot['supported_modes'])}")
-        parts.append(f"- operations: {len(snapshot['operations'])}")
-        parts.append(f"- tools: {len(snapshot['tools'])}")
-        parts.append(f"- models: {len(snapshot['models'])}")
-        parts.append("(artifact not yet persisted — run /self to generate)")
-
-    try:
-        ref_text = blob_io.read_blob_text("self_model", "reflection.json")
-        if ref_text:
-            parts.append("")
-            parts.append("### Current Assessment")
-            parts.append(str(ref_text).strip()[:800])
-    except Exception:
-        logger.debug("failed to render reflection", exc_info=True)
-
-    return "\n".join(parts)
+    snapshot = _build_capability_snapshot()
+    thread_entries = _load_recent_thread_entries(limit=10)
+    state_snapshot = _runtime_state_snapshot()
+    return "\n".join(
+        [
+            "## Little Lisa Self Model",
+            f"- user_slug: {snapshot['user_slug']}",
+            f"- timeout_profile: {snapshot['timeout_profile']}",
+            f"- timezone: {snapshot['timezone']} ({snapshot['timezone_source']})",
+            f"- supported_modes: {len(snapshot['supported_modes'])}",
+            f"- operations: {len(snapshot['operations'])}",
+            f"- tools: {len(snapshot['tools'])}",
+            f"- models: {len(snapshot['models'])}",
+            f"- local_thread_entries: {len(thread_entries)}",
+            f"- local_state_snapshot_loaded: {'yes' if isinstance(state_snapshot, dict) else 'no'}",
+        ]
+    )
 
 
 def _render_debug_frontdoor() -> str:
@@ -2332,6 +2267,7 @@ def _render_runtime_settings() -> str:
     return "\n".join(
         [
             "## Runtime Settings",
+            f"- timeout_profile: {_runtime_timeout_profile()}",
             f"- timezone: {_runtime_timezone()}",
             f"- timezone_source: {_runtime_timezone_source()}",
             f"- session_context: {_runtime_user_slug() or 'none'}",
@@ -2355,6 +2291,40 @@ def _load_state_snapshot(path: str) -> dict[str, Any] | None:
         raise ValueError("State snapshot file must contain a JSON object.")
     logger.info("loaded state snapshot from %s (%d keys)", file_path, len(decoded))
     return decoded
+
+
+def _mode_timeout_seconds(mode_id: str) -> int | None:
+    profile = _runtime_timeout_profile()
+    profile_map = {
+        "fast": {"default": 30, "discuss": 30, "search": 45, "thinkabout": 60},
+        "balanced": {"default": 60, "discuss": 60, "search": 120, "thinkabout": 120},
+        "deep": {"default": 120, "discuss": 120, "search": 240, "thinkabout": 240},
+    }
+    return profile_map.get(profile, {}).get(mode_id)
+
+
+def _apply_mode_timeout_profile(mode_id: str) -> list[tuple[str, int]]:
+    timeout_seconds = _mode_timeout_seconds(mode_id)
+    if timeout_seconds is None:
+        return []
+    updated: list[tuple[str, int]] = []
+    for operation_id, definition in get_operation_catalog().items():
+        if definition.mode_allowlist and mode_id not in definition.mode_allowlist:
+            continue
+        previous = int(definition.timeout_seconds)
+        definition.timeout_seconds = timeout_seconds
+        updated.append((operation_id, previous))
+    return updated
+
+
+def _restore_mode_timeouts(applied: list[tuple[str, int]]) -> None:
+    if not applied:
+        return
+    catalog = get_operation_catalog()
+    for operation_id, previous in applied:
+        definition = catalog.get(operation_id)
+        if definition is not None:
+            definition.timeout_seconds = previous
 
 
 def _load_manifest() -> ModelManifest:
@@ -3203,46 +3173,34 @@ def _resolve_int_env(env_var: str, default: int) -> int:
 class LittleLisaStateProvider:
     """File-only digest provider for Little Lisa.
 
-    Runs bounded work inside the existing slice budget:
+    Runs one deterministic, no-LLM operation inside the existing slice
+    budget:
 
     1. Thread digest: when the thread JSONL exceeds max_thread_entries,
        compact the oldest overflow entries into a thread_digest.md
        sidecar and truncate the JSONL to the most recent entries.
-    2. Self-model scan: deterministic catalog walk + live introspection.
-       Populates the persisted self-model artifact.
-    3. Reflection: LLM holistic assessment (only when self-model is stale
-       and budget remains). Persists the reflection vibe.
 
     Memory eviction is no longer host-side: ``lisa-memory``'s SQLite store
     enforces TTL via its ``expires_at`` column (daily/weekly/long_term),
-    so there is nothing for the slice to do.
+    so there is nothing for the slice to do. The former ``_consolidate_memory``
+    reached into the in-process MCPMemoryClient's private ``_records`` /
+    ``_save`` — impossible across the MCP boundary, and redundant with TTL.
     """
-
-    _REFLECTION_STALE_SECONDS = 900.0  # 15 minutes
 
     def __init__(
         self,
         *,
         thread_path: Path | None,
         max_thread_entries: int = _DEFAULT_THREAD_MAX_ENTRIES,
-        blob_io: Any | None = None,
-        complete_fn: Any | None = None,
-        resolve_model_fn: Any | None = None,
-        introspect_fn: Any | None = None,
     ) -> None:
         self._thread_path = thread_path
         self._max_thread_entries = max(1, max_thread_entries)
-        self._blob_io = blob_io
-        self._complete_fn = complete_fn
-        self._resolve_model_fn = resolve_model_fn
-        self._introspect_fn = introspect_fn
-        self._self_model_generated_at: str = ""
 
     def __call__(self) -> Any:
         return None
 
     async def slice(self, ctx: Any, policy: Any) -> SliceOutcome:
-        """Run bounded thread compaction, self-model scan, and reflection."""
+        """Run bounded thread compaction."""
         del ctx
         started = time.monotonic()
         work_items = 0
@@ -3255,22 +3213,6 @@ class LittleLisaStateProvider:
             last_item = thread_compacted[1]
             notes.append(thread_compacted[2])
 
-        # Self-model scan (deterministic, no LLM)
-        if not _slice_budget_expired(policy, started):
-            sm_result = await self._run_self_model_scan()
-            if sm_result is not None:
-                work_items += 1
-                last_item = "self_model:scan"
-                notes.append("self-model scan refreshed")
-
-        # Reflection (LLM call — only when self-model is stale)
-        if not _slice_budget_expired(policy, started) and self._should_reflect():
-            ref_result = await self._run_reflection()
-            if ref_result is not None:
-                work_items += 1
-                last_item = "reflect_self:assessment"
-                notes.append("reflection refreshed")
-
         elapsed_ms = (time.monotonic() - started) * 1000.0
         return SliceOutcome(
             work_items_completed=work_items,
@@ -3278,80 +3220,6 @@ class LittleLisaStateProvider:
             last_item=last_item,
             notes=tuple(notes),
         )
-
-    def _should_reflect(self) -> bool:
-        """Return True when the self-model is stale enough to warrant reflection."""
-        if not self._self_model_generated_at:
-            return False
-        if not self._complete_fn or not self._resolve_model_fn:
-            return False
-        try:
-            generated = datetime.fromisoformat(self._self_model_generated_at)
-            age = (datetime.now(UTC) - generated).total_seconds()
-            return age >= self._REFLECTION_STALE_SECONDS
-        except Exception:
-            return False
-
-    async def _run_self_model_scan(self) -> Any | None:
-        """Execute the ``self_model`` operation and persist the artifact."""
-        if self._blob_io is None:
-            return None
-        try:
-            from kernel.models import OperationExecutionContext
-            from kernel.operations.registry import execute_operation
-
-            op_ctx = OperationExecutionContext(
-                operation_id="self_model",
-                user_slug=_runtime_user_slug() or "default",
-                workspace_id="default",
-                surface_type="personal_dm",
-                blob_io=self._blob_io,
-                complete_fn=self._complete_fn,
-                resolve_model_fn=self._resolve_model_fn,
-                introspect_fn=self._introspect_fn,
-            )
-            result = await execute_operation("self_model", op_ctx)
-            if isinstance(result.output_json, dict):
-                self._self_model_generated_at = str(
-                    result.output_json.get("generated_at") or ""
-                )
-            return result
-        except Exception:
-            logger.debug("self-model scan failed in slice", exc_info=True)
-            return None
-
-    async def _run_reflection(self) -> Any | None:
-        """Execute the ``reflect_self`` operation and persist the reflection."""
-        if self._blob_io is None:
-            return None
-        try:
-            from kernel.models import OperationExecutionContext
-            from kernel.operations.registry import execute_operation
-
-            self_model_json = self._blob_io.read_blob_text("self_model", "self_model.json")
-            user_block = self_model_json or ""
-
-            op_ctx = OperationExecutionContext(
-                operation_id="reflect_self",
-                user_slug=_runtime_user_slug() or "default",
-                workspace_id="default",
-                surface_type="personal_dm",
-                user_block=user_block,
-                conversation_excerpt_markdown=_build_recent_thread_excerpt(limit=6) or "",
-                blob_io=self._blob_io,
-                complete_fn=self._complete_fn,
-                resolve_model_fn=self._resolve_model_fn,
-                introspect_fn=self._introspect_fn,
-            )
-            result = await execute_operation("reflect_self", op_ctx)
-            if result.output_text:
-                self._blob_io.write_blob_text(
-                    "self_model", "reflection.json", result.output_text
-                )
-            return result
-        except Exception:
-            logger.debug("reflection failed in slice", exc_info=True)
-            return None
 
     def _compact_thread(
         self,
@@ -3604,30 +3472,6 @@ def _build_workshop_context_bundle(
     )
 
 
-def _build_introspect_callable() -> Callable[[], Awaitable[Any]] | None:
-    """Build the introspect callable wired into TurnHooks.
-
-    Returns an async callable that delegates to
-    ``kernel.introspect.gather_introspection`` with the host's warm MCP
-    pool, turn log path, token usage path, and process start time. Returns
-    ``None`` when introspection cannot be wired (no pool, no log path).
-    """
-    from kernel.introspect import gather_introspection
-
-    session_started = _RUNTIME_STATE.get("session_started_utc")
-    process_start = session_started if isinstance(session_started, datetime) else None
-
-    async def _introspect() -> Any:
-        return await gather_introspection(
-            mcp_pool=_runtime_warm_pool(),
-            log_path=_runtime_log_path(),
-            token_usage_path=_runtime_token_usage_path(),
-            process_start_time=process_start,
-        )
-
-    return _introspect
-
-
 def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
     """Build TurnHooks wired to Little Lisa callbacks and memory operations.
 
@@ -3650,10 +3494,6 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         max_thread_entries=_resolve_int_env(
             _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES
         ),
-        blob_io=LocalBlobIO(_runtime_data_dir()),
-        complete_fn=_complete_live,
-        resolve_model_fn=_resolve_model,
-        introspect_fn=_build_introspect_callable(),
     )
 
     persisted_last_slice_finished_at: float | None = None
@@ -3668,7 +3508,6 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         complete_live=_complete_live,
         resolve_model=_resolve_model,
         execute_tool=_execute_tool,
-        introspect=_build_introspect_callable(),
     )
 
     async def _execute_operation(
@@ -3781,10 +3620,6 @@ async def _run_explicit_slice_command(*, message: str) -> str:
         max_thread_entries=_resolve_int_env(
             _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES
         ),
-        blob_io=LocalBlobIO(_runtime_data_dir()),
-        complete_fn=_complete_live,
-        resolve_model_fn=_resolve_model,
-        introspect_fn=_build_introspect_callable(),
     )
     policy = SlicePolicy(
         mode=SliceMode.EXPLICIT,
@@ -3831,63 +3666,6 @@ async def _run_explicit_slice_command(*, message: str) -> str:
     )
 
 
-async def _run_self_command(*, message: str) -> str:
-    """Run the full self-model pipeline: scan, reflect, and render.
-
-    Triggers an explicit slice (which runs self-model scan + reflection when
-    budget allows), then renders the persisted artifacts via
-    ``_render_debug_self``.
-    """
-    import time as _time  # noqa: PLC0415
-
-    from kernel.slice import SliceMode, SlicePolicy  # noqa: PLC0415
-
-    _, explicit_budget_ms = _resolve_slice_tuning()
-    provider = LittleLisaStateProvider(
-        thread_path=_runtime_thread_path(),
-        max_thread_entries=_resolve_int_env(
-            _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES
-        ),
-        blob_io=LocalBlobIO(_runtime_data_dir()),
-        complete_fn=_complete_live,
-        resolve_model_fn=_resolve_model,
-        introspect_fn=_build_introspect_callable(),
-    )
-    self_budget_ms = max(explicit_budget_ms, 10_000)
-    policy = SlicePolicy(
-        mode=SliceMode.EXPLICIT,
-        budget_ms=self_budget_ms,
-    )
-    started = _time.monotonic()
-    outcome = await provider.slice(ctx=None, policy=policy)
-    elapsed_ms = (_time.monotonic() - started) * 1000.0
-    persisted = _RUNTIME_STATE.setdefault("last_slice_finished_at", None)
-    if isinstance(persisted, (int, float)):
-        _RUNTIME_STATE["last_slice_finished_at"] = _time.monotonic()
-
-    response_text = _render_debug_self()
-    slice_note = (
-        f"\n\n---\nSlice: {outcome.work_items_completed} item(s) in {elapsed_ms:.0f} ms. "
-        f"Notes: {'; '.join(outcome.notes) if outcome.notes else 'none'}."
-    )
-    response_text = response_text + slice_note
-
-    timestamp_utc = datetime.now(UTC).isoformat()
-    context: dict[str, Any] = {
-        "timestamp_utc": timestamp_utc,
-        "raw_message": message,
-        "mode_id": "self",
-        "handoff": "self-model command",
-    }
-    _set_last_turn_context(context)
-    _append_turn_log(context=context, response_text=response_text)
-    _append_thread_entry(mode_id="self", query=message, response_text=response_text)
-    _RUNTIME_STATE["current_mode_id"] = "self"
-    _RUNTIME_STATE["current_stage_id"] = "-"
-    _RUNTIME_STATE["next_model_id"] = "-"
-    return response_text
-
-
 async def handle_message(message: str) -> str:
     """Route one console message through the kernel turn runner.
 
@@ -3927,8 +3705,6 @@ async def _dispatch_host_command(
         return _handle_simple_command(message, "settings", _render_runtime_settings())
     if lowered in {"/consolidate", "consolidate", "/slice", "slice"}:
         return await _run_explicit_slice_command(message=message)
-    if lowered == "/self":
-        return await _run_self_command(message=message)
     if lowered.startswith("/debug"):
         return _handle_debug_command(stripped, message)
     return None
@@ -4179,6 +3955,11 @@ async def _execute_mode_turn(
     _set_last_turn_context(run_context)
 
     hooks = _build_turn_hooks(run_context)
+    applied_timeouts = _apply_mode_timeout_profile(mode.mode_id)
+    run_context["applied_operation_timeouts"] = {
+        "profile": _runtime_timeout_profile(),
+        "count": len(applied_timeouts),
+    }
     try:
         result: TurnResult = await run_turn(
             mode_id=mode.mode_id,
@@ -4212,6 +3993,8 @@ async def _execute_mode_turn(
             response_text=response_text,
         )
         return response_text
+    finally:
+        _restore_mode_timeouts(applied_timeouts)
 
     _apply_turn_usage(
         result,
@@ -4296,6 +4079,7 @@ def _build_desktop_subprocess_args(
     thread_dir: str,
     no_thread: bool,
     session_context: str,
+    timeout_profile: str,
     timezone: str,
     state_snapshot: str,
     streaming: str,
@@ -4324,6 +4108,7 @@ def _build_desktop_subprocess_args(
     if no_thread:
         args.append("--no-thread")
     _append_flag_args(args, session_context, "--session-context")
+    _append_flag_args(args, timeout_profile, "--timeout-profile")
     _append_flag_args(args, timezone, "--timezone")
     _append_flag_args(args, state_snapshot, "--state-snapshot")
     _append_flag_args(args, streaming, "--streaming")
@@ -4380,6 +4165,7 @@ def _run_default_no_args_mode(
     thread_dir: str,
     no_thread: bool,
     session_context: str,
+    timeout_profile: str,
     timezone: str,
     state_snapshot: str,
     streaming: str,
@@ -4403,6 +4189,7 @@ def _run_default_no_args_mode(
             thread_dir=thread_dir,
             no_thread=no_thread,
             session_context=session_context,
+            timeout_profile=timeout_profile,
             timezone=timezone,
             state_snapshot=state_snapshot,
             streaming=streaming,
@@ -4437,6 +4224,7 @@ def _run_default_no_args_mode(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -4456,7 +4244,7 @@ async def _run_repl() -> None:
     _print_startup_banner()
     console.print(
         Panel(
-            "Type /help, /help capabilities, /self, /debug context, "
+            "Type /help, /help capabilities, /debug context, "
             "/debug frontdoor, /search <query>, /deep <query>, or /quit.",
             title="Session",
             border_style=STYLE_BORDER_SESSION,
@@ -4545,6 +4333,9 @@ def _print_startup_banner() -> None:
 
 
 def _status_segments(compact_level: int = _STATUS_COMPACT_FULL) -> list[tuple[str, str]]:
+    profile = _runtime_timeout_profile()
+    profile_emoji = {"fast": "⚡", "balanced": "⚖", "deep": "🧠"}.get(profile, "⏱")
+    profile_badge = f"{profile_emoji} {profile}"
     user = _runtime_user_slug().strip()
     user_segment = (f"👤 {user}", STYLE_STATUS_INFO) if user else None
     mode_id = _runtime_current_mode_id()
@@ -4561,6 +4352,7 @@ def _status_segments(compact_level: int = _STATUS_COMPACT_FULL) -> list[tuple[st
     if compact_level <= _STATUS_COMPACT_FULL:
         return _finalize_status_segments(
             segments=[
+                (profile_badge, STYLE_STATUS_INFO),
                 (mode_badge, STYLE_STATUS_METRIC),
                 (model_badge, STYLE_STATUS_METRIC),
                 (token_badge, STYLE_STATUS_METRIC),
@@ -4572,6 +4364,7 @@ def _status_segments(compact_level: int = _STATUS_COMPACT_FULL) -> list[tuple[st
     if compact_level == _STATUS_COMPACT_ABBREVIATED:
         return _finalize_status_segments(
             segments=[
+                (profile_badge, STYLE_STATUS_INFO),
                 (mode_badge_short, STYLE_STATUS_METRIC),
                 (model_badge, STYLE_STATUS_METRIC),
                 (token_badge_short, STYLE_STATUS_METRIC),
@@ -4583,6 +4376,7 @@ def _status_segments(compact_level: int = _STATUS_COMPACT_FULL) -> list[tuple[st
     if compact_level == _STATUS_COMPACT_TRIMMED:
         return _finalize_status_segments(
             segments=[
+                (profile_badge, STYLE_STATUS_INFO),
                 (mode_badge_short, STYLE_STATUS_METRIC),
                 (model_badge, STYLE_STATUS_METRIC),
                 (token_badge_short, STYLE_STATUS_METRIC),
@@ -4818,6 +4612,7 @@ def _initialize_runtime(
     thread_dir: str = "",
     no_thread: bool = False,
     user_slug: str,
+    timeout_profile: str,
     timezone: str = "",
     state_snapshot_path: str,
     streaming: str = "",
@@ -4845,7 +4640,7 @@ def _initialize_runtime(
         thread_dir=thread_dir,
         no_thread=no_thread,
     )
-    _init_timezone(timezone=timezone)
+    _init_timeout_and_timezone(timeout_profile=timeout_profile, timezone=timezone)
     _init_state_snapshot(state_snapshot_path=state_snapshot_path)
     _init_streaming(streaming=streaming)
     _build_warm_mcp_pool()
@@ -4942,7 +4737,6 @@ def _memory_list_fn(
             "memory.list",
             {
                 "user_slug": user_slug,
-                "surface_id": surface_id,
                 "limit": limit,
             },
         )
@@ -5017,14 +4811,69 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
         # with another server's (e.g. mem0's add_memory vs lisa-memory's
         # add_memory).
         target_server_id = _BACKEND_ID_TO_SERVER_ID.get(default_spec.id, default_spec.id)
-        # Build arg maps generically from the backend's declarative
-        # arg_translation config (or None when the backend takes the generic
-        # shape natively). No backend-specific knowledge lives here — the
-        # translation rules are declared in mcp_servers.yaml and parsed into
-        # MemoryBackendSpec.arg_translation by the manifest loader.
-        add_arg_map, search_arg_map, list_arg_map = _build_memory_arg_maps(
-            default_spec.arg_translation,
-        )
+        # Per-backend arg translation: the generic aliases expose a stable
+        # shape (content/user_slug/memory_scope/...) but each backend's MCP
+        # tools expect their own argument names. Mem0's tools require user_id
+        # (not user_slug) and ignore memory_scope/memory_tier; lisa-memory
+        # takes the generic shape directly.
+        if default_spec.id == "mem0":
+            # Mem0's add_memory tool requires `text` (not `content`) and
+            # scopes memory by user_id / agent_id / app_id / run_id. The
+            # generic memory.* alias exposes a stable shape (content /
+            # user_slug / memory_scope / memory_tier); the arg map translates
+            # it to Mem0's surface and injects ambient scope (mode_id,
+            # surface_id, workspace_id) so the model can never accidentally
+            # store or search outside the current turn's boundary.
+            #
+            # Map Lisa → Mem0:
+            #   user_slug   → user_id       (user isolation)
+            #   mode_id     → agent_id      (which mode created the memory)
+            #   surface_id  → app_id        (teams, desktop, CLI, etc.)
+            #   workspace_id→ metadata      (workspace scope)
+            #   memory_scope→ metadata      (personal / team)
+            #   memory_tier → metadata      (daily / weekly / long_term)
+            add_arg_map = lambda a: {
+                "text": a.get("content", ""),
+                "user_id": a.get("user_slug", "default"),
+                "agent_id": a.get("mode_id", _runtime_current_mode_id()) or "default",
+                "app_id": a.get("surface_id", "little-lisa") or "little-lisa",
+                "metadata": {
+                    "workspace_id": a.get("workspace_id", "default"),
+                    "memory_scope": a.get("memory_scope", "personal"),
+                    "memory_tier": a.get("memory_tier", "daily"),
+                },
+            }
+            # search_memories supports structured AND filters. Inject
+            # ambient scope boundaries (user_id, agent_id, app_id) so every
+            # search is automatically confined to the current mode and
+            # surface — the model never sees or controls these boundaries.
+            search_arg_map = lambda a: {
+                "query": a.get("query", ""),
+                "filters": {
+                    "AND": [
+                        {"user_id": a.get("user_slug", _runtime_user_slug() or "default")},
+                        {"agent_id": _runtime_current_mode_id() or "default"},
+                        {"app_id": "little-lisa"},
+                    ]
+                },
+                "limit": a.get("limit", 5),
+            }
+            # get_memories uses the same filter shape; inject ambient scope.
+            list_arg_map = lambda a: {
+                "filters": {
+                    "AND": [
+                        {"user_id": a.get("user_slug", _runtime_user_slug() or "default")},
+                        {"agent_id": _runtime_current_mode_id() or "default"},
+                        {"app_id": "little-lisa"},
+                    ]
+                },
+                "page": 1,
+                "page_size": a.get("limit", 20),
+            }
+        else:
+            add_arg_map = None
+            search_arg_map = None
+            list_arg_map = None
 
     add_schema = {
         "type": "object",
@@ -5041,7 +4890,6 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
         "properties": {
             "query": {"type": "string"},
             "user_slug": {"type": "string", "default": "default"},
-            "surface_id": {"type": "string", "default": ""},
             "limit": {"type": "integer", "default": 5},
         },
         "required": ["query"],
@@ -5083,120 +4931,6 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
             arg_map=list_arg_map,
         ),
     ])
-
-    # When the default backend declares arg_translation, the model can also
-    # call the backend's native tools directly. Register the same arg maps as
-    # dispatch-time overrides keyed by the namespaced tool names so the ambient
-    # scope boundaries are injected identically whether the model goes through
-    # the ``memory.*`` synthetic alias or calls the native tool directly. The
-    # tool names come from the spec — no backend id is hardcoded here.
-    if default_spec is not None and default_spec.arg_translation is not None:
-        pool.register_dispatch_arg_map(
-            f"{target_server_id}.{tool_names['add']}", add_arg_map,
-        )
-        pool.register_dispatch_arg_map(
-            f"{target_server_id}.{tool_names['search']}", search_arg_map,
-        )
-        pool.register_dispatch_arg_map(
-            f"{target_server_id}.{tool_names['list']}", list_arg_map,
-        )
-
-
-def _build_memory_arg_maps(
-    translation: Any,
-) -> tuple[
-    "Callable[[dict[str, Any]], dict[str, Any]] | None",
-    "Callable[[dict[str, Any]], dict[str, Any]] | None",
-    "Callable[[dict[str, Any]], dict[str, Any]] | None",
-]:
-    """Build the three memory arg maps from a declarative ArgTranslation spec.
-
-    Returns ``(None, None, None)`` when ``translation`` is None (the backend
-    takes the generic shape natively — no translation needed). Otherwise
-    builds add / search / list arg maps that:
-
-    - rename generic fields to native field names (``field_map``)
-    - inject ambient runtime scope the model cannot override (``ambient``)
-    - stuff extra generic fields into a nested ``metadata`` sub-dict
-      (``metadata_fields``)
-    - use structured ``filters.AND`` for search/list when configured
-      (``structured_filters``)
-    - use ``page``/``page_size`` for list when configured (``paginated_list``)
-
-    No backend-specific knowledge lives here — every rule comes from the
-    YAML-declared ``arg_translation`` block on the backend entry.
-    """
-    if translation is None:
-        return None, None, None
-
-    def _ambient_value(source: str) -> str:
-        if source == "user_id":
-            return _runtime_user_slug() or "default"
-        if source == "agent_id":
-            return _runtime_current_mode_id() or "default"
-        # app_id — resolved from the configured surface; "little-lisa" is
-        # the canonical app id for this host.
-        return "little-lisa"
-
-    def _ambient_pairs() -> dict[str, str]:
-        return {
-            native_field: _ambient_value(source)
-            for native_field, source in translation.ambient.items()
-        }
-
-    def _metadata(args: dict[str, Any]) -> dict[str, Any]:
-        return {
-            meta_key: args.get(generic_field, "")
-            for generic_field, meta_key in translation.metadata_fields.items()
-        }
-
-    def _add_map(a: dict[str, Any]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        # Pass-through fields with optional renaming.
-        for generic_field in ("content", "user_slug", "memory_scope", "memory_tier"):
-            if generic_field not in a:
-                continue
-            native = translation.field_map.get(generic_field, generic_field)
-            result[native] = a[generic_field]
-        # Ambient injected fields override anything the model passed.
-        result.update(_ambient_pairs())
-        if translation.metadata_fields:
-            result["metadata"] = _metadata(a)
-        return result
-
-    def _search_map(a: dict[str, Any]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for generic_field in ("query",):
-            if generic_field in a:
-                native = translation.field_map.get(generic_field, generic_field)
-                result[native] = a[generic_field]
-        if translation.structured_filters:
-            result["filters"] = {"AND": [
-                {native_field: value}
-                for native_field, value in _ambient_pairs().items()
-            ]}
-        else:
-            result.update(_ambient_pairs())
-        result["limit"] = a.get("limit", 5)
-        return result
-
-    def _list_map(a: dict[str, Any]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        if translation.structured_filters:
-            result["filters"] = {"AND": [
-                {native_field: value}
-                for native_field, value in _ambient_pairs().items()
-            ]}
-        else:
-            result.update(_ambient_pairs())
-        if translation.paginated_list:
-            result["page"] = 1
-            result["page_size"] = a.get("limit", 20)
-        else:
-            result["limit"] = a.get("limit", 20)
-        return result
-
-    return _add_map, _search_map, _list_map
 
 
 async def astart_warm_mcp_pool() -> None:
@@ -5355,8 +5089,9 @@ def _init_session_context_and_threads(
     return normalized_user, context_ref, context_active
 
 
-def _init_timezone(*, timezone: str) -> None:
-    """Resolve and set timezone and session counters."""
+def _init_timeout_and_timezone(*, timeout_profile: str, timezone: str) -> None:
+    """Resolve and set timeout profile, timezone, and session counters."""
+    _RUNTIME_STATE["timeout_profile"] = _resolve_timeout_profile(timeout_profile)
     _RUNTIME_STATE["session_started_utc"] = datetime.now(UTC)
     _RUNTIME_STATE["session_turn_count"] = 0
     _RUNTIME_STATE["session_success_count"] = 0
@@ -5425,6 +5160,7 @@ def _log_runtime_initialized(
             "session_context_active": context_active,
             "timezone": _runtime_timezone(),
             "timezone_source": _runtime_timezone_source(),
+            "timeout_profile": _runtime_timeout_profile(),
             "log_path": str(_runtime_log_path() or ""),
             "streaming_mode": _runtime_streaming_mode(),
             "streaming_enabled": _runtime_stream_enabled(),
@@ -5496,6 +5232,7 @@ def _cli_callback(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     desktop_host: str = typer.Option(
@@ -5533,6 +5270,7 @@ def _cli_callback(
         thread_dir=thread_dir,
         no_thread=no_thread,
         session_context=session_context,
+        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot=state_snapshot,
         streaming=streaming,
@@ -5554,6 +5292,7 @@ def _cli_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -5569,6 +5308,7 @@ def _cli_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -5610,6 +5350,7 @@ def _desktop_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -5625,6 +5366,7 @@ def _desktop_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -5883,6 +5625,7 @@ def _verify_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -5903,6 +5646,7 @@ def _verify_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -6200,6 +5944,7 @@ def _modes_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -6215,6 +5960,7 @@ def _modes_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -6234,6 +5980,7 @@ def _models_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -6249,6 +5996,7 @@ def _models_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -6269,6 +6017,7 @@ def _once_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    timeout_profile: TimeoutProfileOption = "",
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -6284,6 +6033,7 @@ def _once_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        timeout_profile=timeout_profile,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,

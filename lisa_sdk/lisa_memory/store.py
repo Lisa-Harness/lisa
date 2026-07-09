@@ -53,7 +53,7 @@ def _days(n: int) -> Any:
     return timedelta(days=n)
 
 
-def _expires_at(tier: str, ttl_days: int | None) -> str | None:
+def _expires_at(ttl_days: int | None) -> str | None:
     if ttl_days is None:
         return None
     return str((datetime.now(UTC).replace(microsecond=0) + _days(ttl_days)).isoformat())
@@ -153,7 +153,7 @@ class SqliteMemoryStore:
         entry_id = _entry_id()
         created_at = _now_iso()
         ttl_days = self.default_ttl_days.get(write.memory_tier, DEFAULT_TTL_DAYS["daily"])
-        expires_at = _expires_at(write.memory_tier, ttl_days)
+        expires_at = _expires_at(ttl_days)
         self._conn.execute(
             """
             INSERT INTO memories (

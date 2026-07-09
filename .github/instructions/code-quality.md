@@ -55,9 +55,12 @@ uv run ruff check kernel lisa_sdk sdk_extensions sdk_packs examples
 # 3. Type check (strict, all public packages)
 uv run mypy kernel lisa_sdk sdk_extensions sdk_packs
 
-# 4. Tests (no live API calls)
+# 4. Dead code check
+uv run vulture kernel lisa_sdk sdk_extensions sdk_packs examples/little_lisa vulture_allowlist.py
+
+# 5. Tests (no live API calls)
 uv run pytest -m "not live" --tb=short -v
 
-# 5. Smoke test
+# 6. Smoke test
 uv run little-lisa verify
 ```

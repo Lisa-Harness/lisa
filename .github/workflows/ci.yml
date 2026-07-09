@@ -39,6 +39,9 @@ jobs:
       - name: Type check (mypy — all public packages)
         run: uv run mypy kernel lisa_sdk sdk_extensions sdk_packs
 
+      - name: Dead code (vulture)
+        run: uv run vulture kernel lisa_sdk sdk_extensions sdk_packs examples/little_lisa vulture_allowlist.py
+
       - name: Unit tests (no live)
         run: uv run pytest -m "not live" --tb=short -v
 

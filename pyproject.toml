@@ -25,6 +25,7 @@ dev = [
     "pytest-mock>=3.14.0",
     "ruff>=0.8.0",
     "types-PyYAML>=6.0",
+    "vulture>=2.11",
 ]
 
 [tool.uv]
@@ -63,6 +64,7 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = ["vulture_allowlist.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "PL", "C90", "RET", "RUF"]
@@ -90,3 +92,52 @@ no_implicit_optional = true
 check_untyped_defs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
+exclude = ["vulture_allowlist.py"]
+
+[tool.vulture]
+min_confidence = 80
+exclude = [
+    "**/tests/",
+    "**/test_*.py",
+    "**/conftest.py",
+    "**/*egg-info*/",
+    "**/__pycache__/",
+    ".venv/",
+    "debug_err.py",
+    "test_mcp.py",
+]
+ignore_names = [
+    "main",
+    "mcp",
+    "init_*",
+    "build_*",
+    "get_*",
+    "register_*",
+    "discover_*",
+    "resolve_*",
+    "*SignalConnector",
+    "*Connector",
+    "*Detector",
+    "*Registry",
+    "*Store",
+    "*Broker",
+    "*Catalog",
+    "*Spec",
+    "*Config",
+    "*Policy",
+    "*Manifest",
+    "*Error",
+    "*Exception",
+    "*Context",
+    "*Fragments",
+    "*Sections",
+    "*Evidence",
+    "*Summary",
+    "*Anomalies",
+]
+ignore_decorators = [
+    "@mcp.tool",
+    "@property",
+    "@router.get",
+    "@router.post",
+]

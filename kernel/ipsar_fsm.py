@@ -334,7 +334,6 @@ def validate_workflow_mode(mode: WorkflowModeConfig) -> None:
             raise WorkflowValidationError(
                 f"Workflow mode '{mode.mode_id}' must define at least one stage."
             )
-            return
         raise WorkflowValidationError(
             f"Mode '{mode.mode_id}' has unknown start stage '{mode.start_stage_id}'."
         )
