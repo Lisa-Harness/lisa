@@ -166,6 +166,8 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             parameters={
                 "content": distilled_text,
                 "user_slug": ctx.user_slug,
+                "workspace_id": ctx.workspace_id,
+                "surface_id": ctx.surface_id,
                 "memory_scope": ctx.memory_scope,
                 "memory_tier": memory_tier,
             },
