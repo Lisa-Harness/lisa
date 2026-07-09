@@ -80,11 +80,41 @@ logger = logging.getLogger(__name__)
 try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter
-    from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.history import FileHistory, History
 except ImportError:  # pragma: no cover - optional dependency for richer REPL UX
     PromptSession = None
     WordCompleter = None
     FileHistory = None
+    History = None
+
+
+class _SurrogateSafeFileHistory(History):
+    """FileHistory wrapper that sanitises unpaired surrogates before persisting.
+
+    On Windows, the console can emit unpaired surrogate characters for emoji
+    (e.g. ??).  Python's utf-8 codec rejects those, which crashes
+    prompt_toolkit's FileHistory.store_string.  This wrapper strips them.
+    """
+
+    def __init__(self, filename: str) -> None:
+        self._inner = FileHistory(filename)
+
+    def load_history_strings(self) -> list[str]:
+        return self._inner.load_history_strings()
+
+    def store_string(self, string: str) -> None:
+        # Replace unpaired surrogates with the Unicode replacement character
+        # so the string is always valid UTF-8.
+        safe = string.encode("utf-8", errors="surrogateescape").decode(
+            "utf-8", errors="replace"
+        )
+        self._inner.store_string(safe)
+
+    def append_string(self, string: str) -> None:
+        safe = string.encode("utf-8", errors="surrogateescape").decode(
+            "utf-8", errors="replace"
+        )
+        self._inner.append_string(safe)
 
 FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
 if str(FRAMEWORK_ROOT) not in sys.path:
@@ -3493,6 +3523,7 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         """
         ctx.answer_memory_recall_fn = provider.answer_memory_recall
         ctx.memory_recall_default_limit = 8
+        ctx.introspect_fn = provider.introspect
         return await execute_operation(operation_id, ctx)
 
     async def _on_turn_complete(
@@ -3538,6 +3569,7 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         workflow_session_factory=create_workflow_session,
         state_provider=_state_provider,
         build_workshop_context_bundle_fn=_build_workshop_context_bundle,
+        introspect=provider.introspect,
     )
 
 
@@ -4115,7 +4147,7 @@ def _build_repl_prompt_session() -> PromptSession[str] | None:
     history_path = _runtime_data_dir() / _REPL_HISTORY_FILE_NAME
     history_path.parent.mkdir(parents=True, exist_ok=True)
     return PromptSession(
-        history=FileHistory(str(history_path)),
+        history=_SurrogateSafeFileHistory(str(history_path)),
         completer=WordCompleter(list(_repl_command_hints()), ignore_case=True),
         complete_while_typing=True,
         multiline=False,
