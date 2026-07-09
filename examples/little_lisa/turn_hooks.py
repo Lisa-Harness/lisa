@@ -71,12 +71,27 @@ class LittleLisaTurnHooks:
         complete_live: Callable[..., Awaitable[StubCompletion]],
         resolve_model: Callable[[str], StubModelDefinition],
         execute_tool: Callable[[str, Any], Awaitable[ToolResult]],
+        introspect: "Callable[[], Awaitable[Any]] | None" = None,
     ) -> None:
         self._memory_list_fn = memory_list_fn
         self._state_provider = state_provider
         self._complete_live = complete_live
         self._resolve_model = resolve_model
         self._execute_tool = execute_tool
+        self._introspect = introspect
+
+    # ── Live introspection ──────────────────────────────────────────────────
+    async def introspect(self) -> Any:
+        """Gather a live introspection snapshot from the host runtime.
+
+        Delegates to ``kernel.introspect.gather_introspection`` with the
+        host's warm MCP pool, turn log path, and token usage path. When
+        the introspect callable was not wired at construction time, returns
+        ``None``.
+        """
+        if self._introspect is None:
+            return None
+        return await self._introspect()
 
     # ── Slice delegation ──────────────────────────────────────────────────
     async def post_turn_slice(self, policy: SlicePolicy) -> Any:

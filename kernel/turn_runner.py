@@ -338,6 +338,15 @@ class TurnHooks:
     When set, injected into ``OperationExecutionContext`` so the workshop
     operation can curate per-panel context bundles. Default: None."""
 
+    # ── Live introspection ─────────────────────────────────────────────────
+    introspect: Any | None = None
+    """Async callable returning an ``IntrospectSnapshot`` from the host's
+    live runtime (process memory, asyncio tasks, MCP pool health, token
+    usage, log tail). When set, injected into
+    ``OperationExecutionContext.introspect_fn`` so the self-model operation
+    and the reflect_self operation can access live runtime state. Default:
+    None (self-model telemetry fields stay empty)."""
+
 
 # ── Streaming adapter ──────────────────────────────────────────────────────
 

@@ -15,6 +15,7 @@ from typing import Any
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.model_manifest import ModelManifest
 from kernel.models import (
+    IntrospectSnapshot,
     LisaSelfModelArtifact,
     OperationExecutionContext,
     OperationResult,
@@ -90,6 +91,17 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         known_unknowns=known_unknown_entries,
     )
 
+    # ── Augment with live introspection telemetry (no LLM call) ──────────
+    snapshot = await _gather_introspection(ctx)
+    if snapshot is not None:
+        artifact.uptime_seconds = snapshot.uptime_seconds
+        artifact.asyncio_tasks = snapshot.asyncio_tasks
+        artifact.python_threads = snapshot.python_threads
+        artifact.process_rss_mb = snapshot.process_rss_mb
+        artifact.mcp_pool_health = snapshot.mcp_pool_health
+        artifact.token_usage_24h = snapshot.token_usage_24h
+        artifact.recent_log_errors = snapshot.recent_log_errors
+
     vibe = build_self_model_vibe(artifact)
 
     # Persist the full artifact via blob_io when available
@@ -145,12 +157,46 @@ def build_self_model_vibe(artifact: LisaSelfModelArtifact) -> str:
         f"Known unknowns: {known_unknown_preview}\n"
         f"{artifact.grounding_summary}"
     )
+    # Append live runtime telemetry when available
+    if artifact.uptime_seconds > 0 or artifact.asyncio_tasks > 0:
+        runtime_line = (
+            f"\nRuntime: uptime={int(artifact.uptime_seconds)}s, "
+            f"tasks={artifact.asyncio_tasks}, threads={artifact.python_threads}, "
+            f"rss={artifact.process_rss_mb:.0f}MB"
+        )
+        failed_mcp = [
+            sid for sid, h in artifact.mcp_pool_health.items() if h.status == "failed"
+        ]
+        if failed_mcp:
+            runtime_line += f", mcp_down={','.join(failed_mcp)}"
+        vibe += runtime_line
     if len(vibe) > _VIBE_MAX_CHARS:
         vibe = vibe[: _VIBE_MAX_CHARS - 3] + "..."
     return vibe
 
 
 # ── Private helpers ────────────────────────────────────────────────────────
+
+
+async def _gather_introspection(ctx: OperationExecutionContext) -> IntrospectSnapshot | None:
+    """Call the host's ``introspect_fn`` callback when wired.
+
+    Returns ``None`` when the callback is not set or raises — the self-model
+    still works without live telemetry, it just lacks the runtime fields.
+    """
+    introspect_fn = getattr(ctx, "introspect_fn", None)
+    if introspect_fn is None:
+        return None
+    try:
+        result = introspect_fn()
+        # Support both sync and async callables
+        if hasattr(result, "__await__"):
+            result = await result
+        if isinstance(result, IntrospectSnapshot):
+            return result
+    except Exception:
+        logger.debug("introspect_fn failed; self-model telemetry fields empty", exc_info=True)
+    return None
 
 
 def _resolve_tool_catalog(ctx: OperationExecutionContext) -> dict[str, Any]:

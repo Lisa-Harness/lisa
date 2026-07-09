@@ -220,6 +220,7 @@ class OperationExecutionContext(BaseModel):
     state_provider: Any = Field(default=None, exclude=True)
     workflow_turn_runner: Any = Field(default=None, exclude=True)
     workflow_session_factory: Any = Field(default=None, exclude=True)
+    introspect_fn: Any = Field(default=None, exclude=True)
     preferred_model_id: str | None = Field(default=None, exclude=True)
 
 
@@ -396,7 +397,87 @@ class LisaSelfModelArtifact(BaseModel):
     grounding: list[SelfKnowledgeEntry] = Field(default_factory=list)
     known_unknowns: list[SelfKnowledgeEntry] = Field(default_factory=list)
     source_manifest_generated_at: str = ""
+    # ── Live runtime telemetry (populated by introspection, not catalog walk) ──
+    uptime_seconds: float = 0.0
+    asyncio_tasks: int = 0
+    python_threads: int = 0
+    process_rss_mb: float = 0.0
+    mcp_pool_health: dict[str, "McpServerHealth"] = Field(default_factory=dict)
+    token_usage_24h: "TokenUsageSummary | None" = None
+    recent_log_errors: list["LogErrorEntry"] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Live introspection (Python-level runtime snapshot)
+# ---------------------------------------------------------------------------
+
+McpConnectionStatus = Literal["warm", "cold", "failed", "unknown"]
+
+
+class McpServerHealth(BaseModel):
+    """Health snapshot for one MCP server in the host's tool pool."""
+
+    server_id: str
+    status: McpConnectionStatus = "unknown"
+    warm: bool = False
+    last_error: str = ""
+
+
+class TokenUsageSummary(BaseModel):
+    """Aggregated token-usage summary derived from the telemetry JSONL tail."""
+
+    total_cost_estimate: float = 0.0
+    total_tokens: int = 0
+    top_model: str = ""
+    top_model_tokens: int = 0
+    spike_at: str = ""  # ISO timestamp of the highest-cost event, or empty
+    event_count: int = 0
+
+
+class LogErrorEntry(BaseModel):
+    """One error or warning entry extracted from the turn log tail."""
+
+    ts: str = ""
+    level: str = ""
+    event: str = ""
+    message: str = ""
+    server: str = ""
+
+
+class IntrospectSnapshot(BaseModel):
+    """Live Python-level introspection snapshot for the running host process."""
+
+    captured_at: str
+    uptime_seconds: float = 0.0
+    asyncio_tasks: int = 0
+    python_threads: int = 0
+    python_modules: int = 0
+    process_rss_mb: float = 0.0
+    process_cpu_percent: float = 0.0
+    mcp_pool_health: dict[str, McpServerHealth] = Field(default_factory=dict)
+    token_usage_24h: TokenUsageSummary | None = None
+    recent_log_errors: list[LogErrorEntry] = Field(default_factory=list)
+    logfile_tail_lines: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Reflective self-assessment (LLM-generated from inventory + introspection)
+# ---------------------------------------------------------------------------
+
+ReflectionHealth = Literal["healthy", "degraded", "struggling", "unknown"]
+
+
+class LisaReflectionArtifact(BaseModel):
+    """LLM-generated holistic assessment of Lisa's current operational state."""
+
+    generated_at: str
+    overall_health: ReflectionHealth = "unknown"
+    health_reasoning: str = ""
+    attention_items: list[str] = Field(default_factory=list)
+    behavioral_patterns: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    self_model_snapshot_generated_at: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -828,6 +909,8 @@ class UnifiedState(BaseModel):
     architecture_atlas_artifact_path: str = ""
     self_model_vibe: str = ""
     self_model_artifact_path: str = ""
+    reflection_vibe: str = ""
+    reflection_artifact_path: str = ""
 
 
 # ---------------------------------------------------------------------------

@@ -146,3 +146,62 @@ def test_build_token_usage_event_supports_time_billed_kind() -> None:
     assert event.duration_ms == 5000.0
     assert event.time_cost_usd == 0.001
     assert event.prompt_tokens == 200
+
+
+@pytest.mark.asyncio
+async def test_read_recent_returns_last_n_records() -> None:
+    """read_recent returns the last N persisted records as parsed dicts."""
+    with TemporaryDirectory() as td:
+        path = Path(td) / "token-usage.jsonl"
+        handler = TokenUsageTelemetryHandler(path)
+
+        for i in range(5):
+            await handler.publish(
+                build_token_usage_event(
+                    provider="openai",
+                    model_id=f"model-{i}",
+                    prompt_tokens=i * 10,
+                    completion_tokens=5,
+                )
+            )
+
+        records = handler.read_recent(limit=3)
+        assert len(records) == 3
+        # Last 3 records: model-2, model-3, model-4
+        assert records[0]["model_id"] == "model-2"
+        assert records[1]["model_id"] == "model-3"
+        assert records[2]["model_id"] == "model-4"
+
+
+def test_read_recent_returns_empty_when_file_missing() -> None:
+    """read_recent returns [] when the file doesn't exist."""
+    with TemporaryDirectory() as td:
+        path = Path(td) / "nonexistent.jsonl"
+        handler = TokenUsageTelemetryHandler(path)
+        assert handler.read_recent(limit=10) == []
+
+
+@pytest.mark.asyncio
+async def test_read_recent_skips_invalid_json_lines() -> None:
+    """read_recent skips lines that can't be parsed as JSON."""
+    with TemporaryDirectory() as td:
+        path = Path(td) / "token-usage.jsonl"
+        handler = TokenUsageTelemetryHandler(path)
+
+        # Write one valid event
+        await handler.publish(
+            build_token_usage_event(provider="openai", model_id="valid", prompt_tokens=10)
+        )
+        # Append one invalid line directly
+        with path.open("a", encoding="utf-8") as f:
+            f.write("not valid json\n")
+        # Write another valid event
+        await handler.publish(
+            build_token_usage_event(provider="openai", model_id="valid2", prompt_tokens=10)
+        )
+
+        records = handler.read_recent(limit=10)
+        # Two valid records, one invalid line skipped
+        assert len(records) == 2
+        assert records[0]["model_id"] == "valid"
+        assert records[1]["model_id"] == "valid2"

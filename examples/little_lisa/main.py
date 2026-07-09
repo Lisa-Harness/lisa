@@ -88,7 +88,7 @@ except ImportError:  # pragma: no cover - optional dependency for richer REPL UX
     History = None
 
 
-class _SurrogateSafeFileHistory(History):
+class _SurrogateSafeFileHistory(FileHistory):
     """FileHistory wrapper that sanitises unpaired surrogates before persisting.
 
     On Windows, the console can emit unpaired surrogate characters for emoji
@@ -96,25 +96,19 @@ class _SurrogateSafeFileHistory(History):
     prompt_toolkit's FileHistory.store_string.  This wrapper strips them.
     """
 
-    def __init__(self, filename: str) -> None:
-        self._inner = FileHistory(filename)
-
-    def load_history_strings(self) -> list[str]:
-        return self._inner.load_history_strings()
-
     def store_string(self, string: str) -> None:
         # Replace unpaired surrogates with the Unicode replacement character
         # so the string is always valid UTF-8.
         safe = string.encode("utf-8", errors="surrogateescape").decode(
             "utf-8", errors="replace"
         )
-        self._inner.store_string(safe)
+        super().store_string(safe)
 
     def append_string(self, string: str) -> None:
         safe = string.encode("utf-8", errors="surrogateescape").decode(
             "utf-8", errors="replace"
         )
-        self._inner.append_string(safe)
+        super().append_string(safe)
 
 FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
 if str(FRAMEWORK_ROOT) not in sys.path:
@@ -588,6 +582,7 @@ _HOST_REPL_SHORTCUTS: tuple[str, ...] = (
     "/help capabilities",
     "/settings",
     "/tokens",
+    "/self",
     "/debug context",
     "/debug frontdoor",
     "/consolidate",
@@ -1897,6 +1892,12 @@ def _assemble_dynamic_user_context(mode_id: str, query: str, pre_turn_briefing: 
     if snapshot_section:
         sections.append(snapshot_section)
 
+    self_model_vibe, reflection_vibe = _load_self_model_vibes()
+    if self_model_vibe:
+        sections.append(self_model_vibe)
+    if reflection_vibe:
+        sections.append(f"## Current Assessment\n\n{reflection_vibe}")
+
     query_lower = query.lower()
     capability_keywords = (
         "capability",
@@ -2134,6 +2135,43 @@ def _build_state_snapshot_context() -> str:
     return "\n".join(lines)
 
 
+def _load_self_model_vibes() -> tuple[str, str]:
+    """Load the persisted self-model and reflection vibes from blob storage.
+
+    Returns ``(self_model_vibe, reflection_vibe)``. Either is empty string
+    when the artifact doesn't exist or can't be parsed. The self-model vibe
+    is the compact ~500 char string built by ``build_self_model_vibe``. The
+    reflection vibe is the ``health_reasoning`` paragraph from the
+    reflection artifact.
+    """
+    blob_io = LocalBlobIO(_runtime_data_dir())
+    self_model_vibe = ""
+    reflection_vibe = ""
+
+    try:
+        sm_json = blob_io.read_blob_text("self_model", "self_model.json")
+        if sm_json:
+            import json as _json
+
+            artifact_dict = _json.loads(sm_json)
+            from kernel.models import LisaSelfModelArtifact
+            from sdk_packs.core.operations.self_model.self_model import build_self_model_vibe
+
+            artifact = LisaSelfModelArtifact.model_validate(artifact_dict)
+            self_model_vibe = build_self_model_vibe(artifact)
+    except Exception:
+        logger.debug("failed to load self-model vibe for context", exc_info=True)
+
+    try:
+        ref_text = blob_io.read_blob_text("self_model", "reflection.json")
+        if ref_text:
+            reflection_vibe = str(ref_text).strip()[:500]
+    except Exception:
+        logger.debug("failed to load reflection vibe for context", exc_info=True)
+
+    return self_model_vibe, reflection_vibe
+
+
 def _build_capability_snapshot() -> dict[str, Any]:
     catalog = get_workflow_catalog()
     manifest = _load_manifest()
@@ -2237,23 +2275,74 @@ def _render_debug_context() -> str:
 
 
 def _render_debug_self() -> str:
-    snapshot = _build_capability_snapshot()
-    thread_entries = _load_recent_thread_entries(limit=10)
-    state_snapshot = _runtime_state_snapshot()
-    return "\n".join(
-        [
-            "## Little Lisa Self Model",
-            f"- user_slug: {snapshot['user_slug']}",
-            f"- timeout_profile: {snapshot['timeout_profile']}",
-            f"- timezone: {snapshot['timezone']} ({snapshot['timezone_source']})",
-            f"- supported_modes: {len(snapshot['supported_modes'])}",
-            f"- operations: {len(snapshot['operations'])}",
-            f"- tools: {len(snapshot['tools'])}",
-            f"- models: {len(snapshot['models'])}",
-            f"- local_thread_entries: {len(thread_entries)}",
-            f"- local_state_snapshot_loaded: {'yes' if isinstance(state_snapshot, dict) else 'no'}",
-        ]
-    )
+    """Render the persisted self-model artifact and reflection for /debug self.
+
+    Falls back to a flat capability snapshot when the artifacts don't exist
+    yet (e.g. before the first slice has run).
+    """
+    blob_io = LocalBlobIO(_runtime_data_dir())
+    parts: list[str] = ["## Self Model"]
+
+    sm_loaded = False
+    try:
+        import json as _json
+
+        sm_json = blob_io.read_blob_text("self_model", "self_model.json")
+        if sm_json:
+            from kernel.models import LisaSelfModelArtifact
+
+            artifact = LisaSelfModelArtifact.model_validate(_json.loads(sm_json))
+            parts.append(f"- identity: {artifact.identity_summary}")
+            parts.append(f"- grounding: {artifact.grounding_summary}")
+            parts.append(f"- capabilities: {len(artifact.capabilities)} entries")
+            parts.append(f"- limitations: {len(artifact.limitations)} entries")
+            parts.append(f"- known_unknowns: {len(artifact.known_unknowns)} entries")
+            if artifact.uptime_seconds > 0 or artifact.asyncio_tasks > 0:
+                parts.append("")
+                parts.append("### Live Telemetry")
+                parts.append(f"- uptime_seconds: {int(artifact.uptime_seconds)}")
+                parts.append(f"- asyncio_tasks: {artifact.asyncio_tasks}")
+                parts.append(f"- python_threads: {artifact.python_threads}")
+                parts.append(f"- process_rss_mb: {artifact.process_rss_mb:.1f}")
+                if artifact.mcp_pool_health:
+                    parts.append("- mcp_pool_health:")
+                    for sid, health in sorted(artifact.mcp_pool_health.items()):
+                        parts.append(f"  - {sid}: {health.status}")
+                if artifact.token_usage_24h:
+                    tu = artifact.token_usage_24h
+                    parts.append(
+                        f"- token_usage_24h: cost=${tu.total_cost_estimate:.4f}, "
+                        f"tokens={tu.total_tokens}, top_model={tu.top_model}, "
+                        f"events={tu.event_count}"
+                    )
+                if artifact.recent_log_errors:
+                    parts.append(f"- recent_log_errors: {len(artifact.recent_log_errors)} entries")
+                    for err in artifact.recent_log_errors[:5]:
+                        parts.append(f"  - [{err.level}] {err.event}: {err.message[:80]}")
+            parts.append(f"- generated_at: {artifact.generated_at}")
+            sm_loaded = True
+    except Exception:
+        logger.debug("failed to render persisted self-model", exc_info=True)
+
+    if not sm_loaded:
+        snapshot = _build_capability_snapshot()
+        parts.append(f"- user_slug: {snapshot['user_slug']}")
+        parts.append(f"- supported_modes: {len(snapshot['supported_modes'])}")
+        parts.append(f"- operations: {len(snapshot['operations'])}")
+        parts.append(f"- tools: {len(snapshot['tools'])}")
+        parts.append(f"- models: {len(snapshot['models'])}")
+        parts.append("(artifact not yet persisted — run /self to generate)")
+
+    try:
+        ref_text = blob_io.read_blob_text("self_model", "reflection.json")
+        if ref_text:
+            parts.append("")
+            parts.append("### Current Assessment")
+            parts.append(str(ref_text).strip()[:800])
+    except Exception:
+        logger.debug("failed to render reflection", exc_info=True)
+
+    return "\n".join(parts)
 
 
 def _render_debug_frontdoor() -> str:
@@ -3173,34 +3262,46 @@ def _resolve_int_env(env_var: str, default: int) -> int:
 class LittleLisaStateProvider:
     """File-only digest provider for Little Lisa.
 
-    Runs one deterministic, no-LLM operation inside the existing slice
-    budget:
+    Runs bounded work inside the existing slice budget:
 
     1. Thread digest: when the thread JSONL exceeds max_thread_entries,
        compact the oldest overflow entries into a thread_digest.md
        sidecar and truncate the JSONL to the most recent entries.
+    2. Self-model scan: deterministic catalog walk + live introspection.
+       Populates the persisted self-model artifact.
+    3. Reflection: LLM holistic assessment (only when self-model is stale
+       and budget remains). Persists the reflection vibe.
 
     Memory eviction is no longer host-side: ``lisa-memory``'s SQLite store
     enforces TTL via its ``expires_at`` column (daily/weekly/long_term),
-    so there is nothing for the slice to do. The former ``_consolidate_memory``
-    reached into the in-process MCPMemoryClient's private ``_records`` /
-    ``_save`` — impossible across the MCP boundary, and redundant with TTL.
+    so there is nothing for the slice to do.
     """
+
+    _REFLECTION_STALE_SECONDS = 900.0  # 15 minutes
 
     def __init__(
         self,
         *,
         thread_path: Path | None,
         max_thread_entries: int = _DEFAULT_THREAD_MAX_ENTRIES,
+        blob_io: Any | None = None,
+        complete_fn: Any | None = None,
+        resolve_model_fn: Any | None = None,
+        introspect_fn: Any | None = None,
     ) -> None:
         self._thread_path = thread_path
         self._max_thread_entries = max(1, max_thread_entries)
+        self._blob_io = blob_io
+        self._complete_fn = complete_fn
+        self._resolve_model_fn = resolve_model_fn
+        self._introspect_fn = introspect_fn
+        self._self_model_generated_at: str = ""
 
     def __call__(self) -> Any:
         return None
 
     async def slice(self, ctx: Any, policy: Any) -> SliceOutcome:
-        """Run bounded thread compaction."""
+        """Run bounded thread compaction, self-model scan, and reflection."""
         del ctx
         started = time.monotonic()
         work_items = 0
@@ -3213,6 +3314,22 @@ class LittleLisaStateProvider:
             last_item = thread_compacted[1]
             notes.append(thread_compacted[2])
 
+        # Self-model scan (deterministic, no LLM)
+        if not _slice_budget_expired(policy, started):
+            sm_result = await self._run_self_model_scan()
+            if sm_result is not None:
+                work_items += 1
+                last_item = "self_model:scan"
+                notes.append("self-model scan refreshed")
+
+        # Reflection (LLM call — only when self-model is stale)
+        if not _slice_budget_expired(policy, started) and self._should_reflect():
+            ref_result = await self._run_reflection()
+            if ref_result is not None:
+                work_items += 1
+                last_item = "reflect_self:assessment"
+                notes.append("reflection refreshed")
+
         elapsed_ms = (time.monotonic() - started) * 1000.0
         return SliceOutcome(
             work_items_completed=work_items,
@@ -3220,6 +3337,80 @@ class LittleLisaStateProvider:
             last_item=last_item,
             notes=tuple(notes),
         )
+
+    def _should_reflect(self) -> bool:
+        """Return True when the self-model is stale enough to warrant reflection."""
+        if not self._self_model_generated_at:
+            return False
+        if not self._complete_fn or not self._resolve_model_fn:
+            return False
+        try:
+            generated = datetime.fromisoformat(self._self_model_generated_at)
+            age = (datetime.now(UTC) - generated).total_seconds()
+            return age >= self._REFLECTION_STALE_SECONDS
+        except Exception:
+            return False
+
+    async def _run_self_model_scan(self) -> Any | None:
+        """Execute the ``self_model`` operation and persist the artifact."""
+        if self._blob_io is None:
+            return None
+        try:
+            from kernel.models import OperationExecutionContext
+            from kernel.operations.registry import execute_operation
+
+            op_ctx = OperationExecutionContext(
+                operation_id="self_model",
+                user_slug=_runtime_user_slug() or "default",
+                workspace_id="default",
+                surface_type="personal_dm",
+                blob_io=self._blob_io,
+                complete_fn=self._complete_fn,
+                resolve_model_fn=self._resolve_model_fn,
+                introspect_fn=self._introspect_fn,
+            )
+            result = await execute_operation("self_model", op_ctx)
+            if isinstance(result.output_json, dict):
+                self._self_model_generated_at = str(
+                    result.output_json.get("generated_at") or ""
+                )
+            return result
+        except Exception:
+            logger.debug("self-model scan failed in slice", exc_info=True)
+            return None
+
+    async def _run_reflection(self) -> Any | None:
+        """Execute the ``reflect_self`` operation and persist the reflection."""
+        if self._blob_io is None:
+            return None
+        try:
+            from kernel.models import OperationExecutionContext
+            from kernel.operations.registry import execute_operation
+
+            self_model_json = self._blob_io.read_blob_text("self_model", "self_model.json")
+            user_block = self_model_json or ""
+
+            op_ctx = OperationExecutionContext(
+                operation_id="reflect_self",
+                user_slug=_runtime_user_slug() or "default",
+                workspace_id="default",
+                surface_type="personal_dm",
+                user_block=user_block,
+                conversation_excerpt_markdown=_build_recent_thread_excerpt(limit=6) or "",
+                blob_io=self._blob_io,
+                complete_fn=self._complete_fn,
+                resolve_model_fn=self._resolve_model_fn,
+                introspect_fn=self._introspect_fn,
+            )
+            result = await execute_operation("reflect_self", op_ctx)
+            if result.output_text:
+                self._blob_io.write_blob_text(
+                    "self_model", "reflection.json", result.output_text
+                )
+            return result
+        except Exception:
+            logger.debug("reflection failed in slice", exc_info=True)
+            return None
 
     def _compact_thread(
         self,
@@ -3472,6 +3663,30 @@ def _build_workshop_context_bundle(
     )
 
 
+def _build_introspect_callable() -> Callable[[], Awaitable[Any]] | None:
+    """Build the introspect callable wired into TurnHooks.
+
+    Returns an async callable that delegates to
+    ``kernel.introspect.gather_introspection`` with the host's warm MCP
+    pool, turn log path, token usage path, and process start time. Returns
+    ``None`` when introspection cannot be wired (no pool, no log path).
+    """
+    from kernel.introspect import gather_introspection
+
+    session_started = _RUNTIME_STATE.get("session_started_utc")
+    process_start = session_started if isinstance(session_started, datetime) else None
+
+    async def _introspect() -> Any:
+        return await gather_introspection(
+            mcp_pool=_runtime_warm_pool(),
+            log_path=_runtime_log_path(),
+            token_usage_path=_runtime_token_usage_path(),
+            process_start_time=process_start,
+        )
+
+    return _introspect
+
+
 def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
     """Build TurnHooks wired to Little Lisa callbacks and memory operations.
 
@@ -3494,6 +3709,10 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         max_thread_entries=_resolve_int_env(
             _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES
         ),
+        blob_io=LocalBlobIO(_runtime_data_dir()),
+        complete_fn=_complete_live,
+        resolve_model_fn=_resolve_model,
+        introspect_fn=_build_introspect_callable(),
     )
 
     persisted_last_slice_finished_at: float | None = None
@@ -3508,6 +3727,7 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         complete_live=_complete_live,
         resolve_model=_resolve_model,
         execute_tool=_execute_tool,
+        introspect=_build_introspect_callable(),
     )
 
     async def _execute_operation(
@@ -3620,6 +3840,10 @@ async def _run_explicit_slice_command(*, message: str) -> str:
         max_thread_entries=_resolve_int_env(
             _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES
         ),
+        blob_io=LocalBlobIO(_runtime_data_dir()),
+        complete_fn=_complete_live,
+        resolve_model_fn=_resolve_model,
+        introspect_fn=_build_introspect_callable(),
     )
     policy = SlicePolicy(
         mode=SliceMode.EXPLICIT,
@@ -3666,6 +3890,63 @@ async def _run_explicit_slice_command(*, message: str) -> str:
     )
 
 
+async def _run_self_command(*, message: str) -> str:
+    """Run the full self-model pipeline: scan, reflect, and render.
+
+    Triggers an explicit slice (which runs self-model scan + reflection when
+    budget allows), then renders the persisted artifacts via
+    ``_render_debug_self``.
+    """
+    import time as _time  # noqa: PLC0415
+
+    from kernel.slice import SliceMode, SlicePolicy  # noqa: PLC0415
+
+    _, explicit_budget_ms = _resolve_slice_tuning()
+    provider = LittleLisaStateProvider(
+        thread_path=_runtime_thread_path(),
+        max_thread_entries=_resolve_int_env(
+            _LITTLE_LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES
+        ),
+        blob_io=LocalBlobIO(_runtime_data_dir()),
+        complete_fn=_complete_live,
+        resolve_model_fn=_resolve_model,
+        introspect_fn=_build_introspect_callable(),
+    )
+    self_budget_ms = max(explicit_budget_ms, 10_000)
+    policy = SlicePolicy(
+        mode=SliceMode.EXPLICIT,
+        budget_ms=self_budget_ms,
+    )
+    started = _time.monotonic()
+    outcome = await provider.slice(ctx=None, policy=policy)
+    elapsed_ms = (_time.monotonic() - started) * 1000.0
+    persisted = _RUNTIME_STATE.setdefault("last_slice_finished_at", None)
+    if isinstance(persisted, (int, float)):
+        _RUNTIME_STATE["last_slice_finished_at"] = _time.monotonic()
+
+    response_text = _render_debug_self()
+    slice_note = (
+        f"\n\n---\nSlice: {outcome.work_items_completed} item(s) in {elapsed_ms:.0f} ms. "
+        f"Notes: {'; '.join(outcome.notes) if outcome.notes else 'none'}."
+    )
+    response_text = response_text + slice_note
+
+    timestamp_utc = datetime.now(UTC).isoformat()
+    context: dict[str, Any] = {
+        "timestamp_utc": timestamp_utc,
+        "raw_message": message,
+        "mode_id": "self",
+        "handoff": "self-model command",
+    }
+    _set_last_turn_context(context)
+    _append_turn_log(context=context, response_text=response_text)
+    _append_thread_entry(mode_id="self", query=message, response_text=response_text)
+    _RUNTIME_STATE["current_mode_id"] = "self"
+    _RUNTIME_STATE["current_stage_id"] = "-"
+    _RUNTIME_STATE["next_model_id"] = "-"
+    return response_text
+
+
 async def handle_message(message: str) -> str:
     """Route one console message through the kernel turn runner.
 
@@ -3705,6 +3986,8 @@ async def _dispatch_host_command(
         return _handle_simple_command(message, "settings", _render_runtime_settings())
     if lowered in {"/consolidate", "consolidate", "/slice", "slice"}:
         return await _run_explicit_slice_command(message=message)
+    if lowered == "/self":
+        return await _run_self_command(message=message)
     if lowered.startswith("/debug"):
         return _handle_debug_command(stripped, message)
     return None
@@ -4244,7 +4527,7 @@ async def _run_repl() -> None:
     _print_startup_banner()
     console.print(
         Panel(
-            "Type /help, /help capabilities, /debug context, "
+            "Type /help, /help capabilities, /self, /debug context, "
             "/debug frontdoor, /search <query>, /deep <query>, or /quit.",
             title="Session",
             border_style=STYLE_BORDER_SESSION,
@@ -4737,6 +5020,7 @@ def _memory_list_fn(
             "memory.list",
             {
                 "user_slug": user_slug,
+                "surface_id": surface_id,
                 "limit": limit,
             },
         )
@@ -4834,9 +5118,9 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
             #   memory_tier → metadata      (daily / weekly / long_term)
             add_arg_map = lambda a: {
                 "text": a.get("content", ""),
-                "user_id": a.get("user_slug", "default"),
-                "agent_id": a.get("mode_id", _runtime_current_mode_id()) or "default",
-                "app_id": a.get("surface_id", "little-lisa") or "little-lisa",
+                "user_id": _runtime_user_slug() or "default",
+                "agent_id": _runtime_current_mode_id() or "default",
+                "app_id": "little-lisa",
                 "metadata": {
                     "workspace_id": a.get("workspace_id", "default"),
                     "memory_scope": a.get("memory_scope", "personal"),
@@ -4851,7 +5135,7 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
                 "query": a.get("query", ""),
                 "filters": {
                     "AND": [
-                        {"user_id": a.get("user_slug", _runtime_user_slug() or "default")},
+                        {"user_id": _runtime_user_slug() or "default"},
                         {"agent_id": _runtime_current_mode_id() or "default"},
                         {"app_id": "little-lisa"},
                     ]
@@ -4862,7 +5146,7 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
             list_arg_map = lambda a: {
                 "filters": {
                     "AND": [
-                        {"user_id": a.get("user_slug", _runtime_user_slug() or "default")},
+                        {"user_id": _runtime_user_slug() or "default"},
                         {"agent_id": _runtime_current_mode_id() or "default"},
                         {"app_id": "little-lisa"},
                     ]
@@ -4890,6 +5174,7 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
         "properties": {
             "query": {"type": "string"},
             "user_slug": {"type": "string", "default": "default"},
+            "surface_id": {"type": "string", "default": ""},
             "limit": {"type": "integer", "default": 5},
         },
         "required": ["query"],
