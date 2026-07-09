@@ -1,7 +1,7 @@
 """Tests for the four Kernel-as-MCP servers (Part 4).
 
 Covers tool registration and dispatch for lisa-context, lisa-memory,
-lisa-search, and lisa-surf using FastMCP's in-process ``call_tool`` API.
+and lisa-search using FastMCP's in-process ``call_tool`` API.
 """
 
 from __future__ import annotations
@@ -174,59 +174,6 @@ def test_search_lists_tools() -> None:
     tools = asyncio_get_tools(mcp)
     names = {t.name for t in tools}
     assert {"web_search", "web_search_configured"} <= names
-
-
-# ── lisa_surf ───────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_surf_url_creates_session() -> None:
-    from lisa_sdk.lisa_surf.server import mcp
-
-    result = await mcp.call_tool(
-        "surf_url",
-        {
-            "workspace_id": "ws-1",
-            "surface_id": "surf-1",
-            "url": "https://example.com",
-        },
-    )
-    parsed = json.loads(_tool_text(result))
-    assert parsed["url"] == "https://example.com"
-    assert "session_id" in parsed
-    assert parsed["summary"]  # non-empty
-
-
-@pytest.mark.asyncio
-async def test_surf_get_session_no_blob_io() -> None:
-    from lisa_sdk.lisa_surf.server import mcp
-
-    result = await mcp.call_tool(
-        "get_session_state",
-        {"workspace_id": "ws-1", "surface_id": "surf-1"},
-    )
-    parsed = json.loads(_tool_text(result))
-    assert parsed["session"] is None
-
-
-@pytest.mark.asyncio
-async def test_surf_flush_session_no_blob_io() -> None:
-    from lisa_sdk.lisa_surf.server import mcp
-
-    result = await mcp.call_tool(
-        "flush_session",
-        {"workspace_id": "ws-1", "surface_id": "surf-1"},
-    )
-    parsed = json.loads(_tool_text(result))
-    assert parsed["deleted"] is False
-
-
-def test_surf_lists_three_tools() -> None:
-    from lisa_sdk.lisa_surf.server import mcp
-
-    tools = asyncio_get_tools(mcp)
-    names = {t.name for t in tools}
-    assert {"surf_url", "flush_session", "get_session_state"} <= names
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────

@@ -321,7 +321,6 @@ async def execute_declarative_operation(
                             event_bus=ctx.event_bus,
                             blob_io=ctx.blob_io,
                             state_provider=ctx.state_provider,
-                            browser_automation=ctx.browser_automation,
                         ),
                     )
                     if tool_name and tool_name not in used_tools:

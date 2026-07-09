@@ -17,9 +17,6 @@ from kernel.models import (
     UnifiedState,
 )
 
-if TYPE_CHECKING:
-    from lisa_sdk.models import SurfSessionState
-
 
 @runtime_checkable
 class BlobIO(Protocol):
@@ -51,20 +48,6 @@ class BlobIO(Protocol):
         content_type: str | None = None,
     ) -> bool: ...
 
-    def read_surf_workflow_session(
-        self, workspace_id: str, surface_id: str
-    ) -> SurfSessionState | None: ...
-    def write_surf_workflow_session(self, session: SurfSessionState) -> bool: ...
-    def delete_surf_workflow_session(self, workspace_id: str, surface_id: str) -> bool: ...
-
-    def read_surf_screenshot(self, blob_path: str) -> bytes | None: ...
-    def write_surf_trace(
-        self,
-        trace_json: str,
-        screenshots: dict[str, bytes],
-        artifact_prefix: str,
-    ) -> bool: ...
-
     def read_user_context_overlays(self) -> dict[str, Any] | None: ...
     def write_user_context_overlays(self, overlays: dict[str, Any]) -> bool: ...
 
@@ -82,18 +65,6 @@ class BlobIO(Protocol):
 
     def read_memory_snapshot(self) -> dict[str, Any] | None: ...
     def write_memory_snapshot(self, snapshot: dict[str, Any]) -> bool: ...
-
-
-@runtime_checkable
-class BrowserAutomation(Protocol):
-    """Protocol for Playwright-based browser automation.
-
-    Host apps (e.g. ``app.browser_session``) implement this protocol and inject
-    it into ``ToolExecutionContext.browser_automation``.
-    """
-
-    async def surf_url(self, url: str) -> Any: ...
-    def flush(self) -> bool: ...
 
 
 @runtime_checkable

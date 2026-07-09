@@ -158,7 +158,6 @@ class ToolExecutionContext(BaseModel):
     event_bus: Any = Field(default=None, exclude=True)
     blob_io: Any = Field(default=None, exclude=True)
     state_provider: Any = Field(default=None, exclude=True)
-    browser_automation: Any = Field(default=None, exclude=True)
 
 
 class ToolResult(BaseModel):
@@ -219,7 +218,6 @@ class OperationExecutionContext(BaseModel):
     memory_recall_default_limit: int | None = Field(default=None, exclude=True)
     blob_io: Any = Field(default=None, exclude=True)
     state_provider: Any = Field(default=None, exclude=True)
-    browser_automation: Any = Field(default=None, exclude=True)
     workflow_turn_runner: Any = Field(default=None, exclude=True)
     workflow_session_factory: Any = Field(default=None, exclude=True)
     preferred_model_id: str | None = Field(default=None, exclude=True)

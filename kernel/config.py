@@ -91,11 +91,6 @@ class Settings(BaseSettings):
 
     sdk_content_roots: str = ""
     workspace_id_fallback: str = "default"
-    surf_enabled: bool = True
-    surf_session_ttl_minutes: int = 30
-    surf_session_max_pages: int = 12
-    surf_session_max_links: int = 12
-    surf_session_max_commentary_entries: int = 20
     web_search_api_key: SecretStr = SecretStr("")
     web_search_endpoint: str = "https://api.search.brave.com/res/v1/web/search"
     web_search_count: int = 5
@@ -194,10 +189,6 @@ class Settings(BaseSettings):
         return value.split("#", 1)[0].strip()
 
     @field_validator(
-        "surf_session_ttl_minutes",
-        "surf_session_max_pages",
-        "surf_session_max_links",
-        "surf_session_max_commentary_entries",
         "workshop_max_context_tokens",
         "workshop_default_shared_context_tokens",
         "workshop_default_per_panel_context_tokens",

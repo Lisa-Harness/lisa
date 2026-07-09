@@ -43,13 +43,7 @@ class Settings(BaseSettings):
     workspace_id_fallback: str = "default"
     state_container: str = "lisa-state"
     intel_inbox_container: str = "lisa-intel-inbox"
-    surf_container: str = "lisa-surf"
     memory_recall_final_limit: int = 8
-    surf_enabled: bool = True
-    surf_session_ttl_minutes: int = 30
-    surf_session_max_pages: int = 12
-    surf_session_max_links: int = 12
-    surf_session_max_commentary_entries: int = 20
     web_search_api_key: SecretStr = SecretStr("")
     web_search_endpoint: str = "https://api.search.brave.com/res/v1/web/search"
     web_search_count: int = 5
@@ -65,10 +59,6 @@ class Settings(BaseSettings):
         "heartbeat_interval_seconds",
         "external_signal_timeout_seconds",
         "memory_recall_final_limit",
-        "surf_session_ttl_minutes",
-        "surf_session_max_pages",
-        "surf_session_max_links",
-        "surf_session_max_commentary_entries",
         mode="before",
     )
     @classmethod

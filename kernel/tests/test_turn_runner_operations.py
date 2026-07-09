@@ -288,7 +288,7 @@ async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
                 ),
                 MCPToolSpec(
                     server_id="test",
-                    name="test.surf_url",
+                    name="test.browse_url",
                     description="Browse a URL",
                     input_schema={"type": "object", "properties": {}},
                 ),
@@ -317,7 +317,7 @@ async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
     # memory.add (synthetic) is allowed; namespaced MCP tools are not
     assert "memory.add" in tool_names
     assert "test.delete_all_memories" not in tool_names
-    assert "test.surf_url" not in tool_names
+    assert "test.browse_url" not in tool_names
 
 
 # ── tools_authoritative mode ─────────────────────────────────────────
@@ -398,7 +398,7 @@ async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
                 ),
                 MCPToolSpec(
                     server_id="test",
-                    name="test.surf_url",
+                    name="test.browse_url",
                     description="Browse a URL",
                     input_schema={"type": "object", "properties": {}},
                 ),
@@ -434,4 +434,4 @@ async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
     tool_names = {t["function"]["name"] for t in captured_tools if "function" in t}
     # No MCP tools should appear (allowed_tool_ids is empty + authoritative)
     assert "memory.add" not in tool_names
-    assert "test.surf_url" not in tool_names
+    assert "test.browse_url" not in tool_names

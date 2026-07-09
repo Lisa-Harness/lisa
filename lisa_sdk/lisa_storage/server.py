@@ -3,7 +3,7 @@
 Exposes 22 tools, one per ``BlobIO`` protocol method. The filesystem root is
 ``{data_dir}/storage/`` with container subdirectories. Path-safe resolution
 prevents ``..`` traversal. Bytes use base64 encoding over the wire;
-structured types (``UnifiedState``, ``SurfSessionState``, overlays, etc.)
+structured types (``UnifiedState``, overlays, etc.)
 serialize as JSON strings.
 
 ``--readonly`` disables all write tools (they return
@@ -20,7 +20,6 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from kernel.models import UnifiedState
-from lisa_sdk.models import SurfSessionState
 
 logger = logging.getLogger(__name__)
 
@@ -149,76 +148,6 @@ async def write_blob_text(
         return _readonly_error()
     target = _resolve_container_path(container, blob_path)
     target.write_text(payload, encoding="utf-8")
-    return json.dumps({"ok": True})
-
-
-# ── Surf workflow sessions ──────────────────────────────────────────────────
-
-
-@mcp.tool()
-async def read_surf_workflow_session(workspace_id: str, surface_id: str) -> str:
-    """Read a surf session state JSON, or ``null`` if absent."""
-    target = _resolve_container_path("surf_sessions", f"{workspace_id}/{surface_id}.json")
-    if not target.is_file():
-        return "null"
-    return target.read_text(encoding="utf-8")
-
-
-@mcp.tool()
-async def write_surf_workflow_session(session_json: str) -> str:
-    """Write a surf session state from a JSON string."""
-    if _readonly:
-        return _readonly_error()
-    session = SurfSessionState.model_validate_json(session_json)
-    target = _resolve_container_path(
-        "surf_sessions", f"{session.workspace_id}/{session.surface_id}.json"
-    )
-    target.write_text(session.model_dump_json(), encoding="utf-8")
-    return json.dumps({"ok": True})
-
-
-@mcp.tool()
-async def delete_surf_workflow_session(workspace_id: str, surface_id: str) -> str:
-    """Delete a surf session. Returns ``{"ok": true}`` even if absent."""
-    if _readonly:
-        return _readonly_error()
-    target = _resolve_container_path("surf_sessions", f"{workspace_id}/{surface_id}.json")
-    if target.is_file():
-        target.unlink()
-    return json.dumps({"ok": True})
-
-
-# ── Surf screenshots / traces ───────────────────────────────────────────────
-
-
-@mcp.tool()
-async def read_surf_screenshot(blob_path: str) -> str:
-    """Read a screenshot as base64, or ``null`` if absent."""
-    target = _resolve_container_path("surf_screenshots", blob_path)
-    if not target.is_file():
-        return "null"
-    return base64.b64encode(target.read_bytes()).decode("ascii")
-
-
-@mcp.tool()
-async def write_surf_trace(
-    trace_json: str,
-    screenshots_json: str,
-    artifact_prefix: str,
-) -> str:
-    """Write a surf trace and its screenshots.
-
-    ``screenshots_json`` is a JSON object mapping screenshot name to base64
-    bytes. Screenshots are written under ``surf_screenshots/{artifact_prefix}/``.
-    """
-    if _readonly:
-        return _readonly_error()
-    trace_target = _resolve_container_path("surf_traces", f"{artifact_prefix}.json")
-    trace_target.write_text(trace_json, encoding="utf-8")
-    screenshots = json.loads(screenshots_json)
-    for name, b64 in screenshots.items():
-        shot_target = _resolve_container_path("surf_screenshots", f"{artifact_prefix}/{name}")
-        shot_target.write_bytes(base64.b64decode(b64))
     return json.dumps({"ok": True})
 
 

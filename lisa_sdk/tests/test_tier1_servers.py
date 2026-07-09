@@ -97,7 +97,7 @@ async def test_storage_lists_all_blobio_tools(storage_env: Path) -> None:
 
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
-    # All 23 BlobIO protocol methods
+    # All 18 BlobIO protocol methods (surf removed; replaced by Playwright MCP)
     expected = {
         "read_unified_state",
         "write_unified_state",
@@ -105,11 +105,6 @@ async def test_storage_lists_all_blobio_tools(storage_env: Path) -> None:
         "write_blob_bytes",
         "read_blob_text",
         "write_blob_text",
-        "read_surf_workflow_session",
-        "write_surf_workflow_session",
-        "delete_surf_workflow_session",
-        "read_surf_screenshot",
-        "write_surf_trace",
         "read_user_context_overlays",
         "write_user_context_overlays",
         "read_surface_context_overlays",

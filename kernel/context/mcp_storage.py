@@ -6,7 +6,7 @@ per-call stdio session (open → call → close), matching the
 ``MCPMemoryClient`` pattern.
 
 Bytes use base64 encoding over the wire. Structured types
-(``UnifiedState``, ``SurfSessionState``) serialize as JSON strings and are
+(``UnifiedState``) serialize as JSON strings and are
 deserialized via ``model_validate`` on the adapter side.
 """
 
@@ -160,78 +160,6 @@ class MCPBlobIO:
                     "blob_path": blob_path,
                     "payload": payload,
                     "content_type": content_type or "text/plain",
-                },
-            )
-        )
-        return _parse_ok(text)
-
-    # ── Surf workflow sessions ─────────────────────────────────────────────
-
-    def read_surf_workflow_session(self, workspace_id: str, surface_id: str) -> Any:
-        import asyncio
-
-        from lisa_sdk.models import SurfSessionState
-
-        text = asyncio.run(
-            self._call(
-                "read_surf_workflow_session",
-                {"workspace_id": workspace_id, "surface_id": surface_id},
-            )
-        )
-        if not text or text == "null":
-            return None
-        return SurfSessionState.model_validate_json(text)
-
-    def write_surf_workflow_session(self, session: Any) -> bool:
-        import asyncio
-
-        text = asyncio.run(
-            self._call(
-                "write_surf_workflow_session",
-                {"session_json": session.model_dump_json()},
-            )
-        )
-        return _parse_ok(text)
-
-    def delete_surf_workflow_session(self, workspace_id: str, surface_id: str) -> bool:
-        import asyncio
-
-        text = asyncio.run(
-            self._call(
-                "delete_surf_workflow_session",
-                {"workspace_id": workspace_id, "surface_id": surface_id},
-            )
-        )
-        return _parse_ok(text)
-
-    # ── Surf screenshots / traces ───────────────────────────────────────────
-
-    def read_surf_screenshot(self, blob_path: str) -> bytes | None:
-        import asyncio
-
-        text = asyncio.run(self._call("read_surf_screenshot", {"blob_path": blob_path}))
-        if not text or text == "null":
-            return None
-        return base64.b64decode(text)
-
-    def write_surf_trace(
-        self,
-        trace_json: str,
-        screenshots: dict[str, bytes],
-        artifact_prefix: str,
-    ) -> bool:
-        import asyncio
-
-        screenshots_json = json.dumps(
-            {k: base64.b64encode(v).decode("ascii") for k, v in screenshots.items()}
-        )
-        text = asyncio.run(
-            self._call(
-                "write_surf_trace",
-                {
-                    "trace_json": trace_json,
-                    "screenshots_json": screenshots_json,
-                    "artifact_prefix": artifact_prefix,
                 },
             )
         )

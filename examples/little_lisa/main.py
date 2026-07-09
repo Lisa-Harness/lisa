@@ -689,14 +689,6 @@ def _tool_catalog() -> dict[str, ToolDefinition]:
             tool_id="web_search",
             description="Stub web search tool for Little Lisa.",
         ),
-        "surf_browser": ToolDefinition(
-            tool_id="surf_browser",
-            description="Stub browser automation tool for Little Lisa.",
-        ),
-        "surf_session_flush": ToolDefinition(
-            tool_id="surf_session_flush",
-            description="Stub surf-session flush tool for Little Lisa.",
-        ),
     }
 
 
@@ -3270,11 +3262,13 @@ class TurnResultAdapter:
 def _build_mcp_tool_servers() -> list[Any]:
     """Build the approved MCP server registry and compile it to configs.
 
-    Registers all first-party MCP servers (context, memory, operations,
-    search, surf, guard, storage, content) with the launch policy registry,
-    then compiles them into ``MCPClientConfig`` entries for ``MCPToolPool``.
+    Registers all MCP servers (first-party and external) from
+    ``mcp_servers.yaml`` with the launch policy registry, then compiles
+    them into ``MCPClientConfig`` entries for ``MCPToolPool``. The
+    ``warm`` / ``required`` / ``disabled`` launch policy is declared in
+    YAML — no hardcoded server list or warm_ids set remains.
 
-    Memory is now an MCP feature: ``lisa-memory`` serves the three core
+    Memory is an MCP feature: ``lisa-memory`` serves the three core
     memory calls, Mem0 (or any other HTTP/stdio memory server) serves the
     same three plus its full surface, and the generic ``memory.*`` synthetic
     aliases route to the default backend via the pool. No in-process memory
@@ -3284,89 +3278,58 @@ def _build_mcp_tool_servers() -> list[Any]:
     console_scripts entry points (``.venv/Scripts/lisa-*.exe``) with zero
     subprocess overhead. No ``uv`` resolution needed.
 
-    Warm vs cold: ``lisa-content`` and ``lisa-context`` are marked
-    ``warm=True, required=True`` so the host owns a long-lived pool for
-    them (spawned once at init, reused across turns). The other servers
-    stay cold (per-turn spawn/teardown); their tool surface is discovered
-    fresh each time.
+    Warm vs cold: servers marked ``warm: true`` in the manifest are
+    spawned eagerly at pool ``start()`` and kept alive across turns (with
+    bounded retry and event-driven restart). Servers with ``warm: false``
+    (default) are cold — they are **not** connected at start; they are
+    lazily connected on first ``list_tools`` or ``call_tool`` that needs
+    them.
     """
     warm_configs, cold_configs = _compile_mcp_configs()
     return [*warm_configs, *cold_configs]
 
 
 def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
-    """Compile first-party MCP servers and split them into (warm, cold).
+    """Compile all MCP servers from mcp_servers.yaml and split into (warm, cold).
 
-    Warm configs get ``warm=True, required=True`` applied post-compile via
-    ``dataclasses.replace`` — the launch policy layer (``MCPServerSpec`` /
-    ``MCPServerRegistry``) stays pure and runtime-agnostic. Only
-    ``lisa-content`` and ``lisa-context`` are warm; both are load-bearing
-    for every turn, so they are ``required=True`` (startup failure fails
-    the turn loudly after bounded retry).
+    All servers (first-party and external) are declared in
+    ``mcp_servers.yaml`` with their ``warm`` / ``required`` / ``disabled``
+    launch policy. The manifest loader produces ``MCPServerSpec`` entries
+    that carry these fields; the compiler passes them through to
+    ``MCPClientConfig``. No hardcoded server list or ``warm_ids`` set
+    remains — adding, removing, disabling, or changing a server's launch
+    policy is a YAML edit.
 
-    External servers declared in ``mcp_servers.yaml`` are loaded here and
-    registered alongside first-party specs. The manifest's memory-backend
-    designation (which server_id backs the generic ``memory.*`` aliases)
-    is stashed on runtime state for ``_build_turn_hooks`` to consume.
+    The manifest's memory-backend designation (which server_id backs the
+    generic ``memory.*`` aliases) is stashed on runtime state for
+    ``_build_turn_hooks`` to consume.
     """
-    from dataclasses import replace  # noqa: PLC0415
-
     from kernel.mcp_launch.compiler import compile_registry  # noqa: PLC0415
-    from kernel.mcp_launch.policy import (  # noqa: PLC0415
-        EnvPolicy,
-        MCPServerRegistry,
-        MCPServerSpec,
-        RuntimeKind,
-        ToolPolicy,
-    )
+    from kernel.mcp_launch.policy import MCPServerRegistry  # noqa: PLC0415
     from kernel.mcp_launch.server_manifest import load_mcp_server_manifest  # noqa: PLC0415
+
+    # Make FRAMEWORK_ROOT available for ${FRAMEWORK_ROOT} expansion in
+    # the manifest's path-like fields (venv_dir, command_path, etc.).
+    os.environ.setdefault("FRAMEWORK_ROOT", str(FRAMEWORK_ROOT))
 
     registry = MCPServerRegistry()
     data_dir = str(_runtime_data_dir())
     workspace_root = str(FRAMEWORK_ROOT)
 
-    # All first-party servers run as console_scripts entry points from the
-    # project venv. The entry_point defaults to server_id (e.g. "lisa-context"),
-    # which matches the [project.scripts] name in mcp_server/pyproject.toml.
-    venv_dir = str(FRAMEWORK_ROOT / ".venv")
-
-    first_party_servers = [
-        ("lisa-context", "lisa_context.server", True),
-        ("lisa-memory", "lisa_memory.server", True),
-        ("lisa-search", "lisa_search.server", False),
-        ("lisa-surf", "lisa_surf.server", False),
-        ("lisa-guard", "lisa_guard.server", False),
-        ("lisa-storage", "lisa_storage.server", True),
-        ("lisa-content", "lisa_content.server", False),
-    ]
-
-    for server_id, _module, _supports_readonly in first_party_servers:
-        tool_policy = ToolPolicy()
-        registry.register(
-            MCPServerSpec(
-                server_id=server_id,
-                runtime_kind=RuntimeKind.VENV_BIN,
-                venv_dir=venv_dir,
-                env_policy=EnvPolicy(inherit_parent=True),
-                tool_policy=tool_policy,
-            )
-        )
-
-    # External servers from mcp_servers.yaml (Mem0, Letta, …). These are
-    # registered into the same approval registry so the launch policy layer
-    # gates them identically to first-party servers. The manifest also
-    # carries the memory-backend designation used by _build_turn_hooks.
-    external_specs, memory_config = load_mcp_server_manifest(
+    # All servers (first-party + external) from mcp_servers.yaml. The
+    # manifest loader honors ``disabled: true`` by skipping entries, and
+    # parses ``warm`` / ``required`` onto the spec. The compiler passes
+    # them through to MCPClientConfig.
+    specs, memory_config = load_mcp_server_manifest(
         FRAMEWORK_ROOT / "examples" / "little_lisa" / "mcp_servers.yaml"
     )
-    for spec in external_specs:
+    for spec in specs:
         registry.register(spec)
     _RUNTIME_STATE["memory_config"] = memory_config
 
     compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
-    warm_ids = {"lisa-context", "lisa-memory", "lisa-content"}
-    warm = [replace(c, warm=True, required=True) for c in compiled if c.server_id in warm_ids]
-    cold = [c for c in compiled if c.server_id not in warm_ids]
+    warm = [c for c in compiled if c.warm]
+    cold = [c for c in compiled if not c.warm]
     return warm, cold
 
 
@@ -4618,9 +4581,9 @@ def _initialize_runtime(
 def _build_warm_mcp_pool() -> None:
     """Build (but do NOT start) the long-lived warm MCP server pool.
 
-    ``lisa-content`` and ``lisa-context`` are compiled as warm configs and
-    collected into an :class:`MCPToolPool` here. The pool is **started**
-    later, inside the host's long-lived event loop, by
+    Servers marked ``warm: true`` in ``mcp_servers.yaml`` are compiled as
+    warm configs and collected into an :class:`MCPToolPool` here. The pool
+    is **started** later, inside the host's long-lived event loop, by
     :func:`astart_warm_mcp_pool`.
 
     Why split build and start: ``stdio_client`` (an anyio async context
@@ -4638,11 +4601,11 @@ def _build_warm_mcp_pool() -> None:
     warm_configs, cold_configs = _compile_mcp_configs()
     # Build the long-lived pool with ALL configs (warm + cold). The ``warm``
     # flag on each config controls eager-vs-lazy start inside pool.start():
-    # warm servers connect eagerly with retry; cold servers (e.g. mem0) connect
-    # best-effort at start and, if that fails (no MEM0_API_KEY), stay down until
-    # a server-scoped alias (memory.add → mem0) lazily starts them on first call.
+    # warm servers connect eagerly with retry; cold servers are NOT connected
+    # at start — they are lazily connected on first list_tools or call_tool.
     # Keeping cold configs in the pool is required so server-scoped dispatch
-    # (_call_tool_scoped) can resolve ``server_id="mem0"`` against _configs.
+    # (_call_tool_scoped) and lazy connect (_ensure_connected) can resolve
+    # ``server_id="mem0"`` against _configs.
     pool = MCPToolPool([*warm_configs, *cold_configs])
     _RUNTIME_STATE["mcp_tool_pool"] = pool
     _RUNTIME_STATE["mcp_cold_configs"] = cold_configs
