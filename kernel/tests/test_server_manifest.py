@@ -316,7 +316,7 @@ servers:
     venv_dir: "/fake/venv"
     warm: true
     required: true
-  - server_id: lisa-search
+  - server_id: lisa-guard
     runtime_kind: venv_bin
     venv_dir: "/fake/venv"
 """,
@@ -326,7 +326,7 @@ servers:
     context = next(s for s in specs if s.server_id == "lisa-context")
     assert context.warm is True
     assert context.required is True
-    search = next(s for s in specs if s.server_id == "lisa-search")
+    search = next(s for s in specs if s.server_id == "lisa-guard")
     assert search.warm is False
     assert search.required is False
 

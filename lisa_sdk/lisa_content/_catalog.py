@@ -24,8 +24,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "build_mode_catalog_json",
     "build_operation_catalog_json",
+    "build_tool_catalog_json",
     "resolve_mode_roots",
     "resolve_operation_roots",
+    "resolve_tool_roots",
 ]
 
 # ── Path helpers ────────────────────────────────────────────────────────────
@@ -35,6 +37,12 @@ def resolve_mode_roots(all_roots: list[Path]) -> list[Path]:
     """Return existing ``modes/`` subdirectories under all content roots."""
 
     return _resolve_subdir_roots(all_roots, "modes")
+
+
+def resolve_tool_roots(all_roots: list[Path]) -> list[Path]:
+    """Return existing ``tools/`` subdirectories under all content roots."""
+
+    return _resolve_subdir_roots(all_roots, "tools")
 
 
 def resolve_operation_roots(all_roots: list[Path]) -> list[Path]:
@@ -448,3 +456,109 @@ def _parse_string_mapping(raw: Any) -> dict[str, str]:
     for key, value in raw.items():
         result[str(key)] = str(value)
     return result
+
+
+# ── Tool catalog ─────────────────────────────────────────────────────────────
+
+_TOOL_METADATA_SUFFIX = ".tool.yml"
+
+
+def build_tool_catalog_json(tool_roots: list[Path]) -> str:
+    """Scan tool roots and return a JSON-serializable internal tool catalog.
+
+    Returns a JSON string encoding ``dict[str, dict]`` where each value is a
+    tool definition dict. The kernel deserializes this into ``ToolDefinition``
+    objects, importing the implementation module locally using the
+    ``module_path`` field (same pattern as operations).
+
+    Tools are runtime-only (``.py`` + ``.tool.yml`` pairs). Declarative tools
+    are not supported in this iteration.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for root in tool_roots:
+        if not root.is_dir():
+            continue
+        for tool_id, tool_dict in _load_tools_from_root(root).items():
+            merged[tool_id] = tool_dict  # last wins
+    return json.dumps(merged)
+
+
+def _load_tools_from_root(root: Path) -> dict[str, dict[str, Any]]:
+    """Load all internal tools from one root directory."""
+
+    catalog: dict[str, dict[str, Any]] = {}
+    for py_path in _iter_tool_module_files(root):
+        yml_path = _resolve_tool_metadata_path(py_path)
+        if not yml_path.is_file():
+            logger.warning("Skipping tool module '%s': missing '%s'", py_path, yml_path.name)
+            continue
+        tool_dict = _load_runtime_tool(py_path, yml_path, root)
+        if tool_dict is not None:
+            catalog[tool_dict["tool_id"]] = tool_dict
+    return catalog
+
+
+def _iter_tool_module_files(tools_dir: Path) -> list[Path]:
+    """Return sorted Python tool modules (``.py`` files with a ``.tool.yml`` sibling)."""
+
+    runtime_modules: list[Path] = []
+    for module_path in tools_dir.rglob("*.py"):
+        if module_path.name == "__init__.py" or "__pycache__" in module_path.parts:
+            continue
+        runtime_modules.append(module_path)
+    return sorted(runtime_modules)
+
+
+def _resolve_tool_metadata_path(py_path: Path) -> Path:
+    """Resolve the ``.tool.yml`` metadata path for a tool module.
+
+    Supports two conventions:
+    - ``my_tool.py`` → ``my_tool.tool.yml`` (explicit suffix, preferred)
+    - ``my_tool.py`` → ``my_tool.yml`` (legacy fallback)
+    """
+
+    explicit = py_path.with_suffix(".tool.yml")
+    if explicit.is_file():
+        return explicit
+    return py_path.with_suffix(".yml")
+
+
+def _load_runtime_tool(
+    py_path: Path,
+    yml_path: Path,
+    root: Path,
+) -> dict[str, Any] | None:
+    """Load one Python runtime tool from its ``.tool.yml`` metadata."""
+
+    try:
+        metadata = yaml.safe_load(yml_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        logger.warning("Invalid YAML in '%s': %s", yml_path, exc)
+        return None
+
+    if not isinstance(metadata, dict):
+        return None
+
+    tool_id = metadata.get("tool_id")
+    if not tool_id or not isinstance(tool_id, str):
+        return None
+
+    module_path = str(metadata.get("module_path", "") or "").strip()
+    if not module_path:
+        module_path = _infer_module_path(py_path, root)
+
+    mode_allowlist_raw = metadata.get("mode_allowlist")
+    mode_allowlist: list[str] | None
+    if mode_allowlist_raw is None:
+        mode_allowlist = None
+    else:
+        mode_allowlist = [str(m) for m in mode_allowlist_raw]
+
+    return {
+        "tool_id": tool_id,
+        "description": str(metadata.get("description", "") or ""),
+        "mode_allowlist": mode_allowlist,
+        "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 3) or 3),
+        "timeout_seconds": int(metadata.get("timeout_seconds", 30) or 30),
+        "module_path": module_path,
+    }

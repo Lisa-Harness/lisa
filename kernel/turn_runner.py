@@ -43,6 +43,7 @@ from kernel.models import (
     OperationExecutionContext,
     OperationResult,
     SurfaceContext,
+    ToolExecutionContext,
     ToolResult,
 )
 from kernel.operations.registry import (
@@ -50,6 +51,7 @@ from kernel.operations.registry import (
     execute_operation,
     get_operation_catalog,
 )
+from kernel.openai_function_tools import build_strict_openai_function_tool
 from kernel.provider_core import StreamedChunk, StreamedCompletion, _aggregate_streamed_chunks
 from kernel.seams.protocols import (
     ContentRegistry,
@@ -69,6 +71,7 @@ from kernel.slice import (
     resolve_mode_for_trigger,
 )
 from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
+from kernel.tools.registry import execute_tool, get_tool_catalog
 from kernel.tools.schema_translator import mcp_tool_to_openai_function, openai_tool_call_to_mcp
 
 logger = logging.getLogger(__name__)
@@ -229,7 +232,7 @@ class TurnHooks:
     mcp_tool_servers: list[MCPClientConfig] = field(default_factory=list)
     """MCP server configurations to spawn for tool discovery and dispatch.
     Default: empty list (no external tools). The host declares which MCP
-    servers to run (e.g. ``lisa-context``, ``lisa-search``)
+    servers to run (e.g. ``lisa-context``, ``lisa-guard``)
     and the kernel manages the subprocess lifecycle via ``MCPToolPool``.
 
     The kernel speaks MCP tool schema internally. At the provider edge,
@@ -668,12 +671,21 @@ async def _run_turn_inner(
     _log = logger_override or logger
 
     async def _mcp_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
-        """Bridge OperationExecutionContext.execute_tool_fn to MCPToolPool.
+        """Bridge OperationExecutionContext.execute_tool_fn to in-process tools.
 
-        Declarative operations that need to call tools route through here.
-        The MCP pool owns the actual dispatch; we convert MCPToolResult to
-        ToolResult for compatibility with the operation execution contract.
+        Catalog-driven: if the tool_id is in the internal tool catalog
+        (discovered from packs), dispatch in-process via
+        ``tools.registry.execute_tool``. Otherwise fall through to the MCP
+        pool. Declarative operations that need to call tools route through
+        here.
         """
+        from kernel.tools.registry import get_tool_catalog as _get_tools
+
+        tool_catalog = _get_tools()
+        definition = tool_catalog.get(tool_id)
+        if definition is not None and definition.implementation_module is not None:
+            tool_ctx = _to_tool_context(tool_id, _ctx)
+            return await execute_tool(tool_id, tool_ctx)
 
         params = getattr(_ctx, "parameters", {}) or {}
         mcp_result = await pool.call_tool(tool_id, params)
@@ -801,6 +813,7 @@ async def _run_turn_inner(
         for spec in mcp_tools
     ]
     operation_catalog = get_operation_catalog()
+    tool_catalog = get_tool_catalog()
     tool_schemas.extend(
         build_operation_tool_schemas(
             mode_id,
@@ -809,6 +822,10 @@ async def _run_turn_inner(
             ),
         )
     )
+    # Advertise in-process (pack-contributed) tools alongside MCP tools and
+    # operations. Pack tools are dispatched in-process via execute_tool, not
+    # through the MCP pool.
+    tool_schemas.extend(_build_in_process_tool_schemas(mode_config))
 
     # Resolve preferred model
     preferred_model_id = (
@@ -917,6 +934,21 @@ async def _run_turn_inner(
                     )
                     op_result = await exec_op(tool_name, op_ctx)
                     tool_output = _stringify_result(op_result)
+                elif tool_name in tool_catalog:
+                    # In-process tool (pack-contributed): dispatch via the
+                    # tool registry, which imports the implementation module
+                    # and calls execute(ctx) under a timeout.
+                    tool_def = tool_catalog[tool_name]
+                    if tool_def.implementation_module is not None:
+                        tool_ctx = _to_tool_context(tool_name, ctx)
+                        tool_ctx.parameters = tool_arguments
+                        tool_result = await execute_tool(tool_name, tool_ctx)
+                        tool_output = tool_result.output_text or (
+                            _serialize_tool_json(tool_result) if tool_result.output_json else "Done"
+                        )
+                    else:
+                        mcp_result = await pool.call_tool(tool_name, tool_arguments)
+                        tool_output = mcp_result.output_text or "Done"
                 else:
                     mcp_result = await pool.call_tool(tool_name, tool_arguments)
                     tool_output = mcp_result.output_text or "Done"
@@ -1061,6 +1093,69 @@ def _stringify_result(result: OperationResult) -> str:
 
         return _json.dumps(output_json)
     return "Done"
+
+
+def _serialize_tool_json(result: ToolResult) -> str:
+    """Serialize a ToolResult's output_json for model consumption."""
+    import json as _json
+
+    return _json.dumps(result.output_json)
+
+
+def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:
+    """Build a ToolExecutionContext from an OperationExecutionContext or similar.
+
+    Carries the ambient identity/scope fields so pack-contributed tools can
+    use them without a host-specific context object.
+    """
+    return ToolExecutionContext(
+        tool_id=tool_id,
+        workspace_id=getattr(ctx, "workspace_id", "default"),
+        user_id=getattr(ctx, "user_id", ""),
+        user_slug=getattr(ctx, "user_slug", "default"),
+        surface_type=getattr(ctx, "surface_type", "personal_dm"),
+        surface_id=getattr(ctx, "surface_id", ""),
+        memory_scope=getattr(ctx, "memory_scope", "personal"),
+        mode_id=getattr(ctx, "mode_id", ""),
+        query=getattr(ctx, "query", ""),
+        parameters=getattr(ctx, "parameters", {}) or {},
+        event_bus=getattr(ctx, "event_bus", None),
+        state_provider=getattr(ctx, "state_provider", None),
+    )
+
+
+def _build_in_process_tool_schemas(
+    mode_config: Any,
+) -> list[dict[str, Any]]:
+    """Build OpenAI tool schemas for in-process (pack-contributed) tools.
+
+    Advertises tools from the internal tool catalog (discovered from packs)
+    that are allowed for the current mode. Mirrors
+    ``build_operation_tool_schemas`` but for the tool catalog.
+    """
+    catalog = get_tool_catalog()
+    if not catalog:
+        return []
+
+    allowed_tool_ids: set[str] | None = None
+    if mode_config and (mode_config.allowed_tool_ids or mode_config.tools_authoritative):
+        allowed_tool_ids = set(mode_config.allowed_tool_ids)
+
+    schemas: list[dict[str, Any]] = []
+    for tool_id, definition in catalog.items():
+        if allowed_tool_ids is not None and tool_id not in allowed_tool_ids:
+            continue
+        if definition.mode_allowlist is not None and mode_config:
+            if mode_config.mode_id not in definition.mode_allowlist:
+                continue
+        schemas.append(
+            build_strict_openai_function_tool(
+                name=tool_id,
+                description=definition.description or f"Execute {tool_id}.",
+                parameters_schema=definition.parameters_schema,
+            )
+        )
+    return schemas
 
 
 def _coerce_non_negative_int(value: Any) -> int:

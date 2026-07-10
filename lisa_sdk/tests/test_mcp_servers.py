@@ -1,7 +1,7 @@
 """Tests for the four Kernel-as-MCP servers (Part 4).
 
 Covers tool registration and dispatch for lisa-context, lisa-memory,
-and lisa-search using FastMCP's in-process ``call_tool`` API.
+and lisa-guard using FastMCP's in-process ``call_tool`` API.
 """
 
 from __future__ import annotations
@@ -131,49 +131,6 @@ async def test_context_lists_broker_tool() -> None:
     names = {t.name for t in tools}
     assert "broker_context" in names
     assert "add_memory" not in names
-
-
-# ── lisa_search ─────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_search_web_search_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    from lisa_sdk.lisa_search import server as search_server
-    from lisa_sdk.lisa_search import web_search as ws
-
-    monkeypatch.setattr(ws, "is_configured", lambda: False)
-
-    async def _raise(query: str, client: Any = None) -> Any:
-        raise RuntimeError("not configured")
-
-    monkeypatch.setattr(ws, "search", _raise)
-    monkeypatch.setattr(search_server, "_web_search", ws)
-    from lisa_sdk.lisa_search.server import mcp
-
-    result = await mcp.call_tool("web_search", {"query": "test"})
-    assert "not configured" in _tool_text(result)
-
-
-@pytest.mark.asyncio
-async def test_search_configured_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    from lisa_sdk.lisa_search import server as search_server
-    from lisa_sdk.lisa_search import web_search as ws
-
-    monkeypatch.setattr(ws, "is_configured", lambda: True)
-    monkeypatch.setattr(search_server, "_web_search", ws)
-    from lisa_sdk.lisa_search.server import mcp
-
-    result = await mcp.call_tool("web_search_configured", {})
-    parsed = json.loads(_tool_text(result))
-    assert parsed["configured"] is True
-
-
-def test_search_lists_tools() -> None:
-    from lisa_sdk.lisa_search.server import mcp
-
-    tools = asyncio_get_tools(mcp)
-    names = {t.name for t in tools}
-    assert {"web_search", "web_search_configured"} <= names
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────

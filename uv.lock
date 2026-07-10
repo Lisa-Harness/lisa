@@ -11,13 +11,13 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "lisa-ext-clarity",
     "lisa-ext-cloudflare",
     "lisa-ext-github",
     "lisa-ext-stripe",
     "lisa-framework-workspace",
     "lisa-kernel",
     "lisa-pack-core",
+    "lisa-pack-search",
     "lisa-sdk",
     "little-lisa",
 ]
@@ -864,38 +864,6 @@ wheels = [
 ]
 
 [[package]]
-name = "lisa-ext-clarity"
-version = "0.1.0"
-source = { editable = "sdk_extensions/clarity" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "lisa-kernel" },
-    { name = "lisa-sdk" },
-    { name = "pydantic" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp", specifier = ">=3.9.0" },
-    { name = "lisa-kernel", editable = "kernel" },
-    { name = "lisa-sdk", editable = "lisa_sdk" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "lisa-ext-cloudflare"
 version = "0.1.0"
 source = { editable = "sdk_extensions/cloudflare" }
@@ -990,12 +958,12 @@ name = "lisa-framework-workspace"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "lisa-ext-clarity" },
     { name = "lisa-ext-cloudflare" },
     { name = "lisa-ext-github" },
     { name = "lisa-ext-stripe" },
     { name = "lisa-kernel" },
     { name = "lisa-pack-core" },
+    { name = "lisa-pack-search" },
     { name = "lisa-sdk" },
     { name = "little-lisa" },
     { name = "rich" },
@@ -1016,12 +984,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "lisa-ext-clarity", editable = "sdk_extensions/clarity" },
     { name = "lisa-ext-cloudflare", editable = "sdk_extensions/cloudflare" },
     { name = "lisa-ext-github", editable = "sdk_extensions/github" },
     { name = "lisa-ext-stripe", editable = "sdk_extensions/stripe" },
     { name = "lisa-kernel", editable = "kernel" },
     { name = "lisa-pack-core", editable = "sdk_packs/core" },
+    { name = "lisa-pack-search", editable = "sdk_packs/search" },
     { name = "lisa-sdk", editable = "lisa_sdk" },
     { name = "little-lisa", editable = "examples/little_lisa" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
@@ -1101,6 +1069,30 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-search"
+version = "0.1.0"
+source = { editable = "sdk_packs/search" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
 ]
 provides-extras = ["dev"]

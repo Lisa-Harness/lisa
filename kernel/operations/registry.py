@@ -62,16 +62,40 @@ class OperationExecutionError(RuntimeError):
 
 def is_known_tool(tool_id: str) -> bool:
     """Return True if the given ID corresponds to a registered internal tool."""
-    if _get_tool_catalog_fn is None:
-        return False
-    return tool_id in _get_tool_catalog_fn()
+    from kernel.tools.registry import get_tool_catalog
+
+    return tool_id in get_tool_catalog()
 
 
 def register_tool_catalog_callback(get_tool_catalog_fn: Callable[[], dict[str, Any]]) -> None:
-    """Inject the tool catalog callback used for operation validation and tool schemas."""
+    """Inject the tool catalog callback used for operation validation and tool schemas.
+
+    .. deprecated::
+        Tools are now discovered from content packs via ``register_tool_mcp``.
+        This callback is retained as a thin delegator for hosts that still
+        register a hand-built tool catalog. The live tool catalog lives in
+        ``kernel.tools.registry``; this function stashes the callback and
+        re-validates the operation catalog against it.
+    """
     global _get_tool_catalog_fn  # noqa: PLW0603
     _get_tool_catalog_fn = get_tool_catalog_fn
     validate_operation_catalog(_OPERATION_CATALOG)
+
+
+def _resolve_tool_catalog() -> dict[str, Any]:
+    """Return the effective tool catalog, preferring the MCP-loaded registry.
+
+    Falls back to the legacy host callback if the tool registry is empty
+    (e.g. a host that hasn't called ``register_tool_mcp`` yet).
+    """
+    from kernel.tools.registry import get_tool_catalog
+
+    mcp_catalog = get_tool_catalog()
+    if mcp_catalog:
+        return mcp_catalog
+    if _get_tool_catalog_fn is not None:
+        return _get_tool_catalog_fn()
+    return {}
 
 
 def register_operation_mcp(config: MCPClientConfig) -> None:
@@ -91,11 +115,11 @@ def register_operation_mcp(config: MCPClientConfig) -> None:
 
 
 def _build_tool_schemas(tool_ids: list[str]) -> list[dict[str, Any]]:
-    """Return filtered tool schemas for one operation from the injected tool catalog."""
-    if _get_tool_catalog_fn is None or not tool_ids:
+    """Return filtered tool schemas for one operation from the effective tool catalog."""
+    if not tool_ids:
         return []
 
-    catalog = _get_tool_catalog_fn()
+    catalog = _resolve_tool_catalog()
     schemas: list[dict[str, Any]] = []
     for tool_id in tool_ids:
         definition = catalog.get(tool_id)
@@ -133,7 +157,14 @@ def _wrap_declarative_tool_executor(
 
 def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
     """Validate the operation catalog for basic invariants."""
-    tool_catalog = _get_tool_catalog_fn() if _get_tool_catalog_fn is not None else None
+    tool_catalog = _resolve_tool_catalog() if _get_tool_catalog_fn is not None else None
+    # Also validate against the MCP-loaded tool registry even when no legacy
+    # callback is registered, so pack-contributed tools satisfy tool_id refs.
+    if tool_catalog is None:
+        from kernel.tools.registry import get_tool_catalog
+
+        mcp_tools = get_tool_catalog()
+        tool_catalog = mcp_tools if mcp_tools else None
     for operation_id, definition in catalog.items():
         if operation_id != definition.operation_id:
             raise OperationValidationError(

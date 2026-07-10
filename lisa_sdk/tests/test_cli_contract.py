@@ -19,7 +19,6 @@ import pytest
 ALL_SERVERS: list[tuple[str, str, bool]] = [
     ("lisa_sdk.lisa_context.server", "lisa-context", True),
     ("lisa_sdk.lisa_memory.server", "lisa-memory", True),
-    ("lisa_sdk.lisa_search.server", "lisa-search", False),
     ("lisa_sdk.lisa_guard.server", "lisa-guard", False),
     ("lisa_sdk.lisa_content.server", "lisa-content", False),
 ]

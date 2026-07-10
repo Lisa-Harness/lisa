@@ -14,7 +14,6 @@ import pytest
 from kernel.model_manifest import ModelManifest
 from kernel.operations.registry import OperationExecutionError
 from kernel.turn_runner import TurnResult
-from lisa_sdk.models import WebSearchResponse, WebSearchResult
 from pydantic import BaseModel
 from sdk_packs.core.operations.memory import synthesize_learning
 
@@ -755,20 +754,6 @@ async def test_handle_message_surfaces_frontdoor_and_mode_token_context(
     assert completion["total_tokens"] == 150
 
 
-@pytest.mark.asyncio
-async def test_web_search_tool_returns_friendly_error_when_unconfigured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(little_lisa, "web_search_is_configured", lambda: False)
-
-    result = await little_lisa.execute_little_lisa_tool(
-        "web_search",
-        SimpleNamespace(query="cloud cost", parameters={"query": "cloud cost"}),
-    )
-
-    assert result.error == "Web search is not configured. Set WEB_SEARCH_API_KEY to enable it."
-
-
 def test_resolve_model_supports_designations_and_concrete_ids() -> None:
     front_door_model_id = little_lisa.resolve_little_lisa_model("front-door").model_id
     default_model_id = little_lisa.resolve_little_lisa_model("default").model_id
@@ -1324,37 +1309,6 @@ async def test_complete_live_preserves_non_json_structured_output_for_fallback(
     )
 
     assert response.content.startswith("- The bot memory architecture")
-
-
-@pytest.mark.asyncio
-async def test_web_search_tool_returns_grounded_payload_when_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def _fake_web_search(query: str) -> WebSearchResponse:
-        return WebSearchResponse(
-            query=query,
-            generated_at="2026-05-29T00:00:00+00:00",
-            results=[
-                WebSearchResult(
-                    name="Cloud Cost Guardrails",
-                    url="https://example.com/guardrails",
-                    snippet="Use budgets and alerts for spend guardrails.",
-                    display_url="example.com/guardrails",
-                )
-            ],
-        )
-
-    monkeypatch.setattr(little_lisa, "web_search_is_configured", lambda: True)
-    monkeypatch.setattr(little_lisa, "web_search", _fake_web_search)
-
-    result = await little_lisa.execute_little_lisa_tool(
-        "web_search",
-        SimpleNamespace(query="cloud cost", parameters={"query": "cloud cost"}),
-    )
-
-    assert result.error == ""
-    assert result.output_json["response"]["query"] == "cloud cost"
-    assert result.output_json["response"]["results"][0]["url"] == "https://example.com/guardrails"
 
 
 @pytest.mark.asyncio

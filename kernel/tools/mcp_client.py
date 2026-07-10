@@ -536,7 +536,7 @@ class MCPToolPool:
         (``config.warm=False``) are **not** connected here — they are
         lazily connected on first ``list_tools`` or ``call_tool`` that
         needs them. This keeps servers like ``mem0`` (no API key) or
-        ``lisa-search`` (only needed in some modes) from spawning until
+        ``lisa-guard`` (only needed in some modes) from spawning until
         first use.
         """
 

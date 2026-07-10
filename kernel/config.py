@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import SecretStr, field_validator
+from pydantic import field_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
@@ -91,10 +91,6 @@ class Settings(BaseSettings):
 
     sdk_content_roots: str = ""
     workspace_id_fallback: str = "default"
-    web_search_api_key: SecretStr = SecretStr("")
-    web_search_endpoint: str = "https://api.search.brave.com/res/v1/web/search"
-    web_search_count: int = 5
-    web_search_market: str = "US"
     workshop_max_context_tokens: int = 2800
     workshop_default_shared_context_tokens: int = 700
     workshop_default_per_panel_context_tokens: int = 500

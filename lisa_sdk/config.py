@@ -7,7 +7,7 @@ on the kernel's internal config surface or the private app's broader settings.
 
 from __future__ import annotations
 
-from pydantic import SecretStr, field_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from sdk_extensions._settings import build_owned_settings_sources
@@ -44,10 +44,6 @@ class Settings(BaseSettings):
     state_container: str = "lisa-state"
     intel_inbox_container: str = "lisa-intel-inbox"
     memory_recall_final_limit: int = 8
-    web_search_api_key: SecretStr = SecretStr("")
-    web_search_endpoint: str = "https://api.search.brave.com/res/v1/web/search"
-    web_search_count: int = 5
-    web_search_market: str = "US"
 
     @staticmethod
     def _strip_inline_comment(value: object) -> object:

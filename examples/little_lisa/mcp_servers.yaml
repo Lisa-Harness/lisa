@@ -94,10 +94,6 @@ servers:
     required: true
 
   # ── First-party servers (cold — lazily connected on first use) ──
-  - server_id: lisa-search
-    runtime_kind: venv_bin
-    venv_dir: "${FRAMEWORK_ROOT}/.venv"
-
   - server_id: lisa-guard
     runtime_kind: venv_bin
     venv_dir: "${FRAMEWORK_ROOT}/.venv"

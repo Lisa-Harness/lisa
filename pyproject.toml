@@ -10,6 +10,7 @@ dependencies = [
     "lisa-ext-github",
     "lisa-ext-stripe",
     "lisa-pack-core",
+    "lisa-pack-search",
     "little-lisa",
     "rich>=13.7.0",
     "typer>=0.12.3",
@@ -38,6 +39,7 @@ members = [
     "sdk_extensions/github",
     "sdk_extensions/stripe",
     "sdk_packs/core",
+    "sdk_packs/search",
     "examples/little_lisa",
 ]
 
@@ -48,6 +50,7 @@ lisa-ext-cloudflare = { workspace = true }
 lisa-ext-github = { workspace = true }
 lisa-ext-stripe = { workspace = true }
 lisa-pack-core = { workspace = true }
+lisa-pack-search = { workspace = true }
 little-lisa = { workspace = true }
 
 [tool.pytest.ini_options]

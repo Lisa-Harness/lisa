@@ -57,8 +57,6 @@ class ExtensionRuntimeContext:
     signal_connector_executor: Any = None
     data_source_executor: Any = None
     data_source_hooks: Any = None
-    web_search: Callable[[str], Awaitable[Any]] | None = None
-    render_search_results: Callable[[Any], str] | None = None
     complete_with_profile: Callable[..., Awaitable[str]] | None = None
     apply_state_updates: StateArtifactUpdater | None = None
     execute_stage_chain: StageChainExecutor | None = None

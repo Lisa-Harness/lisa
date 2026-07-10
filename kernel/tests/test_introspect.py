@@ -107,16 +107,16 @@ async def test_gather_introspection_mcp_pool_health() -> None:
     mock_pool = MagicMock()
     mock_pool.configs = [
         MagicMock(server_id="lisa_memory", warm=True),
-        MagicMock(server_id="lisa_search", warm=True),
+        MagicMock(server_id="lisa-guard", warm=True),
         MagicMock(server_id="mem0", warm=False),
     ]
     mock_pool.warm_server_ids.return_value = ["lisa_memory"]
-    mock_pool.warm_failed_ids.return_value = ["lisa_search"]
+    mock_pool.warm_failed_ids.return_value = ["lisa-guard"]
 
     snapshot = await gather_introspection(mcp_pool=mock_pool)
     assert len(snapshot.mcp_pool_health) == 3
     assert snapshot.mcp_pool_health["lisa_memory"].status == "warm"
-    assert snapshot.mcp_pool_health["lisa_search"].status == "failed"
+    assert snapshot.mcp_pool_health["lisa-guard"].status == "failed"
     assert snapshot.mcp_pool_health["mem0"].status == "cold"
 
 

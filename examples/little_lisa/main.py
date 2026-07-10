@@ -163,9 +163,9 @@ from kernel.operations.registry import (  # noqa: E402
     execute_operation,
     get_operation_catalog,
     register_operation_mcp,
-    register_tool_catalog_callback,
 )
 from kernel.slice import SliceOutcome  # noqa: E402
+from kernel.tools.registry import register_tool_mcp  # noqa: E402
 from kernel.token_usage import (  # noqa: E402
     TokenUsageTelemetryHandler,
     build_token_usage_event,
@@ -176,8 +176,6 @@ from kernel.tools.mcp_client import (  # noqa: E402
     MCPToolPool,
 )
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn  # noqa: E402
-from lisa_sdk.lisa_search.web_search import is_configured as web_search_is_configured  # noqa: E402
-from lisa_sdk.lisa_search.web_search import search as web_search  # noqa: E402
 
 try:
     from .model_manifest import load_model_manifest
@@ -637,19 +635,25 @@ FrontDoorRouteDecision = RouteDecision
 
 
 def _tool_catalog() -> dict[str, ToolDefinition]:
-    """Return stub tool definitions required to validate installed public operations."""
+    """Return the host-side tool catalog override (empty — packs provide tools).
 
-    return {
-        "web_search": ToolDefinition(
-            tool_id="web_search",
-            description="Stub web search tool for Little Lisa.",
-        ),
-    }
+    Tools are now discovered from content packs via ``register_tool_mcp``.
+    This stub is kept as a legacy callback seam for hosts that need to
+    inject hand-built tools; Little Lisa returns an empty dict so all
+    tools come from the pack-contributed MCP catalog.
+    """
+
+    return {}
 
 
 def get_little_lisa_tool_catalog() -> dict[str, ToolDefinition]:
     """Return the Little Lisa tool catalog for diagnostics and harnesses."""
 
+    from kernel.tools.registry import get_tool_catalog  # noqa: PLC0415
+
+    pack_catalog = get_tool_catalog()
+    if pack_catalog:
+        return pack_catalog
     return _tool_catalog()
 
 
@@ -694,7 +698,7 @@ def setup_framework() -> None:
     # content MCP. validate_workflow_catalog calls _validate_mode_operation_bindings
     # which needs the operation callbacks registered before it can validate.
     register_operation_mcp(content_config)
-    register_tool_catalog_callback(_tool_catalog)
+    register_tool_mcp(content_config)
     register_operation_callbacks(get_operation_catalog, execute_operation)
     register_content_mcp(content_config)
     # Wire the MCPContentRegistry as the content registry for context frames.
@@ -761,7 +765,7 @@ def _runtime_host_log_path() -> Path:
 def _configure_root_logging() -> None:
     """Own the stdlib root logger so FastMCP's RichHandler stops spamming stderr.
 
-    ``FastMCP.__init__`` (imported eagerly via ``lisa_sdk.lisa_search`` etc.)
+    ``FastMCP.__init__`` (imported eagerly via ``lisa_sdk.lisa_content`` etc.)
     calls ``configure_logging``, which installs a ``RichHandler`` on the
     root logger at INFO with a stderr console. That makes every
     ``logger.info(...)`` in the host process render to stderr with Rich's
@@ -2850,33 +2854,14 @@ async def _complete_live_openai_compatible(
 
 
 async def _execute_tool(tool_id: str, ctx: Any) -> ToolResult:
-    """Return deterministic local tool results without external API calls."""
+    """Fallback tool executor for host-owned tools.
 
-    if tool_id == "web_search":
-        query = str(
-            getattr(ctx, "parameters", {}).get("query") or getattr(ctx, "query", "")
-        ).strip()
-        if not web_search_is_configured():
-            logger.debug("web_search tool invoked but not configured")
-            return ToolResult(
-                tool_id=tool_id,
-                error="Web search is not configured. Set WEB_SEARCH_API_KEY to enable it.",
-            )
-        if not query:
-            logger.debug("web_search tool invoked with empty query")
-            return ToolResult(tool_id=tool_id, error="web_search requires a query.")
-        try:
-            response = await web_search(query)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("web_search tool failed: %s: %s", type(exc).__name__, exc)
-            return ToolResult(
-                tool_id=tool_id,
-                error=f"Web search failed: {type(exc).__name__}: {exc}",
-            )
-        return ToolResult(
-            tool_id=tool_id,
-            output_json={"response": response.model_dump(mode="json")},
-        )
+    Pack-contributed tools are dispatched in-process via the tool registry
+    (``kernel.tools.registry.execute_tool``) — the turn loop and operation
+    ``execute_tool_fn`` both go catalog-first. This stub is only reached
+    for host-owned tools that are not in any pack catalog.
+    """
+
     logger.debug("tool %s is stubbed in Little Lisa", tool_id)
     return ToolResult(tool_id=tool_id, output_text=f"{tool_id} is stubbed in Little Lisa.")
 
@@ -5355,13 +5340,6 @@ def _verify_check_memory_backend() -> tuple[str, str]:
     )
 
 
-def _verify_check_web_search() -> tuple[str, str]:
-    """Check web search is configured (optional)."""
-    if web_search_is_configured():
-        return _VERIFY_PASS, "Web search configured"
-    return _VERIFY_WARN, "Web search not configured (optional — set WEB_SEARCH_API_KEY)"
-
-
 def _verify_check_provider_keys() -> tuple[str, str]:
     """Check which provider API keys are configured (redacted)."""
     parts: list[str] = []
@@ -5491,7 +5469,6 @@ def _verify_command(
         ("Pack catalog", *_verify_check_pack_catalog()),
         ("Provider keys", *_verify_check_provider_keys()),
         ("Ollama", *_verify_check_ollama()),
-        ("Web search", *_verify_check_web_search()),
         ("Memory backend", *_verify_check_memory_backend()),
         ("Paths", *_verify_check_paths()),
     ]

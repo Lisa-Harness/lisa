@@ -22,9 +22,6 @@ lisa_sdk.lisa_context.server.main  # noqa: Vulture
 # reason: console_script target — lisa-memory MCP server
 lisa_sdk.lisa_memory.server.main  # noqa: Vulture
 
-# reason: console_script target — lisa-search MCP server
-lisa_sdk.lisa_search.server.main  # noqa: Vulture
-
 # reason: console_script target — lisa-guard MCP server
 lisa_sdk.lisa_guard.server.main  # noqa: Vulture
 
@@ -70,10 +67,10 @@ sdk_packs.core.operations.self_model.self_model.execute  # noqa: Vulture
 # string dispatch at kernel/context/mcp_catalog.py:321.
 # ──────────────────────────────────────────────────────────────────────────
 # reason: response-format model loaded via _resolve_model_class string dispatch
-sdk_packs.core.operations.research.discussion_briefing.DiscussionBriefingStructuredOutput  # noqa: Vulture
+sdk_packs.search.operations.research.discussion_briefing.DiscussionBriefingStructuredOutput  # noqa: Vulture
 
 # reason: response-format model loaded via _resolve_model_class string dispatch
-sdk_packs.core.operations.research.web_search.WebSearchStructuredOutput  # noqa: Vulture
+sdk_packs.search.operations.research.web_search.WebSearchStructuredOutput  # noqa: Vulture
 
 # reason: response-format model loaded via _resolve_model_class string dispatch
 sdk_packs.core.operations.research.workshop_run.WorkshopSynthesis  # noqa: Vulture

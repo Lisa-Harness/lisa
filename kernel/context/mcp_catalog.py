@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from kernel.models import (
     DefaultIntentBridge,
     OperationDefinition,
+    ToolDefinition,
     WorkflowModeConfig,
     WorkflowStageConfig,
     WorkshopBudgetConfig,
@@ -34,7 +35,7 @@ from kernel.tools.mcp_client import MCPClientConfig
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["MCPModeCatalog", "MCPOperationCatalog"]
+__all__ = ["MCPModeCatalog", "MCPOperationCatalog", "MCPToolCatalog"]
 
 
 def _extract_text(result: Any) -> str:
@@ -321,4 +322,112 @@ def _import_operation_module(module_path: str) -> Any:
         return importlib.import_module(module_path)
     except Exception:  # pylint: disable=broad-except
         logger.warning("Failed to import operation module '%s'", module_path, exc_info=True)
+        return None
+
+
+# ── Tool catalog ──────────────────────────────────────────────────────────────
+
+
+class MCPToolCatalog:
+    """Internal tool catalog backed by the ``lisa-content`` MCP server.
+
+    Calls ``list_tools`` and deserializes the JSON response into
+    ``ToolDefinition`` objects. The implementation module is imported locally
+    using the ``module_path`` field returned by the server — same pattern as
+    ``MCPOperationCatalog``.
+    """
+
+    def __init__(self, config: MCPClientConfig) -> None:
+        self._params = StdioServerParameters(
+            command=config.command,
+            args=config.args,
+            env=config.env,
+            cwd=config.cwd,
+        )
+        self._catalog: dict[str, ToolDefinition] | None = None
+
+    def _call(self, tool: str, arguments: dict[str, Any]) -> str:
+        async def _run() -> str:
+            async with stdio_client(self._params) as (read, write_stream):
+                async with ClientSession(read, write_stream) as session:
+                    await session.initialize()
+                    result = await session.call_tool(tool, arguments=arguments)
+                    return _extract_text(result)
+
+        # Check for a running event loop BEFORE constructing the coroutine
+        # to avoid the "coroutine was never awaited" RuntimeWarning.
+        try:
+            asyncio.get_running_loop()
+            in_loop = True
+        except RuntimeError:
+            in_loop = False
+
+        if in_loop:
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(asyncio.run, _run())
+                return future.result()
+        return asyncio.run(_run())
+
+    def get_tool_catalog(self) -> dict[str, ToolDefinition]:
+        """Return the tool catalog, loading it from the MCP server on first call."""
+        if self._catalog is not None:
+            return self._catalog
+        raw_json = self._call("list_tools", {})
+        raw_catalog = json.loads(raw_json) if raw_json else {}
+        self._catalog = {
+            tool_id: _deserialize_tool(tool_dict)
+            for tool_id, tool_dict in raw_catalog.items()
+        }
+        return self._catalog
+
+    def invalidate(self) -> None:
+        """Clear the cached catalog so the next call reloads from the server."""
+        self._catalog = None
+
+
+def _deserialize_tool(data: dict[str, Any]) -> ToolDefinition:
+    """Deserialize one tool dict from JSON into a ``ToolDefinition``.
+
+    Tools are runtime-only: the implementation module is imported locally
+    using ``module_path``, and ``Parameters`` is pulled from the module for
+    the OpenAI function-tool schema.
+    """
+
+    module_path = data.get("module_path", "")
+    implementation_module: Any = None
+    if module_path:
+        implementation_module = _import_tool_module(module_path)
+
+    parameters_schema = None
+    if implementation_module is not None:
+        parameters_schema = getattr(implementation_module, "Parameters", None)
+
+    mode_allowlist_raw = data.get("mode_allowlist")
+    mode_allowlist: list[str] | None
+    if mode_allowlist_raw is None:
+        mode_allowlist = None
+    else:
+        mode_allowlist = [str(m) for m in mode_allowlist_raw]
+
+    return ToolDefinition(
+        tool_id=data["tool_id"],
+        description=data.get("description", ""),
+        parameters_schema=parameters_schema,
+        mode_allowlist=mode_allowlist,
+        max_calls_per_turn=data.get("max_calls_per_turn", 3),
+        timeout_seconds=data.get("timeout_seconds", 30),
+        module_path=module_path,
+        implementation_module=implementation_module,
+    )
+
+
+def _import_tool_module(module_path: str) -> Any:
+    """Import and return one tool implementation module."""
+
+    try:
+        return importlib.import_module(module_path)
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("Failed to import tool module '%s'", module_path, exc_info=True)
         return None

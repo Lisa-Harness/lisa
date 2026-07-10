@@ -5,6 +5,7 @@ Tools:
 - ``list_content_roots`` — list all discovered content root paths
 - ``list_modes`` — return the full workflow mode catalog as JSON
 - ``list_operations`` — return the full operation catalog as JSON
+- ``list_tools`` — return the full internal tool catalog as JSON
 - ``invalidate_cache`` — clear the file-read cache
 - ``invalidate_catalog`` — clear the mode/operation catalog caches
 
@@ -33,8 +34,10 @@ from kernel.content_roots import (
 from lisa_sdk.lisa_content._catalog import (
     build_mode_catalog_json,
     build_operation_catalog_json,
+    build_tool_catalog_json,
     resolve_mode_roots,
     resolve_operation_roots,
+    resolve_tool_roots,
 )
 
 logger = logging.getLogger(__name__)
@@ -117,6 +120,20 @@ async def list_operations() -> str:
     """
     operation_roots = resolve_operation_roots(_all_roots())
     return build_operation_catalog_json(operation_roots)
+
+
+@mcp.tool()
+async def list_tools() -> str:
+    """Return the full internal tool catalog as JSON.
+
+    Scans all discovered content roots for ``tools/`` subdirectories,
+    discovers ``.py``+``.tool.yml`` runtime tool definitions, and returns a
+    JSON object mapping ``tool_id`` to a serializable tool definition dict.
+    The kernel imports the implementation module locally using the
+    ``module_path`` field (same pattern as operations).
+    """
+    tool_roots = resolve_tool_roots(_all_roots())
+    return build_tool_catalog_json(tool_roots)
 
 
 @mcp.tool()

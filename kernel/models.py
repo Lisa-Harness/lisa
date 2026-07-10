@@ -170,7 +170,13 @@ class ToolResult(BaseModel):
 
 
 class ToolDefinition(BaseModel):
-    """Catalog metadata for one internal tool exposed through app.tool_registry."""
+    """Catalog metadata for one internal tool discovered from content packs.
+
+    Tools are the capability layer (distinct from operations, which are the
+    behavior layer). Like operations, tools are discovered from ``tools/``
+    subdirectories in content packs via the ``lisa-content`` MCP server and
+    dispatched in-process through the imported ``implementation_module``.
+    """
 
     tool_id: str
     description: str = ""
@@ -178,6 +184,7 @@ class ToolDefinition(BaseModel):
     mode_allowlist: list[str] | None = None
     max_calls_per_turn: int = Field(default=3)
     timeout_seconds: int = Field(default=30)
+    module_path: str = ""
     implementation_module: Any = Field(default=None, exclude=True)
 
 
