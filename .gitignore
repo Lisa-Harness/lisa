@@ -16,7 +16,7 @@ build/
 venv/
 
 # Artifacts
-examples/little_lisa/artifacts/
+hosts/little_lisa/artifacts/
 
 # IDE
 .vscode/
