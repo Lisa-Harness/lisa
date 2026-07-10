@@ -9,7 +9,7 @@ description: >
   code review, security review, privacy review, review changes, review last
   commit, review HEAD, review fixup, pre-merge review, review PR, review
   session changes.
-tools: [vscode/resolveMemoryFileUri, vscode/runCommand, vscode/askQuestions, execute, read, edit/createDirectory, edit/createFile, search, web, 'github/*', todo]
+tools: [vscode, execute, read, agent, ms-python.python, edit, search, web, browser, todo]
 user-invocable: true
 argument-hint: "Explicit commit range or list of SHAs to review"
 ---
@@ -44,10 +44,18 @@ git diff --stat     <range>          # file-level summary
 git diff            <range>          # full unified diff
 ```
 
-Collect all three outputs. If the diff exceeds 1,000 lines, process files in
-groups defined by top-level directory (e.g., src/, tests/, docs/). Complete
-all four review dimensions for each group before moving to the next, and label
-each group clearly in the output (e.g., "Group 1 — src/").
+Collect all three outputs. If the diff output is empty (e.g., merge commit or
+empty commit), report to the user: "The resolved range produced no diff
+output. The commits may be merge commits or empty. No code review findings can
+be generated." and stop.
+
+If the diff exceeds 1,000 lines, process files in groups defined by top-level
+directory (e.g., src/, tests/, docs/) to keep context manageable. This
+grouping governs only your **processing order** — you may evaluate all four
+dimensions for one group before moving to the next — but the final review
+output must follow the flat template in Step 5 (one section per dimension
+across all files, not repeated dimension headers per group). When grouping,
+note each file's group inline within the dimension sections if helpful.
 
 ## Step 3 — Read workspace instructions
 
@@ -65,10 +73,10 @@ cite file names, diff line numbers, and exact code snippets. Do not skip a
 dimension because the change looks small; a one-line change can carry a
 critical privacy or security issue.
 
-If a file in the diff contains no text changes (binary file, rename-only, or
-mode-only change), note this under the file entry and skip the four-dimension
-evaluation for that file. Instead, flag under Security whether the binary file
-is a new third-party artifact that should be verified.
+**Special case — non-text files:** For binary, rename-only, or mode-only
+changes, skip Dimensions 1–3. For Dimension 4 (Security only): flag if the
+binary is a new third-party artifact that should be verified. Then continue to
+the next file.
 
 ### Dimension 1 — Completeness
 
@@ -77,10 +85,13 @@ is a new third-party artifact that should be verified.
   the corresponding requirement cannot be verified from the diff alone, note
   that explicitly.
 - Are edge cases, failure modes, and boundary conditions handled?
-- Does every new or materially changed public function/method have a docstring
-  (module summary, `Args:`, `Returns:`, `Raises:` as applicable)?
-- Does every new or materially changed callable have a corresponding test
-  (happy path + each documented `Raises:` mode)?
+- Does every new public function/method, or any public function/method where
+  the diff modifies its signature, return value, raised exceptions, or more than
+  3 lines of its body, have a docstring (module summary, `Args:`, `Returns:`,
+  `Raises:` as applicable)?
+- Does every new callable, or any callable where the diff modifies its
+  signature, return value, raised exceptions, or more than 3 lines of its body,
+  have a corresponding test (happy path + each documented `Raises:` mode)?
 - Before rendering findings, check: does the diff contain changes to any public
   API, CLI argument, config key, or output format? If yes, flag missing
   `CHANGELOG.md` entry as a Completeness finding. If no, skip this check.
@@ -148,8 +159,9 @@ Severity definitions:
   inconsistency required by the linter, or has a low-probability edge case not
   yet handled.
 
-Output using exactly this structure. Never omit a section; if a dimension has
-no findings, say so explicitly with one sentence.
+Output using exactly this flat structure — one section per dimension across
+all files (including any from grouped processing in Step 2). Never omit a
+section; if a dimension has no findings, say so explicitly with one sentence.
 
 ---
 
