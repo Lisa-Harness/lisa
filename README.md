@@ -39,6 +39,12 @@ uv run little-lisa
 
 Little Lisa uses a model manifest (`hosts/little_lisa/models.yaml`) with `front-door`, `default`, and `deep` designations. It supports live completion through `azure_openai`, `openai`, `anthropic`, and local `ollama` providers, plus local action/chat packs discovered through `SDK_CONTENT_ROOTS`; heavier workflow modes still report the missing host wiring they require.
 
+`lisa-pack-learning` is now an opt-in pack in this workspace. Install it through the host pack manager when you want memory-backed learning behavior:
+
+```powershell
+uv run little-lisa packs install "C:\Code\lisa-pack-learning" --no-log
+```
+
 Key CLI options:
 
 - `--streaming none|stage|text|hybrid[:delay]` controls terminal streaming mode.
@@ -66,7 +72,7 @@ For a first custom pack, follow `docs/PACK_AUTHORING_GUIDE.md` and point `SDK_CO
 
 ## Package Layout
 
-The root `pyproject.toml` defines a public-only `uv` workspace:
+The root `pyproject.toml` defines a public-only `uv` workspace. The learning pack is part of the public framework set but not included in the default dependency graph during the split-repo transition:
 
 - `lisa-kernel`
 - `lisa-sdk`
@@ -74,9 +80,10 @@ The root `pyproject.toml` defines a public-only `uv` workspace:
 - `lisa-pack-github`
 - `lisa-pack-stripe`
 - `lisa-pack-core`
-- `lisa-pack-learning`
 - `lisa-pack-search`
 - `little-lisa`
+
+Install `lisa-pack-learning` through the pack manager when you want memory-backed learning workflows.
 
 Private packages such as CloudServers operations, CloudServers packs, and market-intel collectors are intentionally absent.
 

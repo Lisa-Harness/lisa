@@ -82,6 +82,64 @@ async def test_run_pack_install_success_records_lock_and_restart(
 
 
 @pytest.mark.asyncio
+async def test_run_pack_install_local_folder_records_local_source_and_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"installed", b"")
+
+    async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> _FakeProc:
+        _ = args
+        _ = kwargs
+        return _FakeProc()
+
+    local_pack = tmp_path / "lisa-pack-learning"
+    local_pack.mkdir(parents=True, exist_ok=True)
+    (local_pack / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "lisa-pack-learning"',
+                'version = "0.1.0"',
+                'requires-python = ">=3.11"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        little_lisa,
+        "_validate_pack_spec_for_install",
+        lambda spec: (True, ""),
+    )
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    monkeypatch.setitem(_state(), "data_dir", tmp_path)
+    monkeypatch.setitem(_state(), "restart_required", False)
+    monkeypatch.setitem(_state(), "restart_reason", "")
+
+    ok, details = await _fn("_run_pack_install")(str(local_pack))
+
+    assert ok is True
+    assert "Installed 'lisa-pack-learning' from local source" in details
+    assert _state()["restart_required"] is True
+    assert _state()["restart_reason"] == "pack install: lisa-pack-learning"
+
+    lock = _fn("_load_installed_packs_lock")()
+    assert isinstance(lock.get("packs"), list)
+    assert any(
+        str(item.get("package_name")) == "lisa-pack-learning"
+        and str(item.get("source_kind")) == "local"
+        and str(item.get("source_ref")) == str(local_pack)
+        for item in lock["packs"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_pack_uninstall_success_updates_lock_and_restart(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

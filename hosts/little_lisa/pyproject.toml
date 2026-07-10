@@ -21,7 +21,6 @@ dependencies = [
     "lisa-pack-github",
     "lisa-pack-stripe",
     "lisa-pack-core",
-    "lisa-pack-learning",
     "aiohttp>=3.10.0",
     "openai>=1.30.0",
     "pillow>=10.0.0",

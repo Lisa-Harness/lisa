@@ -69,16 +69,18 @@ Live tests must be explicit, opt-in, and secret-safe. Do not make live tests par
 For a minimal extension, start with one signal connector package and validate it through the public extension harness before wiring it into a fuller host.
 
 ```plaintext
-sdk_packs/hello_world/
-  __init__.py
-  connector.py
-  models.py
+C:\Code\lisa-pack-hello-world\
+  sdk_packs/
+    hello_world/
+      __init__.py
+      connector.py
+      models.py
   pyproject.toml
   tests/
   test_import_boundaries.py
 ```
 
-`sdk_packs/hello_world/models.py`
+`C:\Code\lisa-pack-hello-world\sdk_packs\hello_world\models.py`
 
 ```python
 from pydantic import BaseModel
@@ -90,7 +92,7 @@ class HelloWorldSnapshot(BaseModel):
   message: str = "hello world"
 ```
 
-`sdk_packs/hello_world/connector.py`
+`C:\Code\lisa-pack-hello-world\sdk_packs\hello_world\connector.py`
 
 ```python
 import httpx
@@ -127,7 +129,7 @@ class HelloWorldSignalConnector(SignalConnector[HelloWorldSnapshot]):
     )
 ```
 
-`sdk_packs/hello_world/pyproject.toml`
+`C:\Code\lisa-pack-hello-world\pyproject.toml`
 
 ```toml
 [build-system]
@@ -135,7 +137,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["../.."]
+where = ["."]
 include = ["sdk_packs.hello_world*"]
 
 [project]
@@ -151,7 +153,7 @@ hello_world = "sdk_packs.hello_world.connector:HelloWorldSignalConnector"
 From `lisa_framework/` on Windows:
 
 ```powershell
-uv pip install -e .\sdk_packs\hello_world
+uv pip install -e "C:\Code\lisa-pack-hello-world"
 uv run python -c "from kernel.testing.extension_harness import list_extension_entries; print([entry.model_dump() for entry in list_extension_entries() if entry.entry_id == 'hello_world'])"
 uv run python -c "from kernel.testing.extension_harness import build_connector_contract_preview, load_signal_connector; connector = load_signal_connector('hello_world'); print(build_connector_contract_preview(connector))"
 ```

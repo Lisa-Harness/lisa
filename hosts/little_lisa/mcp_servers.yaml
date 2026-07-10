@@ -45,7 +45,7 @@ pack_policy:
 # the cross-server name clash (e.g. lisa-memory.add_memory vs
 # mem0.add_memory) by construction.
 memory:
-  default_backend: mem0
+  default_backend: lisa_memory
   backends:
     # lisa-memory — first-party stdio MCP server. The minimal built-in: three
     # core memory calls backed by local SQLite. Default backend for memory.*.
@@ -134,7 +134,7 @@ servers:
     tool_policy:
       denied_tools:
         - delete_all_memories
-        - delete_entitites
+        - delete_entities
         - delete_memory
     # Proxy policy: the MCP pool is a proxy between the LLM and this server.
     # The user_id field is stripped from the tool schema the model sees and

@@ -108,12 +108,12 @@ Authored text should live under `content/` and be loaded by host-provided reader
 
 ## Hello World Pack
 
-The fastest end-to-end path is a local pack inside the extracted framework tree. Little Lisa discovers these packs from `SDK_CONTENT_ROOTS`, so you do not need a private app or a published wheel just to prove the pack shape.
+The fastest end-to-end path is a local external pack folder. Little Lisa discovers these packs from `SDK_CONTENT_ROOTS`, so you do not need a private app or a published wheel just to prove the pack shape.
 
-Create this folder under `lisa_framework/`:
+Create this folder outside the framework repo (example path shown):
 
 ```plaintext
-sdk_packs/hello_world/
+C:\Code\lisa-pack-hello-world\
   __init__.py
   modes/
     hello/
@@ -123,13 +123,13 @@ sdk_packs/hello_world/
     hello_operation.yml
 ```
 
-`sdk_packs/hello_world/__init__.py`
+`C:\Code\lisa-pack-hello-world\__init__.py`
 
 ```python
 """Hello world pack."""
 ```
 
-`sdk_packs/hello_world/modes/hello/_mode.md`
+`C:\Code\lisa-pack-hello-world\modes\hello\_mode.md`
 
 ```markdown
 ---
@@ -146,7 +146,7 @@ description: "Hello world action mode."
 # Hello
 ```
 
-`sdk_packs/hello_world/operations/hello_operation.yml`
+`C:\Code\lisa-pack-hello-world\operations\hello_operation.yml`
 
 ```yaml
 operation_id: hello_operation
@@ -155,7 +155,7 @@ mode_allowlist: [hello]
 timeout_seconds: 30
 ```
 
-`sdk_packs/hello_world/operations/hello_operation.py`
+`C:\Code\lisa-pack-hello-world\operations\hello_operation.py`
 
 ```python
 from kernel.models import OperationExecutionContext, OperationResult
@@ -168,7 +168,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 From `lisa_framework/` on Windows:
 
 ```powershell
-$env:SDK_CONTENT_ROOTS = (Resolve-Path .\sdk_packs\hello_world)
+$env:SDK_CONTENT_ROOTS = "C:\Code\lisa-pack-hello-world"
 uv run little-lisa modes
 uv run little-lisa once "/hello framework"
 ```

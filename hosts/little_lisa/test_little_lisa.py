@@ -15,7 +15,6 @@ from kernel.model_manifest import ModelManifest
 from kernel.operations.registry import OperationExecutionError
 from kernel.turn_runner import TurnResult
 from pydantic import BaseModel
-from sdk_packs.learning.operations.memory import synthesize_learning
 
 from . import main as little_lisa
 
@@ -47,6 +46,48 @@ def test_list_models_table_includes_designations_and_aliases() -> None:
     assert "Reasoning" in header_text
     # At least one model row should be present (the default manifest has models)
     assert len(table.rows) >= 1
+
+
+def test_build_content_mcp_config_uses_discovered_roots_and_host_data_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pack_root = tmp_path / "external-pack"
+    (pack_root / "content").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(little_lisa, "_sdk_content_roots", lambda: [pack_root])
+    monkeypatch.setattr(little_lisa, "_load_mode_provider_preferences", lambda _path: {})
+
+    config = little_lisa._build_content_mcp_config()
+
+    assert config.args is not None
+    assert "--data-dir" in config.args
+    data_dir_index = config.args.index("--data-dir")
+    assert config.args[data_dir_index + 1] == str(little_lisa._DEFAULT_DATA_DIR)
+
+    assert config.env is not None
+    roots_value = str(config.env.get("SDK_CONTENT_ROOTS", ""))
+    configured_roots = [part for part in roots_value.split(os.pathsep) if part]
+    assert str(pack_root) in configured_roots
+    assert str(pack_root / "content") in configured_roots
+    assert not any("sdk_packs/core" in root for root in configured_roots)
+
+
+def test_build_content_mcp_config_without_discovered_roots_keeps_empty_sdk_content_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(little_lisa, "_sdk_content_roots", lambda: [])
+    monkeypatch.setattr(little_lisa, "_load_mode_provider_preferences", lambda _path: {})
+
+    config = little_lisa._build_content_mcp_config()
+
+    assert config.args is not None
+    assert "--data-dir" in config.args
+    data_dir_index = config.args.index("--data-dir")
+    assert config.args[data_dir_index + 1] == str(little_lisa._DEFAULT_DATA_DIR)
+
+    assert config.env is not None
+    assert str(config.env.get("SDK_CONTENT_ROOTS", "")) == ""
 
 
 def test_resolve_desktop_token_uses_generator_when_blank(
@@ -1826,6 +1867,9 @@ async def test_turn_hook_execute_operation_injects_memory_dependencies(
 async def test_synthesize_learning_prompt_mentions_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    synthesize_learning = pytest.importorskip(
+        "sdk_packs.learning.operations.memory.synthesize_learning"
+    )
     captured: dict[str, object] = {}
 
     async def _fake_execute_tool_fn(tool_id: str, ctx: object) -> object:

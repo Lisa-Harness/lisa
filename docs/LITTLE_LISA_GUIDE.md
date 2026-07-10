@@ -53,9 +53,8 @@ hosts/little_lisa/artifacts/markdown/
 
 The host wires these public framework seams:
 
-- `sdk_packs/core/modes` and `sdk_packs/search/modes` for mode discovery.
-- `sdk_packs/core/operations` and `sdk_packs/search/operations` for operation discovery.
-- Additional local pack roots from `SDK_CONTENT_ROOTS` for hello-world pack authoring.
+- Installed and configured pack roots (entry points plus `SDK_CONTENT_ROOTS`) for mode and operation discovery.
+- External local pack roots from `SDK_CONTENT_ROOTS` for hello-world pack authoring.
 - Stub tool definitions required for operation-catalog validation.
 - Manifest-based model resolution callbacks.
 - Live model completion callbacks for `azure_openai`, `openai`, `anthropic`, and local `ollama` providers.
@@ -333,10 +332,10 @@ Settings precedence:
 
 ## Hello World Pack Smoke
 
-The quickest pack-authoring proof is a local pack under `sdk_packs/` plus one `SDK_CONTENT_ROOTS` entry:
+The quickest pack-authoring proof is an external local pack plus one `SDK_CONTENT_ROOTS` entry:
 
 ```powershell
-$env:SDK_CONTENT_ROOTS = (Resolve-Path .\sdk_packs\hello_world)
+$env:SDK_CONTENT_ROOTS = "C:\Code\lisa-pack-hello-world"
 uv run little-lisa modes
 uv run little-lisa once "/hello framework"
 ```

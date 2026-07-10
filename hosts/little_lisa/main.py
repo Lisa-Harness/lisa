@@ -288,8 +288,6 @@ except ImportError:  # pragma: no cover - direct script execution fallback
     )
     from tray import TrayConfig, run_tray  # type: ignore[no-redef]
 
-CORE_PACK_ROOT = FRAMEWORK_ROOT / "sdk_packs" / "core"
-
 _DEFAULT_DATA_DIR = FRAMEWORK_ROOT / "hosts" / "little_lisa" / "artifacts"
 _DEFAULT_GOOGLE_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 _DEFAULT_TURN_LOG_NAME = "turns.jsonl"
@@ -643,7 +641,7 @@ def _sdk_content_roots() -> list[Path]:
 
 
 def _authored_content_roots() -> list[Path]:
-    roots = [CORE_PACK_ROOT, *_sdk_content_roots()]
+    roots = _sdk_content_roots()
     return _unique_paths([root / "content" for root in roots if (root / "content").is_dir()])
 
 
@@ -682,7 +680,7 @@ def get_little_lisa_tool_catalog() -> dict[str, ToolDefinition]:
 
 
 def _build_content_mcp_config() -> MCPClientConfig:
-    """Build an MCPClientConfig that spawns lisa-content with the core pack root.
+    """Build an MCPClientConfig that spawns lisa-content for discovered pack roots.
 
     The kernel calls ``list_modes``, ``list_operations``, and
     ``read_authored_text`` on this server to discover and load all content
@@ -696,7 +694,7 @@ def _build_content_mcp_config() -> MCPClientConfig:
     """
     host_manifest_path = FRAMEWORK_ROOT / "hosts" / "little_lisa" / "mcp_servers.yaml"
     mode_preferences = _load_mode_provider_preferences(host_manifest_path)
-    roots_for_child: list[Path] = [CORE_PACK_ROOT, *_sdk_content_roots()]
+    roots_for_child = _sdk_content_roots()
     content_roots = [root / "content" for root in roots_for_child if (root / "content").is_dir()]
     configured_roots = _unique_paths([*roots_for_child, *content_roots])
     env = {"SDK_CONTENT_ROOTS": os.pathsep.join(str(root) for root in configured_roots)}
@@ -709,7 +707,7 @@ def _build_content_mcp_config() -> MCPClientConfig:
             "-m",
             "sdk.lisa_content.server",
             "--data-dir",
-            str(CORE_PACK_ROOT),
+            str(_DEFAULT_DATA_DIR),
         ],
         env=env,
     )

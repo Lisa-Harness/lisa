@@ -10,7 +10,6 @@ dependencies = [
     "lisa-pack-github",
     "lisa-pack-stripe",
     "lisa-pack-core",
-    "lisa-pack-learning",
     "lisa-pack-search",
     "little-lisa",
     "rich>=13.7.0",
@@ -40,7 +39,6 @@ members = [
     "sdk_packs/github",
     "sdk_packs/stripe",
     "sdk_packs/core",
-    "sdk_packs/learning",
     "sdk_packs/search",
     "hosts/little_lisa",
 ]
@@ -52,7 +50,6 @@ lisa-pack-cloudflare = { workspace = true }
 lisa-pack-github = { workspace = true }
 lisa-pack-stripe = { workspace = true }
 lisa-pack-core = { workspace = true }
-lisa-pack-learning = { workspace = true }
 lisa-pack-search = { workspace = true }
 little-lisa = { workspace = true }
 
