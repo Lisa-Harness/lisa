@@ -149,6 +149,9 @@ from kernel.ipsar_fsm import (  # noqa: E402
 )
 from kernel.model_manifest import ModelManifest  # noqa: E402
 from kernel.models import (  # noqa: E402
+    AnomalyAlert,
+    DomainKnowledgeArtifact,
+    IntelCollection,
     OperationExecutionContext,
     OperationResult,
     RouteDecision,
@@ -176,6 +179,12 @@ from kernel.tools.mcp_client import (  # noqa: E402
     MCPToolPool,
 )
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn  # noqa: E402
+
+from kernel.context.context_budget import ContextBudgetAllocator, ContextLane  # noqa: E402
+from lisa_sdk.lisa_context.context_broker import (  # noqa: E402
+    render_context_packet_markdown,
+    select_ranked_context,
+)
 
 try:
     from .model_manifest import load_model_manifest
@@ -555,7 +564,6 @@ STYLE_STATUS_DEBUG_ON = "black on dark_khaki"
 STYLE_STATUS_DEBUG_OFF = "bright_white on grey35"
 STYLE_STATUS_SEPARATOR = "grey42"
 _LEGACY_ONCE_ARG_COUNT = 2
-_RANKED_CONTEXT_MIN_TOKEN_LEN = 3
 _STATUS_COMPACT_FULL = 0
 _STATUS_COMPACT_ABBREVIATED = 1
 _STATUS_COMPACT_TRIMMED = 2
@@ -706,6 +714,15 @@ def setup_framework() -> None:
     from kernel.context.context_frames import set_content_registry  # noqa: PLC0415
 
     set_content_registry(MCPContentRegistry(content_config))
+
+    # Wire the production extension-evidence builder so the context broker's
+    # catalog builder picks up evidence from installed SDK extensions
+    # (Cloudflare, GitHub, Stripe) via entry-point discovery.
+    from lisa_sdk.lisa_context.extension_evidence_builder import (  # noqa: PLC0415
+        set_production_extension_evidence_builder,
+    )
+
+    set_production_extension_evidence_builder()
 
 
 def configure_runtime() -> None:
@@ -1793,31 +1810,30 @@ def _assemble_dynamic_user_context(mode_id: str, query: str, pre_turn_briefing: 
     if command_pattern:
         lines.append(f"- command_pattern: {command_pattern}")
 
-    sections = ["## Dynamic User Context\n\n" + "\n".join(lines)]
+    # Build the raw sections dict, tagged by budget lane.
+    raw_sections: list[tuple[str, ContextLane, str]] = [
+        ("dynamic_context", "core", "## Dynamic User Context\n\n" + "\n".join(lines)),
+    ]
 
-    user_slug = _runtime_user_slug()
     user_context = ""
     if user_slug:
         user_context = _load_selected_session_context_text().strip()
     if user_context:
-        sections.append("## Selected User Context\n\n" + user_context[:1200])
+        raw_sections.append(("selected_user_context", "memory", user_context))
 
     thread_digest = _load_thread_digest()
     if thread_digest:
-        sections.append(f"## Prior Conversation Digest\n\n{thread_digest[:2000]}")
+        raw_sections.append(("prior_conversation_digest", "history", thread_digest))
 
     conversation_excerpt = _build_recent_thread_excerpt(limit=6)
     if conversation_excerpt:
-        sections.append(f"## Recent Conversation\n\n{conversation_excerpt}")
+        raw_sections.append(("recent_conversation", "history", conversation_excerpt))
 
-    ranked = _build_ranked_context(query)
-    if ranked:
-        ranked_lines = "\n".join(f"- {item}" for item in ranked)
-        sections.append("## Ranked Context\n\n" + ranked_lines)
-
-    snapshot_section = _build_state_snapshot_context()
-    if snapshot_section:
-        sections.append(snapshot_section)
+    # Ranked context evidence from the broker (no MCP round-trip — the
+    # broker is a pure ranking function over the in-process UnifiedState).
+    packet_markdown = _build_brokered_context_markdown(mode_id=mode_id, query=query)
+    if packet_markdown:
+        raw_sections.append(("ranked_context", "retrieval", packet_markdown))
 
     query_lower = query.lower()
     capability_keywords = (
@@ -1829,15 +1845,94 @@ def _assemble_dynamic_user_context(mode_id: str, query: str, pre_turn_briefing: 
     )
     if any(keyword in query_lower for keyword in capability_keywords):
         capability = _build_capability_snapshot()
-        sections.append(
-            "## Capability Context\n\n"
-            f"- supported_modes: {len(capability['supported_modes'])}\n"
-            f"- operations: {len(capability['operations'])}\n"
-            f"- tools: {len(capability['tools'])}\n"
-            f"- models: {len(capability['models'])}"
+        raw_sections.append(
+            (
+                "capability_context",
+                "operational",
+                "## Capability Context\n\n"
+                f"- supported_modes: {len(capability['supported_modes'])}\n"
+                f"- operations: {len(capability['operations'])}\n"
+                f"- tools: {len(capability['tools'])}\n"
+                f"- models: {len(capability['models'])}",
+            )
         )
 
-    return "\n\n".join(sections)
+    # Route every section through the budget allocator. The allocator enforces
+    # per-lane token limits and a total ceiling, dropping or truncating as
+    # needed. Surviving sections are joined into the final user context block.
+    allocator = ContextBudgetAllocator.for_turn(reasoning_model=False)
+    rendered_sections: list[str] = []
+    for key, lane, text in raw_sections:
+        elected = allocator.allocate(
+            key=key,
+            lane=lane,
+            text=text,
+            required=(key == "dynamic_context"),
+            allow_truncate=True,
+        )
+        if elected:
+            rendered_sections.append(elected)
+
+    _publish_context_usage_event(allocator=allocator, mode_id=mode_id, query=query)
+    return "\n\n".join(rendered_sections)
+
+
+def _build_brokered_context_markdown(*, mode_id: str, query: str) -> str:
+    """Select ranked context evidence from the in-process state and render it.
+
+    Calls ``select_ranked_context`` directly (pure function, no MCP round-trip)
+    using the compiled ``UnifiedState`` from ``_state_provider()``. Returns an
+    empty string when no evidence is selected.
+    """
+    state = _state_provider()
+    if not state.compiled_at:
+        return ""
+    packet = select_ranked_context(
+        state=state,
+        query=query,
+        mode_id=mode_id,
+    )
+    if not packet.selected_evidence:
+        return ""
+    return render_context_packet_markdown(packet)
+
+
+def _publish_context_usage_event(
+    *,
+    allocator: ContextBudgetAllocator,
+    mode_id: str,
+    query: str,
+) -> None:
+    """Publish a ContextUsageEvent with the allocator summary to the event bus.
+
+    The event bus may be absent in test contexts; when it is, this is a no-op.
+    """
+    pool = _runtime_warm_pool()
+    event_bus = getattr(pool, "event_bus", None) if pool is not None else None
+    if event_bus is None:
+        return
+    summary = allocator.summary()
+    import asyncio  # noqa: PLC0415
+
+    from kernel.models import ContextUsageEvent  # noqa: PLC0415
+
+    event = ContextUsageEvent(
+        mode_id=mode_id,
+        query_preview=query[:200],
+        prompt_strategy="broker_packet",
+        context_char_count=int(summary.get("used_tokens", 0)) * 4,
+        ranking_metadata={
+            "budget_summary": summary,
+        },
+    )
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(event_bus.publish(event.model_dump()))
+        else:
+            loop.run_until_complete(event_bus.publish(event.model_dump()))
+    except RuntimeError:
+        pass
 
 
 def _runtime_log_metadata() -> dict[str, Any]:
@@ -1953,14 +2048,6 @@ def _format_operation_error(exc: OperationExecutionError) -> str:
     return message
 
 
-def _tokenize(text: str) -> set[str]:
-    return {
-        token
-        for token in re.findall(r"[a-z0-9]+", text.lower())
-        if len(token) >= _RANKED_CONTEXT_MIN_TOKEN_LEN
-    }
-
-
 def _load_recent_thread_entries(limit: int = 30) -> list[dict[str, Any]]:
     path = _runtime_thread_path()
     if path is None or not path.exists():
@@ -1993,26 +2080,6 @@ def _append_thread_entry(*, mode_id: str, query: str, response_text: str) -> Non
         handle.write(json.dumps(entry, ensure_ascii=True) + "\n")
 
 
-def _build_ranked_context(query: str) -> list[str]:
-    query_tokens = _tokenize(query)
-    if not query_tokens:
-        return []
-    scored: list[tuple[int, str]] = []
-    for entry in _load_recent_thread_entries(limit=40):
-        entry_query = str(entry.get("query") or "")
-        entry_response = str(entry.get("response_text") or "")
-        candidate_text = f"{entry_query} {entry_response}".strip()
-        if not candidate_text:
-            continue
-        overlap = len(query_tokens.intersection(_tokenize(candidate_text)))
-        if overlap <= 0:
-            continue
-        preview = entry_response.strip()[:180] or entry_query.strip()[:180]
-        scored.append((overlap, preview))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return [text for _, text in scored[:3]]
-
-
 def _load_thread_digest() -> str:
     """Load the thread digest sidecar if it exists."""
     thread_path = _runtime_thread_path()
@@ -2039,18 +2106,6 @@ def _build_recent_thread_excerpt(limit: int = 3) -> str:
             continue
         preview = response[:160] if response else query[:160]
         lines.append(f"- {query or 'unknown'}: {preview}")
-    return "\n".join(lines)
-
-
-def _build_state_snapshot_context() -> str:
-    snapshot = _runtime_state_snapshot()
-    if not snapshot:
-        return ""
-    top_keys = sorted(snapshot.keys())[:8]
-    compiled_at = str(snapshot.get("compiled_at") or snapshot.get("generated_at") or "")
-    lines = ["## Local State Snapshot", f"- keys: {', '.join(top_keys) or 'none'}"]
-    if compiled_at:
-        lines.append(f"- compiled_at: {compiled_at}")
     return "\n".join(lines)
 
 
@@ -2899,9 +2954,71 @@ def _mode_support_gap(_mode: WorkflowModeConfig) -> str | None:
 
 
 def _state_provider() -> UnifiedState:
-    """Return an empty state cache for operations that request host state."""
+    """Return a compiled UnifiedState for operations and the context broker.
 
-    return UnifiedState(compiled_at=datetime.now(UTC).isoformat())
+    Builds the state from the dict-based ``_runtime_state_snapshot()`` (loaded
+    via ``--state-snapshot``), populating ``signal_snapshots``,
+    ``intel_collections``, ``active_alerts``, and ``domain_knowledge`` from
+    the snapshot's keys. The broker's evidence-catalog builder then walks
+    these fields plus extension-contributed evidence to produce a ranked
+    ContextPacket without a live MCP round-trip.
+    """
+    compiled_at = datetime.now(UTC).isoformat()
+    snapshot = _runtime_state_snapshot()
+    if not snapshot:
+        return UnifiedState(compiled_at=compiled_at)
+
+    state = UnifiedState(
+        compiled_at=str(snapshot.get("compiled_at") or snapshot.get("generated_at") or compiled_at),
+    )
+
+    raw_signals = snapshot.get("signal_snapshots")
+    if isinstance(raw_signals, dict):
+        state.signal_snapshots = raw_signals
+
+    raw_alerts = snapshot.get("active_alerts")
+    if isinstance(raw_alerts, list):
+        try:
+            state.active_alerts = [
+                a if isinstance(a, AnomalyAlert) else AnomalyAlert.model_validate(a)
+                for a in raw_alerts
+            ]
+        except (ValidationError, TypeError):
+            state.active_alerts = []
+
+    raw_intel = snapshot.get("intel_collections")
+    if isinstance(raw_intel, dict):
+        try:
+            state.intel_collections = {
+                k: v if isinstance(v, IntelCollection) else IntelCollection.model_validate(v)
+                for k, v in raw_intel.items()
+            }
+        except (ValidationError, TypeError):
+            state.intel_collections = {}
+
+    raw_domain = snapshot.get("domain_knowledge")
+    if isinstance(raw_domain, dict):
+        try:
+            state.domain_knowledge = {
+                k: (
+                    v
+                    if isinstance(v, DomainKnowledgeArtifact)
+                    else DomainKnowledgeArtifact.model_validate(v)
+                )
+                for k, v in raw_domain.items()
+            }
+        except (ValidationError, TypeError):
+            state.domain_knowledge = {}
+
+    thinking = snapshot.get("thinking_vibe")
+    if isinstance(thinking, str) and thinking.strip():
+        state.thinking_vibe = thinking.strip()
+
+    strategy = snapshot.get("strategy_vibe")
+    if isinstance(strategy, str) and strategy.strip():
+        state.strategy_vibe = strategy.strip()
+
+    return state
 
 
 def format_modes() -> str:
@@ -4623,13 +4740,16 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
     server sessions. The default backend's tool names come from the
     manifest's ``memory.tool_names`` mapping.
 
-    Ambient scope (user_id, agent_id, app_id) is injected by the proxy
-    layer (:class:`~kernel.mcp_launch.policy.ProxyPolicy` on the server's
+    Ambient scope (user_id) is injected by the proxy layer
+    (:class:`~kernel.mcp_launch.policy.ProxyPolicy` on the server's
     config), not by these aliases. The aliases only do generic→native
     field renaming (e.g. ``content``→``text`` for mem0). The proxy strips
-    ambient fields from the schema the model sees and injects them at
+    the user_id field from the schema the model sees and injects it at
     dispatch time — covering both the alias path and direct native-tool
-    calls (``mem0.get_memories``) from the same chokepoint.
+    calls (``mem0.get_memories``) from the same chokepoint. agent_id and
+    app_id were dropped from the mem0 policy because they were metadata-
+    only and broke store→retrieve round-trip (add_memory injects them
+    top-level while get_memories filters via filters.AND).
     """
     from kernel.tools.mcp_client import SyntheticToolSpec  # noqa: PLC0415
     from kernel.tools.synthetic import mcp_alias_tool  # noqa: PLC0415

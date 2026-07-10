@@ -112,16 +112,17 @@ servers:
         - delete_entitites
         - delete_memory
     # Proxy policy: the MCP pool is a proxy between the LLM and this server.
-    # These ambient fields are stripped from the tool schema the model sees
-    # (so the model never knows user_id/agent_id/app_id exist) and injected
-    # from the host runtime at dispatch time (so the model cannot escape the
-    # privacy boundary by calling mem0.get_memories directly instead of
-    # through the memory.* aliases). structured_filters tells the proxy to
-    # inject them as filters.AND entries (Mem0's structured filter syntax)
-    # for tools that accept a filters parameter.
+    # The user_id field is stripped from the tool schema the model sees and
+    # injected from the host runtime at dispatch time (so the model cannot
+    # escape the privacy boundary by calling mem0.get_memories directly
+    # instead of through the memory.* aliases). structured_filters tells the
+    # proxy to inject user_id as a filters.AND entry (Mem0's structured filter
+    # syntax) for tools that accept a filters parameter. We scope to user_id
+    # only: mem0 isolates by user_id, and agent_id/app_id were metadata-only.
+    # Keeping them caused a store→retrieve round-trip break — add_memory
+    # injects them top-level while get_memories filters via filters.AND, so
+    # the mode-dependent agent_id mismatch yielded zero matches on recall.
     proxy_policy:
       ambient:
         user_id: user_slug
-        agent_id: mode_id
-        app_id: app_id
       structured_filters: true

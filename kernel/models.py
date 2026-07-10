@@ -836,7 +836,6 @@ class ContextBrokerResponse(BaseModel):
 
 ContextPromptStrategy = Literal[
     "broker_packet",
-    "legacy_fallback_live_context",
 ]
 
 

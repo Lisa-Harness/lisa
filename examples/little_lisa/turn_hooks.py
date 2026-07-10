@@ -38,9 +38,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Minimum token length counted for lexical-overlap ranking. Mirrors the
-# ``_RANKED_CONTEXT_MIN_TOKEN_LEN`` constant used in ``main.py`` so the
-# ranking algorithm here is byte-for-byte identical to the original closure.
+# Minimum token length counted for lexical-overlap memory recall ranking.
 _RANKED_MIN_TOKEN_LEN = 3
 
 
