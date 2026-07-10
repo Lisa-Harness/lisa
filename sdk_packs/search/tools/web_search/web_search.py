@@ -5,7 +5,7 @@ pack's ``tools/`` directory. The kernel imports this module via
 ``module_path`` and dispatches calls through ``execute(ctx)``.
 
 Configuration is read directly from environment variables (not
-``lisa_sdk.config``) so the pack has zero SDK config linkage and is
+``sdk.config``) so the pack has zero SDK config linkage and is
 self-contained for externalization.
 """
 

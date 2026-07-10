@@ -6,7 +6,7 @@
 
 ## Problem
 
-`handle_message` in `examples/little_lisa/main.py` is the single most complex
+`handle_message` in `hosts/little_lisa/main.py` is the single most complex
 function in the codebase:
 
 | Metric | Current | Budget |
@@ -109,9 +109,9 @@ continue to work.
 
 ## Verification
 
-1. `ruff check examples/little_lisa/main.py --select C901,PLR0911,PLR0912,PLR0915`
+1. `ruff check hosts/little_lisa/main.py --select C901,PLR0911,PLR0912,PLR0915`
    — zero violations for `handle_message`.
-2. `pytest examples/little_lisa/ -m "not live" -p no:randomly` — 99 passed,
+2. `pytest hosts/little_lisa/ -m "not live" -p no:randomly` — 99 passed,
    7 pre-existing failures unchanged.
 3. Manual: `/help`, `/tokens`, `/settings`, `/debug context`, `/consolidate`
    all produce the same output as before.

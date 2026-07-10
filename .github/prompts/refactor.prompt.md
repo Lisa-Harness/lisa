@@ -39,7 +39,7 @@ is already lint-clean — no refactor needed." Do not invoke the agent.
 
 Invoke the `refactor` agent with:
 
-- The **explicit resolved target** (e.g. `examples/little_lisa/main.py`,
+- The **explicit resolved target** (e.g. `hosts/little_lisa/main.py`,
   `kernel/turn_runner.py`, or a space-separated list of paths).
 - A one-line **inference rationale** stating which resolution path was used.
 

@@ -5,7 +5,7 @@ research loop can synthesize from full page content instead of search
 snippets alone.
 
 Configuration is read directly from environment variables (not
-``lisa_sdk.config``) so the pack has zero SDK config linkage and is
+``sdk.config``) so the pack has zero SDK config linkage and is
 self-contained for externalization, mirroring ``web_search``.
 
 HTML-to-text extraction uses the standard library only — no new heavy

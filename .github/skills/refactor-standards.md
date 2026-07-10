@@ -65,11 +65,12 @@ to a submodule:
 ## Required verification loop (no warn-only stage)
 
 ```powershell
-uv run ruff format --check kernel lisa_sdk sdk_extensions sdk_packs examples
-uv run ruff check kernel lisa_sdk sdk_extensions sdk_packs examples
-uv run mypy kernel lisa_sdk sdk_extensions sdk_packs
+uv run ruff format --check kernel sdk sdk_packs hosts
+uv run ruff check kernel sdk sdk_packs hosts
+uv run mypy kernel sdk sdk_packs
 uv run pytest -m "not live" --tb=short -v
 uv run little-lisa verify
 ```
 
 Any failure blocks the commit. CI enforces the same.
+

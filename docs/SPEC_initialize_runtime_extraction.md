@@ -85,9 +85,9 @@ continue to work.
 
 ## Verification
 
-1. `ruff check examples/little_lisa/main.py --select PLR0915` — zero
+1. `ruff check hosts/little_lisa/main.py --select PLR0915` — zero
    violations for `_initialize_runtime`.
-2. `pytest examples/little_lisa/ -m "not live" -p no:randomly` — 99 passed,
+2. `pytest hosts/little_lisa/ -m "not live" -p no:randomly` — 99 passed,
    7 pre-existing failures unchanged.
 
 ## Out of scope

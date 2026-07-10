@@ -1,4 +1,4 @@
-# SDK Extensions Guide
+# SDK Integrations Guide
 
 Extensions add integration-specific capabilities through typed packages and entry points. They should be deterministic by default, host-neutral, and easy to validate without live services.
 
@@ -27,7 +27,7 @@ Each extension package should include:
 - `tests/test_import_boundaries.py`: verifies no private app imports.
 - Focused config and contract tests.
 
-Author-facing rich attachment and host-rendered summary DTOs live in `lisa_sdk.rendering`, not in a host app module.
+Author-facing rich attachment and host-rendered summary DTOs live in `sdk.rendering`, not in a host app module.
 
 ## Entry Point Groups
 
@@ -44,12 +44,11 @@ Common public entry-point groups:
 
 Hosts decide which groups they discover and how often extension outputs are collected.
 
-## Public Extensions In This Workspace
+## Public Integration Packs In This Workspace
 
-- `sdk_extensions/clarity`: Microsoft Clarity live-insights and export helpers.
-- `sdk_extensions/cloudflare`: Cloudflare zone and worker signal connector.
-- `sdk_extensions/github`: GitHub repository and workflow signal connector.
-- `sdk_extensions/stripe`: Stripe billing signal connector.
+- `sdk_packs/cloudflare`: Cloudflare zone and worker signal connector (published as `lisa-pack-cloudflare`).
+- `sdk_packs/github`: GitHub repository and workflow signal connector (published as `lisa-pack-github`).
+- `sdk_packs/stripe`: Stripe billing signal connector (published as `lisa-pack-stripe`).
 
 CloudServers operations and market-intel extensions are intentionally not included in this public staged tree.
 
@@ -58,10 +57,9 @@ CloudServers operations and market-intel extensions are intentionally not includ
 Run package tests without live API calls by default:
 
 ```powershell
-uv run pytest sdk_extensions/github/tests -m "not live"
-uv run pytest sdk_extensions/cloudflare/tests -m "not live"
-uv run pytest sdk_extensions/stripe/tests -m "not live"
-uv run pytest sdk_extensions/clarity/tests -m "not live"
+uv run pytest sdk_packs/github/tests -m "not live"
+uv run pytest sdk_packs/cloudflare/tests -m "not live"
+uv run pytest sdk_packs/stripe/tests -m "not live"
 ```
 
 Live tests must be explicit, opt-in, and secret-safe. Do not make live tests part of default local or CI validation.
@@ -71,7 +69,7 @@ Live tests must be explicit, opt-in, and secret-safe. Do not make live tests par
 For a minimal extension, start with one signal connector package and validate it through the public extension harness before wiring it into a fuller host.
 
 ```plaintext
-sdk_extensions/hello_world/
+sdk_packs/hello_world/
   __init__.py
   connector.py
   models.py
@@ -80,7 +78,7 @@ sdk_extensions/hello_world/
   test_import_boundaries.py
 ```
 
-`sdk_extensions/hello_world/models.py`
+`sdk_packs/hello_world/models.py`
 
 ```python
 from pydantic import BaseModel
@@ -92,7 +90,7 @@ class HelloWorldSnapshot(BaseModel):
   message: str = "hello world"
 ```
 
-`sdk_extensions/hello_world/connector.py`
+`sdk_packs/hello_world/connector.py`
 
 ```python
 import httpx
@@ -129,7 +127,7 @@ class HelloWorldSignalConnector(SignalConnector[HelloWorldSnapshot]):
     )
 ```
 
-`sdk_extensions/hello_world/pyproject.toml`
+`sdk_packs/hello_world/pyproject.toml`
 
 ```toml
 [build-system]
@@ -138,22 +136,22 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["../.."]
-include = ["sdk_extensions.hello_world*"]
+include = ["sdk_packs.hello_world*"]
 
 [project]
-name = "lisa-ext-hello-world"
+name = "lisa-pack-hello-world"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = ["lisa-kernel", "httpx>=0.27.0"]
 
 [project.entry-points."lisa.extensions.signal_connectors"]
-hello_world = "sdk_extensions.hello_world.connector:HelloWorldSignalConnector"
+hello_world = "sdk_packs.hello_world.connector:HelloWorldSignalConnector"
 ```
 
 From `lisa_framework/` on Windows:
 
 ```powershell
-uv pip install -e .\sdk_extensions\hello_world
+uv pip install -e .\sdk_packs\hello_world
 uv run python -c "from kernel.testing.extension_harness import list_extension_entries; print([entry.model_dump() for entry in list_extension_entries() if entry.entry_id == 'hello_world'])"
 uv run python -c "from kernel.testing.extension_harness import build_connector_contract_preview, load_signal_connector; connector = load_signal_connector('hello_world'); print(build_connector_contract_preview(connector))"
 ```
@@ -165,7 +163,7 @@ Those commands prove entry-point discovery and contract shape without relying on
 1. Define settings and Pydantic contracts first.
 2. Implement one clear runtime owner module.
 3. Register entry points in the package `pyproject.toml`.
-4. Keep imports limited to `kernel`, `lisa_sdk`, and package-local modules.
+4. Keep imports limited to `kernel`, `sdk`, and package-local modules.
 5. Add deterministic unit tests with fake transports or hook stubs.
 6. Add import-boundary tests.
 7. Add opt-in live tests only when a real service contract needs them.
@@ -176,3 +174,4 @@ The public `kernel.testing.extension_harness` module is the intended first valid
 ## Host Boundary
 
 Extensions should return typed snapshots, contribution fragments, or evidence records. They should not send chat messages, choose proactive recipients, own production storage, or import private host code. A host scheduler or runtime adapter owns those responsibilities.
+

@@ -28,12 +28,12 @@ jobs:
         run: |
           uv build --package lisa-kernel
           uv build --package lisa-sdk
-          uv build --package lisa-ext-clarity
-          uv build --package lisa-ext-cloudflare
-          uv build --package lisa-ext-github
-          uv build --package lisa-ext-stripe
+          uv build --package lisa-pack-cloudflare
+          uv build --package lisa-pack-github
+          uv build --package lisa-pack-stripe
           uv build --package lisa-pack-core
-          uv build --package lisa-pack-extras
+          uv build --package lisa-pack-learning
+          uv build --package lisa-pack-search
           uv build --package little-lisa
 
       - name: Publish to PyPI

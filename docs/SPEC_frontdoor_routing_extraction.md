@@ -108,10 +108,10 @@ continue to work.
 
 ## Verification
 
-1. `ruff check examples/little_lisa/frontdoor_routing.py` — zero violations.
-2. `ruff check examples/little_lisa/main.py --select C901,PLR0915` — zero
+1. `ruff check hosts/little_lisa/frontdoor_routing.py` — zero violations.
+2. `ruff check hosts/little_lisa/main.py --select C901,PLR0915` — zero
    violations for `_plan_frontdoor_route`.
-3. `pytest examples/little_lisa/ -m "not live" -p no:randomly` — 99 passed,
+3. `pytest hosts/little_lisa/ -m "not live" -p no:randomly` — 99 passed,
    7 pre-existing failures unchanged.
 
 ## Out of scope

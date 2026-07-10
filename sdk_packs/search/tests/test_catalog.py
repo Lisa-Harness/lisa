@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from lisa_sdk.lisa_content._catalog import (
+from sdk.lisa_content._catalog import (
     build_mode_catalog_json,
     build_tool_catalog_json,
     resolve_mode_roots,

@@ -5,7 +5,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 async def main():
     params = StdioServerParameters(
         command=r"C:\Code\lisa_framework\.venv\Scripts\lisa-memory.exe",
-        args=["--data-dir", r"C:\Code\lisa_framework\examples\little_lisa\artifacts"],
+        args=["--data-dir", r"C:\Code\lisa_framework\hosts\little_lisa\artifacts"],
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:

@@ -38,7 +38,7 @@ Build a standalone executable from `lisa_framework/`:
 
 ```powershell
 uv sync --extra dev
-uv run pyinstaller --name little_lisa --onefile examples/little_lisa/main.py
+uv run pyinstaller --name little_lisa --onefile hosts/little_lisa/main.py
 ```
 
 The resulting executable is available at `dist/little_lisa.exe`.
@@ -46,7 +46,7 @@ The resulting executable is available at `dist/little_lisa.exe`.
 Generated Markdown documents are written under:
 
 ```plaintext
-examples/little_lisa/artifacts/markdown/
+hosts/little_lisa/artifacts/markdown/
 ```
 
 ## What It Wires
@@ -66,7 +66,7 @@ The host wires these public framework seams:
 
 Little Lisa keeps model selection intentionally small and explicit.
 
-- Default manifest path: `examples/little_lisa/models.yaml`.
+- Default manifest path: `hosts/little_lisa/models.yaml`.
 - Override path with `LITTLE_LISA_MODELS_FILE`.
 - Supported provider values: `azure_openai`, `openai`, `anthropic`, `ollama`.
 - Supported designations: `front-door`, `default`, `deep`, `reasoning`.
@@ -176,7 +176,7 @@ no TTL.  Use `app/memory_store.py` for production.
 - Default chat and discuss modes use live model completion when provider credentials are configured.
 - Installed but unsupported modes return an explicit host-wiring gap instead of pretending to run.
 - Workflow modes run when they only rely on shared turn-runner callbacks; modes that require app-only workflow fan-out behavior still report an explicit gap.
-- Local thread continuity is persisted to `examples/little_lisa/artifacts/threads/<user>.jsonl` and used for lightweight ranked-context hints.
+- Local thread continuity is persisted to `hosts/little_lisa/artifacts/threads/<user>.jsonl` and used for lightweight ranked-context hints.
 - `--timezone <IANA>` pins status-line local time and timezone display.
 - `--state-snapshot <file.json>` injects compact local snapshot context into prompt assembly.
 - `--user <slug>` selects authored context from `content/user_contexts/<slug>.md` and controls local thread-log keying.
@@ -209,7 +209,7 @@ The host keeps a small alias map for deterministic model intent by mode:
 - `search` and `markdown` use `default`
 - `/deep` uses `deep`
 
-These aliases are resolved against `examples/little_lisa/models.yaml` designations.
+These aliases are resolved against `hosts/little_lisa/models.yaml` designations.
 
 ## Front-Door Diagnostics
 
@@ -298,11 +298,11 @@ graph TD
 
 When extracting a new concern from `main.py`:
 
-1. Create `examples/little_lisa/<concern>.py` with a module-level docstring describing its responsibility, dependency direction, and re-exported names.
+1. Create `hosts/little_lisa/<concern>.py` with a module-level docstring describing its responsibility, dependency direction, and re-exported names.
 2. Write pure functions that accept state/config as parameters — avoid global state references.
 3. In `main.py`, import the new module's functions using the `try/except ImportError` fallback pattern.
 4. Keep thin wrapper functions in `main.py` for any name that tests monkeypatch directly.
-5. Run `uv run pytest examples/little_lisa/ -q` to verify zero regressions.
+5. Run `uv run pytest hosts/little_lisa/ -q` to verify zero regressions.
 
 ## Runtime Options
 
@@ -352,3 +352,4 @@ Little Lisa does not include:
 - Teams, Azure, or CloudServers-specific logic.
 
 A real host should replace the stubs with concrete callbacks and protocol implementations while keeping the same framework-facing contracts.
+

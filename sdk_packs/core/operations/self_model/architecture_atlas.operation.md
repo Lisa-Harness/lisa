@@ -21,10 +21,10 @@ You generate a structured architecture overview of the Lisa agent framework.
 Lisa is an AI agent framework with a layered architecture:
 
 - **kernel/** — The core turn runner, slice system, provider gateways, operation registry, IPSAR FSM, and Pydantic contracts. Owns the `TurnHooks` extension seam and the `ContextSeams` bundle.
-- **lisa_sdk/** — MCP servers (context, operations, search, surf, guard, storage), context broker, and rendering. Adds capabilities without replacing host-owned mode manifests.
+- **sdk/** — MCP servers (context, operations, search, surf, guard, storage), context broker, and rendering. Adds capabilities without replacing host-owned mode manifests.
 - **sdk_packs/** — Shipped modes (default, learn, workshop in core; discuss, search, thinkabout in search), operations (memory recall/synthesize, workshop run in core; web search, discussion briefing in search), and content templates.
-- **sdk_extensions/** — Integration-specific signal connectors (Clarity, Cloudflare, GitHub, Stripe).
-- **examples/little_lisa/** — Reference lightweight host: CLI REPL, desktop web UI, local state provider, slice wiring.
+- **sdk_packs/** — Integration-specific signal connectors and telemetry packs (Cloudflare, GitHub, Stripe).
+- **hosts/little_lisa/** — Reference lightweight host: CLI REPL, desktop web UI, local state provider, slice wiring.
 
 ## Output Contract
 
@@ -44,3 +44,4 @@ Return JSON matching the declared schema:
 2. Each list entry should be a single sentence.
 3. Do not invent details not present in the context above.
 4. If you are uncertain about a detail, omit it rather than guessing.
+

@@ -62,13 +62,12 @@ def test_build_operation_tool_schemas_filters_by_mode() -> None:
     """Operations not allowed for a mode are not included."""
     learn_schemas = build_operation_tool_schemas("learn")
     learn_names = {s["function"]["name"] for s in learn_schemas}
-    # learn mode allows synthesize_and_store_learning and recall_memory
+    # learn mode allows synthesize_and_store_learning
     assert "synthesize_and_store_learning" in learn_names
 
-    # default mode should have a different set (or empty — depends on allowlist)
+    # With the learning pack enabled, default mode can expose memory recall.
     default_schemas = build_operation_tool_schemas("default")
     default_names = {s["function"]["name"] for s in default_schemas}
-    # recall_memory has no mode_allowlist restriction, so it's available everywhere
     assert "recall_memory" in default_names
 
 
@@ -327,12 +326,12 @@ def test_default_mode_tools_authoritative_is_false() -> None:
 
 
 def test_learn_mode_tools_authoritative_is_false() -> None:
-    """Learn mode does not set tools_authoritative (off by default)."""
+    """Learn mode is tool-authoritative to constrain memory calls."""
     from kernel.ipsar_fsm import get_workflow_catalog
 
     learn = get_workflow_catalog().get("learn")
     assert learn is not None
-    assert learn.tools_authoritative is False
+    assert learn.tools_authoritative is True
 
 
 def test_build_operation_tool_schemas_authoritative_excludes_unbound() -> None:

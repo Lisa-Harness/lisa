@@ -212,5 +212,5 @@ Focused local checks from `lisa_framework/`:
 uv run little-lisa modes
 uv run little-lisa once "/markdown Draft a quick checklist"
 uv run little-lisa once "/hello framework"  # after setting SDK_CONTENT_ROOTS
-uv run ruff check sdk_packs examples
+uv run ruff check sdk_packs hosts
 ```

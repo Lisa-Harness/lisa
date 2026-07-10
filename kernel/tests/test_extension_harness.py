@@ -55,7 +55,7 @@ class _HelloWorldConnector(SignalConnector[_HelloWorldSnapshot]):
 def test_list_extension_entries_reports_signal_connector_metadata(monkeypatch) -> None:
     fake_entry_point = _FakeEntryPoint(
         name="hello_world",
-        value="sdk_extensions.hello_world.connector:HelloWorldSignalConnector",
+        value="sdk_packs.hello_world.connector:HelloWorldSignalConnector",
         factory=_HelloWorldConnector,
     )
     monkeypatch.setattr(
@@ -69,14 +69,14 @@ def test_list_extension_entries_reports_signal_connector_metadata(monkeypatch) -
     assert [entry.entry_id for entry in entries] == ["hello_world"]
     assert entries[0].kind == "connector"
     assert (
-        entries[0].import_path == "sdk_extensions.hello_world.connector:HelloWorldSignalConnector"
+        entries[0].import_path == "sdk_packs.hello_world.connector:HelloWorldSignalConnector"
     )
 
 
 def test_load_signal_connector_and_build_contract_preview(monkeypatch) -> None:
     fake_entry_point = _FakeEntryPoint(
         name="hello_world",
-        value="sdk_extensions.hello_world.connector:HelloWorldSignalConnector",
+        value="sdk_packs.hello_world.connector:HelloWorldSignalConnector",
         factory=_HelloWorldConnector,
     )
     monkeypatch.setattr(

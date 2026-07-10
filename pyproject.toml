@@ -6,10 +6,11 @@ requires-python = ">=3.11"
 dependencies = [
     "lisa-kernel",
     "lisa-sdk",
-    "lisa-ext-cloudflare",
-    "lisa-ext-github",
-    "lisa-ext-stripe",
+    "lisa-pack-cloudflare",
+    "lisa-pack-github",
+    "lisa-pack-stripe",
     "lisa-pack-core",
+    "lisa-pack-learning",
     "lisa-pack-search",
     "little-lisa",
     "rich>=13.7.0",
@@ -34,22 +35,24 @@ package = false
 [tool.uv.workspace]
 members = [
     "kernel",
-    "lisa_sdk",
-    "sdk_extensions/cloudflare",
-    "sdk_extensions/github",
-    "sdk_extensions/stripe",
+    "sdk",
+    "sdk_packs/cloudflare",
+    "sdk_packs/github",
+    "sdk_packs/stripe",
     "sdk_packs/core",
+    "sdk_packs/learning",
     "sdk_packs/search",
-    "examples/little_lisa",
+    "hosts/little_lisa",
 ]
 
 [tool.uv.sources]
 lisa-kernel = { workspace = true }
 lisa-sdk = { workspace = true }
-lisa-ext-cloudflare = { workspace = true }
-lisa-ext-github = { workspace = true }
-lisa-ext-stripe = { workspace = true }
+lisa-pack-cloudflare = { workspace = true }
+lisa-pack-github = { workspace = true }
+lisa-pack-stripe = { workspace = true }
 lisa-pack-core = { workspace = true }
+lisa-pack-learning = { workspace = true }
 lisa-pack-search = { workspace = true }
 little-lisa = { workspace = true }
 
@@ -141,3 +144,4 @@ ignore_decorators = [
     "@router.get",
     "@router.post",
 ]
+

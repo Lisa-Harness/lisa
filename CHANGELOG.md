@@ -128,24 +128,22 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 #### SDK (`lisa-sdk`)
 
-- Author-facing helper contracts for packs, extensions, workshop execution, and rendering.
+- Author-facing helper contracts for packs, workshop execution, rendering, and integration contracts.
 - `WorkshopExecutionService` (`workshop_execution.py`) for safe child-workflow fan-out with isolated session keys and structured concurrency.
 - `RichAttachment` and `RefreshSummarySection` rendering contracts (`rendering.py`) for host-neutral rich reply content.
 - SDK-owned settings (`config.py`) for heartbeat interval, signal timeout, memory recall limit, and surf/web search defaults.
-- Import-boundary test enforcing `lisa_sdk` isolation from private app modules.
+- Import-boundary test enforcing `sdk` isolation from private app modules.
 
-#### Extensions (`lisa-ext-*`)
+#### Integration Packs (`lisa-pack-*`)
 
-- `lisa-ext-clarity`: Microsoft Clarity live-insights signal connector with anomaly detection (rage clicks, JS errors), context evidence, heartbeat context, digest sections, refresh summary, poll job scheduling, PII sanitization, and blob storage helpers.
-- `lisa-ext-cloudflare`: Cloudflare signal connector with GraphQL analytics (worker requests/errors/CPU, edge status codes, KV/Durable Objects/D1 metrics, WAF events, Pages projects), anomaly detection, context evidence, heartbeat context, digest sections, and refresh summary.
-- `lisa-ext-github`: GitHub signal connector with repo status, commit info, workflow runs, open PRs, anomaly detection, context evidence, heartbeat context, digest sections, refresh summary, read-only code search/file excerpt/tree listing client, and write-capable PR creation client with protected-branch safety.
-- `lisa-ext-stripe`: Stripe billing signal connector with active/trialing subscriptions and MRR, context evidence, heartbeat context, digest sections, and refresh summary.
+- `lisa-pack-cloudflare`: Cloudflare signal connector with GraphQL analytics (worker requests/errors/CPU, edge status codes, KV/Durable Objects/D1 metrics, WAF events, Pages projects), anomaly detection, context evidence, heartbeat context, digest sections, and refresh summary.
+- `lisa-pack-github`: GitHub signal connector with repo status, commit info, workflow runs, open PRs, anomaly detection, context evidence, heartbeat context, digest sections, refresh summary, read-only code search/file excerpt/tree listing client, and write-capable PR creation client with protected-branch safety.
+- `lisa-pack-stripe`: Stripe billing signal connector with active/trialing subscriptions and MRR, context evidence, heartbeat context, digest sections, and refresh summary.
 
 #### Packs (`lisa-pack-*`)
 
-- `lisa-pack-core`: baseline public modes (default, learn, workshop), authored front-door routing prompts, user context templates, memory recall/synthesize operations, research workshop operation with planner+synthesis pipeline.
+- `lisa-pack-core`: baseline public modes (default, workshop), authored front-door routing prompts, user context templates, and research workshop operation with planner+synthesis pipeline.
 - `lisa-pack-search`: research & reasoning pack owning discuss, search, and thinkabout modes plus the web_search tool, the web_search research-loop operation, and the discussion_briefing pre-turn operation. Discuss was absorbed from core so each mode is co-located with its enrichment operations.
-- `lisa-pack-extras`: optional general-purpose modes and authoring operations.
 
 #### Little Lisa (`little-lisa`)
 
@@ -184,3 +182,4 @@ All notable changes to the Lisa Framework will be documented in this file.
 - `little-lisa` turn logs now emit top-level resolved model fields and per-invocation token totals for both front-door planning and mode execution, making `turn.completed` JSONL entries readable without deep payload expansion.
 - Front-door routing retries once without `response_format` when the first structured-output call fails, using explicit JSON-only instructions before deciding fallback.
 - Slice budget is pressure-driven: budget grows as a function of idle time since the last slice finished, not a wall-clock tick. This is the canonical pattern for opportunistic house-keeping (reindex, eviction, sync) — everything not wall-clock bound is a candidate.
+

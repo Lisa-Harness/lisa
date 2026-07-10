@@ -1,7 +1,7 @@
 """Kernel-owned runtime configuration.
 
 This module intentionally contains only settings consumed by `kernel/**`.
-Public packs and extensions use `lisa_sdk.config`, while the root app owns its
+Public packs and extensions use `sdk.config`, while the root app owns its
 broader host and product settings in `app.config`.
 """
 
@@ -256,3 +256,4 @@ def reload_settings() -> Settings:
 
     globals()["settings"] = new_settings
     return new_settings
+

@@ -177,7 +177,7 @@ class ContextSeams:
 
 ### Import-boundary enforcement
 
-The existing `lisa_sdk/tests/test_import_boundaries.py` pattern extends to
+The existing `sdk/tests/test_import_boundaries.py` pattern extends to
 `kernel/tests/test_context_import_boundaries.py`: assert that no module under
 `kernel/context/` imports `app.*` or any private package. This is the regression
 guard for the breach that exists today.
@@ -488,3 +488,4 @@ implemented when needed. OpenAI translation ships in Phase 2.
    is surfaced as MCP tools.
 4. **mem0 as default.** mem0 can be installed as an alternative MCP memory server,
     but `lisa-context` remains the default. No kernel fallback.
+

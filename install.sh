@@ -136,8 +136,8 @@ clone_or_update_repo() {
 generate_env_file() {
     local install_dir=$1; shift
     local providers=("$@")
-    local env_file="$install_dir/examples/little_lisa/.env"
-    local env_example="$install_dir/examples/little_lisa/.env.example"
+    local env_file="$install_dir/hosts/little_lisa/.env"
+    local env_example="$install_dir/hosts/little_lisa/.env.example"
 
     if [[ -f "$env_file" ]]; then
         printf "  .env already exists — preserved\n"
@@ -202,7 +202,7 @@ post_install_guidance() {
 
     if $has_secrets; then
         printf "  To finish configuring your providers:\n"
-        printf "    1. Edit %s\n" "$install_dir/examples/little_lisa/.env"
+        printf "    1. Edit %s\n" "$install_dir/hosts/little_lisa/.env"
         for prov in ${providers[@]}; do
             [[ "$prov" == "ollama" ]] && continue
             local label="${_PROVIDER_LABEL[$prov]}"

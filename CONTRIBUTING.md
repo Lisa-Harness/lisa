@@ -16,16 +16,16 @@ warn-only stage — any failure blocks. Run all steps from the repo root.
 
 ```powershell
 # 1. Format check (deterministic; idempotent)
-uv run ruff format --check kernel lisa_sdk sdk_extensions sdk_packs examples
+uv run ruff format --check kernel sdk sdk_packs hosts
 
 # 2. Lint (complexity + style + import ordering)
-uv run ruff check kernel lisa_sdk sdk_extensions sdk_packs examples
+uv run ruff check kernel sdk sdk_packs hosts
 
 # 3. Type check (strict, all public packages)
-uv run mypy kernel lisa_sdk sdk_extensions sdk_packs
+uv run mypy kernel sdk sdk_packs
 
 # 4. Dead code check
-uv run vulture kernel lisa_sdk sdk_extensions sdk_packs examples/little_lisa vulture_allowlist.py
+uv run vulture kernel sdk sdk_packs hosts/little_lisa vulture_allowlist.py
 
 # 5. Tests (no live API calls)
 uv run pytest -m "not live" --tb=short -v
@@ -55,10 +55,9 @@ uv run little-lisa verify
 | Package | Path | Description |
 | --- | --- | --- |
 | `lisa-kernel` | `kernel/` | Runtime-neutral contracts, FSM engine, operation registry |
-| `lisa-sdk` | `lisa_sdk/` | Author-facing helpers for packs and extensions |
-| `lisa-ext-*` | `sdk_extensions/` | Public extensions (Clarity, Cloudflare, GitHub, Stripe) |
+| `lisa-sdk` | `sdk/` | Author-facing helpers for packs and integration contracts |
 | `lisa-pack-*` | `sdk_packs/` | Public mode/operation packs |
-| `little-lisa` | `examples/little_lisa/` | Local terminal host CLI |
+| `little-lisa` | `hosts/little_lisa/` | Local terminal host CLI |
 
 ## Commit Conventions
 
@@ -72,3 +71,4 @@ uv run little-lisa verify
 ## Questions?
 
 Open a discussion or issue on GitHub.
+

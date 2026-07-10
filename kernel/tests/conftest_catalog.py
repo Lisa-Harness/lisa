@@ -17,6 +17,9 @@ from kernel.operations.registry import execute_operation, get_operation_catalog,
 from kernel.tools.mcp_client import MCPClientConfig
 
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk_packs" / "core").resolve()
+_LEARNING_ROOT: Path = (
+    Path(__file__).resolve().parents[1] / ".." / "sdk_packs" / "learning"
+).resolve()
 
 
 def _make_content_mcp_config() -> MCPClientConfig:
@@ -26,12 +29,12 @@ def _make_content_mcp_config() -> MCPClientConfig:
         command=sys.executable,
         args=[
             "-m",
-            "lisa_sdk.lisa_content.server",
+            "sdk.lisa_content.server",
             "--data-dir",
             str(_CORE_ROOT),
         ],
         env={
-            "SDK_CONTENT_ROOTS": str(_CORE_ROOT),
+            "SDK_CONTENT_ROOTS": f"{_CORE_ROOT};{_LEARNING_ROOT}",
         },
     )
 

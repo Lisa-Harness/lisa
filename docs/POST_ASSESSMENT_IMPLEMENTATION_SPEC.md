@@ -712,7 +712,7 @@ hooks = TurnHooks(
 
 | Question | Answer |
 | --- | --- |
-| Separate repo or monorepo? | **Separate repo.** `lisa-packs` — a community-contributed mode pack registry. The framework repo keeps `lisa-pack-core` and `lisa-pack-extras` as reference implementations. |
+| Separate repo or monorepo? | **Separate repo.** `lisa-packs` — a community-contributed mode pack registry. The framework repo keeps `lisa-pack-core`, `lisa-pack-learning`, and `lisa-pack-search` as reference implementations. |
 | Distribution mechanism? | **PyPI packages + git clone.** Each pack is a Python package installable via pip. The repo is also cloneable for filesystem discovery. |
 | Curation model? | **Community PRs + maintainer review.** Lightweight CODEOWNERS, a PACK_AUTHORING_GUIDE.md, and a CI check that validates `_mode.md` front matter. |
 
@@ -802,7 +802,7 @@ And the pack's modes appear in the mode catalog automatically.
 
 | Question | Answer |
 | --- | --- |
-| What does the TS SDK cover? | **SDK layer only.** `lisa-sdk-ts` mirrors `lisa_sdk/`: rendering contracts, workshop execution, settings. It does NOT reimplement the kernel. |
+| What does the TS SDK cover? | **SDK layer only.** `lisa-sdk-ts` mirrors `sdk/`: rendering contracts, workshop execution, settings. It does NOT reimplement the kernel. |
 | Runtime target? | **Node.js 18+, TypeScript 5.x, ESM.** No CommonJS. |
 | Package manager? | **pnpm** (consistent with Adam's preferences). |
 | MCP integration? | **Yes.** The TS SDK includes an MCP client that speaks to Lisa's MCP servers. |
@@ -841,7 +841,7 @@ lisa-sdk-ts/
                 mode-basic/
                 mode-with-operations/
                 extension-basic/
-    examples/
+    hosts/
         little-lisa-ts/
             package.json
             src/
@@ -1361,3 +1361,4 @@ flowchart TD
 | Real-model eval (LLM-as-judge) | Host concern; not a kernel feature |
 | CI/CD pipeline configuration | Ops concern |
 | Documentation site / API reference | Separate content work |
+

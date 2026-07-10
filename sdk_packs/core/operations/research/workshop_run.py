@@ -34,7 +34,7 @@ from kernel.models import (
     WorkshopRenderConfig,
 )
 from kernel.operations.structured_output import run_structured_completion_with_retry
-from lisa_sdk.workshop_execution import (
+from sdk.workshop_execution import (
     WorkshopChildExecutionRequest,
     WorkshopExecutionParentContext,
     WorkshopExecutionService,
@@ -672,3 +672,4 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             },
         },
     )
+

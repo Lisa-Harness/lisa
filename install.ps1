@@ -232,7 +232,7 @@ function Write-PostInstallGuidance {
 
     if ($hasSecrets) {
         Write-Host "  To finish configuring your providers:" -ForegroundColor Yellow
-        Write-Host "    1. Edit $(Join-Path $InstallDir "examples\little_lisa\.env")" -ForegroundColor Yellow
+        Write-Host "    1. Edit $(Join-Path $InstallDir "hosts\little_lisa\.env")" -ForegroundColor Yellow
         foreach ($provider in $Providers) {
             $meta = $ProviderMeta[$provider]
             $blanks = @($meta.EnvVars | ForEach-Object { $meta.Defaults[$meta.EnvVars.IndexOf($_)] }) -eq ""

@@ -25,7 +25,7 @@ unless the bug is a linter/type error blocking the refactor.
 
 The caller provides an **explicit** file path or module glob. If no concrete
 target is provided, ask: "Which file or module should I refactor? Provide a
-path (e.g. `examples/little_lisa/main.py`) or a glob (e.g. `kernel/**/*.py`)."
+path (e.g. `hosts/little_lisa/main.py`) or a glob (e.g. `kernel/**/*.py`)."
 
 Do not infer scope from chat context or working-tree state.
 

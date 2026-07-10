@@ -89,9 +89,9 @@ async def _setup_command() -> None:
 
 ## Verification
 
-1. `ruff check examples/little_lisa/main.py --select C901` — zero violations
+1. `ruff check hosts/little_lisa/main.py --select C901` — zero violations
    for `_setup_command`.
-2. `pytest examples/little_lisa/ -m "not live" -p no:randomly` — 99 passed,
+2. `pytest hosts/little_lisa/ -m "not live" -p no:randomly` — 99 passed,
    7 pre-existing failures unchanged.
 3. Manual: `little-lisa setup` produces the same menu and flow as before.
 
@@ -100,3 +100,4 @@ async def _setup_command() -> None:
 - Changing the provider list or validation logic.
 - Adding new providers.
 - Making the wizard non-interactive.
+

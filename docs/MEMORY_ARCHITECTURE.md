@@ -60,7 +60,7 @@ A memory backend is an MCP server in the pool, no different from
 any mode that declares the tools in its `allowed_operation_ids` or tool
 allowlist. There is no memory-specific gating.
 
-- **`lisa_memory`** (`lisa_sdk/lisa_memory/`): stdio, warm, the minimal
+- **`lisa_memory`** (`sdk/lisa_memory/`): stdio, warm, the minimal
   built-in. Three core tools + `get_surface_context`, local SQLite with TTL.
   The default backend.
 - **`mem0`** (`https://mcp.mem0.ai/mcp`): HTTP, cold. Serves the three core
@@ -276,19 +276,19 @@ servers:
 
 | File | Role |
 | --- | --- |
-| `lisa_sdk/lisa_memory/server.py` | The minimal built-in memory server (3 core tools + `get_surface_context`). |
-| `lisa_sdk/lisa_memory/store.py` | `SqliteMemoryStore` — extracted verbatim from the former `lisa_context`. |
-| `lisa_sdk/lisa_context/server.py` | Broker-only now (`broker_context`); no SQLite store. |
+| `sdk/lisa_memory/server.py` | The minimal built-in memory server (3 core tools + `get_surface_context`). |
+| `sdk/lisa_memory/store.py` | `SqliteMemoryStore` — extracted verbatim from the former `lisa_context`. |
+| `sdk/lisa_context/server.py` | Broker-only now (`broker_context`); no SQLite store. |
 | `kernel/mcp_launch/policy.py` | `RuntimeKind.HTTP`, `MCPServerSpec.url`/`.headers`. |
 | `kernel/mcp_launch/server_manifest.py` | Parses `runtime_kind: http` + `url`/`headers`; `_ENV_REF_RE` in-place expansion. |
 | `kernel/mcp_launch/compiler.py` | Emits `MCPClientConfig` with `url`/`headers` for HTTP specs. |
 | `kernel/tools/mcp_client.py` | `MCPClientConfig.url`/`.headers`, `_connect_http` via `streamable_http_client`. |
 | `kernel/tools/synthetic.py` | `mcp_alias_tool` — the builder the synthetic aliases use. |
-| `examples/little_lisa/main.py` | `_register_memory_synthetic_tools` (pool-backed aliases), `_memory_list_fn`, warm-pool wiring. |
-| `examples/little_lisa/turn_hooks.py` | `LittleLisaTurnHooks.answer_memory_recall` (the preserved ranker). |
+| `hosts/little_lisa/main.py` | `_register_memory_synthetic_tools` (pool-backed aliases), `_memory_list_fn`, warm-pool wiring. |
+| `hosts/little_lisa/turn_hooks.py` | `LittleLisaTurnHooks.answer_memory_recall` (the preserved ranker). |
 | `sdk_packs/core/operations/memory/synthesize_learning.py` | Persists via `ctx.execute_tool_fn("memory.add")`. |
 | `sdk_packs/core/operations/memory/recall.py` | Calls `ctx.answer_memory_recall_fn` (the ranker hook). |
-| `examples/little_lisa/mcp_servers.yaml` | The manifest: `memory.backends` + `servers` (dual registration). |
+| `hosts/little_lisa/mcp_servers.yaml` | The manifest: `memory.backends` + `servers` (dual registration). |
 
 ## Switching the Default Backend
 

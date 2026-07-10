@@ -16,7 +16,7 @@ is co-located with its enrichment operations. The pack is discovered via the
 ``lisa.extensions.content_roots`` entry point.
 
 The pack reads configuration from environment variables only and never
-imports ``lisa_sdk`` or ``kernel`` config, so it stays self-contained for
+imports ``sdk`` or ``kernel`` config, so it stays self-contained for
 externalization.
 """
 

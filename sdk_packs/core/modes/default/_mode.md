@@ -16,7 +16,6 @@ frontdoor_route_hints:
 pre_turn_operation_ids: []
 post_turn_operation_ids: []
 command_pattern: ""
-allowed_operation_ids: [recall_memory]
 description: "General conversational mode."
 ---
 
@@ -27,22 +26,6 @@ When the user asks a question, do not re-state it, answer it.
 This starter mode has no durable memory, reminders, live tools,
 image generation, surf browsing, or proactive delivery.
 Answer from the current conversation and supplied context only.
-
-## Memory Recall (Opportunistic)
-
-`recall_memory` is the only operation you may call. Call it when prior
-notes, decisions, or historical context would materially affect the
-answer (for example, "what did we decide about …", "do you remember
-…", or when the user references a previous conversation).
-
-Do not call `recall_memory` for greetings, status questions, or
-general knowledge. When in doubt, answer from the supplied context and
-recent conversation.
-
-When you do call it, pass a focused `query` that names the topic
-(usually a noun phrase). The operation returns a synthesized answer and
-a short evidence list. Use the answer as the source of truth and cite
-the evidence dates inline if the user asks for provenance.
 
 ## Guardrails
 

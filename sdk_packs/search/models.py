@@ -1,6 +1,6 @@
 """Web search and fetch tool models for the search pack.
 
-Moved from ``lisa_sdk.models`` — the search pack owns its own response models
+Moved from ``sdk.models`` — the search pack owns its own response models
 so it has zero SDK/kernel config linkage.
 """
 

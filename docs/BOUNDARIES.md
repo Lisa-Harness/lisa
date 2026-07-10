@@ -1,16 +1,15 @@
 # Public Boundary
 
-This staged tree is the intended public framework boundary. It contains reusable mechanics for building Lisa-style hosts, extensions, and packs while leaving the production Lisa app and CloudServers-specific intelligence private.
+This staged tree is the intended public framework boundary. It contains reusable mechanics for building Lisa-style hosts and packs while leaving the production Lisa app and CloudServers-specific intelligence private.
 
 ## Public Layers
 
 | Layer | Public responsibility | Must not own |
 | --- | --- | --- |
 | `kernel` | Runtime-neutral contracts, mode catalog loading, workflow state, operation registry, tool and storage protocols | Host transport SDKs, production deployment, proprietary app behavior |
-| `lisa_sdk` | Author-facing helpers for rendering, workshop execution, extension contracts, and pack composition | Private app imports, private model policy, production storage |
-| `sdk_extensions` | Public integration packages with typed config, models, entry points, and deterministic tests | Customer/product-specific collectors or private credentials |
+| `sdk` | Author-facing helpers for rendering, workshop execution, integration contracts, and pack composition | Private app imports, private model policy, production storage |
 | `sdk_packs` | Public modes, operations, and authored prompt assets | Private product strategy, market-intel workflows, CloudServers-specific content |
-| `examples/little_lisa` | Local terminal host for package discovery, command routing, and a narrow operation-shape test with manifest-driven model routing | Production chat transport, durable memory, production-grade model policy/fallback, workflow-stage execution |
+| `hosts/little_lisa` | Local terminal host for package discovery, command routing, and a narrow operation-shape test with manifest-driven model routing | Production chat transport, durable memory, production-grade model policy/fallback, workflow-stage execution |
 
 ## Private Layers
 
@@ -56,3 +55,4 @@ Prompt wording is not a privacy control. Hosts must enforce scope in storage key
 ## Exclusion Rule
 
 Do not add private app logic to this tree to make an example work. Prefer a small protocol, callback, stub, or host-owned adapter. If a feature requires CloudServers data, market-intel assets, or production Lisa state, keep it outside the public framework and document the missing host capability.
+

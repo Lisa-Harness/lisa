@@ -289,7 +289,7 @@ A real host must inject concrete implementations for these seams:
 | Scheduler | Host-owned | For signal connector polling and heartbeat jobs |
 | Browser automation | Host-owned | For surf workflow execution |
 
-Little Lisa (`examples/little_lisa/`) is the reference host. It wires a minimal subset of these seams for local development and pack authoring.
+Little Lisa (`hosts/little_lisa/`) is the reference host. It wires a minimal subset of these seams for local development and pack authoring.
 
 ## Privacy Model
 
@@ -309,7 +309,7 @@ The kernel ships with:
 - `kernel/tests/`: unit tests for contracts, FSM validation, route parsing, and slice math.
 - `kernel/testing/extension_harness.py`: public harness for validating connectors and data sources without a host app.
 
-Import-boundary tests across all packages (`lisa_sdk/tests/test_import_boundaries.py`, extension `tests/test_import_boundaries.py`) enforce that public packages never import private app modules.
+Import-boundary tests across all packages (`sdk/tests/test_import_boundaries.py`, extension `tests/test_import_boundaries.py`) enforce that public packages never import private app modules.
 
 ## Further Reading
 
@@ -317,3 +317,4 @@ Import-boundary tests across all packages (`lisa_sdk/tests/test_import_boundarie
 - [PACK_AUTHORING_GUIDE.md](PACK_AUTHORING_GUIDE.md) — how to create modes, operations, and content packs
 - [SDK_EXTENSIONS_GUIDE.md](SDK_EXTENSIONS_GUIDE.md) — how to create signal connectors and data sources
 - [LITTLE_LISA_GUIDE.md](LITTLE_LISA_GUIDE.md) — reference host usage and configuration
+

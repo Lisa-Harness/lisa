@@ -47,16 +47,16 @@ The local dev loop and CI use the same commands in the same order. There is no w
 
 ```powershell
 # 1. Format check (deterministic; idempotent)
-uv run ruff format --check kernel lisa_sdk sdk_extensions sdk_packs examples
+uv run ruff format --check kernel sdk sdk_packs hosts
 
 # 2. Lint (complexity + style + import ordering)
-uv run ruff check kernel lisa_sdk sdk_extensions sdk_packs examples
+uv run ruff check kernel sdk sdk_packs hosts
 
 # 3. Type check (strict, all public packages)
-uv run mypy kernel lisa_sdk sdk_extensions sdk_packs
+uv run mypy kernel sdk sdk_packs
 
 # 4. Dead code check
-uv run vulture kernel lisa_sdk sdk_extensions sdk_packs examples/little_lisa vulture_allowlist.py
+uv run vulture kernel sdk sdk_packs hosts/little_lisa vulture_allowlist.py
 
 # 5. Tests (no live API calls)
 uv run pytest -m "not live" --tb=short -v
@@ -64,3 +64,4 @@ uv run pytest -m "not live" --tb=short -v
 # 6. Smoke test
 uv run little-lisa verify
 ```
+

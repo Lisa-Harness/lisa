@@ -17,7 +17,7 @@ validate their work with minimal boilerplate and maximum confidence.
 | Eval framework: build or adopt? | **Build a minimal one.** The eval harness is ~300 lines of Python, not a product. It uses CSV/JSONL datasets and simple pass/fail assertions. Adopting a full eval framework (LangSmith, Braintrust) is a host decision, not a kernel concern. |
 | Snapshot testing: which tool? | **pytest-snapshot or inline golden files.** The kernel already uses pytest. Golden files live next to test files as `*.snapshot.txt` or `*.snapshot.json`. |
 | MCP integration tests: subprocess or in-memory? | **In-memory first.** An `InMemoryMCPServer` that implements the MCP stdio protocol over `asyncio` queues. No subprocess spawning in unit tests. Subprocess tests are a separate integration suite. |
-| Where do test helpers live? | **`kernel/testing/` for kernel-level helpers; `lisa_sdk/testing/` for SDK-level helpers.** Packs and extensions import from `lisa_sdk.testing`. |
+| Where do test helpers live? | **`kernel/testing/` for kernel-level helpers; `sdk/testing/` for SDK-level helpers.** Packs and extensions import from `sdk.testing`. |
 
 ## Layered Test Architecture
 
@@ -613,8 +613,8 @@ of spawning a subprocess.
 | Kernel integration tests | `kernel/tests/integration/test_{module}.py` |
 | Eval datasets | `kernel/tests/eval/datasets/{mode_id}.csv` |
 | Snapshots | `kernel/tests/snapshots/{name}.snapshot.txt` |
-| SDK tests | `lisa_sdk/tests/test_{module}.py` |
-| Extension tests | `sdk_extensions/{ext}/tests/test_{module}.py` |
+| SDK tests | `sdk/tests/test_{module}.py` |
+| Integration pack tests | `sdk_packs/{pack}/tests/test_{module}.py` |
 | Pack tests | `sdk_packs/{pack}/tests/` (new — packs currently have no tests) |
 
 ### CI integration
@@ -674,7 +674,7 @@ uv run pytest -m "not slow"
 
 | Deliverable | Location |
 | --- | --- |
-| `lisa_sdk/testing/__init__.py` — re-exports from `kernel.testing` | `lisa_sdk/testing/__init__.py` |
+| `sdk/testing/__init__.py` — re-exports from `kernel.testing` | `sdk/testing/__init__.py` |
 | Pack test template | `sdk_packs/core/tests/` |
 | Extension test template updates | Existing extension test files |
 
@@ -690,3 +690,4 @@ uv run pytest -m "not slow"
 | Test coverage enforcement (coverage thresholds) | Separate concern. Add `pytest-cov` thresholds after the test suite is populated. |
 | Browser automation testing | Deferred to MCP Phase 6 (MCP-native browser automation). |
 | Streaming turn tests | Deferred until streaming is implemented in the turn runner. |
+
