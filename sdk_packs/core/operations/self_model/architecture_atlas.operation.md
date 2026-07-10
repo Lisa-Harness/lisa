@@ -22,7 +22,7 @@ Lisa is an AI agent framework with a layered architecture:
 
 - **kernel/** — The core turn runner, slice system, provider gateways, operation registry, IPSAR FSM, and Pydantic contracts. Owns the `TurnHooks` extension seam and the `ContextSeams` bundle.
 - **lisa_sdk/** — MCP servers (context, operations, search, surf, guard, storage), context broker, and rendering. Adds capabilities without replacing host-owned mode manifests.
-- **sdk_packs/** — Shipped modes (default, discuss, thinkabout, workshop, search), operations (memory recall/synthesize, web search, discussion briefing, workshop run), and content templates.
+- **sdk_packs/** — Shipped modes (default, learn, workshop in core; discuss, search, thinkabout in search), operations (memory recall/synthesize, workshop run in core; web search, discussion briefing in search), and content templates.
 - **sdk_extensions/** — Integration-specific signal connectors (Clarity, Cloudflare, GitHub, Stripe).
 - **examples/little_lisa/** — Reference lightweight host: CLI REPL, desktop web UI, local state provider, slice wiring.
 

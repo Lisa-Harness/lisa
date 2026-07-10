@@ -1,4 +1,4 @@
-"""Web search tool models for the search pack.
+"""Web search and fetch tool models for the search pack.
 
 Moved from ``lisa_sdk.models`` — the search pack owns its own response models
 so it has zero SDK/kernel config linkage.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-__all__ = ["WebSearchResponse", "WebSearchResult"]
+__all__ = ["FetchedPage", "WebSearchResponse", "WebSearchResult"]
 
 
 class WebSearchResult(BaseModel):
@@ -26,3 +26,13 @@ class WebSearchResponse(BaseModel):
     query: str
     generated_at: str
     results: list[WebSearchResult] = Field(default_factory=list)
+
+
+class FetchedPage(BaseModel):
+    """One fetched page rendered as plain text for model consumption."""
+
+    url: str
+    status_code: int
+    title: str = ""
+    text: str = ""
+    content_type: str = ""

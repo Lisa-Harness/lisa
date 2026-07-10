@@ -1,0 +1,5 @@
+tool_id: fetch_page
+description: "Fetch an http(s) URL and extract its main visible text for grounded synthesis."
+mode_allowlist: null
+max_calls_per_turn: 3
+timeout_seconds: 30

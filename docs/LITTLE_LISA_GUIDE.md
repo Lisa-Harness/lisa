@@ -53,8 +53,8 @@ examples/little_lisa/artifacts/markdown/
 
 The host wires these public framework seams:
 
-- `sdk_packs/core/modes` and `sdk_packs/extras/modes` for mode discovery.
-- `sdk_packs/core/operations` and `sdk_packs/extras/operations` for operation discovery.
+- `sdk_packs/core/modes` and `sdk_packs/search/modes` for mode discovery.
+- `sdk_packs/core/operations` and `sdk_packs/search/operations` for operation discovery.
 - Additional local pack roots from `SDK_CONTENT_ROOTS` for hello-world pack authoring.
 - Stub tool definitions required for operation-catalog validation.
 - Manifest-based model resolution callbacks.

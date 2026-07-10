@@ -1,9 +1,23 @@
-"""Search pack for Lisa.
+"""Search and reasoning pack for Lisa.
 
-A self-contained, externalizable pack providing the web search capability:
-modes (search, thinkabout), operations (web_search research loop,
-discussion_briefing), and the ``web_search`` internal tool. The pack is
-discovered via the ``lisa.extensions.content_roots`` entry point.
+A self-contained, externalizable research toolset providing the web search
+capability plus conversational and reasoning modes that consume it:
+
+- Modes: ``discuss`` (conversational research companion), ``search``
+  (one-shot grounded answer), and ``thinkabout`` (reasoned-opinion workflow).
+- Operations: the ``web_search`` research loop, the ``discussion_briefing``
+  pre-turn enrichment for discuss, and (planned) ``deep_research`` for
+  multi-hop fetch-and-synthesize.
+- Tools: ``web_search`` (Brave) and ``fetch_page`` (URL fetch + main-content
+  extraction) so research loops synthesize from full page text, not snippets.
+
+``discuss`` was absorbed from the core pack so every research/reasoning mode
+is co-located with its enrichment operations. The pack is discovered via the
+``lisa.extensions.content_roots`` entry point.
+
+The pack reads configuration from environment variables only and never
+imports ``lisa_sdk`` or ``kernel`` config, so it stays self-contained for
+externalization.
 """
 
 from __future__ import annotations

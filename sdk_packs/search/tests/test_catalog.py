@@ -1,7 +1,8 @@
 """Tests for the search pack's catalog discovery.
 
 Verifies that the ``lisa-content`` server discovers the web_search tool,
-the two operations, and the two modes from the search pack's content root.
+the two operations, and the three modes (discuss, search, thinkabout) from
+the search pack's content root.
 """
 
 from __future__ import annotations
@@ -9,7 +10,9 @@ from __future__ import annotations
 import json
 
 from lisa_sdk.lisa_content._catalog import (
+    build_mode_catalog_json,
     build_tool_catalog_json,
+    resolve_mode_roots,
     resolve_tool_roots,
 )
 from sdk_packs.search import get_content_root
@@ -29,6 +32,25 @@ def test_web_search_tool_discovered() -> None:
     assert tool["description"]
     assert tool["module_path"]
     assert tool["module_path"].startswith("sdk_packs.search.tools.")
+
+
+def test_search_pack_modes_discovered() -> None:
+    """The search pack owns discuss, search, and thinkabout modes.
+
+    Discuss was absorbed from the core pack so each conversational/research
+    mode is co-located with its enrichment operations in the search pack.
+    """
+    roots = resolve_mode_roots([get_content_root()])
+    assert roots, "No modes/ directory found in search pack"
+
+    catalog = json.loads(build_mode_catalog_json(roots))
+
+    assert set(catalog) >= {"discuss", "search", "thinkabout"}, catalog.keys()
+
+    discuss = catalog["discuss"]
+    assert discuss["mode_kind"] == "chat"
+    assert discuss["pre_turn_operation_ids"] == ["discussion_briefing"]
+    assert discuss["command_pattern"].startswith("^(?:/)?discuss")
 
 
 def test_search_pack_models_importable() -> None:

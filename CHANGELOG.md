@@ -143,7 +143,8 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 #### Packs (`lisa-pack-*`)
 
-- `lisa-pack-core`: baseline public modes (default, discuss, learn, search, thinkabout, workshop), authored front-door routing prompts, user context templates, memory recall/synthesize operations, research workshop operation with planner+synthesis pipeline, and structured output contracts for discussion briefing and web search.
+- `lisa-pack-core`: baseline public modes (default, learn, workshop), authored front-door routing prompts, user context templates, memory recall/synthesize operations, research workshop operation with planner+synthesis pipeline.
+- `lisa-pack-search`: research & reasoning pack owning discuss, search, and thinkabout modes plus the web_search tool, the web_search research-loop operation, and the discussion_briefing pre-turn operation. Discuss was absorbed from core so each mode is co-located with its enrichment operations.
 - `lisa-pack-extras`: optional general-purpose modes and authoring operations.
 
 #### Little Lisa (`little-lisa`)
