@@ -17,8 +17,7 @@ def test_load_manifest_reads_designations_and_models() -> None:
     assert manifest.designated("front-door") is not None
     assert manifest.designated("default") is not None
     assert manifest.designated("reasoning") is not None
-    assert manifest.model_for_mode("thinkabout").model_id == "deepseek-v4-pro:cloud"
-    assert manifest.model_for_mode("search").model_id == "deepseek-v4-flash:cloud"
+    assert manifest.model_for_mode("discuss").model_id == "glm-5.2:cloud"
 
 
 def test_load_manifest_rejects_duplicate_designation(tmp_path: Path) -> None:

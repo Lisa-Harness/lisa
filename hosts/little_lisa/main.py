@@ -290,7 +290,7 @@ except ImportError:  # pragma: no cover - direct script execution fallback
 
 CORE_PACK_ROOT = FRAMEWORK_ROOT / "sdk_packs" / "core"
 
-_DEFAULT_DATA_DIR = FRAMEWORK_ROOT / "examples" / "little_lisa" / "artifacts"
+_DEFAULT_DATA_DIR = FRAMEWORK_ROOT / "hosts" / "little_lisa" / "artifacts"
 _DEFAULT_GOOGLE_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 _DEFAULT_TURN_LOG_NAME = "turns.jsonl"
 
@@ -694,10 +694,12 @@ def _build_content_mcp_config() -> MCPClientConfig:
     can resolve authored text assets like ``frontdoor/route.md`` without a
     ``content/`` prefix).
     """
-    content_root = CORE_PACK_ROOT / "content"
-    host_manifest_path = FRAMEWORK_ROOT / "examples" / "little_lisa" / "mcp_servers.yaml"
+    host_manifest_path = FRAMEWORK_ROOT / "hosts" / "little_lisa" / "mcp_servers.yaml"
     mode_preferences = _load_mode_provider_preferences(host_manifest_path)
-    env = {"SDK_CONTENT_ROOTS": f"{CORE_PACK_ROOT};{content_root}"}
+    roots_for_child: list[Path] = [CORE_PACK_ROOT, *_sdk_content_roots()]
+    content_roots = [root / "content" for root in roots_for_child if (root / "content").is_dir()]
+    configured_roots = _unique_paths([*roots_for_child, *content_roots])
+    env = {"SDK_CONTENT_ROOTS": os.pathsep.join(str(root) for root in configured_roots)}
     if mode_preferences:
         env[_LISA_MODE_PROVIDER_PREFERENCES_ENV] = json.dumps(mode_preferences, ensure_ascii=True)
     return MCPClientConfig(
@@ -1214,6 +1216,8 @@ def _resolve_session_context_literal_path(s: str) -> tuple[str, str, bool] | Non
         return None
     if p.is_dir():
         return "session_context", str(p.absolute()), True
+    if p.suffix.lower() != ".md":
+        raise ValueError("Session context file path must end with '.md'.")
     tn = _extract_front_matter_thread_name(p) or context_slug_to_thread_name(s)
     return tn, str(p.absolute()), True
 
@@ -1252,8 +1256,10 @@ def _resolve_session_context_user_contexts(s: str) -> tuple[str, str, bool] | No
     context_name = s[:-3] if s.lower().endswith(".md") else s
     relative_path = f"user_contexts/{context_name}.md"
     try:
-        _read_authored_text(relative_path)
+        content = _read_authored_text(relative_path)
     except FileNotFoundError:
+        return None
+    if not str(content).strip():
         return None
     return context_name, relative_path, False
 
@@ -3397,7 +3403,7 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
     registry = MCPServerRegistry()
     data_dir = str(_runtime_data_dir())
     workspace_root = str(FRAMEWORK_ROOT)
-    host_manifest_path = FRAMEWORK_ROOT / "examples" / "little_lisa" / "mcp_servers.yaml"
+    host_manifest_path = FRAMEWORK_ROOT / "hosts" / "little_lisa" / "mcp_servers.yaml"
 
     # All servers (first-party + external) from mcp_servers.yaml. The
     # manifest loader honors ``disabled: true`` by skipping entries, and
@@ -4978,7 +4984,7 @@ def _status_time_badge() -> tuple[str, str]:
     try:
         status_dt = datetime.now(ZoneInfo(timezone_name))
     except ZoneInfoNotFoundError:
-        status_dt = datetime.now().astimezone()
+        status_dt = datetime.now()
     timezone_label = timezone_name
     if "/" in timezone_name:
         tz_abbrev_raw = str(status_dt.tzname() or "").strip()
@@ -4994,6 +5000,10 @@ def _status_time_badge() -> tuple[str, str]:
                 )
             else:
                 timezone_label = tz_abbrev_raw.upper()
+        elif timezone_label == timezone_name:
+            # ZoneInfo may be unavailable (no tzdata); keep label compact anyway.
+            tail = timezone_name.rsplit("/", 1)[-1]
+            timezone_label = "".join(part[:1] for part in tail.split("_") if part).upper() or tail
 
         # Windows fallback: if tzname resolves to a long phrase, prefer canonical US abbreviations.
         if " " in timezone_label:
@@ -5142,6 +5152,8 @@ def _resolve_runtime_thread_strategy(
     elif thread_from_env:
         base_dir = thread_from_env
     elif data_dir != _DEFAULT_DATA_DIR:
+        base_dir = data_dir / "threads"
+    elif normalized_user:
         base_dir = data_dir / "threads"
 
     if base_dir is None:
@@ -5632,6 +5644,8 @@ def _init_session_context_and_threads(
     )
     _RUNTIME_STATE["thread_dir"] = resolved_thread_dir
     _RUNTIME_STATE["thread_path"] = thread_path
+    # Back-compat test seam: legacy key retained alongside thread_path.
+    _RUNTIME_STATE["thread_log_path"] = thread_path
     _RUNTIME_STATE["user_slug"] = normalized_user
     _RUNTIME_STATE["session_context_ref"] = context_ref
     _RUNTIME_STATE["session_context_active"] = context_active

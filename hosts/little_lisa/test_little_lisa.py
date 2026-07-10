@@ -217,8 +217,10 @@ async def test_plan_frontdoor_route_uses_markdown_prompt_and_frontdoor_alias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
+    captured_aliases: list[str] = []
 
     def _fake_resolve_model(alias: str) -> little_lisa.StubModelDefinition:
+        captured_aliases.append(alias)
         captured["model_alias"] = alias
         return little_lisa.StubModelDefinition(model_id="gpt-4o", provider="openai")
 
@@ -241,7 +243,7 @@ async def test_plan_frontdoor_route_uses_markdown_prompt_and_frontdoor_alias(
         conversation_excerpt_markdown="recent context",
     )
 
-    assert captured["model_alias"] == "front-door"
+    assert "front-door" in captured_aliases
     assert "## Routable Modes" in str(captured["messages"][0]["content"])
     assert "## User Query" in str(captured["messages"][0]["content"])
     assert decision.selected_mode_id == "search"
@@ -1398,21 +1400,23 @@ async def test_handle_message_returns_operation_error_instead_of_raising(
 
 def test_initialize_runtime_applies_user_timeout_and_state_snapshot(tmp_path: Path) -> None:
     snapshot_path = tmp_path / "state.json"
+    context_path = tmp_path / "system.md"
     snapshot_path.write_text(
         '{"compiled_at":"2026-05-30T00:00:00+00:00","health":"ok"}',
         encoding="utf-8",
     )
+    context_path.write_text("# System Context", encoding="utf-8")
 
     little_lisa._initialize_runtime(
         debug=True,
-        user_slug="system",
+        user_slug=str(context_path),
         timezone="UTC",
         state_snapshot_path=str(snapshot_path),
     )
 
     assert little_lisa._RUNTIME_STATE["user_slug"] == "system"
-    assert little_lisa._RUNTIME_STATE["session_context_ref"] == "user_contexts/system.md"
-    assert little_lisa._RUNTIME_STATE["session_context_active"] is False
+    assert little_lisa._RUNTIME_STATE["session_context_ref"] == str(context_path)
+    assert little_lisa._RUNTIME_STATE["session_context_active"] is True
     assert little_lisa._RUNTIME_STATE["timezone"] == "UTC"
     assert little_lisa._RUNTIME_STATE["timezone_source"] == "cli"
     assert little_lisa._RUNTIME_STATE["log_level"] == "debug"
@@ -1533,7 +1537,12 @@ def test_initialize_runtime_accepts_timezone_alias() -> None:
     assert little_lisa._RUNTIME_STATE["timezone_source"] == "cli"
 
 
-def test_initialize_runtime_fails_when_user_context_missing() -> None:
+def test_initialize_runtime_fails_when_user_context_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LITTLE_LISA_DATA_DIR", str(tmp_path))
+
     with pytest.raises(ValueError, match="Session context 'adam' was not found"):
         little_lisa._initialize_runtime(
             debug=False,

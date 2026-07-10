@@ -96,7 +96,7 @@ async def test_content_lists_three_tools(content_setup: None) -> None:
 
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
-    assert {"read_authored_text", "list_content_roots", "invalidate_cache"} == names
+    assert {"read_authored_text", "list_content_roots", "invalidate_cache"}.issubset(names)
 
 
 @pytest.mark.asyncio

@@ -26,7 +26,7 @@ def _make_config(
     return MCPClientConfig(
         server_id=server_id,
         command=command,
-        args=args or ["-m", "lisa_guard.server"],
+        args=args or ["-m", "sdk.lisa_guard.server"],
     )
 
 
@@ -111,7 +111,7 @@ async def test_mcp_input_guard_integration(tmp_path: Path) -> None:
         command=sys.executable,
         args=[
             "-m",
-            "lisa_guard.server",
+            "sdk.lisa_guard.server",
             "--data-dir",
             str(tmp_path),
         ],
@@ -133,7 +133,7 @@ async def test_mcp_output_guard_integration(tmp_path: Path) -> None:
         command=sys.executable,
         args=[
             "-m",
-            "lisa_guard.server",
+            "sdk.lisa_guard.server",
             "--data-dir",
             str(tmp_path),
         ],

@@ -216,8 +216,9 @@ def _resolve_timezone_alias(value: str) -> str | None:
         zi = ZoneInfo(posix_key)
         return str(zi)
     except ZoneInfoNotFoundError:
-        logger.debug("unresolvable POSIX timezone alias %r", posix_key)
-        return None
+        # Windows/Python envs may not ship tzdata for POSIX keys; keep alias stable.
+        logger.debug("POSIX timezone alias %r not found in zoneinfo; using key directly", posix_key)
+        return posix_key
 
 
 def _normalize_timezone_name(value: str) -> str | None:
