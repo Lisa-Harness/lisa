@@ -19,7 +19,7 @@ doc without prior conversation context.
 | How do modes get memory? | **By listing operations/tools like any other.** `allowed_operation_ids` for the operation path (`recall_memory`, `synthesize_and_store_learning`); tool allowlists for direct backend tools (`mem0.update_memory`, etc.). No special memory field on the operation context. |
 | What is the indirection layer? | **Three synthetic aliases** — `memory.add` / `memory.search` / `memory.list` — built as `mcp_alias_tool` entries that forward through the MCP tool pool to the default backend's tool names. This is the only indirection; everything else is direct. |
 | Are backends tool servers too? | **Yes.** A memory backend is dual-registered: as a `memory.backends` entry (for the synthetic aliases) AND as a `servers` entry (so its full tool surface is discoverable). One connection, two roles. |
-| Is there a host-side ranker? | **Yes, one.** `answer_memory_recall` is preserved as host policy — it ranks records by lexical overlap. It is not backend semantics. Backends stay dumb; the host owns ranking. |
+| Is there a host-side ranker? | **No host-owned behavior.** The lexical recall ranker lives in `lisa-pack-learning`; hosts may delegate to it, but memory behavior is pack-owned, not host-owned. |
 | What is the minimal built-in? | **`lisa_memory`** — a stdio MCP server with three core tools (`add_memory` / `search_memory` / `list_memories`) plus `get_surface_context`, backed by local SQLite. The default backend. |
 | What happened to `lisa_context`? | **Split.** `lisa_context` is now broker-only (`broker_context`). Its former memory store and tools moved to `lisa_memory`. |
 | How does the pool reach HTTP backends? | **`RuntimeKind.HTTP`.** The pool speaks streamable-HTTP via `streamable_http_client` in its `AsyncExitStack`, the same discipline as stdio. |
@@ -35,7 +35,7 @@ flowchart TD
     end
 
     subgraph Host[Host — Little Lisa]
-        Ranker[answer_memory_recall<br/>host-side ranker<br/>memory_list_fn]
+      HostPolicy[memory backend policy<br/>memory_list_fn bridge]
     end
 
     subgraph Pool[MCPToolPool — warm + cold]
@@ -44,10 +44,10 @@ flowchart TD
     end
 
     Ops -->|ctx.execute_tool_fn| Synth
-    Ops -->|ctx.answer_memory_recall_fn| Ranker
+    Ops -->|ctx.execute_tool_fn(memory.list)| HostPolicy
     Synth -->|mcp_alias_tool forward| LisaMem
     Synth -->|when default_backend: mem0| Mem0
-    Ranker -->|memory.list via pool| LisaMem
+    HostPolicy -->|memory.list via pool| LisaMem
     Mem0 -.->|full surface to modes<br/>that declare tools| Model
 ```
 
@@ -77,23 +77,21 @@ the manifest). A mode that says `memory.add` gets the default backend; a
 mode that says `mem0.update_memory` gets Mem0 directly. The aliases are the
 indirection layer — nothing else is.
 
-## The One Preserved Hook: `answer_memory_recall`
+## Learning Owns Recall Behavior
 
-The ranker (`LittleLisaTurnHooks.answer_memory_recall`) is the single
-memory-specific host hook. It is **not** a memory call — it is host policy:
+The lexical recall ranker is part of `lisa-pack-learning`, alongside the
+`recall_memory` and `synthesize_and_store_learning` operations. The host is
+responsible only for runtime policy and bridging MCP tool execution:
 
-1. Calls `memory.list` through the pool (via `memory_list_fn`).
-2. Parses the JSON array into `MemoryRecord` objects.
-3. Tokenizes the query, scores lexical overlap + salience bonus.
-4. Returns a structured `MemoryRecallAnswer` with scored evidence.
+1. The host wires memory backends and the `memory.*` synthetic aliases.
+2. Learning operations call `ctx.execute_tool_fn("memory.list")` or
+  `ctx.execute_tool_fn("memory.add")` like any other tool.
+3. The learning pack ranks the returned `MemoryRecord` rows and produces the
+  final `MemoryRecallAnswer`.
 
-Why this cannot be an MCP tool: the ranking algorithm is host policy, not
-backend semantics. If ranking lived in a backend, every backend would
-re-implement the same ranker, and a backend like Mem0 (which already does its
-own server-side ranking) would have to be forced through a foreign ranker or
-bypass it. The host owns one ranker; backends stay dumb. The `recall_memory`
-operation calls `ctx.answer_memory_recall_fn`; storage operations call
-`ctx.execute_tool_fn("memory.add")` like any other tool.
+This keeps memory behavior out of kernel/core/host while preserving host
+ownership of backend selection, auth, ambient scope injection, and pool
+lifecycle.
 
 ## What Was Deleted (hard cutover, no shim)
 
@@ -103,7 +101,7 @@ operation calls `ctx.answer_memory_recall_fn`; storage operations call
 | `kernel/memory_router.py` (`MemoryStoreRouter`) | The router's job (default selection) is done by the synthetic-alias wiring at pool start. |
 | `kernel/memory_protocol.py` (`MemoryStore` protocol for operations) | Nothing in the kernel needs it once operations go through the tool pool. |
 | `ContextSeams.memory_store` + `_lazy_memory_store` | No in-process memory seam. |
-| `OperationExecutionContext.memory_store` | Operations reach memory via `execute_tool_fn`. (`answer_memory_recall_fn` stays.) |
+| `OperationExecutionContext.memory_store` | Operations reach memory via `execute_tool_fn`. |
 | `LittleLisaStateProvider._consolidate_memory` | Reached into `MCPMemoryClient._records`/`_save` — impossible across the MCP boundary; redundant with `lisa_memory`'s TTL `expires_at`. |
 
 ## What Was NOT Deleted
@@ -156,7 +154,7 @@ return raw
 ```
 
 A header value like `Bearer ${MEM0_API_KEY}` is **not** a whole-string ref —
-it is `Bearer ` + a ref. The original returned the literal unchanged,
+it is the literal prefix `Bearer` plus a `${MEM0_API_KEY}` ref. The original returned the literal unchanged,
 producing `Authorization: Bearer ${MEM0_API_KEY}` (the variable name, not the
 secret). This was caught only by a test asserting the expanded value.
 
@@ -168,7 +166,7 @@ expansion.
 ### 4. The empty-auth-header guard — refuse to wire rather than crash
 
 When `MEM0_API_KEY` is unset, `${MEM0_API_KEY}` expands to `""`, producing
-`Authorization: Bearer `. Sending that header yields a 401 from the server.
+an `Authorization: Bearer` header with no token. Sending that header yields a 401 from the server.
 Because the 401 fires inside `streamable_http_client`'s anyio task group, it
 cascades into a cross-task cancel-scope `RuntimeError` that masks the real
 cause (the empty key).
@@ -284,10 +282,10 @@ servers:
 | `kernel/mcp_launch/compiler.py` | Emits `MCPClientConfig` with `url`/`headers` for HTTP specs. |
 | `kernel/tools/mcp_client.py` | `MCPClientConfig.url`/`.headers`, `_connect_http` via `streamable_http_client`. |
 | `kernel/tools/synthetic.py` | `mcp_alias_tool` — the builder the synthetic aliases use. |
-| `hosts/little_lisa/main.py` | `_register_memory_synthetic_tools` (pool-backed aliases), `_memory_list_fn`, warm-pool wiring. |
-| `hosts/little_lisa/turn_hooks.py` | `LittleLisaTurnHooks.answer_memory_recall` (the preserved ranker). |
-| `sdk_packs/core/operations/memory/synthesize_learning.py` | Persists via `ctx.execute_tool_fn("memory.add")`. |
-| `sdk_packs/core/operations/memory/recall.py` | Calls `ctx.answer_memory_recall_fn` (the ranker hook). |
+| `hosts/little_lisa/main.py` | `_register_memory_synthetic_tools` (pool-backed aliases), warm-pool wiring, generic operation callback injection. |
+| `hosts/little_lisa/turn_hooks.py` | Generic host callbacks for completion, tool execution, introspection, and slice delegation. |
+| `sdk_packs/learning/operations/memory/synthesize_learning.py` | Persists via `ctx.execute_tool_fn("memory.add")`. |
+| `sdk_packs/learning/operations/memory/recall.py` | Calls `memory.list` directly and ranks results in-pack. |
 | `hosts/little_lisa/mcp_servers.yaml` | The manifest: `memory.backends` + `servers` (dual registration). |
 
 ## Switching the Default Backend

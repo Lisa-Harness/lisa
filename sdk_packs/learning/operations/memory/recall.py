@@ -7,10 +7,13 @@ filters.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+import json
 
-from kernel.models import OperationExecutionContext, OperationResult
+from pydantic import BaseModel, Field, ValidationError
+
+from kernel.models import MemoryRecord, OperationExecutionContext, OperationResult, ToolExecutionContext
 from sdk.config import settings
+from sdk_packs.learning.utils.memory_recall import build_memory_recall_answer
 
 
 class Parameters(BaseModel):
@@ -39,20 +42,50 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     if not raw_query:
         return OperationResult()
 
-    if not callable(ctx.answer_memory_recall_fn):
-        return OperationResult(output_text="Memory recall unavailable: recall hook not injected.")
+    if not callable(ctx.execute_tool_fn):
+        return OperationResult(output_text="Memory recall unavailable: tool execution not injected.")
 
     default_limit = max(1, ctx.memory_recall_default_limit or settings.memory_recall_final_limit)
+    limit = int(ctx.params.get("limit", default_limit) or 1)
 
-    recall = await ctx.answer_memory_recall_fn(
+    tool_result = await ctx.execute_tool_fn(
+        "memory.list",
+        ToolExecutionContext(
+            tool_id="memory.list",
+            workspace_id=ctx.workspace_id,
+            user_id=ctx.user_id,
+            user_slug=ctx.user_slug,
+            surface_id=ctx.surface_id,
+            memory_scope=ctx.memory_scope,
+            mode_id=ctx.mode_id,
+            query=raw_query,
+            parameters={
+                "user_slug": ctx.user_slug,
+                "limit": max(1, min(limit, 20)),
+            },
+        ),
+    )
+    if getattr(tool_result, "error", None):
+        return OperationResult(output_text=f"Memory recall unavailable: {tool_result.error}")
+
+    records: list[MemoryRecord] = []
+    try:
+        data = json.loads(tool_result.output_text or "[]")
+    except (json.JSONDecodeError, TypeError):
+        data = []
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            try:
+                records.append(MemoryRecord.model_validate(item))
+            except (ValidationError, TypeError):
+                continue
+
+    recall = build_memory_recall_answer(
         query=raw_query,
-        user_slug=ctx.user_slug,
-        workspace_id=ctx.workspace_id,
-        memory_scope=ctx.memory_scope,
-        surface_id=ctx.surface_id,
-        complete_fn=ctx.complete_fn,
-        force_deep=bool(ctx.params.get("deep", False)),
-        limit=int(ctx.params.get("limit", default_limit) or 1),
+        records=records,
+        limit=limit,
     )
 
     if not recall.found:

@@ -217,7 +217,6 @@ class OperationExecutionContext(BaseModel):
     resolve_model_fn: Any = Field(default=None, exclude=True)
     read_authored_text_fn: Any = Field(default=None, exclude=True)
     generate_image_fn: Any = Field(default=None, exclude=True)
-    answer_memory_recall_fn: Any = Field(default=None, exclude=True)
     build_workshop_context_bundle_fn: Any = Field(default=None, exclude=True)
     execute_tool_fn: Any = Field(default=None, exclude=True)
     execute_operation_fn: Any = Field(default=None, exclude=True)

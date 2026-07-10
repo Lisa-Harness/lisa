@@ -138,17 +138,20 @@ As of 2026-06-19, Little Lisa delegates all turn execution to
 - `complete` — executes live chat completions against the provider configured for the selected model manifest entry.
 - `execute_tool` — executes `web_search` through `kernel.web_search` when configured; other tools remain stubbed.
 - `execute_operation` — delegates to `kernel.operations.registry.execute_operation`.
-- Memory is MCP-backed via the `lisa-context` MCP server.
+- Memory backends are MCP-backed via `lisa-memory` or `mem0`, selected by host manifest policy.
+- Memory behavior (`recall_memory`, `synthesize_and_store_learning`, and the memory-backed `default`/`learn` modes) is provided by `lisa-pack-learning`, not by Little Lisa core.
 
 This means action, chat, and workflow modes all flow through the same
 three-phase loop (pre-turn → tool loop → post-turn) as the production app.
 The only difference is which hooks are wired.
 
-### MCP Memory (lisa-context)
+### MCP Memory
 
-File-backed JSON memory with keyword-overlap matching.  Intentionally
-minimal — no embeddings, no semantic search, no multi-tenant isolation,
-no TTL.  Use `app/memory_store.py` for production.
+Little Lisa wires memory backends through MCP runtime policy in
+`mcp_servers.yaml`. The default local backend is `lisa-memory`
+(SQLite-backed, minimal built-in), and hosts may switch the generic
+`memory.*` aliases to `mem0` by declaration. Memory recall and synthesis
+workflows are provided by `lisa-pack-learning`.
 
 ## Expected Behavior
 

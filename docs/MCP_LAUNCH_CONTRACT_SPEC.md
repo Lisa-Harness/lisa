@@ -239,6 +239,13 @@ from `--data-dir` exclusively.
 | `LOG_LEVEL` | all servers | Default log level (overridable by `--log-level`) |
 | `LOG_FORMAT` | all servers | Log output format |
 
+Host runtime policy and pack behavior stay separate: MCP server manifests
+own backend launch/configuration (for example which memory backend the
+generic `memory.*` aliases target), while packs discovered through
+`SDK_CONTENT_ROOTS` own the operations and modes that use those tools
+(for example `lisa-pack-learning` providing `recall_memory` and
+`synthesize_and_store_learning`).
+
 ## Part 3 — Controlled Third-Party MCP Server Model
 
 ### Launch policy registry

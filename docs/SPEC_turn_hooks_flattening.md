@@ -6,8 +6,8 @@
 
 ## Problem
 
-`_build_turn_hooks` in `main.py` contains 9 nested async closures that
-capture mutable parent state (`memory_store`, `state_provider`). This makes
+`_build_turn_hooks` in `main.py` contains nested async closures that
+capture mutable parent state (`state_provider` and host callback bindings). This makes
 the hooks untestable in isolation and violates the repo's "flatten closures"
 structural rule.
 
@@ -17,22 +17,19 @@ structural rule.
 | PLR0915 (statements) | 51 | ≤ 50 |
 | Nested closures | 9 | 0 |
 
-The nested closures:
+The nested closures at the time of the extraction:
 
 1. `_post_turn_slice` — delegates to `state_provider.slice`
 2. `_pre_turn_slice` — delegates to `state_provider.slice`
 3. `_explicit_slice` — delegates to `state_provider.slice`
-4. `_answer_memory_recall` — queries `memory_store`, ranks records
-5. `_write_memory` — writes to `memory_store`
-6. `_list_memory_records` — lists from `memory_store`
-7. `_complete` — delegates to `_complete_live`
-8. `_resolve_model_hook` — delegates to `_resolve_model`
-9. `_execute_tool` — delegates to `_execute_tool`
+4. `_complete` — delegates to `_complete_live`
+5. `_resolve_model_hook` — delegates to `_resolve_model`
+6. `_execute_tool` — delegates to `_execute_tool`
 
 ## Goal
 
 Flatten all closures into a `TurnHookProviders` class that holds the shared
-state (`memory_store`, `state_provider`) as instance attributes, with the
+state (`state_provider` plus host callback bindings) as instance attributes, with the
 hook callbacks as methods.
 
 ## Design
@@ -46,13 +43,11 @@ class LittleLisaTurnHooks:
     def __init__(
         self,
         *,
-        memory_store: MCPMemoryClient,
         state_provider: LittleLisaStateProvider,
         complete_live: Callable[..., Awaitable[StubCompletion]],
         resolve_model: Callable[[str], StubModelDefinition],
         execute_tool: Callable[[str, Any], Awaitable[ToolResult]],
     ) -> None:
-        self._memory_store = memory_store
         self._state_provider = state_provider
         self._complete_live = complete_live
         self._resolve_model = resolve_model
@@ -66,19 +61,6 @@ class LittleLisaTurnHooks:
 
     async def explicit_slice(self, policy: SlicePolicy) -> Any:
         return await self._state_provider.slice(ctx=None, policy=policy)
-
-    async def answer_memory_recall(
-        self, *, query: str, user_slug: str, workspace_id: str,
-        memory_scope: str = "personal", surface_id: str = "",
-        limit: int = 5, **_kwargs: Any,
-    ) -> MemoryRecallAnswer:
-        ...  # moved from closure
-
-    async def write_memory(self, request: MemoryWriteRequest) -> MemoryRecord:
-        ...  # moved from closure
-
-    async def list_memory_records(self, ...) -> list[MemoryRecord]:
-        ...  # moved from closure
 
     async def complete(self, **kwargs: Any) -> StubCompletion:
         return await self._complete_live(**kwargs)
@@ -98,10 +80,9 @@ class LittleLisaTurnHooks:
 
 ```python
 def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
-    """Build TurnHooks wired to Little Lisa callbacks and memory operations."""
-    memory_store, state_provider = _build_memory_and_state_provider()
+    """Build TurnHooks wired to Little Lisa callbacks."""
+    state_provider = _build_memory_and_state_provider()
     provider = LittleLisaTurnHooks(
-        memory_store=memory_store,
         state_provider=state_provider,
         complete_live=_complete_live,
         resolve_model=_resolve_model,

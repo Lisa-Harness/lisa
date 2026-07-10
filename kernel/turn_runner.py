@@ -928,7 +928,7 @@ async def _run_turn_inner(
                     # Operation: dispatch in-process via the host's
                     # execute_operation hook, which injects all host
                     # callbacks (complete_fn, resolve_model_fn,
-                    # answer_memory_recall_fn, execute_tool_fn, etc.).
+                    # execute_tool_fn, introspect_fn, etc.).
                     op_ctx = ctx.model_copy(
                         update={"operation_id": tool_name, "params": tool_arguments}
                     )

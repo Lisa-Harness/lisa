@@ -939,3 +939,161 @@ Traceback (most recent call last):
 ModuleNotFoundError: No module named 'sdk_extensions.stripe'
 2026-07-10 16:44:09 [little_lisa.model_manifest] INFO: loaded model manifest: 2 model(s)
 2026-07-10 16:44:09 [little_lisa.model_manifest] INFO: loaded model manifest: 2 model(s)
+2026-07-10 18:07:18 [kernel.intake.connector_discovery] WARNING: Failed to load signal connector 'cloudflare'
+Traceback (most recent call last):
+  File "C:\Code\lisa_framework\kernel\intake\connector_discovery.py", line 26, in discover_installed_signal_connectors
+    loaded = ep.load()
+             ^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\importlib\metadata\__init__.py", line 205, in load
+    module = import_module(match.group('module'))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\importlib\__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1310, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1324, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'sdk_extensions.cloudflare'
+2026-07-10 18:07:18 [kernel.intake.connector_discovery] WARNING: Failed to load signal connector 'github'
+Traceback (most recent call last):
+  File "C:\Code\lisa_framework\kernel\intake\connector_discovery.py", line 26, in discover_installed_signal_connectors
+    loaded = ep.load()
+             ^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\importlib\metadata\__init__.py", line 205, in load
+    module = import_module(match.group('module'))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\importlib\__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1310, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1324, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'sdk_extensions.github'
+2026-07-10 18:07:18 [kernel.intake.connector_discovery] WARNING: Failed to load signal connector 'stripe'
+Traceback (most recent call last):
+  File "C:\Code\lisa_framework\kernel\intake\connector_discovery.py", line 26, in discover_installed_signal_connectors
+    loaded = ep.load()
+             ^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\importlib\metadata\__init__.py", line 205, in load
+    module = import_module(match.group('module'))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\importlib\__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1310, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1324, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'sdk_extensions.stripe'
+2026-07-10 18:07:18 [little_lisa.model_manifest] INFO: loaded model manifest: 2 model(s)
+2026-07-10 18:07:18 [little_lisa.model_manifest] INFO: loaded model manifest: 2 model(s)
+2026-07-10 18:10:10 [sdk.lisa_context.extension_evidence_builder] WARNING: Failed to load context_evidence entry 'cloudflare'
+Traceback (most recent call last):
+  File "C:\Code\lisa_framework\sdk\lisa_context\extension_evidence_builder.py", line 55, in build_extension_context_evidence
+    builder_fn = ep.load()
+                 ^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\importlib\metadata\__init__.py", line 205, in load
+    module = import_module(match.group('module'))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\importlib\__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1310, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1324, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'sdk_extensions.cloudflare'
+2026-07-10 18:10:10 [sdk.lisa_context.extension_evidence_builder] WARNING: Failed to load context_evidence entry 'github'
+Traceback (most recent call last):
+  File "C:\Code\lisa_framework\sdk\lisa_context\extension_evidence_builder.py", line 55, in build_extension_context_evidence
+    builder_fn = ep.load()
+                 ^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\importlib\metadata\__init__.py", line 205, in load
+    module = import_module(match.group('module'))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\importlib\__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1310, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1324, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'sdk_extensions.github'
+2026-07-10 18:10:10 [sdk.lisa_context.extension_evidence_builder] WARNING: Failed to load context_evidence entry 'stripe'
+Traceback (most recent call last):
+  File "C:\Code\lisa_framework\sdk\lisa_context\extension_evidence_builder.py", line 55, in build_extension_context_evidence
+    builder_fn = ep.load()
+                 ^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\importlib\metadata\__init__.py", line 205, in load
+    module = import_module(match.group('module'))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0\Lib\importlib\__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1310, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1324, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'sdk_extensions.stripe'
+2026-07-10 18:11:48 [little_lisa.model_manifest] INFO: loaded model manifest: 2 model(s)
+2026-07-10 18:11:48 [little_lisa.model_manifest] INFO: loaded model manifest: 2 model(s)
+2026-07-10 18:13:06 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:13:07 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:13:12 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp "HTTP/1.1 307 Temporary Redirect"
+2026-07-10 18:13:12 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp/ "HTTP/1.1 200 OK"
+2026-07-10 18:13:12 [mcp.client.streamable_http] INFO: Negotiated protocol version: 2025-11-25
+2026-07-10 18:13:12 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp "HTTP/1.1 307 Temporary Redirect"
+2026-07-10 18:13:12 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp/ "HTTP/1.1 202 Accepted"
+2026-07-10 18:13:13 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp "HTTP/1.1 307 Temporary Redirect"
+2026-07-10 18:13:13 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp/ "HTTP/1.1 200 OK"
+2026-07-10 18:13:13 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:13:14 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp "HTTP/1.1 307 Temporary Redirect"
+2026-07-10 18:13:15 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp/ "HTTP/1.1 200 OK"
+2026-07-10 18:13:16 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:14:44 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:14:49 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:14:50 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:14:51 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:14:51 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp "HTTP/1.1 307 Temporary Redirect"
+2026-07-10 18:14:52 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp/ "HTTP/1.1 200 OK"
+2026-07-10 18:14:55 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:20:05 [little_lisa.model_manifest] INFO: loaded model manifest: 2 model(s)
+2026-07-10 18:20:05 [little_lisa.model_manifest] INFO: loaded model manifest: 2 model(s)
+2026-07-10 18:20:36 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:20:39 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:20:44 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp "HTTP/1.1 307 Temporary Redirect"
+2026-07-10 18:20:44 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp/ "HTTP/1.1 200 OK"
+2026-07-10 18:20:44 [mcp.client.streamable_http] INFO: Negotiated protocol version: 2025-11-25
+2026-07-10 18:20:44 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp "HTTP/1.1 307 Temporary Redirect"
+2026-07-10 18:20:44 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp/ "HTTP/1.1 202 Accepted"
+2026-07-10 18:20:44 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp "HTTP/1.1 307 Temporary Redirect"
+2026-07-10 18:20:44 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp/ "HTTP/1.1 200 OK"
+2026-07-10 18:20:46 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:20:46 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp "HTTP/1.1 307 Temporary Redirect"
+2026-07-10 18:20:46 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp/ "HTTP/1.1 200 OK"
+2026-07-10 18:20:47 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:20:47 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp "HTTP/1.1 307 Temporary Redirect"
+2026-07-10 18:20:47 [httpx] INFO: HTTP Request: POST https://mcp.mem0.ai/mcp/ "HTTP/1.1 200 OK"
+2026-07-10 18:20:50 [httpx] INFO: HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-10 18:27:41 [little_lisa.model_manifest] INFO: loaded model manifest: 2 model(s)
+2026-07-10 18:27:41 [little_lisa.model_manifest] INFO: loaded model manifest: 2 model(s)

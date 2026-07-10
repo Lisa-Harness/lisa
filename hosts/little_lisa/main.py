@@ -3655,12 +3655,10 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
     Delegates to ``LittleLisaTurnHooks`` in ``turn_hooks.py`` which holds
     shared state as instance attributes instead of capturing it via closures.
 
-    Memory is now an MCP feature, not a kernel seam: the ``memory.list``
-    synthetic alias routes through the warm MCP tool pool to the default
-    backend (``lisa-memory``), and the host-side ranker
-    (``answer_memory_recall``) parses the JSON records it returns. The
-    ranker is the one preserved host-side hook (it is host policy, not
-    backend semantics); storage is just an MCP tool call.
+    Memory is now an MCP feature, not a kernel seam. The host owns the
+    pool-backed ``memory.add`` / ``memory.search`` / ``memory.list`` aliases
+    and generic operation callbacks; the learning pack owns memory recall and
+    synthesis behavior by calling those aliases through ``ctx.execute_tool_fn``.
     """
     from kernel.slice import SliceTuning  # noqa: PLC0415
 
@@ -3680,7 +3678,6 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
             persisted_last_slice_finished_at = float(raw)
 
     provider = turn_hooks_module.LittleLisaTurnHooks(
-        memory_list_fn=_memory_list_fn,
         state_provider=state_provider,
         complete_live=_complete_live,
         resolve_model=_resolve_model,
@@ -3691,14 +3688,13 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         operation_id: str,
         ctx: OperationExecutionContext,
     ) -> OperationResult:
-        """Execute an operation with the memory recall ranker wired.
+        """Execute an operation with host callbacks wired.
 
-        Memory storage is just an MCP tool call (``memory.add``); operations
-        reach it via ``ctx.execute_tool_fn`` like any other tool. Only the
-        host-side recall ranker is injected here — it is host policy, not
-        backend semantics.
+        Learning-pack memory operations reach ``memory.add`` / ``memory.list``
+        via ``ctx.execute_tool_fn`` like any other tool. The kernel turn
+        runner injects that executor; this host hook adds the remaining
+        runtime defaults such as recall limits and live introspection.
         """
-        ctx.answer_memory_recall_fn = provider.answer_memory_recall
         ctx.memory_recall_default_limit = 8
         ctx.introspect_fn = provider.introspect
         return await execute_operation(operation_id, ctx)
@@ -5278,59 +5274,6 @@ def _is_empty_auth_header(value: str) -> bool:
         return False
     token = value.lstrip()[len("bearer "):].strip()
     return token == ""
-
-
-def _memory_list_fn(
-    *,
-    user_slug: str,
-    workspace_id: str = "default",
-    memory_scope: str = "personal",
-    surface_id: str = "",
-    limit: int = 20,
-) -> Any:
-    """Return an awaitable that lists memory records via the warm MCP pool.
-
-    The host-side recall ranker (``LittleLisaTurnHooks.answer_memory_recall``)
-    needs parsed :class:`~kernel.models.MemoryRecord` objects to score. This
-    helper calls the ``memory.list`` synthetic alias through the warm pool
-    (which routes to the default memory backend — ``lisa-memory`` or ``mem0``)
-    and parses the JSON array it returns into ``MemoryRecord`` instances.
-
-    Returns a coroutine; callers ``await`` it. The pool is read from runtime
-    state (set by ``astart_warm_mcp_pool``).
-    """
-    from kernel.models import MemoryRecord  # noqa: PLC0415
-
-    async def _list() -> list[MemoryRecord]:
-        pool = _RUNTIME_STATE.get("mcp_tool_pool")
-        if pool is None:
-            return []
-        result = await pool.call_tool(
-            "memory.list",
-            {
-                "user_slug": user_slug,
-                "limit": limit,
-            },
-        )
-        if not result.output_text or result.is_error:
-            return []
-        try:
-            data = json.loads(result.output_text)
-        except (json.JSONDecodeError, TypeError):
-            return []
-        if not isinstance(data, list):
-            return []
-        records: list[MemoryRecord] = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            try:
-                records.append(MemoryRecord.model_validate(item))
-            except (ValidationError, TypeError):
-                continue
-        return records
-
-    return _list()
 
 
 def _register_memory_synthetic_tools(pool: Any) -> None:

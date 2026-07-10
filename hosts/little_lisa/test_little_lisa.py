@@ -1752,10 +1752,10 @@ async def test_handle_message_requires_models_before_running_turn(
 
 @pytest.mark.asyncio
 async def test_build_turn_hooks_wires_recall_hook() -> None:
-    """Auto-recall is wired so memory snippets are injected before turns.
+    """Turn hooks build cleanly with learning-owned memory behavior.
 
-    The little-lisa host provides MCP-backed memory access and exposes the
-    `recall_memory` operation for explicit model calls.
+    The little-lisa host still provides MCP-backed memory aliases, while the
+    learning pack owns the explicit `recall_memory` operation behavior.
     """
     little_lisa._build_turn_hooks({"mode_id": "default"})
 
@@ -1765,8 +1765,8 @@ async def test_build_turn_hooks_routes_memory_through_operations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When the model calls `recall_memory` via the operation surface, the
-    operation context it receives has the recall ranker hook injected (the
-    operation dispatch, not an in-process store, is the surface for that).
+    operation context it receives has the live tool executor and defaults
+    injected; the learning pack owns the recall behavior itself.
     """
     captured: dict[str, object] = {}
 
@@ -1777,7 +1777,7 @@ async def test_build_turn_hooks_routes_memory_through_operations(
         captured["operation_id"] = operation_id
         captured["mode_id"] = ctx.mode_id
         captured["query"] = ctx.query
-        captured["has_recall_fn"] = callable(ctx.answer_memory_recall_fn)
+        captured["has_introspect_fn"] = callable(ctx.introspect_fn)
         captured["default_limit"] = ctx.memory_recall_default_limit
         return little_lisa.OperationResult(output_text="ok")
 
@@ -1791,7 +1791,7 @@ async def test_build_turn_hooks_routes_memory_through_operations(
     assert captured["operation_id"] == "recall_memory"
     assert captured["mode_id"] == "default"
     assert captured["query"] == "hello"
-    assert captured["has_recall_fn"] is True
+    assert captured["has_introspect_fn"] is True
     assert captured["default_limit"] == 8
 
 
@@ -1806,7 +1806,7 @@ async def test_turn_hook_execute_operation_injects_memory_dependencies(
         ctx: little_lisa.OperationExecutionContext,
     ) -> little_lisa.OperationResult:
         captured["operation_id"] = operation_id
-        captured["has_recall_fn"] = callable(ctx.answer_memory_recall_fn)
+        captured["has_introspect_fn"] = callable(ctx.introspect_fn)
         captured["default_limit"] = ctx.memory_recall_default_limit
         return little_lisa.OperationResult(output_text="ok")
 
@@ -1818,7 +1818,7 @@ async def test_turn_hook_execute_operation_injects_memory_dependencies(
 
     assert result.output_text == "ok"
     assert captured["operation_id"] == "recall_memory"
-    assert captured["has_recall_fn"] is True
+    assert captured["has_introspect_fn"] is True
     assert captured["default_limit"] == 8
 
 

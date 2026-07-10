@@ -8,7 +8,7 @@ The kernel is **runtime-neutral** by design. It owns all contracts, abstractions
 
 Key principles:
 
-- **Contracts over implementations**: The kernel defines Pydantic models, protocols, and dataclasses. Hosts provide the concrete wiring (model completion, tool execution, memory storage, blob I/O).
+- **Contracts over implementations**: The kernel defines Pydantic models, protocols, and dataclasses. Hosts provide the concrete wiring (model completion, tool execution, MCP backend policy). Packs provide behavior such as memory recall and synthesis workflows.
 - **Pressure, not a clock**: Background work uses an opportunistic slice model where budget grows as a function of idle time since the last slice finished. Wall-clock timers are reserved for heartbeat-driven jobs only.
 - **No compat or migration layers**: When a pattern changes, old code goes away. No shim layers, no dual-path code.
 - **Sensible defaults, externalize later**: Keep defaults working; defer config-driven knobs until the pattern is proven.
@@ -47,7 +47,7 @@ Key principles:
 | --- | --- |
 | `web_search.py` | Brave Web Search integration. Configurable endpoint, market, and result count. |
 | `surf_workflow.py` | Durable surf session helpers for iterative browser workflows: TTL, trimming, page/commentary tracking, session persistence. |
-| `mcp_client.py` | MCP stdio client for delegating memory operations to the `lisa-context` MCP server. |
+| `tools/mcp_client.py` | MCP tool-pool/client transport for stdio and HTTP servers, including memory backends routed by host policy. |
 | `openai_function_tools.py` | OpenAI function-tool schema builder with strict-mode support. |
 | `state_providers.py` | `BlankStateProvider` for hosts that don't need memory. |
 | `telemetry.py` | OpenTelemetry span helpers. |
