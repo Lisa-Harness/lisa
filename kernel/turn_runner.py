@@ -40,11 +40,13 @@ from kernel.ipsar_fsm import (
     run_mode_pre_turn_operations,
 )
 from kernel.models import (
+    CallLedger,
     OperationExecutionContext,
     OperationResult,
     SurfaceContext,
     ToolExecutionContext,
     ToolResult,
+    TurnBudget,
 )
 from kernel.operations.registry import (
     build_operation_tool_schemas,
@@ -555,6 +557,7 @@ async def run_turn(
     hooks: TurnHooks,
     max_tool_iterations: int = 5,
     preferred_model_id: str | None = None,
+    turn_budget: TurnBudget | None = None,
     logger_override: logging.Logger | None = None,
 ) -> TurnResult:
     """Execute one conversational turn with the full model+tool loop.
@@ -578,6 +581,12 @@ async def run_turn(
         max_tool_iterations: Maximum number of tool-calling loop iterations.
         preferred_model_id: Optional per-turn model alias override supplied by
             the host when routing needs an explicit front-door model.
+        turn_budget: Optional whole-turn resource budget. When set, the loop
+            tracks tool calls, tokens, and wall time against the budget and
+            forces a final no-tools completion when any limit is reached.
+            When None, only ``max_tool_iterations`` bounds the loop (the
+            historical behavior). The budget is the "ratio" knob: the host
+            expresses the mix of inference and compute as one envelope.
         logger_override: Optional logger for test capture.
 
     Returns:
@@ -624,6 +633,7 @@ async def run_turn(
             mode_config=mode_config,
             max_tool_iterations=max_tool_iterations,
             preferred_model_id=preferred_model_id,
+            turn_budget=turn_budget,
             logger_override=logger_override,
         )
     pool = MCPToolPool(hooks.mcp_tool_servers)
@@ -643,6 +653,7 @@ async def run_turn(
             mode_config=mode_config,
             max_tool_iterations=max_tool_iterations,
             preferred_model_id=preferred_model_id,
+            turn_budget=turn_budget,
             logger_override=logger_override,
         )
     finally:
@@ -664,11 +675,21 @@ async def _run_turn_inner(
     mode_config: Any,
     max_tool_iterations: int,
     preferred_model_id: str | None,
+    turn_budget: TurnBudget | None,
     logger_override: logging.Logger | None,
 ) -> TurnResult:
     """Inner turn loop that owns the MCPToolPool lifecycle via the caller."""
 
     _log = logger_override or logger
+
+    # Per-turn call ledger shared across all dispatch branches (operations,
+    # pack tools, MCP tools). Enforces ``max_calls_per_turn`` uniformly; the
+    # declarative operation runtime keeps its own in-loop counter for its
+    # bounded sub-agent, but the ledger is the authoritative cross-branch cap.
+    ledger = CallLedger()
+    # Wall-clock anchor for the turn budget. Captured once so every budget
+    # check measures from the same origin.
+    turn_start_mono = time.monotonic()
 
     async def _mcp_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
         """Bridge OperationExecutionContext.execute_tool_fn to in-process tools.
@@ -715,7 +736,7 @@ async def _run_turn_inner(
             state_provider=hooks.state_provider,
             build_workshop_context_bundle_fn=hooks.build_workshop_context_bundle_fn,
         )
-        result = await run_mode_entry_operations(mode_id, ctx)
+        result = await run_mode_entry_operations(mode_id, ctx, ledger=ledger)
         return TurnResult(
             response_text=result.output_text.strip() or "Done",
             tool_call_count=0,
@@ -735,7 +756,7 @@ async def _run_turn_inner(
         state_provider=hooks.state_provider,
         build_workshop_context_bundle_fn=hooks.build_workshop_context_bundle_fn,
     )
-    pre_result = await run_mode_pre_turn_operations(mode_id, ctx)
+    pre_result = await run_mode_pre_turn_operations(mode_id, ctx, ledger=ledger)
     pre_briefing = _extract_pre_turn_briefing(pre_result)
     # ── Phase 1.0: Input guard ─────────────────────────────────────
     # Runs before the pre-turn slice so a blocked input does not consume
@@ -848,8 +869,66 @@ async def _run_turn_inner(
     total_duration_ms = 0.0
     total_latency_ms = 0
 
+    def _budget_forces_final() -> bool:
+        """Return True when the turn budget is exhausted and the loop must
+        force a final no-tools completion.
+
+        A budget field set to 0 means unlimited and never forces. When any
+        nonzero field is exhausted, the model gets one more call — but with
+        no tools advertised so it must produce a final text response.
+        """
+        if turn_budget is None:
+            return False
+        if turn_budget.max_tool_calls and total_tool_calls >= turn_budget.max_tool_calls:
+            return True
+        if turn_budget.max_total_tokens and total_tokens >= turn_budget.max_total_tokens:
+            return True
+        if turn_budget.max_wall_ms:
+            elapsed_ms = int((time.monotonic() - turn_start_mono) * 1000)
+            if elapsed_ms >= turn_budget.max_wall_ms:
+                return True
+        return False
+
+    # Per-iteration model selection (item 5). When the host wires
+    # ``hooks.model_policy``, the loop consults it each iteration instead of
+    # resolving one model for the whole turn. The policy can upgrade or
+    # downgrade the model based on whether tools have run and how much budget
+    # remains. This lets a host express "cheap model routes, expensive model
+    # synthesizes" without the operation indirection.
+    def _resolve_iteration_model(iteration_num: int) -> Any:
+        policy = hooks.context_seams.model_policy
+        choose_fn = getattr(policy, "choose", None)
+        if callable(choose_fn):
+            chosen_id = policy.choose(  # type: ignore[attr-defined]
+                default_model_id=preferred_model_id,
+                iteration=iteration_num,
+                tool_calls_so_far=total_tool_calls,
+                budget_remaining=(
+                    None
+                    if turn_budget is None
+                    else max(0, turn_budget.max_tool_calls - total_tool_calls)
+                    if turn_budget.max_tool_calls
+                    else None
+                ),
+            )
+            if isinstance(chosen_id, str) and chosen_id.strip():
+                return resolve_model(chosen_id.strip())
+        return model_def
+
     while iteration < max_tool_iterations:
         iteration += 1
+        # Budget enforcement: when exhausted, strip tools so the model must
+        # produce a final text response. This is the "ratio" stop condition.
+        budget_exhausted = _budget_forces_final()
+        effective_tools = None if budget_exhausted else (tool_schemas if tool_schemas else None)
+        if budget_exhausted:
+            _log.debug(
+                "turn budget exhausted (mode=%s, tool_calls=%d, tokens=%d); forcing final",
+                mode_id,
+                total_tool_calls,
+                total_tokens,
+            )
+        effective_model_def = _resolve_iteration_model(iteration)
         if hooks.complete_stream is not None:
             # ── Streaming path ──────────────────────────────────────────
             # v1: stream tokens to the host. When the stream indicates
@@ -859,10 +938,10 @@ async def _run_turn_inner(
             chunks: list[StreamedChunk] = []
             async for chunk in hooks.complete_stream(
                 messages=messages,
-                model_def=model_def,
+                model_def=effective_model_def,
                 max_tokens=4096,
                 temperature=0.4,
-                tools=tool_schemas if tool_schemas else None,
+                tools=effective_tools,
             ):
                 chunks.append(chunk)
             aggregated = _aggregate_streamed_chunks(chunks)
@@ -870,10 +949,10 @@ async def _run_turn_inner(
                 # Fall back to non-streaming for tool-call payload
                 completion = await complete(
                     messages=messages,
-                    model_def=model_def,
+                    model_def=effective_model_def,
                     max_tokens=4096,
                     temperature=0.4,
-                    tools=tool_schemas if tool_schemas else None,
+                    tools=effective_tools,
                 )
             else:
                 # Build a completion-like object from the aggregated stream
@@ -881,10 +960,10 @@ async def _run_turn_inner(
         else:
             completion = await complete(
                 messages=messages,
-                model_def=model_def,
+                model_def=effective_model_def,
                 max_tokens=4096,
                 temperature=0.4,
-                tools=tool_schemas if tool_schemas else None,
+                tools=effective_tools,
             )
         (
             prompt_tokens,
@@ -922,6 +1001,26 @@ async def _run_turn_inner(
             tool_name, tool_arguments = openai_tool_call_to_mcp(tool_call)
             tool_call_id = str(tool_call.get("id") or "")
 
+            # Per-target ``max_calls_per_turn`` enforcement (item 2). The
+            # ledger is the single enforcement point across operations and
+            # pack tools. MCP tools have no catalog definition, so they are
+            # bounded only by the global iteration count.
+            target_def = operation_catalog.get(tool_name) or tool_catalog.get(tool_name)
+            if target_def is not None:
+                max_calls = getattr(target_def, "max_calls_per_turn", 0)
+                if ledger.is_exhausted(tool_name, max_calls):
+                    tool_output = (
+                        f"Tool '{tool_name}' has reached its per-turn call limit "
+                        f"({max_calls})."
+                    )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": tool_name,
+                        "content": tool_output,
+                    })
+                    continue
+
             tools_dispatched = True
             try:
                 if tool_name in operation_catalog:
@@ -953,6 +1052,7 @@ async def _run_turn_inner(
                     mcp_result = await pool.call_tool(tool_name, tool_arguments)
                     tool_output = mcp_result.output_text or "Done"
                 total_tool_calls += 1
+                ledger.record(tool_name)
             except Exception as exc:  # pylint: disable=broad-except
                 _log.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
                 tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"

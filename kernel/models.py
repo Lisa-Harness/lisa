@@ -1089,6 +1089,55 @@ class WorkshopPanelModeConfig(BaseModel):
     query_prompt_file: str = ""
 
 
+class TurnBudget(BaseModel):
+    """Whole-turn resource budget spanning inference + compute.
+
+    This is the missing "ratio" knob. The host expresses the mix of model
+    work and tool work as one budget; the turn loop enforces it across all
+    iterations regardless of which dispatch branch (operation / tool / MCP)
+    fired.
+
+    A budget field is "unlimited" when set to 0. An exhausted budget forces a
+    final no-tools completion so the turn still returns a coherent response.
+    """
+
+    max_tool_calls: int = Field(default=0, ge=0, description="0 = unlimited.")
+    max_total_tokens: int = Field(default=0, ge=0, description="0 = unlimited.")
+    max_wall_ms: int = Field(default=0, ge=0, description="0 = unlimited.")
+
+
+class CallLedger(BaseModel):
+    """Per-turn call counter shared across all dispatch branches.
+
+    Enforces ``max_calls_per_turn`` uniformly for operations, pack tools, and
+    MCP tools. Without this, only declarative operations were bounded; the
+    main turn loop enforced only a global iteration count, not a per-target
+    cap.
+    """
+
+    counts: dict[str, int] = Field(default_factory=dict)
+
+    def remaining(self, target_id: str, max_calls: int) -> int:
+        """Return how many more calls to ``target_id`` are permitted.
+
+        ``max_calls <= 0`` means unlimited. The ledger never blocks unlimited
+        targets; it still records the count so callers can observe it.
+        """
+        if max_calls <= 0:
+            return max_calls
+        return max(0, max_calls - self.counts.get(target_id, 0))
+
+    def record(self, target_id: str) -> None:
+        """Record one call to ``target_id``."""
+        self.counts[target_id] = self.counts.get(target_id, 0) + 1
+
+    def is_exhausted(self, target_id: str, max_calls: int) -> bool:
+        """Return True when ``target_id`` has hit its per-turn cap."""
+        if max_calls <= 0:
+            return False
+        return self.counts.get(target_id, 0) >= max_calls
+
+
 class WorkshopBudgetConfig(BaseModel):
     """Authored workshop budget envelope loaded from mode front-matter."""
 
@@ -1158,11 +1207,35 @@ class WorkflowModeConfig(BaseModel):
     # Must include a named group (?P<query>...) for the trailing user text.
     command_pattern: str = ""
     require_query: bool = False
+    # Lifecycle bindings accept BOTH operation IDs and tool IDs. The dispatcher
+    # resolves each ID against the operation catalog first, then the tool catalog.
+    # This dissolves the historical asymmetry where only operations could run in
+    # pre/post-turn slots — a deterministic compute step no longer needs an
+    # operation wrapper to participate in the lifecycle.
     entry_operation_ids: list[str] = Field(default_factory=list)
     pre_turn_operation_ids: list[str] = Field(default_factory=list)
     post_turn_operation_ids: list[str] = Field(default_factory=list)
     allowed_operation_ids: list[str] = Field(default_factory=list)
     allowed_tool_ids: list[str] = Field(default_factory=list)
+    # Failure policy for entry (action-mode) bindings. ``abort`` (default) is
+    # the historical behavior: a failing entry target kills the mode transition.
+    # ``skip`` logs the failure and continues to the next binding, mirroring the
+    # failure isolation pre/post-turn hooks already enjoy.
+    entry_failure_policy: Literal["abort", "skip"] = "abort"
+    # BAIT FOR EXPANSION — not yet wired. Optional gates between ordered entry
+    # bindings. A gate is a condition that must hold before the next binding runs.
+    # When this field is populated, ``run_mode_entry_operations`` will evaluate
+    # each gate against the accumulated result and stop the pipeline on failure.
+    # Left empty today so existing action modes run as an ungated ordered list,
+    # exactly as before. The slot exists so the pipeline concept (gated ordered
+    # steps with inter-step data passing) can be lit up without a model change.
+    #
+    # Planned shape (do NOT populate yet):
+    #   entry_gates:
+    #     - after: cloudflare_status
+    #       condition: "len(output_json.get('zones', [])) > 0"
+    #       on_fail: stop  # or skip_rest
+    entry_gates: list[dict[str, Any]] = Field(default_factory=list)
     # When True, the mode's allowed_tool_ids and allowed_operation_ids are
     # authoritative: empty means no tools/operations are advertised to the
     # LLM. When False (default), empty means all pass through.

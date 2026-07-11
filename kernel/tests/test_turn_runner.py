@@ -219,8 +219,9 @@ async def test_run_turn_omits_empty_structured_pre_turn_briefing(
     async def pre_turn_result(
         mode_id: str,
         ctx: OperationExecutionContext,
+        ledger: Any = None,
     ) -> OperationResult:
-        _ = (mode_id, ctx)
+        _ = (mode_id, ctx, ledger)
         return OperationResult(
             output_text='{"briefing_points": [], "output_text": "", "source_kind": "", "source_urls": []}',
             output_json={
@@ -258,8 +259,9 @@ async def test_run_turn_includes_non_empty_structured_pre_turn_briefing(
     async def pre_turn_result(
         mode_id: str,
         ctx: OperationExecutionContext,
+        ledger: Any = None,
     ) -> OperationResult:
-        _ = (mode_id, ctx)
+        _ = (mode_id, ctx, ledger)
         return OperationResult(
             output_text='{"output_text": "fallback json dump"}',
             output_json={

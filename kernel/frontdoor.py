@@ -22,6 +22,7 @@ from kernel.models import (
     RoutePlannerSource,
     SurfaceContext,
 )
+from kernel.operations.structured_output import parse_structured_payload
 
 __all__ = [
     "build_deterministic_route_decision",
@@ -484,7 +485,10 @@ async def _try_fast_path_route(
             temperature=0.0,
             response_format=_FastPathVerification,
         )
-        verification = _FastPathVerification.model_validate_json(str(completion.content or ""))
+        verification = parse_structured_payload(
+            _FastPathVerification, str(completion.content or "")
+        )
+        assert isinstance(verification, _FastPathVerification)
     except (ValidationError, ValueError, RuntimeError):
         return None
 
@@ -549,7 +553,10 @@ async def _run_model_bounded_route(
             temperature=0.1,
             response_format=RouteDecision,
         )
-        decision = RouteDecision.model_validate_json(str(completion.content or ""))
+        decision_payload = parse_structured_payload(
+            RouteDecision, str(completion.content or "")
+        )
+        decision = RouteDecision.model_validate(decision_payload.model_dump())
     except (ValidationError, ValueError, RuntimeError):
         return fallback
 

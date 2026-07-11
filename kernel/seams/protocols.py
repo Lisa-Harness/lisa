@@ -155,10 +155,26 @@ class ModelPolicy(Protocol):
 
     Replaces ``app.model_policy``. The default implementation resolves
     aliases through ``kernel.model_manifest``.
+
+    ``choose`` is OPTIONAL. When a host wires it, the turn loop consults it
+    every iteration instead of resolving one model for the whole turn. This
+    lets a host express "cheap model routes, expensive model synthesizes"
+    without the operation indirection. The default ``ManifestModelPolicy``
+    does not implement ``choose``; the loop falls back to the resolved
+    ``preferred_model_id`` when the method is absent.
     """
 
     def resolve_alias(self, alias: str) -> str: ...
     def is_available(self, model_id: str) -> bool: ...
+
+    # NOTE: ``choose`` is intentionally NOT declared here. Protocol members
+    # are mandatory; ``choose`` is an optional capability. The turn loop
+    # probes for it with ``getattr(policy, "choose", None)`` and falls back
+    # to the resolved default model when absent. Declaring it here would
+    # force every ModelPolicy implementation (including the default
+    # ``ManifestModelPolicy``) to stub it. Hosts that want per-iteration
+    # selection add the method to their own implementation; the runtime
+    # duck-types it.
 
 
 @runtime_checkable

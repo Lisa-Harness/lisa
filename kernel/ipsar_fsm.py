@@ -30,15 +30,18 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
 from kernel.config import settings
 from kernel.intake.connector_discovery import discover_installed_signal_collectors
 from kernel.models import (
+    CallLedger,
     OperationExecutionContext,
     OperationResult,
+    ToolExecutionContext,
+    ToolResult,
     UnifiedState,
     WorkflowModeConfig,
     WorkflowSessionState,
@@ -675,42 +678,115 @@ def get_mode_system_intro(mode_id: str) -> str:
     return mode.instruction_body or mode.description
 
 
-async def _execute_mode_operation_ids(
-    operation_ids: list[str],
+async def _execute_mode_target_ids(
+    target_ids: list[str],
     ctx: OperationExecutionContext,
+    *,
+    failure_policy: Literal["abort", "skip"] = "abort",
+    ledger: CallLedger | None = None,
 ) -> OperationResult:
-    """Execute one ordered list of operation IDs and merge their structured results.
+    """Execute one ordered list of lifecycle target IDs and merge results.
+
+    Each ID is resolved polymorphically: operations dispatch through the
+    injected operation callback; tools dispatch through the tool registry.
+    This dissolves the historical asymmetry where only operations could run
+    in lifecycle slots. A deterministic compute step (tool) no longer needs an
+    operation wrapper to participate in pre/post-turn or entry slots.
 
     Args:
-        operation_ids: Ordered operation identifiers declared by one mode.
+        target_ids: Ordered operation OR tool identifiers declared by one mode.
         ctx: Shared execution context for the current mode turn.
+        failure_policy: ``abort`` (default) re-raises on the first failing target;
+            ``skip`` logs and continues, mirroring pre/post-turn isolation.
+        ledger: Optional per-turn call ledger. When provided, each target is
+            checked against the catalog's ``max_calls_per_turn`` before dispatch.
 
     Returns:
         Combined OperationResult. Text outputs are joined with blank lines, extra
-        metadata is shallow-merged, and a single-operation JSON payload is passed
+        metadata is shallow-merged, and a single-target JSON payload is passed
         through directly for convenience.
     """
-    if not operation_ids:
+    if not target_ids:
         return OperationResult()
+
+    from kernel.operations.registry import get_operation_catalog
+    from kernel.tools.registry import execute_tool, get_tool_catalog
+
+    operation_catalog = get_operation_catalog()
+    tool_catalog = get_tool_catalog()
 
     output_parts: list[str] = []
     extra: dict[str, Any] = dict(ctx.extra)
     json_results: list[tuple[str, dict[str, Any]]] = []
 
-    for operation_id in operation_ids:
-        operation_ctx = ctx.model_copy(update={"operation_id": operation_id, "extra": extra})
-        result = await _execute_operation(operation_id, operation_ctx)
+    for target_id in target_ids:
+        # Per-turn cap enforcement (uniform across operations and tools).
+        if ledger is not None:
+            definition = operation_catalog.get(target_id) or tool_catalog.get(target_id)
+            if definition is not None:
+                max_calls = getattr(definition, "max_calls_per_turn", 0)
+                if ledger.is_exhausted(target_id, max_calls):
+                    logger.debug(
+                        "lifecycle target '%s' skipped: per-turn cap %d reached",
+                        target_id,
+                        max_calls,
+                    )
+                    continue
+
+        target_ctx = ctx.model_copy(update={"operation_id": target_id, "extra": extra})
+        try:
+            if target_id in operation_catalog:
+                result = await _execute_operation(target_id, target_ctx)
+            elif target_id in tool_catalog:
+                tool_ctx = ToolExecutionContext(
+                    tool_id=target_id,
+                    workspace_id=ctx.workspace_id,
+                    user_id=ctx.user_id,
+                    user_slug=ctx.user_slug,
+                    surface_type=ctx.surface_type,
+                    surface_id=ctx.surface_id,
+                    memory_scope=ctx.memory_scope,
+                    mode_id=ctx.mode_id,
+                    query=ctx.query,
+                    event_bus=ctx.event_bus,
+                    state_provider=ctx.state_provider,
+                )
+                tool_result = await execute_tool(target_id, tool_ctx)
+                result = OperationResult(
+                    output_text=tool_result.output_text,
+                    output_json=dict(tool_result.output_json) if tool_result.output_json else {},
+                    extra={"tool_error": tool_result.error} if tool_result.error else {},
+                )
+            else:
+                logger.warning(
+                    "lifecycle target '%s' is neither a known operation nor a known tool; skipping",
+                    target_id,
+                )
+                continue
+        except Exception as exc:  # pylint: disable=broad-except
+            if failure_policy == "abort":
+                raise
+            logger.warning(
+                "lifecycle target '%s' failed (skip policy): %s: %s",
+                target_id,
+                type(exc).__name__,
+                exc,
+            )
+            continue
+
+        if ledger is not None:
+            ledger.record(target_id)
         if result.output_text:
             output_parts.append(result.output_text)
         if result.output_json:
-            json_results.append((operation_id, result.output_json))
+            json_results.append((target_id, result.output_json))
         if result.extra:
             extra.update(result.extra)
 
     if len(json_results) == 1:
         output_json = json_results[0][1]
     else:
-        output_json = {operation_id: payload for operation_id, payload in json_results}
+        output_json = {target_id: payload for target_id, payload in json_results}
 
     return OperationResult(
         output_text="\n\n".join(output_parts),
@@ -722,41 +798,77 @@ async def _execute_mode_operation_ids(
 async def run_mode_entry_operations(
     mode_id: str,
     ctx: OperationExecutionContext,
+    *,
+    ledger: CallLedger | None = None,
 ) -> OperationResult:
-    """Execute the entry operations configured for one action mode."""
+    """Execute the entry targets configured for one action mode.
+
+    Resolves each entry ID polymorphically (operation or tool). The mode's
+    ``entry_failure_policy`` controls whether a failing target aborts the
+    mode transition (``abort``, the historical default) or is logged and
+    skipped (``skip``, matching pre/post-turn isolation).
+    """
     mode = get_workflow_catalog().get(mode_id)
     if mode is None:
         return OperationResult()
-    return await _execute_mode_operation_ids(mode.entry_operation_ids, ctx)
+    return await _execute_mode_target_ids(
+        mode.entry_operation_ids,
+        ctx,
+        failure_policy=mode.entry_failure_policy,
+        ledger=ledger,
+    )
 
 
 async def run_mode_pre_turn_operations(
     mode_id: str,
     ctx: OperationExecutionContext,
+    *,
+    ledger: CallLedger | None = None,
 ) -> OperationResult:
-    """Execute pre-turn operations for one workflow or chat mode."""
+    """Execute pre-turn targets for one workflow or chat mode.
+
+    Resolves each ID polymorphically (operation or tool). Failures are always
+    isolated: a flaky enrichment target logs a warning and the turn continues.
+    """
     mode = get_workflow_catalog().get(mode_id)
     if mode is None:
         return OperationResult()
     if mode.pre_turn_operation_ids:
         try:
-            return await _execute_mode_operation_ids(mode.pre_turn_operation_ids, ctx)
+            return await _execute_mode_target_ids(
+                mode.pre_turn_operation_ids,
+                ctx,
+                failure_policy="skip",
+                ledger=ledger,
+            )
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("pre_turn operations failed for mode '%s': %s", mode_id, exc)
+            logger.warning("pre_turn targets failed for mode '%s': %s", mode_id, exc)
     return OperationResult()
 
 
 async def run_mode_post_turn_operations(
     mode_id: str,
     ctx: OperationExecutionContext,
+    *,
+    ledger: CallLedger | None = None,
 ) -> OperationResult:
-    """Execute post-turn operations for one workflow or chat mode."""
+    """Execute post-turn targets for one workflow or chat mode.
+
+    Resolves each ID polymorphically (operation or tool). Failures are always
+    isolated: a flaky bookkeeping target logs a warning and the turn is
+    considered successful.
+    """
     mode = get_workflow_catalog().get(mode_id)
     if mode is None:
         return OperationResult()
     if mode.post_turn_operation_ids:
         try:
-            return await _execute_mode_operation_ids(mode.post_turn_operation_ids, ctx)
+            return await _execute_mode_target_ids(
+                mode.post_turn_operation_ids,
+                ctx,
+                failure_policy="skip",
+                ledger=ledger,
+            )
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("post_turn operations failed for mode '%s': %s", mode_id, exc)
+            logger.warning("post_turn targets failed for mode '%s': %s", mode_id, exc)
     return OperationResult()
