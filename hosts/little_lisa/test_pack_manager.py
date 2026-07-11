@@ -3,6 +3,7 @@ from __future__ import annotations
 # pylint: disable=protected-access
 
 import asyncio
+from typing import Any, cast
 from pathlib import Path
 
 import pytest
@@ -11,10 +12,10 @@ from . import main as little_lisa
 
 
 def _state() -> dict[str, object]:
-    return getattr(little_lisa, "_RUNTIME_STATE")
+    return cast(dict[str, object], getattr(little_lisa, "_RUNTIME_STATE"))
 
 
-def _fn(name: str):
+def _fn(name: str) -> Any:
     return getattr(little_lisa, name)
 
 
@@ -379,3 +380,62 @@ def test_compile_mcp_configs_applies_pack_server_exclusions(
 
     assert "pack-a.shared-server" not in server_ids
     assert "pack-b.shared-server" in server_ids
+
+
+def test_compile_mcp_configs_namespaces_pack_memory_servers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pack_root = tmp_path / "learning"
+    pack_root.mkdir(parents=True, exist_ok=True)
+
+    pack_manifest_text = "\n".join(
+        [
+            "version: 1",
+            "memory:",
+            "  default_backend: lisa_memory",
+            "  backends:",
+            "    - id: lisa_memory",
+            "      kind: stdio",
+            "      command: \"${LISA_MCP_COMMAND:lisa-memory}\"",
+            "      args:",
+            "        - --data-dir",
+            "        - \"${LISA_DATA_DIR}\"",
+            "      tool_names:",
+            "        add: add_memory",
+            "        search: search_memory",
+            "        list: list_memories",
+            "    - id: mem0",
+            "      kind: http",
+            "      url: https://mcp.mem0.ai/mcp",
+            "      headers:",
+            "        Authorization: \"Bearer ${MEM0_API_KEY}\"",
+            "      tool_names:",
+            "        add: add_memory",
+            "        search: search_memories",
+            "        list: get_memories",
+            "servers:",
+            "  - server_id: lisa-memory",
+            "    runtime_kind: venv_bin",
+            "    entry_point: lisa-memory",
+            "    venv_dir: \"${FRAMEWORK_ROOT}/.venv\"",
+            "    warm: true",
+            "    required: true",
+            "  - server_id: mem0",
+            "    runtime_kind: http",
+            "    url: https://mcp.mem0.ai/mcp",
+            "    headers:",
+            "      Authorization: \"Bearer ${MEM0_API_KEY}\"",
+        ]
+    ) + "\n"
+    (pack_root / "mcp_servers.yaml").write_text(pack_manifest_text, encoding="utf-8")
+
+    monkeypatch.setattr(little_lisa, "_sdk_content_roots", lambda: [pack_root])
+    monkeypatch.setattr(little_lisa, "_load_pack_server_exclusions", lambda _path: set())
+
+    warm, cold = _fn("_compile_mcp_configs")()
+    server_ids = {config.server_id for config in [*warm, *cold]}
+
+    assert "learning.lisa-memory" in server_ids
+    assert "learning.mem0" in server_ids
+    assert _state()["memory_config_pack_slug"] == "learning"

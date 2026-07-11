@@ -137,7 +137,7 @@ As of 2026-06-19, Little Lisa delegates all turn execution to
 - `complete` — executes live chat completions against the provider configured for the selected model manifest entry.
 - `execute_tool` — executes `web_search` through `kernel.web_search` when configured; other tools remain stubbed.
 - `execute_operation` — delegates to `kernel.operations.registry.execute_operation`.
-- Memory backends are MCP-backed via `lisa-memory` or `mem0`, selected by host manifest policy.
+- Memory backends are MCP-backed via the learning pack manifest (`sdk_packs/learning/mcp_servers.yaml`), which selects the default backend and registers the memory servers.
 - Memory behavior (`recall_memory`, `synthesize_and_store_learning`, and the memory-backed `default`/`learn` modes) is provided by `lisa-pack-learning`, not by Little Lisa core.
 
 This means action, chat, and workflow modes all flow through the same
@@ -149,10 +149,10 @@ The only difference is which hooks are wired.
 Memory is pack-owned. The learning pack declares the memory backends and
 memory tool servers in `sdk_packs/learning/mcp_servers.yaml`; the host
 merges them into the MCP pool under namespaced ids and wires the generic
-`memory.*` aliases to the pack's default backend. The default local backend
-is `lisa-memory` (SQLite-backed, minimal built-in), and hosts may switch
-the aliases to `mem0` by declaration in the pack manifest. Memory recall and
-synthesis workflows are also provided by `lisa-pack-learning`.
+`memory.*` aliases to the pack's default backend. The pack currently defaults
+to `mem0`, while `lisa-memory` remains the local stdio backend available in
+the same manifest. Memory recall and synthesis workflows are also provided by
+`lisa-pack-learning`.
 
 ## Expected Behavior
 

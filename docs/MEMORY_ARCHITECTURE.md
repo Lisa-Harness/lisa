@@ -20,7 +20,7 @@ doc without prior conversation context.
 | What is the indirection layer? | **Three synthetic aliases** — `memory.add` / `memory.search` / `memory.list` — built as `mcp_alias_tool` entries that forward through the MCP tool pool to the default backend's tool names. This is the only indirection; everything else is direct. |
 | Are backends tool servers too? | **Yes.** A memory backend is dual-registered: as a `memory.backends` entry (for the synthetic aliases) AND as a `servers` entry (so its full tool surface is discoverable). One connection, two roles. |
 | Is there a host-side ranker? | **No host-owned behavior.** The lexical recall ranker lives in `lisa-pack-learning`; hosts may delegate to it, but memory behavior is pack-owned, not host-owned. |
-| What is the minimal built-in? | **`lisa_memory`** — a stdio MCP server with three core tools (`add_memory` / `search_memory` / `list_memories`) plus `get_surface_context`, backed by local SQLite. The default backend. |
+| What is the minimal built-in? | **`lisa_memory`** — a stdio MCP server with three core tools (`add_memory` / `search_memory` / `list_memories`) plus `get_surface_context`, backed by local SQLite. It remains the local backend available in the learning pack manifest. |
 | What happened to `lisa_context`? | **Split.** `lisa_context` is now broker-only (`broker_context`). Its former memory store and tools moved to `lisa_memory`. |
 | How does the pool reach HTTP backends? | **`RuntimeKind.HTTP`.** The pool speaks streamable-HTTP via `streamable_http_client` in its `AsyncExitStack`, the same discipline as stdio. |
 | Is there memory eviction? | **No host-side eviction.** `lisa_memory`'s SQLite store enforces TTL via its `expires_at` column (daily/weekly/long_term). The former `_consolidate_memory` reached into private in-process state and is gone. |
@@ -259,7 +259,7 @@ one pack may contribute the `memory:` section; the first contributor wins.
 ```yaml
 # sdk_packs/learning/mcp_servers.yaml
 memory:
-  default_backend: lisa_memory   # or mem0 (needs MEM0_API_KEY)
+  default_backend: mem0   # lisa_memory stays available as the local stdio backend
   backends:
     - id: lisa_memory
       kind: stdio
@@ -310,11 +310,12 @@ servers:
 
 ## Switching the Default Backend
 
-1. **To Mem0:** set `MEM0_API_KEY` in `.env` or the shell, set
-   `memory.default_backend: mem0` in `sdk_packs/learning/mcp_servers.yaml`,
-   restart. The `verify` command checks the key is set and the header
-   expanded before runtime.
-2. **To `lisa_memory` (default):** no key needed. The three core aliases
-   route to local SQLite. Mem0's full surface is still available as tools to
-   modes that declare them (if `MEM0_API_KEY` is set and the server connects;
-   otherwise the empty-header guard drops it from the pool).
+1. **To Mem0 (current default):** set `MEM0_API_KEY` in `.env` or the shell.
+  The learning pack manifest defaults `memory.default_backend` to `mem0`.
+  The `verify` command checks the key is set and the header expanded before
+  runtime.
+2. **To `lisa_memory`:** change `memory.default_backend` to `lisa_memory` in
+  `sdk_packs/learning/mcp_servers.yaml`, restart, and the three core aliases
+  route to local SQLite. Mem0's full surface remains available to modes that
+  declare it when `MEM0_API_KEY` is set and the server connects; otherwise
+  the empty-header guard drops it from the pool.
