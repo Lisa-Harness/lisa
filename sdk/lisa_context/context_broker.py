@@ -31,6 +31,9 @@ from kernel.seams.protocols import ExtensionEvidenceBuilder
 
 # Module-level extension-evidence builder. Hosts override via
 # ``set_extension_evidence_builder`` when they need the production builder.
+# Callers that need explicit injection (e.g. tests, kernel seams) pass
+# ``extension_evidence_builder=`` to ``build_context_evidence_catalog`` or
+# ``select_ranked_context``; when omitted, this module global is used.
 _extension_evidence_builder: ExtensionEvidenceBuilder = NoOpExtensionEvidenceBuilder()
 
 
@@ -39,6 +42,13 @@ def set_extension_evidence_builder(builder: ExtensionEvidenceBuilder) -> None:
 
     global _extension_evidence_builder
     _extension_evidence_builder = builder
+
+
+def reset_extension_evidence_builder() -> None:
+    """Reset the extension-evidence builder to the NoOp default (for tests)."""
+
+    global _extension_evidence_builder
+    _extension_evidence_builder = NoOpExtensionEvidenceBuilder()
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9']+")
@@ -366,9 +376,14 @@ def _new_evidence(
     return _apply_evidence_identity(evidence)
 
 
-def _build_extension_evidence(state: UnifiedState) -> list[ContextEvidence]:
+def _build_extension_evidence(
+    state: UnifiedState,
+    *,
+    builder: ExtensionEvidenceBuilder | None = None,
+) -> list[ContextEvidence]:
     runtime_context = ExtensionRuntimeContext(state_provider=None)
-    return _extension_evidence_builder.build_extension_context_evidence(runtime_context, state)
+    active_builder = builder or _extension_evidence_builder
+    return active_builder.build_extension_context_evidence(runtime_context, state)
 
 
 def _build_alert_evidence(state: UnifiedState) -> list[ContextEvidence]:
@@ -563,9 +578,23 @@ def _build_domain_knowledge_evidence(state: UnifiedState) -> list[ContextEvidenc
     return evidence
 
 
-def build_context_evidence_catalog(state: UnifiedState) -> list[ContextEvidence]:
-    """Build the full structured evidence catalog from the current hot state."""
-    extension_evidence = _build_extension_evidence(state)
+def build_context_evidence_catalog(
+    state: UnifiedState,
+    *,
+    extension_evidence_builder: ExtensionEvidenceBuilder | None = None,
+) -> list[ContextEvidence]:
+    """Build the full structured evidence catalog from the current hot state.
+
+    Args:
+        state: The current hot-state snapshot.
+        extension_evidence_builder: Optional explicit builder to use for
+            extension evidence. When ``None`` (default), the module-level
+            builder (set via ``set_extension_evidence_builder``) is used.
+    """
+    extension_evidence = _build_extension_evidence(
+        state,
+        builder=extension_evidence_builder,
+    )
     extension_owned_collection_sources = {
         item.source for item in extension_evidence if item.evidence_type == "intel_collection"
     }
@@ -602,12 +631,23 @@ def select_ranked_context(
     mode_id: str = "default",
     stage_id: str = "",
     connectors: list[str] | None = None,
+    extension_evidence_builder: ExtensionEvidenceBuilder | None = None,
 ) -> ContextPacket:
-    """Select one ranked ContextPacket for the current turn."""
+    """Select one ranked ContextPacket for the current turn.
+
+    Args:
+        extension_evidence_builder: Optional explicit builder for extension
+            evidence. When ``None`` (default), the module-level builder is
+            used. Pass this explicitly in tests or kernel seams to avoid
+            depending on module-global mutation.
+    """
     connector_set = set(connectors or [])
     now = _parse_iso(state.compiled_at) or datetime.now(UTC)
     query_tokens = _tokenize(query)
-    candidates = state.context_evidence_catalog or build_context_evidence_catalog(state)
+    candidates = state.context_evidence_catalog or build_context_evidence_catalog(
+        state,
+        extension_evidence_builder=extension_evidence_builder,
+    )
     scored: list[ContextEvidence] = []
 
     for candidate in candidates:

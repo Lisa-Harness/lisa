@@ -123,8 +123,15 @@ async def test_memory_lists_four_tools() -> None:
 # ── lisa_context (broker only) ─────────────────────────────────────────────
 
 
+@pytest.fixture
+def context_setup() -> None:
+    from sdk.lisa_context.context_broker import reset_extension_evidence_builder
+
+    reset_extension_evidence_builder()
+
+
 @pytest.mark.asyncio
-async def test_context_lists_broker_tool() -> None:
+async def test_context_lists_broker_tool(context_setup: None) -> None:
     from sdk.lisa_context.server import mcp
 
     tools = await mcp.list_tools()
@@ -134,7 +141,7 @@ async def test_context_lists_broker_tool() -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_broker_context_returns_packet() -> None:
+async def test_context_broker_context_returns_packet(context_setup: None) -> None:
     """broker_context with a valid typed payload returns a ContextBrokerResponse."""
     from sdk.lisa_context.server import mcp
 
@@ -151,7 +158,7 @@ async def test_context_broker_context_returns_packet() -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_broker_context_empty_state_ok() -> None:
+async def test_context_broker_context_empty_state_ok(context_setup: None) -> None:
     """broker_context with no state field uses an empty UnifiedState."""
     from sdk.lisa_context.server import mcp
 
@@ -163,7 +170,7 @@ async def test_context_broker_context_empty_state_ok() -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_broker_context_malformed_state_raises() -> None:
+async def test_context_broker_context_malformed_state_raises(context_setup: None) -> None:
     """broker_context with malformed state should fail, not silently degrade."""
     from sdk.lisa_context.server import mcp
 

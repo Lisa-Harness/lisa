@@ -85,8 +85,9 @@ async def test_guard_configured(guard_setup: None) -> None:
 
 @pytest.fixture
 def content_setup() -> None:
-    from sdk.lisa_content.server import init_content
+    from sdk.lisa_content.server import init_content, reset_content_state
 
+    reset_content_state()
     init_content()
 
 

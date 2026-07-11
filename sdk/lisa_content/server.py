@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -49,8 +50,27 @@ __all__ = ["init_content", "main", "mcp"]
 
 mcp = FastMCP("Lisa Content Server")
 
-_extra_roots: list[Path] = []
-_read_cache: dict[tuple[str, str], str] = {}
+
+@dataclass
+class _ContentState:
+    """Mutable server state, encapsulated to avoid module-global leakage.
+
+    Replaces the prior ``_extra_roots`` / ``_read_cache`` module-level globals
+    so test isolation is explicit: call ``reset_content_state()`` between
+    tests instead of relying on import-order side effects.
+    """
+
+    extra_roots: list[Path] = field(default_factory=list)
+    read_cache: dict[tuple[str, str], str] = field(default_factory=dict)
+
+
+_state = _ContentState()
+
+
+def reset_content_state() -> None:
+    """Reset all mutable server state (for test isolation)."""
+    global _state
+    _state = _ContentState()
 
 
 def init_content(extra_roots: list[Path] | None = None) -> None:
@@ -58,8 +78,8 @@ def init_content(extra_roots: list[Path] | None = None) -> None:
 
     Called by ``main()`` after arg parsing. Tests may call this directly.
     """
-    global _extra_roots
-    _extra_roots = list(extra_roots) if extra_roots else []
+    global _state
+    _state = _ContentState(extra_roots=list(extra_roots) if extra_roots else [])
 
 
 def _all_roots() -> list[Path]:
@@ -68,7 +88,7 @@ def _all_roots() -> list[Path]:
     configured = discover_configured_content_roots()
     seen: set[str] = set()
     merged: list[Path] = []
-    for root in (*installed, *configured, *_extra_roots):
+    for root in (*installed, *configured, *_state.extra_roots):
         key = str(root.resolve())
         if key in seen:
             continue
@@ -105,7 +125,7 @@ def read_authored_text(relative_path: str) -> str:
         return ""
     fp = _roots_fingerprint()
     cache_key = (fp, normalized)
-    cached = _read_cache.get(cache_key)
+    cached = _state.read_cache.get(cache_key)
     if cached is not None:
         return cached
     for root in _all_roots():
@@ -113,11 +133,11 @@ def read_authored_text(relative_path: str) -> str:
         if candidate.is_file():
             try:
                 content = candidate.read_text(encoding="utf-8")
-                _read_cache[cache_key] = content
+                _state.read_cache[cache_key] = content
                 return content
             except OSError:
                 continue
-    _read_cache[cache_key] = ""
+    _state.read_cache[cache_key] = ""
     return ""
 
 
@@ -171,7 +191,7 @@ async def list_tools() -> str:
 @mcp.tool()
 async def invalidate_cache() -> str:
     """Clear the file-read cache after content roots change."""
-    _read_cache.clear()
+    _state.read_cache.clear()
     return json.dumps({"ok": True})
 
 
