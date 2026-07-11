@@ -143,6 +143,7 @@ from kernel.content_roots import (  # noqa: E402
     discover_installed_content_roots,
     resolve_content_subdir_roots,
 )
+from kernel.context.context_budget import ContextBudgetAllocator, ContextLane  # noqa: E402
 from kernel.ipsar import parse_route  # noqa: E402
 from kernel.ipsar_fsm import (  # noqa: E402
     create_workflow_session,
@@ -152,7 +153,6 @@ from kernel.ipsar_fsm import (  # noqa: E402
     register_operation_callbacks,
 )
 from kernel.model_manifest import ModelManifest  # noqa: E402
-from kernel.pack_activation import load_disabled_pack_names  # noqa: E402
 from kernel.models import (  # noqa: E402
     AnomalyAlert,
     DomainKnowledgeArtifact,
@@ -173,8 +173,8 @@ from kernel.operations.registry import (  # noqa: E402
     register_operation_mcp,
 )
 from kernel.operations.structured_output import parse_structured_payload  # noqa: E402
+from kernel.pack_activation import load_disabled_pack_names  # noqa: E402
 from kernel.slice import SliceOutcome  # noqa: E402
-from kernel.tools.registry import register_tool_mcp  # noqa: E402
 from kernel.token_usage import (  # noqa: E402
     TokenUsageTelemetryHandler,
     build_token_usage_event,
@@ -184,9 +184,11 @@ from kernel.tools.mcp_client import (  # noqa: E402
     MCPConnectionError,
     MCPToolPool,
 )
+from kernel.tools.registry import (  # noqa: E402
+    get_tool_catalog,
+    register_tool_mcp,
+)
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn  # noqa: E402
-
-from kernel.context.context_budget import ContextBudgetAllocator, ContextLane  # noqa: E402
 from sdk.lisa_context.context_broker import (  # noqa: E402
     build_ambient_facts,
     render_context_packet_markdown,
@@ -803,27 +805,16 @@ def _sdk_operation_roots() -> list[Path]:
 FrontDoorRouteDecision = RouteDecision
 
 
-def _tool_catalog() -> dict[str, ToolDefinition]:
-    """Return the host-side tool catalog override (empty — packs provide tools).
+def get_little_lisa_tool_catalog() -> dict[str, ToolDefinition]:
+    """Return the Little Lisa tool catalog for diagnostics and harnesses.
 
-    Tools are now discovered from content packs via ``register_tool_mcp``.
-    This stub is kept as a legacy callback seam for hosts that need to
-    inject hand-built tools; Little Lisa returns an empty dict so all
-    tools come from the pack-contributed MCP catalog.
+    Tools are discovered from content packs via ``register_tool_mcp`` and
+    exposed through the kernel tool registry. Little Lisa does not maintain
+    a separate host-side override catalog, so this wrapper returns the live
+    pack-contributed catalog (which is empty before ``setup_framework`` runs).
     """
 
-    return {}
-
-
-def get_little_lisa_tool_catalog() -> dict[str, ToolDefinition]:
-    """Return the Little Lisa tool catalog for diagnostics and harnesses."""
-
-    from kernel.tools.registry import get_tool_catalog  # noqa: PLC0415
-
-    pack_catalog = get_tool_catalog()
-    if pack_catalog:
-        return pack_catalog
-    return _tool_catalog()
+    return get_tool_catalog()
 
 
 def _build_content_mcp_config() -> MCPClientConfig:
@@ -891,8 +882,8 @@ def setup_framework() -> None:
     register_operation_callbacks(get_operation_catalog, execute_operation)
     register_content_mcp(content_config)
     # Wire the MCPContentRegistry as the content registry for context frames.
-    from kernel.context.mcp_content_registry import MCPContentRegistry  # noqa: PLC0415
     from kernel.context.context_frames import set_content_registry  # noqa: PLC0415
+    from kernel.context.mcp_content_registry import MCPContentRegistry  # noqa: PLC0415
 
     set_content_registry(MCPContentRegistry(content_config))
 

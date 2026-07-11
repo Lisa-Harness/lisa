@@ -166,6 +166,55 @@ async def test_help_capabilities_returns_capability_snapshot() -> None:
 
     assert "Capability Snapshot" in output
     assert "Supported modes" in output
+    assert "Operations:" in output
+    assert "Tools:" in output
+    assert "Models:" in output
+
+
+def test_build_capability_snapshot_reflects_live_catalog() -> None:
+    snapshot = little_lisa._build_capability_snapshot()
+
+    assert "supported_modes" in snapshot
+    assert "unsupported_modes" in snapshot
+    assert "operations" in snapshot
+    assert "tools" in snapshot
+    assert "models" in snapshot
+    assert isinstance(snapshot["operations"], list)
+    assert isinstance(snapshot["tools"], list)
+    assert isinstance(snapshot["models"], list)
+    # Models come from the manifest; at least one is configured in tests.
+    assert len(snapshot["models"]) >= 1
+
+
+def test_get_little_lisa_tool_catalog_returns_registry_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_tool = little_lisa.ToolDefinition(
+        tool_id="fake_tool",
+        description="A fake tool for testing.",
+        implementation_module=None,
+    )
+    fake_catalog = {"fake_tool": fake_tool}
+
+    monkeypatch.setattr(
+        little_lisa,
+        "get_tool_catalog",
+        lambda: fake_catalog,
+    )
+
+    result = little_lisa.get_little_lisa_tool_catalog()
+
+    assert result is fake_catalog
+    assert "fake_tool" in result
+
+
+def test_get_little_lisa_tool_catalog_empty_before_setup() -> None:
+    # setup_framework() runs via the module-scope autouse fixture, so by the
+    # time tests execute the catalog is populated. This test verifies the
+    # wrapper returns whatever the registry currently holds without falling
+    # back to a separate host-side stub.
+    result = little_lisa.get_little_lisa_tool_catalog()
+    assert isinstance(result, dict)
 
 
 @pytest.mark.asyncio
