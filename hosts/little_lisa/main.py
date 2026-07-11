@@ -152,6 +152,7 @@ from kernel.ipsar_fsm import (  # noqa: E402
     register_operation_callbacks,
 )
 from kernel.model_manifest import ModelManifest  # noqa: E402
+from kernel.pack_activation import load_disabled_pack_names  # noqa: E402
 from kernel.models import (  # noqa: E402
     AnomalyAlert,
     DomainKnowledgeArtifact,
@@ -322,6 +323,7 @@ _LITTLE_LISA_AUTO_RESTART_ENV = "LITTLE_LISA_AUTO_RESTART"
 _LITTLE_LISA_RESTART_RESUME_MESSAGE_ENV = "LITTLE_LISA_RESTART_RESUME_MESSAGE"
 _LISA_MODE_PROVIDER_PREFERENCES_ENV = "LISA_MODE_PROVIDER_PREFERENCES"
 _LISA_CONTENT_PROVIDER_PREFERENCES_ENV = "LISA_CONTENT_PROVIDER_PREFERENCES"
+_LISA_DISABLED_PACKS_ENV = "LISA_DISABLED_PACKS"
 _PACK_LOCK_FILE_NAME = "installed-packs.json"
 _DEFAULT_ALWAYS_ON_PACKAGES: tuple[str, ...] = (
     "lisa-pack-core",
@@ -842,6 +844,13 @@ def _build_content_mcp_config() -> MCPClientConfig:
     content_roots = [root / "content" for root in roots_for_child if (root / "content").is_dir()]
     configured_roots = _unique_paths([*roots_for_child, *content_roots])
     env = {"SDK_CONTENT_ROOTS": os.pathsep.join(str(root) for root in configured_roots)}
+
+    # Pass disabled pack names to the lisa-content child process so that
+    # entry-point discovery in the child also excludes disabled packs.
+    disabled_packs = load_disabled_pack_names(_runtime_data_dir())
+    if disabled_packs:
+        env[_LISA_DISABLED_PACKS_ENV] = os.pathsep.join(sorted(disabled_packs))
+
     if any(content_provider_preferences.get(kind) for kind in ("modes", "operations", "tools")):
         env[_LISA_CONTENT_PROVIDER_PREFERENCES_ENV] = json.dumps(
             content_provider_preferences,
@@ -892,7 +901,9 @@ def setup_framework() -> None:
         set_production_extension_evidence_builder,
     )
 
-    set_production_extension_evidence_builder()
+    set_production_extension_evidence_builder(
+        excluded_packs=load_disabled_pack_names(_runtime_data_dir()),
+    )
 
 
 def configure_runtime() -> None:

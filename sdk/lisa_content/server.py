@@ -31,6 +31,7 @@ from kernel.content_roots import (
     discover_configured_content_roots,
     discover_installed_content_roots,
 )
+from kernel.pack_activation import load_disabled_pack_names_from_env
 from sdk.lisa_content._catalog import (
     build_mode_catalog_json,
     build_operation_catalog_json,
@@ -59,7 +60,8 @@ def init_content(extra_roots: list[Path] | None = None) -> None:
 
 
 def _all_roots() -> list[Path]:
-    installed = discover_installed_content_roots()
+    excluded = load_disabled_pack_names_from_env()
+    installed = discover_installed_content_roots(excluded_packs=excluded)
     configured = discover_configured_content_roots()
     seen: set[str] = set()
     merged: list[Path] = []

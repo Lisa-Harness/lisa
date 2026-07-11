@@ -9,10 +9,20 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from kernel.config import settings
+from kernel.pack_activation import _normalize_pack_name
 
 logger = logging.getLogger(__name__)
 
 _CONTENT_ROOT_ENTRY_POINT_GROUP = "lisa.extensions.content_roots"
+
+
+def _entry_point_pack_name(ep: importlib.metadata.EntryPoint) -> str:
+    """Return the distribution package name for an entry point, or empty string."""
+    dist = getattr(ep, "dist", None)
+    if dist is None:
+        return ""
+    name = dist.metadata.get("Name", "") if dist.metadata else ""
+    return _normalize_pack_name(str(name or ""))
 
 
 def _dedupe_paths(paths: Iterable[Path]) -> list[Path]:
@@ -27,11 +37,22 @@ def _dedupe_paths(paths: Iterable[Path]) -> list[Path]:
     return deduped
 
 
-def discover_installed_content_roots() -> list[Path]:
-    """Return installed content roots contributed through entry points."""
+def discover_installed_content_roots(
+    excluded_packs: set[str] | None = None,
+) -> list[Path]:
+    """Return installed content roots contributed through entry points.
+
+    Args:
+        excluded_packs: Normalized pack names to exclude from discovery.
+            When ``None`` (default), no filtering is applied — all installed
+            packs are returned. When non-empty, entry points whose distribution
+            package name is in the set are skipped.
+    """
 
     roots: list[Path] = []
     for ep in importlib.metadata.entry_points(group=_CONTENT_ROOT_ENTRY_POINT_GROUP):
+        if excluded_packs and _entry_point_pack_name(ep) in excluded_packs:
+            continue
         try:
             root_loader = ep.load()
             candidate = Path(root_loader())

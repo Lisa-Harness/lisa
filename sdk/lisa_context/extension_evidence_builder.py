@@ -14,8 +14,10 @@ returns an empty list when no extensions are installed.
 from __future__ import annotations
 
 import logging
-from importlib.metadata import entry_points
+from importlib.metadata import EntryPoint, entry_points
 from typing import Any
+
+from kernel.pack_activation import _normalize_pack_name
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,15 @@ __all__ = [
 _ENTRY_POINT_GROUP = "lisa.extensions.context_evidence"
 
 
+def _entry_point_pack_name(ep: EntryPoint) -> str:
+    """Return the distribution package name for an entry point, or empty string."""
+    dist = getattr(ep, "dist", None)
+    if dist is None:
+        return ""
+    name = dist.metadata.get("Name", "") if dist.metadata else ""
+    return _normalize_pack_name(str(name or ""))
+
+
 class EntryPointExtensionEvidenceBuilder:
     """Aggregate context evidence from all installed extensions.
 
@@ -35,7 +46,15 @@ class EntryPointExtensionEvidenceBuilder:
     ``(runtime_context, state)`` and return a ``list[ContextEvidence]``.
     Failures in one extension are logged and swallowed so a broken
     extension does not block context assembly.
+
+    Args:
+        excluded_packs: Normalized pack names to exclude from evidence
+            collection. When ``None`` (default), all installed extensions
+            contribute evidence.
     """
+
+    def __init__(self, excluded_packs: set[str] | None = None) -> None:
+        self._excluded_packs = excluded_packs
 
     def build_extension_context_evidence(
         self,
@@ -51,6 +70,8 @@ class EntryPointExtensionEvidenceBuilder:
             return evidence
 
         for ep in eps:
+            if self._excluded_packs and _entry_point_pack_name(ep) in self._excluded_packs:
+                continue
             try:
                 builder_fn = ep.load()
             except Exception:  # pylint: disable=broad-except
@@ -73,8 +94,16 @@ class EntryPointExtensionEvidenceBuilder:
         return evidence
 
 
-def set_production_extension_evidence_builder() -> None:
-    """Install the entry-point-based builder as the broker's extension evidence source."""
+def set_production_extension_evidence_builder(
+    excluded_packs: set[str] | None = None,
+) -> None:
+    """Install the entry-point-based builder as the broker's extension evidence source.
+
+    Args:
+        excluded_packs: Normalized pack names to exclude from evidence
+            collection. Forwarded to the ``EntryPointExtensionEvidenceBuilder``
+            constructor.
+    """
     from sdk.lisa_context.context_broker import set_extension_evidence_builder
 
-    set_extension_evidence_builder(EntryPointExtensionEvidenceBuilder())
+    set_extension_evidence_builder(EntryPointExtensionEvidenceBuilder(excluded_packs=excluded_packs))

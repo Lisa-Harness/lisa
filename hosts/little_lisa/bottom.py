@@ -34,6 +34,7 @@ from kernel.intake.contracts import (
     ProcessedState,
 )
 from kernel.models import UnifiedState
+from kernel.pack_activation import _normalize_pack_name, load_disabled_pack_names
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,26 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _discover_processing_loops() -> list[ProcessingLoop]:
-    """Discover and instantiate installed processing loops via entry points."""
+def _entry_point_pack_name(ep: importlib.metadata.EntryPoint) -> str:
+    """Return the distribution package name for an entry point, or empty string."""
+    dist = getattr(ep, "dist", None)
+    if dist is None:
+        return ""
+    name = dist.metadata.get("Name", "") if dist.metadata else ""
+    return _normalize_pack_name(str(name or ""))
+
+
+def _discover_processing_loops(
+    excluded_packs: set[str] | None = None,
+) -> list[ProcessingLoop]:
+    """Discover and instantiate installed processing loops via entry points.
+
+    Args:
+        excluded_packs: Normalized pack names to exclude from discovery.
+            When ``None`` (default), no filtering is applied. When non-empty,
+            entry points whose distribution package name is in the set are
+            skipped.
+    """
     loops: list[ProcessingLoop] = []
     try:
         eps = importlib.metadata.entry_points(group=_PROCESSING_LOOP_GROUP)
@@ -60,6 +79,8 @@ def _discover_processing_loops() -> list[ProcessingLoop]:
         return loops
 
     for ep in eps:
+        if excluded_packs and _entry_point_pack_name(ep) in excluded_packs:
+            continue
         try:
             loop_cls = ep.load()
             loop = loop_cls()
@@ -126,9 +147,16 @@ async def _collect_one(
         )
 
 
-async def _collect_all() -> list[CollectionResult]:
-    """Run all installed signal collectors in parallel."""
-    collectors_map = discover_installed_signal_collectors()
+async def _collect_all(
+    excluded_packs: set[str] | None = None,
+) -> list[CollectionResult]:
+    """Run all installed signal collectors in parallel.
+
+    Args:
+        excluded_packs: Normalized pack names to exclude from collection.
+            Forwarded to :func:`discover_installed_signal_collectors`.
+    """
+    collectors_map = discover_installed_signal_collectors(excluded_packs=excluded_packs)
     if not collectors_map:
         logger.info("No signal collectors installed")
         return []
@@ -174,19 +202,22 @@ async def run_tick(*, data_dir: Path) -> UnifiedState:
     """Run one bottom-half tick: collect → process → merge → write.
 
     Args:
-        data_dir: Directory where ``state.json`` is written.
+        data_dir: Directory where ``state.json`` is written. Also used to
+            locate ``installed-packs.json`` for disabled-pack exclusion.
 
     Returns:
         The merged ``UnifiedState``.
     """
     logger.info("Bottom-half tick starting")
 
+    excluded_packs = load_disabled_pack_names(data_dir)
+
     # 1. Collect signals
-    collections = await _collect_all()
+    collections = await _collect_all(excluded_packs=excluded_packs)
     logger.info("Collected %d signal(s)", len(collections))
 
     # 2. Run processing loops
-    loops = _discover_processing_loops()
+    loops = _discover_processing_loops(excluded_packs=excluded_packs)
     processed: list[ProcessedState] = []
     for loop in loops:
         ctx = ProcessContext(collections=collections)
