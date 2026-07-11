@@ -1,12 +1,14 @@
 ---
 version: 1
 mode_models:
-  discuss: glm-5.2:cloud
+  workshop: glm-5.2:cloud
 models:
+  - model_id: llama3.2:latest
+    provider: ollama
+    designations: [front-door, default, deep, reasoning]
+
   - model_id: gemma4:cloud
     provider: ollama
-    designations: [front-door]
 
   - model_id: glm-5.2:cloud
     provider: ollama
-    designations: [default, deep, reasoning]
