@@ -8,7 +8,8 @@ This staged tree is the intended public framework boundary. It contains reusable
 | --- | --- | --- |
 | `kernel` | Runtime-neutral contracts, mode catalog loading, workflow state, operation registry, tool and storage protocols | Host transport SDKs, production deployment, proprietary app behavior |
 | `sdk` | Author-facing helpers for rendering, workshop execution, integration contracts, and pack composition | Private app imports, private model policy, production storage |
-| `sdk_packs` | Public modes, operations, and authored prompt assets | Private product strategy, market-intel workflows, CloudServers-specific content |
+| `sdk_packs` | Core reference pack (modes, operations, authored content) | Private product strategy, market-intel workflows, CloudServers-specific content |
+| `lisa_pack_*` | External integration packs (cloudflare, github, stripe) with modes, operations, content, and all SDK extension kinds | Private app imports, kernel internals |
 | `hosts/little_lisa` | Local terminal host for package discovery, command routing, and a narrow operation-shape test with manifest-driven model routing | Production chat transport, durable memory, production-grade model policy/fallback, workflow-stage execution |
 
 ## Private Layers

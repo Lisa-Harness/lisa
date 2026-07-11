@@ -1,0 +1,4 @@
+operation_id: stripe_status
+description: Produce a Stripe billing and subscription health summary from the cached signal snapshot.
+mode_allowlist: [stripe]
+timeout_seconds: 10

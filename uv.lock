@@ -895,11 +895,11 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "lisa-kernel", editable = "kernel" },
-    { name = "lisa-pack-cloudflare", editable = "sdk_packs/cloudflare" },
+    { name = "lisa-pack-cloudflare", editable = "lisa_pack_cloudflare" },
     { name = "lisa-pack-core", editable = "sdk_packs/core" },
-    { name = "lisa-pack-github", editable = "sdk_packs/github" },
+    { name = "lisa-pack-github", editable = "lisa_pack_github" },
     { name = "lisa-pack-search", editable = "sdk_packs/search" },
-    { name = "lisa-pack-stripe", editable = "sdk_packs/stripe" },
+    { name = "lisa-pack-stripe", editable = "lisa_pack_stripe" },
     { name = "lisa-sdk", editable = "sdk" },
     { name = "little-lisa", editable = "hosts/little_lisa" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
@@ -964,7 +964,7 @@ provides-extras = ["dev", "memory"]
 [[package]]
 name = "lisa-pack-cloudflare"
 version = "0.1.0"
-source = { editable = "sdk_packs/cloudflare" }
+source = { editable = "lisa_pack_cloudflare" }
 dependencies = [
     { name = "httpx" },
     { name = "lisa-kernel" },
@@ -1016,7 +1016,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "lisa-pack-github"
 version = "0.1.0"
-source = { editable = "sdk_packs/github" }
+source = { editable = "lisa_pack_github" }
 dependencies = [
     { name = "httpx" },
     { name = "lisa-kernel" },
@@ -1070,7 +1070,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "lisa-pack-stripe"
 version = "0.1.0"
-source = { editable = "sdk_packs/stripe" }
+source = { editable = "lisa_pack_stripe" }
 dependencies = [
     { name = "httpx" },
     { name = "lisa-kernel" },

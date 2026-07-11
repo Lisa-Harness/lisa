@@ -86,13 +86,13 @@ $env:LITTLE_LISA_AUTO_RESTART = "false"
 Example shape (replace with your real repo/ref):
 
 ```powershell
-uv run little-lisa packs install "git+https://github.com/acme/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare" --no-log
+uv run little-lisa packs install "git+https://github.com/the-migus-group/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare" --no-log
 ```
 
 From REPL/host command surface:
 
 ```powershell
-uv run little-lisa once "/pack install git+https://github.com/acme/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare" --no-log
+uv run little-lisa once "/pack install git+https://github.com/the-migus-group/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare" --no-log
 ```
 
 ## 4b) Install From Local Folder (Split-Repos Workflow)

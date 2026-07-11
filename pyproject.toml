@@ -35,12 +35,12 @@ package = false
 members = [
     "kernel",
     "sdk",
-    "sdk_packs/cloudflare",
-    "sdk_packs/github",
-    "sdk_packs/stripe",
     "sdk_packs/core",
     "sdk_packs/search",
     "hosts/little_lisa",
+    "lisa_pack_cloudflare",
+    "lisa_pack_github",
+    "lisa_pack_stripe",
 ]
 
 [tool.uv.sources]
@@ -141,4 +141,3 @@ ignore_decorators = [
     "@router.get",
     "@router.post",
 ]
-

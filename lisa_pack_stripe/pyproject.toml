@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lisa_pack_stripe*"]
+
+[tool.setuptools.package-data]
+"lisa_pack_stripe" = ["content/**/*.md", "modes/**/*.md", "operations/**/*.md", "operations/**/*.yml", "operations/**/*.py"]
+
+[tool.uv.sources]
+lisa-kernel = { workspace = true }
+lisa-sdk = { workspace = true }
+
+[project]
+name = "lisa-pack-stripe"
+version = "0.1.0"
+description = "Lisa Stripe pack - subscription and trial activity signal connector plus status mode"
+requires-python = ">=3.11"
+
+dependencies = [
+    "lisa-kernel",
+    "lisa-sdk",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+    "live: hits real external signal or provider APIs and prints a tester-visible summary",
+    "integration: multi-module in-process test; may require Azurite on localhost:10000",
+    "eval: deterministic agent regression evals (no model calls, no I/O)",
+]
+
+[project.entry-points."lisa.extensions.content_roots"]
+stripe = "lisa_pack_stripe:get_content_root"
+
+[project.entry-points."lisa.extensions.signal_connectors"]
+stripe = "lisa_pack_stripe.connector:StripeSignalConnector"
+
+[project.entry-points."lisa.extensions.anomaly_detectors"]
+stripe = "lisa_pack_stripe.anomalies:build_anomaly_detectors"
+
+[project.entry-points."lisa.extensions.heartbeat_context"]
+stripe = "lisa_pack_stripe.heartbeat_context:build_heartbeat_context_fragments"
+
+[project.entry-points."lisa.extensions.digest_sections"]
+stripe = "lisa_pack_stripe.digest:build_digest_sections"
+
+[project.entry-points."lisa.extensions.context_evidence"]
+stripe = "lisa_pack_stripe.context_evidence:build_context_evidence"
+
+[project.entry-points."lisa.extensions.refresh_summary_sections"]
+stripe = "lisa_pack_stripe.refresh_summary:build_refresh_summary_sections"

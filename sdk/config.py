@@ -10,7 +10,7 @@ from __future__ import annotations
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
-from sdk_packs._settings import build_owned_settings_sources
+from sdk.pack_settings import build_owned_settings_sources
 
 
 class Settings(BaseSettings):

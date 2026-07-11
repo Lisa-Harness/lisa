@@ -44,11 +44,13 @@ Common public entry-point groups:
 
 Hosts decide which groups they discover and how often extension outputs are collected.
 
-## Public Integration Packs In This Workspace
+## Public Integration Packs
 
-- `sdk_packs/cloudflare`: Cloudflare zone and worker signal connector (published as `lisa-pack-cloudflare`).
-- `sdk_packs/github`: GitHub repository and workflow signal connector (published as `lisa-pack-github`).
-- `sdk_packs/stripe`: Stripe billing signal connector (published as `lisa-pack-stripe`).
+- `lisa_pack_cloudflare`: Cloudflare zone, worker, and edge infrastructure status pack (published as `lisa-pack-cloudflare`). Includes modes, operations, content, signal connectors, anomaly detectors, and all SDK extension kinds.
+- `lisa_pack_github`: GitHub repository, CI/CD, and PR health status pack (published as `lisa-pack-github`). Includes modes, operations, content, signal connectors, anomaly detectors, and all SDK extension kinds.
+- `lisa_pack_stripe`: Stripe subscription, trial, and billing health status pack (published as `lisa-pack-stripe`). Includes modes, operations, content, signal connectors, anomaly detectors, and all SDK extension kinds.
+
+These packs live as top-level directories in the workspace and are installable via `/pack install` from PyPI or Git (`github.com/the-migus-group`). They can also be installed from a local folder for development.
 
 CloudServers operations and market-intel extensions are intentionally not included in this public staged tree.
 
