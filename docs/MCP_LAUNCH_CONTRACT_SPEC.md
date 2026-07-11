@@ -631,6 +631,7 @@ Tools:
 | `list_tools` | (none) | JSON object mapping `tool_id` to tool def |
 | `invalidate_cache` | (none) | `{"ok": true}` |
 | `invalidate_catalog` | (none) | `{"ok": true}` — clears cached mode/operation/tool catalog JSON |
+| `list_catalog_diagnostics` | (none) | JSON diagnostics report (root discovery failures, mode/operation/tool issues, summary) |
 
 Behavior:
 

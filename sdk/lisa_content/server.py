@@ -7,7 +7,8 @@ Tools:
 - ``list_operations`` — return the full operation catalog as JSON
 - ``list_tools`` — return the full internal tool catalog as JSON
 - ``invalidate_cache`` — clear the file-read cache
-- ``invalidate_catalog`` — clear the mode/operation catalog caches
+- ``invalidate_catalog`` — clear the mode/operation/tool catalog caches
+- ``list_catalog_diagnostics`` — return a diagnostics report for root discovery and catalog scan failures
 
 Uses ``kernel.content_roots.discover_installed_content_roots()`` +
 ``discover_configured_content_roots()`` to find content roots at startup.
@@ -40,6 +41,7 @@ from sdk.lisa_content._catalog import (
     resolve_operation_roots,
     resolve_tool_roots,
 )
+from sdk.lisa_content._diagnostics import build_catalog_diagnostics_json
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +180,28 @@ async def invalidate_catalog() -> str:
     """Clear the mode/operation/tool catalog caches after content roots change."""
     invalidate_catalog_cache()
     return json.dumps({"ok": True})
+
+
+@mcp.tool()
+async def list_catalog_diagnostics() -> str:
+    """Return a diagnostics report for content root discovery and catalog scan failures.
+
+    Re-scans entry points to capture load failures and missing directories,
+    checks each mode directory for missing ``_mode.md`` or invalid front-matter,
+    and checks each runtime operation/tool module for missing metadata siblings.
+    Use this to inspect *why* a pack contributed nothing instead of seeing an
+    empty catalog with no explanation.
+    """
+    all_roots = _all_roots()
+    mode_roots = resolve_mode_roots(all_roots)
+    operation_roots = resolve_operation_roots(all_roots)
+    tool_roots = resolve_tool_roots(all_roots)
+    return build_catalog_diagnostics_json(
+        all_roots=all_roots,
+        mode_roots=mode_roots,
+        operation_roots=operation_roots,
+        tool_roots=tool_roots,
+    )
 
 
 def main() -> None:

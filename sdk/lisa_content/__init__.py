@@ -8,6 +8,7 @@ Tools:
 - ``list_tools`` — return the full internal tool catalog as JSON
 - ``invalidate_cache`` — clear the file-read cache
 - ``invalidate_catalog`` — clear the mode/operation/tool catalog caches
+- ``list_catalog_diagnostics`` — return a diagnostics report for root discovery and catalog scan failures
 """
 
 from __future__ import annotations

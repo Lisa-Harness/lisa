@@ -126,7 +126,7 @@ async def test_content_list_roots_returns_array(content_setup: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_content_lists_all_seven_tools(content_setup: None) -> None:
+async def test_content_lists_all_eight_tools(content_setup: None) -> None:
     from sdk.lisa_content.server import mcp
 
     tools = await mcp.list_tools()
@@ -139,6 +139,7 @@ async def test_content_lists_all_seven_tools(content_setup: None) -> None:
         "list_tools",
         "invalidate_cache",
         "invalidate_catalog",
+        "list_catalog_diagnostics",
     } <= names
 
 
@@ -260,4 +261,107 @@ async def test_content_list_tools_returns_json(content_setup: None) -> None:
     result = await mcp.call_tool("list_tools", {})
     data = json.loads(_tool_text(result))
     assert isinstance(data, dict)
+
+
+# ── lisa_content diagnostics ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_content_diagnostics_returns_report(content_setup: None) -> None:
+    """list_catalog_diagnostics returns a JSON report with expected keys."""
+    from sdk.lisa_content.server import mcp
+
+    result = await mcp.call_tool("list_catalog_diagnostics", {})
+    data = json.loads(_tool_text(result))
+    assert "root_discovery_failures" in data
+    assert "mode_issues" in data
+    assert "operation_issues" in data
+    assert "tool_issues" in data
+    assert "summary" in data
+    assert "total_roots" in data["summary"]
+    assert "total_issues" in data["summary"]
+
+
+@pytest.mark.asyncio
+async def test_content_diagnostics_detects_missing_mode_config(tmp_path: Path, monkeypatch) -> None:
+    """A mode directory without _mode.md should be reported as an issue."""
+    from sdk.lisa_content import server
+    from sdk.lisa_content.server import init_content, mcp
+
+    root = tmp_path / "root"
+    mode_dir = root / "modes" / "broken_mode"
+    mode_dir.mkdir(parents=True, exist_ok=True)
+
+    init_content(extra_roots=[root])
+    monkeypatch.setattr(server, "_all_roots", lambda: [root])
+    result = await mcp.call_tool("list_catalog_diagnostics", {})
+    data = json.loads(_tool_text(result))
+    mode_issues = data["mode_issues"]
+    assert len(mode_issues) >= 1
+    assert any(issue["mode_dir"] == "broken_mode" for issue in mode_issues)
+    assert data["summary"]["total_issues"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_content_diagnostics_detects_missing_operation_metadata(tmp_path: Path, monkeypatch) -> None:
+    """A .py operation module without a .yml sibling should be reported."""
+    from sdk.lisa_content import server
+    from sdk.lisa_content.server import init_content, mcp
+
+    root = tmp_path / "root"
+    ops_dir = root / "operations" / "research"
+    ops_dir.mkdir(parents=True, exist_ok=True)
+    (ops_dir / "orphan.py").write_text("# no yml sibling\n", encoding="utf-8")
+
+    init_content(extra_roots=[root])
+    monkeypatch.setattr(server, "_all_roots", lambda: [root])
+    result = await mcp.call_tool("list_catalog_diagnostics", {})
+    data = json.loads(_tool_text(result))
+    op_issues = data["operation_issues"]
+    assert len(op_issues) >= 1
+    assert any("orphan.py" in issue["path"] for issue in op_issues)
+
+
+@pytest.mark.asyncio
+async def test_content_diagnostics_detects_missing_tool_metadata(tmp_path: Path, monkeypatch) -> None:
+    """A .py tool module without a .tool.yml sibling should be reported."""
+    from sdk.lisa_content import server
+    from sdk.lisa_content.server import init_content, mcp
+
+    root = tmp_path / "root"
+    tools_dir = root / "tools" / "broken_tool"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    (tools_dir / "broken_tool.py").write_text("# no tool yml sibling\n", encoding="utf-8")
+
+    init_content(extra_roots=[root])
+    monkeypatch.setattr(server, "_all_roots", lambda: [root])
+    result = await mcp.call_tool("list_catalog_diagnostics", {})
+    data = json.loads(_tool_text(result))
+    tool_issues = data["tool_issues"]
+    assert len(tool_issues) >= 1
+    assert any("broken_tool.py" in issue["path"] for issue in tool_issues)
+
+
+@pytest.mark.asyncio
+async def test_content_diagnostics_clean_report(tmp_path: Path, monkeypatch) -> None:
+    """A valid content root with proper files should produce zero issues."""
+    from sdk.lisa_content import server
+    from sdk.lisa_content.server import init_content, mcp
+
+    root = tmp_path / "root"
+    mode_dir = root / "modes" / "good_mode"
+    mode_dir.mkdir(parents=True, exist_ok=True)
+    (mode_dir / "_mode.md").write_text(
+        "---\nmode_id: good_mode\nmode_kind: chat\nstart_stage_id: \"\"\ndescription: \"ok\"\n---\n# Good\n",
+        encoding="utf-8",
+    )
+
+    init_content(extra_roots=[root])
+    monkeypatch.setattr(server, "_all_roots", lambda: [root])
+    result = await mcp.call_tool("list_catalog_diagnostics", {})
+    data = json.loads(_tool_text(result))
+    assert data["mode_issues"] == []
+    assert data["operation_issues"] == []
+    assert data["tool_issues"] == []
+    assert data["summary"]["total_issues"] == 0
 
