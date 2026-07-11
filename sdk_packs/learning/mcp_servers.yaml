@@ -27,4 +27,3 @@ servers:
     tool_policy:
       denied_tools:
         - get_surface_context
-        - list_memories
