@@ -35,7 +35,7 @@ from typing import Any
 import yaml
 
 from kernel.config import settings
-from kernel.intake.connector_discovery import discover_installed_signal_connectors
+from kernel.intake.connector_discovery import discover_installed_signal_collectors
 from kernel.models import (
     OperationExecutionContext,
     OperationResult,
@@ -117,7 +117,7 @@ def register_content_mcp(config: MCPClientConfig) -> None:
 def _known_connector_ids() -> frozenset[str]:
     """Return installed signal connector IDs discovered from extension entry points."""
 
-    return frozenset(discover_installed_signal_connectors())
+    return frozenset(discover_installed_signal_collectors())
 
 
 def _format_connector_snapshot_value(value: Any) -> str:
@@ -579,7 +579,7 @@ def build_filtered_live_context(
 ) -> str:
     """Render stage-scoped telemetry markdown from the full unified state payload."""
     lines = [f"- Snapshot compiled at: {state.compiled_at}"]
-    connector_metadata = discover_installed_signal_connectors()
+    connector_metadata = discover_installed_signal_collectors()
 
     for connector_id in connectors:
         display_name = connector_metadata.get(

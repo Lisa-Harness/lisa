@@ -38,17 +38,17 @@ sdk.get_content_root  # noqa: Vulture
 sdk_packs.core.get_content_root  # noqa: Vulture
 
 # reason: lisa.extensions.signal_connectors entry-point target (cloudflare)
-sdk_packs.cloudflare.connector.CloudflareSignalConnector  # noqa: Vulture
+lisa_pack_cloudflare.connector.CloudflareSignalCollector  # noqa: Vulture
 
 # reason: lisa.extensions.signal_connectors entry-point target (github)
-sdk_packs.github.connector.GitHubSignalConnector  # noqa: Vulture
+lisa_pack_github.connector.GitHubSignalCollector  # noqa: Vulture
 
 # reason: lisa.extensions.signal_connectors entry-point target (stripe)
-sdk_packs.stripe.connector.StripeSignalConnector  # noqa: Vulture
+lisa_pack_stripe.connector.StripeSignalCollector  # noqa: Vulture
 
 # ──────────────────────────────────────────────────────────────────────────
 # Operation execute() functions — dispatched via getattr(module, "execute")
-# at kernel/operations/registry.py:352.
+# at kernel/operations/registry.py.
 # ──────────────────────────────────────────────────────────────────────────
 # reason: operation dispatch via getattr(module, "execute")
 sdk_packs.learning.operations.memory.recall.execute  # noqa: Vulture
@@ -64,7 +64,7 @@ sdk_packs.core.operations.self_model.self_model.execute  # noqa: Vulture
 
 # ──────────────────────────────────────────────────────────────────────────
 # Pydantic structured-output models — loaded via _resolve_model_class()
-# string dispatch at kernel/context/mcp_catalog.py:321.
+# string dispatch at kernel/context/mcp_catalog.py.
 # ──────────────────────────────────────────────────────────────────────────
 # reason: response-format model loaded via _resolve_model_class string dispatch
 sdk_packs.search.operations.research.discussion_briefing.DiscussionBriefingStructuredOutput  # noqa: Vulture
@@ -103,50 +103,14 @@ hosts.little_lisa.main._DEFAULT_MEMORY_MAX_RECORDS  # noqa: Vulture
 # must satisfy, even if the Protocol/ABC body (``...`` / ``raise`` / pass)
 # never reads them.
 # ──────────────────────────────────────────────────────────────────────────
-# reason: StateBuilder.__call__ Protocol parameter — interface contract
-kernel.extension_runtime.StateBuilder.__call__.collections  # noqa: Vulture
+# reason: DataSanitizer.redact Protocol parameter — interface contract
+kernel.context.data_sanitizer.PassThroughSanitizer.redact.scope  # noqa: Vulture
 
-# reason: StateBuilder.__call__ Protocol parameter — interface contract
-kernel.extension_runtime.StateBuilder.__call__.analysis  # noqa: Vulture
+# reason: OutputGuard.validate Protocol parameter — interface contract
+kernel.seams.protocols.OutputGuard.validate.surface  # noqa: Vulture
 
-# reason: StageChainExecutor.__call__ Protocol parameter — interface contract
-kernel.extension_runtime.StageChainExecutor.__call__.collection_scope  # noqa: Vulture
-
-# reason: StageChainExecutor.__call__ Protocol parameter — interface contract
-kernel.extension_runtime.StageChainExecutor.__call__.directional_query  # noqa: Vulture
-
-# reason: abstract method parameter — interface contract for data sources
-kernel.intake.knowledge.collect_artifact.http_client  # noqa: Vulture
-
-# reason: abstract method parameter — interface contract for data sources
-kernel.intake.sources.execute_cycle.http_client  # noqa: Vulture
-
-# reason: OutboxReader Protocol parameter — interface contract
-kernel.seams.protocols.OutboxReader.read_outbox_entries.max_bytes  # noqa: Vulture
-
-# reason: SynthesisRuntime Protocol parameters — interface contracts
-kernel.synthesis.runtime.run_local_analysis.collection_scope  # noqa: Vulture
-
-# reason: SynthesisRuntime Protocol parameters — interface contracts
-kernel.synthesis.runtime.run_local_analysis.raw_items  # noqa: Vulture
-
-# reason: SynthesisRuntime Protocol parameters — interface contracts
-kernel.synthesis.runtime.run_local_analysis.directional_query  # noqa: Vulture
-
-# reason: SynthesisRuntime Protocol parameters — interface contracts
-kernel.synthesis.runtime.run_synthesis.collection_scope  # noqa: Vulture
-
-# reason: SynthesisRuntime Protocol parameters — interface contracts
-kernel.synthesis.runtime.run_synthesis.local_analysis  # noqa: Vulture
-
-# reason: SynthesisRuntime Protocol parameters — interface contracts
-kernel.synthesis.runtime.build_memory_artifact.collection_scope  # noqa: Vulture
-
-# reason: SynthesisRuntime Protocol parameters — interface contracts
-kernel.synthesis.runtime.build_memory_artifact.local_analysis  # noqa: Vulture
-
-# reason: SynthesisRuntime Protocol parameters — interface contracts
-kernel.synthesis.runtime.build_memory_artifact.synthesis  # noqa: Vulture
+# reason: StateProvider Protocol parameter — interface contract
+kernel.state_providers.BlankStateProvider.__call__  # noqa: Vulture
 
 # reason: EmbeddingProvider Protocol parameter — interface contract
 sdk.lisa_memory.store.EmbeddingProvider.embed.texts  # noqa: Vulture

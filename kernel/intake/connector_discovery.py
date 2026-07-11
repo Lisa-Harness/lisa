@@ -1,4 +1,4 @@
-"""Discovery helpers for installed signal connector extensions."""
+"""Discovery helpers for installed signal collector extensions."""
 
 from __future__ import annotations
 
@@ -10,39 +10,39 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
-class InstalledSignalConnector:
-    """Minimal installed connector metadata used by kernel registry consumers."""
+class InstalledSignalCollector:
+    """Minimal installed collector metadata used by kernel registry consumers."""
 
-    connector_id: str
+    collector_id: str
     display_name: str
 
 
-def discover_installed_signal_connectors() -> dict[str, InstalledSignalConnector]:
-    """Return installed connector IDs mapped to basic display metadata."""
+def discover_installed_signal_collectors() -> dict[str, InstalledSignalCollector]:
+    """Return installed collector IDs mapped to basic display metadata."""
 
-    connectors: dict[str, InstalledSignalConnector] = {}
+    collectors: dict[str, InstalledSignalCollector] = {}
     for ep in importlib.metadata.entry_points(group="lisa.extensions.signal_connectors"):
         try:
             loaded = ep.load()
         except Exception:  # pylint: disable=broad-except
-            logger.warning("Failed to load signal connector %r", ep.name, exc_info=True)
+            logger.warning("Failed to load signal collector %r", ep.name, exc_info=True)
             continue
 
-        connector_id = getattr(loaded, "connector_id", "")
-        if not isinstance(connector_id, str) or not connector_id:
+        collector_id = getattr(loaded, "collector_id", "")
+        if not isinstance(collector_id, str) or not collector_id:
             continue
 
         display_name = getattr(loaded, "display_name", "")
-        connectors[connector_id] = InstalledSignalConnector(
-            connector_id=connector_id,
+        collectors[collector_id] = InstalledSignalCollector(
+            collector_id=collector_id,
             display_name=(
                 display_name
                 if isinstance(display_name, str) and display_name
-                else connector_id.replace("_", " ").title()
+                else collector_id.replace("_", " ").title()
             ),
         )
 
-    return connectors
+    return collectors
 
 
-__all__ = ["InstalledSignalConnector", "discover_installed_signal_connectors"]
+__all__ = ["InstalledSignalCollector", "discover_installed_signal_collectors"]

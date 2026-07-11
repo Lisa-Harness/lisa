@@ -1,16 +1,16 @@
-"""Base contract for external signal connectors.
+"""Base contract for external signal collectors.
 
-Signal connectors are singleton, stateless monitors for external systems.
-Each connector:
+Signal collectors are singleton, stateless monitors for external systems.
+Each collector:
 - Defines what configuration is required (env vars or settings)
 - Implements a collect() method to fetch fresh data from the external system
 - Returns a typed snapshot (Pydantic model) that can be serialized to state cache or blob storage
 - Provides error recovery paths for misconfiguration or collection failures
 
-Signal connectors are invoked by a host scheduler or SignalConnectorExecutor,
-which handles retries, timing, and error classification.
+Signal collectors are invoked by a one-shot bottom-half process
+(``little-lisa bottom --tick``) triggered by a systemd timer or cron.
 
-TypeVar SnapshotT is the Pydantic model returned by each connector's collect() method.
+TypeVar SnapshotT is the Pydantic model returned by each collector's collect() method.
 """
 
 from __future__ import annotations
@@ -25,10 +25,10 @@ SignalRunMode = Literal["scheduled", "on_demand", "live_test"]
 SnapshotT = TypeVar("SnapshotT", bound=BaseModel)
 
 
-class SignalConnector(ABC, Generic[SnapshotT]):
+class SignalCollector(ABC, Generic[SnapshotT]):
     """Base class for stateless, repeatable external signal collection.
 
-    Each signal connector monitors one external system (Cloudflare, GitHub, Stripe, etc.)
+    Each signal collector monitors one external system (Cloudflare, GitHub, Stripe, etc.)
     and provides three key capabilities:
 
     1. Configuration validation: missing_configuration() returns required env vars not set.
@@ -41,19 +41,19 @@ class SignalConnector(ABC, Generic[SnapshotT]):
     status classification logic beyond the default snapshot.status field.
     """
 
-    connector_id: str
+    collector_id: str
     display_name: str
     intel_collection_key: str | None = None
-    """If set, the SignalConnectorExecutor caller will write the connector's snapshot
-    into ``UnifiedState.intel_collections[intel_collection_key]`` after each successful
-    or error collection run.  Connectors that do not need to populate intel_collections
-    leave this as ``None``."""
+    """If set, the bottom-half tick will write the collector's snapshot
+    into ``UnifiedState.intel_collections[intel_collection_key]`` after each
+    successful or error collection run. Collectors that do not need to
+    populate intel_collections leave this as ``None``."""
 
     def missing_configuration(self) -> list[str]:
         """Return list of missing environment variables or settings required to run.
 
-        Called by SignalConnectorExecutor before attempting collection. If any
-        variables are missing, the executor will short-circuit to an unconfigured
+        Called by the bottom-half tick before attempting collection. If any
+        variables are missing, the tick will short-circuit to an unconfigured
         snapshot and skip the collect() call.
 
         Returns:

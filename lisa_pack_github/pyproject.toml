@@ -46,19 +46,10 @@ markers = [
 github = "lisa_pack_github:get_content_root"
 
 [project.entry-points."lisa.extensions.signal_connectors"]
-github = "lisa_pack_github.connector:GitHubSignalConnector"
-
-[project.entry-points."lisa.extensions.anomaly_detectors"]
-github = "lisa_pack_github.anomalies:build_anomaly_detectors"
-
-[project.entry-points."lisa.extensions.heartbeat_context"]
-github = "lisa_pack_github.heartbeat_context:build_heartbeat_context_fragments"
-
-[project.entry-points."lisa.extensions.digest_sections"]
-github = "lisa_pack_github.digest:build_digest_sections"
+github = "lisa_pack_github.connector:GitHubSignalCollector"
 
 [project.entry-points."lisa.extensions.context_evidence"]
 github = "lisa_pack_github.context_evidence:build_context_evidence"
 
-[project.entry-points."lisa.extensions.refresh_summary_sections"]
-github = "lisa_pack_github.refresh_summary:build_refresh_summary_sections"
+[project.entry-points."lisa.extensions.processing_loops"]
+github = "lisa_pack_github.processing:GitHubProcessingLoop"

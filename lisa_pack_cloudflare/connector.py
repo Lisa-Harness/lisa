@@ -40,7 +40,7 @@ from typing import Any
 
 import httpx
 
-from kernel.intake.connectors import SignalConnector
+from kernel.intake.connectors import SignalCollector
 from lisa_pack_cloudflare.config import get_cloudflare_connector_settings
 from lisa_pack_cloudflare.models import CloudflareMetrics
 
@@ -166,14 +166,14 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-class CloudflareSignalConnector(SignalConnector[CloudflareMetrics]):
+class CloudflareSignalCollector(SignalCollector[CloudflareMetrics]):
     """Cloudflare zone and worker health monitor.
 
     Singleton connector that polls Cloudflare APIs for zone health and worker status.
-    Injected as a dependency into SignalConnectorExecutor, initialized once at app startup.
+    Injected as a dependency into the bottom-half tick, initialized once at app startup.
 
     Attributes:
-        connector_id: 'cloudflare' (used to identify this connector in logs and results)
+        collector_id: 'cloudflare' (used to identify this collector in logs and results)
         display_name: 'Cloudflare' (human-readable name for UI/reports)
 
     Dependencies:
@@ -182,7 +182,7 @@ class CloudflareSignalConnector(SignalConnector[CloudflareMetrics]):
         - CLOUDFLARE_ACCOUNT_ID (str env var, optional): account ID for worker script inventory
     """
 
-    connector_id = "cloudflare"
+    collector_id = "cloudflare"
     display_name = "Cloudflare"
 
     def missing_configuration(self) -> list[str]:

@@ -46,19 +46,10 @@ markers = [
 stripe = "lisa_pack_stripe:get_content_root"
 
 [project.entry-points."lisa.extensions.signal_connectors"]
-stripe = "lisa_pack_stripe.connector:StripeSignalConnector"
-
-[project.entry-points."lisa.extensions.anomaly_detectors"]
-stripe = "lisa_pack_stripe.anomalies:build_anomaly_detectors"
-
-[project.entry-points."lisa.extensions.heartbeat_context"]
-stripe = "lisa_pack_stripe.heartbeat_context:build_heartbeat_context_fragments"
-
-[project.entry-points."lisa.extensions.digest_sections"]
-stripe = "lisa_pack_stripe.digest:build_digest_sections"
+stripe = "lisa_pack_stripe.connector:StripeSignalCollector"
 
 [project.entry-points."lisa.extensions.context_evidence"]
 stripe = "lisa_pack_stripe.context_evidence:build_context_evidence"
 
-[project.entry-points."lisa.extensions.refresh_summary_sections"]
-stripe = "lisa_pack_stripe.refresh_summary:build_refresh_summary_sections"
+[project.entry-points."lisa.extensions.processing_loops"]
+stripe = "lisa_pack_stripe.processing:StripeProcessingLoop"

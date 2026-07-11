@@ -1,28 +1,28 @@
 """Kernel intake — external data collection contracts.
 
-This subpackage unifies the three forms of external data collection the
-framework supports:
+This subpackage defines the bottom-half contracts for passive data
+acquisition:
 
 - ``connectors``: stateless, repeatable monitors for external systems
-  (Cloudflare, GitHub, Stripe, etc.). Each connector returns a typed
+  (Cloudflare, GitHub, Stripe, etc.). Each collector returns a typed
   snapshot that can be cached in ``UnifiedState``.
-- ``sources``: stateful data fetchers that may maintain rolling caches
-  across execution cycles (e.g. for trend comparison).
-- ``knowledge``: pack-owned domain-knowledge providers that contribute
-  bounded orientation material (repo atlases, operator guidance) through
-  the same intake seam.
+- ``contracts``: the minimal ``ProcessingLoop`` protocol for background
+  processing chains that run after collection and write results back
+  into ``UnifiedState``.
 
-All three share the ``DataSourceHooks`` host-injection contract from
-``kernel.seams.protocols``.
+The bottom half is driven by a one-shot process (``little-lisa bottom
+--tick``) triggered by a systemd timer or cron — no long-running threads.
+The top half (turn loop) reads the resulting ``UnifiedState`` via the
+host's ``_state_provider()``.
 """
 
-from kernel.intake.connectors import SignalConnector, SignalRunMode
-from kernel.intake.knowledge import DomainKnowledgeProvider
-from kernel.intake.sources import DataSource
+from kernel.intake.connectors import SignalCollector, SignalRunMode
+from kernel.intake.contracts import ProcessContext, ProcessingLoop, ProcessedState
 
 __all__ = [
-    "DataSource",
-    "DomainKnowledgeProvider",
-    "SignalConnector",
+    "ProcessContext",
+    "ProcessingLoop",
+    "ProcessedState",
+    "SignalCollector",
     "SignalRunMode",
 ]

@@ -33,19 +33,19 @@ from __future__ import annotations
 
 import httpx
 
-from kernel.intake.connectors import SignalConnector
+from kernel.intake.connectors import SignalCollector
 from lisa_pack_github.config import get_github_extension_settings
 from lisa_pack_github.models import GitHubStatus
 
 
-class GitHubSignalConnector(SignalConnector[GitHubStatus]):
+class GitHubSignalCollector(SignalCollector[GitHubStatus]):
     """GitHub repository activity and CI status monitor.
 
     Singleton connector that polls GitHub API for repo health and workflow status.
-    Injected as a dependency into SignalConnectorExecutor, initialized once at app startup.
+    Injected as a dependency into the bottom-half tick, initialized once at app startup.
 
     Attributes:
-        connector_id: 'github' (used to identify this connector in logs and results)
+        collector_id: 'github' (used to identify this collector in logs and results)
         display_name: 'GitHub' (human-readable name for UI/reports)
 
     Dependencies:
@@ -53,7 +53,7 @@ class GitHubSignalConnector(SignalConnector[GitHubStatus]):
         - GITHUB_REPO (str env var): repository identifier (format: owner/repo)
     """
 
-    connector_id = "github"
+    collector_id = "github"
     display_name = "GitHub"
 
     def missing_configuration(self) -> list[str]:

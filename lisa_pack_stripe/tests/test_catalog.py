@@ -69,12 +69,10 @@ def test_stripe_operation_allowlist_matches_modes() -> None:
             )
 
 
-def test_stripe_anomaly_detector_importable() -> None:
-    """The Stripe anomaly detector module is importable and exposes the builder."""
-    from lisa_pack_stripe.anomalies import (  # noqa: PLC0415  — lazy import for boundary test
-        build_anomaly_detectors,
-        detect_stripe_anomalies,
-    )
+def test_stripe_processing_loop_importable() -> None:
+    """The Stripe processing loop module is importable and exposes the loop."""
+    from lisa_pack_stripe.processing import StripeProcessingLoop  # noqa: PLC0415  — lazy import for boundary test
 
-    assert callable(build_anomaly_detectors)
-    assert callable(detect_stripe_anomalies)
+    loop = StripeProcessingLoop()
+    assert loop.loop_id == "stripe"
+    assert callable(loop.process)

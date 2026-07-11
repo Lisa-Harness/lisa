@@ -7,7 +7,7 @@ Host layers still own wire conversion and channel-specific delivery.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,22 +54,7 @@ class RichAttachment(BaseModel):
         )
 
 
-@dataclass(frozen=True, slots=True)
-class RefreshSummarySection:
-    """Extension-owned details for one connector block in the refresh card."""
-
-    connector_id: str
-    facts: tuple[tuple[str, str], ...] = ()
-    lines: tuple[str, ...] = ()
-    order: int = 100
-
-
-RefreshSummarySectionBuilder = Callable[[UnifiedState], Iterable[RefreshSummarySection]]
-
-
 __all__ = [
-    "RefreshSummarySection",
-    "RefreshSummarySectionBuilder",
     "RichAttachment",
 ]
 

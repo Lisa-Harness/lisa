@@ -620,46 +620,26 @@ class IntelMemoryArtifact(BaseModel):
     memory_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class SignalConnectorError(BaseModel):
+class SignalCollectorError(BaseModel):
     kind: str
     message: str
     status_code: int | None = None
     retryable: bool = False
 
 
-class SignalConnectorRun(BaseModel):
-    connector_id: str
+class SignalCollectorRun(BaseModel):
+    collector_id: str
     run_mode: str = "scheduled"  # "scheduled" | "on_demand" | "live_test"
     status: str = "ok"  # "ok" | "degraded" | "unconfigured" | "error"
     started_at: str
     finished_at: str
     duration_ms: int = 0
     attempts: int = 0
-    error: SignalConnectorError | None = None
+    error: SignalCollectorError | None = None
 
 
-class SignalConnectorRefreshResult(BaseModel):
-    run: SignalConnectorRun
-    snapshot: BaseModel | None = None
-
-
-class DataSourceRun(BaseModel):
-    """Execution metadata for one data-source collection cycle."""
-
-    source_id: str
-    run_mode: str = "scheduled"  # "scheduled" | "on_demand" | "live_test"
-    status: str = "ok"  # "ok" | "skipped" | "unconfigured" | "error"
-    started_at: str
-    finished_at: str
-    duration_ms: int = 0
-    attempts: int = 0
-    error_message: str = ""
-
-
-class DataSourceRefreshResult(BaseModel):
-    """Result envelope for one data-source collection cycle."""
-
-    run: DataSourceRun
+class SignalCollectorRefreshResult(BaseModel):
+    run: SignalCollectorRun
     snapshot: BaseModel | None = None
 
 
@@ -758,7 +738,7 @@ ContextEvidenceNamespace = Literal[
     "general_context",
 ]
 ContextEvidenceSourceType = Literal[
-    "signal_connector",
+    "signal_collector",
     "operational_alert",
     "developer_state",
     "domain_knowledge",
@@ -779,7 +759,7 @@ class ContextEvidence(BaseModel):
     namespace: ContextEvidenceNamespace = "general_context"
     source: str = ""
     source_type: ContextEvidenceSourceType = "general"
-    connector_id: str = ""
+    collector_id: str = ""
     evidence_type: str = ""
     title: str = ""
     body: str = ""
@@ -898,7 +878,7 @@ class UnifiedState(BaseModel):
     domain_knowledge: dict[str, DomainKnowledgeArtifact] = Field(default_factory=dict)
     dev_state: DevState | None = None
     active_alerts: list[AnomalyAlert] = Field(default_factory=list)
-    connector_runs: dict[str, SignalConnectorRun] = Field(default_factory=dict)
+    collector_runs: dict[str, SignalCollectorRun] = Field(default_factory=dict)
     context_evidence_catalog: list[ContextEvidence] = Field(default_factory=list)
     context_markdown: str = ""  # pre-rendered markdown context for prompt injection
     thinking_vibe: str = ""
@@ -1387,7 +1367,6 @@ class ConversationDigest(BaseModel):
 ThreadArtifactType = Literal[
     "web_page",
     "search_results",
-    "signal_refresh",
     "stats_snapshot",
     "workflow_summary",
     "markdown_document",

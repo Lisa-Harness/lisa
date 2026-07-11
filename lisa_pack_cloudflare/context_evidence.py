@@ -78,9 +78,9 @@ def build_context_evidence(
     evidence_collected_at = cloudflare.collected_at or collected_at
     return [
         ContextEvidence(
-            evidence_id="connector:cloudflare",
+            evidence_id="collector:cloudflare",
             source="cloudflare",
-            connector_id="cloudflare",
+            collector_id="cloudflare",
             evidence_type="connector_status",
             title="Cloudflare health",
             body=" | ".join(summary_parts),

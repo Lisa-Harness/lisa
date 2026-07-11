@@ -1,4 +1,4 @@
-"""Kernel seams — host-injection protocols for state, and memory.
+"""Kernel seams — host-injection protocols for state and guardrails.
 
 These Protocols define the dependency-inversion surface between the
 runtime-neutral kernel and host applications. Hosts implement these
@@ -16,13 +16,6 @@ from kernel.models import (
     SurfaceContext,
     UnifiedState,
 )
-
-
-@runtime_checkable
-class OutboxReader(Protocol):
-    """Protocol for reading parsed developer outbox entries."""
-
-    def read_outbox_entries(self, max_bytes: int = 512_000) -> list[dict[str, Any]]: ...
 
 
 @runtime_checkable
@@ -87,44 +80,6 @@ class OutputGuard(Protocol):
 
 
 @runtime_checkable
-class MemoryStore(Protocol):
-    """Protocol for durable conversation memory.
-
-    Host apps (e.g. ``app.memory_store``) implement this protocol and inject
-    it into ``OperationExecutionContext.memory_store``.
-    """
-
-    async def record_memory(self, request: Any) -> Any: ...
-    async def list_recent_memories(
-        self,
-        *,
-        user_slug: str,
-        operation_id: str = "",
-        limit: int = 20,
-        workspace_id: str = "default",
-        memory_scope: str = "personal",
-        surface_id: str = "",
-    ) -> list[Any]: ...
-    async def list_memories(
-        self,
-        *,
-        user_slug: str,
-        workspace_id: str = "default",
-        memory_scope: str = "personal",
-        surface_id: str = "",
-        limit: int = 20,
-    ) -> list[Any]: ...
-    async def recall(self, query: str, **kwargs: Any) -> Any: ...
-
-
-@runtime_checkable
-class ThreadStore(Protocol):
-    """Protocol for cached thread-state access used by data sources."""
-
-    def iter_cached_states(self) -> list[Any]: ...
-
-
-@runtime_checkable
 class CompleteFn(Protocol):
     """Protocol for LLM completion calls.
 
@@ -171,36 +126,6 @@ class ExecuteOperationFn(Protocol):
     """
 
     async def __call__(self, operation_id: str, ctx: Any) -> Any: ...
-
-
-@runtime_checkable
-class DataSourceHooks(Protocol):
-    """Protocol for host services injected into data-source execution.
-
-    This mirrors the host-injected seam used by tool and operation execution
-    contexts while keeping host-owned services behind explicit protocols.
-    """
-
-    outbox_reader: OutboxReader | None
-    state_provider: StateProvider | None
-    memory_store: MemoryStore
-    thread_store: ThreadStore
-    event_bus: Any
-
-
-@dataclass(slots=True)
-class DataSourceHookSet:
-    """Concrete host-service bundle for data-source execution.
-
-    Runtime owners build this typed bundle and pass it into data sources
-    instead of relying on ``SimpleNamespace``-style dynamic objects.
-    """
-
-    state_provider: StateProvider | None
-    memory_store: MemoryStore
-    thread_store: ThreadStore
-    event_bus: Any
-    outbox_reader: OutboxReader | None = None
 
 
 # ── Context seams ───────────────────────────────────────────────────────────

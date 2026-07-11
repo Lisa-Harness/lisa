@@ -49,9 +49,9 @@ def build_context_evidence(
     evidence_collected_at = github.collected_at or collected_at
     return [
         ContextEvidence(
-            evidence_id="connector:github",
+            evidence_id="collector:github",
             source="github",
-            connector_id="github",
+            collector_id="github",
             evidence_type="connector_status",
             title="GitHub delivery state",
             body=(

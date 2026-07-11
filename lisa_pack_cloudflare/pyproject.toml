@@ -46,19 +46,10 @@ markers = [
 cloudflare = "lisa_pack_cloudflare:get_content_root"
 
 [project.entry-points."lisa.extensions.signal_connectors"]
-cloudflare = "lisa_pack_cloudflare.connector:CloudflareSignalConnector"
-
-[project.entry-points."lisa.extensions.anomaly_detectors"]
-cloudflare = "lisa_pack_cloudflare.anomalies:build_anomaly_detectors"
-
-[project.entry-points."lisa.extensions.heartbeat_context"]
-cloudflare = "lisa_pack_cloudflare.heartbeat_context:build_heartbeat_context_fragments"
-
-[project.entry-points."lisa.extensions.digest_sections"]
-cloudflare = "lisa_pack_cloudflare.digest:build_digest_sections"
+cloudflare = "lisa_pack_cloudflare.connector:CloudflareSignalCollector"
 
 [project.entry-points."lisa.extensions.context_evidence"]
 cloudflare = "lisa_pack_cloudflare.context_evidence:build_context_evidence"
 
-[project.entry-points."lisa.extensions.refresh_summary_sections"]
-cloudflare = "lisa_pack_cloudflare.refresh_summary:build_refresh_summary_sections"
+[project.entry-points."lisa.extensions.processing_loops"]
+cloudflare = "lisa_pack_cloudflare.processing:CloudflareProcessingLoop"

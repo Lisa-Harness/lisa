@@ -60,9 +60,9 @@ def build_context_evidence(
     evidence_collected_at = stripe.collected_at or collected_at
     return [
         ContextEvidence(
-            evidence_id="connector:stripe",
+            evidence_id="collector:stripe",
             source="stripe",
-            connector_id="stripe",
+            collector_id="stripe",
             evidence_type="connector_status",
             title="Stripe subscription snapshot",
             body=" | ".join(summary_parts),

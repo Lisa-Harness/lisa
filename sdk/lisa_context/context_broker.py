@@ -16,7 +16,7 @@ from kernel.config import settings
 from kernel.context.context_frames import render_ranked_evidence_namespace_frame
 from kernel.context.extension_evidence import NoOpExtensionEvidenceBuilder
 from kernel.extension_runtime import ExtensionRuntimeContext
-from kernel.intake.connector_discovery import discover_installed_signal_connectors
+from kernel.intake.connector_discovery import discover_installed_signal_collectors
 from kernel.models import (
     ContextConflictRisk,
     ContextEvidence,
@@ -116,7 +116,7 @@ def _default_collected_at(state: UnifiedState) -> str:
 
 
 def _source_ttl(source: str) -> timedelta:
-    if source in discover_installed_signal_connectors() or source in {"alerts", "dev_state"}:
+    if source in discover_installed_signal_collectors() or source in {"alerts", "dev_state"}:
         return timedelta(seconds=max(settings.heartbeat_interval_seconds * 2, 60))
     if source == "domain_knowledge":
         return timedelta(hours=max(settings.repo_context_stale_after_hours, 1))
@@ -174,7 +174,7 @@ def _base_relevance_for_evidence(evidence: ContextEvidence) -> tuple[float, str]
     if evidence.source_type == "domain_knowledge":
         return 0.65, "baseline: domain knowledge"
 
-    if evidence.source_type == "signal_connector":
+    if evidence.source_type == "signal_collector":
         return 0.45, "baseline: signal connector"
 
     return 0.0, ""
@@ -226,7 +226,7 @@ def _classify_evidence_namespace(evidence: ContextEvidence) -> ContextEvidenceNa
     evidence_type = evidence.evidence_type.lower()
     tags = {tag.lower() for tag in evidence.tags}
     evidence_id = evidence.evidence_id.lower()
-    signal_sources = set(discover_installed_signal_connectors())
+    signal_sources = set(discover_installed_signal_collectors())
 
     if evidence_type == "alert" or source in signal_sources or source.endswith("_ops_trends"):
         return "operational_state"
@@ -253,12 +253,12 @@ def _classify_evidence_namespace(evidence: ContextEvidence) -> ContextEvidenceNa
 def _classify_evidence_source_type(evidence: ContextEvidence) -> ContextEvidenceSourceType:
     source = evidence.source.lower()
     evidence_type = evidence.evidence_type.lower()
-    signal_sources = set(discover_installed_signal_connectors())
+    signal_sources = set(discover_installed_signal_collectors())
 
     if evidence_type == "alert":
         return "operational_alert"
-    if source in signal_sources or evidence.connector_id:
-        return "signal_connector"
+    if source in signal_sources or evidence.collector_id:
+        return "signal_collector"
     if source == "dev_state":
         return "developer_state"
     if source == "domain_knowledge" or evidence_type == "domain_knowledge":
@@ -300,7 +300,7 @@ def _new_evidence(
     title: str,
     body: str,
     collected_at: str,
-    connector_id: str = "",
+    collector_id: str = "",
     confidence: float = 0.8,
     salience_score: float = 0.5,
     tags: Iterable[str] | None = None,
@@ -309,7 +309,7 @@ def _new_evidence(
     evidence = ContextEvidence(
         evidence_id=evidence_id,
         source=source,
-        connector_id=connector_id,
+        collector_id=collector_id,
         evidence_type=evidence_type,
         title=title,
         body=body,
@@ -335,7 +335,7 @@ def _build_alert_evidence(state: UnifiedState) -> list[ContextEvidence]:
             _new_evidence(
                 evidence_id=f"alert:{index}:{alert.source}",
                 source=alert.source or "alerts",
-                connector_id=alert.source,
+                collector_id=alert.source,
                 evidence_type="alert",
                 title=f"{alert.source.title()} {alert.severity} alert",
                 body=alert.message,
@@ -522,7 +522,7 @@ def _should_include_for_connectors(evidence: ContextEvidence, connector_set: set
         return True
     if evidence.evidence_type == "alert":
         return True
-    return bool(evidence.connector_id and evidence.connector_id in connector_set)
+    return bool(evidence.collector_id and evidence.collector_id in connector_set)
 
 
 def select_ranked_context(

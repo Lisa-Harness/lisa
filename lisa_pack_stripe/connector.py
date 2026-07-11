@@ -32,19 +32,19 @@ from __future__ import annotations
 
 import httpx
 
-from kernel.intake.connectors import SignalConnector
+from kernel.intake.connectors import SignalCollector
 from lisa_pack_stripe.config import get_stripe_connector_settings
 from lisa_pack_stripe.models import StripeMetrics
 
 
-class StripeSignalConnector(SignalConnector[StripeMetrics]):
+class StripeSignalCollector(SignalCollector[StripeMetrics]):
     """Stripe billing and subscription health monitor.
 
     Singleton connector that polls Stripe API for subscription and trial metrics.
-    Injected as a dependency into SignalConnectorExecutor, initialized once at app startup.
+    Injected as a dependency into the bottom-half tick, initialized once at app startup.
 
     Attributes:
-        connector_id: 'stripe' (used to identify this connector in logs and results)
+        collector_id: 'stripe' (used to identify this collector in logs and results)
         display_name: 'Stripe' (human-readable name for UI/reports)
 
     Dependencies:
@@ -56,7 +56,7 @@ class StripeSignalConnector(SignalConnector[StripeMetrics]):
         at any given time. Scale this threshold if needed.
     """
 
-    connector_id = "stripe"
+    collector_id = "stripe"
     display_name = "Stripe"
 
     def missing_configuration(self) -> list[str]:

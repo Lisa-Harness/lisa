@@ -7193,6 +7193,44 @@ async def _run_once_with_teardown(message: str) -> None:
         await aclose_warm_mcp_pool()
 
 
+@app.command("bottom", help="Run one bottom-half tick: collect signals, process, write state.")
+def _bottom_command(
+    data_dir: DataDirOption = "",
+    log_level: LogLevelOption = "",
+    host_log: HostLogOption = "",
+) -> None:
+    """One-shot bottom-half process. Triggered by systemd timer or cron."""
+    resolved_data_dir = Path(data_dir).expanduser() if data_dir else _DEFAULT_DATA_DIR
+    if log_level or host_log:
+        _initialize_runtime_or_exit(
+            debug=False,
+            log_level=log_level,
+            log_path="",
+            no_log=False,
+            data_dir=data_dir,
+            memory_db="",
+            thread_dir="",
+            no_thread=True,
+            user_slug="",
+            timezone="",
+            state_snapshot_path="",
+            streaming="none",
+            host_log_path=host_log,
+        )
+    try:
+        from . import bottom  # noqa: PLC0415
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        import bottom  # type: ignore[no-redef]
+
+    state = asyncio.run(bottom.run_tick(data_dir=resolved_data_dir))
+    console.print(
+        f"[green]Bottom-half tick complete.[/green] "
+        f"{len(state.signal_snapshots)} signal(s), "
+        f"{len(state.active_alerts)} alert(s). "
+        f"State written to {resolved_data_dir / 'state.json'}"
+    )
+
+
 def main() -> None:
     """CLI entry point for Little Lisa."""
 
