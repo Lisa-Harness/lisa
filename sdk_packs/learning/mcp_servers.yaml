@@ -24,3 +24,7 @@ servers:
     venv_dir: "${FRAMEWORK_ROOT}/.venv"
     warm: true
     required: true
+    tool_policy:
+      denied_tools:
+        - get_surface_context
+        - list_memories
