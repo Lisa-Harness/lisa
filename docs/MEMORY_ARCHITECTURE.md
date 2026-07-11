@@ -249,7 +249,15 @@ config, fails opaquely at runtime (the anyio 401 cascade).
 
 ## Manifest Shape
 
+Memory backends + memory tool servers live in the **learning pack**
+manifest (`sdk_packs/learning/mcp_servers.yaml`), not the host manifest.
+The host loads the pack manifest, merges the servers into the pool under
+namespaced ids (`learning.lisa-memory` / `learning.mem0`), and wires the
+generic `memory.*` synthetic aliases to the pack's default backend. Only
+one pack may contribute the `memory:` section; the first contributor wins.
+
 ```yaml
+# sdk_packs/learning/mcp_servers.yaml
 memory:
   default_backend: lisa_memory   # or mem0 (needs MEM0_API_KEY)
   backends:
@@ -264,10 +272,20 @@ memory:
       headers: {Authorization: "Bearer ${MEM0_API_KEY}"}
       tool_names: {add: add_memory, search: search_memories, list: get_memories}
 servers:
+  - server_id: lisa-memory
+    runtime_kind: venv_bin
+    entry_point: lisa-memory   # bare exe name; server_id is namespaced by the host
+    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    warm: true
+    required: true
   - server_id: mem0
     runtime_kind: http
     url: https://mcp.mem0.ai/mcp
     headers: {Authorization: "Bearer ${MEM0_API_KEY}"}
+    proxy_policy:
+      ambient:
+        user_id: user_slug
+      structured_filters: true
 ```
 
 ## Key Files
@@ -286,14 +304,16 @@ servers:
 | `hosts/little_lisa/turn_hooks.py` | Generic host callbacks for completion, tool execution, introspection, and slice delegation. |
 | `sdk_packs/learning/operations/memory/synthesize_learning.py` | Persists via `ctx.execute_tool_fn("memory.add")`. |
 | `sdk_packs/learning/operations/memory/recall.py` | Calls `memory.list` directly and ranks results in-pack. |
-| `hosts/little_lisa/mcp_servers.yaml` | The manifest: `memory.backends` + `servers` (dual registration). |
+| `sdk_packs/learning/mcp_servers.yaml` | The memory manifest: `memory.backends` + `servers` (dual registration). Pack-owned. |
+| `hosts/little_lisa/mcp_servers.yaml` | Host-owned (non-memory) servers only; no `memory:` section. |
+| `hosts/little_lisa/main.py` | `_compile_mcp_configs` merges pack memory config; `_register_memory_synthetic_tools` resolves namespaced default-backend ids; warm-pool wiring; generic operation callback injection. |
 
 ## Switching the Default Backend
 
 1. **To Mem0:** set `MEM0_API_KEY` in `.env` or the shell, set
-   `memory.default_backend: mem0` in `mcp_servers.yaml`, restart. The
-   `verify` command checks the key is set and the header expanded before
-   runtime.
+   `memory.default_backend: mem0` in `sdk_packs/learning/mcp_servers.yaml`,
+   restart. The `verify` command checks the key is set and the header
+   expanded before runtime.
 2. **To `lisa_memory` (default):** no key needed. The three core aliases
    route to local SQLite. Mem0's full surface is still available as tools to
    modes that declare them (if `MEM0_API_KEY` is set and the server connects;

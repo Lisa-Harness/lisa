@@ -27,62 +27,28 @@ pack_policy:
       - learning
 
 # ──────────────────────────────────────────────────────────────────────────
-# Memory backends
+# Memory backends + memory MCP tool servers
 # ──────────────────────────────────────────────────────────────────────────
-# Each entry has an id, a kind (http | stdio), connection details, and
-# tool_names mapping the generic memory.add/search/list aliases to that
-# backend's actual MCP tool names. default_backend picks one by id; the
-# host wires it behind the generic memory.* synthetic tools. Adding a new
-# backend is a YAML entry, not a code change.
+# Memory is pack-owned: the learning pack (sdk_packs/learning/mcp_servers.yaml)
+# declares the ``memory.backends`` list and the ``lisa-memory`` / ``mem0``
+# server entries. The host loads that pack manifest, merges the servers into
+# the pool under namespaced ids (``learning.lisa-memory`` / ``learning.mem0``),
+# and wires the generic ``memory.*`` synthetic aliases to the pack's default
+# backend. Only one pack may contribute the ``memory:`` section; the first
+# contributor wins.
 #
-# Backends are ALSO registered as tool servers (below under `servers`) so
-# their full tool surface is available to modes that declare them. The
-# three core aliases route to the default backend; the backend's other
-# tools (e.g. Mem0's update_memory, delete_memory, list_entities) are
-# directly callable by their namespaced name (server_id.tool_name, e.g.
-# mem0.search_memories) from any mode that allows them.  Both backends'
-# tools appear in the catalog without collision — namespacing eliminates
-# the cross-server name clash (e.g. lisa-memory.add_memory vs
-# mem0.add_memory) by construction.
-memory:
-  default_backend: lisa_memory
-  backends:
-    # lisa-memory — first-party stdio MCP server. The minimal built-in: three
-    # core memory calls backed by local SQLite. Default backend for memory.*.
-    - id: lisa_memory
-      kind: stdio
-      command: "${LISA_MCP_COMMAND:lisa-memory}"
-      args:
-        - --data-dir
-        - "${LISA_DATA_DIR}"
-      tool_names:
-        add: add_memory
-        search: search_memory
-        list: list_memories
-
-    # Mem0 cloud — HTTP MCP, bearer-token auth. Serves the three core calls
-    # (so it can be swapped in as the default) plus its full surface
-    # (update/delete/get/entities/events) as a tool server. Set
-    # default_backend: mem0 and provide MEM0_API_KEY to make it the default.
-    - id: mem0
-      kind: http
-      url: https://mcp.mem0.ai/mcp
-      headers:
-        Authorization: "Bearer ${MEM0_API_KEY}"
-      agent_id: lisa
-      tool_names:
-        add: add_memory
-        search: search_memories
-        list: get_memories
+# See docs/MEMORY_ARCHITECTURE.md for the layered design.
 
 # ──────────────────────────────────────────────────────────────────────────
 # MCP tool servers
 # ──────────────────────────────────────────────────────────────────────────
-# All servers (first-party and external) are declared here. The host loads
-# them via load_mcp_server_manifest and compiles them into MCPClientConfig
-# entries for MCPToolPool. Adding, removing, disabling, or changing the
-# launch policy (warm/cold/required) of any server is a YAML edit, not a
-# code change.
+# Host-owned (non-memory) servers are declared here. The host loads them via
+# load_mcp_server_manifest and compiles them into MCPClientConfig entries for
+# MCPToolPool. Adding, removing, disabling, or changing the launch policy
+# (warm/cold/required) of any server is a YAML edit, not a code change.
+#
+# Memory servers (lisa-memory, mem0) live in the learning pack manifest, not
+# here — they are pack-contributed and namespaced at compile time.
 #
 # Launch policy fields:
 #   warm: true  → spawned eagerly at pool.start(); kept alive across turns
@@ -106,12 +72,6 @@ servers:
     warm: true
     required: true
 
-  - server_id: lisa-memory
-    runtime_kind: venv_bin
-    venv_dir: "${FRAMEWORK_ROOT}/.venv"
-    warm: true
-    required: true
-
   - server_id: lisa-content
     runtime_kind: venv_bin
     venv_dir: "${FRAMEWORK_ROOT}/.venv"
@@ -122,32 +82,3 @@ servers:
   - server_id: lisa-guard
     runtime_kind: venv_bin
     venv_dir: "${FRAMEWORK_ROOT}/.venv"
-
-  # ── External servers ──
-  # Mem0 cloud — HTTP MCP, bearer-token auth. Disabled when MEM0_API_KEY is
-  # unset; the host's empty-header guard drops it from the pool.
-  - server_id: mem0
-    runtime_kind: http
-    url: https://mcp.mem0.ai/mcp
-    headers:
-      Authorization: "Bearer ${MEM0_API_KEY}"
-    tool_policy:
-      denied_tools:
-        - delete_all_memories
-        - delete_entities
-        - delete_memory
-    # Proxy policy: the MCP pool is a proxy between the LLM and this server.
-    # The user_id field is stripped from the tool schema the model sees and
-    # injected from the host runtime at dispatch time (so the model cannot
-    # escape the privacy boundary by calling mem0.get_memories directly
-    # instead of through the memory.* aliases). structured_filters tells the
-    # proxy to inject user_id as a filters.AND entry (Mem0's structured filter
-    # syntax) for tools that accept a filters parameter. We scope to user_id
-    # only: mem0 isolates by user_id, and agent_id/app_id were metadata-only.
-    # Keeping them caused a store→retrieve round-trip break — add_memory
-    # injects them top-level while get_memories filters via filters.AND, so
-    # the mode-dependent agent_id mismatch yielded zero matches on recall.
-    proxy_policy:
-      ambient:
-        user_id: user_slug
-      structured_filters: true

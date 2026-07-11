@@ -414,6 +414,7 @@ _RUNTIME_STATE: dict[str, Any] = {
     "stream_mode": "hybrid",
     "stream_char_delay_ms": 0,
     "memory_config": None,
+    "memory_config_pack_slug": None,
     "restart_required": False,
     "restart_reason": "",
 }
@@ -3403,17 +3404,20 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
     workspace_root = str(FRAMEWORK_ROOT)
     host_manifest_path = FRAMEWORK_ROOT / "hosts" / "little_lisa" / "mcp_servers.yaml"
 
-    # All servers (first-party + external) from mcp_servers.yaml. The
+    # All host-owned servers (first-party) from mcp_servers.yaml. The
     # manifest loader honors ``disabled: true`` by skipping entries, and
     # parses ``warm`` / ``required`` onto the spec. The compiler passes
-    # them through to MCPClientConfig.
+    # them through to MCPClientConfig. The host manifest no longer carries
+    # a ``memory:`` section or memory server entries; memory backends +
+    # memory tool servers are contributed by the learning pack (see
+    # sdk_packs/learning/mcp_servers.yaml) and merged below.
     specs, memory_config = load_mcp_server_manifest(host_manifest_path)
     for spec in specs:
         registry.register(spec)
-    _RUNTIME_STATE["memory_config"] = memory_config
 
     excluded_pack_servers = _load_pack_server_exclusions(host_manifest_path)
     used_pack_slugs: set[str] = set()
+    memory_owner_slug: str | None = None
     for root in _sdk_content_roots():
         pack_manifest_path = root / "mcp_servers.yaml"
         if not pack_manifest_path.exists():
@@ -3428,13 +3432,24 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
             )
             continue
 
-        if pack_memory.default_backend or pack_memory.backends:
-            logger.warning(
-                "Ignoring memory section in pack MCP manifest %s; memory policy is host-owned.",
-                pack_manifest_path,
-            )
-
         pack_slug = _unique_pack_slug_for_root(root, used_pack_slugs)
+
+        # A pack may contribute the memory backends + memory tool servers.
+        # Only one pack may own memory; the first contributor wins and any
+        # later one is rejected with a warning. The owning pack's slug is
+        # stashed so the synthetic ``memory.*`` aliases can resolve the
+        # namespaced default-backend server id (``<slug>.<server_id>``).
+        if pack_memory.default_backend or pack_memory.backends:
+            if memory_owner_slug is not None:
+                logger.warning(
+                    "Ignoring memory section in pack MCP manifest %s; memory is already owned by pack %r.",
+                    pack_manifest_path,
+                    memory_owner_slug,
+                )
+            else:
+                memory_config = pack_memory
+                memory_owner_slug = pack_slug
+
         for spec in pack_specs:
             if _pack_server_excluded(pack_slug, spec.server_id, excluded_pack_servers):
                 logger.info(
@@ -3448,6 +3463,9 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
             # server_id without collision in the global registry.
             namespaced = dataclasses.replace(spec, server_id=f"{pack_slug}.{spec.server_id}")
             registry.register(namespaced)
+
+    _RUNTIME_STATE["memory_config"] = memory_config
+    _RUNTIME_STATE["memory_config_pack_slug"] = memory_owner_slug
 
     compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
     warm = [c for c in compiled if c.warm]
@@ -5309,18 +5327,25 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
     default_backend_id = getattr(memory_config, "default_backend", None)
     declared = getattr(memory_config, "backends", ()) or ()
     default_spec = next((s for s in declared if s.id == default_backend_id), None)
-    # Map the manifest's memory-backend id to the pool's server_id. The
-    # first-party lisa_memory backend (underscore in the manifest) is the
-    # lisa-memory server (hyphen) in the pool; external backends' ids must
-    # match a servers[] server_id (validated at manifest load).
-    _BACKEND_ID_TO_SERVER_ID = {"lisa_memory": "lisa-memory"}
+    # Memory backends + memory tool servers are contributed by a pack (the
+    # learning pack by default). Pack-contributed servers are compiled into
+    # namespaced runtime ids (``<pack_slug>.<server_id>``); the synthetic
+    # aliases pin dispatch to the namespaced default-backend id. When no
+    # pack owns memory, fall back to the bare first-party ``lisa-memory``
+    # server id (registered in code, not via a pack).
+    owning_slug = _RUNTIME_STATE.get("memory_config_pack_slug")
+    prefix = f"{owning_slug}." if owning_slug else ""
+    _BACKEND_ID_TO_SERVER_ID = {"lisa_memory": f"{prefix}lisa-memory"}
     if default_spec is None:
         # No external default declared: lisa-memory is the first-party default.
         # Its tool names are the generic aliases themselves.
         tool_names = {"add": "add_memory", "search": "search_memory", "list": "list_memories"}
         # Pin dispatch to lisa-memory explicitly so the alias routes to it
         # even if another server in the pool also exposes the same tool names.
-        target_server_id = "lisa-memory"
+        # When a pack owns memory, the server is registered as
+        # ``<pack_slug>.lisa-memory``; otherwise it is the bare
+        # first-party ``lisa-memory``.
+        target_server_id = f"{prefix}lisa-memory"
         # lisa-memory's tools take the generic shape (user_slug, memory_scope,
         # memory_tier) natively — no field renaming needed. Ambient scope
         # is not proxy-enforced for lisa-memory (it has no proxy_policy),
@@ -5335,8 +5360,17 @@ def _register_memory_synthetic_tools(pool: Any) -> None:
         # bypasses the pool's first-registered-wins bare-name index so the
         # default backend serves the alias even when its tool name collides
         # with another server's (e.g. mem0's add_memory vs lisa-memory's
-        # add_memory).
-        target_server_id = _BACKEND_ID_TO_SERVER_ID.get(default_spec.id, default_spec.id)
+        # add_memory). The backend id in the manifest is bare (``mem0`` or
+        # ``lisa_memory``); the pool's server id is namespaced when memory
+        # is pack-owned (``<pack_slug>.<server_id>``). The lisa_memory
+        # backend id maps to the ``lisa-memory`` server id; any other
+        # backend id is its own server id.
+        lisa_memory_server_id = _BACKEND_ID_TO_SERVER_ID.get("lisa_memory", "lisa-memory")
+        target_server_id = (
+            lisa_memory_server_id
+            if default_spec.id == "lisa_memory"
+            else f"{prefix}{default_spec.id}"
+        )
         # Per-backend field renaming: the generic aliases expose a stable
         # shape (content/user_slug/memory_scope/...) but each backend's MCP
         # tools may expect different argument names. Mem0's add_memory

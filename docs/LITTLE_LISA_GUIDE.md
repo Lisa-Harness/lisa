@@ -146,11 +146,13 @@ The only difference is which hooks are wired.
 
 ### MCP Memory
 
-Little Lisa wires memory backends through MCP runtime policy in
-`mcp_servers.yaml`. The default local backend is `lisa-memory`
-(SQLite-backed, minimal built-in), and hosts may switch the generic
-`memory.*` aliases to `mem0` by declaration. Memory recall and synthesis
-workflows are provided by `lisa-pack-learning`.
+Memory is pack-owned. The learning pack declares the memory backends and
+memory tool servers in `sdk_packs/learning/mcp_servers.yaml`; the host
+merges them into the MCP pool under namespaced ids and wires the generic
+`memory.*` aliases to the pack's default backend. The default local backend
+is `lisa-memory` (SQLite-backed, minimal built-in), and hosts may switch
+the aliases to `mem0` by declaration in the pack manifest. Memory recall and
+synthesis workflows are also provided by `lisa-pack-learning`.
 
 ## Expected Behavior
 
