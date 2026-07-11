@@ -34,8 +34,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from kernel.ipsar_fsm import (
+    apply_transition,
     get_mode_system_intro,
+    get_transition_tool_schema,
     get_workflow_catalog,
+    is_terminal_stage,
     run_mode_entry_operations,
     run_mode_pre_turn_operations,
 )
@@ -47,6 +50,8 @@ from kernel.models import (
     ToolExecutionContext,
     ToolResult,
     TurnBudget,
+    WorkflowSessionState,
+    WorkflowTransitionRequest,
 )
 from kernel.operations.registry import (
     build_operation_tool_schemas,
@@ -78,6 +83,17 @@ from kernel.tools.schema_translator import mcp_tool_to_openai_function, openai_t
 
 logger = logging.getLogger(__name__)
 
+# The tool name the model calls to request a workflow stage transition.
+# Intercepted by the turn loop before the operation/tool/MCP dispatch branches.
+_TRANSITION_TOOL_NAME = "transition_stage"
+
+# Stuck-session guard: after this many turns in the same stage without a
+# transition, the loop injects a nudge message prompting the model to
+# transition or ask the user. After the cap, the loop forces a final
+# no-tools completion to stop burning tokens.
+_STAGE_NUDGE_THRESHOLD = 4
+_STAGE_NUDGE_CAP = 6
+
 # ── Public types ───────────────────────────────────────────────────────────
 
 
@@ -105,6 +121,15 @@ class TurnResult:
     """True when an input or output guard blocked the turn. Input blocks
     short-circuit before the model call; output blocks replace the response
     with a safe fallback and emit a ``guardrail.audit`` event."""
+    transitioned_to: str | None = None
+    """When the model called ``transition_stage`` during this turn, the new
+    ``stage_id``. None when no transition occurred or the mode is not a
+    workflow. The host reads this to persist the updated session and update
+    its UI route preview."""
+    workflow_terminated: bool = False
+    """True when the transition moved the session to a terminal stage. The
+    loop forces one final no-tools completion using the terminal stage's
+    instruction as the system prompt so the model produces a closing summary."""
 
 
 def _lazy_model_policy() -> ModelPolicy:
@@ -340,6 +365,13 @@ class TurnHooks:
     runtime — without it, the loaded stage instructions are never injected
     and the mode runs as if it were a flat chat mode. Default: None (stage
     instructions are omitted; chat and action modes are unaffected)."""
+
+    workflow_session_updater: Any | None = None
+    """Callable receiving an updated ``WorkflowSessionState`` after a
+    successful ``transition_stage`` tool call. The host persists the session
+    (file, DB, in-memory map) so the next turn's ``workflow_session`` hook
+    returns the new stage. Default: None (transitions are applied in-process
+    but not persisted across turns)."""
 
     # ── Host state provider ───────────────────────────────────────────────
     state_provider: Any | None = None
@@ -875,6 +907,17 @@ async def _run_turn_inner(
     # through the MCP pool.
     tool_schemas.extend(_build_in_process_tool_schemas(mode_config))
 
+    # Workflow modes: advertise the transition_stage tool so the model can
+    # advance the FSM. The turn loop intercepts this tool call before the
+    # operation/tool/MCP dispatch branches and calls apply_transition.
+    is_workflow = (
+        mode_config is not None
+        and mode_config.mode_kind == "workflow"
+        and hooks.workflow_session is not None
+    )
+    if is_workflow:
+        tool_schemas.extend(get_transition_tool_schema())
+
     # Resolve preferred model
     preferred_model_id = (
         preferred_model_id.strip()
@@ -886,6 +929,8 @@ async def _run_turn_inner(
     model_def = resolve_model(preferred_model_id)
 
     content = ""
+    transitioned_to: str | None = None
+    workflow_terminated = False
     total_tool_calls = 0
     iteration = 0
     total_prompt_tokens = 0
@@ -944,6 +989,33 @@ async def _run_turn_inner(
 
     while iteration < max_tool_iterations:
         iteration += 1
+
+        # Stuck-session guard: if the session has been in the same stage
+        # for too many turns, inject a nudge. After the cap, strip tools to
+        # force a final response and stop burning tokens.
+        if is_workflow and hooks.workflow_session is not None:
+            wf_session = hooks.workflow_session()
+            if wf_session is not None:
+                turns_in_stage = wf_session.turn_count
+                if turns_in_stage >= _STAGE_NUDGE_CAP:
+                    _log.warning(
+                        "workflow mode=%s stuck in stage=%s for %d turns; forcing final",
+                        mode_id,
+                        wf_session.stage_id,
+                        turns_in_stage,
+                    )
+                    budget_exhausted = True
+                elif turns_in_stage >= _STAGE_NUDGE_THRESHOLD:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"You have been in the '{wf_session.stage_id}' stage "
+                            f"for {turns_in_stage} turns. If you have enough evidence, "
+                            f"call transition_stage to advance. Otherwise, ask the user "
+                            f"a clarifying question."
+                        ),
+                    })
+
         # Budget enforcement: when exhausted, strip tools so the model must
         # produce a final text response. This is the "ratio" stop condition.
         budget_exhausted = _budget_forces_final()
@@ -1050,6 +1122,55 @@ async def _run_turn_inner(
 
             tools_dispatched = True
             try:
+                # Transition interception: the model called transition_stage.
+                # This is handled in-loop, not through the operation/tool/MCP
+                # dispatch branches. The kernel validates the transition
+                # against the current stage's allowed_next_stages, updates
+                # the session, and notifies the host via
+                # workflow_session_updater.
+                if tool_name == _TRANSITION_TOOL_NAME and is_workflow:
+                    target_stage = str(tool_arguments.get("target_stage_id") or "").strip()
+                    rationale = str(tool_arguments.get("rationale") or "").strip()
+                    missing = tool_arguments.get("required_missing_inputs") or []
+                    if not target_stage:
+                        tool_output = "transition_stage requires target_stage_id."
+                    else:
+                        wf_session_fn = hooks.workflow_session
+                        current_session = wf_session_fn() if wf_session_fn is not None else None
+                        if current_session is None:
+                            tool_output = "No active workflow session; cannot transition."
+                        else:
+                            try:
+                                transition_req = WorkflowTransitionRequest(
+                                    target_stage_id=target_stage,
+                                    rationale=rationale,
+                                    required_missing_inputs=(
+                                        list(missing) if isinstance(missing, list) else []
+                                    ),
+                                )
+                                updated_session = apply_transition(
+                                    current_session, transition_req
+                                )
+                                if hooks.workflow_session_updater is not None:
+                                    hooks.workflow_session_updater(updated_session)
+                                transitioned_to = updated_session.stage_id
+                                tool_output = (
+                                    f"Transitioned to stage: {updated_session.stage_id}."
+                                    + (f" Rationale: {rationale}" if rationale else "")
+                                )
+                            except Exception as trans_exc:  # pylint: disable=broad-except
+                                tool_output = (
+                                    f"Transition failed: "
+                                    f"{type(trans_exc).__name__}: {trans_exc}"
+                                )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": tool_name,
+                        "content": tool_output,
+                    })
+                    continue
+
                 if tool_name in operation_catalog:
                     # Operation: dispatch in-process via the host's
                     # execute_operation hook, which injects all host
@@ -1108,6 +1229,38 @@ async def _run_turn_inner(
 
     if not content:
         content = "The model did not produce a final response."
+
+    # Terminal-stage handling: if the model transitioned to a terminal
+    # stage during this turn, force one final no-tools completion using the
+    # terminal stage's instruction so the model produces a closing summary.
+    if transitioned_to is not None and is_workflow:
+        terminal_session = hooks.workflow_session() if hooks.workflow_session else None
+        if terminal_session is not None and is_terminal_stage(terminal_session):
+            terminal_stage_config = mode_config.stages.get(terminal_session.stage_id)
+            if terminal_stage_config and terminal_stage_config.instruction_body:
+                terminal_prompt = assemble_system(
+                    mode_instruction,
+                    terminal_stage_config.instruction_body,
+                )
+                messages.append({
+                    "role": "user",
+                    "content": "Provide a closing summary for this workflow.",
+                })
+                messages[0] = {"role": "system", "content": terminal_prompt}
+                try:
+                    final_completion = await complete(
+                        messages=messages,
+                        model_def=effective_model_def,
+                        max_tokens=4096,
+                        temperature=0.4,
+                        tools=None,
+                    )
+                    final_content = getattr(final_completion, "content", "") or ""
+                    if final_content.strip():
+                        content = final_content.strip()
+                except Exception as exc:  # pylint: disable=broad-except
+                    _log.warning("terminal-stage summary failed: %s", exc)
+            workflow_terminated = True
 
     # ── Phase 3: Post-turn ────────────────────────────────────────────
     # Output guard runs before on_complete/store_mem so the persisted and
@@ -1169,6 +1322,8 @@ async def _run_turn_inner(
         latency_ms=total_latency_ms,
         slice_outcomes=slice_outcomes,
         blocked=turn_blocked,
+        transitioned_to=transitioned_to,
+        workflow_terminated=workflow_terminated,
     )
 
 

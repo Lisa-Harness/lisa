@@ -358,6 +358,109 @@ async def test_run_turn_injects_workflow_stage_instruction() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_turn_workflow_transition_dispatches_apply_transition() -> None:
+    """When the model calls transition_stage, the loop intercepts it,
+    calls apply_transition, updates the session via workflow_session_updater,
+    and reports transitioned_to on the TurnResult.
+    """
+    from kernel.models import WorkflowSessionState
+
+    updated_sessions: list[WorkflowSessionState] = []
+
+    # Mutable session so workflow_session() always returns the latest state.
+    session = WorkflowSessionState(
+        user_id="test-user",
+        user_slug="test",
+        mode_id="thinkabout",
+        stage_id="inquire",
+        entered_at="2026-01-01T00:00:00Z",
+    )
+
+    def workflow_session() -> Any:
+        return session
+
+    def workflow_session_updater(updated: WorkflowSessionState) -> None:
+        updated_sessions.append(updated)
+        # Mutate in place so workflow_session() sees the new stage.
+        session.stage_id = updated.stage_id
+        session.turn_count = updated.turn_count
+        session.stage_data = updated.stage_data
+
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "reason", "rationale": "enough evidence"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Done reasoning.")
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.workflow_session = workflow_session
+    hooks.workflow_session_updater = workflow_session_updater
+
+    result = await run_turn(mode_id="thinkabout", query="analyze this", hooks=hooks)
+
+    assert result.response_text == "Done reasoning."
+    assert result.transitioned_to == "reason"
+    assert len(updated_sessions) == 1
+    assert updated_sessions[0].stage_id == "reason"
+    assert updated_sessions[0].turn_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
+    """After _STAGE_NUDGE_THRESHOLD turns in the same stage, the loop
+    injects a nudge user-message prompting the model to transition.
+    """
+    from kernel.models import WorkflowSessionState
+
+    session = WorkflowSessionState(
+        user_id="test-user",
+        user_slug="test",
+        mode_id="thinkabout",
+        stage_id="inquire",
+        entered_at="2026-01-01T00:00:00Z",
+        turn_count=4,  # at the nudge threshold
+    )
+
+    def workflow_session() -> Any:
+        return session
+
+    captured_messages: list[dict[str, Any]] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        captured_messages.clear()
+        captured_messages.extend(kwargs["messages"])
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow_session = workflow_session
+
+    result = await run_turn(mode_id="thinkabout", query="analyze this", hooks=hooks)
+
+    assert result.response_text == "Done."
+    # The nudge message should be present in the messages sent to the model.
+    nudge_found = any(
+        "been in the" in str(msg.get("content", ""))
+        for msg in captured_messages
+        if msg.get("role") == "user"
+    )
+    assert nudge_found
+
+
+@pytest.mark.asyncio
 async def test_run_turn_mcp_tool_not_registered() -> None:
     """When a tool name is not on any MCP server, the pool returns an error
     and the turn continues."""
