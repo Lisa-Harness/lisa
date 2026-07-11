@@ -805,6 +805,51 @@ async def test_handle_message_surfaces_frontdoor_and_mode_token_context(
     assert completion["total_tokens"] == 150
 
 
+def test_normalize_response_format_emits_json_schema_for_pydantic_model() -> None:
+    """Pydantic models must become json_schema response_format, not json_object."""
+    from pydantic import BaseModel as _BM
+
+    class _RouteSchema(_BM):
+        reasoning: str = ""
+        selected_mode_id: str = "default"
+        confidence_score: float = 0.0
+
+    normalized = little_lisa._normalize_response_format(_RouteSchema)
+    assert normalized is not None
+    assert normalized["type"] == "json_schema"
+    inner = normalized["json_schema"]
+    assert inner["name"] == "_RouteSchema"
+    assert "properties" in inner["schema"]
+    assert set(inner["schema"]["properties"]) == {"reasoning", "selected_mode_id", "confidence_score"}
+    # strict must not be set — optional fields with defaults would violate strict mode.
+    assert "strict" not in inner
+
+
+def test_normalize_response_format_passes_through_dict() -> None:
+    """Pre-built dict response_format values are passed through unchanged."""
+    raw = {"type": "json_object"}
+    normalized = little_lisa._normalize_response_format(raw)
+    assert normalized == {"type": "json_object"}
+
+
+def test_normalize_response_format_returns_none_for_none() -> None:
+    """None response_format stays None — no structured-output constraint."""
+    assert little_lisa._normalize_response_format(None) is None
+
+
+def test_normalize_response_format_emits_json_schema_for_route_decision() -> None:
+    """The real RouteDecision model must produce a json_schema with its full shape."""
+    normalized = little_lisa._normalize_response_format(little_lisa.FrontDoorRouteDecision)
+    assert normalized is not None
+    assert normalized["type"] == "json_schema"
+    inner = normalized["json_schema"]
+    assert inner["name"] == "RouteDecision"
+    schema = inner["schema"]
+    assert "selected_mode_id" in schema["properties"]
+    assert "confidence_score" in schema["properties"]
+    assert "alternatives" in schema["properties"]
+
+
 def test_resolve_model_supports_designations_and_concrete_ids() -> None:
     front_door_model_id = little_lisa.resolve_little_lisa_model("front-door").model_id
     default_model_id = little_lisa.resolve_little_lisa_model("default").model_id
