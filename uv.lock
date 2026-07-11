@@ -872,10 +872,12 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "lisa-kernel" },
+    { name = "lisa-pack-brave-search" },
     { name = "lisa-pack-cloudflare" },
     { name = "lisa-pack-core" },
     { name = "lisa-pack-github" },
     { name = "lisa-pack-learning" },
+    { name = "lisa-pack-mem0" },
     { name = "lisa-pack-search" },
     { name = "lisa-pack-stripe" },
     { name = "lisa-sdk" },
@@ -899,10 +901,12 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "lisa-kernel", editable = "kernel" },
+    { name = "lisa-pack-brave-search", editable = "lisa_pack_brave_search" },
     { name = "lisa-pack-cloudflare", editable = "lisa_pack_cloudflare" },
     { name = "lisa-pack-core", editable = "sdk_packs/core" },
     { name = "lisa-pack-github", editable = "lisa_pack_github" },
     { name = "lisa-pack-learning", editable = "sdk_packs/learning" },
+    { name = "lisa-pack-mem0", editable = "lisa_pack_mem0" },
     { name = "lisa-pack-search", editable = "sdk_packs/search" },
     { name = "lisa-pack-stripe", editable = "lisa_pack_stripe" },
     { name = "lisa-sdk", editable = "sdk" },
