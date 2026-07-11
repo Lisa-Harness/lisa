@@ -439,3 +439,385 @@ def test_compile_mcp_configs_namespaces_pack_memory_servers(
     assert "learning.lisa-memory" in server_ids
     assert "learning.mem0" in server_ids
     assert _state()["memory_config_pack_slug"] == "learning"
+
+
+def test_set_pack_enabled_rejects_disabling_always_on_pack(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setitem(_state(), "data_dir", tmp_path)
+    monkeypatch.setattr(little_lisa, "_always_on_pack_names", lambda _path=None: {"lisa-pack-core"})
+
+    ok, details = _fn("_set_pack_enabled")("core", enabled=False)
+
+    assert ok is False
+    assert "always on" in details
+
+
+def test_set_pack_enabled_for_bundled_pack_records_lock_and_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bundled_root = tmp_path / "lisa_pack_cloudflare"
+    bundled_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setitem(_state(), "data_dir", tmp_path)
+    monkeypatch.setitem(_state(), "restart_required", False)
+    monkeypatch.setitem(_state(), "restart_reason", "")
+    monkeypatch.setattr(little_lisa, "_always_on_pack_names", lambda _path=None: {"lisa-pack-core"})
+    monkeypatch.setattr(little_lisa, "discover_installed_content_roots", lambda: [bundled_root])
+
+    ok, details = _fn("_set_pack_enabled")("cloudflare", enabled=True)
+
+    assert ok is True
+    assert "Enabled 'lisa-pack-cloudflare'" in details
+    assert _state()["restart_required"] is True
+    assert _state()["restart_reason"] == "pack enable: lisa-pack-cloudflare"
+
+    lock = _fn("_load_installed_packs_lock")()
+    assert any(
+        entry.get("package_name") == "lisa-pack-cloudflare"
+        and bool(entry.get("enabled", False)) is True
+        and entry.get("source_kind") == "bundled"
+        for entry in lock.get("packs", [])
+    )
+
+
+def test_sdk_content_roots_filters_bundled_activation_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    core_root = tmp_path / "sdk_packs" / "core"
+    bundled_root = tmp_path / "lisa_pack_cloudflare"
+    configured_root = tmp_path / "configured_root"
+    core_root.mkdir(parents=True, exist_ok=True)
+    bundled_root.mkdir(parents=True, exist_ok=True)
+    configured_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setitem(_state(), "data_dir", tmp_path)
+    monkeypatch.setattr(little_lisa, "_always_on_pack_names", lambda _path=None: {"lisa-pack-core"})
+    monkeypatch.setattr(
+        little_lisa,
+        "discover_installed_content_roots",
+        lambda: [core_root, bundled_root],
+    )
+    monkeypatch.setattr(
+        little_lisa,
+        "discover_configured_content_roots",
+        lambda: [configured_root],
+    )
+
+    _fn("_write_installed_packs_lock")(
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-pack-cloudflare",
+                    "source_kind": "bundled",
+                    "enabled": False,
+                }
+            ]
+        }
+    )
+
+    roots_disabled = _fn("_sdk_content_roots")()
+    assert core_root in roots_disabled
+    assert configured_root in roots_disabled
+    assert bundled_root not in roots_disabled
+
+    _fn("_write_installed_packs_lock")(
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-pack-cloudflare",
+                    "source_kind": "bundled",
+                    "enabled": True,
+                }
+            ]
+        }
+    )
+    roots_enabled = _fn("_sdk_content_roots")()
+    assert bundled_root in roots_enabled
+
+
+@pytest.mark.asyncio
+async def test_run_pack_install_autoselects_memory_provider_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"installed", b"")
+
+    async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> _FakeProc:
+        _ = args
+        _ = kwargs
+        return _FakeProc()
+
+    mem0_root = tmp_path / "lisa_pack_mem0"
+    mem0_root.mkdir(parents=True, exist_ok=True)
+    (mem0_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "lisa-pack-mem0"',
+                'version = "0.1.0"',
+                'requires-python = ">=3.11"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (mem0_root / "mcp_servers.yaml").write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "memory:",
+                "  default_backend: mem0",
+                "  backends:",
+                "    - id: mem0",
+                "      kind: http",
+                "      url: https://mcp.mem0.ai/mcp",
+                "      headers:",
+                "        Authorization: \"Bearer ${MEM0_API_KEY}\"",
+                "      tool_names:",
+                "        add: add_memory",
+                "        search: search_memories",
+                "        list: get_memories",
+                "servers:",
+                "  - server_id: mem0",
+                "    runtime_kind: http",
+                "    url: https://mcp.mem0.ai/mcp",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setitem(_state(), "data_dir", tmp_path)
+    monkeypatch.setattr(
+        little_lisa,
+        "_validate_pack_spec_for_install",
+        lambda spec: (True, ""),
+    )
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    monkeypatch.setattr(little_lisa, "discover_installed_content_roots", lambda: [mem0_root])
+    monkeypatch.setattr(little_lisa, "_always_on_pack_names", lambda _path=None: {"lisa-pack-core"})
+
+    ok, _details = await _fn("_run_pack_install")("lisa-pack-mem0==0.1.0")
+
+    assert ok is True
+    lock = _fn("_load_installed_packs_lock")()
+    assert lock.get("selected_capability_providers", {}).get("memory") == "lisa-pack-mem0"
+
+
+def test_compile_mcp_configs_prefers_runtime_installed_memory_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    learning_root = tmp_path / "learning-pack"
+    mem0_root = tmp_path / "mem0-pack"
+    learning_root.mkdir(parents=True, exist_ok=True)
+    mem0_root.mkdir(parents=True, exist_ok=True)
+
+    (learning_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "lisa-pack-learning"',
+                'version = "0.1.0"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (mem0_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "lisa-pack-mem0"',
+                'version = "0.1.0"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    (learning_root / "mcp_servers.yaml").write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "memory:",
+                "  default_backend: lisa_memory",
+                "  backends:",
+                "    - id: lisa_memory",
+                "      kind: stdio",
+                "      command: \"${LISA_MCP_COMMAND:lisa-memory}\"",
+                "      args: []",
+                "      tool_names:",
+                "        add: add_memory",
+                "        search: search_memory",
+                "        list: list_memories",
+                "servers:",
+                "  - server_id: lisa-memory",
+                "    runtime_kind: venv_bin",
+                "    entry_point: lisa-memory",
+                "    venv_dir: \"${FRAMEWORK_ROOT}/.venv\"",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (mem0_root / "mcp_servers.yaml").write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "memory:",
+                "  default_backend: mem0",
+                "  backends:",
+                "    - id: mem0",
+                "      kind: http",
+                "      url: https://mcp.mem0.ai/mcp",
+                "      headers:",
+                "        Authorization: \"Bearer ${MEM0_API_KEY}\"",
+                "      tool_names:",
+                "        add: add_memory",
+                "        search: search_memories",
+                "        list: get_memories",
+                "servers:",
+                "  - server_id: mem0",
+                "    runtime_kind: http",
+                "    url: https://mcp.mem0.ai/mcp",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setitem(_state(), "data_dir", tmp_path)
+    _fn("_write_installed_packs_lock")(
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-pack-mem0",
+                    "source_kind": "package",
+                    "enabled": True,
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(little_lisa, "_sdk_content_roots", lambda: [learning_root, mem0_root])
+    monkeypatch.setattr(little_lisa, "_load_pack_server_exclusions", lambda _path: set())
+    monkeypatch.setattr(little_lisa, "_load_capability_provider_preferences", lambda _path: {})
+
+    _warm, _cold = _fn("_compile_mcp_configs")()
+
+    assert _state()["memory_config_pack_slug"] == "mem0-pack"
+
+
+def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    learning_root = tmp_path / "learning-pack"
+    mem0_root = tmp_path / "mem0-pack"
+    learning_root.mkdir(parents=True, exist_ok=True)
+    mem0_root.mkdir(parents=True, exist_ok=True)
+
+    (learning_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "lisa-pack-learning"',
+                'version = "0.1.0"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (mem0_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "lisa-pack-mem0"',
+                'version = "0.1.0"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    (learning_root / "mcp_servers.yaml").write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "memory:",
+                "  default_backend: lisa_memory",
+                "  backends:",
+                "    - id: lisa_memory",
+                "      kind: stdio",
+                "      command: \"${LISA_MCP_COMMAND:lisa-memory}\"",
+                "      args: []",
+                "      tool_names:",
+                "        add: add_memory",
+                "        search: search_memory",
+                "        list: list_memories",
+                "servers:",
+                "  - server_id: lisa-memory",
+                "    runtime_kind: venv_bin",
+                "    entry_point: lisa-memory",
+                "    venv_dir: \"${FRAMEWORK_ROOT}/.venv\"",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (mem0_root / "mcp_servers.yaml").write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "memory:",
+                "  default_backend: mem0",
+                "  backends:",
+                "    - id: mem0",
+                "      kind: http",
+                "      url: https://mcp.mem0.ai/mcp",
+                "      headers:",
+                "        Authorization: \"Bearer ${MEM0_API_KEY}\"",
+                "      tool_names:",
+                "        add: add_memory",
+                "        search: search_memories",
+                "        list: get_memories",
+                "servers:",
+                "  - server_id: mem0",
+                "    runtime_kind: http",
+                "    url: https://mcp.mem0.ai/mcp",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setitem(_state(), "data_dir", tmp_path)
+    _fn("_write_installed_packs_lock")(
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-pack-mem0",
+                    "source_kind": "package",
+                    "enabled": True,
+                }
+            ],
+            "selected_capability_providers": {
+                "memory": "lisa-pack-learning",
+            },
+        }
+    )
+    monkeypatch.setattr(little_lisa, "_sdk_content_roots", lambda: [learning_root, mem0_root])
+    monkeypatch.setattr(little_lisa, "_load_pack_server_exclusions", lambda _path: set())
+    monkeypatch.setattr(little_lisa, "_load_capability_provider_preferences", lambda _path: {})
+
+    _warm, _cold = _fn("_compile_mcp_configs")()
+
+    assert _state()["memory_config_pack_slug"] == "learning-pack"

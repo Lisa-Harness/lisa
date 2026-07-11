@@ -50,6 +50,11 @@ Hosts decide which groups they discover and how often extension outputs are coll
 - `lisa_pack_github`: GitHub repository, CI/CD, and PR health status pack (published as `lisa-pack-github`). Includes modes, operations, content, signal connectors, anomaly detectors, and all SDK extension kinds.
 - `lisa_pack_stripe`: Stripe subscription, trial, and billing health status pack (published as `lisa-pack-stripe`). Includes modes, operations, content, signal connectors, anomaly detectors, and all SDK extension kinds.
 
+Provider packs:
+
+- `lisa_pack_mem0` (published as `lisa-pack-mem0`): external memory provider pack that contributes Mem0 MCP memory ownership metadata.
+- `lisa_pack_brave_search` (published as `lisa-pack-brave-search`): external `web_search` provider implementation pack that can replace the bundled search stub.
+
 These packs live as top-level directories in the workspace and are installable via `/pack install` from PyPI or Git (`github.com/the-migus-group`). They can also be installed from a local folder for development.
 
 CloudServers operations and market-intel extensions are intentionally not included in this public staged tree.
@@ -178,4 +183,3 @@ The public `kernel.testing.extension_harness` module is the intended first valid
 ## Host Boundary
 
 Extensions should return typed snapshots, contribution fragments, or evidence records. They should not send chat messages, choose proactive recipients, own production storage, or import private host code. A host scheduler or runtime adapter owns those responsibilities.
-

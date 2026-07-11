@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from sdk.lisa_content._catalog import build_mode_catalog_json, resolve_mode_roots
+from sdk.lisa_content._catalog import (
+    build_mode_catalog_json,
+    build_operation_catalog_json,
+    build_tool_catalog_json,
+    resolve_mode_roots,
+    resolve_operation_roots,
+    resolve_tool_roots,
+)
 
 
 def _write_default_mode(root: Path, *, provider_id: str, description: str) -> None:
@@ -32,6 +39,62 @@ def _write_default_mode(root: Path, *, provider_id: str, description: str) -> No
     )
 
 
+def _write_operation(root: Path, *, operation_id: str, description: str) -> None:
+    operations_dir = root / "operations" / "research"
+    operations_dir.mkdir(parents=True, exist_ok=True)
+    (operations_dir / f"{operation_id}.operation.md").write_text(
+        "\n".join(
+            [
+                "---",
+                f"operation_id: {operation_id}",
+                f'description: "{description}"',
+                "tool_ids: [web_search]",
+                "mode_allowlist: [search]",
+                "---",
+                "",
+                "# Operation",
+                "",
+                "Provider test operation.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_tool(root: Path, *, tool_id: str, description: str) -> None:
+    tools_dir = root / "tools" / tool_id
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    (tools_dir / f"{tool_id}.py").write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "from kernel.models import ToolExecutionContext, ToolResult",
+                "",
+                "",
+                "async def execute(ctx: ToolExecutionContext) -> ToolResult:",
+                "    return ToolResult(tool_id=ctx.tool_id or 'web_search', output_text='ok')",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tools_dir / f"{tool_id}.tool.yml").write_text(
+        "\n".join(
+            [
+                f"tool_id: {tool_id}",
+                f'description: "{description}"',
+                "mode_allowlist: null",
+                "max_calls_per_turn: 3",
+                "timeout_seconds: 30",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_mode_collision_uses_preference_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -42,8 +105,14 @@ def test_mode_collision_uses_preference_env(
     _write_default_mode(learning, provider_id="lisa-pack-learning", description="learning default")
 
     monkeypatch.setenv(
-        "LISA_MODE_PROVIDER_PREFERENCES",
-        json.dumps({"default": ["lisa-pack-learning", "lisa-pack-core"]}),
+        "LISA_CONTENT_PROVIDER_PREFERENCES",
+        json.dumps(
+            {
+                "modes": {
+                    "default": ["lisa-pack-learning", "lisa-pack-core"],
+                }
+            }
+        ),
     )
 
     mode_roots = resolve_mode_roots([core, learning])
@@ -63,10 +132,65 @@ def test_mode_collision_falls_back_to_last_discovered_when_no_preference(
     _write_default_mode(learning, provider_id="lisa-pack-learning", description="learning default")
 
     monkeypatch.delenv("LISA_MODE_PROVIDER_PREFERENCES", raising=False)
+    monkeypatch.delenv("LISA_CONTENT_PROVIDER_PREFERENCES", raising=False)
 
     mode_roots = resolve_mode_roots([core, learning])
     catalog = json.loads(build_mode_catalog_json(mode_roots))
 
     assert catalog["default"]["mode_provider_id"] == "lisa-pack-learning"
     assert catalog["default"]["description"] == "learning default"
+
+
+def test_operation_collision_uses_provider_preferences(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    search = tmp_path / "search_pack"
+    brave = tmp_path / "brave_pack"
+    _write_operation(search, operation_id="web_search", description="search operation")
+    _write_operation(brave, operation_id="web_search", description="brave operation")
+
+    monkeypatch.setenv(
+        "LISA_CONTENT_PROVIDER_PREFERENCES",
+        json.dumps(
+            {
+                "operations": {
+                    "web_search": ["brave-pack", "search-pack"],
+                }
+            }
+        ),
+    )
+
+    operation_roots = resolve_operation_roots([search, brave])
+    catalog = json.loads(build_operation_catalog_json(operation_roots))
+
+    assert catalog["web_search"]["description"] == "brave operation"
+    assert catalog["web_search"]["operation_provider_id"] == "brave-pack"
+
+
+def test_tool_collision_uses_provider_preferences(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    search = tmp_path / "search_pack"
+    brave = tmp_path / "brave_pack"
+    _write_tool(search, tool_id="web_search", description="search tool")
+    _write_tool(brave, tool_id="web_search", description="brave tool")
+
+    monkeypatch.setenv(
+        "LISA_CONTENT_PROVIDER_PREFERENCES",
+        json.dumps(
+            {
+                "tools": {
+                    "web_search": ["brave-pack", "search-pack"],
+                }
+            }
+        ),
+    )
+
+    tool_roots = resolve_tool_roots([search, brave])
+    catalog = json.loads(build_tool_catalog_json(tool_roots))
+
+    assert catalog["web_search"]["description"] == "brave tool"
+    assert catalog["web_search"]["tool_provider_id"] == "brave-pack"
 

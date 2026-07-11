@@ -56,7 +56,11 @@ def test_build_content_mcp_config_uses_discovered_roots_and_host_data_dir(
     (pack_root / "content").mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(little_lisa, "_sdk_content_roots", lambda: [pack_root])
-    monkeypatch.setattr(little_lisa, "_load_mode_provider_preferences", lambda _path: {})
+    monkeypatch.setattr(
+        little_lisa,
+        "_load_content_provider_preferences",
+        lambda _path: {"modes": {}, "operations": {}, "tools": {}},
+    )
 
     config = little_lisa._build_content_mcp_config()
 
@@ -77,7 +81,11 @@ def test_build_content_mcp_config_without_discovered_roots_keeps_empty_sdk_conte
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(little_lisa, "_sdk_content_roots", lambda: [])
-    monkeypatch.setattr(little_lisa, "_load_mode_provider_preferences", lambda _path: {})
+    monkeypatch.setattr(
+        little_lisa,
+        "_load_content_provider_preferences",
+        lambda _path: {"modes": {}, "operations": {}, "tools": {}},
+    )
 
     config = little_lisa._build_content_mcp_config()
 

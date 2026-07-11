@@ -17,6 +17,8 @@ requires-python = ">=3.11"
 dependencies = [
     "lisa-kernel",
     "lisa-sdk",
+    "lisa-pack-learning",
+    "lisa-pack-search",
     "lisa-pack-cloudflare",
     "lisa-pack-github",
     "lisa-pack-stripe",

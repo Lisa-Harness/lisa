@@ -135,9 +135,9 @@ As of 2026-06-19, Little Lisa delegates all turn execution to
 
 - `resolve_model` — resolves mode-preferred model IDs to a stub definition.
 - `complete` — executes live chat completions against the provider configured for the selected model manifest entry.
-- `execute_tool` — executes `web_search` through `kernel.web_search` when configured; other tools remain stubbed.
+- `execute_tool` — delegates to the tool registry (`kernel.tools.registry.execute_tool`) for pack-contributed tools.
 - `execute_operation` — delegates to `kernel.operations.registry.execute_operation`.
-- Memory backends are MCP-backed via the learning pack manifest (`sdk_packs/learning/mcp_servers.yaml`), which selects the default backend and registers the memory servers.
+- Memory backends are MCP-backed via active pack manifests and capability-provider policy.
 - Memory behavior (`recall_memory`, `synthesize_and_store_learning`, and the memory-backed `default`/`learn` modes) is provided by `lisa-pack-learning`, not by Little Lisa core.
 
 This means action, chat, and workflow modes all flow through the same
@@ -146,13 +146,11 @@ The only difference is which hooks are wired.
 
 ### MCP Memory
 
-Memory is pack-owned. The learning pack declares the memory backends and
-memory tool servers in `sdk_packs/learning/mcp_servers.yaml`; the host
-merges them into the MCP pool under namespaced ids and wires the generic
-`memory.*` aliases to the pack's default backend. The pack currently defaults
-to `mem0`, while `lisa-memory` remains the local stdio backend available in
-the same manifest. Memory recall and synthesis workflows are also provided by
-`lisa-pack-learning`.
+Memory is capability-owned by policy. The bundled learning pack provides the
+`lisa_memory` fallback in `sdk_packs/learning/mcp_servers.yaml`; external
+providers (for example `lisa-pack-mem0`) can be installed and selected as the
+memory owner via host policy/lock state. The host wires generic `memory.*`
+aliases to the selected provider's backend config.
 
 ## Expected Behavior
 
@@ -172,7 +170,7 @@ the same manifest. Memory recall and synthesis workflows are also provided by
 - `/debug self` prints a compact self-model summary for the local host runtime.
 - Action and chat modes added through `SDK_CONTENT_ROOTS` run when they only need Little Lisa callbacks.
 - `/search <query>` exercises route parsing and the prompt-authored search operation through the turn runner.
-- Live `web_search` tool calls are available when `WEB_SEARCH_API_KEY` is configured.
+- The bundled `web_search` tool is a generic unavailable stub until a provider pack (for example `lisa-pack-brave-search`) is installed and preferred.
 - `/markdown <request>` writes a local Markdown artifact using the authoring operation.
 - `/discuss <topic>` parses discuss mode and runs its optional pre-turn briefing through the turn runner.
 - `/quit` exits the interactive console loop.

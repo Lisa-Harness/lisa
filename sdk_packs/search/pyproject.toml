@@ -12,11 +12,8 @@ include = ["sdk_packs.search*"]
 [project]
 name = "lisa-pack-search"
 version = "0.1.0"
-description = "Lisa search and reasoning pack - discuss, search, and thinkabout modes, web_search + fetch_page tools, and the research-loop operations"
+description = "Lisa search and reasoning pack - discuss/search/thinkabout modes, research operations, fetch_page tool, and a generic web_search provider stub"
 requires-python = ">=3.11"
-dependencies = [
-    "httpx>=0.27.0",
-]
 
 [project.optional-dependencies]
 dev = [

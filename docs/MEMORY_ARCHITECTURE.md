@@ -249,28 +249,29 @@ config, fails opaquely at runtime (the anyio 401 cascade).
 
 ## Manifest Shape
 
-Memory backends + memory tool servers live in the **learning pack**
-manifest (`sdk_packs/learning/mcp_servers.yaml`), not the host manifest.
-The host loads the pack manifest, merges the servers into the pool under
-namespaced ids (`learning.lisa-memory` / `learning.mem0`), and wires the
-generic `memory.*` synthetic aliases to the pack's default backend. Only
-one pack may contribute the `memory:` section; the first contributor wins.
+Memory backends + memory tool servers are **pack-contributed** (not host
+declared). The bundled learning pack provides the `lisa_memory` fallback,
+and external packs (for example `lisa-pack-mem0`) can provide alternates.
+
+The host merges active pack manifests into the MCP pool under namespaced ids
+and selects memory ownership deterministically from:
+
+1. Explicit lock selection (`selected_capability_providers.memory`)
+2. Host policy (`pack_policy.preferred_capability_providers.memory`)
+3. Runtime-installed preference over bundled fallback
+
+This removes discovery-order dependence.
 
 ```yaml
 # sdk_packs/learning/mcp_servers.yaml
 memory:
-  default_backend: mem0   # lisa_memory stays available as the local stdio backend
+  default_backend: lisa_memory
   backends:
     - id: lisa_memory
       kind: stdio
       command: "${LISA_MCP_COMMAND:lisa-memory}"
       args: ["--data-dir", "${LISA_DATA_DIR}"]
       tool_names: {add: add_memory, search: search_memory, list: list_memories}
-    - id: mem0
-      kind: http
-      url: https://mcp.mem0.ai/mcp
-      headers: {Authorization: "Bearer ${MEM0_API_KEY}"}
-      tool_names: {add: add_memory, search: search_memories, list: get_memories}
 servers:
   - server_id: lisa-memory
     runtime_kind: venv_bin
@@ -278,6 +279,19 @@ servers:
     venv_dir: "${FRAMEWORK_ROOT}/.venv"
     warm: true
     required: true
+```
+
+```yaml
+# lisa_pack_mem0/mcp_servers.yaml
+memory:
+  default_backend: mem0
+  backends:
+    - id: mem0
+      kind: http
+      url: https://mcp.mem0.ai/mcp
+      headers: {Authorization: "Bearer ${MEM0_API_KEY}"}
+      tool_names: {add: add_memory, search: search_memories, list: get_memories}
+servers:
   - server_id: mem0
     runtime_kind: http
     url: https://mcp.mem0.ai/mcp
@@ -304,18 +318,16 @@ servers:
 | `hosts/little_lisa/turn_hooks.py` | Generic host callbacks for completion, tool execution, introspection, and slice delegation. |
 | `sdk_packs/learning/operations/memory/synthesize_learning.py` | Persists via `ctx.execute_tool_fn("memory.add")`. |
 | `sdk_packs/learning/operations/memory/recall.py` | Calls `memory.list` directly and ranks results in-pack. |
-| `sdk_packs/learning/mcp_servers.yaml` | The memory manifest: `memory.backends` + `servers` (dual registration). Pack-owned. |
+| `sdk_packs/learning/mcp_servers.yaml` | Bundled fallback memory manifest (`lisa_memory`). |
+| `lisa_pack_mem0/mcp_servers.yaml` | External Mem0 memory provider manifest. |
 | `hosts/little_lisa/mcp_servers.yaml` | Host-owned (non-memory) servers only; no `memory:` section. |
-| `hosts/little_lisa/main.py` | `_compile_mcp_configs` merges pack memory config; `_register_memory_synthetic_tools` resolves namespaced default-backend ids; warm-pool wiring; generic operation callback injection. |
+| `hosts/little_lisa/main.py` | `_compile_mcp_configs` selects memory owner by capability policy and lock state; `_register_memory_synthetic_tools` resolves namespaced default-backend ids. |
 
 ## Switching the Default Backend
 
-1. **To Mem0 (current default):** set `MEM0_API_KEY` in `.env` or the shell.
-  The learning pack manifest defaults `memory.default_backend` to `mem0`.
-  The `verify` command checks the key is set and the header expanded before
-  runtime.
-2. **To `lisa_memory`:** change `memory.default_backend` to `lisa_memory` in
-  `sdk_packs/learning/mcp_servers.yaml`, restart, and the three core aliases
-  route to local SQLite. Mem0's full surface remains available to modes that
-  declare it when `MEM0_API_KEY` is set and the server connects; otherwise
-  the empty-header guard drops it from the pool.
+1. **Fallback default (`lisa_memory`):** bundled learning pack is the default owner.
+2. **Switch to Mem0:** install/enable `lisa-pack-mem0` and set `MEM0_API_KEY`.
+  If no explicit capability selection exists, installation auto-selects Mem0
+  as the `memory` provider.
+3. **Switch back:** disable or uninstall `lisa-pack-mem0` (or set explicit
+  capability selection back to learning) and restart.

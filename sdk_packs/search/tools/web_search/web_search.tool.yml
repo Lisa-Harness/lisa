@@ -1,5 +1,5 @@
 tool_id: web_search
-description: "Search the web using Brave Search and return grounded results."
+description: "Generic web search contract. Install a provider pack (for example lisa-pack-brave-search) to enable live results."
 mode_allowlist: null
 max_calls_per_turn: 3
 timeout_seconds: 30

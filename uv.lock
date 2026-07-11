@@ -13,9 +13,12 @@ resolution-markers = [
 members = [
     "lisa-framework-workspace",
     "lisa-kernel",
+    "lisa-pack-brave-search",
     "lisa-pack-cloudflare",
     "lisa-pack-core",
     "lisa-pack-github",
+    "lisa-pack-learning",
+    "lisa-pack-mem0",
     "lisa-pack-search",
     "lisa-pack-stripe",
     "lisa-sdk",
@@ -872,6 +875,7 @@ dependencies = [
     { name = "lisa-pack-cloudflare" },
     { name = "lisa-pack-core" },
     { name = "lisa-pack-github" },
+    { name = "lisa-pack-learning" },
     { name = "lisa-pack-search" },
     { name = "lisa-pack-stripe" },
     { name = "lisa-sdk" },
@@ -898,6 +902,7 @@ requires-dist = [
     { name = "lisa-pack-cloudflare", editable = "lisa_pack_cloudflare" },
     { name = "lisa-pack-core", editable = "sdk_packs/core" },
     { name = "lisa-pack-github", editable = "lisa_pack_github" },
+    { name = "lisa-pack-learning", editable = "sdk_packs/learning" },
     { name = "lisa-pack-search", editable = "sdk_packs/search" },
     { name = "lisa-pack-stripe", editable = "lisa_pack_stripe" },
     { name = "lisa-sdk", editable = "sdk" },
@@ -960,6 +965,30 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
 provides-extras = ["dev", "memory"]
+
+[[package]]
+name = "lisa-pack-brave-search"
+version = "0.1.0"
+source = { editable = "lisa_pack_brave_search" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "lisa-pack-cloudflare"
@@ -1044,12 +1073,9 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "lisa-pack-search"
+name = "lisa-pack-learning"
 version = "0.1.0"
-source = { editable = "sdk_packs/search" }
-dependencies = [
-    { name = "httpx" },
-]
+source = { editable = "sdk_packs/learning" }
 
 [package.optional-dependencies]
 dev = [
@@ -1060,7 +1086,31 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-mem0"
+version = "0.1.0"
+source = { editable = "lisa_pack_mem0" }
+
+[[package]]
+name = "lisa-pack-search"
+version = "0.1.0"
+source = { editable = "sdk_packs/search" }
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
@@ -1142,6 +1192,8 @@ dependencies = [
     { name = "lisa-pack-cloudflare" },
     { name = "lisa-pack-core" },
     { name = "lisa-pack-github" },
+    { name = "lisa-pack-learning" },
+    { name = "lisa-pack-search" },
     { name = "lisa-pack-stripe" },
     { name = "lisa-sdk" },
     { name = "openai" },
@@ -1171,6 +1223,8 @@ requires-dist = [
     { name = "lisa-pack-cloudflare" },
     { name = "lisa-pack-core" },
     { name = "lisa-pack-github" },
+    { name = "lisa-pack-learning" },
+    { name = "lisa-pack-search" },
     { name = "lisa-pack-stripe" },
     { name = "lisa-sdk" },
     { name = "openai", specifier = ">=1.30.0" },

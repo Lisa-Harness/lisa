@@ -71,6 +71,7 @@ def _resolve_subdir_roots(roots: list[Path], subdir: str) -> list[Path]:
 
 _MODE_CONFIG_FILENAME = "_mode.md"
 _MODE_PROVIDER_PREFERENCES_ENV = "LISA_MODE_PROVIDER_PREFERENCES"
+_CONTENT_PROVIDER_PREFERENCES_ENV = "LISA_CONTENT_PROVIDER_PREFERENCES"
 
 
 def build_mode_catalog_json(mode_roots: list[Path]) -> str:
@@ -81,11 +82,12 @@ def build_mode_catalog_json(mode_roots: list[Path]) -> str:
     ``WorkflowModeConfig`` objects.
     """
     merged: dict[str, dict[str, Any]] = {}
-    mode_preferences = _load_mode_provider_preferences()
+    preferences = _load_content_provider_preferences()
+    mode_preferences = preferences.get("modes", {})
     for root in mode_roots:
         if not root.is_dir():
             continue
-        inferred_provider_id = _infer_mode_provider_id(root)
+        inferred_provider_id = _infer_content_provider_id(root)
         for mode_dir in sorted(root.iterdir()):
             if not mode_dir.is_dir():
                 continue
@@ -96,9 +98,10 @@ def build_mode_catalog_json(mode_roots: list[Path]) -> str:
                 if current is None:
                     merged[mode_id] = mode_dict
                 else:
-                    merged[mode_id] = _select_mode_candidate(
+                    merged[mode_id] = _select_catalog_candidate(
                         current=current,
                         candidate=mode_dict,
+                        provider_field="mode_provider_id",
                         preferred_providers=mode_preferences.get(mode_id, []),
                     )
     return json.dumps(merged)
@@ -200,59 +203,98 @@ def _load_one_mode(
     }
 
 
-def _load_mode_provider_preferences() -> dict[str, list[str]]:
-    """Parse mode-provider preferences from env.
+def _load_content_provider_preferences() -> dict[str, dict[str, list[str]]]:
+    """Parse host-supplied provider preferences from env.
 
-    Expected format is JSON object mapping mode_id -> provider-id list.
-    Example: {"default": ["lisa-pack-learning", "learning"]}
+    Preferred shape:
+    {
+      "modes": {"default": ["lisa-pack-learning", "lisa-pack-core"]},
+      "operations": {"web_search": ["lisa-pack-search"]},
+      "tools": {"web_search": ["lisa-pack-brave-search", "lisa-pack-search"]}
+    }
+
+    Legacy compatibility:
+    - ``LISA_MODE_PROVIDER_PREFERENCES`` may still provide mode-only mappings.
     """
 
-    raw = os.getenv(_MODE_PROVIDER_PREFERENCES_ENV, "").strip()
+    mode_preferences = _load_provider_preference_mapping(
+        _MODE_PROVIDER_PREFERENCES_ENV,
+        context="mode-provider preferences",
+    )
+    content_preferences = _load_provider_preference_mapping(
+        _CONTENT_PROVIDER_PREFERENCES_ENV,
+        context="content-provider preferences",
+    )
+
+    modes = _parse_preference_mapping(content_preferences.get("modes") or {})
+    operations = _parse_preference_mapping(content_preferences.get("operations") or {})
+    tools = _parse_preference_mapping(content_preferences.get("tools") or {})
+
+    # Backward compatibility for hosts still setting the legacy env var.
+    if not modes and mode_preferences:
+        modes = mode_preferences
+
+    return {
+        "modes": modes,
+        "operations": operations,
+        "tools": tools,
+    }
+
+
+def _load_provider_preference_mapping(env_var: str, *, context: str) -> dict[str, Any]:
+    raw = os.getenv(env_var, "").strip()
     if not raw:
         return {}
     try:
         decoded = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("Invalid JSON in %s", _MODE_PROVIDER_PREFERENCES_ENV)
+        logger.warning("Invalid JSON in %s for %s", env_var, context)
         return {}
+    return decoded if isinstance(decoded, dict) else {}
 
-    if not isinstance(decoded, dict):
+
+def _parse_preference_mapping(raw: Any) -> dict[str, list[str]]:
+    if not isinstance(raw, dict):
         return {}
 
     preferences: dict[str, list[str]] = {}
-    for mode_id, providers in decoded.items():
-        if not isinstance(mode_id, str):
+    for key_raw, providers_raw in raw.items():
+        if not isinstance(key_raw, str):
             continue
-        values: list[str]
-        if isinstance(providers, list):
-            values = [
+        key = key_raw.strip().lower()
+        if not key:
+            continue
+
+        providers: list[str]
+        if isinstance(providers_raw, str):
+            normalized = _normalize_provider_id(providers_raw)
+            providers = [normalized] if normalized else []
+        elif isinstance(providers_raw, list):
+            providers = [
                 _normalize_provider_id(item)
-                for item in providers
+                for item in providers_raw
                 if isinstance(item, str) and _normalize_provider_id(item)
             ]
-        elif isinstance(providers, str):
-            normalized = _normalize_provider_id(providers)
-            values = [normalized] if normalized else []
         else:
-            values = []
+            providers = []
 
-        if values:
-            preferences[mode_id.strip()] = values
+        if providers:
+            preferences[key] = providers
     return preferences
 
 
-def _infer_mode_provider_id(mode_root: Path) -> str:
-    """Infer a stable provider id from a mode root path."""
+def _infer_content_provider_id(root: Path) -> str:
+    """Infer a stable provider id from a content sub-root path."""
 
-    resolved = mode_root.resolve()
+    resolved = root.resolve()
     raw_candidates = [
-        resolved.parent.parent.name,
         resolved.parent.name,
+        resolved.parent.parent.name,
         resolved.name,
     ]
     for raw in raw_candidates:
         normalized = _normalize_provider_id(raw)
-        if normalized and normalized not in {"modes", "content"}:
+        if normalized and normalized not in {"modes", "operations", "tools", "content"}:
             return normalized
     return ""
 
@@ -272,16 +314,17 @@ def _provider_rank(provider_id: str, preferred_providers: list[str]) -> int:
         return len(preferred_providers) + 1
 
 
-def _select_mode_candidate(
+def _select_catalog_candidate(
     *,
     current: dict[str, Any],
     candidate: dict[str, Any],
+    provider_field: str,
     preferred_providers: list[str],
 ) -> dict[str, Any]:
-    """Select the winning mode entry for duplicate mode_id collisions."""
+    """Select the winning entry for duplicate id collisions."""
 
-    current_provider = _normalize_provider_id(str(current.get("mode_provider_id") or ""))
-    candidate_provider = _normalize_provider_id(str(candidate.get("mode_provider_id") or ""))
+    current_provider = _normalize_provider_id(str(current.get(provider_field) or ""))
+    candidate_provider = _normalize_provider_id(str(candidate.get(provider_field) or ""))
     current_rank = _provider_rank(current_provider, preferred_providers)
     candidate_rank = _provider_rank(candidate_provider, preferred_providers)
 
@@ -401,15 +444,34 @@ def build_operation_catalog_json(operation_roots: list[Path]) -> str:
     locally (using the ``module_path`` field).
     """
     merged: dict[str, dict[str, Any]] = {}
+    preferences = _load_content_provider_preferences()
+    operation_preferences = preferences.get("operations", {})
     for root in operation_roots:
         if not root.is_dir():
             continue
-        for op_id, op_dict in _load_operations_from_root(root).items():
-            merged[op_id] = op_dict  # last wins
+        inferred_provider_id = _infer_content_provider_id(root)
+        for op_id, op_dict in _load_operations_from_root(
+            root,
+            inferred_provider_id=inferred_provider_id,
+        ).items():
+            current = merged.get(op_id)
+            if current is None:
+                merged[op_id] = op_dict
+            else:
+                merged[op_id] = _select_catalog_candidate(
+                    current=current,
+                    candidate=op_dict,
+                    provider_field="operation_provider_id",
+                    preferred_providers=operation_preferences.get(op_id, []),
+                )
     return json.dumps(merged)
 
 
-def _load_operations_from_root(root: Path) -> dict[str, dict[str, Any]]:
+def _load_operations_from_root(
+    root: Path,
+    *,
+    inferred_provider_id: str,
+) -> dict[str, dict[str, Any]]:
     """Load all operations from one root directory."""
 
     catalog: dict[str, dict[str, Any]] = {}
@@ -418,6 +480,7 @@ def _load_operations_from_root(root: Path) -> dict[str, dict[str, Any]]:
     for md_path in _iter_operation_markdown_files(root):
         op_dict = _load_markdown_operation(md_path)
         if op_dict is not None:
+            op_dict.setdefault("operation_provider_id", inferred_provider_id)
             catalog[op_dict["operation_id"]] = op_dict
 
     # 2. Python runtime operations with .yml metadata
@@ -428,6 +491,7 @@ def _load_operations_from_root(root: Path) -> dict[str, dict[str, Any]]:
             continue
         op_dict = _load_runtime_operation(py_path, yml_path, root)
         if op_dict is not None:
+            op_dict.setdefault("operation_provider_id", inferred_provider_id)
             op_id = op_dict["operation_id"]
             if op_id in catalog and catalog[op_id].get("execution_kind") == "prompt":
                 logger.info(
@@ -589,15 +653,34 @@ def build_tool_catalog_json(tool_roots: list[Path]) -> str:
     are not supported in this iteration.
     """
     merged: dict[str, dict[str, Any]] = {}
+    preferences = _load_content_provider_preferences()
+    tool_preferences = preferences.get("tools", {})
     for root in tool_roots:
         if not root.is_dir():
             continue
-        for tool_id, tool_dict in _load_tools_from_root(root).items():
-            merged[tool_id] = tool_dict  # last wins
+        inferred_provider_id = _infer_content_provider_id(root)
+        for tool_id, tool_dict in _load_tools_from_root(
+            root,
+            inferred_provider_id=inferred_provider_id,
+        ).items():
+            current = merged.get(tool_id)
+            if current is None:
+                merged[tool_id] = tool_dict
+            else:
+                merged[tool_id] = _select_catalog_candidate(
+                    current=current,
+                    candidate=tool_dict,
+                    provider_field="tool_provider_id",
+                    preferred_providers=tool_preferences.get(tool_id, []),
+                )
     return json.dumps(merged)
 
 
-def _load_tools_from_root(root: Path) -> dict[str, dict[str, Any]]:
+def _load_tools_from_root(
+    root: Path,
+    *,
+    inferred_provider_id: str,
+) -> dict[str, dict[str, Any]]:
     """Load all internal tools from one root directory."""
 
     catalog: dict[str, dict[str, Any]] = {}
@@ -608,6 +691,7 @@ def _load_tools_from_root(root: Path) -> dict[str, dict[str, Any]]:
             continue
         tool_dict = _load_runtime_tool(py_path, yml_path, root)
         if tool_dict is not None:
+            tool_dict.setdefault("tool_provider_id", inferred_provider_id)
             catalog[tool_dict["tool_id"]] = tool_dict
     return catalog
 

@@ -7,7 +7,7 @@ where = ["../.."]
 include = ["sdk_packs.learning*"]
 
 [tool.setuptools.package-data]
-"sdk_packs.learning" = ["modes/**/*.md", "operations/**/*.md", "operations/**/*.yml"]
+"sdk_packs.learning" = ["mcp_servers.yaml", "modes/**/*.md", "operations/**/*.md", "operations/**/*.yml"]
 
 [project]
 name = "lisa-pack-learning"

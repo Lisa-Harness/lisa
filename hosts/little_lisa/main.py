@@ -321,7 +321,14 @@ _LITTLE_LISA_PACK_REQUIRE_GIT_REF_ENV = "LITTLE_LISA_PACK_REQUIRE_GIT_REF"
 _LITTLE_LISA_AUTO_RESTART_ENV = "LITTLE_LISA_AUTO_RESTART"
 _LITTLE_LISA_RESTART_RESUME_MESSAGE_ENV = "LITTLE_LISA_RESTART_RESUME_MESSAGE"
 _LISA_MODE_PROVIDER_PREFERENCES_ENV = "LISA_MODE_PROVIDER_PREFERENCES"
+_LISA_CONTENT_PROVIDER_PREFERENCES_ENV = "LISA_CONTENT_PROVIDER_PREFERENCES"
 _PACK_LOCK_FILE_NAME = "installed-packs.json"
+_DEFAULT_ALWAYS_ON_PACKAGES: tuple[str, ...] = (
+    "lisa-pack-core",
+    "lisa-pack-learning",
+    "lisa-pack-search",
+)
+_RUNTIME_INSTALL_SOURCE_KINDS = {"package", "git", "local"}
 
 # Config-resolution logic (timezone, timeout, log-level, streaming, slice)
 # lives in the dedicated ``config`` module.  We import the names here so
@@ -592,6 +599,8 @@ _HOST_REPL_SHORTCUTS: tuple[str, ...] = (
     "/help",
     "/help capabilities",
     "/pack list",
+    "/pack enable ",
+    "/pack disable ",
     "/pack install ",
     "/pack uninstall ",
     "/settings",
@@ -636,8 +645,141 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
     return deduped
 
 
+def _host_mcp_manifest_path() -> Path:
+    return FRAMEWORK_ROOT / "hosts" / "little_lisa" / "mcp_servers.yaml"
+
+
+def _normalize_pack_name(raw: str) -> str:
+    value = raw.strip().lower().replace("_", "-")
+    value = re.sub(r"[^a-z0-9-]+", "-", value).strip("-")
+    return value
+
+
+def _infer_pack_package_name(root: Path) -> str:
+    """Infer the pack package name for one discovered content root."""
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            payload = {}
+        project = payload.get("project") if isinstance(payload, dict) else None
+        if isinstance(project, dict):
+            name = project.get("name")
+            if isinstance(name, str) and name.strip():
+                return _normalize_pack_name(name)
+
+    root_name = _normalize_pack_name(root.name)
+    if root.parent.name == "sdk_packs" and root_name:
+        return f"lisa-pack-{root_name}"
+    if root_name.startswith("lisa-pack-"):
+        return root_name
+    return root_name
+
+
+def _pack_aliases(package_name: str, *, root: Path | None = None) -> set[str]:
+    aliases: set[str] = set()
+    normalized = _normalize_pack_name(package_name)
+    if normalized:
+        aliases.add(normalized)
+        if normalized.startswith("lisa-pack-"):
+            aliases.add(normalized[len("lisa-pack-"):])
+    if root is not None:
+        root_alias = _normalize_pack_name(root.name)
+        if root_alias:
+            aliases.add(root_alias)
+    return aliases
+
+
+def _always_on_pack_names(host_manifest_path: Path | None = None) -> set[str]:
+    always_on = {_normalize_pack_name(name) for name in _DEFAULT_ALWAYS_ON_PACKAGES}
+    manifest_path = host_manifest_path or _host_mcp_manifest_path()
+    policy = _load_pack_policy_dict(manifest_path, warning_subject="pack activation policy")
+
+    configured = policy.get("always_on_packs") or []
+    if not isinstance(configured, list):
+        return always_on
+
+    for item in configured:
+        if not isinstance(item, str):
+            continue
+        normalized = _normalize_pack_name(item)
+        if normalized:
+            always_on.add(normalized)
+    return always_on
+
+
+def _runtime_installed_pack_names(lock: dict[str, Any]) -> set[str]:
+    entries = lock.get("packs") if isinstance(lock, dict) else None
+    if not isinstance(entries, list):
+        return set()
+
+    runtime_installed: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        source_kind = str(entry.get("source_kind") or "").strip().lower()
+        if source_kind not in _RUNTIME_INSTALL_SOURCE_KINDS:
+            continue
+        package_name = _normalize_pack_name(str(entry.get("package_name") or ""))
+        if package_name:
+            runtime_installed.add(package_name)
+    return runtime_installed
+
+
+def _runtime_enabled_pack_map(lock: dict[str, Any]) -> dict[str, bool]:
+    entries = lock.get("packs") if isinstance(lock, dict) else None
+    if not isinstance(entries, list):
+        return {}
+
+    enabled_map: dict[str, bool] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        package_name = _normalize_pack_name(str(entry.get("package_name") or ""))
+        if not package_name:
+            continue
+        enabled_map[package_name] = bool(entry.get("enabled", True))
+    return enabled_map
+
+
+def _pack_is_active(
+    package_name: str,
+    *,
+    always_on_packs: set[str],
+    runtime_installed: set[str],
+    enabled_map: dict[str, bool],
+) -> bool:
+    if package_name in always_on_packs:
+        return True
+    if package_name in runtime_installed:
+        return enabled_map.get(package_name, True)
+    return enabled_map.get(package_name, False)
+
+
+def _active_installed_pack_roots() -> list[Path]:
+    lock = _load_installed_packs_lock()
+    always_on_packs = _always_on_pack_names()
+    runtime_installed = _runtime_installed_pack_names(lock)
+    enabled_map = _runtime_enabled_pack_map(lock)
+
+    active: list[Path] = []
+    for root in discover_installed_content_roots():
+        package_name = _infer_pack_package_name(root)
+        if not package_name:
+            continue
+        if _pack_is_active(
+            package_name,
+            always_on_packs=always_on_packs,
+            runtime_installed=runtime_installed,
+            enabled_map=enabled_map,
+        ):
+            active.append(root)
+    return active
+
+
 def _sdk_content_roots() -> list[Path]:
-    roots = [*discover_installed_content_roots(), *discover_configured_content_roots()]
+    roots = [*_active_installed_pack_roots(), *discover_configured_content_roots()]
     return _unique_paths([root for root in roots if root.is_dir()])
 
 
@@ -693,12 +835,18 @@ def _build_content_mcp_config() -> MCPClientConfig:
     can resolve authored text assets like ``frontdoor/route.md`` without a
     ``content/`` prefix).
     """
-    host_manifest_path = FRAMEWORK_ROOT / "hosts" / "little_lisa" / "mcp_servers.yaml"
-    mode_preferences = _load_mode_provider_preferences(host_manifest_path)
+    host_manifest_path = _host_mcp_manifest_path()
+    content_provider_preferences = _load_content_provider_preferences(host_manifest_path)
+    mode_preferences = content_provider_preferences.get("modes", {})
     roots_for_child = _sdk_content_roots()
     content_roots = [root / "content" for root in roots_for_child if (root / "content").is_dir()]
     configured_roots = _unique_paths([*roots_for_child, *content_roots])
     env = {"SDK_CONTENT_ROOTS": os.pathsep.join(str(root) for root in configured_roots)}
+    if any(content_provider_preferences.get(kind) for kind in ("modes", "operations", "tools")):
+        env[_LISA_CONTENT_PROVIDER_PREFERENCES_ENV] = json.dumps(
+            content_provider_preferences,
+            ensure_ascii=True,
+        )
     if mode_preferences:
         env[_LISA_MODE_PROVIDER_PREFERENCES_ENV] = json.dumps(mode_preferences, ensure_ascii=True)
     return MCPClientConfig(
@@ -3124,7 +3272,7 @@ def _format_help() -> str:
     lines.extend(
         [
             "- /deep <request> routes through default mode on the deep-designated model.",
-            "- /pack list|install|uninstall manages runtime pack installs (restart required after changes).",
+            "- /pack list|enable|disable|install|uninstall manages pack activation and runtime installs (restart required after changes).",
             "- Natural-language turns pass through the front-door route planner first.",
             "- /help capabilities shows the runtime capability snapshot.",
             "- /settings shows effective profile/timezone/debug/log-level runtime settings.",
@@ -3402,7 +3550,16 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
     registry = MCPServerRegistry()
     data_dir = str(_runtime_data_dir())
     workspace_root = str(FRAMEWORK_ROOT)
-    host_manifest_path = FRAMEWORK_ROOT / "hosts" / "little_lisa" / "mcp_servers.yaml"
+    host_manifest_path = _host_mcp_manifest_path()
+    capability_preferences = _load_capability_provider_preferences(host_manifest_path)
+    lock = _load_installed_packs_lock()
+    runtime_installed_packages = _runtime_installed_pack_names(lock)
+    selected_capability_providers_raw = lock.get("selected_capability_providers")
+    selected_capability_providers = (
+        selected_capability_providers_raw
+        if isinstance(selected_capability_providers_raw, dict)
+        else {}
+    )
 
     # All host-owned servers (first-party) from mcp_servers.yaml. The
     # manifest loader honors ``disabled: true`` by skipping entries, and
@@ -3418,6 +3575,7 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
     excluded_pack_servers = _load_pack_server_exclusions(host_manifest_path)
     used_pack_slugs: set[str] = set()
     memory_owner_slug: str | None = None
+    memory_candidates: list[dict[str, Any]] = []
     for root in _sdk_content_roots():
         pack_manifest_path = root / "mcp_servers.yaml"
         if not pack_manifest_path.exists():
@@ -3433,22 +3591,19 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
             continue
 
         pack_slug = _unique_pack_slug_for_root(root, used_pack_slugs)
+        pack_package_name = _infer_pack_package_name(root)
 
-        # A pack may contribute the memory backends + memory tool servers.
-        # Only one pack may own memory; the first contributor wins and any
-        # later one is rejected with a warning. The owning pack's slug is
-        # stashed so the synthetic ``memory.*`` aliases can resolve the
-        # namespaced default-backend server id (``<slug>.<server_id>``).
+        # A pack may contribute memory backends + memory tool servers. Ownership
+        # is selected deterministically from host policy + lock state.
         if pack_memory.default_backend or pack_memory.backends:
-            if memory_owner_slug is not None:
-                logger.warning(
-                    "Ignoring memory section in pack MCP manifest %s; memory is already owned by pack %r.",
-                    pack_manifest_path,
-                    memory_owner_slug,
-                )
-            else:
-                memory_config = pack_memory
-                memory_owner_slug = pack_slug
+            memory_candidates.append(
+                {
+                    "pack_slug": pack_slug,
+                    "package_name": pack_package_name,
+                    "manifest_path": pack_manifest_path,
+                    "memory_config": pack_memory,
+                }
+            )
 
         for spec in pack_specs:
             if _pack_server_excluded(pack_slug, spec.server_id, excluded_pack_servers):
@@ -3463,6 +3618,43 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
             # server_id without collision in the global registry.
             namespaced = dataclasses.replace(spec, server_id=f"{pack_slug}.{spec.server_id}")
             registry.register(namespaced)
+
+    selected_memory_provider = _normalize_pack_name(
+        str(selected_capability_providers.get("memory") or "")
+    )
+    selected_memory_owner = _select_capability_provider_owner(
+        candidates=memory_candidates,
+        selected_provider=selected_memory_provider,
+        preferred_providers=capability_preferences.get("memory", []),
+        runtime_installed_packages=runtime_installed_packages,
+    )
+    if selected_memory_provider and selected_memory_owner is None:
+        logger.warning(
+            "Selected memory provider %r is not active; falling back to preference order.",
+            selected_memory_provider,
+        )
+
+    if selected_memory_owner is not None:
+        memory_config = selected_memory_owner["memory_config"]
+        memory_owner_slug = str(selected_memory_owner.get("pack_slug") or "") or None
+        selected_manifest = str(selected_memory_owner.get("manifest_path") or "")
+        selected_package = str(selected_memory_owner.get("package_name") or "")
+        logger.info(
+            "Selected memory provider owner: package=%s slug=%s manifest=%s",
+            selected_package,
+            memory_owner_slug or "(none)",
+            selected_manifest,
+        )
+        for candidate in memory_candidates:
+            if candidate is selected_memory_owner:
+                continue
+            logger.info(
+                "Ignoring memory manifest from package=%s slug=%s at %s; selected owner is %s.",
+                candidate.get("package_name"),
+                candidate.get("pack_slug"),
+                candidate.get("manifest_path"),
+                selected_package,
+            )
 
     _RUNTIME_STATE["memory_config"] = memory_config
     _RUNTIME_STATE["memory_config_pack_slug"] = memory_owner_slug
@@ -3498,24 +3690,7 @@ def _load_pack_server_exclusions(host_manifest_path: Path) -> set[str]:
     - ``pack_slug/server_id``
     - ``pack_slug.*`` (exclude all servers from one pack)
     """
-    if not host_manifest_path.exists():
-        return set()
-
-    try:
-        raw = yaml.safe_load(host_manifest_path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        logger.warning(
-            "Failed to read pack exclusion policy from %s",
-            host_manifest_path,
-            exc_info=True,
-        )
-        return set()
-
-    if not isinstance(raw, dict):
-        return set()
-    policy = raw.get("pack_policy") or {}
-    if not isinstance(policy, dict):
-        return set()
+    policy = _load_pack_policy_dict(host_manifest_path, warning_subject="pack exclusion policy")
     entries = policy.get("exclude_servers") or []
     if not isinstance(entries, list):
         logger.warning("pack_policy.exclude_servers must be a list in %s", host_manifest_path)
@@ -3531,8 +3706,8 @@ def _load_pack_server_exclusions(host_manifest_path: Path) -> set[str]:
     return exclusions
 
 
-def _load_mode_provider_preferences(host_manifest_path: Path) -> dict[str, list[str]]:
-    """Load mode-provider preferences from ``pack_policy.preferred_mode_providers``."""
+def _load_pack_policy_dict(host_manifest_path: Path, *, warning_subject: str) -> dict[str, Any]:
+    """Load and return ``pack_policy`` from the host manifest."""
     if not host_manifest_path.exists():
         return {}
 
@@ -3540,7 +3715,8 @@ def _load_mode_provider_preferences(host_manifest_path: Path) -> dict[str, list[
         raw = yaml.safe_load(host_manifest_path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
         logger.warning(
-            "Failed to read mode provider preferences from %s",
+            "Failed to read %s from %s",
+            warning_subject,
             host_manifest_path,
             exc_info=True,
         )
@@ -3551,35 +3727,137 @@ def _load_mode_provider_preferences(host_manifest_path: Path) -> dict[str, list[
     policy = raw.get("pack_policy") or {}
     if not isinstance(policy, dict):
         return {}
+    return policy
 
-    mapping = policy.get("preferred_mode_providers") or {}
-    if not isinstance(mapping, dict):
+
+def _parse_provider_priority_mapping(raw: Any) -> dict[str, list[str]]:
+    """Parse a mapping of id -> ordered provider preference list."""
+    if not isinstance(raw, dict):
         return {}
 
     preferences: dict[str, list[str]] = {}
-    for mode_id_raw, provider_values in mapping.items():
-        if not isinstance(mode_id_raw, str):
+    for key_raw, provider_values in raw.items():
+        if not isinstance(key_raw, str):
             continue
-        mode_id = mode_id_raw.strip()
-        if not mode_id:
+        key = key_raw.strip().lower()
+        if not key:
             continue
 
         providers: list[str]
         if isinstance(provider_values, str):
-            providers = [provider_values.strip()] if provider_values.strip() else []
+            normalized = _normalize_pack_name(provider_values)
+            providers = [normalized] if normalized else []
         elif isinstance(provider_values, list):
             providers = [
-                item.strip()
+                _normalize_pack_name(item)
                 for item in provider_values
-                if isinstance(item, str) and item.strip()
+                if isinstance(item, str) and _normalize_pack_name(item)
             ]
         else:
             providers = []
 
         if providers:
-            preferences[mode_id] = providers
+            preferences[key] = providers
 
     return preferences
+
+
+def _load_content_provider_preferences(host_manifest_path: Path) -> dict[str, dict[str, list[str]]]:
+    """Load host provider preferences for content collisions.
+
+    Preferred shape:
+
+    ``pack_policy.preferred_providers.{modes|operations|tools}``
+
+    Legacy compatibility:
+
+    ``pack_policy.preferred_mode_providers`` (modes only)
+    """
+    policy = _load_pack_policy_dict(host_manifest_path, warning_subject="content provider preferences")
+
+    structured = policy.get("preferred_providers") or {}
+    if not isinstance(structured, dict):
+        structured = {}
+
+    mode_preferences = _parse_provider_priority_mapping(structured.get("modes") or {})
+    operation_preferences = _parse_provider_priority_mapping(structured.get("operations") or {})
+    tool_preferences = _parse_provider_priority_mapping(structured.get("tools") or {})
+
+    if not mode_preferences:
+        mode_preferences = _parse_provider_priority_mapping(policy.get("preferred_mode_providers") or {})
+
+    return {
+        "modes": mode_preferences,
+        "operations": operation_preferences,
+        "tools": tool_preferences,
+    }
+
+
+def _load_mode_provider_preferences(host_manifest_path: Path) -> dict[str, list[str]]:
+    """Backward-compatible mode-only provider preferences view."""
+    return _load_content_provider_preferences(host_manifest_path).get("modes", {})
+
+
+def _load_capability_provider_preferences(host_manifest_path: Path) -> dict[str, list[str]]:
+    """Load host capability-provider ownership preferences.
+
+    Shape: ``pack_policy.preferred_capability_providers.<capability_id>``
+    where each value is an ordered provider list.
+    """
+    policy = _load_pack_policy_dict(host_manifest_path, warning_subject="capability provider preferences")
+    return _parse_provider_priority_mapping(policy.get("preferred_capability_providers") or {})
+
+
+def _provider_identifiers_for_pack(*, package_name: str, pack_slug: str) -> set[str]:
+    identifiers = {
+        _normalize_pack_name(package_name),
+        _normalize_pack_name(pack_slug),
+    }
+    normalized_package = _normalize_pack_name(package_name)
+    if normalized_package.startswith("lisa-pack-"):
+        identifiers.add(normalized_package[len("lisa-pack-"):])
+    return {identifier for identifier in identifiers if identifier}
+
+
+def _provider_preference_rank(
+    provider_identifiers: set[str],
+    preferred_providers: list[str],
+) -> int:
+    for index, provider in enumerate(preferred_providers):
+        if provider in provider_identifiers:
+            return index
+    return len(preferred_providers) + 1
+
+
+def _select_capability_provider_owner(
+    *,
+    candidates: list[dict[str, Any]],
+    selected_provider: str,
+    preferred_providers: list[str],
+    runtime_installed_packages: set[str],
+) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+
+    selected = _normalize_pack_name(selected_provider)
+    if selected:
+        for candidate in candidates:
+            identifiers = _provider_identifiers_for_pack(
+                package_name=str(candidate.get("package_name") or ""),
+                pack_slug=str(candidate.get("pack_slug") or ""),
+            )
+            if selected in identifiers:
+                return candidate
+
+    def _sort_key(candidate: dict[str, Any]) -> tuple[int, int, str, str]:
+        package_name = _normalize_pack_name(str(candidate.get("package_name") or ""))
+        pack_slug = _normalize_pack_name(str(candidate.get("pack_slug") or ""))
+        identifiers = _provider_identifiers_for_pack(package_name=package_name, pack_slug=pack_slug)
+        preference_rank = _provider_preference_rank(identifiers, preferred_providers)
+        runtime_rank = 0 if package_name in runtime_installed_packages else 1
+        return (preference_rank, runtime_rank, package_name, pack_slug)
+
+    return min(candidates, key=_sort_key)
 
 
 def _pack_server_excluded(pack_slug: str, declared_server_id: str, exclusions: set[str]) -> bool:
@@ -3904,18 +4182,55 @@ async def _dispatch_host_command(
 def _load_installed_packs_lock() -> dict[str, Any]:
     """Load installed pack provenance metadata from disk."""
     path = _runtime_pack_lock_path()
+    default_payload: dict[str, Any] = {
+        "packs": [],
+        "selected_capability_providers": {},
+    }
     if not path.exists():
-        return {"packs": []}
+        return default_payload
     try:
         decoded = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"packs": []}
+        return default_payload
     if not isinstance(decoded, dict):
-        return {"packs": []}
+        return default_payload
+
     packs = decoded.get("packs")
     if not isinstance(packs, list):
-        return {"packs": []}
-    return {"packs": [item for item in packs if isinstance(item, dict)]}
+        packs = []
+
+    normalized_packs: list[dict[str, Any]] = []
+    for item in packs:
+        if not isinstance(item, dict):
+            continue
+        package_name = _normalize_pack_name(str(item.get("package_name") or ""))
+        if not package_name:
+            continue
+        source_kind = str(item.get("source_kind") or "package").strip().lower() or "package"
+        normalized_packs.append(
+            {
+                **item,
+                "package_name": package_name,
+                "source_kind": source_kind,
+                "enabled": bool(item.get("enabled", True)),
+            }
+        )
+
+    selected = decoded.get("selected_capability_providers")
+    selected_map: dict[str, str] = {}
+    if isinstance(selected, dict):
+        for capability_raw, provider_raw in selected.items():
+            if not isinstance(capability_raw, str) or not isinstance(provider_raw, str):
+                continue
+            capability_id = capability_raw.strip().lower()
+            provider_id = _normalize_pack_name(provider_raw)
+            if capability_id and provider_id:
+                selected_map[capability_id] = provider_id
+
+    return {
+        "packs": normalized_packs,
+        "selected_capability_providers": selected_map,
+    }
 
 
 def _write_installed_packs_lock(payload: dict[str, Any]) -> None:
@@ -3923,6 +4238,191 @@ def _write_installed_packs_lock(payload: dict[str, Any]) -> None:
     path = _runtime_pack_lock_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+
+def _installed_pack_roots_by_name() -> dict[str, Path]:
+    roots: dict[str, Path] = {}
+    for root in discover_installed_content_roots():
+        package_name = _infer_pack_package_name(root)
+        if not package_name or package_name in roots:
+            continue
+        roots[package_name] = root
+    return roots
+
+
+def _pack_alias_map(lock: dict[str, Any]) -> dict[str, str]:
+    alias_map: dict[str, str] = {}
+    installed_roots = _installed_pack_roots_by_name()
+
+    for package_name, root in installed_roots.items():
+        for alias in _pack_aliases(package_name, root=root):
+            alias_map.setdefault(alias, package_name)
+
+    for package_name in _always_on_pack_names():
+        for alias in _pack_aliases(package_name):
+            alias_map.setdefault(alias, package_name)
+
+    entries = lock.get("packs") if isinstance(lock, dict) else None
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        package_name = _normalize_pack_name(str(entry.get("package_name") or ""))
+        if not package_name:
+            continue
+        for alias in _pack_aliases(package_name):
+            alias_map.setdefault(alias, package_name)
+
+    return alias_map
+
+
+def _resolve_pack_name(raw: str, lock: dict[str, Any] | None = None) -> str:
+    normalized = _normalize_pack_name(raw)
+    if not normalized:
+        return ""
+
+    lock_payload = lock if isinstance(lock, dict) else _load_installed_packs_lock()
+    aliases = _pack_alias_map(lock_payload)
+    if normalized in aliases:
+        return aliases[normalized]
+
+    prefixed = normalized if normalized.startswith("lisa-pack-") else f"lisa-pack-{normalized}"
+    return aliases.get(prefixed, "")
+
+
+def _clear_selected_provider_for_package(lock: dict[str, Any], package_name: str) -> list[str]:
+    selected = lock.get("selected_capability_providers")
+    if not isinstance(selected, dict):
+        lock["selected_capability_providers"] = {}
+        return []
+
+    cleared: list[str] = []
+    for capability_id, provider_id in list(selected.items()):
+        if not isinstance(capability_id, str) or not isinstance(provider_id, str):
+            continue
+        if _normalize_pack_name(provider_id) != package_name:
+            continue
+        selected.pop(capability_id, None)
+        cleared.append(capability_id)
+    return cleared
+
+
+def _pack_contributes_memory_capability(package_name: str) -> bool:
+    normalized = _normalize_pack_name(package_name)
+    if not normalized:
+        return False
+
+    from kernel.mcp_launch.server_manifest import (  # noqa: PLC0415
+        MCPServerManifestError,
+        load_mcp_server_manifest,
+    )
+
+    for root in discover_installed_content_roots():
+        if _infer_pack_package_name(root) != normalized:
+            continue
+        manifest_path = root / "mcp_servers.yaml"
+        if not manifest_path.is_file():
+            continue
+        try:
+            _, memory = load_mcp_server_manifest(manifest_path)
+        except MCPServerManifestError:
+            continue
+        if memory.default_backend or memory.backends:
+            return True
+
+    return normalized.startswith("lisa-pack-mem")
+
+
+def _auto_select_capability_provider_on_install(
+    lock: dict[str, Any],
+    package_name: str,
+) -> None:
+    selected = lock.get("selected_capability_providers")
+    if not isinstance(selected, dict):
+        selected = {}
+        lock["selected_capability_providers"] = selected
+
+    capability_id = "memory"
+    if selected.get(capability_id):
+        return
+    if package_name in _always_on_pack_names():
+        return
+    if not _pack_contributes_memory_capability(package_name):
+        return
+
+    selected[capability_id] = package_name
+
+
+def _set_pack_enabled(package_name: str, *, enabled: bool) -> tuple[bool, str]:
+    """Persist explicit activation for one pack and request host restart."""
+    lock = _load_installed_packs_lock()
+    resolved = _resolve_pack_name(package_name, lock)
+    if not resolved:
+        return False, (
+            f"Unknown pack '{package_name}'. Run /pack list to see available packs "
+            "and their canonical names."
+        )
+
+    always_on = _always_on_pack_names()
+    if not enabled and resolved in always_on:
+        return False, f"Pack '{resolved}' is always on and cannot be disabled."
+
+    entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
+    index = next(
+        (
+            i
+            for i, entry in enumerate(entries)
+            if _normalize_pack_name(str(entry.get("package_name") or "")) == resolved
+        ),
+        -1,
+    )
+    now_iso = datetime.now(UTC).isoformat()
+
+    if index >= 0:
+        entry = dict(entries[index])
+        entry["package_name"] = resolved
+        entry["enabled"] = enabled
+        entry["updated_at"] = now_iso
+        entry.setdefault("source_kind", "bundled")
+        if entry.get("source_kind") == "bundled":
+            entry.setdefault("source_ref", "bundled")
+        entries[index] = entry
+    else:
+        entries.append(
+            {
+                "package_name": resolved,
+                "enabled": enabled,
+                "source_kind": "bundled",
+                "source_ref": "bundled",
+                "updated_at": now_iso,
+            }
+        )
+
+    lock["packs"] = entries
+
+    cleared = []
+    if not enabled:
+        cleared = _clear_selected_provider_for_package(lock, resolved)
+
+    _write_installed_packs_lock(lock)
+    action = "enable" if enabled else "disable"
+    _request_runtime_restart(reason=f"pack {action}: {resolved}")
+
+    if enabled:
+        return (
+            True,
+            f"Enabled '{resolved}'. Restart required to reload content roots and MCP manifests.",
+        )
+
+    if cleared:
+        return (
+            True,
+            f"Disabled '{resolved}' and cleared provider selections for: {', '.join(sorted(cleared))}. "
+            "Restart required to reload content roots and MCP manifests.",
+        )
+    return (
+        True,
+        f"Disabled '{resolved}'. Restart required to reload content roots and MCP manifests.",
+    )
 
 
 def _pack_allowed_prefixes() -> list[str]:
@@ -4089,7 +4589,9 @@ async def _run_pack_install(spec: str) -> tuple[bool, str]:
         preview = "\n".join(output.splitlines()[-12:]).strip()
         return False, f"Install failed for '{spec}'.\n{preview}"
 
-    package_name = _extract_package_name_from_spec(spec)
+    package_name = _normalize_pack_name(_extract_package_name_from_spec(spec))
+    if not package_name:
+        return False, f"Install succeeded for '{spec}' but package name could not be inferred."
     source_kind = (
         "local"
         if _is_local_pack_spec(spec)
@@ -4101,7 +4603,7 @@ async def _run_pack_install(spec: str) -> tuple[bool, str]:
     filtered = [
         entry
         for entry in entries
-        if str(entry.get("package_name") or "").lower() != package_name.lower()
+        if _normalize_pack_name(str(entry.get("package_name") or "")) != package_name
     ]
     filtered.append(
         {
@@ -4109,9 +4611,13 @@ async def _run_pack_install(spec: str) -> tuple[bool, str]:
             "installed_at": now_iso,
             "source_kind": source_kind,
             "source_ref": install_target,
+            "enabled": True,
+            "updated_at": now_iso,
         }
     )
-    _write_installed_packs_lock({"packs": filtered})
+    lock["packs"] = filtered
+    _auto_select_capability_provider_on_install(lock, package_name)
+    _write_installed_packs_lock(lock)
 
     _request_runtime_restart(reason=f"pack install: {package_name}")
     return True, (
@@ -4122,7 +4628,12 @@ async def _run_pack_install(spec: str) -> tuple[bool, str]:
 
 async def _run_pack_uninstall(package_name: str) -> tuple[bool, str]:
     """Uninstall one pack and update provenance metadata."""
-    normalized = package_name.strip()
+    requested = package_name.strip()
+    if not requested:
+        return False, "Usage: /pack uninstall <package-name>"
+
+    lock = _load_installed_packs_lock()
+    normalized = _resolve_pack_name(requested, lock) or _normalize_pack_name(requested)
     if not normalized:
         return False, "Usage: /pack uninstall <package-name>"
 
@@ -4142,16 +4653,23 @@ async def _run_pack_uninstall(package_name: str) -> tuple[bool, str]:
         preview = "\n".join(output.splitlines()[-12:]).strip()
         return False, f"Uninstall failed for '{normalized}'.\n{preview}"
 
-    lock = _load_installed_packs_lock()
     entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
     filtered = [
         entry
         for entry in entries
-        if str(entry.get("package_name") or "").lower() != normalized.lower()
+        if _normalize_pack_name(str(entry.get("package_name") or "")) != normalized
     ]
-    _write_installed_packs_lock({"packs": filtered})
+    lock["packs"] = filtered
+    cleared = _clear_selected_provider_for_package(lock, normalized)
+    _write_installed_packs_lock(lock)
 
     _request_runtime_restart(reason=f"pack uninstall: {normalized}")
+    if cleared:
+        cleared_text = ", ".join(sorted(cleared))
+        return True, (
+            f"Uninstalled '{normalized}' and cleared provider selections for: {cleared_text}. "
+            "Restart required to unload entry points, pack catalogs, and MCP manifests."
+        )
     return True, (
         f"Uninstalled '{normalized}'. "
         "Restart required to unload entry points, pack catalogs, and MCP manifests."
@@ -4189,21 +4707,55 @@ def _restart_current_process() -> None:
 
 
 def _render_pack_list() -> str:
-    """Render installed pack provenance from local lock metadata."""
+    """Render discovered packs, activation state, and capability-provider selections."""
     lock = _load_installed_packs_lock()
     entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
-    if not entries:
-        return "No runtime-installed packs recorded yet."
+    installed_roots = _installed_pack_roots_by_name()
+    always_on = _always_on_pack_names()
+    runtime_installed = _runtime_installed_pack_names(lock)
+    enabled_map = _runtime_enabled_pack_map(lock)
+    entry_map = {
+        _normalize_pack_name(str(entry.get("package_name") or "")): entry
+        for entry in entries
+        if _normalize_pack_name(str(entry.get("package_name") or ""))
+    }
 
-    lines = ["## Installed Packs"]
-    for entry in sorted(entries, key=lambda item: str(item.get("package_name") or "")):
-        package_name = str(entry.get("package_name") or "").strip() or "unknown"
-        source_kind = str(entry.get("source_kind") or "unknown").strip() or "unknown"
-        source_ref = str(entry.get("source_ref") or "").strip() or "(unknown source)"
-        installed_at = str(entry.get("installed_at") or "").strip() or "(unknown time)"
-        lines.append(
-            f"- {package_name} | source={source_kind} | installed_at={installed_at} | ref={source_ref}"
+    all_packages = set(installed_roots) | set(entry_map) | always_on
+    if not all_packages:
+        return "No packs discovered yet."
+
+    lines = ["## Pack Activation"]
+    for package_name in sorted(all_packages):
+        entry = entry_map.get(package_name) or {}
+        source_kind = str(entry.get("source_kind") or "").strip().lower()
+        if not source_kind:
+            if package_name in always_on:
+                source_kind = "always-on"
+            elif package_name in runtime_installed:
+                source_kind = "package"
+            else:
+                source_kind = "bundled"
+
+        active = _pack_is_active(
+            package_name,
+            always_on_packs=always_on,
+            runtime_installed=runtime_installed,
+            enabled_map=enabled_map,
         )
+        activation = "always-on" if package_name in always_on else ("enabled" if active else "disabled")
+        root = installed_roots.get(package_name)
+        root_text = str(root) if root is not None else "(not discovered in current environment)"
+        lines.append(
+            f"- {package_name} | state={activation} | source={source_kind} | root={root_text}"
+        )
+
+    selected = lock.get("selected_capability_providers")
+    if isinstance(selected, dict) and selected:
+        lines.append("\n## Selected Capability Providers")
+        for capability_id, provider_id in sorted(selected.items()):
+            lines.append(f"- {capability_id}: {provider_id}")
+
+    lines.append("\nTip: use /pack enable <name> or /pack disable <name> for bundled/runtime packs.")
     return "\n".join(lines)
 
 
@@ -4214,7 +4766,7 @@ async def _handle_pack_command(stripped: str, message: str) -> str:
         return _handle_simple_command(
             message,
             "pack",
-            "Usage: /pack list | /pack install <spec> | /pack uninstall <package>",
+            "Usage: /pack list | /pack enable <pack> | /pack disable <pack> | /pack install <spec> | /pack uninstall <package>",
         )
 
     verb, _, remainder = command_text.partition(" ")
@@ -4228,6 +4780,22 @@ async def _handle_pack_command(stripped: str, message: str) -> str:
 
     if action == "list":
         return _handle_simple_command(message, "pack", _render_pack_list())
+
+    if action == "enable":
+        if not arg:
+            return _handle_simple_command(message, "pack", "Usage: /pack enable <pack>")
+        ok, details = _set_pack_enabled(arg, enabled=True)
+        if not ok:
+            return _handle_simple_command(message, "pack", details)
+        return _handle_simple_command(message, "pack", details)
+
+    if action == "disable":
+        if not arg:
+            return _handle_simple_command(message, "pack", "Usage: /pack disable <pack>")
+        ok, details = _set_pack_enabled(arg, enabled=False)
+        if not ok:
+            return _handle_simple_command(message, "pack", details)
+        return _handle_simple_command(message, "pack", details)
 
     if action == "install":
         ok, details = await _run_pack_install(arg)
@@ -4254,7 +4822,7 @@ async def _handle_pack_command(stripped: str, message: str) -> str:
     return _handle_simple_command(
         message,
         "pack",
-        "Unknown /pack action. Supported: list, install, uninstall.",
+        "Unknown /pack action. Supported: list, enable, disable, install, uninstall.",
     )
 
 

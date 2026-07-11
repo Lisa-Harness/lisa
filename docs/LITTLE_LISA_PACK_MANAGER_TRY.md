@@ -4,12 +4,14 @@ This guide lets you exercise the new runtime pack capabilities in a local dev lo
 
 ## What You Can Try
 
-- Runtime pack list/install/uninstall commands.
+- Runtime pack list/enable/disable/install/uninstall commands.
+- Activation gating: bundled packs are off until `/pack enable`.
 - Package trust policy enforcement (prefix + Git host allowlist).
 - Git-based pack refs (not just package-index refs).
 - Auto-restart after pack lifecycle changes.
 - Optional resume message after restart.
 - Pack-contributed MCP server coexistence and host exclusions.
+- Capability-provider ownership selection (for memory backends).
 
 ## Prerequisites
 
@@ -27,7 +29,7 @@ Use your local venv if needed:
 
 ## 1) Basic Pack Commands
 
-List runtime-installed packs metadata:
+List pack activation state (always-on, bundled, runtime-installed):
 
 ```powershell
 uv run little-lisa packs list --no-log
@@ -37,6 +39,18 @@ From chat/REPL, same operation:
 
 ```powershell
 uv run little-lisa once "/pack list" --no-log
+```
+
+Enable a bundled pack explicitly:
+
+```powershell
+uv run little-lisa once "/pack enable cloudflare" --no-log
+```
+
+Disable it again:
+
+```powershell
+uv run little-lisa once "/pack disable cloudflare" --no-log
 ```
 
 ## 2) Trust Policy Checks
@@ -117,25 +131,38 @@ Requirements for local folder install:
 - `pyproject.toml` must include `project.name`.
 - `project.name` must match allowed prefixes policy (default `lisa-pack-`).
 
-## 4c) Default Mode Replacement By Install (No Core Edits)
+## 4c) Mode/Tool Provider Preferences (No Core Edits)
 
-Little Lisa host policy can prefer a pack-provided `mode_id: default` when that
-pack is installed. This is configured in [hosts/little_lisa/mcp_servers.yaml](hosts/little_lisa/mcp_servers.yaml)
-under:
+Little Lisa host policy can prefer specific providers for duplicate mode/operation/tool IDs. This is configured in [hosts/little_lisa/mcp_servers.yaml](hosts/little_lisa/mcp_servers.yaml)
+under `pack_policy.preferred_providers`:
 
 ```yaml
 pack_policy:
-  preferred_mode_providers:
-    default:
-      - lisa-pack-learning
-      - learning
+  preferred_providers:
+    modes:
+      default:
+        - lisa-pack-learning
+        - lisa-pack-core
+    tools:
+      web_search:
+        - lisa-pack-brave-search
+        - lisa-pack-search
 ```
 
 Result:
 
 - If `lisa-pack-learning` is installed/enabled, its `default` mode is selected.
-- If it is not installed, core `default` remains active.
+- If it is not active, core `default` remains active.
+- If `lisa-pack-brave-search` is active, it replaces the bundled `web_search` stub.
 - End users do not need to edit core pack files to transition.
+
+## 4d) Capability Provider Selection (Memory)
+
+Capability ownership is selected per capability (for example, `memory`) via
+`pack_policy.preferred_capability_providers` and lock-state overrides.
+
+Installing an external memory provider pack (for example `lisa-pack-mem0`)
+auto-selects it when no explicit capability provider has been chosen yet.
 
 ## 5) Resume a Request After Restart
 
@@ -160,6 +187,12 @@ Runtime metadata is persisted at:
 ```plaintext
 <data-dir>\installed-packs.json
 ```
+
+The lock now persists:
+
+- Pack provenance (`source_kind`, `source_ref`)
+- Activation state (`enabled`)
+- Explicit capability provider selections (`selected_capability_providers`)
 
 Default data-dir:
 

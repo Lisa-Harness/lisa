@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "lisa-kernel",
     "lisa-sdk",
+    "lisa-pack-learning",
     "lisa-pack-cloudflare",
     "lisa-pack-github",
     "lisa-pack-stripe",
@@ -36,21 +37,27 @@ members = [
     "kernel",
     "sdk",
     "sdk_packs/core",
+    "sdk_packs/learning",
     "sdk_packs/search",
     "hosts/little_lisa",
     "lisa_pack_cloudflare",
     "lisa_pack_github",
     "lisa_pack_stripe",
+    "lisa_pack_mem0",
+    "lisa_pack_brave_search",
 ]
 
 [tool.uv.sources]
 lisa-kernel = { workspace = true }
 lisa-sdk = { workspace = true }
+lisa-pack-learning = { workspace = true }
 lisa-pack-cloudflare = { workspace = true }
 lisa-pack-github = { workspace = true }
 lisa-pack-stripe = { workspace = true }
 lisa-pack-core = { workspace = true }
 lisa-pack-search = { workspace = true }
+lisa-pack-mem0 = { workspace = true }
+lisa-pack-brave-search = { workspace = true }
 little-lisa = { workspace = true }
 
 [tool.pytest.ini_options]
