@@ -308,6 +308,56 @@ async def test_run_turn_prefers_explicit_model_override() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_turn_injects_workflow_stage_instruction() -> None:
+    """Workflow modes inject the current stage's instruction_body into the
+    system prompt via the assemble_system_prompt hook's stage_instruction arg.
+
+    Without this, loaded stage instructions (inquire.md, reason.md, etc.)
+    are never injected and the FSM is dead at runtime.
+    """
+    from kernel.ipsar_fsm import get_workflow_catalog
+
+    captured_stage_instructions: list[str | None] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        captured_messages = kwargs["messages"]
+        return _StubCompletion(content="Done.")
+
+    def assemble_system(mode_instruction: str, stage_instruction: str | None) -> str:
+        captured_stage_instructions.append(stage_instruction)
+        parts = [mode_instruction]
+        if stage_instruction:
+            parts.append(stage_instruction)
+        return "\n\n".join(parts)
+
+    def workflow_session() -> Any:
+        from kernel.models import WorkflowSessionState
+
+        mode = get_workflow_catalog().get("thinkabout")
+        if mode is None:
+            return None
+        return WorkflowSessionState(
+            user_id="test-user",
+            user_slug="test",
+            mode_id="thinkabout",
+            stage_id="inquire",
+            entered_at="2026-01-01T00:00:00Z",
+        )
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.assemble_system_prompt = assemble_system
+    hooks.workflow_session = workflow_session
+
+    result = await run_turn(mode_id="thinkabout", query="analyze this", hooks=hooks)
+
+    assert result.response_text == "Done."
+    assert len(captured_stage_instructions) >= 1
+    stage_instruction = captured_stage_instructions[0]
+    assert stage_instruction is not None
+    assert "Inquire" in stage_instruction or "inquire" in stage_instruction.lower()
+
+
+@pytest.mark.asyncio
 async def test_run_turn_mcp_tool_not_registered() -> None:
     """When a tool name is not on any MCP server, the pool returns an error
     and the turn continues."""

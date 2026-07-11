@@ -1222,20 +1222,6 @@ class WorkflowModeConfig(BaseModel):
     # ``skip`` logs the failure and continues to the next binding, mirroring the
     # failure isolation pre/post-turn hooks already enjoy.
     entry_failure_policy: Literal["abort", "skip"] = "abort"
-    # BAIT FOR EXPANSION — not yet wired. Optional gates between ordered entry
-    # bindings. A gate is a condition that must hold before the next binding runs.
-    # When this field is populated, ``run_mode_entry_operations`` will evaluate
-    # each gate against the accumulated result and stop the pipeline on failure.
-    # Left empty today so existing action modes run as an ungated ordered list,
-    # exactly as before. The slot exists so the pipeline concept (gated ordered
-    # steps with inter-step data passing) can be lit up without a model change.
-    #
-    # Planned shape (do NOT populate yet):
-    #   entry_gates:
-    #     - after: cloudflare_status
-    #       condition: "len(output_json.get('zones', [])) > 0"
-    #       on_fail: stop  # or skip_rest
-    entry_gates: list[dict[str, Any]] = Field(default_factory=list)
     # When True, the mode's allowed_tool_ids and allowed_operation_ids are
     # authoritative: empty means no tools/operations are advertised to the
     # LLM. When False (default), empty means all pass through.

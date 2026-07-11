@@ -147,7 +147,6 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         allowed_tool_ids=data.get("allowed_tool_ids", []),
         tools_authoritative=data.get("tools_authoritative", False),
         entry_failure_policy=data.get("entry_failure_policy", "abort"),
-        entry_gates=data.get("entry_gates", []),
         workshop_panels=workshop_panels,
         workshop_budget=workshop_budget,
         workshop_planner_prompt_file=data.get("workshop_planner_prompt_file", ""),

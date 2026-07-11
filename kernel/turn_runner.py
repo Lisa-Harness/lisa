@@ -331,6 +331,16 @@ class TurnHooks:
     ``OperationExecutionContext`` so workshop operations can create child
     sessions. Default: None."""
 
+    workflow_session: Any | None = None
+    """Callable returning the current ``WorkflowSessionState`` for the active
+    user/mode, or ``None`` when no workflow session is active. When set, the
+    turn loop reads the session's ``stage_id`` and injects the current
+    stage's ``instruction_body`` into the system prompt alongside the mode
+    instruction. This is the seam that makes workflow FSM stages live at
+    runtime — without it, the loaded stage instructions are never injected
+    and the mode runs as if it were a flat chat mode. Default: None (stage
+    instructions are omitted; chat and action modes are unaffected)."""
+
     # ── Host state provider ───────────────────────────────────────────────
     state_provider: Any | None = None
     """Callable returning a ``UnifiedState`` for the current host session.
@@ -791,9 +801,26 @@ async def _run_turn_inner(
     if pre_turn_outcome is not None:
         hooks.last_slice_finished_at = time.monotonic()
 
-    # Assemble prompts
+    # Assemble prompts — workflow modes inject the current stage's
+    # instruction_body alongside the mode-level intro. Without this, the
+    # loaded stage instructions (inquire.md, reason.md, etc.) are never
+    # injected and the FSM is dead at runtime. The host wires
+    # ``hooks.workflow_session`` to return the current session; when absent
+    # or not a workflow mode, the loop falls back to mode-level only (the
+    # historical behavior for chat and action modes).
     mode_instruction = get_mode_system_intro(mode_id)
-    system_prompt = assemble_system(mode_instruction, None)
+    stage_instruction: str | None = None
+    if (
+        mode_config is not None
+        and mode_config.mode_kind == "workflow"
+        and hooks.workflow_session is not None
+    ):
+        session = hooks.workflow_session()
+        if session is not None and session.stage_id in mode_config.stages:
+            stage_instruction = (
+                mode_config.stages[session.stage_id].instruction_body or None
+            )
+    system_prompt = assemble_system(mode_instruction, stage_instruction)
     user_context = assemble_user(mode_id, query, pre_briefing)
     memory_snippet = ""
 
