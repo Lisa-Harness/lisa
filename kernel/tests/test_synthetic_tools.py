@@ -465,3 +465,92 @@ async def test_mcp_alias_tool_target_server_id_routes_scoped(
     assert result.output_text == "cloud:added"
     assert routed == ["mem0"]
     await pool.aclose()
+
+
+# ── tool_policy vs internal dispatch ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_denied_tool_hidden_from_catalog_but_dispatchable_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tool denied by tool_policy must be hidden from list_tools() (the
+    model-facing catalog) but remain dispatchable via server-scoped alias
+    forwarding. This is the memory.list → list_memories path: the model
+    calls the generic alias, the alias forwards to the denied native tool
+    via _call_tool_scoped, and the per-server index must still have it.
+
+    Regression for commit 68145c7 which denied list_memories and broke
+    recall because filter_tools ran inside _refresh_tool_index and stripped
+    the tool from _tool_index_by_server too.
+    """
+    from kernel.mcp_launch.policy import ToolPolicy
+
+    _patch_connect(monkeypatch)
+
+    class _FakeResult:
+        def __init__(self, tools: list[Any] | None = None, text: str = "") -> None:
+            self.tools = tools or []
+            self.content = [type("C", (), {"text": text})()] if text else []
+            self.is_error = False
+
+    class _FakeTool:
+        def __init__(self, name: str, description: str, schema: dict[str, Any]) -> None:
+            self.name = name
+            self.description = description
+            self.inputSchema = schema
+
+    class _FakeSession:
+        async def list_tools(self) -> _FakeResult:
+            return _FakeResult(tools=[
+                _FakeTool("add_memory", "add", {"type": "object"}),
+                _FakeTool("search_memory", "search", {"type": "object"}),
+                _FakeTool("list_memories", "list", {"type": "object"}),
+                _FakeTool("get_surface_context", "surface", {"type": "object"}),
+            ])
+
+        async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> _FakeResult:
+            return _FakeResult(text=f"server:{tool_id}")
+
+    config = MCPClientConfig(
+        server_id="lisa-memory",
+        command="python",
+        args=["-m", "nonexistent"],
+        tool_policy=ToolPolicy(denied_tools=["get_surface_context", "list_memories"]),
+    )
+    pool = MCPToolPool([config])
+    await pool.start()
+    pool._sessions["lisa-memory"] = _FakeSession()  # type: ignore[assignment]
+    await pool._refresh_tool_index()
+
+    # 1. Denied tools are NOT in the model-facing catalog.
+    catalog_names = {t.name for t in await pool.list_tools()}
+    assert "lisa-memory.list_memories" not in catalog_names
+    assert "lisa-memory.get_surface_context" not in catalog_names
+    assert "lisa-memory.add_memory" in catalog_names
+    assert "lisa-memory.search_memory" in catalog_names
+
+    # 2. Denied tool IS still in the per-server dispatch index.
+    server_idx = pool._tool_index_by_server.get("lisa-memory", {})
+    assert "list_memories" in server_idx
+    assert "get_surface_context" in server_idx
+
+    # 3. Scoped dispatch to the denied tool works (alias forwarding path).
+    result = await pool.call_tool("list_memories", {}, server_id="lisa-memory")
+    assert result.is_error is False
+    assert result.output_text == "server:list_memories"
+
+    # 4. An alias forwarding to the denied tool works end-to-end.
+    alias = mcp_alias_tool(
+        name="memory.list",
+        description="generic list alias",
+        pool=pool,
+        target_tool="list_memories",
+        target_server_id="lisa-memory",
+    )
+    pool.add_synthetic_tools([alias])
+    result = await pool.call_tool("memory.list", {"user_slug": "adam"})
+    assert result.is_error is False
+    assert result.output_text == "server:list_memories"
+
+    await pool.aclose()

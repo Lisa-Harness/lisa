@@ -691,14 +691,30 @@ class MCPToolPool:
                 )
                 for tool in result.tools
             ]
+            # Per-server index keeps EVERY discovered tool, collisions or
+            # not.  Server-scoped dispatch (_call_tool_scoped) resolves
+            # alias targets through this index, so it must not be filtered
+            # by tool_policy — denying a tool from the model catalog must
+            # not break internal alias forwarding (e.g. memory.list →
+            # list_memories when list_memories is denied to the model).
+            server_index: dict[str, MCPToolSpec] = {}
+            for spec in server_tools:
+                server_index[spec.name] = spec
+            self._tool_index_by_server[config.server_id] = server_index
+
+            # Model-facing catalog: apply tool_policy (hide tools the model
+            # should not call directly) then proxy_policy (strip ambient
+            # fields from schemas so the model never sees user_id /
+            # agent_id / app_id as settable parameters).
+            catalog_tools = server_tools
             if config.tool_policy is not None:
-                server_tools = filter_tools(server_tools, config.tool_policy)
+                catalog_tools = filter_tools(catalog_tools, config.tool_policy)
             # Proxy policy: strip ambient fields from the tool schema so the
             # model never sees parameters it cannot control (user_id,
             # agent_id, app_id, …). The proxy injects them at dispatch time.
             proxy_policy = getattr(config, "proxy_policy", None)
             if proxy_policy is not None and getattr(proxy_policy, "ambient", None):
-                server_tools = [
+                catalog_tools = [
                     MCPToolSpec(
                         server_id=spec.server_id,
                         name=spec.name,
@@ -707,14 +723,9 @@ class MCPToolPool:
                             spec.input_schema, proxy_policy
                         ),
                     )
-                    for spec in server_tools
+                    for spec in catalog_tools
                 ]
-            server_index: dict[str, MCPToolSpec] = {}
-            for spec in server_tools:
-                # Per-server index keeps every tool keyed by bare name,
-                # collisions or not.  Used by server-scoped dispatch
-                # (_call_tool_scoped) which receives the bare tool name.
-                server_index[spec.name] = spec
+            for spec in catalog_tools:
                 # Merged index is keyed by the namespaced name
                 # (``server_id.tool_name``).  This eliminates cross-server
                 # collisions by construction — two servers exposing the
@@ -742,7 +753,6 @@ class MCPToolPool:
                     continue
                 self._tool_index[namespaced] = (config.server_id, namespaced_spec)
                 self._tools.append(namespaced_spec)
-            self._tool_index_by_server[config.server_id] = server_index
 
         # Re-seed host-owned synthetic tools after the MCP index is rebuilt.
         # Synthetic tools are not rediscovered from servers — they are owned
