@@ -427,7 +427,7 @@ async def test_plan_frontdoor_route_retries_when_structured_output_empty(
     assert calls[1].get("response_format") is None
     assert calls[0].get("max_tokens") == 512
     assert calls[1].get("max_tokens") == 512
-    assert decision.selected_mode_id == "default"
+    assert decision.selected_mode_id == "discuss"
     assert decision.normalized_query == "lets discuss the latest suggestions"
     debug_payload = little_lisa._last_frontdoor_debug()
     assert isinstance(debug_payload, dict)

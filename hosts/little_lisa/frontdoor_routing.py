@@ -16,6 +16,7 @@ from typing import Any
 from kernel import frontdoor as shared_frontdoor
 from kernel.models import RouteDecision as FrontDoorRouteDecision
 from kernel.models import SurfaceContext
+from kernel.operations.structured_output import parse_structured_payload
 from pydantic import ValidationError
 
 try:
@@ -227,7 +228,7 @@ async def _retry_without_response_format(
     frontdoor_debug["structured_output_retry_used"] = True
     frontdoor_debug["structured_output_retry_succeeded"] = True
     retry_text = _extract_json_object(retry_completion.content)
-    parsed = response_format.model_validate_json(retry_text)
+    parsed = parse_structured_payload(response_format, retry_text)
     frontdoor_debug["raw_completion_preview"] = preview_fn(retry_completion.content, 320)
     return StubCompletion(
         content=parsed.model_dump_json(),
@@ -301,7 +302,9 @@ async def _complete_frontdoor_planner(
         return completion
 
     try:
-        parsed = response_format.model_validate_json(_extract_json_object(completion.content))
+        parsed = parse_structured_payload(
+            response_format, _extract_json_object(completion.content)
+        )
     except ValidationError as exc:
         logger.warning(
             "frontdoor planner output validation failed: %s: %s",

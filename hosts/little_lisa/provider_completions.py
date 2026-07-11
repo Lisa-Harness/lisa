@@ -17,6 +17,8 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
+from kernel.operations.structured_output import parse_structured_payload
+
 
 def _extract_anthropic_error_detail(response: httpx.Response) -> str:
     """Extract a concise detail string from an Anthropic error response."""
@@ -377,7 +379,7 @@ def _normalize_structured_content(
     ):
         return content
     try:
-        parsed = response_format.model_validate_json(_extract_json_object(content))
+        parsed = parse_structured_payload(response_format, _extract_json_object(content))
     except ValidationError:
         return content
     normalized = parsed.model_dump_json()

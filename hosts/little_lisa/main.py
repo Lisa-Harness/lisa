@@ -172,6 +172,7 @@ from kernel.operations.registry import (  # noqa: E402
     get_operation_catalog,
     register_operation_mcp,
 )
+from kernel.operations.structured_output import parse_structured_payload  # noqa: E402
 from kernel.slice import SliceOutcome  # noqa: E402
 from kernel.tools.registry import register_tool_mcp  # noqa: E402
 from kernel.token_usage import (  # noqa: E402
@@ -1785,7 +1786,7 @@ async def _retry_validation_failure(
     frontdoor_debug["structured_output_retry_used"] = True
     frontdoor_debug["structured_output_retry_succeeded"] = True
     try:
-        retry_decision = FrontDoorRouteDecision.model_validate_json(retry_text)
+        retry_decision = parse_structured_payload(FrontDoorRouteDecision, retry_text)
     except ValidationError as retry_exc:
         frontdoor_debug["planner_retry_validation_error"] = (
             f"{type(retry_exc).__name__}: {retry_exc}"
