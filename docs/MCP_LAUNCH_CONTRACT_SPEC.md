@@ -626,14 +626,22 @@ Tools:
 | --- | --- | --- |
 | `read_authored_text` | `relative_path: str` | Text content or empty string |
 | `list_content_roots` | (none) | JSON array of root paths |
+| `list_modes` | (none) | JSON object mapping `mode_id` to mode config |
+| `list_operations` | (none) | JSON object mapping `operation_id` to operation def |
+| `list_tools` | (none) | JSON object mapping `tool_id` to tool def |
 | `invalidate_cache` | (none) | `{"ok": true}` |
+| `invalidate_catalog` | (none) | `{"ok": true}` — clears cached mode/operation/tool catalog JSON |
 
 Behavior:
 
 - Uses `kernel.content_roots.discover_installed_content_roots()` +
   `discover_configured_content_roots()` to find content roots at startup.
 - `read_authored_text` searches all discovered roots, returns first match
-  or empty string (same logic as `DiskContentRegistry`).
+  or empty string. Rejects paths containing `..` segments or absolute paths
+  to prevent traversal outside content roots.
+- `read_authored_text` and `list_modes`/`list_operations`/`list_tools` are
+  cached by a content-root fingerprint; `invalidate_cache` and
+  `invalidate_catalog` clear the respective caches.
 - `--readonly` is not applicable (content server is read-only by design).
 
 Env vars (behavioral):
@@ -816,8 +824,14 @@ All existing first-party servers must adopt the shared CLI contract.
 
 - Add `argparse` with `--data-dir` (required), `--transport`, `--log-level`, `--readonly`.
 - Remove `LISA_MCP_DB_PATH` / `LISA_MEMORY_DB_PATH` env-var reads.
-- Derive `memory.db` path from `--data-dir`.
 - `main()` calls `build_parser("lisa-context", supports_readonly=True)`.
+- `--readonly` is accepted for CLI-contract consistency but is inert: the
+  broker is stateless and read-only by design.
+- `--data-dir` is accepted for contract consistency but unused (the broker
+  does not persist anything today).
+- `broker_context` accepts a typed `BrokerContextRequest` (Pydantic model)
+  with embedded `state` for `UnifiedState` construction. Malformed `state`
+  raises `ValidationError` instead of silently degrading to an empty state.
 
 ### `lisa-operations`
 

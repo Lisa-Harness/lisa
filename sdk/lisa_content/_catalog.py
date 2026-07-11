@@ -25,10 +25,26 @@ __all__ = [
     "build_mode_catalog_json",
     "build_operation_catalog_json",
     "build_tool_catalog_json",
+    "invalidate_catalog_cache",
     "resolve_mode_roots",
     "resolve_operation_roots",
     "resolve_tool_roots",
 ]
+
+# ── Catalog cache ───────────────────────────────────────────────────────────
+
+_catalog_cache: dict[str, str] = {}
+
+
+def _roots_fingerprint(roots: list[Path]) -> str:
+    """Return a stable string key for a set of catalog roots."""
+    return "\n".join(str(r.resolve()) for r in roots)
+
+
+def invalidate_catalog_cache() -> None:
+    """Clear all cached catalog JSON (modes, operations, tools)."""
+    _catalog_cache.clear()
+
 
 # ── Path helpers ────────────────────────────────────────────────────────────
 
@@ -81,6 +97,10 @@ def build_mode_catalog_json(mode_roots: list[Path]) -> str:
     mode config dict with nested ``stages``. The kernel deserializes this into
     ``WorkflowModeConfig`` objects.
     """
+    cache_key = "modes:" + _roots_fingerprint(mode_roots)
+    cached = _catalog_cache.get(cache_key)
+    if cached is not None:
+        return cached
     merged: dict[str, dict[str, Any]] = {}
     preferences = _load_content_provider_preferences()
     mode_preferences = preferences.get("modes", {})
@@ -104,7 +124,9 @@ def build_mode_catalog_json(mode_roots: list[Path]) -> str:
                         provider_field="mode_provider_id",
                         preferred_providers=mode_preferences.get(mode_id, []),
                     )
-    return json.dumps(merged)
+    result = json.dumps(merged)
+    _catalog_cache[cache_key] = result
+    return result
 
 
 def _load_one_mode(
@@ -444,6 +466,10 @@ def build_operation_catalog_json(operation_roots: list[Path]) -> str:
     ``OperationDefinition`` objects, importing the implementation module
     locally (using the ``module_path`` field).
     """
+    cache_key = "operations:" + _roots_fingerprint(operation_roots)
+    cached = _catalog_cache.get(cache_key)
+    if cached is not None:
+        return cached
     merged: dict[str, dict[str, Any]] = {}
     preferences = _load_content_provider_preferences()
     operation_preferences = preferences.get("operations", {})
@@ -465,7 +491,9 @@ def build_operation_catalog_json(operation_roots: list[Path]) -> str:
                     provider_field="operation_provider_id",
                     preferred_providers=operation_preferences.get(op_id, []),
                 )
-    return json.dumps(merged)
+    result = json.dumps(merged)
+    _catalog_cache[cache_key] = result
+    return result
 
 
 def _load_operations_from_root(
@@ -653,6 +681,10 @@ def build_tool_catalog_json(tool_roots: list[Path]) -> str:
     Tools are runtime-only (``.py`` + ``.tool.yml`` pairs). Declarative tools
     are not supported in this iteration.
     """
+    cache_key = "tools:" + _roots_fingerprint(tool_roots)
+    cached = _catalog_cache.get(cache_key)
+    if cached is not None:
+        return cached
     merged: dict[str, dict[str, Any]] = {}
     preferences = _load_content_provider_preferences()
     tool_preferences = preferences.get("tools", {})
@@ -674,7 +706,9 @@ def build_tool_catalog_json(tool_roots: list[Path]) -> str:
                     provider_field="tool_provider_id",
                     preferred_providers=tool_preferences.get(tool_id, []),
                 )
-    return json.dumps(merged)
+    result = json.dumps(merged)
+    _catalog_cache[cache_key] = result
+    return result
 
 
 def _load_tools_from_root(

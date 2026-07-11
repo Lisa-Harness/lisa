@@ -133,6 +133,51 @@ async def test_context_lists_broker_tool() -> None:
     assert "add_memory" not in names
 
 
+@pytest.mark.asyncio
+async def test_context_broker_context_returns_packet() -> None:
+    """broker_context with a valid typed payload returns a ContextBrokerResponse."""
+    from sdk.lisa_context.server import mcp
+
+    payload = {
+        "query": "what is the current status",
+        "mode_id": "default",
+        "state": {"compiled_at": "2026-07-11T00:00:00+00:00", "context_markdown": ""},
+    }
+    result = await mcp.call_tool("broker_context", payload)
+    data = json.loads(_tool_text(result))
+    assert "packet" in data
+    assert "packet_markdown" in data
+    assert data["packet"]["query"] == "what is the current status"
+
+
+@pytest.mark.asyncio
+async def test_context_broker_context_empty_state_ok() -> None:
+    """broker_context with no state field uses an empty UnifiedState."""
+    from sdk.lisa_context.server import mcp
+
+    payload = {"query": "hello"}
+    result = await mcp.call_tool("broker_context", payload)
+    data = json.loads(_tool_text(result))
+    assert "packet" in data
+    assert data["packet"]["query"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_context_broker_context_malformed_state_raises() -> None:
+    """broker_context with malformed state should fail, not silently degrade."""
+    from sdk.lisa_context.server import mcp
+
+    payload = {
+        "query": "hello",
+        "state": {"compiled_at": 12345, "context_markdown": "", "bogus_field": object()},
+    }
+    # FastMCP wraps tool errors; the call should raise rather than return
+    # an empty-state response.
+    with pytest.raises(Exception):
+        await mcp.call_tool("broker_context", payload)
+
+
+
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 

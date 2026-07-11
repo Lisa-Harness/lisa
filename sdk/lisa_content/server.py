@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import logging
-from functools import lru_cache
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -36,6 +35,7 @@ from sdk.lisa_content._catalog import (
     build_mode_catalog_json,
     build_operation_catalog_json,
     build_tool_catalog_json,
+    invalidate_catalog_cache,
     resolve_mode_roots,
     resolve_operation_roots,
     resolve_tool_roots,
@@ -48,6 +48,7 @@ __all__ = ["init_content", "main", "mcp"]
 mcp = FastMCP("Lisa Content Server")
 
 _extra_roots: list[Path] = []
+_read_cache: dict[tuple[str, str], str] = {}
 
 
 def init_content(extra_roots: list[Path] | None = None) -> None:
@@ -74,20 +75,47 @@ def _all_roots() -> list[Path]:
     return merged
 
 
+def _roots_fingerprint() -> str:
+    """Return a stable string key for the current discovered root set."""
+    return "\n".join(str(r.resolve()) for r in _all_roots())
+
+
+def _is_safe_relative_path(normalized: str) -> bool:
+    """Reject paths that could escape a content root.
+
+    Blocks absolute paths and any path containing a ``..`` segment so a
+    crafted ``relative_path`` cannot read files outside discovered roots.
+    """
+    if not normalized:
+        return False
+    if Path(normalized).is_absolute():
+        return False
+    if ".." in Path(normalized).parts:
+        return False
+    return True
+
+
 @mcp.tool()
-@lru_cache(maxsize=512)
 def read_authored_text(relative_path: str) -> str:
     """Return the first matching authored text asset, or empty string."""
     normalized = relative_path.strip().strip("/\\")
-    if not normalized:
+    if not _is_safe_relative_path(normalized):
         return ""
+    fp = _roots_fingerprint()
+    cache_key = (fp, normalized)
+    cached = _read_cache.get(cache_key)
+    if cached is not None:
+        return cached
     for root in _all_roots():
         candidate = root / normalized
         if candidate.is_file():
             try:
-                return candidate.read_text(encoding="utf-8")
+                content = candidate.read_text(encoding="utf-8")
+                _read_cache[cache_key] = content
+                return content
             except OSError:
                 continue
+    _read_cache[cache_key] = ""
     return ""
 
 
@@ -141,16 +169,14 @@ async def list_tools() -> str:
 @mcp.tool()
 async def invalidate_cache() -> str:
     """Clear the file-read cache after content roots change."""
-    read_authored_text.cache_clear()  # type: ignore[attr-defined]
+    _read_cache.clear()
     return json.dumps({"ok": True})
 
 
 @mcp.tool()
 async def invalidate_catalog() -> str:
-    """Clear the mode/operation catalog caches after content roots change."""
-    # The catalog builders are not lru_cached (they scan fresh each call),
-    # but this tool exists so the kernel can signal a cache bust intentually.
-    # If caching is added later, this is where the clear goes.
+    """Clear the mode/operation/tool catalog caches after content roots change."""
+    invalidate_catalog_cache()
     return json.dumps({"ok": True})
 
 
