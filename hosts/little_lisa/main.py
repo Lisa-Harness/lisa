@@ -2311,7 +2311,7 @@ def _build_capability_snapshot() -> dict[str, Any]:
     catalog = get_workflow_catalog()
     manifest = _load_manifest()
     operations = get_operation_catalog()
-    tools = _tool_catalog()
+    tools = get_little_lisa_tool_catalog()
     supported_modes = [
         mode_id for mode_id, mode in sorted(catalog.items()) if _mode_support_gap(mode) is None
     ]
