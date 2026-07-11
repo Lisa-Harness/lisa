@@ -189,15 +189,27 @@ async def _gather_introspection(ctx: OperationExecutionContext) -> IntrospectSna
 
 
 def _resolve_tool_catalog(ctx: OperationExecutionContext) -> dict[str, Any]:
-    """Best-effort tool catalog from the execution context."""
-    schemas = ctx.tool_schemas or []
-    catalog: dict[str, Any] = {}
-    for schema in schemas:
-        if isinstance(schema, dict):
-            name = schema.get("function", {}).get("name") or schema.get("name")
-            if name:
-                catalog[str(name)] = schema
-    return catalog
+    """Runtime-wide tool catalog from the in-process registry.
+
+    This deliberately does NOT read ``ctx.tool_schemas``: that field is
+    populated by the operation registry as a per-operation allow-list (the
+    tools the *current* operation is allowed to call). ``self_model`` declares
+    no ``tool_ids`` because it reports on tools rather than calling them, so
+    ``ctx.tool_schemas`` is always empty here — reading it produced a
+    perpetual "0 tools" count. The runtime-wide inventory lives in
+    ``kernel.tools.registry.get_tool_catalog``, the same source the operation
+    registry itself uses internally.
+    """
+    try:
+        from kernel.tools.registry import get_tool_catalog  # noqa: PLC0415
+
+        return dict(get_tool_catalog())
+    except Exception:
+        logger.debug(
+            "get_tool_catalog unavailable; self-model tool count will be 0",
+            exc_info=True,
+        )
+        return {}
 
 
 def _resolve_model_manifest(ctx: OperationExecutionContext) -> ModelManifest | None:

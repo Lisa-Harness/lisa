@@ -128,3 +128,45 @@ async def test_self_model_execute_without_introspect_fn(monkeypatch: pytest.Monk
     assert artifact_json["python_threads"] == 0
     assert artifact_json["process_rss_mb"] == 0.0
     assert artifact_json["mcp_pool_health"] == {}
+
+
+@pytest.mark.asyncio
+async def test_self_model_tool_count_from_registry_not_ctx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """self_model sources the tool count from the registry, not ctx.tool_schemas.
+
+    Regression: self_model declared no ``tool_ids``, so the operation registry
+    left ``ctx.tool_schemas`` empty. Reading only that field produced a
+    perpetual "0 tools" identity summary even when the runtime catalog had
+    tools. The fix reads ``get_tool_catalog()`` directly.
+    """
+    from sdk_packs.core.operations.self_model.self_model import execute
+    from sdk_packs.core.operations.self_model import self_model as self_model_module
+
+    monkeypatch.setattr(self_model_module, "get_workflow_catalog", lambda: {})
+
+    # Simulate a runtime with one tool registered.
+    fake_catalog = {"web_search": object()}
+
+    def _noop_get_tool_catalog() -> dict:
+        return fake_catalog  # type: ignore[return-value]
+
+    # The lazy import in _resolve_tool_catalog targets kernel.tools.registry.
+    import kernel.tools.registry as tool_registry_mod
+
+    monkeypatch.setattr(tool_registry_mod, "get_tool_catalog", _noop_get_tool_catalog)
+
+    ctx = OperationExecutionContext(
+        operation_id="self_model",
+        user_slug="test_user",
+        # Deliberately leave tool_schemas empty — this is the bug condition.
+        tool_schemas=[],
+    )
+
+    result = await execute(ctx)
+    artifact_json = result.output_json
+    assert isinstance(artifact_json, dict)
+    summary: str = artifact_json["identity_summary"]
+    assert "1 tools" in summary
+    assert "0 tools" not in summary
