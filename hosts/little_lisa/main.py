@@ -2283,8 +2283,8 @@ def _build_recent_thread_excerpt(limit: int = 3) -> str:
         response = str(entry.get("response_text") or "").strip()
         if not query and not response:
             continue
-        preview = response[:160] if response else query[:160]
-        lines.append(f"- {query or 'unknown'}: {preview}")
+        body = response or query
+        lines.append(f"- {query or 'unknown'}: {body}")
     return "\n".join(lines)
 
 
