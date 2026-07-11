@@ -409,6 +409,8 @@ class LisaSelfModelArtifact(BaseModel):
     mcp_pool_health: dict[str, "McpServerHealth"] = Field(default_factory=dict)
     token_usage_24h: "TokenUsageSummary | None" = None
     recent_log_errors: list["LogErrorEntry"] = Field(default_factory=list)
+    operational_health: str = "unknown"  # healthy|degraded|critical|unknown
+    operational_health_reasons: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -449,6 +451,9 @@ class LogErrorEntry(BaseModel):
     server: str = ""
 
 
+OperationalHealth = Literal["healthy", "degraded", "critical", "unknown"]
+
+
 class IntrospectSnapshot(BaseModel):
     """Live Python-level introspection snapshot for the running host process."""
 
@@ -463,6 +468,10 @@ class IntrospectSnapshot(BaseModel):
     token_usage_24h: TokenUsageSummary | None = None
     recent_log_errors: list[LogErrorEntry] = Field(default_factory=list)
     logfile_tail_lines: int = 0
+    failed_mcp_servers: int = 0
+    recent_error_count: int = 0
+    operational_health: str = "unknown"  # healthy|degraded|critical|unknown
+    operational_health_reasons: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

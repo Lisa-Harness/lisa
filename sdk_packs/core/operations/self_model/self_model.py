@@ -101,6 +101,8 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         artifact.mcp_pool_health = snapshot.mcp_pool_health
         artifact.token_usage_24h = snapshot.token_usage_24h
         artifact.recent_log_errors = snapshot.recent_log_errors
+        artifact.operational_health = snapshot.operational_health
+        artifact.operational_health_reasons = snapshot.operational_health_reasons
 
     vibe = build_self_model_vibe(artifact)
 
@@ -158,7 +160,11 @@ def build_self_model_vibe(artifact: LisaSelfModelArtifact) -> str:
         ]
         if failed_mcp:
             runtime_line += f", mcp_down={','.join(failed_mcp)}"
+        if artifact.operational_health != "unknown":
+            runtime_line += f", health={artifact.operational_health}"
         vibe += runtime_line
+        if artifact.operational_health_reasons:
+            vibe += f"\nHealth reasons: {', '.join(artifact.operational_health_reasons[:3])}"
     if len(vibe) > _VIBE_MAX_CHARS:
         vibe = vibe[: _VIBE_MAX_CHARS - 3] + "..."
     return vibe

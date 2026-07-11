@@ -31,6 +31,7 @@ from kernel.models import (
     LogErrorEntry,
     McpConnectionStatus,
     McpServerHealth,
+    OperationalHealth,
     TokenUsageSummary,
 )
 
@@ -43,6 +44,12 @@ _TOKEN_USAGE_TAIL_LIMIT = 200
 _LOG_TAIL_LIMIT = 100
 _LOG_ERROR_LEVELS = frozenset({"error", "warning", "critical"})
 _MCP_UNKNOWN = "unknown"
+_TASKS_WARN_THRESHOLD = 120
+_TASKS_CRITICAL_THRESHOLD = 250
+_RSS_WARN_MB = 1500.0
+_RSS_CRITICAL_MB = 3000.0
+_ERROR_WARN_THRESHOLD = 3
+_ERROR_CRITICAL_THRESHOLD = 8
 
 
 async def gather_introspection(
@@ -69,6 +76,14 @@ async def gather_introspection(
     mcp_health = _gather_mcp_pool_health(mcp_pool)
     token_summary = _summarize_token_usage(token_usage_path)
     log_errors, log_tail_lines = _tail_log_errors(log_path)
+    failed_mcp_servers = sum(1 for health in mcp_health.values() if health.status == "failed")
+    recent_error_count = len(log_errors)
+    operational_health, operational_health_reasons = _classify_operational_health(
+        asyncio_tasks=asyncio_tasks,
+        process_rss_mb=rss_mb,
+        failed_mcp_servers=failed_mcp_servers,
+        recent_error_count=recent_error_count,
+    )
 
     return IntrospectSnapshot(
         captured_at=captured_at,
@@ -82,6 +97,10 @@ async def gather_introspection(
         token_usage_24h=token_summary,
         recent_log_errors=log_errors,
         logfile_tail_lines=log_tail_lines,
+        failed_mcp_servers=failed_mcp_servers,
+        recent_error_count=recent_error_count,
+        operational_health=_normalize_operational_health(operational_health),
+        operational_health_reasons=operational_health_reasons,
     )
 
 
@@ -252,3 +271,58 @@ def _tail_log_errors(log_path: Path | None) -> tuple[list[LogErrorEntry], int]:
             )
         )
     return errors, len(tail)
+
+
+def _classify_operational_health(
+    *,
+    asyncio_tasks: int,
+    process_rss_mb: float,
+    failed_mcp_servers: int,
+    recent_error_count: int,
+) -> tuple[OperationalHealth, list[str]]:
+    """Classify runtime health from a bounded set of deterministic telemetry signals."""
+    reasons: list[str] = []
+    status: OperationalHealth = "healthy"
+
+    if failed_mcp_servers >= 2:
+        status = "critical"
+        reasons.append(f"mcp failures: {failed_mcp_servers}")
+    elif failed_mcp_servers > 0:
+        status = "degraded"
+        reasons.append(f"mcp failures: {failed_mcp_servers}")
+
+    if recent_error_count >= _ERROR_CRITICAL_THRESHOLD:
+        status = "critical"
+        reasons.append(f"recent errors: {recent_error_count}")
+    elif recent_error_count >= _ERROR_WARN_THRESHOLD and status != "critical":
+        status = "degraded"
+        reasons.append(f"recent errors: {recent_error_count}")
+
+    if asyncio_tasks >= _TASKS_CRITICAL_THRESHOLD:
+        status = "critical"
+        reasons.append(f"task pressure: {asyncio_tasks}")
+    elif asyncio_tasks >= _TASKS_WARN_THRESHOLD and status != "critical":
+        status = "degraded"
+        reasons.append(f"task pressure: {asyncio_tasks}")
+
+    if process_rss_mb >= _RSS_CRITICAL_MB:
+        status = "critical"
+        reasons.append(f"rss_mb: {process_rss_mb:.1f}")
+    elif process_rss_mb >= _RSS_WARN_MB and status != "critical":
+        status = "degraded"
+        reasons.append(f"rss_mb: {process_rss_mb:.1f}")
+
+    if not reasons and asyncio_tasks == 0 and process_rss_mb == 0.0 and failed_mcp_servers == 0:
+        return "unknown", []
+
+    return status, reasons
+
+
+def _normalize_operational_health(value: str) -> OperationalHealth:
+    if value == "healthy":
+        return "healthy"
+    if value == "degraded":
+        return "degraded"
+    if value == "critical":
+        return "critical"
+    return "unknown"

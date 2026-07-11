@@ -202,6 +202,9 @@ def _base_relevance_for_evidence(evidence: ContextEvidence) -> tuple[float, str]
     if evidence.evidence_type == "alert":
         return 0.85, "baseline: alert"
 
+    if evidence.source == "self_model" or evidence.evidence_type == "self_model_runtime":
+        return 0.8, "baseline: self model"
+
     if evidence.source_type in {"reflection", "strategy_memory"}:
         return 0.75, f"baseline: {evidence.source_type}"
 
@@ -262,6 +265,9 @@ def _classify_evidence_namespace(evidence: ContextEvidence) -> ContextEvidenceNa
     evidence_id = evidence.evidence_id.lower()
     signal_sources = set(discover_installed_signal_collectors())
 
+    if source == "self_model" or evidence_type == "self_model_runtime":
+        return "operational_state"
+
     if evidence_type == "alert" or source in signal_sources or source.endswith("_ops_trends"):
         return "operational_state"
     if source == "dev_state" or evidence_type in {"recent_work", "domain_knowledge"}:
@@ -288,6 +294,9 @@ def _classify_evidence_source_type(evidence: ContextEvidence) -> ContextEvidence
     source = evidence.source.lower()
     evidence_type = evidence.evidence_type.lower()
     signal_sources = set(discover_installed_signal_collectors())
+
+    if source == "self_model" or evidence_type == "self_model_runtime":
+        return "reflection"
 
     if evidence_type == "alert":
         return "operational_alert"
@@ -499,6 +508,32 @@ def _build_analysis_evidence(state: UnifiedState) -> list[ContextEvidence]:
     return evidence
 
 
+def _self_model_salience(body: str) -> float:
+    body_lower = body.lower()
+    if "health=critical" in body_lower or "critical" in body_lower:
+        return 0.95
+    if "health=degraded" in body_lower or "degraded" in body_lower:
+        return 0.8
+    return 0.65
+
+
+def _build_self_model_evidence(state: UnifiedState) -> list[ContextEvidence]:
+    if not state.self_model_vibe:
+        return []
+    return [
+        _new_evidence(
+            evidence_id="self_model:runtime_vibe",
+            source="self_model",
+            evidence_type="self_model_runtime",
+            title="Live self-model runtime state",
+            body=state.self_model_vibe,
+            collected_at=state.compiled_at,
+            salience_score=_self_model_salience(state.self_model_vibe),
+            tags=["self_model", "runtime", "operational"],
+        )
+    ]
+
+
 def _build_domain_knowledge_evidence(state: UnifiedState) -> list[ContextEvidence]:
     evidence: list[ContextEvidence] = []
 
@@ -538,6 +573,7 @@ def build_context_evidence_catalog(state: UnifiedState) -> list[ContextEvidence]
     catalog.extend(extension_evidence)
     catalog.extend(_build_alert_evidence(state))
     catalog.extend(_build_dev_state_evidence(state))
+    catalog.extend(_build_self_model_evidence(state))
     catalog.extend(
         _build_all_collection_evidence(
             state,

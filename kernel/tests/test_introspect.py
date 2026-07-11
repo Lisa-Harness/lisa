@@ -25,6 +25,7 @@ async def test_gather_introspection_returns_valid_snapshot() -> None:
     assert snapshot.asyncio_tasks >= 0
     assert snapshot.python_threads >= 1
     assert snapshot.python_modules > 0
+    assert snapshot.operational_health in {"healthy", "degraded", "critical", "unknown"}
 
 
 @pytest.mark.asyncio
@@ -118,6 +119,32 @@ async def test_gather_introspection_mcp_pool_health() -> None:
     assert snapshot.mcp_pool_health["lisa_memory"].status == "warm"
     assert snapshot.mcp_pool_health["lisa-guard"].status == "failed"
     assert snapshot.mcp_pool_health["mem0"].status == "cold"
+    assert snapshot.failed_mcp_servers == 1
+    assert snapshot.operational_health in {"degraded", "critical"}
+
+
+@pytest.mark.asyncio
+async def test_gather_introspection_operational_health_critical_from_errors() -> None:
+    """Many recent errors should push operational health into critical."""
+    with TemporaryDirectory() as td:
+        log_path = Path(td) / "turns.jsonl"
+        with log_path.open("w", encoding="utf-8") as f:
+            for _ in range(9):
+                f.write(
+                    json.dumps(
+                        {
+                            "level": "error",
+                            "event": "test.error",
+                            "message": "boom",
+                        }
+                    )
+                    + "\n"
+                )
+
+        snapshot = await gather_introspection(log_path=log_path)
+        assert snapshot.recent_error_count == 9
+        assert snapshot.operational_health == "critical"
+        assert any("recent errors" in reason for reason in snapshot.operational_health_reasons)
 
 
 @pytest.mark.asyncio

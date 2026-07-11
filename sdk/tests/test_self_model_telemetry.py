@@ -45,6 +45,8 @@ def test_build_self_model_vibe_includes_runtime_telemetry() -> None:
     artifact.mcp_pool_health = {
         "mem0": McpServerHealth(server_id="mem0", status="failed", warm=True),
     }
+    artifact.operational_health = "degraded"
+    artifact.operational_health_reasons = ["mcp failures: 1"]
 
     vibe = build_self_model_vibe(artifact)
     assert "Runtime:" in vibe
@@ -52,6 +54,8 @@ def test_build_self_model_vibe_includes_runtime_telemetry() -> None:
     assert "tasks=47" in vibe
     assert "rss=187MB" in vibe
     assert "mcp_down=mem0" in vibe
+    assert "health=degraded" in vibe
+    assert "Health reasons: mcp failures: 1" in vibe
 
 
 def test_build_self_model_vibe_without_telemetry() -> None:
@@ -88,6 +92,10 @@ async def test_self_model_execute_with_introspect_fn(monkeypatch: pytest.MonkeyP
             token_usage_24h=None,
             recent_log_errors=[],
             logfile_tail_lines=0,
+            failed_mcp_servers=0,
+            recent_error_count=0,
+            operational_health="healthy",
+            operational_health_reasons=[],
         )
 
     ctx = OperationExecutionContext(
@@ -104,6 +112,7 @@ async def test_self_model_execute_with_introspect_fn(monkeypatch: pytest.MonkeyP
     assert artifact_json["python_threads"] == 3
     assert artifact_json["process_rss_mb"] == pytest.approx(42.5)
     assert "test_server" in artifact_json["mcp_pool_health"]
+    assert artifact_json["operational_health"] == "healthy"
 
 
 @pytest.mark.asyncio

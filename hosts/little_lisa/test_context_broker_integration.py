@@ -61,6 +61,11 @@ def _make_populated_state() -> UnifiedState:
         },
         thinking_vibe="Considering whether to adjust our pricing strategy",
         strategy_vibe="Focus on developer audience segment",
+        self_model_vibe=(
+            "## Self Model\n"
+            "Runtime: uptime=450s, tasks=31, threads=6, rss=512MB, health=degraded\n"
+            "Health reasons: mcp failures: 1"
+        ),
     )
 
 
@@ -86,6 +91,13 @@ class TestEvidenceCatalog:
         thinking_evidence = [e for e in catalog if e.evidence_type == "active_thoughts"]
         assert len(thinking_evidence) == 1
         assert thinking_evidence[0].namespace == "long_term_strategic_memory"
+
+    def test_builds_evidence_from_self_model(self) -> None:
+        state = _make_populated_state()
+        catalog = build_context_evidence_catalog(state)
+        self_model = [e for e in catalog if e.evidence_type == "self_model_runtime"]
+        assert len(self_model) == 1
+        assert self_model[0].namespace == "operational_state"
 
 
 class TestSelectRankedContext:
@@ -132,6 +144,15 @@ class TestSelectRankedContext:
         strategy_pos = markdown.find("long_term_strategic_memory")
         if operational_pos != -1 and strategy_pos != -1:
             assert operational_pos < strategy_pos
+
+    def test_self_model_operational_evidence_survives_low_overlap(self) -> None:
+        state = _make_populated_state()
+        packet = select_ranked_context(
+            state=state,
+            query="totally unrelated lexical query",
+            mode_id="default",
+        )
+        assert any(item.source == "self_model" for item in packet.selected_evidence)
 
 
 class TestContextBudgetAllocator:
