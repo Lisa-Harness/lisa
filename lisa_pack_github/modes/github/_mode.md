@@ -14,14 +14,13 @@ frontdoor_route_hints:
   - Prefer `github` when the user asks about GitHub repository health, CI workflow status, or open PRs.
   - Prefer `github` when the user wants a repository and CI/CD health summary.
 frontdoor_examples:
-  - |-
-      User message: "How is the GitHub repo doing?"
-      Reasoning: The user is explicitly asking about repository and CI health.
-      selected_mode_id: github
-      normalized_query: how is the GitHub repo doing
-      clarification_needed: false
-      clarification_question:
-      confidence_score: 0.95
+  - reasoning: "User explicitly asks about repository and CI health."
+    selected_mode_id: github
+    normalized_query: how is the GitHub repo doing
+    clarification_needed: false
+    clarification_question: ""
+    direct_response: ""
+    confidence_score: 0.95
 entry_operation_ids: [github_status]
 command_pattern: "^(?:/)?github(?:[\\s,:;]+(?P<query>.+))?$"
 description: "GitHub repository, CI workflow, and PR health status summary."

@@ -275,9 +275,12 @@ def build_route_examples_markdown(
     lines: list[str] = ["## Routing Examples"]
     for index, example in enumerate(examples, start=1):
         lines.append(f"Example {index}:")
-        lines.append(example)
+        lines.append("```json")
+        lines.append(example.strip())
+        lines.append("```")
         if index < len(examples):
             lines.append("")
+    lines.append("")
     return "\n".join(lines)
 
 

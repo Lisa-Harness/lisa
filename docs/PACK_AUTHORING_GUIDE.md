@@ -61,12 +61,13 @@ frontdoor_fast_path_patterns:
 frontdoor_route_hints:
   - "Prefer `search` when the user asks for recent external information."
 frontdoor_examples:
-  - |-
-      User message: "Find recent cloud costs"
-      Reasoning: The user asked for fresh external data.
-      selected_mode_id: search
-      normalized_query: cloud costs
-      confidence_score: 0.92
+  - reasoning: "User asked for fresh external data."
+    selected_mode_id: search
+    normalized_query: cloud costs
+    clarification_needed: false
+    clarification_question: ""
+    direct_response: ""
+    confidence_score: 0.92
 ---
 ```
 

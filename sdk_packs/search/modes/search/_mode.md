@@ -11,14 +11,13 @@ frontdoor_route_hints:
   - Prefer `search` when the user is asking for research or information that is not available in the current context.
   - Prefer `search` when the user is explicitly asking for recent information, data, or signals that would not be in the model's training data.
 frontdoor_examples:
-  - |-
-      User message: "Find recent data about cloud costs"
-      Reasoning: The user is asking for fresh information that may not be in model training data.
-      selected_mode_id: search
-      normalized_query: cloud costs
-      clarification_needed: false
-      clarification_question:
-      confidence_score: 0.92
+  - reasoning: "User asks for fresh data unlikely to be in training data."
+    selected_mode_id: search
+    normalized_query: cloud costs
+    clarification_needed: false
+    clarification_question: ""
+    direct_response: ""
+    confidence_score: 0.92
 require_query: true
 entry_operation_ids: [web_search]
 command_pattern: "^(?:/)?search[\\s,:;]+(?P<query>.+)$"

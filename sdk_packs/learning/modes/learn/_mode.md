@@ -14,22 +14,20 @@ frontdoor_route_hints:
   - Route to `learn` when the user asks to take a note, reflect on the conversation, capture a learning, or distill an insight.
   - Prefer `learn` when the user wants to remember something from the current discussion for the long term.
 frontdoor_examples:
-  - |-
-      User message: "Take a note that we decided to use PostgreSQL."
-      Reasoning: The user explicitly asks to take a note of a decision.
-      selected_mode_id: learn
-      normalized_query: Take a note that we decided to use PostgreSQL.
-      clarification_needed: false
-      clarification_question:
-      confidence_score: 0.98
-  - |-
-      User message: "Reflect on what we just discussed and store the key takeaway."
-      Reasoning: The user is requesting reflection and durable insight extraction.
-      selected_mode_id: learn
-      normalized_query: Reflect on what we just discussed and store the key takeaway.
-      clarification_needed: false
-      clarification_question:
-      confidence_score: 0.95
+  - reasoning: "User explicitly asks to take a note of a decision."
+    selected_mode_id: learn
+    normalized_query: Take a note that we decided to use PostgreSQL.
+    clarification_needed: false
+    clarification_question: ""
+    direct_response: ""
+    confidence_score: 0.98
+  - reasoning: "User requests reflection and durable insight extraction."
+    selected_mode_id: learn
+    normalized_query: Reflect on what we just discussed and store the key takeaway.
+    clarification_needed: false
+    clarification_question: ""
+    direct_response: ""
+    confidence_score: 0.95
 command_pattern: '^(?:(?:/)?(?:learn|reflect|note)(?:[\s,:;]+|(?=$))|(?:please\s+)?(?:take\s+a\s+note\s+of|note\s+that)\s+)(?P<query>.*)$'
 ---
 

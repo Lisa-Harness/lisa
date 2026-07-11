@@ -17,14 +17,13 @@ frontdoor_route_hints:
   - Prefer `thinkabout` when the user is asking for focused analysis, tradeoff evaluation, or a reasoned stance on one decision.
   - Prefer `thinkabout` when the user is asking for a focused analysis, pros and cons breakdown, or structured thinking about a specific question or decision.
 frontdoor_examples:
-  - |-
-      User message: "Can we think about this idea to get a better understanding?"
-      Reasoning: The user explicitly asks for focused analysis or a reasoned stance on a decision.
-      selected_mode_id: thinkabout
-      normalized_query: Can we think about this idea to get a better understanding?
-      clarification_needed: false
-      clarification_question:
-      confidence_score: 0.88
+  - reasoning: "User explicitly asks for focused analysis or a reasoned stance."
+    selected_mode_id: thinkabout
+    normalized_query: Can we think about this idea to get a better understanding?
+    clarification_needed: false
+    clarification_question: ""
+    direct_response: ""
+    confidence_score: 0.88
 description: "Exploratory reasoning and forming opinion workflow."
 command_pattern: "^(?:/)?(?:thinkabout)(?:[\\s,:;]+(?P<query>.+))?$"
 ---

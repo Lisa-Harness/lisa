@@ -17,21 +17,24 @@ Rules:
 
 {{FRONTDOOR_ROUTE_HINTS}}
 
-## Output Template
+## Output Format
 
-Fill in this template with your routing verdict. Write reasoning and selected_mode_id
-together — they must agree because they come from the same analysis.
+Return **one JSON object only**. No Markdown fences, no prose, no comments.
+Keep `reasoning` to one sentence (under 40 words) to stay within the token
+budget — its only purpose is to justify the chosen mode.
 
-```plaintext
-Reasoning: <explain which mode the user's message maps to and why>
-selected_mode_id: <one routable mode id from the injected catalog>
-normalized_query: <rewrite only if needed for clarity, otherwise repeat verbatim>
-clarification_needed: <true or false>
-clarification_question: <if clarification_needed is true, your question; otherwise empty>
-direct_response: <your answer only if fulfilling directly; otherwise empty>
-confidence_score: <0.0 to 1.0>
+```json
+{
+  "reasoning": "<one sentence: why this mode owns the turn>",
+  "selected_mode_id": "<one routable mode id from the injected catalog>",
+  "normalized_query": "<rewrite only if needed for clarity, otherwise repeat verbatim>",
+  "clarification_needed": false,
+  "clarification_question": "",
+  "direct_response": "",
+  "confidence_score": 0.0
+}
 ```
 
 {{FRONTDOOR_ROUTE_EXAMPLES}}
 
-Return only the filled-in template as a valid JSON object matching the FrontDoorRouteDecision schema.
+Return only the JSON object. Do not wrap it in code fences or add any commentary.

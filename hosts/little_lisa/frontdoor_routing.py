@@ -16,6 +16,7 @@ from typing import Any
 from kernel import frontdoor as shared_frontdoor
 from kernel.models import RouteDecision as FrontDoorRouteDecision
 from kernel.models import SurfaceContext
+from kernel.operations.structured_output import json_only_retry_messages
 from kernel.operations.structured_output import parse_structured_payload
 from pydantic import ValidationError
 
@@ -202,20 +203,25 @@ async def _retry_without_response_format(
     preview_fn: Callable[[str, int], str],
     attempt: str,
 ) -> StubCompletion:
-    """Retry a front-door completion without structured output format."""
-    retry_messages = list(messages or [])
-    if retry_messages:
-        retry_system = dict(retry_messages[0])
-        retry_system["content"] = (
-            f"{retry_system.get('content') or ''!s}\n\n"
-            f"Return only one valid JSON object matching {response_format.__name__}. "
-            "Do not include Markdown fences, prose, or comments."
-        )
-        retry_messages[0] = retry_system
+    """Retry a front-door completion without structured output format.
+
+    Uses the shared ``json_only_retry_messages`` helper to append a fresh
+    user turn with a JSON-only instruction, which is more reliable with
+    instruction-tuned models than mutating the system message. The retry
+    uses a larger token budget than the original attempt so a truncated
+    first completion (EOF mid-string) has room to finish on retry.
+    """
+    retry_messages = json_only_retry_messages(
+        list(messages or []),
+        response_format,
+    )
+    retry_max_tokens = int(kwargs.get("max_tokens") or 0)
+    if retry_max_tokens:
+        retry_max_tokens = min(retry_max_tokens * 2, 4096)
     retry_completion = await complete_live(
         messages=retry_messages,
         model_def=model_def,
-        max_tokens=int(kwargs.get("max_tokens") or 0),
+        max_tokens=retry_max_tokens,
         temperature=float(kwargs.get("temperature") or 0.0),
         response_format=None,
     )
@@ -417,7 +423,7 @@ async def plan_frontdoor_route(
         complete=_complete_adapter,
         mode_supported=mode_supported,
         build_user_prompt=build_user_prompt,
-        model_bounded_max_tokens=512,
+        model_bounded_max_tokens=1024,
         is_default_executor=is_default_executor,
     )
 

@@ -379,8 +379,8 @@ async def test_plan_frontdoor_route_retries_without_response_format(
     assert len(calls) == expected_call_count
     assert calls[0].get("response_format") == little_lisa.FrontDoorRouteDecision
     assert calls[1].get("response_format") is None
-    assert calls[0].get("max_tokens") == 512
-    assert calls[1].get("max_tokens") == 512
+    assert calls[0].get("max_tokens") == 1024
+    assert calls[1].get("max_tokens") == 2048
     assert decision.selected_mode_id == "search"
     assert decision.normalized_query == "agent popularity"
     debug_payload = little_lisa._last_frontdoor_debug()
@@ -425,8 +425,8 @@ async def test_plan_frontdoor_route_retries_when_structured_output_empty(
     assert len(calls) == expected_call_count
     assert calls[0].get("response_format") == little_lisa.FrontDoorRouteDecision
     assert calls[1].get("response_format") is None
-    assert calls[0].get("max_tokens") == 512
-    assert calls[1].get("max_tokens") == 512
+    assert calls[0].get("max_tokens") == 1024
+    assert calls[1].get("max_tokens") == 2048
     assert decision.selected_mode_id == "discuss"
     assert decision.normalized_query == "lets discuss the latest suggestions"
     debug_payload = little_lisa._last_frontdoor_debug()

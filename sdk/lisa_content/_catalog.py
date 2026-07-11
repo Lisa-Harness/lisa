@@ -207,7 +207,10 @@ def _load_one_mode(
         "frontdoor_priority": int(front_matter.get("frontdoor_priority", 0) or 0),
         "frontdoor_fast_path_patterns": [str(p) for p in (front_matter.get("frontdoor_fast_path_patterns") or [])],
         "frontdoor_route_hints": [str(h) for h in (front_matter.get("frontdoor_route_hints") or [])],
-        "frontdoor_examples": [str(e) for e in (front_matter.get("frontdoor_examples") or [])],
+        "frontdoor_examples": [
+            json.dumps(e) if isinstance(e, dict) else str(e)
+            for e in (front_matter.get("frontdoor_examples") or [])
+        ],
         "command_pattern": str(front_matter.get("command_pattern", "") or ""),
         "require_query": bool(front_matter.get("require_query", False)),
         "entry_operation_ids": [str(o) for o in (front_matter.get("entry_operation_ids") or [])],
