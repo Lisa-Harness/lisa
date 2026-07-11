@@ -5,8 +5,8 @@ mode_models:
 models:
   - model_id: gemma4:cloud
     provider: ollama
-    designations: [default, front-door]
+    designations: [front-door]
 
   - model_id: glm-5.2:cloud
     provider: ollama
-    designations: [deep, reasoning]
+    designations: [default, deep, reasoning]
