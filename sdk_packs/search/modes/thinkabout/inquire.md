@@ -1,9 +1,6 @@
 ---
 stage_id: inquire
-terminal: false
 allowed_next_stages: [reason, exit]
-allow_user_questions: true
-required_connectors: []
 description: "Actively research the user's premise using web_search, clarify the constraints, and pull in context."
 ---
 

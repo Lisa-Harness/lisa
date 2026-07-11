@@ -6,6 +6,12 @@ require_query: true
 frontdoor_routable: true
 frontdoor_priority: 8
 allowed_operation_ids: [web_search]
+tools_authoritative: true
+frontdoor_fast_path_patterns:
+  - "\\bthink\\s+about\\b"
+  - "\\bgo\\s+in\\s+depth\\b"
+  - "\\banalyze\\s+(?:this|tradeoffs?)\\b"
+  - "\\bevaluate\\s+(?:this|tradeoffs?)\\b"
 frontdoor_route_hints:
   - Route to `thinkabout` when the user explicitly asks to think about, go in depth, analyze, evaluate tradeoffs, or reason through one decision.
   - Prefer `thinkabout` when the user is asking for focused analysis, tradeoff evaluation, or a reasoned stance on one decision.

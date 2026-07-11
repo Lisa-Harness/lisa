@@ -12,7 +12,15 @@ frontdoor_fast_path_patterns:
 frontdoor_route_hints:
   - Prefer `cloudflare` when the user asks about Cloudflare zone, worker, edge, WAF, Pages, or D1 status.
   - Prefer `cloudflare` when the user wants a Cloudflare infrastructure health summary.
-require_query: false
+frontdoor_examples:
+  - |-
+      User message: "What's the status of our Cloudflare zone?"
+      Reasoning: The user is explicitly asking about Cloudflare infrastructure health.
+      selected_mode_id: cloudflare
+      normalized_query: status of our Cloudflare zone
+      clarification_needed: false
+      clarification_question:
+      confidence_score: 0.95
 entry_operation_ids: [cloudflare_status]
 command_pattern: "^(?:/)?cloudflare(?:[\\s,:;]+(?P<query>.+))?$"
 description: "Cloudflare zone, worker, and edge infrastructure status summary."

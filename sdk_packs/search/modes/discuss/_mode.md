@@ -2,9 +2,9 @@
 mode_id: discuss
 start_stage_id: none
 mode_kind: chat
-require_query: false
+frontdoor_routable: true
+frontdoor_priority: 5
 pre_turn_operation_ids: [discussion_briefing]
-post_turn_operation_ids: []
 frontdoor_route_hints:
   - Route to `discuss` when the user asks to brainstorm, debate, or explore ideas conversationally without asking for research.
   - Prefer `discuss` when the user is asking for a discussion, brainstorming, or conversational exploration of a topic.

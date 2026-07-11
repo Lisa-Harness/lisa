@@ -3,7 +3,7 @@ mode_id: stripe
 start_stage_id: none
 mode_kind: action
 frontdoor_routable: true
-frontdoor_priority: 3
+frontdoor_priority: 5
 frontdoor_fast_path_patterns:
   - "\\bstripe\\s+(status|health)\\b"
   - "\\bsubscription\\s+(status|count)\\b"
@@ -13,7 +13,15 @@ frontdoor_fast_path_patterns:
 frontdoor_route_hints:
   - Prefer `stripe` when the user asks about Stripe billing, subscriptions, trials, or MRR.
   - Prefer `stripe` when the user wants a billing and subscription health summary.
-require_query: false
+frontdoor_examples:
+  - |-
+      User message: "What's our Stripe billing status?"
+      Reasoning: The user is explicitly asking about billing and subscription health.
+      selected_mode_id: stripe
+      normalized_query: Stripe billing status
+      clarification_needed: false
+      clarification_question:
+      confidence_score: 0.95
 entry_operation_ids: [stripe_status]
 command_pattern: "^(?:/)?stripe(?:[\\s,:;]+(?P<query>.+))?$"
 description: "Stripe subscription, trial, and billing health status summary."

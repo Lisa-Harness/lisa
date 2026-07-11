@@ -1,9 +1,6 @@
 ---
 stage_id: formulate
-terminal: false
 allowed_next_stages: [exit]
-allow_user_questions: true
-required_connectors: []
 description: "Declare a strict opinion based on research to drive towards an actionable outcome."
 ---
 

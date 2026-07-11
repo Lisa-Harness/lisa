@@ -4,7 +4,6 @@ start_stage_id: none
 mode_kind: action
 artifact_type: search_results
 frontdoor_routable: true
-frontdoor_priority: 0
 frontdoor_fast_path_patterns:
   - "^(?:search(?:\\s+the\\s+web)?|web\\s+search|look\\s+up|find\\s+(?:recent|latest|current)|what(?:'s|\\s+is)\\s+(?:the\\s+)?(?:latest|new)|latest\\s+(?:news|updates?)\\s+(?:on|for)?|recent\\s+(?:news|updates?)\\s+(?:on|for)?)\\b"
 frontdoor_route_hints:

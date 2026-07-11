@@ -1,5 +1,5 @@
 operation_id: workshop_run
 description: Plan a mode-authored workshop, curate isolated panel context, run child workflow turns, and synthesize one answer.
-mode_allowlist: [workshop, vibecheck]
+mode_allowlist: [workshop]
 preferred_model_id: gpt-5.4
 timeout_seconds: 90

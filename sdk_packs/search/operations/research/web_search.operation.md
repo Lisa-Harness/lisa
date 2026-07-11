@@ -4,11 +4,8 @@ description: Execute a structured deep-research loop and render synthesized tele
 tool_ids: [web_search]
 mode_allowlist: [search, thinkabout]
 timeout_seconds: 120
-max_calls_per_turn: 3
 completion_max_tokens: 4000
-completion_temperature: 0.2
 response_format_model_path: sdk_packs.search.operations.research.web_search.WebSearchStructuredOutput
-response_output_text_field: output_text
 ---
 
 # Web Search

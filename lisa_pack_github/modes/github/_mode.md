@@ -3,7 +3,7 @@ mode_id: github
 start_stage_id: none
 mode_kind: action
 frontdoor_routable: true
-frontdoor_priority: 3
+frontdoor_priority: 4
 frontdoor_fast_path_patterns:
   - "\\bgithub\\s+(status|health)\\b"
   - "\\bci\\s+(status|health|failing|passing)\\b"
@@ -13,7 +13,15 @@ frontdoor_fast_path_patterns:
 frontdoor_route_hints:
   - Prefer `github` when the user asks about GitHub repository health, CI workflow status, or open PRs.
   - Prefer `github` when the user wants a repository and CI/CD health summary.
-require_query: false
+frontdoor_examples:
+  - |-
+      User message: "How is the GitHub repo doing?"
+      Reasoning: The user is explicitly asking about repository and CI health.
+      selected_mode_id: github
+      normalized_query: how is the GitHub repo doing
+      clarification_needed: false
+      clarification_question:
+      confidence_score: 0.95
 entry_operation_ids: [github_status]
 command_pattern: "^(?:/)?github(?:[\\s,:;]+(?P<query>.+))?$"
 description: "GitHub repository, CI workflow, and PR health status summary."

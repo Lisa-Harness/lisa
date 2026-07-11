@@ -1,11 +1,8 @@
 ---
 operation_id: reflect_self
 description: Form a holistic self-assessment from the deterministic self-model, live introspection telemetry, and recent turn context. Produces a LisaReflectionArtifact vibe for prompt injection.
-tool_ids: []
-mode_allowlist: []
 timeout_seconds: 30
 max_calls_per_turn: 1
-completion_temperature: 0.2
 completion_max_tokens: 1000
 preferred_model_id: default
 response_format_model_path: sdk_packs.core.operations.self_model.reflect_self.ReflectSelfOutput

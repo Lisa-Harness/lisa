@@ -1,9 +1,7 @@
 ---
 stage_id: exit
 terminal: true
-allowed_next_stages: []
 allow_user_questions: false
-required_connectors: []
 description: "Summarize and close the Thinkabout session."
 ---
 

@@ -1,9 +1,6 @@
 ---
 stage_id: reason
-terminal: false
 allowed_next_stages: [formulate, exit]
-allow_user_questions: true
-required_connectors: []
 description: "Discuss findings, identify trade-offs, and align on logical paths."
 ---
 

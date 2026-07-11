@@ -194,6 +194,8 @@ def _load_one_mode(
         "allowed_operation_ids": [str(o) for o in (front_matter.get("allowed_operation_ids") or [])],
         "allowed_tool_ids": [str(t) for t in (front_matter.get("allowed_tool_ids") or [])],
         "tools_authoritative": bool(front_matter.get("tools_authoritative", False)),
+        "entry_failure_policy": str(front_matter.get("entry_failure_policy", "abort") or "abort"),
+        "entry_gates": list(front_matter.get("entry_gates") or []),
         "workshop_panels": workshop_panels,
         "workshop_budget": front_matter.get("workshop_budget") or {},
         "workshop_planner_prompt_file": workshop_planner_prompt_file,

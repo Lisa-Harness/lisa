@@ -1,9 +1,6 @@
 ---
 operation_id: architecture_atlas
 description: Generate a structured architecture atlas from the kernel layer model and codebase layout.
-tool_ids: []
-mode_allowlist: []
-timeout_seconds: 60
 max_calls_per_turn: 1
 completion_temperature: 0
 completion_max_tokens: 2000
