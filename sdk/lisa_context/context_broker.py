@@ -11,6 +11,7 @@ import math
 import re
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from kernel.config import settings
 from kernel.context.context_frames import render_ranked_evidence_namespace_frame
@@ -80,6 +81,39 @@ _NAMESPACE_RENDER_ORDER: tuple[ContextEvidenceNamespace, ...] = (
 )
 _MARKET_SIGNAL_SOURCES = {"market", "clarity"}
 _LONG_TERM_MEMORY_SOURCES = {"strategy", "thinking"}
+
+
+def build_ambient_facts(
+    *,
+    timezone: str = "UTC",
+    host_os: str = "",
+    host_name: str = "",
+    now: datetime | None = None,
+) -> str:
+    """Build compact ambient runtime facts for prompt context injection."""
+
+    now_utc = now.astimezone(UTC) if now is not None else datetime.now(UTC)
+    configured_timezone = (timezone or "UTC").strip() or "UTC"
+    timezone_used = configured_timezone
+    try:
+        target_zone = ZoneInfo(configured_timezone)
+    except ZoneInfoNotFoundError:
+        target_zone = UTC
+        timezone_used = "UTC"
+    local_now = now_utc.astimezone(target_zone)
+
+    lines = [
+        f"- local_date: {local_now.strftime('%Y-%m-%d')}",
+        f"- local_time: {local_now.strftime('%H:%M %Z')}",
+        f"- local_weekday: {local_now.strftime('%A')}",
+        f"- timezone: {timezone_used}",
+        f"- utc_now: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}",
+    ]
+    if host_os.strip():
+        lines.append(f"- host_os: {host_os.strip()}")
+    if host_name.strip():
+        lines.append(f"- host: {host_name.strip()}")
+    return "\n".join(lines)
 
 
 def _normalize_token(token: str) -> str:

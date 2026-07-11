@@ -188,6 +188,7 @@ from kernel.turn_runner import TurnHooks, TurnResult, run_turn  # noqa: E402
 
 from kernel.context.context_budget import ContextBudgetAllocator, ContextLane  # noqa: E402
 from sdk.lisa_context.context_broker import (  # noqa: E402
+    build_ambient_facts,
     render_context_packet_markdown,
     select_ranked_context,
 )
@@ -2000,9 +2001,15 @@ def _assemble_dynamic_user_context(mode_id: str, query: str, pre_turn_briefing: 
         lines.append(f"- mode_description: {mode_description}")
     if command_pattern:
         lines.append(f"- command_pattern: {command_pattern}")
+    ambient_facts = build_ambient_facts(
+        timezone=_runtime_timezone(),
+        host_os=platform.system(),
+        host_name="little_lisa",
+    )
 
     # Build the raw sections dict, tagged by budget lane.
     raw_sections: list[tuple[str, ContextLane, str]] = [
+        ("ambient_facts", "core", "## Ambient Facts\n\n" + ambient_facts),
         ("dynamic_context", "core", "## Dynamic User Context\n\n" + "\n".join(lines)),
     ]
 

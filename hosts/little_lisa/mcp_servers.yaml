@@ -87,6 +87,7 @@ servers:
   - server_id: lisa-context
     runtime_kind: venv_bin
     venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    cli_args: ["--timezone", "${LITTLE_LISA_TIMEZONE}"]
     warm: true
     required: true
 

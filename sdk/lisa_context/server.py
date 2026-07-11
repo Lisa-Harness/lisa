@@ -25,6 +25,7 @@ from kernel.models import (
     UnifiedState,
 )
 from sdk.lisa_context.context_broker import (
+    build_ambient_facts,
     render_context_packet_markdown,
     select_ranked_context,
 )
@@ -34,6 +35,7 @@ __all__ = ["main", "mcp"]
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("Lisa Context Server")
+_SERVER_TIMEZONE = "UTC"
 
 
 def _state_from_request(payload: dict[str, Any]) -> UnifiedState:
@@ -59,7 +61,12 @@ async def broker_context(payload: dict[str, Any]) -> str:
     )
     response = ContextBrokerResponse(
         packet=packet,
-        packet_markdown=render_context_packet_markdown(packet),
+        packet_markdown=(
+            "## Ambient Facts\n\n"
+            + build_ambient_facts(timezone=_SERVER_TIMEZONE, host_name="lisa-context")
+            + "\n\n"
+            + render_context_packet_markdown(packet)
+        ),
         context_tag=request.context_budget.get("context_tag", ""),
     )
     return response.model_dump_json()
@@ -75,11 +82,25 @@ def main() -> None:
     from sdk.lisa_mcp_config.cli import build_parser, configure_logging, resolve_data_dir
 
     parser = build_parser("lisa-context", supports_readonly=True)
+    parser.add_argument(
+        "--timezone",
+        type=str,
+        default="UTC",
+        help="IANA timezone for ambient facts (for example, UTC or America/New_York).",
+    )
     args = parser.parse_args()
+
+    global _SERVER_TIMEZONE
+    _SERVER_TIMEZONE = str(args.timezone or "UTC")
 
     log = configure_logging(args.log_level, server_name="lisa-context")
     data_dir = resolve_data_dir(args.data_dir)
-    log.info("lisa-context starting (data_dir=%s, readonly=%s)", data_dir, args.readonly)
+    log.info(
+        "lisa-context starting (data_dir=%s, readonly=%s, timezone=%s)",
+        data_dir,
+        args.readonly,
+        _SERVER_TIMEZONE,
+    )
     mcp.run(transport=args.transport)
 
 

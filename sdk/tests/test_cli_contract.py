@@ -85,6 +85,13 @@ def test_context_server_has_readonly_arg() -> None:
     assert "--readonly" in result.stdout
 
 
+def test_context_server_has_timezone_arg() -> None:
+    """lisa-context should accept --timezone for ambient facts rendering."""
+    result = _run_server("sdk.lisa_context.server", "--help")
+    assert result.returncode == 0
+    assert "--timezone" in result.stdout
+
+
 def test_no_env_var_path_fallback_in_source() -> None:
     """No first-party server source should reference removed env vars."""
 
