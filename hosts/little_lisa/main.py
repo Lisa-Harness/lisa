@@ -4706,6 +4706,28 @@ def _restart_current_process() -> None:
     os.execv(sys.executable, fallback)
 
 
+def _escape_markdown_cell(value: str) -> str:
+    """Escape a string for safe use inside a Markdown pipe-table cell."""
+    return value.replace("|", "\\|").replace("\n", " ")
+
+
+def _resolve_pack_source_kind(
+    name: str,
+    entry: dict[str, Any],
+    always_on: set[str],
+    runtime_installed: set[str],
+) -> str:
+    """Resolve the source-kind label for a pack entry."""
+    source_kind = str(entry.get("source_kind") or "").strip().lower()
+    if source_kind:
+        return source_kind
+    if name in always_on:
+        return "always-on"
+    if name in runtime_installed:
+        return "package"
+    return "bundled"
+
+
 def _render_pack_list() -> str:
     """Render discovered packs, activation state, and capability-provider selections."""
     lock = _load_installed_packs_lock()
@@ -4724,38 +4746,47 @@ def _render_pack_list() -> str:
     if not all_packages:
         return "No packs discovered yet."
 
-    lines = ["## Pack Activation"]
+    lines = ["## Pack Activation", ""]
+    lines.append("| Pack | State | Source | Root |")
+    lines.append("| --- | --- | --- | --- |")
     for package_name in sorted(all_packages):
         entry = entry_map.get(package_name) or {}
-        source_kind = str(entry.get("source_kind") or "").strip().lower()
-        if not source_kind:
-            if package_name in always_on:
-                source_kind = "always-on"
-            elif package_name in runtime_installed:
-                source_kind = "package"
-            else:
-                source_kind = "bundled"
-
+        source_kind = _resolve_pack_source_kind(
+            package_name, entry, always_on, runtime_installed
+        )
         active = _pack_is_active(
             package_name,
             always_on_packs=always_on,
             runtime_installed=runtime_installed,
             enabled_map=enabled_map,
         )
-        activation = "always-on" if package_name in always_on else ("enabled" if active else "disabled")
+        if package_name in always_on:
+            activation = "always-on"
+        elif active:
+            activation = "enabled"
+        else:
+            activation = "disabled"
         root = installed_roots.get(package_name)
         root_text = str(root) if root is not None else "(not discovered in current environment)"
         lines.append(
-            f"- {package_name} | state={activation} | source={source_kind} | root={root_text}"
+            f"| {_escape_markdown_cell(package_name)} | {_escape_markdown_cell(activation)} | "
+            f"{_escape_markdown_cell(source_kind)} | {_escape_markdown_cell(root_text)} |"
         )
 
     selected = lock.get("selected_capability_providers")
     if isinstance(selected, dict) and selected:
-        lines.append("\n## Selected Capability Providers")
+        lines.append("")
+        lines.append("## Selected Capability Providers")
+        lines.append("")
+        lines.append("| Capability | Provider |")
+        lines.append("| --- | --- |")
         for capability_id, provider_id in sorted(selected.items()):
-            lines.append(f"- {capability_id}: {provider_id}")
+            cap = _escape_markdown_cell(str(capability_id))
+            prov = _escape_markdown_cell(str(provider_id))
+            lines.append(f"| {cap} | {prov} |")
 
-    lines.append("\nTip: use /pack enable <name> or /pack disable <name> for bundled/runtime packs.")
+    lines.append("")
+    lines.append("Tip: use /pack enable <name> or /pack disable <name> for bundled/runtime packs.")
     return "\n".join(lines)
 
 
