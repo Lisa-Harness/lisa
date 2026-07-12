@@ -21,8 +21,6 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
-from hosts.core.callbacks import TransportCallbacks
-
 logger = logging.getLogger(__name__)
 
 # ── Visual style constants (kept in sync with the Little Lisa palette) ──

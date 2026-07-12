@@ -26,7 +26,7 @@ def load_model_manifest(path: Path | None = None) -> ModelManifest:
     logger.debug("loading model manifest from %s", resolved)
     manifest = load_shared_model_manifest(
         resolved,
-        require_mode_models=True,
+        require_mode_models=False,
         supported_designations=_SUPPORTED_DESIGNATIONS,
     )
     logger.info("loaded model manifest: %d model(s)", len(manifest.models))

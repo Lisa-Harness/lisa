@@ -30,6 +30,25 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+# Load .env from the project root before importing hosts.core so that
+# HostConfig.from_env sees the provider credentials and config values.
+# The .env file is searched at: (1) CWD, (2) project root, (3) hosts/little_lisa/
+# for backward compatibility with existing .env files.
+try:
+    from dotenv import load_dotenv
+
+    _FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
+    for _env_candidate in (
+        Path.cwd() / ".env",
+        _FRAMEWORK_ROOT / ".env",
+        _FRAMEWORK_ROOT / "hosts" / "little_lisa" / ".env",
+    ):
+        if _env_candidate.exists():
+            load_dotenv(dotenv_path=_env_candidate, override=False)
+            break
+except ImportError:  # pragma: no cover — python-dotenv is optional
+    pass
+
 from hosts.cli.repl import run_repl
 from hosts.cli.render import render_models, render_modes, render_pack_list_panel
 from hosts.core.config import HostConfig
@@ -445,10 +464,12 @@ def _verify_check_python() -> tuple[str, str]:
 
 
 def _verify_check_env(runtime: HostRuntime) -> tuple[str, str]:
-    env_path = runtime.data_dir / ".env"
-    if env_path.exists():
-        return _VERIFY_PASS, f".env found ({env_path})"
-    return _VERIFY_WARN, f".env not found at {env_path} — copy .env.example to .env"
+    # Check for .env in the project root (where the CLI loads it from).
+    _root = Path(__file__).resolve().parents[2]
+    for candidate in (Path.cwd() / ".env", _root / ".env", _root / "hosts" / "little_lisa" / ".env"):
+        if candidate.exists():
+            return _VERIFY_PASS, f".env found ({candidate})"
+    return _VERIFY_WARN, ".env not found. Run `lisa setup` or create one in the project root."
 
 
 def _verify_check_manifest(runtime: HostRuntime) -> tuple[str, str]:
@@ -517,24 +538,31 @@ def _verify_check_provider_keys() -> tuple[str, str]:
     import os
 
     parts: list[str] = []
-    azure_key = os.getenv("AZURE_OPENAI_API_KEY", "").strip()
-    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
+    # Check LISA_* vars first (the new host's env vars), then fall back to
+    # the bare AZURE_OPENAI_* / OPENAI_* / ANTHROPIC_* / GOOGLE_* vars that
+    # the providers module also accepts.
+    azure_key = os.getenv("LISA_AZURE_OPENAI_API_KEY", "").strip() or os.getenv("AZURE_OPENAI_API_KEY", "").strip()
+    azure_endpoint = os.getenv("LISA_AZURE_OPENAI_ENDPOINT", "").strip() or os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
     if azure_key and azure_endpoint:
         parts.append(f"Azure OpenAI: {_redact_key(azure_key)} @ {azure_endpoint}")
     elif azure_key or azure_endpoint:
         parts.append("Azure OpenAI: partially configured")
 
-    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+    openai_key = os.getenv("LISA_OPENAI_API_KEY", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
     if openai_key:
         parts.append(f"OpenAI: {_redact_key(openai_key)}")
 
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    anthropic_key = os.getenv("LISA_ANTHROPIC_API_KEY", "").strip() or os.getenv("ANTHROPIC_API_KEY", "").strip()
     if anthropic_key:
         parts.append(f"Anthropic: {_redact_key(anthropic_key)}")
 
-    google_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    google_key = os.getenv("LISA_GOOGLE_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
     if google_key:
         parts.append(f"Google Gemini: {_redact_key(google_key)}")
+
+    ollama_host = os.getenv("LISA_OLLAMA_HOST", "").strip() or os.getenv("OLLAMA_HOST", "").strip()
+    if ollama_host:
+        parts.append(f"Ollama: {ollama_host}")
 
     if not parts:
         return _VERIFY_WARN, "No provider keys configured"
