@@ -69,7 +69,7 @@ import typer
 import yaml
 from dotenv import load_dotenv
 from openai import AsyncAzureOpenAI, AsyncOpenAI
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from rich.cells import cell_len
 from rich.console import Console
 from rich.markdown import Markdown
@@ -577,6 +577,9 @@ _HOST_REPL_SHORTCUTS: tuple[str, ...] = (
     "/debug context",
     "/debug frontdoor",
     "/consolidate",
+    "/checkpoint",
+    "/restore",
+    "/checkpoints",
     "/deep ",
     "/quit",
 )
@@ -2554,8 +2557,21 @@ def _google_client_instance() -> AsyncOpenAI:
 
 
 def _normalize_google_base_url(base_url: str) -> str:
-    """Return a supported Google OpenAI-compatible base URL."""
-    return _normalize_google_base_url_helper(base_url, _DEFAULT_GOOGLE_OPENAI_BASE_URL)
+    """Return a supported Google OpenAI-compatible base URL.
+
+    Google's OpenAI-compatible endpoint path must include ``/openai``;
+    bare ``generativelanguage.googleapis.com`` URLs are rewritten to the
+    known-good default. Other URLs are passed through with a trailing slash.
+    """
+    normalized = base_url.strip()
+    if not normalized:
+        return _DEFAULT_GOOGLE_OPENAI_BASE_URL
+    lowered = normalized.lower()
+    if "generativelanguage.googleapis.com" in lowered and "/openai" not in lowered:
+        return _DEFAULT_GOOGLE_OPENAI_BASE_URL
+    if not normalized.endswith("/"):
+        normalized = f"{normalized}/"
+    return normalized
 
 
 def _ollama_client_instance() -> AsyncOpenAI:
@@ -2591,7 +2607,359 @@ def _anthropic_http_client_instance() -> httpx.AsyncClient:
     return client
 
 
-# _normalize_response_format, _extract_completion_tool_calls, _extract_usage_counts,
+# ── Inlined provider helpers ──────────────────────────────────────────────
+# These were previously imported from the deleted ``provider_completions``
+# module. They are pure, stateless translation/normalization functions kept
+# here so the live completion path has no external dependency on app-private
+# modules.
+
+
+def _is_pydantic_model_class(obj: Any) -> bool:
+    """Return True when obj is a Pydantic BaseModel class."""
+    return isinstance(obj, type) and issubclass(obj, BaseModel)
+
+
+def _build_json_schema_response_format(
+    response_format: type[Any],
+) -> dict[str, Any]:
+    """Build an OpenAI-compatible json_schema response_format dict from a Pydantic model.
+
+    Emits the full schema so the provider can constrain the model to the declared
+    shape, not merely ``json_object``. ``strict`` is left unset (defaults to
+    false on the provider side) because ``RouteDecision`` has optional fields
+    with defaults that would otherwise violate strict-schema constraints.
+    """
+    schema = response_format.model_json_schema()
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": getattr(response_format, "__name__", "response") or "response",
+            "schema": schema,
+        },
+    }
+
+
+def _normalize_response_format(response_format: type[Any] | None) -> dict[str, Any] | None:
+    """Return the OpenAI-compatible response_format dict, or None.
+
+    When ``response_format`` is a Pydantic ``BaseModel`` subclass, emit a
+    ``json_schema`` response_format so the provider receives the full schema and
+    can constrain the model to the declared shape. Non-Pydantic dict values are
+    passed through unchanged so callers that pre-build a response_format dict
+    are not disrupted.
+    """
+    if response_format is None:
+        return None
+    if _is_pydantic_model_class(response_format):
+        return _build_json_schema_response_format(response_format)
+    if isinstance(response_format, dict):
+        return dict(response_format)
+    return {"type": "json_object"}
+
+
+def _extract_completion_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
+    """Normalize OpenAI-style tool call objects into plain dicts."""
+    if not isinstance(tool_calls, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for call in tool_calls:
+        call_id = str(getattr(call, "id", "") or "")
+        call_type = str(getattr(call, "type", "function") or "function")
+        function = getattr(call, "function", None)
+        function_name = str(getattr(function, "name", "") or "")
+        function_arguments = str(getattr(function, "arguments", "") or "")
+        entry: dict[str, Any] = {
+            "id": call_id,
+            "type": call_type,
+            "function": {
+                "name": function_name,
+                "arguments": function_arguments,
+            },
+        }
+        # Gemini thinking models attach thought_signature to each function call;
+        # it must be echoed verbatim in the corresponding tool-result message.
+        thought_sig = getattr(call, "thought_signature", None) or getattr(
+            function, "thought_signature", None
+        )
+        if thought_sig:
+            entry["function"]["thought_signature"] = thought_sig
+        normalized.append(entry)
+    return normalized
+
+
+def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
+    """Parse tool call arguments from string or dict into a dict."""
+    if isinstance(arguments, dict):
+        return arguments
+    if not isinstance(arguments, str):
+        return {}
+    text = arguments.strip()
+    if not text:
+        return {}
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        return {"raw": text}
+    if isinstance(decoded, dict):
+        return decoded
+    return {"value": decoded}
+
+
+def _to_anthropic_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Translate OpenAI-style tool schemas to Anthropic tool format."""
+    if not tools:
+        return []
+    translated: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        function_payload = tool.get("function")
+        if not isinstance(function_payload, dict):
+            continue
+        name = str(function_payload.get("name") or "").strip()
+        if not name:
+            continue
+        description = str(function_payload.get("description") or "").strip()
+        parameters = function_payload.get("parameters")
+        if not isinstance(parameters, dict):
+            parameters = {"type": "object", "properties": {}}
+        translated.append(
+            {
+                "name": name,
+                "description": description,
+                "input_schema": parameters,
+            }
+        )
+    return translated
+
+
+def _translate_tool_result_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Translate an OpenAI tool-result message to Anthropic format."""
+    tool_call_id = str(message.get("tool_call_id") or "").strip() or "tool_call"
+    tool_result_content = str(message.get("content") or "")
+    return {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": tool_call_id,
+                "content": tool_result_content,
+            }
+        ],
+    }
+
+
+def _translate_assistant_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """Translate assistant tool_calls from OpenAI format to Anthropic blocks."""
+    translated_calls: list[dict[str, Any]] = []
+    raw_tool_calls = message.get("tool_calls")
+    if not isinstance(raw_tool_calls, list):
+        return translated_calls
+    for index, raw_tool_call in enumerate(raw_tool_calls, start=1):
+        if not isinstance(raw_tool_call, dict):
+            continue
+        function_payload = raw_tool_call.get("function")
+        if isinstance(function_payload, dict):
+            tool_name = str(function_payload.get("name") or "").strip()
+            tool_arguments = function_payload.get("arguments")
+        else:
+            tool_name = str(raw_tool_call.get("name") or "").strip()
+            tool_arguments = raw_tool_call.get("arguments")
+        if not tool_name:
+            continue
+        tool_id = str(raw_tool_call.get("id") or "").strip() or f"tool_call_{index}"
+        translated_calls.append(
+            {
+                "type": "tool_use",
+                "id": tool_id,
+                "name": tool_name,
+                "input": _parse_tool_arguments(tool_arguments),
+            }
+        )
+    return translated_calls
+
+
+def _translate_chat_message(message: dict[str, Any], role: str) -> dict[str, Any]:
+    """Translate a user/assistant chat message to Anthropic content-block format."""
+    blocks: list[dict[str, Any]] = []
+    text_content = str(message.get("content") or "")
+    if text_content:
+        blocks.append({"type": "text", "text": text_content})
+    if role == "assistant":
+        blocks.extend(_translate_assistant_tool_calls(message))
+    if not blocks:
+        blocks.append({"type": "text", "text": ""})
+    return {"role": role, "content": blocks}
+
+
+def _to_anthropic_payload_messages(
+    messages: list[dict[str, Any]],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Convert OpenAI-style messages to Anthropic (system, messages) format."""
+    system_parts: list[str] = []
+    translated_messages: list[dict[str, Any]] = []
+
+    for message in messages:
+        role = str(message.get("role") or "").strip().lower()
+        if role == "system":
+            text = str(message.get("content") or "").strip()
+            if text:
+                system_parts.append(text)
+            continue
+
+        if role == "tool":
+            translated_messages.append(_translate_tool_result_message(message))
+            continue
+
+        if role not in {"user", "assistant"}:
+            continue
+
+        translated_messages.append(_translate_chat_message(message, role))
+
+    if not translated_messages:
+        translated_messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": ""}],
+            }
+        )
+
+    system_prompt = "\n\n".join(system_parts).strip()
+    return (system_prompt or None, translated_messages)
+
+
+def _extract_anthropic_text(content_blocks: Any) -> str:
+    """Extract concatenated text from Anthropic content blocks."""
+    if not isinstance(content_blocks, list):
+        return ""
+    text_parts: list[str] = []
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        if str(block.get("type") or "") != "text":
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text:
+            text_parts.append(text)
+    return "\n".join(text_parts).strip()
+
+
+def _extract_anthropic_tool_calls(content_blocks: Any) -> list[dict[str, Any]]:
+    """Extract tool_use blocks from Anthropic content as OpenAI-style dicts."""
+    if not isinstance(content_blocks, list):
+        return []
+    calls: list[dict[str, Any]] = []
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        if str(block.get("type") or "") != "tool_use":
+            continue
+        calls.append(
+            {
+                "id": str(block.get("id") or ""),
+                "type": "function",
+                "function": {
+                    "name": str(block.get("name") or ""),
+                    "arguments": json.dumps(block.get("input") or {}),
+                },
+            }
+        )
+    return calls
+
+
+def _extract_anthropic_error_detail(response: httpx.Response) -> str:
+    """Extract a concise detail string from an Anthropic error response."""
+    try:
+        payload = response.json()
+    except ValueError:
+        response_text = response.text.strip()
+        return response_text or "no error payload provided by Anthropic"
+
+    if not isinstance(payload, dict):
+        return "unexpected non-object error payload from Anthropic"
+
+    error_payload = payload.get("error")
+    if isinstance(error_payload, dict):
+        error_type = str(error_payload.get("type") or "").strip()
+        error_message = str(error_payload.get("message") or "").strip()
+        if error_type and error_message:
+            return f"{error_type}: {error_message}"
+        if error_message:
+            return error_message
+        if error_type:
+            return error_type
+
+    top_level_message = str(payload.get("message") or "").strip()
+    return top_level_message or "no error payload provided by Anthropic"
+
+
+def _first_message_content(message: Any) -> str:
+    """Extract text content from an OpenAI chat completion message."""
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for item in content:
+            item_text = getattr(item, "text", "")
+            if item_text:
+                text_parts.append(str(item_text))
+        return "\n".join(text_parts).strip()
+    return str(content or "")
+
+
+def _extract_json_object(text: str) -> str:
+    """Extract the first likely JSON object from a model response."""
+    normalized = str(text or "").strip()
+    if normalized.startswith("```json"):
+        normalized = normalized[7:]
+    elif normalized.startswith("```"):
+        normalized = normalized[3:]
+    if normalized.endswith("```"):
+        normalized = normalized[:-3]
+    normalized = normalized.strip()
+
+    if normalized.startswith("{") and normalized.endswith("}"):
+        return normalized
+
+    start = normalized.find("{")
+    end = normalized.rfind("}")
+    if start >= 0 and end > start:
+        return normalized[start : end + 1]
+    return normalized
+
+
+def _normalize_structured_content(
+    content: str,
+    response_format: type[Any] | None,
+) -> str:
+    """Return normalized structured JSON when possible, otherwise original content."""
+    if (
+        response_format is None
+        or not content
+        or not hasattr(response_format, "model_validate_json")
+    ):
+        return content
+    try:
+        parsed = parse_structured_payload(response_format, _extract_json_object(content))
+    except ValidationError:
+        return content
+    normalized = parsed.model_dump_json()
+    if not isinstance(normalized, str):
+        return content
+    return normalized
+
+
+def _normalize_ollama_host_to_base_url(host: str) -> str:
+    """Normalize an Ollama host string to an OpenAI-compatible base URL."""
+    normalized = host.strip().rstrip("/")
+    if not normalized:
+        return ""
+    if not normalized.startswith(("http://", "https://")):
+        normalized = f"http://{normalized}"
+    if normalized.endswith("/v1"):
+        return f"{normalized}/"
+    return f"{normalized}/v1/"
 
 
 async def _complete_anthropic(
@@ -3295,6 +3663,9 @@ def _format_help() -> str:
             "- /tokens shows detailed session token breakdown by model, mode, and stage.",
             "- /debug context|capabilities|self|frontdoor shows local diagnostics.",
             "- /consolidate (or /slice) runs the explicit thread/memory compaction slice.",
+            "- /checkpoint [label] saves a state+workflow checkpoint to lisa-storage.",
+            "- /restore <checkpoint_id> restores state from a saved checkpoint.",
+            "- /checkpoints lists all saved checkpoints (newest first).",
             "- /quit exits the interactive console loop.",
         ]
     )
@@ -3971,6 +4342,7 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
     synthesis behavior by calling those aliases through ``ctx.execute_tool_fn``.
     """
     from kernel.slice import SliceTuning  # noqa: PLC0415
+    from kernel.turn_runner import CheckpointTuning  # noqa: PLC0415
 
     slice_tuning_dict, _explicit_budget_ms = _resolve_slice_tuning()
     slice_tuning = SliceTuning.from_mapping(slice_tuning_dict)
@@ -4034,6 +4406,23 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
             "tool_result_count": turn_input_summary.get("tool_result_count", 0),
         }
 
+    async def _on_checkpoint(bundle: Any) -> None:
+        """Persist a CheckpointBundle via lisa-storage through the MCP tool pool.
+
+        The kernel builds the bundle from current UnifiedState + WorkflowSessionState;
+        this hook hands it to the lisa-storage MCP server's ``save_checkpoint`` tool.
+        Failures are caught by the turn runner — this hook just attempts the write.
+        """
+        pool = _runtime_warm_pool()
+        if pool is None:
+            logger.debug("on_checkpoint: no warm pool available; skipping")
+            return
+        try:
+            bundle_dict = bundle.model_dump(mode="json")
+            await pool.call_tool("lisa-storage.save_checkpoint", {"bundle": bundle_dict})
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("on_checkpoint: save_checkpoint failed: %s", exc)
+
     return TurnHooks(
         resolve_model=provider.resolve_model_hook,
         complete=provider.complete,
@@ -4053,6 +4442,8 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         state_provider=_state_provider,
         build_workshop_context_bundle_fn=_build_workshop_context_bundle,
         introspect=provider.introspect,
+        checkpoint_tuning=CheckpointTuning(enabled=True, on_stage_transition=True, every_n_turns=10),
+        on_checkpoint=_on_checkpoint,
     )
 
 
@@ -4149,6 +4540,161 @@ async def _run_explicit_slice_command(*, message: str) -> str:
     )
 
 
+async def _handle_checkpoint_command(stripped: str, message: str) -> str:
+    """Handle ``/checkpoint [label]`` — create an explicit checkpoint.
+
+    Builds a CheckpointBundle from current state and persists it via
+    lisa-storage's ``save_checkpoint`` tool through the MCP tool pool.
+    """
+    from kernel.models import CheckpointBundle  # noqa: PLC0415
+    from kernel.turn_runner import _build_checkpoint_bundle  # noqa: PLC0415
+
+    parts = stripped.split(None, 1)
+    label = parts[1].strip() if len(parts) > 1 else ""
+
+    hooks = _build_turn_hooks()
+    bundle = _build_checkpoint_bundle(
+        mode_id=str(_RUNTIME_STATE.get("current_mode_id") or "default"),
+        transitioned_to=None,
+        is_workflow=hooks.workflow_session is not None,
+        hooks=hooks,
+    )
+    if bundle is None:
+        return "Nothing to checkpoint — no state or workflow session available."
+
+    bundle.label = label
+    pool = _runtime_warm_pool()
+    if pool is None:
+        return "Checkpoint created but no storage pool available to persist it."
+
+    try:
+        bundle_dict = bundle.model_dump(mode="json")
+        result = await pool.call_tool("lisa-storage.save_checkpoint", {"bundle": bundle_dict})
+        # Extract text from the MCP result
+        result_text = ""
+        if isinstance(result, tuple) and len(result) >= 1:
+            blocks = result[0]
+            if blocks and hasattr(blocks[0], "text"):
+                result_text = blocks[0].text
+            elif blocks:
+                result_text = str(blocks[0])
+        else:
+            result_text = str(result)
+        data = json.loads(result_text)
+        if "error" in data:
+            return f"Checkpoint failed: {data['error']}"
+        cid = data.get("checkpoint_id", "")
+        return f"Checkpoint saved: {cid}" + (f" (label: {label})" if label else "")
+    except Exception as exc:  # pylint: disable=broad-except
+        return f"Checkpoint failed: {exc}"
+
+
+async def _handle_restore_command(stripped: str, message: str) -> str:
+    """Handle ``/restore <checkpoint_id>`` — restore state from a checkpoint.
+
+    Loads a CheckpointBundle via lisa-storage's ``restore_checkpoint`` tool,
+    then restores UnifiedState into runtime state and WorkflowSessionState
+    via the workflow_session_updater hook.
+    """
+    parts = stripped.split(None, 1)
+    if len(parts) < 2 or not parts[1].strip():
+        return "Usage: /restore <checkpoint_id>"
+
+    checkpoint_id = parts[1].strip()
+    pool = _runtime_warm_pool()
+    if pool is None:
+        return "No storage pool available to restore from."
+
+    try:
+        result = await pool.call_tool(
+            "lisa-storage.restore_checkpoint",
+            {"checkpoint_id": checkpoint_id},
+        )
+        result_text = ""
+        if isinstance(result, tuple) and len(result) >= 1:
+            blocks = result[0]
+            if blocks and hasattr(blocks[0], "text"):
+                result_text = blocks[0].text
+            elif blocks:
+                result_text = str(blocks[0])
+        else:
+            result_text = str(result)
+
+        data = json.loads(result_text)
+        if "error" in data:
+            return f"Restore failed: {data['error']}"
+
+        # Restore UnifiedState into runtime state snapshot
+        unified_state_dict = data.get("unified_state") or {}
+        if unified_state_dict:
+            _RUNTIME_STATE["state_snapshot"] = unified_state_dict
+
+        # Restore WorkflowSessionState via the updater hook
+        wf_session_dict = data.get("workflow_session_state") or {}
+        if wf_session_dict:
+            from kernel.models import WorkflowSessionState  # noqa: PLC0415
+
+            try:
+                session = WorkflowSessionState.model_validate(wf_session_dict)
+                hooks = _build_turn_hooks()
+                if hooks.workflow_session_updater is not None:
+                    hooks.workflow_session_updater(session)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("restore: workflow session restore failed: %s", exc)
+
+        label = data.get("label") or ""
+        stage = data.get("stage_id") or ""
+        turn_count = data.get("turn_count") or 0
+        return (
+            f"Restored checkpoint {checkpoint_id}"
+            + (f" (label: {label})" if label else "")
+            + (f" stage={stage}" if stage else "")
+            + (f" turns={turn_count}" if turn_count else "")
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        return f"Restore failed: {exc}"
+
+
+async def _handle_list_checkpoints_command(message: str) -> str:
+    """Handle ``/checkpoints`` — list all saved checkpoints."""
+    pool = _runtime_warm_pool()
+    if pool is None:
+        return "No storage pool available to list checkpoints."
+
+    try:
+        result = await pool.call_tool("lisa-storage.list_checkpoints", {})
+        result_text = ""
+        if isinstance(result, tuple) and len(result) >= 1:
+            blocks = result[0]
+            if blocks and hasattr(blocks[0], "text"):
+                result_text = blocks[0].text
+            elif blocks:
+                result_text = str(blocks[0])
+        else:
+            result_text = str(result)
+
+        data = json.loads(result_text)
+        if isinstance(data, dict) and "error" in data:
+            return f"List failed: {data['error']}"
+        if not isinstance(data, list) or not data:
+            return "No checkpoints saved."
+
+        lines = ["Saved checkpoints (newest first):"]
+        for entry in data:
+            cid = entry.get("checkpoint_id", "")
+            label = entry.get("label") or ""
+            created = entry.get("created_at", "")[:19]
+            stage = entry.get("stage_id") or ""
+            turns = entry.get("turn_count") or 0
+            lines.append(
+                f"  {cid}  {created}  stage={stage}  turns={turns}"
+                + (f"  label={label}" if label else "")
+            )
+        return "\n".join(lines)
+    except Exception as exc:  # pylint: disable=broad-except
+        return f"List failed: {exc}"
+
+
 async def handle_message(message: str) -> str:
     """Route one console message through the kernel turn runner.
 
@@ -4188,6 +4734,12 @@ async def _dispatch_host_command(
         return _handle_simple_command(message, "settings", _render_runtime_settings())
     if lowered in {"/consolidate", "consolidate", "/slice", "slice"}:
         return await _run_explicit_slice_command(message=message)
+    if lowered.startswith("/checkpoint"):
+        return await _handle_checkpoint_command(stripped, message)
+    if lowered.startswith("/restore"):
+        return await _handle_restore_command(stripped, message)
+    if lowered in {"/checkpoints", "checkpoints"}:
+        return await _handle_list_checkpoints_command(message)
     if lowered.startswith("/pack"):
         return await _handle_pack_command(stripped, message)
     if lowered.startswith("/debug"):
