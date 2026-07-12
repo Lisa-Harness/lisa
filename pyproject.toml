@@ -19,6 +19,7 @@ dependencies = [
     "little-lisa",
     "lisa-host-core",
     "lisa-host-cli",
+    "lisa-host-web",
     "rich>=13.7.0",
     "typer>=0.12.3",
 ]
@@ -49,6 +50,7 @@ members = [
     "sdk/packs/checkpoint",
     "hosts/core",
     "hosts/cli",
+    "hosts/web",
     "hosts/little_lisa",
     "lisa_pack_cloudflare",
     "lisa_pack_github",
@@ -73,6 +75,7 @@ lisa-pack-brave-search = { workspace = true }
 little-lisa = { workspace = true }
 lisa-host-core = { workspace = true }
 lisa-host-cli = { workspace = true }
+lisa-host-web = { workspace = true }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
