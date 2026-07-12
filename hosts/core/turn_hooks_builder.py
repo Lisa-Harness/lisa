@@ -130,11 +130,27 @@ def build_turn_hooks(
         state = build_unified_state(state_snapshot=runtime.state_snapshot)
 
         def _session_context_loader() -> str:
-            from hosts.core.session_context import load_selected_session_context_text
+            from hosts.core.session_context import (
+                load_selected_session_context_text,
+                resolve_session_context_auto,
+            )
 
+            ref = runtime.config.session_context
+            active = bool(runtime.config.session_context)
+
+            # Auto-discover session_context.md or session_context/ in CWD
+            # or the data directory when no explicit --session-context was
+            # passed. This matches the Little Lisa behavior.
+            if not ref:
+                _, ref, active = resolve_session_context_auto(
+                    data_dir=runtime.config.data_dir,
+                )
+
+            if not ref:
+                return ""
             return load_selected_session_context_text(
-                session_context_ref=runtime.config.session_context,
-                session_context_active=bool(runtime.config.session_context),
+                session_context_ref=ref,
+                session_context_active=active,
                 current_mode_id=mode_id,
                 content_loader=loader,
             )

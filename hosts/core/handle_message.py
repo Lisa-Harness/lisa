@@ -441,6 +441,8 @@ async def _plan_frontdoor_route(
         return mode_support_gap(mode) is None
 
     def _build_user_prompt(**kwargs: Any) -> str:
+        # plan_frontdoor_route doesn't pass user_slug — inject it from runtime.
+        kwargs.setdefault("user_slug", runtime.config.user_slug)
         return build_frontdoor_user_prompt(**kwargs)
 
     def _get_catalog() -> dict[str, Any]:

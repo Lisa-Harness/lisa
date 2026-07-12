@@ -432,9 +432,7 @@ def assemble_dynamic_user_context(
         ("dynamic_context", "core", "## Dynamic User Context\n\n" + "\n".join(lines)),
     ]
 
-    user_context = ""
-    if user_slug:
-        user_context = session_context_loader().strip()
+    user_context = session_context_loader().strip()
     if user_context:
         raw_sections.append(("selected_user_context", "memory", user_context))
 
