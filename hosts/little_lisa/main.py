@@ -1512,6 +1512,15 @@ def _last_turn_context() -> dict[str, Any] | None:
     return context if isinstance(context, dict) else None
 
 
+def _set_last_capability_manifest(manifest: CapabilityManifest) -> None:
+    _RUNTIME_STATE["last_capability_manifest"] = manifest
+
+
+def _last_capability_manifest() -> CapabilityManifest | None:
+    manifest = _RUNTIME_STATE.get("last_capability_manifest")
+    return manifest if isinstance(manifest, CapabilityManifest) else None
+
+
 def _set_last_frontdoor_debug(payload: dict[str, Any]) -> None:
     _RUNTIME_STATE["last_frontdoor_debug"] = payload
 
@@ -1966,6 +1975,39 @@ def _assemble_dynamic_user_context(
     pre_turn_briefing: str,
     capability_manifest: CapabilityManifest | None = None,
 ) -> str:
+    # Cache the live manifest so debug/help views can show the active subset
+    # alongside the total horizon without recompiling.
+    if capability_manifest is not None:
+        _set_last_capability_manifest(capability_manifest)
+        # Inject the total capability horizon and mode routing map into the
+        # manifest's metadata so the renderer can show the subset/superset
+        # relationship and which mode owns which capabilities. The kernel
+        # compiler doesn't know about the host's full catalogs — the host
+        # owns that view.
+        snapshot = _build_capability_snapshot()
+        capability_manifest.metadata["total_horizon"] = {
+            "operations": len(snapshot["operations"]),
+            "tools": len(snapshot["tools"]),
+            "modes": len(snapshot["supported_modes"]),
+        }
+        # Build a compact mode→capability routing map from the workflow
+        # catalog. Each mode's allowed_operation_ids and allowed_tool_ids
+        # are the capabilities the model could call if transitioned there.
+        catalog = get_workflow_catalog()
+        routing_map: dict[str, dict[str, list[str]]] = {}
+        for route_mode_id, mode_config in sorted(catalog.items()):
+            if _mode_support_gap(mode_config) is not None:
+                continue
+            caps = sorted(
+                set(
+                    list(getattr(mode_config, "allowed_operation_ids", []))
+                    + list(getattr(mode_config, "allowed_tool_ids", []))
+                )
+            )
+            if caps:
+                routing_map[route_mode_id] = {"capabilities": caps}
+        capability_manifest.metadata["mode_routing_map"] = routing_map
+
     mode = get_workflow_catalog().get(mode_id)
     mode_kind = mode.mode_kind if mode is not None else "unknown"
     mode_description = (mode.description or "").strip() if mode is not None else ""
@@ -2015,35 +2057,30 @@ def _assemble_dynamic_user_context(
     if packet_markdown:
         raw_sections.append(("ranked_context", "retrieval", packet_markdown))
 
-    query_lower = query.lower()
-    capability_keywords = (
-        "capability",
-        "capabilities",
-        "what can you do",
-        "tool",
-        "mode",
-    )
-    if any(keyword in query_lower for keyword in capability_keywords):
-        if capability_manifest is not None:
-            from kernel.capability_manifest import render_capability_manifest_context
+    # Always inject the live capability manifest so the model's self-knowledge
+    # is consistent with the function schema it can actually call this turn.
+    # When the manifest is unavailable (e.g. direct /command handlers), fall
+    # back to the full catalog snapshot.
+    if capability_manifest is not None:
+        from kernel.capability_manifest import render_capability_manifest_context
 
-            capability_block = render_capability_manifest_context(capability_manifest)
-        else:
-            capability = _build_capability_snapshot()
-            capability_block = (
-                "## Capability Context\n\n"
-                f"- supported_modes: {len(capability['supported_modes'])}\n"
-                f"- operations: {len(capability['operations'])}\n"
-                f"- tools: {len(capability['tools'])}\n"
-                f"- models: {len(capability['models'])}"
-            )
-        raw_sections.append(
-            (
-                "capability_context",
-                "operational",
-                capability_block,
-            )
+        capability_block = render_capability_manifest_context(capability_manifest)
+    else:
+        capability = _build_capability_snapshot()
+        capability_block = (
+            "## Capability Context\n\n"
+            f"- supported_modes: {len(capability['supported_modes'])}\n"
+            f"- operations: {len(capability['operations'])}\n"
+            f"- tools: {len(capability['tools'])}\n"
+            f"- models: {len(capability['models'])}"
         )
+    raw_sections.append(
+        (
+            "capability_context",
+            "operational",
+            capability_block,
+        )
+    )
 
     # Route every section through the budget allocator. The allocator enforces
     # per-lane token limits and a total ceiling, dropping or truncating as
@@ -2336,23 +2373,52 @@ def _render_capability_help() -> str:
     mode_preview = ", ".join(snapshot["supported_modes"][:8])
     model_preview = ", ".join(model["model_id"] for model in snapshot["models"][:4]) or "none"
     unsupported_count = len(snapshot["unsupported_modes"])
-    return "\n".join(
-        [
-            "## Capability Snapshot",
-            f"- User context: {snapshot['user_slug']}",
-            f"- Timezone: {snapshot['timezone']} ({snapshot['timezone_source']})",
-            f"- Supported modes ({len(snapshot['supported_modes'])}): {mode_preview}",
-            f"- Operations: {len(snapshot['operations'])}",
-            f"- Tools: {len(snapshot['tools'])}",
-            f"- Models: {model_preview}",
-            f"- Unsupported installed modes: {unsupported_count} (run /debug capabilities)",
-        ]
-    )
+    lines = [
+        "## Capability Snapshot",
+        f"- User context: {snapshot['user_slug']}",
+        f"- Timezone: {snapshot['timezone']} ({snapshot['timezone_source']})",
+        f"- Supported modes ({len(snapshot['supported_modes'])}): {mode_preview}",
+        f"- Operations: {len(snapshot['operations'])}",
+        f"- Tools: {len(snapshot['tools'])}",
+        f"- Models: {model_preview}",
+        f"- Unsupported installed modes: {unsupported_count} (run /debug capabilities)",
+    ]
+    # Show the active mode's live subset if available
+    live = _last_capability_manifest()
+    if live is not None:
+        meta = live.metadata
+        active_mode = meta.get("mode_id", "default")
+        active_count = len(live.entries)
+        active_names = sorted(e.capability_id for e in live.entries)
+        lines.append("")
+        lines.append(f"### Active Mode: {active_mode}")
+        lines.append(f"- callable_this_turn: {active_count} ({', '.join(active_names)})")
+        lines.append(f"- tools_authoritative: {'yes' if meta.get('tools_authoritative') else 'no'}")
+    return "\n".join(lines)
 
 
 def _render_capability_debug() -> str:
     snapshot = _build_capability_snapshot()
-    return "## Capability Debug\n\n```json\n" + json.dumps(snapshot, indent=2) + "\n```"
+    live = _last_capability_manifest()
+    payload: dict[str, Any] = {
+        "total_horizon": {
+            "supported_modes": snapshot["supported_modes"],
+            "unsupported_modes": snapshot["unsupported_modes"],
+            "operations": snapshot["operations"],
+            "tools": snapshot["tools"],
+            "models": snapshot["models"],
+        },
+    }
+    if live is not None:
+        payload["active_mode"] = {
+            "mode_id": live.metadata.get("mode_id", "default"),
+            "tools_authoritative": live.metadata.get("tools_authoritative", False),
+            "callable": sorted(e.capability_id for e in live.entries),
+            "kind_counts": live.metadata.get("kind_counts", {}),
+        }
+    else:
+        payload["active_mode"] = None
+    return "## Capability Debug\n\n```json\n" + json.dumps(payload, indent=2) + "\n```"
 
 
 def _render_debug_context() -> str:
@@ -2401,19 +2467,29 @@ def _render_debug_self() -> str:
     snapshot = _build_capability_snapshot()
     thread_entries = _load_recent_thread_entries(limit=10)
     state_snapshot = _runtime_state_snapshot()
-    return "\n".join(
-        [
-            "## Little Lisa Self Model",
-            f"- user_slug: {snapshot['user_slug']}",
-            f"- timezone: {snapshot['timezone']} ({snapshot['timezone_source']})",
-            f"- supported_modes: {len(snapshot['supported_modes'])}",
-            f"- operations: {len(snapshot['operations'])}",
-            f"- tools: {len(snapshot['tools'])}",
-            f"- models: {len(snapshot['models'])}",
-            f"- local_thread_entries: {len(thread_entries)}",
-            f"- local_state_snapshot_loaded: {'yes' if isinstance(state_snapshot, dict) else 'no'}",
-        ]
-    )
+    lines = [
+        "## Little Lisa Self Model",
+        f"- user_slug: {snapshot['user_slug']}",
+        f"- timezone: {snapshot['timezone']} ({snapshot['timezone_source']})",
+        f"- supported_modes: {len(snapshot['supported_modes'])}",
+        f"- operations: {len(snapshot['operations'])}",
+        f"- tools: {len(snapshot['tools'])}",
+        f"- models: {len(snapshot['models'])}",
+        f"- local_thread_entries: {len(thread_entries)}",
+        f"- local_state_snapshot_loaded: {'yes' if isinstance(state_snapshot, dict) else 'no'}",
+    ]
+    # Show the active mode's live subset if available
+    live = _last_capability_manifest()
+    if live is not None:
+        meta = live.metadata
+        active_mode = meta.get("mode_id", "default")
+        active_count = len(live.entries)
+        active_names = sorted(e.capability_id for e in live.entries)
+        lines.append("")
+        lines.append(f"### Active Mode: {active_mode}")
+        lines.append(f"- callable_this_turn: {active_count} ({', '.join(active_names)})")
+        lines.append(f"- tools_authoritative: {'yes' if meta.get('tools_authoritative') else 'no'}")
+    return "\n".join(lines)
 
 
 def _render_debug_frontdoor() -> str:

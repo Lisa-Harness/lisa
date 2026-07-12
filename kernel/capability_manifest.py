@@ -38,6 +38,7 @@ def compile_capability_manifest(
     mode_config: Any | None = None,
     *,
     captured_at: str = "",
+    total_horizon: dict[str, int] | None = None,
 ) -> CapabilityManifest:
     """Compile a deterministic capability manifest from live tool schemas.
 
@@ -51,6 +52,12 @@ def compile_capability_manifest(
         constraints (``allowed_tool_ids``, ``tools_authoritative``).
     captured_at
         ISO timestamp for ``last_checked_at`` on every entry. Defaults to now.
+    total_horizon
+        Optional dict with ``operations``, ``tools``, ``modes`` keys giving the
+        total capability counts across all catalogs (the superset). When
+        provided and different from the active counts, the renderer emits a
+        ``total_capability_horizon`` line so the model can distinguish "what I
+        can call right now" from "what I could do in another mode."
     """
     timestamp = captured_at or datetime.now(UTC).isoformat()
     operation_catalog = get_operation_catalog()
@@ -124,6 +131,8 @@ def compile_capability_manifest(
         "allowed_tool_ids": allowed_tool_ids,
         "kind_counts": kind_counts,
     }
+    if total_horizon:
+        metadata["total_horizon"] = total_horizon
 
     summary = _build_summary(
         total=len(entries),
@@ -192,6 +201,35 @@ def render_capability_manifest_context(manifest: CapabilityManifest) -> str:
         f"(operations: {operations}, pack_tools: {pack_tool_count}, mcp: {mcp_count}, workflow: {workflow})",
         f"- tools_authoritative: {'yes' if tools_authoritative else 'no'}",
     ]
+
+    total_horizon = meta.get("total_horizon")
+    if total_horizon and isinstance(total_horizon, dict):
+        horizon_parts: list[str] = []
+        for key, label in (("operations", "ops"), ("tools", "tools"), ("modes", "modes")):
+            horizon_count = total_horizon.get(key, 0)
+            if horizon_count:
+                horizon_parts.append(f"{horizon_count} {label}")
+        if horizon_parts:
+            lines.append(
+                f"- total_capability_horizon: {', '.join(horizon_parts)} "
+                f"(available in other modes; only the {len(manifest.entries)} listed below are callable this turn)"
+            )
+
+    # Mode routing map: which mode owns which capabilities, so the model
+    # can tell the user which mode to transition to for a capability not in
+    # the active set. Only includes modes other than the current one.
+    mode_routing = meta.get("mode_routing_map")
+    if mode_routing and isinstance(mode_routing, dict):
+        routing_parts: list[str] = []
+        for route_mode_id, caps in sorted(mode_routing.items()):
+            if route_mode_id == (mode_id or "default"):
+                continue
+            if isinstance(caps, dict):
+                caps_list = sorted(caps.get("capabilities", []))
+                if caps_list:
+                    routing_parts.append(f"{route_mode_id}→[{', '.join(caps_list)}]")
+        if routing_parts:
+            lines.append(f"- mode_routing: {'; '.join(routing_parts)}")
 
     available_names = sorted(e.capability_id for e in manifest.entries)
     if available_names:
