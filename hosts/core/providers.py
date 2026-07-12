@@ -1,0 +1,749 @@
+"""Provider client factories and completion dispatch.
+
+Transport-neutral module extracted from ``hosts/little_lisa/main.py``.
+All state access goes through :class:`HostRuntime`; all UI side-effects
+go through :class:`TransportCallbacks`. This module never imports Rich,
+never calls ``console.print``, never calls ``_append_log_event``, and
+never calls ``_publish_token_usage``. Logging and usage publishing are
+wired through the runtime in a later step; for now they are no-op stubs.
+
+Public surface::
+
+    from hosts.core.providers import complete_live, azure_client_instance
+
+    result = await complete_live(
+        runtime=runtime,
+        transport=transport,
+        messages=msg_list,
+        model_def=model_def,
+        max_tokens=4096,
+        temperature=0.2,
+    )
+"""
+
+from __future__ import annotations
+
+import contextlib
+import logging
+import os
+import re
+import time
+from typing import Any
+
+import httpx
+from openai import AsyncAzureOpenAI, AsyncOpenAI
+from pydantic import BaseModel
+
+from hosts.core.callbacks import NullTransport, TransportCallbacks
+from hosts.core.model_runtime import StubCompletion, StubModelDefinition
+from hosts.core.provider_completions import (
+    _extract_anthropic_error_detail,
+    _extract_anthropic_text,
+    _extract_anthropic_tool_calls,
+    _extract_completion_tool_calls,
+    _extract_json_object,
+    _extract_usage_counts as _provider_extract_usage_counts,
+    _first_message_content,
+    _normalize_google_base_url as _provider_normalize_google_base_url,
+    _normalize_ollama_host_to_base_url,
+    _normalize_structured_content,
+    _to_anthropic_payload_messages,
+    _to_anthropic_tools,
+)
+from hosts.core.runtime import HostRuntime
+from hosts.core.token_accounting import coerce_non_negative_int
+
+logger = logging.getLogger(__name__)
+
+# ── Environment-variable name constants (LISA_*) ─────────────────────
+# Provider credential/env configuration. Renamed from the legacy
+# LITTLE_LISA_* prefixes — no compat aliases.
+
+LISA_AZURE_ENDPOINT_ENV = "LISA_AZURE_OPENAI_ENDPOINT"
+LISA_AZURE_API_KEY_ENV = "LISA_AZURE_OPENAI_API_KEY"
+LISA_AZURE_API_VERSION_ENV = "LISA_AZURE_OPENAI_API_VERSION"
+LISA_OPENAI_API_KEY_ENV = "LISA_OPENAI_API_KEY"
+LISA_GOOGLE_API_KEY_ENV = "LISA_GOOGLE_API_KEY"
+LISA_GOOGLE_API_BASE_URL_ENV = "LISA_GOOGLE_API_BASE_URL"
+LISA_OLLAMA_HOST_ENV = "LISA_OLLAMA_HOST"
+LISA_OLLAMA_API_KEY_ENV = "LISA_OLLAMA_API_KEY"
+LISA_ANTHROPIC_BASE_URL_ENV = "LISA_ANTHROPIC_BASE_URL"
+LISA_ANTHROPIC_API_KEY_ENV = "LISA_ANTHROPIC_API_KEY"
+LISA_ANTHROPIC_VERSION_ENV = "LISA_ANTHROPIC_VERSION"
+
+_DEFAULT_GOOGLE_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+
+# ── Pure helpers ──────────────────────────────────────────────────────
+
+
+def _is_pydantic_model_class(obj: Any) -> bool:
+    """Return True when obj is a Pydantic BaseModel class."""
+    return isinstance(obj, type) and issubclass(obj, BaseModel)
+
+
+def _build_json_schema_response_format(
+    response_format: type[Any],
+) -> dict[str, Any]:
+    """Build an OpenAI-compatible json_schema response_format dict from a Pydantic model.
+
+    Emits the full schema so the provider can constrain the model to the declared
+    shape, not merely ``json_object``. ``strict`` is left unset (defaults to
+    false on the provider side) because ``RouteDecision`` has optional fields
+    with defaults that would otherwise violate strict-schema constraints.
+    """
+    schema = response_format.model_json_schema()
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": getattr(response_format, "__name__", "response") or "response",
+            "schema": schema,
+        },
+    }
+
+
+def _normalize_response_format(response_format: type[Any] | None) -> dict[str, Any] | None:
+    """Return the OpenAI-compatible response_format dict, or None.
+
+    When ``response_format`` is a Pydantic ``BaseModel`` subclass, emit a
+    ``json_schema`` response_format so the provider receives the full schema and
+    can constrain the model to the declared shape. Non-Pydantic dict values are
+    passed through unchanged so callers that pre-build a response_format dict
+    are not disrupted.
+    """
+    if response_format is None:
+        return None
+    if _is_pydantic_model_class(response_format):
+        return _build_json_schema_response_format(response_format)
+    if isinstance(response_format, dict):
+        return dict(response_format)
+    return {"type": "json_object"}
+
+
+def normalize_google_base_url(base_url: str) -> str:
+    """Return a supported Google OpenAI-compatible base URL."""
+    return _provider_normalize_google_base_url(base_url, _DEFAULT_GOOGLE_OPENAI_BASE_URL)
+
+
+def completion_response_format_name(response_format: type[Any] | None) -> str:
+    """Return the __name__ of the response_format type, or empty string."""
+    if response_format is None:
+        return ""
+    return str(getattr(response_format, "__name__", "") or "")
+
+
+def build_completion_kwargs(
+    *,
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None,
+    response_format: type[Any] | None,
+) -> dict[str, Any]:
+    """Build the kwargs dict for an OpenAI-compatible chat completion call."""
+    kwargs: dict[str, Any] = {
+        "model": model_def.model_id,
+        "messages": [],  # placeholder — caller sets messages via kwargs.update
+    }
+    if model_def.provider == "azure_openai" or model_def.reasoning_model:
+        kwargs["max_completion_tokens"] = max_tokens
+    else:
+        kwargs["max_tokens"] = max_tokens
+        kwargs["temperature"] = temperature
+    if tools:
+        kwargs["tools"] = tools
+    normalized_format = _normalize_response_format(response_format)
+    if normalized_format is not None:
+        kwargs["response_format"] = normalized_format
+    return kwargs
+
+
+def extract_usage_counts(usage_payload: Any) -> tuple[int, int, int, int, int]:
+    """Extract token usage from provider response.
+
+    Returns: (prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens)
+    """
+    return _provider_extract_usage_counts(usage_payload, coerce_non_negative_int)
+
+
+def with_duration(result: StubCompletion, elapsed_ms: float) -> StubCompletion:
+    """Rebuild a frozen StubCompletion with the host-measured duration."""
+    return StubCompletion(
+        content=result.content,
+        tool_calls=result.tool_calls,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        total_tokens=result.total_tokens,
+        cached_tokens=result.cached_tokens,
+        reasoning_tokens=result.reasoning_tokens,
+        duration_ms=elapsed_ms,
+    )
+
+
+def stage_status_context(stream_stage: bool, stage_label: str) -> Any:
+    """Return a no-op context manager for the provider call.
+
+    Transport stage notification is handled via :meth:`TransportCallbacks.on_stage`
+    in the completion dispatch functions. This context manager exists only for
+    structural compatibility — it does nothing.
+    """
+    return contextlib.nullcontext()
+
+
+def _extract_markdown_section(content: str, heading: str) -> str:
+    """Extract the body text under a ``## heading`` markdown section."""
+    marker = re.escape(f"## {heading}")
+    pattern = re.compile(rf"(?ms)^{marker}\n\n(.*?)(?=\n\n## |\Z)")
+    match = pattern.search(content)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
+def summarize_turn_messages(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build a structured summary of the turn's message list for logging/debug."""
+    system_prompt = ""
+    user_payload = ""
+    assistant_tool_call_count = 0
+    tool_result_count = 0
+
+    for message in messages:
+        role = str(message.get("role") or "").strip().lower()
+        content = message.get("content")
+        if role == "system" and isinstance(content, str) and not system_prompt:
+            system_prompt = content
+        if role == "user" and isinstance(content, str) and not user_payload:
+            user_payload = content
+        if role == "assistant":
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                assistant_tool_call_count += len(tool_calls)
+        if role == "tool":
+            tool_result_count += 1
+
+    max_preview_chars = 240
+    system_prompt_preview = system_prompt[:max_preview_chars]
+    return {
+        "system_prompt": {
+            "chars": len(system_prompt),
+            "preview": system_prompt_preview,
+            "omitted_for_brevity": len(system_prompt) > len(system_prompt_preview),
+        },
+        "assembled_user_payload": {
+            "pre_turn_briefing": _extract_markdown_section(user_payload, "Pre-turn Briefing"),
+            "memory_recall": _extract_markdown_section(user_payload, "Memory Recall"),
+            "dynamic_user_context": _extract_markdown_section(user_payload, "Dynamic User Context"),
+            "selected_user_context": _extract_markdown_section(
+                user_payload, "Selected User Context"
+            ),
+            "user_query": _extract_markdown_section(user_payload, "User Query"),
+            "chars": len(user_payload),
+        },
+        "message_count": len(messages),
+        "assistant_tool_call_count": assistant_tool_call_count,
+        "tool_result_count": tool_result_count,
+    }
+
+
+# ── Logging and usage stubs (no-ops — wired through runtime later) ────
+
+
+def log_completion_request(
+    *,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    response_format_name: str,
+    tools: list[dict[str, Any]] | None,
+) -> None:
+    """Log the completion.request debug event.
+
+    Currently a no-op — logging will be wired through the runtime in a later step.
+    """
+    _ = (messages, model_def, max_tokens, temperature, response_format_name, tools)
+
+
+def log_completion_error(
+    *,
+    exc: Exception,
+    model_def: StubModelDefinition,
+    response_format_name: str,
+    elapsed_ms: float,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+) -> None:
+    """Log the completion.error event for a failed provider call.
+
+    Currently a no-op — logging will be wired through the runtime in a later step.
+    """
+    _ = (exc, model_def, response_format_name, elapsed_ms, messages, tools)
+
+
+def log_completion_response(
+    *,
+    model_def: StubModelDefinition,
+    response_format_name: str,
+    elapsed_ms: float,
+    result: StubCompletion,
+) -> None:
+    """Log the completion.response debug event for a successful provider call.
+
+    Currently a no-op — logging will be wired through the runtime in a later step.
+    """
+    _ = (model_def, response_format_name, elapsed_ms, result)
+
+
+async def publish_completion_usage(
+    *,
+    model_def: StubModelDefinition,
+    result: StubCompletion,
+    elapsed_ms: float,
+    call_site: str,
+) -> None:
+    """Publish token usage for a completed provider call.
+
+    Currently a no-op — usage publishing will be wired through the runtime
+    in a later step.
+    """
+    _ = (model_def, result, elapsed_ms, call_site)
+
+
+# ── Provider client factories ────────────────────────────────────────
+
+
+def azure_client_instance(runtime: HostRuntime) -> AsyncAzureOpenAI:
+    """Return the cached Azure OpenAI client, creating it on first use."""
+    existing_client = runtime.azure_client
+    if isinstance(existing_client, AsyncAzureOpenAI):
+        return existing_client
+
+    endpoint = (
+        os.getenv(LISA_AZURE_ENDPOINT_ENV, "").strip()
+        or os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
+    )
+    api_key = (
+        os.getenv(LISA_AZURE_API_KEY_ENV, "").strip()
+        or os.getenv("AZURE_OPENAI_API_KEY", "").strip()
+    )
+    if not endpoint or not api_key:
+        raise ValueError(
+            "Azure OpenAI is not configured. Set "
+            f"{LISA_AZURE_ENDPOINT_ENV} and {LISA_AZURE_API_KEY_ENV} "
+            "(or AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY)."
+        )
+    api_version = os.getenv(LISA_AZURE_API_VERSION_ENV, "").strip() or "2024-10-21"
+    client = AsyncAzureOpenAI(
+        api_version=api_version,
+        azure_endpoint=endpoint,
+        api_key=api_key,
+    )
+    runtime.azure_client = client
+    return client
+
+
+def openai_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
+    """Return the cached OpenAI client, creating it on first use."""
+    existing_client = runtime.openai_client
+    if isinstance(existing_client, AsyncOpenAI):
+        return existing_client
+
+    api_key = (
+        os.getenv(LISA_OPENAI_API_KEY_ENV, "").strip()
+        or os.getenv("OPENAI_API_KEY", "").strip()
+    )
+    if not api_key:
+        raise ValueError(
+            f"OpenAI is not configured. Set {LISA_OPENAI_API_KEY_ENV} "
+            "(or OPENAI_API_KEY)."
+        )
+    client = AsyncOpenAI(api_key=api_key)
+    runtime.openai_client = client
+    return client
+
+
+def google_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
+    """Return the cached Google Gemini (OpenAI-compatible) client, creating it on first use."""
+    existing_client = runtime.google_client
+    if isinstance(existing_client, AsyncOpenAI):
+        return existing_client
+
+    api_key = (
+        os.getenv(LISA_GOOGLE_API_KEY_ENV, "").strip()
+        or os.getenv("GOOGLE_API_KEY", "").strip()
+    )
+    endpoint = normalize_google_base_url(
+        os.getenv(LISA_GOOGLE_API_BASE_URL_ENV, "").strip()
+        or os.getenv("GOOGLE_API_BASE_URL", "").strip()
+    )
+    if not api_key:
+        raise ValueError(
+            f"Google Gemini is not configured. Set {LISA_GOOGLE_API_KEY_ENV} "
+            "(or GOOGLE_API_KEY)."
+        )
+    client = AsyncOpenAI(api_key=api_key, base_url=endpoint)
+    runtime.google_client = client
+    return client
+
+
+def ollama_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
+    """Return the cached Ollama (OpenAI-compatible) client, creating it on first use."""
+    existing_client = runtime.ollama_client
+    if isinstance(existing_client, AsyncOpenAI):
+        return existing_client
+
+    configured_host = (
+        os.getenv(LISA_OLLAMA_HOST_ENV, "").strip() or os.getenv("OLLAMA_HOST", "").strip()
+    )
+    base_url = _normalize_ollama_host_to_base_url(configured_host) or "http://localhost:11434/v1/"
+
+    api_key = (
+        os.getenv(LISA_OLLAMA_API_KEY_ENV, "").strip()
+        or os.getenv("OLLAMA_API_KEY", "").strip()
+    )
+    client = AsyncOpenAI(api_key=api_key or "ollama", base_url=base_url)
+    runtime.ollama_client = client
+    return client
+
+
+def anthropic_http_client_instance(runtime: HostRuntime) -> httpx.AsyncClient:
+    """Return the cached Anthropic HTTP client, creating it on first use."""
+    existing_client = runtime.anthropic_http_client
+    if isinstance(existing_client, httpx.AsyncClient):
+        return existing_client
+
+    configured_base_url = os.getenv(LISA_ANTHROPIC_BASE_URL_ENV, "").strip()
+    base_url = (
+        configured_base_url.rstrip("/") if configured_base_url else "https://api.anthropic.com"
+    )
+    client = httpx.AsyncClient(base_url=base_url, timeout=60.0)
+    runtime.anthropic_http_client = client
+    return client
+
+
+# ── Completion dispatch ──────────────────────────────────────────────
+
+
+async def complete_anthropic(
+    *,
+    runtime: HostRuntime,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None = None,
+    response_format: type[Any] | None = None,
+) -> StubCompletion:
+    """Execute an Anthropic provider completion via the HTTP API."""
+    api_key = (
+        os.getenv(LISA_ANTHROPIC_API_KEY_ENV, "").strip()
+        or os.getenv("ANTHROPIC_API_KEY", "").strip()
+    )
+    if not api_key:
+        raise ValueError(
+            f"Anthropic is not configured. Set {LISA_ANTHROPIC_API_KEY_ENV} "
+            "(or ANTHROPIC_API_KEY)."
+        )
+
+    system_prompt, anthropic_messages = _to_anthropic_payload_messages(messages)
+    payload: dict[str, Any] = {
+        "model": model_def.model_id,
+        "max_tokens": max_tokens,
+        "messages": anthropic_messages,
+    }
+    if temperature >= 0:
+        payload["temperature"] = temperature
+    if system_prompt:
+        payload["system"] = system_prompt
+
+    anthropic_tools = _to_anthropic_tools(tools)
+    if anthropic_tools:
+        payload["tools"] = anthropic_tools
+
+    if response_format is not None:
+        format_prompt = "Return only a valid JSON object with no Markdown wrapper."
+        payload["system"] = f"{payload.get('system', '').strip()}\n\n{format_prompt}".strip()
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": os.getenv(LISA_ANTHROPIC_VERSION_ENV, "").strip()
+        or "2023-06-01",
+    }
+    response = await anthropic_http_client_instance(runtime).post(
+        "/v1/messages",
+        headers=headers,
+        json=payload,
+    )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = _extract_anthropic_error_detail(exc.response)
+        message = (
+            f"Anthropic request failed ({exc.response.status_code}) for model "
+            f"'{model_def.model_id}': {detail}"
+        )
+        if exc.response.status_code == httpx.codes.NOT_FOUND:
+            message += (
+                " Check the model_id in models.yaml and confirm the model is available "
+                "for your Anthropic account."
+            )
+        raise httpx.HTTPStatusError(
+            message,
+            request=exc.request,
+            response=exc.response,
+        ) from exc
+
+    response_json = response.json()
+    content_blocks = response_json.get("content")
+    content = _extract_anthropic_text(content_blocks)
+    tool_calls = _extract_anthropic_tool_calls(content_blocks)
+    (
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        cached_tokens,
+        reasoning_tokens,
+    ) = extract_usage_counts(response_json.get("usage"))
+
+    content = _normalize_structured_content(content, response_format)
+
+    return StubCompletion(
+        content=content,
+        tool_calls=tool_calls,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cached_tokens=cached_tokens,
+        reasoning_tokens=reasoning_tokens,
+    )
+
+
+async def dispatch_openai_compatible_provider(
+    *,
+    runtime: HostRuntime,
+    model_def: StubModelDefinition,
+    kwargs: dict[str, Any],
+) -> Any:
+    """Dispatch to the correct OpenAI-compatible client based on provider name."""
+    provider = model_def.provider
+    if provider == "azure_openai":
+        return await azure_client_instance(runtime).chat.completions.create(**kwargs)
+    if provider == "openai":
+        return await openai_client_instance(runtime).chat.completions.create(**kwargs)
+    if provider == "ollama":
+        return await ollama_client_instance(runtime).chat.completions.create(**kwargs)
+    if provider == "google":
+        return await google_client_instance(runtime).chat.completions.create(**kwargs)
+    raise ValueError(f"Unsupported provider '{provider}' in host manifest.")
+
+
+async def complete_live(
+    *,
+    runtime: HostRuntime,
+    transport: TransportCallbacks | None = None,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None = None,
+    response_format: type[Any] | None = None,
+) -> StubCompletion:
+    """Execute a live provider completion against configured provider APIs."""
+    tport = transport or NullTransport()
+
+    stream_stage = (
+        runtime.config.streaming.enabled
+        and runtime.config.streaming.mode in {"stage", "hybrid"}
+    )
+    stage_label = f"{model_def.provider}:{model_def.model_id}"
+    started_at = time.perf_counter()
+    response_format_name = completion_response_format_name(response_format)
+    kwargs = build_completion_kwargs(
+        model_def=model_def,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        tools=tools,
+        response_format=response_format,
+    )
+
+    log_completion_request(
+        messages=messages,
+        model_def=model_def,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        response_format_name=response_format_name,
+        tools=tools,
+    )
+
+    if model_def.provider == "anthropic":
+        return await complete_live_anthropic(
+            runtime=runtime,
+            transport=tport,
+            messages=messages,
+            model_def=model_def,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+            response_format=response_format,
+            stream_stage=stream_stage,
+            stage_label=stage_label,
+            started_at=started_at,
+            response_format_name=response_format_name,
+        )
+
+    return await complete_live_openai_compatible(
+        runtime=runtime,
+        transport=tport,
+        messages=messages,
+        model_def=model_def,
+        response_format=response_format,
+        stream_stage=stream_stage,
+        stage_label=stage_label,
+        started_at=started_at,
+        response_format_name=response_format_name,
+        kwargs=kwargs,
+        tools=tools,
+    )
+
+
+async def complete_live_anthropic(
+    *,
+    runtime: HostRuntime,
+    transport: TransportCallbacks | None = None,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None,
+    response_format: type[Any] | None,
+    stream_stage: bool,
+    stage_label: str,
+    started_at: float,
+    response_format_name: str,
+) -> StubCompletion:
+    """Execute an Anthropic provider completion with stage callbacks."""
+    tport = transport or NullTransport()
+    try:
+        if stream_stage:
+            await tport.on_stage("model_call", {"label": stage_label})
+        result = await complete_anthropic(
+            runtime=runtime,
+            messages=messages,
+            model_def=model_def,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+            response_format=response_format,
+        )
+        if stream_stage:
+            await tport.on_stage("model_call_complete", {"label": stage_label})
+    except Exception as exc:  # pylint: disable=broad-except
+        if stream_stage:
+            await tport.on_stage("model_call_failed", {"label": stage_label})
+        elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+        log_completion_error(
+            exc=exc,
+            model_def=model_def,
+            response_format_name=response_format_name,
+            elapsed_ms=elapsed_ms,
+            messages=messages,
+            tools=tools,
+        )
+        raise
+
+    elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+    log_completion_response(
+        model_def=model_def,
+        response_format_name=response_format_name,
+        elapsed_ms=elapsed_ms,
+        result=result,
+    )
+    final_result = with_duration(result, elapsed_ms)
+    await publish_completion_usage(
+        model_def=model_def,
+        result=final_result,
+        elapsed_ms=elapsed_ms,
+        call_site="complete_live.anthropic",
+    )
+    return final_result
+
+
+async def complete_live_openai_compatible(
+    *,
+    runtime: HostRuntime,
+    transport: TransportCallbacks | None = None,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    response_format: type[Any] | None,
+    stream_stage: bool,
+    stage_label: str,
+    started_at: float,
+    response_format_name: str,
+    kwargs: dict[str, Any],
+    tools: list[dict[str, Any]] | None,
+) -> StubCompletion:
+    """Execute an OpenAI-compatible provider completion with stage callbacks."""
+    tport = transport or NullTransport()
+    kwargs["messages"] = messages
+    try:
+        if stream_stage:
+            await tport.on_stage("model_call", {"label": stage_label})
+        response = await dispatch_openai_compatible_provider(
+            runtime=runtime,
+            model_def=model_def,
+            kwargs=kwargs,
+        )
+        if stream_stage:
+            await tport.on_stage("model_call_complete", {"label": stage_label})
+    except Exception as exc:  # pylint: disable=broad-except
+        if stream_stage:
+            await tport.on_stage("model_call_failed", {"label": stage_label})
+        elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+        log_completion_error(
+            exc=exc,
+            model_def=model_def,
+            response_format_name=response_format_name,
+            elapsed_ms=elapsed_ms,
+            messages=messages,
+            tools=tools,
+        )
+        raise
+
+    choice = response.choices[0]
+    message = choice.message
+    content = _first_message_content(message)
+    tool_calls = _extract_completion_tool_calls(getattr(message, "tool_calls", None))
+    (
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        cached_tokens,
+        reasoning_tokens,
+    ) = extract_usage_counts(getattr(response, "usage", None))
+
+    content = _normalize_structured_content(content, response_format)
+
+    elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+    result = StubCompletion(
+        content=content,
+        tool_calls=tool_calls,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cached_tokens=cached_tokens,
+        reasoning_tokens=reasoning_tokens,
+        duration_ms=elapsed_ms,
+    )
+    log_completion_response(
+        model_def=model_def,
+        response_format_name=response_format_name,
+        elapsed_ms=elapsed_ms,
+        result=result,
+    )
+    await publish_completion_usage(
+        model_def=model_def,
+        result=result,
+        elapsed_ms=elapsed_ms,
+        call_site="complete_live.openai_compatible",
+    )
+    return result

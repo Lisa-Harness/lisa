@@ -1,0 +1,642 @@
+"""Transport-neutral MCP server config compilation.
+
+This module consolidates the logic for compiling MCP server configurations
+from the host manifest (``mcp_servers.yaml``) and any pack-contributed
+manifests discovered under the active SDK content roots. It produces
+``MCPClientConfig`` entries split into warm/cold lists for
+:class:`kernel.tools.mcp_client.MCPToolPool`, plus the content/catalog
+server configs that wire the kernel's content registry and operation/tool
+catalogs.
+
+All functions are transport-neutral: they take an explicit
+:class:`hosts.core.runtime.HostRuntime` (or its derived paths) rather than
+reading a global ``_RUNTIME_STATE`` dict. Transport hosts (CLI, web, VS
+Code) construct a runtime and call :func:`setup_framework` /
+:func:`compile_mcp_configs` during initialization.
+
+The compiled configs are stored on the runtime via
+``runtime.set_mcp_configs(warm, cold)``; pool creation/start/close lives
+in the host's async lifecycle (``runtime.start()`` / ``runtime.aclose()``),
+never in this module.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import logging
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+from hosts.core.config import HostConfig
+from hosts.core.content_roots import (
+    host_mcp_manifest_path,
+    infer_pack_package_name,
+    load_installed_packs_lock,
+    load_pack_policy_dict,
+    runtime_installed_pack_names,
+    sdk_content_roots,
+    unique_paths,
+)
+from hosts.core.runtime import HostRuntime
+from kernel.mcp_launch.compiler import compile_registry
+from kernel.mcp_launch.policy import MCPServerRegistry
+from kernel.mcp_launch.server_manifest import (
+    MCPServerManifestError,
+    load_mcp_server_manifest,
+)
+from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
+from kernel.tools.mcp_client import MCPClientConfig
+
+logger = logging.getLogger(__name__)
+
+# ── Environment-variable name constants ──────────────────────────────
+# Shared with the child ``lisa-content`` / ``lisa-catalog`` MCP servers
+# so they receive the same provider-preference and disabled-pack signals.
+
+_LISA_MODE_PROVIDER_PREFERENCES_ENV = "LISA_MODE_PROVIDER_PREFERENCES"
+_LISA_CONTENT_PROVIDER_PREFERENCES_ENV = "LISA_CONTENT_PROVIDER_PREFERENCES"
+_LISA_DISABLED_PACKS_ENV = "LISA_DISABLED_PACKS"
+
+# Repository root (three parents up from this module: hosts/core/mcp_pool.py).
+FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
+
+
+# ── Content / catalog server configs ─────────────────────────────────
+
+
+def build_content_mcp_config(
+    *,
+    data_dir: Path,
+    content_roots: list[Path],
+    disabled_packs: set[str],
+    host_manifest_path: Path,
+) -> MCPClientConfig:
+    """Build an MCPClientConfig that spawns lisa-content for discovered pack roots.
+
+    The kernel calls ``list_modes``, ``list_operations``, and
+    ``read_authored_text`` on this server to discover and load all content
+    packs. The server does all filesystem access; the kernel never touches
+    the filesystem directly.
+
+    ``SDK_CONTENT_ROOTS`` includes both the pack root (for modes/operations
+    discovery) and the ``content/`` subdirectory (so ``read_authored_text``
+    can resolve authored text assets like ``frontdoor/route.md`` without a
+    ``content/`` prefix).
+
+    Args:
+        data_dir: Host data directory (passed to the child as ``--data-dir``).
+        content_roots: Active SDK content roots (pack roots + configured roots).
+        disabled_packs: Normalized pack names to exclude in the child process.
+        host_manifest_path: Host MCP manifest path (for provider preferences).
+    """
+    content_provider_preferences = load_content_provider_preferences(host_manifest_path)
+    mode_preferences = content_provider_preferences.get("modes", {})
+    roots_for_child = content_roots
+    subdir_roots = [root / "content" for root in roots_for_child if (root / "content").is_dir()]
+    configured_roots = unique_paths([*roots_for_child, *subdir_roots])
+    env: dict[str, str] = {
+        "SDK_CONTENT_ROOTS": os.pathsep.join(str(root) for root in configured_roots)
+    }
+
+    # Pass disabled pack names to the lisa-content child process so that
+    # entry-point discovery in the child also excludes disabled packs.
+    if disabled_packs:
+        env[_LISA_DISABLED_PACKS_ENV] = os.pathsep.join(sorted(disabled_packs))
+
+    if any(content_provider_preferences.get(kind) for kind in ("modes", "operations", "tools")):
+        env[_LISA_CONTENT_PROVIDER_PREFERENCES_ENV] = json.dumps(
+            content_provider_preferences,
+            ensure_ascii=True,
+        )
+    if mode_preferences:
+        env[_LISA_MODE_PROVIDER_PREFERENCES_ENV] = json.dumps(mode_preferences, ensure_ascii=True)
+    return MCPClientConfig(
+        server_id="lisa-content",
+        command=sys.executable,
+        args=[
+            "-m",
+            "mcp_server.content.server",
+            "--data-dir",
+            str(data_dir),
+        ],
+        env=env,
+    )
+
+
+def build_catalog_mcp_config(*, content_config: MCPClientConfig, data_dir: Path) -> MCPClientConfig:
+    """Build an MCPClientConfig that spawns lisa-catalog for catalog tools.
+
+    The kernel calls ``list_modes``, ``list_operations``, and ``list_tools``
+    on this server to discover and load all content-pack catalogs. The
+    server does all filesystem access; the kernel never touches the
+    filesystem directly.
+
+    Shares the same env/roots setup as the content server — the only
+    difference is the module (``mcp_server.catalog.server`` vs
+    ``mcp_server.content.server``).
+    """
+    return MCPClientConfig(
+        server_id="lisa-catalog",
+        command=content_config.command,
+        args=[
+            "-m",
+            "mcp_server.catalog.server",
+            "--data-dir",
+            str(data_dir),
+        ],
+        env=content_config.env,
+    )
+
+
+# ── Framework wiring ─────────────────────────────────────────────────
+
+
+def setup_framework(runtime: HostRuntime) -> None:
+    """Wire the lisa-content and lisa-catalog MCP servers onto the runtime.
+
+    File-reading (``read_authored_text``) goes through ``lisa-content``.
+    Catalog queries (``list_modes``, ``list_operations``, ``list_tools``)
+    go through ``lisa-catalog``. The kernel never touches the filesystem
+    directly — it calls these tools on the appropriate server.
+
+    Order matters: operation MCP first, then operation callbacks, then
+    content MCP. ``validate_workflow_catalog`` calls
+    ``_validate_mode_operation_bindings`` which needs the operation
+    callbacks registered before it can validate.
+    """
+    config = runtime.config
+    data_dir = runtime.data_dir
+    manifest_path = _resolve_host_manifest_path(config)
+    roots = sdk_content_roots(
+        data_dir,
+        host_manifest_path=manifest_path,
+        always_on_packs=config.always_on_packs,
+    )
+    disabled_packs = load_disabled_pack_names(data_dir)
+    content_config = build_content_mcp_config(
+        data_dir=data_dir,
+        content_roots=roots,
+        disabled_packs=disabled_packs,
+        host_manifest_path=manifest_path,
+    )
+    catalog_config = build_catalog_mcp_config(content_config=content_config, data_dir=data_dir)
+
+    from kernel.ipsar_fsm import register_content_mcp, register_operation_callbacks  # noqa: PLC0415
+    from kernel.operations.registry import (  # noqa: PLC0415
+        get_operation_catalog,
+        register_operation_mcp,
+        execute_operation,
+    )
+    from kernel.tools.registry import register_tool_mcp  # noqa: PLC0415
+
+    register_operation_mcp(catalog_config)
+    register_tool_mcp(catalog_config)
+    register_operation_callbacks(get_operation_catalog, execute_operation)
+    register_content_mcp(catalog_config)
+
+    # Wire the MCPContentRegistry as the content registry for context frames.
+    from kernel.context.context_frames import set_content_registry  # noqa: PLC0415
+    from kernel.context.mcp_content_registry import MCPContentRegistry  # noqa: PLC0415
+
+    set_content_registry(MCPContentRegistry(content_config))
+
+    # Wire the production extension-evidence builder so the context broker's
+    # catalog builder picks up evidence from installed SDK extensions
+    # (Cloudflare, GitHub, Stripe) via entry-point discovery.
+    from sdk.context.extension_evidence_builder import (  # noqa: PLC0415
+        set_production_extension_evidence_builder,
+    )
+
+    set_production_extension_evidence_builder(
+        excluded_packs=load_disabled_pack_names(data_dir),
+    )
+
+
+def configure_runtime(runtime: HostRuntime) -> None:
+    """Reset cached provider clients on the runtime."""
+    runtime.azure_client = None
+    runtime.openai_client = None
+    runtime.anthropic_http_client = None
+    runtime.ollama_client = None
+    runtime.google_client = None
+
+
+# ── MCP tool server compilation ──────────────────────────────────────
+
+
+def build_mcp_tool_servers(runtime: HostRuntime) -> list[Any]:
+    """Build the approved MCP server registry and compile it to configs.
+
+    Registers all MCP servers (first-party and external) from
+    ``mcp_servers.yaml`` with the launch policy registry, then compiles
+    them into ``MCPClientConfig`` entries for ``MCPToolPool``. The
+    ``warm`` / ``required`` / ``disabled`` launch policy is declared in
+    YAML — no hardcoded server list or warm_ids set remains.
+
+    Memory is an MCP feature: ``lisa-memory`` serves the three core
+    memory calls, Mem0 (or any other HTTP/stdio memory server) serves the
+    same three plus its full surface, and the generic ``memory.*``
+    synthetic aliases route to the default backend via the pool. No
+    in-process memory seam remains.
+
+    All first-party servers use ``VENV_BIN`` runtime — they run as native
+    console_scripts entry points (``.venv/Scripts/lisa-*.exe``) with zero
+    subprocess overhead. No ``uv`` resolution needed.
+
+    Warm vs cold: servers marked ``warm: true`` in the manifest are
+    spawned eagerly at pool ``start()`` and kept alive across turns (with
+    bounded retry and event-driven restart). Servers with ``warm: false``
+    (default) are cold — they are **not** connected at start; they are
+    lazily connected on first ``list_tools`` or ``call_tool`` that needs
+    them.
+    """
+    warm_configs, cold_configs = compile_mcp_configs(runtime)
+    return [*warm_configs, *cold_configs]
+
+
+def compile_mcp_configs(runtime: HostRuntime) -> tuple[list[Any], list[Any]]:
+    """Compile all MCP servers from mcp_servers.yaml and split into (warm, cold).
+
+    All servers (first-party and external) are declared in
+    ``mcp_servers.yaml`` with their ``warm`` / ``required`` / ``disabled``
+    launch policy. The manifest loader produces ``MCPServerSpec`` entries
+    that carry these fields; the compiler passes them through to
+    ``MCPClientConfig``. No hardcoded server list or ``warm_ids`` set
+    remains — adding, removing, disabling, or changing a server's launch
+    policy is a YAML edit.
+
+    The manifest's memory-backend designation (which server_id backs the
+    generic ``memory.*`` aliases) is stashed on the runtime for
+    ``_build_turn_hooks`` to consume.
+    """
+    config = runtime.config
+    data_dir = str(runtime.data_dir)
+    workspace_root = str(FRAMEWORK_ROOT)
+    host_manifest_path = _resolve_host_manifest_path(config)
+    capability_preferences = load_capability_provider_preferences(host_manifest_path)
+    lock = load_installed_packs_lock(runtime.data_dir)
+    runtime_installed_packages = runtime_installed_pack_names(lock)
+    selected_capability_providers_raw = lock.get("selected_capability_providers")
+    selected_capability_providers = (
+        selected_capability_providers_raw
+        if isinstance(selected_capability_providers_raw, dict)
+        else {}
+    )
+
+    # Make FRAMEWORK_ROOT available for ${FRAMEWORK_ROOT} expansion in
+    # the manifest's path-like fields (venv_dir, command_path, etc.).
+    os.environ.setdefault("FRAMEWORK_ROOT", workspace_root)
+
+    registry = MCPServerRegistry()
+
+    # All host-owned servers (first-party) from mcp_servers.yaml. The
+    # manifest loader honors ``disabled: true`` by skipping entries, and
+    # parses ``warm`` / ``required`` onto the spec. The compiler passes
+    # them through to MCPClientConfig. The host manifest no longer carries
+    # a ``memory:`` section or memory server entries; memory backends +
+    # memory tool servers are contributed by the learning pack (see
+    # sdk/packs/learning/mcp_servers.yaml) and merged below.
+    specs, memory_config = load_mcp_server_manifest(host_manifest_path)
+    for spec in specs:
+        registry.register(spec)
+
+    excluded_pack_servers = load_pack_server_exclusions(host_manifest_path)
+    used_pack_slugs: set[str] = set()
+    memory_owner_slug: str | None = None
+    memory_candidates: list[dict[str, Any]] = []
+    roots = sdk_content_roots(
+        runtime.data_dir,
+        host_manifest_path=host_manifest_path,
+        always_on_packs=config.always_on_packs,
+    )
+    for root in roots:
+        pack_manifest_path = root / "mcp_servers.yaml"
+        if not pack_manifest_path.exists():
+            continue
+        try:
+            pack_specs, pack_memory = load_mcp_server_manifest(pack_manifest_path)
+        except MCPServerManifestError:
+            logger.warning(
+                "Skipping invalid pack MCP manifest at %s",
+                pack_manifest_path,
+                exc_info=True,
+            )
+            continue
+
+        pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
+        pack_package_name = infer_pack_package_name(root)
+
+        # A pack may contribute memory backends + memory tool servers. Ownership
+        # is selected deterministically from host policy + lock state.
+        if pack_memory.default_backend or pack_memory.backends:
+            memory_candidates.append(
+                {
+                    "pack_slug": pack_slug,
+                    "package_name": pack_package_name,
+                    "manifest_path": pack_manifest_path,
+                    "memory_config": pack_memory,
+                }
+            )
+
+        for spec in pack_specs:
+            if pack_server_excluded(pack_slug, spec.server_id, excluded_pack_servers):
+                logger.info(
+                    "Pack MCP server excluded by policy: %s.%s",
+                    pack_slug,
+                    spec.server_id,
+                )
+                continue
+
+            # Compile-time namespacing allows multiple packs to declare the same
+            # server_id without collision in the global registry.
+            namespaced = dataclasses.replace(spec, server_id=f"{pack_slug}.{spec.server_id}")
+            registry.register(namespaced)
+
+    selected_memory_provider = normalize_pack_name(
+        str(selected_capability_providers.get("memory") or "")
+    )
+    selected_memory_owner = select_capability_provider_owner(
+        candidates=memory_candidates,
+        selected_provider=selected_memory_provider,
+        preferred_providers=capability_preferences.get("memory", []),
+        runtime_installed_packages=runtime_installed_packages,
+    )
+    if selected_memory_provider and selected_memory_owner is None:
+        logger.warning(
+            "Selected memory provider %r is not active; falling back to preference order.",
+            selected_memory_provider,
+        )
+
+    if selected_memory_owner is not None:
+        memory_config = selected_memory_owner["memory_config"]
+        memory_owner_slug = str(selected_memory_owner.get("pack_slug") or "") or None
+        selected_manifest = str(selected_memory_owner.get("manifest_path") or "")
+        selected_package = str(selected_memory_owner.get("package_name") or "")
+        logger.info(
+            "Selected memory provider owner: package=%s slug=%s manifest=%s",
+            selected_package,
+            memory_owner_slug or "(none)",
+            selected_manifest,
+        )
+        for candidate in memory_candidates:
+            if candidate is selected_memory_owner:
+                continue
+            logger.info(
+                "Ignoring memory manifest from package=%s slug=%s at %s; selected owner is %s.",
+                candidate.get("package_name"),
+                candidate.get("pack_slug"),
+                candidate.get("manifest_path"),
+                selected_package,
+            )
+
+    runtime.memory_config = memory_config
+    runtime.memory_config_pack_slug = memory_owner_slug
+
+    compiled = compile_registry(registry, data_dir=data_dir, workspace_root=workspace_root)
+    warm = [c for c in compiled if c.warm]
+    cold = [c for c in compiled if not c.warm]
+    return warm, cold
+
+
+# ── Pack slug + policy helpers ───────────────────────────────────────
+
+
+def unique_pack_slug_for_root(root: Path, used_slugs: set[str]) -> str:
+    """Return a stable, filesystem-safe slug for one content-pack root."""
+    raw = root.name.strip().lower()
+    slug = re.sub(r"[^a-z0-9_-]+", "-", raw).strip("-") or "pack"
+    if slug not in used_slugs:
+        used_slugs.add(slug)
+        return slug
+
+    suffix = 2
+    while f"{slug}-{suffix}" in used_slugs:
+        suffix += 1
+    unique = f"{slug}-{suffix}"
+    used_slugs.add(unique)
+    return unique
+
+
+def load_pack_server_exclusions(host_manifest_path: Path) -> set[str]:
+    """Load host-side pack server exclusions from ``pack_policy.exclude_servers``.
+
+    Exclusion entries are normalized lowercase strings and may be expressed as:
+    - ``pack_slug.server_id`` (preferred)
+    - ``pack_slug:server_id``
+    - ``pack_slug/server_id``
+    - ``pack_slug.*`` (exclude all servers from one pack)
+    """
+    policy = load_pack_policy_dict(host_manifest_path, warning_subject="pack exclusion policy")
+    entries = policy.get("exclude_servers") or []
+    if not isinstance(entries, list):
+        logger.warning("pack_policy.exclude_servers must be a list in %s", host_manifest_path)
+        return set()
+
+    exclusions: set[str] = set()
+    for item in entries:
+        if not isinstance(item, str):
+            continue
+        normalized = item.strip().lower()
+        if normalized:
+            exclusions.add(normalized)
+    return exclusions
+
+
+def parse_provider_priority_mapping(raw: Any) -> dict[str, list[str]]:
+    """Parse a mapping of id -> ordered provider preference list."""
+    if not isinstance(raw, dict):
+        return {}
+
+    preferences: dict[str, list[str]] = {}
+    for key_raw, provider_values in raw.items():
+        if not isinstance(key_raw, str):
+            continue
+        key = key_raw.strip().lower()
+        if not key:
+            continue
+
+        providers: list[str]
+        if isinstance(provider_values, str):
+            normalized = normalize_pack_name(provider_values)
+            providers = [normalized] if normalized else []
+        elif isinstance(provider_values, list):
+            providers = [
+                normalize_pack_name(item)
+                for item in provider_values
+                if isinstance(item, str) and normalize_pack_name(item)
+            ]
+        else:
+            providers = []
+
+        if providers:
+            preferences[key] = providers
+
+    return preferences
+
+
+def load_content_provider_preferences(
+    host_manifest_path: Path,
+) -> dict[str, dict[str, list[str]]]:
+    """Load host provider preferences for content collisions.
+
+    Preferred shape:
+
+    ``pack_policy.preferred_providers.{modes|operations|tools}``
+
+    Legacy compatibility:
+
+    ``pack_policy.preferred_mode_providers`` (modes only)
+    """
+    policy = load_pack_policy_dict(
+        host_manifest_path, warning_subject="content provider preferences"
+    )
+
+    structured = policy.get("preferred_providers") or {}
+    if not isinstance(structured, dict):
+        structured = {}
+
+    mode_preferences = parse_provider_priority_mapping(structured.get("modes") or {})
+    operation_preferences = parse_provider_priority_mapping(structured.get("operations") or {})
+    tool_preferences = parse_provider_priority_mapping(structured.get("tools") or {})
+
+    if not mode_preferences:
+        mode_preferences = parse_provider_priority_mapping(
+            policy.get("preferred_mode_providers") or {}
+        )
+
+    return {
+        "modes": mode_preferences,
+        "operations": operation_preferences,
+        "tools": tool_preferences,
+    }
+
+
+def load_mode_provider_preferences(host_manifest_path: Path) -> dict[str, list[str]]:
+    """Backward-compatible mode-only provider preferences view."""
+    return load_content_provider_preferences(host_manifest_path).get("modes", {})
+
+
+def load_capability_provider_preferences(host_manifest_path: Path) -> dict[str, list[str]]:
+    """Load host capability-provider ownership preferences.
+
+    Shape: ``pack_policy.preferred_capability_providers.<capability_id>``
+    where each value is an ordered provider list.
+    """
+    policy = load_pack_policy_dict(
+        host_manifest_path, warning_subject="capability provider preferences"
+    )
+    return parse_provider_priority_mapping(policy.get("preferred_capability_providers") or {})
+
+
+def provider_identifiers_for_pack(*, package_name: str, pack_slug: str) -> set[str]:
+    """Return the set of normalized identifiers that refer to one pack."""
+    identifiers = {
+        normalize_pack_name(package_name),
+        normalize_pack_name(pack_slug),
+    }
+    normalized_package = normalize_pack_name(package_name)
+    if normalized_package.startswith("lisa-pack-"):
+        identifiers.add(normalized_package[len("lisa-pack-"):])
+    return {identifier for identifier in identifiers if identifier}
+
+
+def provider_preference_rank(
+    provider_identifiers: set[str],
+    preferred_providers: list[str],
+) -> int:
+    """Return the 0-based rank of the first matching preferred provider."""
+    for index, provider in enumerate(preferred_providers):
+        if provider in provider_identifiers:
+            return index
+    return len(preferred_providers) + 1
+
+
+def select_capability_provider_owner(
+    *,
+    candidates: list[dict[str, Any]],
+    selected_provider: str,
+    preferred_providers: list[str],
+    runtime_installed_packages: set[str],
+) -> dict[str, Any] | None:
+    """Select the owning pack for a capability from candidate packs.
+
+    Selection order:
+    1. An explicit ``selected_provider`` that matches a candidate's identifiers.
+    2. Preference rank, then runtime-installed status, then package/slug names.
+    """
+    if not candidates:
+        return None
+
+    selected = normalize_pack_name(selected_provider)
+    if selected:
+        for candidate in candidates:
+            identifiers = provider_identifiers_for_pack(
+                package_name=str(candidate.get("package_name") or ""),
+                pack_slug=str(candidate.get("pack_slug") or ""),
+            )
+            if selected in identifiers:
+                return candidate
+
+    def _sort_key(candidate: dict[str, Any]) -> tuple[int, int, str, str]:
+        package_name = normalize_pack_name(str(candidate.get("package_name") or ""))
+        pack_slug = normalize_pack_name(str(candidate.get("pack_slug") or ""))
+        identifiers = provider_identifiers_for_pack(
+            package_name=package_name, pack_slug=pack_slug
+        )
+        preference_rank = provider_preference_rank(identifiers, preferred_providers)
+        runtime_rank = 0 if package_name in runtime_installed_packages else 1
+        return (preference_rank, runtime_rank, package_name, pack_slug)
+
+    return min(candidates, key=_sort_key)
+
+
+def pack_server_excluded(
+    pack_slug: str, declared_server_id: str, exclusions: set[str]
+) -> bool:
+    """Return True when host policy excludes a pack-contributed server."""
+    slug = pack_slug.strip().lower()
+    server = declared_server_id.strip().lower()
+    if not slug or not server or not exclusions:
+        return False
+
+    dotted = f"{slug}.{server}"
+    return (
+        dotted in exclusions
+        or f"{slug}:{server}" in exclusions
+        or f"{slug}/{server}" in exclusions
+        or f"{slug}.*" in exclusions
+    )
+
+
+# ── Internal helpers ─────────────────────────────────────────────────
+
+
+def _resolve_host_manifest_path(config: HostConfig) -> Path:
+    """Return the host MCP manifest path from config or the core default."""
+    if config.mcp_manifest_path is not None:
+        return config.mcp_manifest_path
+    return host_mcp_manifest_path()
+
+
+__all__ = [
+    "build_catalog_mcp_config",
+    "build_content_mcp_config",
+    "build_mcp_tool_servers",
+    "compile_mcp_configs",
+    "configure_runtime",
+    "load_capability_provider_preferences",
+    "load_content_provider_preferences",
+    "load_mode_provider_preferences",
+    "load_pack_server_exclusions",
+    "pack_server_excluded",
+    "parse_provider_priority_mapping",
+    "provider_identifiers_for_pack",
+    "provider_preference_rank",
+    "select_capability_provider_owner",
+    "setup_framework",
+    "unique_pack_slug_for_root",
+]

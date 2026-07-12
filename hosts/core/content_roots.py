@@ -1,0 +1,383 @@
+"""Transport-neutral content root and pack activation discovery.
+
+This module consolidates the pure, stateless logic for:
+
+- Inferring pack package names from discovered content roots.
+- Resolving the "always-on" pack set from a host manifest's
+  ``pack_policy.always_on_packs``.
+- Reading the installed-pack provenance lock file to determine which packs
+  are runtime-installed and enabled.
+- Deciding which installed content roots are active for the current host
+  configuration.
+- Materialising the SDK content / authored-content / mode / operation root
+  lists that downstream MCP content servers and kernel discovery consume.
+
+All functions are transport-neutral: they take explicit ``data_dir`` and
+``host_manifest_path`` parameters rather than reading global runtime state.
+A transport host (Little Lisa, web host, VS Code host) wires its own
+``HostConfig``-derived paths into these functions at startup.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import tomllib
+from pathlib import Path
+from typing import Any
+
+import yaml
+from kernel.content_roots import (
+    discover_configured_content_roots,
+    discover_installed_content_roots,
+    resolve_content_subdir_roots,
+)
+from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
+
+logger = logging.getLogger(__name__)
+
+_PACK_LOCK_FILE_NAME = "installed-packs.json"
+_DEFAULT_ALWAYS_ON_PACKAGES: tuple[str, ...] = (
+    "lisa-pack-core",
+    "lisa-pack-learning",
+    "lisa-pack-search",
+)
+_RUNTIME_INSTALL_SOURCE_KINDS = {"package", "git", "local"}
+
+
+def unique_paths(paths: list[Path]) -> list[Path]:
+    """Return ``paths`` with duplicates (by resolved path) removed, order kept."""
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
+def host_mcp_manifest_path(manifest_path: Path | None = None) -> Path:
+    """Return the host MCP manifest path.
+
+    Defaults to ``hosts/core/mcp_servers.yaml`` when ``manifest_path`` is
+    not supplied. Transport hosts with a different manifest location pass
+    it explicitly.
+    """
+    if manifest_path is not None:
+        return manifest_path
+    return Path(__file__).resolve().parent / "mcp_servers.yaml"
+
+
+def infer_pack_package_name(root: Path) -> str:
+    """Infer the pack package name for one discovered content root."""
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            payload = {}
+        project = payload.get("project") if isinstance(payload, dict) else None
+        if isinstance(project, dict):
+            name = project.get("name")
+            if isinstance(name, str) and name.strip():
+                return normalize_pack_name(name)
+
+    root_name = normalize_pack_name(root.name)
+    if root.parent.name == "packs" and root.parent.parent.name == "sdk" and root_name:
+        return f"lisa-pack-{root_name}"
+    if root_name.startswith("lisa-pack-"):
+        return root_name
+    return root_name
+
+
+def pack_aliases(package_name: str, *, root: Path | None = None) -> set[str]:
+    """Build the set of alias strings that refer to ``package_name``."""
+    aliases: set[str] = set()
+    normalized = normalize_pack_name(package_name)
+    if normalized:
+        aliases.add(normalized)
+        if normalized.startswith("lisa-pack-"):
+            aliases.add(normalized[len("lisa-pack-"):])
+    if root is not None:
+        root_alias = normalize_pack_name(root.name)
+        if root_alias:
+            aliases.add(root_alias)
+    return aliases
+
+
+def load_pack_policy_dict(
+    host_manifest_path: Path, *, warning_subject: str
+) -> dict[str, Any]:
+    """Load and return ``pack_policy`` from the host manifest."""
+    if not host_manifest_path.exists():
+        return {}
+
+    try:
+        raw = yaml.safe_load(host_manifest_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        logger.warning(
+            "Failed to read %s from %s",
+            warning_subject,
+            host_manifest_path,
+            exc_info=True,
+        )
+        return {}
+
+    if not isinstance(raw, dict):
+        return {}
+    policy = raw.get("pack_policy") or {}
+    if not isinstance(policy, dict):
+        return {}
+    return policy
+
+
+def runtime_pack_lock_path(data_dir: Path) -> Path:
+    """Return the path to the installed pack provenance lock file."""
+    return data_dir / _PACK_LOCK_FILE_NAME
+
+
+def load_installed_packs_lock(data_dir: Path) -> dict[str, Any]:
+    """Load installed pack provenance metadata from disk."""
+    path = runtime_pack_lock_path(data_dir)
+    default_payload: dict[str, Any] = {
+        "packs": [],
+        "selected_capability_providers": {},
+    }
+    if not path.exists():
+        return default_payload
+    try:
+        decoded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default_payload
+    if not isinstance(decoded, dict):
+        return default_payload
+
+    packs = decoded.get("packs")
+    if not isinstance(packs, list):
+        packs = []
+
+    normalized_packs: list[dict[str, Any]] = []
+    for item in packs:
+        if not isinstance(item, dict):
+            continue
+        package_name = normalize_pack_name(str(item.get("package_name") or ""))
+        if not package_name:
+            continue
+        source_kind = str(item.get("source_kind") or "package").strip().lower() or "package"
+        normalized_packs.append(
+            {
+                **item,
+                "package_name": package_name,
+                "source_kind": source_kind,
+                "enabled": bool(item.get("enabled", True)),
+            }
+        )
+
+    selected = decoded.get("selected_capability_providers")
+    selected_map: dict[str, str] = {}
+    if isinstance(selected, dict):
+        for capability_raw, provider_raw in selected.items():
+            if not isinstance(capability_raw, str) or not isinstance(provider_raw, str):
+                continue
+            capability_id = capability_raw.strip().lower()
+            provider_id = normalize_pack_name(provider_raw)
+            if capability_id and provider_id:
+                selected_map[capability_id] = provider_id
+
+    return {
+        "packs": normalized_packs,
+        "selected_capability_providers": selected_map,
+    }
+
+
+def always_on_pack_names(
+    host_manifest_path: Path | None = None,
+    *,
+    always_on_packs: tuple[str, ...] | None = None,
+) -> set[str]:
+    """Resolve the set of always-on pack names.
+
+    ``always_on_packs`` overrides the module default; when ``None`` the
+    default tuple is used. Additional names are merged from the host
+    manifest's ``pack_policy.always_on_packs`` list.
+    """
+    defaults = always_on_packs if always_on_packs is not None else _DEFAULT_ALWAYS_ON_PACKAGES
+    always_on = {normalize_pack_name(name) for name in defaults}
+    manifest_path = host_mcp_manifest_path(host_manifest_path)
+    policy = load_pack_policy_dict(manifest_path, warning_subject="pack activation policy")
+
+    configured = policy.get("always_on_packs") or []
+    if not isinstance(configured, list):
+        return always_on
+
+    for item in configured:
+        if not isinstance(item, str):
+            continue
+        normalized = normalize_pack_name(item)
+        if normalized:
+            always_on.add(normalized)
+    return always_on
+
+
+def runtime_installed_pack_names(lock: dict[str, Any]) -> set[str]:
+    """Extract the set of runtime-installed package names from a lock dict."""
+    entries = lock.get("packs") if isinstance(lock, dict) else None
+    if not isinstance(entries, list):
+        return set()
+
+    runtime_installed: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        source_kind = str(entry.get("source_kind") or "").strip().lower()
+        if source_kind not in _RUNTIME_INSTALL_SOURCE_KINDS:
+            continue
+        package_name = normalize_pack_name(str(entry.get("package_name") or ""))
+        if package_name:
+            runtime_installed.add(package_name)
+    return runtime_installed
+
+
+def runtime_enabled_pack_map(lock: dict[str, Any]) -> dict[str, bool]:
+    """Build a ``{package_name: enabled}`` map from a lock dict."""
+    entries = lock.get("packs") if isinstance(lock, dict) else None
+    if not isinstance(entries, list):
+        return {}
+
+    enabled_map: dict[str, bool] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        package_name = normalize_pack_name(str(entry.get("package_name") or ""))
+        if not package_name:
+            continue
+        enabled_map[package_name] = bool(entry.get("enabled", True))
+    return enabled_map
+
+
+def pack_is_active(
+    package_name: str,
+    *,
+    always_on_packs: set[str],
+    runtime_installed: set[str],
+    enabled_map: dict[str, bool],
+) -> bool:
+    """Decide whether a pack is active given the resolved activation sets."""
+    if package_name in always_on_packs:
+        return True
+    if package_name in runtime_installed:
+        return enabled_map.get(package_name, True)
+    return enabled_map.get(package_name, False)
+
+
+def active_installed_pack_roots(
+    data_dir: Path,
+    *,
+    host_manifest_path: Path | None = None,
+    always_on_packs: tuple[str, ...] | None = None,
+) -> list[Path]:
+    """Return installed content roots whose pack is active for this host."""
+    lock = load_installed_packs_lock(data_dir)
+    always_on = always_on_pack_names(host_manifest_path, always_on_packs=always_on_packs)
+    runtime_installed = runtime_installed_pack_names(lock)
+    enabled_map = runtime_enabled_pack_map(lock)
+
+    active: list[Path] = []
+    for root in discover_installed_content_roots():
+        package_name = infer_pack_package_name(root)
+        if not package_name:
+            continue
+        if pack_is_active(
+            package_name,
+            always_on_packs=always_on,
+            runtime_installed=runtime_installed,
+            enabled_map=enabled_map,
+        ):
+            active.append(root)
+    return active
+
+
+def sdk_content_roots(
+    data_dir: Path,
+    *,
+    host_manifest_path: Path | None = None,
+    always_on_packs: tuple[str, ...] | None = None,
+) -> list[Path]:
+    """Return the full SDK content root list (active installed + configured)."""
+    roots = [
+        *active_installed_pack_roots(
+            data_dir,
+            host_manifest_path=host_manifest_path,
+            always_on_packs=always_on_packs,
+        ),
+        *discover_configured_content_roots(),
+    ]
+    return unique_paths([root for root in roots if root.is_dir()])
+
+
+def authored_content_roots(
+    data_dir: Path,
+    *,
+    host_manifest_path: Path | None = None,
+    always_on_packs: tuple[str, ...] | None = None,
+) -> list[Path]:
+    """Return the ``content/`` subdirectories that exist under SDK content roots."""
+    roots = sdk_content_roots(
+        data_dir,
+        host_manifest_path=host_manifest_path,
+        always_on_packs=always_on_packs,
+    )
+    return unique_paths([root / "content" for root in roots if (root / "content").is_dir()])
+
+
+def sdk_mode_roots(
+    data_dir: Path,
+    *,
+    host_manifest_path: Path | None = None,
+    always_on_packs: tuple[str, ...] | None = None,
+) -> list[Path]:
+    """Return the ``modes`` subdirectories across SDK content roots."""
+    roots = sdk_content_roots(
+        data_dir,
+        host_manifest_path=host_manifest_path,
+        always_on_packs=always_on_packs,
+    )
+    return unique_paths(resolve_content_subdir_roots(roots, "modes"))
+
+
+def sdk_operation_roots(
+    data_dir: Path,
+    *,
+    host_manifest_path: Path | None = None,
+    always_on_packs: tuple[str, ...] | None = None,
+) -> list[Path]:
+    """Return the ``operations`` subdirectories across SDK content roots."""
+    roots = sdk_content_roots(
+        data_dir,
+        host_manifest_path=host_manifest_path,
+        always_on_packs=always_on_packs,
+    )
+    return unique_paths(resolve_content_subdir_roots(roots, "operations"))
+
+
+__all__ = [
+    "active_installed_pack_roots",
+    "always_on_pack_names",
+    "authored_content_roots",
+    "host_mcp_manifest_path",
+    "infer_pack_package_name",
+    "load_disabled_pack_names",
+    "load_installed_packs_lock",
+    "load_pack_policy_dict",
+    "pack_aliases",
+    "pack_is_active",
+    "runtime_enabled_pack_map",
+    "runtime_installed_pack_names",
+    "runtime_pack_lock_path",
+    "sdk_content_roots",
+    "sdk_mode_roots",
+    "sdk_operation_roots",
+    "unique_paths",
+]
