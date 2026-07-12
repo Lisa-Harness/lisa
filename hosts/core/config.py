@@ -296,8 +296,30 @@ class HostConfig:
         )
 
         # ── User / session ─────────────────────────────────────────────
-        resolved_user_slug = user_slug.strip()
         resolved_session_context = session_context.strip()
+
+        # Resolve user_slug from the session context's ``name`` front
+        # matter so the thread file and status line show the declared
+        # name rather than a raw file path or slug. Falls back to the
+        # stem-based name from context_slug_to_thread_name when no
+        # front matter is present. When no explicit --session-context was
+        # passed AND no user_slug was given, auto-discover
+        # session_context.md or session_context/ in CWD or the data dir.
+        raw_user_slug = user_slug.strip()
+        if resolved_session_context or not raw_user_slug:
+            from hosts.core.session_context import resolve_session_context_identity
+
+            _resolved_ref, resolved_user_slug_from_ctx = (
+                resolve_session_context_identity(
+                    session_context=resolved_session_context,
+                    data_dir=resolved_data_dir,
+                )
+            )
+            if _resolved_ref:
+                resolved_session_context = _resolved_ref
+        else:
+            resolved_user_slug_from_ctx = ""
+        resolved_user_slug = resolved_user_slug_from_ctx or raw_user_slug
 
         # ── Surface ────────────────────────────────────────────────────
         resolved_surface_type = surface_type.strip() or "personal_dm"

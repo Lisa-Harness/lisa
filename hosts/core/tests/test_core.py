@@ -124,7 +124,8 @@ class TestHostRuntime:
         assert runtime.mcp_tool_pool is None
         assert runtime.tokens.session_turn_count == 0
 
-    def test_path_accessors(self, tmp_path: Path) -> None:
+    def test_path_accessors(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
         config = HostConfig.from_env(data_dir=str(tmp_path), user_slug="test-user")
         runtime = HostRuntime(config)
         assert runtime.data_dir == tmp_path
@@ -133,12 +134,14 @@ class TestHostRuntime:
         assert runtime.thread_path == tmp_path / "threads" / "test-user.jsonl"
         assert runtime.token_usage_path == tmp_path / "token-usage.jsonl"
 
-    def test_thread_path_none_when_no_user(self, tmp_path: Path) -> None:
+    def test_thread_path_none_when_no_user(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
         assert runtime.thread_path is None
 
-    def test_thread_path_none_when_no_thread(self, tmp_path: Path) -> None:
+    def test_thread_path_none_when_no_thread(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
         config = HostConfig.from_env(data_dir=str(tmp_path), user_slug="test", no_thread=True)
         runtime = HostRuntime(config)
         assert runtime.thread_path is None

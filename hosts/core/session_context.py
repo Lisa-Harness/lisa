@@ -35,6 +35,7 @@ Public surface
 - :func:`resolve_session_context_artifacts`
 - :func:`resolve_session_context_artifacts_session_context`
 - :func:`resolve_session_context_user_contexts`
+- :func:`resolve_session_context_identity`
 - :func:`extract_front_matter_thread_name`
 - :func:`load_selected_session_context_text`
 - :func:`load_active_session_context_text`
@@ -187,25 +188,71 @@ def resolve_session_context_user_contexts(
 
 
 def extract_front_matter_thread_name(path: Path) -> str | None:
-    """Return the display name from YAML front matter if present.
+    """Return the ``name`` value from YAML front matter if present.
 
-    Checks ``display_name`` first, then falls back to ``thread_name``.
     Delegates to the canonical kernel :func:`parse_front_matter` so the
     parsing logic stays in one place. Returns ``None`` when the file
-    cannot be read or no name is present.
+    cannot be read or no ``name`` key is present.
     """
     try:
         text = path.read_text(encoding="utf-8")
     except Exception:
         return None
     front_matter, _ = parse_front_matter(text)
-    display_name = front_matter.get("display_name")
-    if isinstance(display_name, str):
-        return display_name.strip() or None
-    thread_name = front_matter.get("thread_name")
-    if isinstance(thread_name, str):
-        return thread_name.strip() or None
+    name = front_matter.get("name")
+    if isinstance(name, str):
+        return name.strip() or None
     return None
+
+
+def resolve_session_context_identity(
+    *,
+    session_context: str,
+    data_dir: Path,
+) -> tuple[str, str]:
+    """Resolve a session-context reference into ``(ref, name)`` for identity.
+
+    Unlike :func:`resolve_session_context`, this never raises and does not
+    require a ``content_loader``. Used by :meth:`HostConfig.from_env` to
+    set ``user_slug`` (thread name + status display) from the session
+    context's ``name`` front matter.
+
+    Resolution:
+    1. Empty: auto-discover ``session_context.md`` or ``session_context/``
+       in cwd and data dir. Returns ``("", "")`` if nothing found.
+    2. Literal ``.md`` file: ``name`` from front matter, or stem.
+    3. Literal directory: name is ``"session_context"``.
+    4. Data-dir slug (``{data_dir}/{slug}.md``): ``name`` from front matter,
+       or stem.
+    5. Data-dir directory (``{data_dir}/{slug}/``): name is
+       ``"session_context"``.
+    6. Otherwise (registry slug or unknown): name is the slug stem.
+    """
+    s = session_context.strip()
+
+    if not s:
+        name, ref, _ = resolve_session_context_auto(data_dir=data_dir)
+        return ref, name
+
+    p = Path(s).expanduser()
+    if p.is_file():
+        if p.suffix.lower() == ".md":
+            name = extract_front_matter_thread_name(p) or context_slug_to_thread_name(s)
+            return str(p.absolute()), name
+        return s, context_slug_to_thread_name(s)
+    if p.is_dir():
+        return str(p.absolute()), "session_context"
+
+    md_path = data_dir / f"{s}.md"
+    if md_path.is_file():
+        name = extract_front_matter_thread_name(md_path) or context_slug_to_thread_name(s)
+        return str(md_path.absolute()), name
+    dir_path = data_dir / s
+    if dir_path.is_dir():
+        return str(dir_path.absolute()), "session_context"
+
+    # Registry slug or unknown — use stem-based name.
+    return s, context_slug_to_thread_name(s)
 
 
 def load_selected_session_context_text(

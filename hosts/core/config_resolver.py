@@ -352,17 +352,3 @@ def parse_streaming_option(raw_value: str) -> tuple[str, int]:
         return "none", 0
 
     return mode, delay
-
-
-# ── Session-context helpers ───────────────────────────────────────────
-
-
-def context_slug_to_thread_name(slug: str) -> str:
-    """Convert a path or slug to a thread name if no front matter is present."""
-    from pathlib import Path  # noqa: PLC0415
-
-    p = Path(slug)
-    name = p.stem
-    if name.lower() == "session_context":
-        return "session_context"
-    return name

@@ -428,7 +428,7 @@ async def test_handle_message_updates_runtime_token_counters(
 def test_resolve_session_context_reads_display_name_from_front_matter(tmp_path: Path) -> None:
     with TemporaryDirectory() as td:
         path = Path(td) / "ctx.md"
-        path.write_text('---\ndisplay_name: "Adam Migus"\n---\n# hello\n', encoding="utf-8")
+        path.write_text('---\nname: "Adam Migus"\n---\n# hello\n', encoding="utf-8")
         name, ref, is_file = session_context.resolve_session_context(
             session_context=str(path),
             data_dir=Path(td),
@@ -1235,7 +1235,7 @@ def test_little_lisa_discovers_and_runs_hello_world_pack_from_sdk_content_roots(
 
 def test_initialize_runtime_prefers_artifact_session_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     session_file = tmp_path / "session_context.md"
-    session_file.write_text('---\ndisplay_name: "Artifact User"\n---\n# hello\n', encoding="utf-8")
+    session_file.write_text('---\nname: "Artifact User"\n---\n# hello\n', encoding="utf-8")
 
     # Auto-discovery from the data directory.
     monkeypatch.chdir(tmp_path)
