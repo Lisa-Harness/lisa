@@ -508,9 +508,9 @@ async def test_default_hooks_are_noops() -> None:
         result = hooks.assemble_system_prompt("instruction", None)
         assert result == "instruction"
 
-    # Default assemble_user_context returns empty
+    # Default assemble_user_context returns empty (accepts optional manifest)
     if hooks.assemble_user_context:
-        result = hooks.assemble_user_context("m", "q", "b")
+        result = hooks.assemble_user_context("m", "q", "b", None)
         assert result == ""
 
     # Default mcp_tool_servers is an empty list
@@ -525,3 +525,44 @@ async def test_turn_result_struct() -> None:
     assert result.response_text == "ok"
     assert result.tool_call_count == 3
     assert result.iteration_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_turn_passes_capability_manifest_to_assemble_user_context() -> None:
+    """The turn runner compiles a CapabilityManifest from the live tool schemas
+    and passes it to assemble_user_context. This closes the Tooling Paradox:
+    the capability context now reflects exactly what is injected into the
+    current turn's function schema.
+    """
+    from kernel.models import CapabilityManifest
+
+    captured_manifests: list[CapabilityManifest | None] = []
+
+    def assemble_user(
+        _mode_id: str,
+        _query: str,
+        _pre_turn_briefing: str,
+        capability_manifest: CapabilityManifest | None = None,
+    ) -> str:
+        captured_manifests.append(capability_manifest)
+        return ""
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.assemble_user_context = assemble_user
+
+    result = await run_turn(mode_id="default", query="hello", hooks=hooks)
+
+    assert result.response_text == "Done."
+    assert len(captured_manifests) == 1
+    manifest = captured_manifests[0]
+    assert manifest is not None
+    assert isinstance(manifest, CapabilityManifest)
+    # The manifest should have at least one entry (operations from the catalog)
+    assert len(manifest.entries) >= 1
+    # Every entry should be marked available with confidence 1.0
+    for entry in manifest.entries:
+        assert entry.status == "available"
+        assert entry.confidence == 1.0

@@ -42,8 +42,10 @@ from kernel.ipsar_fsm import (
     run_mode_entry_operations,
     run_mode_pre_turn_operations,
 )
+from kernel.capability_manifest import compile_capability_manifest
 from kernel.models import (
     CallLedger,
+    CapabilityManifest,
     CheckpointBundle,
     OperationExecutionContext,
     OperationResult,
@@ -280,10 +282,16 @@ class TurnHooks:
     The app injects SYSTEM_PROMPT, turn-input contract, and planner block here.
     """
 
-    assemble_user_context: Callable[[str, str, str], str] | None = None
-    """Given mode_id: str, query: str, and pre_turn_briefing: str, return
-    additional user-context content injected before the query in the final
-    user message.  Default: empty string.
+    assemble_user_context: Callable[[str, str, str, CapabilityManifest | None], str] | None = None
+    """Given mode_id: str, query: str, pre_turn_briefing: str, and an optional
+    CapabilityManifest, return additional user-context content injected before
+    the query in the final user message.  Default: empty string.
+
+    The manifest is compiled from the live tool schemas for this turn — it is
+    the ground truth for what the model can actually call. Hosts should use it
+    to render a capability context that matches the injected function schema,
+    eliminating the "Tooling Paradox" where self-knowledge diverges from the
+    real tool surface.
 
     The app injects surface blocks, user blocks, live context, memory recall,
     self-model, architecture atlas, etc. here.
@@ -499,6 +507,7 @@ def _default_assemble_user_context(
     _mode_id: str,
     _query: str,
     _pre_turn_briefing: str,
+    _capability_manifest: CapabilityManifest | None = None,
 ) -> str:
     return ""
 
@@ -847,7 +856,7 @@ async def _run_turn_inner(
     resolve_model: Callable[[str], Any],
     complete: Callable[..., Awaitable[Any]],
     assemble_system: Callable[[str, str | None], str],
-    assemble_user: Callable[[str, str, str], str],
+    assemble_user: Callable[[str, str, str, CapabilityManifest | None], str],
     exec_op: Callable[..., Awaitable[OperationResult]],
     on_complete: Callable[[str, str, str, list[dict[str, Any]]], Awaitable[None]],
     mode_config: Any,
@@ -989,25 +998,11 @@ async def _run_turn_inner(
                 mode_config.stages[session.stage_id].instruction_body or None
             )
     system_prompt = assemble_system(mode_instruction, stage_instruction)
-    user_context = assemble_user(mode_id, query, pre_briefing)
-    memory_snippet = ""
-
-    # ── Phase 2: Tool loop ────────────────────────────────────────────
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-
-    # Build user message
-    user_parts: list[str] = []
-    if pre_briefing:
-        user_parts.append(f"## Pre-turn Briefing\n\n{pre_briefing}")
-    if memory_snippet:
-        user_parts.append(f"## Memory Recall\n\n{memory_snippet}")
-    if user_context:
-        user_parts.append(user_context)
-    user_parts.append(f"## User Query\n\n{query}")
-    user_content = "\n\n".join(user_parts)
-    messages.append({"role": "user", "content": user_content})
 
     # Build tool schemas for this turn — MCP tools + in-process operations.
+    # Done BEFORE assemble_user_context so the capability manifest reflects
+    # exactly what the model will see this turn (closes the Tooling Paradox:
+    # self-knowledge context now matches the injected function schema).
     # MCP tools are translated from the pool's discovered tool surface.
     # Operations are advertised directly from the in-process catalog so the
     # model sees their real Parameters schema (not an arguments_json wrapper
@@ -1053,6 +1048,30 @@ async def _run_turn_inner(
     )
     if is_workflow:
         tool_schemas.extend(get_transition_tool_schema())
+
+    # Compile a deterministic capability manifest from the live tool schemas
+    # so the model's self-knowledge context matches what it can actually call.
+    capability_manifest = compile_capability_manifest(
+        tool_schemas, mode_config=mode_config
+    )
+
+    user_context = assemble_user(mode_id, query, pre_briefing, capability_manifest)
+    memory_snippet = ""
+
+    # ── Phase 2: Tool loop ────────────────────────────────────────────
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+
+    # Build user message
+    user_parts: list[str] = []
+    if pre_briefing:
+        user_parts.append(f"## Pre-turn Briefing\n\n{pre_briefing}")
+    if memory_snippet:
+        user_parts.append(f"## Memory Recall\n\n{memory_snippet}")
+    if user_context:
+        user_parts.append(user_context)
+    user_parts.append(f"## User Query\n\n{query}")
+    user_content = "\n\n".join(user_parts)
+    messages.append({"role": "user", "content": user_content})
 
     # Resolve preferred model
     preferred_model_id = (

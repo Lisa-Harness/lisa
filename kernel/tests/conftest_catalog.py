@@ -20,6 +20,9 @@ _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs"
 _LEARNING_ROOT: Path = (
     Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "learning"
 ).resolve()
+_SEARCH_ROOT: Path = (
+    Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "search"
+).resolve()
 
 
 def _make_catalog_mcp_config() -> MCPClientConfig:
@@ -34,7 +37,7 @@ def _make_catalog_mcp_config() -> MCPClientConfig:
             str(_CORE_ROOT),
         ],
         env={
-            "SDK_CONTENT_ROOTS": f"{_CORE_ROOT};{_LEARNING_ROOT}",
+            "SDK_CONTENT_ROOTS": f"{_CORE_ROOT};{_LEARNING_ROOT};{_SEARCH_ROOT}",
         },
     )
 
