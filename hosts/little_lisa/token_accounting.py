@@ -40,40 +40,21 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# ── Coercion helpers ──────────────────────────────────────────────────
+# Import coercion helpers from kernel
+from kernel.token_usage import (
+    coerce_non_negative_float,
+    coerce_non_negative_int,
+    ensure_usage_entry,
+)
 
-
-def coerce_non_negative_int(value: Any) -> int:
-    """Safely convert *value* to a non-negative int (0 on failure)."""
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def coerce_non_negative_float(value: Any) -> float:
-    """Safely convert *value* to a non-negative float (0.0 on failure)."""
-    try:
-        return max(0.0, float(value or 0.0))
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def ensure_usage_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    """Ensure one breakdown dict has every token/time field.
-
-    Pre-existing entries (from earlier sessions or tests with the old
-    3-key schema) are upgraded in place so the accumulator math never
-    raises ``KeyError`` on a missing ``cached_tokens`` etc.
-    """
-    entry.setdefault("prompt_tokens", 0)
-    entry.setdefault("completion_tokens", 0)
-    entry.setdefault("total_tokens", 0)
-    entry.setdefault("cached_tokens", 0)
-    entry.setdefault("reasoning_tokens", 0)
-    entry.setdefault("duration_ms", 0.0)
-    entry.setdefault("latency_ms", 0)
-    return entry
+__all__ = [
+    "apply_turn_usage",
+    "coerce_non_negative_float",
+    "coerce_non_negative_int",
+    "ensure_usage_entry",
+    "format_session_exit_summary_lines",
+    "record_session_turn",
+]
 
 
 # ── Usage-entry accumulator ───────────────────────────────────────────

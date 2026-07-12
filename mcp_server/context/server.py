@@ -27,7 +27,7 @@ from kernel.models import (
     ContextBrokerResponse,
     UnifiedState,
 )
-from sdk.context.context_broker import (
+from kernel.context.context_broker import (
     build_ambient_facts,
     render_context_packet_markdown,
     select_ranked_context,

@@ -189,7 +189,7 @@ from kernel.tools.registry import (  # noqa: E402
     register_tool_mcp,
 )
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn  # noqa: E402
-from sdk.context.context_broker import (  # noqa: E402
+from kernel.context.context_broker import (  # noqa: E402
     build_ambient_facts,
     render_context_packet_markdown,
     select_ranked_context,
@@ -242,25 +242,7 @@ try:
         generate_desktop_token,
         run_desktop_server,
     )
-    from .provider_completions import (
-        _extract_anthropic_error_detail,
-        _extract_anthropic_text,
-        _extract_anthropic_tool_calls,
-        _extract_completion_tool_calls,
-        _extract_json_object,
-        _first_message_content,
-        _normalize_ollama_host_to_base_url,
-        _normalize_response_format,
-        _normalize_structured_content,
-        _to_anthropic_payload_messages,
-        _to_anthropic_tools,
-    )
-    from .provider_completions import (
-        _extract_usage_counts as _extract_usage_counts_helper,
-    )
-    from .provider_completions import (
-        _normalize_google_base_url as _normalize_google_base_url_helper,
-    )
+
     from .tray import TrayConfig, run_tray
 except ImportError:  # pragma: no cover - direct script execution fallback
     import frontdoor_routing  # type: ignore[no-redef]
@@ -271,25 +253,6 @@ except ImportError:  # pragma: no cover - direct script execution fallback
         DesktopCallbacks,
         generate_desktop_token,
         run_desktop_server,
-    )
-    from provider_completions import (  # type: ignore[no-redef]
-        _extract_anthropic_error_detail,
-        _extract_anthropic_text,
-        _extract_anthropic_tool_calls,
-        _extract_completion_tool_calls,
-        _extract_json_object,
-        _first_message_content,
-        _normalize_ollama_host_to_base_url,
-        _normalize_response_format,
-        _normalize_structured_content,
-        _to_anthropic_payload_messages,
-        _to_anthropic_tools,
-    )
-    from provider_completions import (
-        _extract_usage_counts as _extract_usage_counts_helper,
-    )
-    from provider_completions import (
-        _normalize_google_base_url as _normalize_google_base_url_helper,
     )
     from tray import TrayConfig, run_tray  # type: ignore[no-redef]
 
@@ -2629,11 +2592,6 @@ def _anthropic_http_client_instance() -> httpx.AsyncClient:
 
 
 # _normalize_response_format, _extract_completion_tool_calls, _extract_usage_counts,
-# _parse_tool_arguments, _to_anthropic_tools, _to_anthropic_payload_messages,
-# _extract_anthropic_text, _extract_anthropic_tool_calls, _first_message_content,
-# _extract_json_object, _normalize_structured_content, _extract_anthropic_error_detail,
-# _normalize_ollama_host_to_base_url are imported from .provider_completions
-# and re-exported here for test compatibility.
 
 
 async def _complete_anthropic(
@@ -2731,8 +2689,36 @@ async def _complete_anthropic(
 def _extract_usage_counts(
     usage_payload: Any,
 ) -> tuple[int, int, int, int, int]:
-    """Extract token usage — delegates to provider_completions with the shared coercer."""
-    return _extract_usage_counts_helper(usage_payload, _coerce_non_negative_int)
+    """Extract token usage from provider response.
+    
+    Returns: (prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens)
+    """
+    if usage_payload is None:
+        return (0, 0, 0, 0, 0)
+    
+    # Extract from provider response structure (varies by provider)
+    if isinstance(usage_payload, dict):
+        # OpenAI-compatible format
+        prompt_tokens = _coerce_non_negative_int(usage_payload.get("prompt_tokens"))
+        completion_tokens = _coerce_non_negative_int(usage_payload.get("completion_tokens"))
+        total_tokens = _coerce_non_negative_int(usage_payload.get("total_tokens"))
+        cached_tokens = _coerce_non_negative_int(
+            (usage_payload.get("prompt_tokens_details") or {}).get("cached_tokens")
+        )
+        reasoning_tokens = _coerce_non_negative_int(
+            (usage_payload.get("completion_tokens_details") or {}).get("reasoning_tokens")
+        )
+        return (prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens)
+    
+    # Try attribute access (Anthropic SDK format)
+    prompt_tokens = _coerce_non_negative_int(getattr(usage_payload, "input_tokens", None))
+    completion_tokens = _coerce_non_negative_int(getattr(usage_payload, "output_tokens", None))
+    total_tokens = _coerce_non_negative_int(getattr(usage_payload, "total_tokens", None))
+    cached_tokens = _coerce_non_negative_int(
+        getattr(getattr(usage_payload, "input_tokens_details", None), "cache_read_input_tokens", None)
+    )
+    reasoning_tokens = 0  # Anthropic doesn't have reasoning tokens yet
+    return (prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens)
 
 
 async def _complete_live(

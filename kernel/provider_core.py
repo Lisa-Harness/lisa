@@ -11,6 +11,8 @@ import httpx
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 from pydantic import BaseModel as PydanticBaseModel
 
+from kernel.token_usage import coerce_non_negative_int
+
 ChatMessages = list[dict[str, Any]]
 ProviderStreamEvent = dict[str, Any]
 ProviderEventEmitter = Callable[[ProviderStreamEvent], Any]
@@ -394,15 +396,7 @@ def extract_openai_embeddings(response: Any) -> list[list[float]]:
     return vectors
 
 
-def _coerce_usage_int(value: Any) -> int:
-    """Coerce one token-count value to a non-negative int, returning 0 on failure."""
 
-    if value is None:
-        return 0
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
 
 
 def extract_openai_completion_usage(response: Any) -> CompletionUsage | None:
@@ -418,17 +412,17 @@ def extract_openai_completion_usage(response: Any) -> CompletionUsage | None:
         raw_usage = response.get("usage")
     if raw_usage is None:
         return None
-    prompt_tokens = _coerce_usage_int(
+    prompt_tokens = coerce_non_negative_int(
         getattr(raw_usage, "prompt_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("prompt_tokens")
     )
-    completion_tokens = _coerce_usage_int(
+    completion_tokens = coerce_non_negative_int(
         getattr(raw_usage, "completion_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("completion_tokens")
     )
-    total_tokens = _coerce_usage_int(
+    total_tokens = coerce_non_negative_int(
         getattr(raw_usage, "total_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("total_tokens")
@@ -443,7 +437,7 @@ def extract_openai_completion_usage(response: Any) -> CompletionUsage | None:
     )
     cached_tokens = 0
     if prompt_details is not None:
-        cached_tokens = _coerce_usage_int(
+        cached_tokens = coerce_non_negative_int(
             getattr(prompt_details, "cached_tokens", None)
             if not isinstance(prompt_details, dict)
             else prompt_details.get("cached_tokens")
@@ -456,7 +450,7 @@ def extract_openai_completion_usage(response: Any) -> CompletionUsage | None:
     )
     reasoning_tokens = 0
     if completion_details is not None:
-        reasoning_tokens = _coerce_usage_int(
+        reasoning_tokens = coerce_non_negative_int(
             getattr(completion_details, "reasoning_tokens", None)
             if not isinstance(completion_details, dict)
             else completion_details.get("reasoning_tokens")
@@ -482,17 +476,17 @@ def extract_responses_usage(response: Any) -> CompletionUsage | None:
     if raw_usage is None:
         return None
 
-    prompt_tokens = _coerce_usage_int(
+    prompt_tokens = coerce_non_negative_int(
         getattr(raw_usage, "input_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("input_tokens")
     )
-    completion_tokens = _coerce_usage_int(
+    completion_tokens = coerce_non_negative_int(
         getattr(raw_usage, "output_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("output_tokens")
     )
-    total_tokens = _coerce_usage_int(
+    total_tokens = coerce_non_negative_int(
         getattr(raw_usage, "total_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("total_tokens")
@@ -507,7 +501,7 @@ def extract_responses_usage(response: Any) -> CompletionUsage | None:
     )
     cached_tokens = 0
     if input_details is not None:
-        cached_tokens = _coerce_usage_int(
+        cached_tokens = coerce_non_negative_int(
             getattr(input_details, "cached_tokens", None)
             if not isinstance(input_details, dict)
             else input_details.get("cached_tokens")
@@ -520,7 +514,7 @@ def extract_responses_usage(response: Any) -> CompletionUsage | None:
     )
     reasoning_tokens = 0
     if output_details is not None:
-        reasoning_tokens = _coerce_usage_int(
+        reasoning_tokens = coerce_non_negative_int(
             getattr(output_details, "reasoning_tokens", None)
             if not isinstance(output_details, dict)
             else output_details.get("reasoning_tokens")
@@ -545,12 +539,12 @@ def extract_openai_embedding_usage(response: Any) -> CompletionUsage | None:
         raw_usage = response.get("usage")
     if raw_usage is None:
         return None
-    prompt_tokens = _coerce_usage_int(
+    prompt_tokens = coerce_non_negative_int(
         getattr(raw_usage, "prompt_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("prompt_tokens")
     )
-    total_tokens = _coerce_usage_int(
+    total_tokens = coerce_non_negative_int(
         getattr(raw_usage, "total_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("total_tokens")
@@ -1362,9 +1356,9 @@ def _extract_gemini_usage(data: dict[str, Any]) -> CompletionUsage | None:
     usage_meta = data.get("usageMetadata")
     if not usage_meta:
         return None
-    prompt_tokens = _coerce_usage_int(usage_meta.get("promptTokenCount"))
-    completion_tokens = _coerce_usage_int(usage_meta.get("candidatesTokenCount"))
-    total_tokens = _coerce_usage_int(usage_meta.get("totalTokenCount"))
+    prompt_tokens = coerce_non_negative_int(usage_meta.get("promptTokenCount"))
+    completion_tokens = coerce_non_negative_int(usage_meta.get("candidatesTokenCount"))
+    total_tokens = coerce_non_negative_int(usage_meta.get("totalTokenCount"))
     if total_tokens <= 0:
         total_tokens = prompt_tokens + completion_tokens
     if prompt_tokens == 0 and completion_tokens == 0:
