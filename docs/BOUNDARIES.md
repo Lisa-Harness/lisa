@@ -32,7 +32,7 @@ A real host must inject concrete implementations for runtime seams:
 
 - Model completion and model resolution callbacks.
 - Tool catalog and tool execution callbacks.
-- Blob/object storage implementation.
+- Blob/object storage implementation (via MCP storage server wiring; `lisa-storage` is the built-in).
 - Memory store and recall implementation when memory operations are enabled.
 - Browser automation implementation when surf operations are enabled.
 - Transport adapter for chat, proactive delivery, and rich attachments.

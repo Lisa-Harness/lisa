@@ -44,6 +44,7 @@ from kernel.ipsar_fsm import (
 )
 from kernel.models import (
     CallLedger,
+    CheckpointBundle,
     OperationExecutionContext,
     OperationResult,
     SurfaceContext,
@@ -201,6 +202,39 @@ class ContextSeams:
     ``PassThroughOutputGuard`` allows everything. Hosts override with a real
     implementation. Blocked outputs are replaced with a safe fallback and
     audited via ``event_bus.publish("guardrail.audit", ...)``."""
+
+
+@dataclass(slots=True)
+class CheckpointTuning:
+    """Host-level knobs for automatic checkpoint creation.
+
+    Checkpoints are turn-anchored, not wall-clock: automatic checkpoints
+    fire in the post-turn phase (Phase 3.6), piggybacking on the existing
+    turn cadence. No background scheduler, no cron. Stage transitions are
+    the primary trigger (cheap, infrequent, high-value); every-N-turns is
+    secondary and off by default.
+
+    All fields have sensible defaults so a host can construct
+    ``CheckpointTuning()`` and let the framework fill in the rest. The
+    default is ``enabled=False`` — a host must opt in.
+    """
+
+    enabled: bool = False
+    on_stage_transition: bool = True
+    every_n_turns: int = 0
+    explicit: bool = True
+
+    @classmethod
+    def from_mapping(cls, mapping: dict[str, Any] | None) -> CheckpointTuning:
+        """Build a tuning from a host config dict. Unknown keys are ignored."""
+        if not mapping:
+            return cls()
+        return cls(
+            enabled=bool(mapping.get("enabled", False)),
+            on_stage_transition=bool(mapping.get("on_stage_transition", True)),
+            every_n_turns=int(mapping.get("every_n_turns", 0) or 0),
+            explicit=bool(mapping.get("explicit", True)),
+        )
 
 
 @dataclass
@@ -394,6 +428,25 @@ class TurnHooks:
     and the reflect_self operation can access live runtime state. Default:
     None (self-model telemetry fields stay empty)."""
 
+    # ── Checkpoints (turn-anchored, not wall-clock) ──────────────────────
+    checkpoint_tuning: CheckpointTuning | None = None
+    """``CheckpointTuning`` instance that controls automatic checkpoint
+    creation. Default: ``None`` means "no automatic checkpoints." A host
+    opts in by setting ``CheckpointTuning(enabled=True, ...)``. Explicit
+    checkpoints (``/checkpoint <label>``) are always available when the
+    ``on_checkpoint`` hook is wired, regardless of this tuning."""
+
+    on_checkpoint: Callable[[CheckpointBundle], Awaitable[None]] | None = None
+    """Called after a qualifying turn (stage transition or every-N-turns
+    boundary) with a ``CheckpointBundle`` built from the current
+    ``UnifiedState`` and ``WorkflowSessionState``. The host persists it —
+    typically by calling ``save_checkpoint`` on ``lisa-storage`` through
+    the MCP tool pool. Default: None (no checkpointing).
+
+    Checkpoint failures (exceptions in this hook) are caught and logged;
+    they do not break the turn. The kernel builds the bundle; the host
+    owns persistence and turn-history population."""
+
 
 # ── Streaming adapter ──────────────────────────────────────────────────────
 
@@ -468,6 +521,89 @@ async def _default_on_turn_complete(
 
 async def _default_slice(_policy: SlicePolicy) -> SliceOutcome:
     return SliceOutcome()
+
+
+# ── Checkpoint helpers ──────────────────────────────────────────────────────
+
+
+def _should_checkpoint(
+    *,
+    tuning: CheckpointTuning | None,
+    transitioned_to: str | None,
+    is_workflow: bool,
+    hooks: TurnHooks,
+) -> bool:
+    """Return True when this turn qualifies for an automatic checkpoint.
+
+    Rules (all require ``tuning.enabled`` and ``hooks.on_checkpoint`` wired):
+    - Stage transition: ``transitioned_to is not None`` and
+      ``tuning.on_stage_transition`` is True.
+    - Every-N-turns: ``tuning.every_n_turns > 0`` and the current workflow
+      session's ``turn_count`` is a positive multiple of ``every_n_turns``.
+    """
+    if tuning is None or not tuning.enabled:
+        return False
+    if transitioned_to is not None and tuning.on_stage_transition:
+        return True
+    if tuning.every_n_turns > 0 and is_workflow and hooks.workflow_session is not None:
+        session = hooks.workflow_session()
+        if session is not None:
+            count = getattr(session, "turn_count", 0)
+            if count > 0 and count % tuning.every_n_turns == 0:
+                return True
+    return False
+
+
+def _build_checkpoint_bundle(
+    *,
+    mode_id: str,
+    transitioned_to: str | None,
+    is_workflow: bool,
+    hooks: TurnHooks,
+) -> CheckpointBundle | None:
+    """Build a CheckpointBundle from the current host state.
+
+    Reads ``UnifiedState`` via ``hooks.state_provider`` (if wired) and
+    ``WorkflowSessionState`` via ``hooks.workflow_session`` (if wired).
+    Returns None when neither is available — there's nothing to checkpoint.
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    unified_state_dict: dict[str, Any] = {}
+    if hooks.state_provider is not None:
+        state = hooks.state_provider()
+        if state is not None:
+            try:
+                unified_state_dict = state.model_dump(mode="json")
+            except Exception as exc:  # pylint: disable=broad-except
+                _log.warning("checkpoint: state_provider dump failed: %s", exc)
+
+    workflow_session_dict: dict[str, Any] = {}
+    stage_id = ""
+    turn_count = 0
+    if is_workflow and hooks.workflow_session is not None:
+        session = hooks.workflow_session()
+        if session is not None:
+            try:
+                workflow_session_dict = session.model_dump(mode="json")
+            except Exception as exc:  # pylint: disable=broad-except
+                _log.warning("checkpoint: workflow_session dump failed: %s", exc)
+            stage_id = str(getattr(session, "stage_id", "") or "")
+            turn_count = int(getattr(session, "turn_count", 0) or 0)
+
+    if not unified_state_dict and not workflow_session_dict:
+        return None
+
+    return CheckpointBundle(
+        checkpoint_id=uuid.uuid4().hex[:16],
+        created_at=datetime.now(UTC).isoformat(),
+        mode_id=mode_id,
+        stage_id=stage_id or (transitioned_to or ""),
+        turn_count=turn_count,
+        unified_state=unified_state_dict,
+        workflow_session_state=workflow_session_dict,
+    )
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────
@@ -1308,6 +1444,33 @@ async def _run_turn_inner(
         )
         if post_turn_outcome is not None:
             hooks.last_slice_finished_at = time.monotonic()
+
+    # ── Phase 3.6: Checkpoint evaluation ─────────────────────────────
+    # Turn-anchored, not wall-clock. Fires after the post-turn slice on
+    # non-blocked turns when the host has wired checkpointing. The kernel
+    # builds a CheckpointBundle from current state + workflow session;
+    # the host's on_checkpoint hook persists it. Checkpoint failures are
+    # caught — they must not break the turn.
+    if not turn_blocked and hooks.on_checkpoint is not None:
+        tuning = hooks.checkpoint_tuning
+        should_checkpoint = _should_checkpoint(
+            tuning=tuning,
+            transitioned_to=transitioned_to,
+            is_workflow=is_workflow,
+            hooks=hooks,
+        )
+        if should_checkpoint:
+            try:
+                bundle = _build_checkpoint_bundle(
+                    mode_id=mode_id,
+                    transitioned_to=transitioned_to,
+                    is_workflow=is_workflow,
+                    hooks=hooks,
+                )
+                if bundle is not None:
+                    await hooks.on_checkpoint(bundle)
+            except Exception as exc:  # pylint: disable=broad-except
+                _log.warning("on_checkpoint hook failed: %s", exc)
 
     return TurnResult(
         response_text=content,

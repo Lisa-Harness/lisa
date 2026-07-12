@@ -58,7 +58,7 @@ Key principles:
 | --- | --- |
 | `operations/` | Operation registry for discovering and executing operations from packs. |
 | `intake/` | External data collection: `SignalConnector` (stateless monitors), `DataSource` (stateful fetchers), and `DomainKnowledgeProvider` (pack-owned orientation material). |
-| `seams/` | Host-injection protocols: `BlobIO`, `StateProvider`, `MemoryStore`, `BrowserAutomation`, `DataSourceHooks`, `InputGuard`, `OutputGuard`, and completion/tool/operation callbacks. |
+| `seams/` | Host-injection protocols: `StateProvider`, `InputGuard`, `OutputGuard`, `ContentRegistry`, `ModelPolicy`, `ProviderGatewayProvider`, `EventBus`, `DataSanitizer`, `ExtensionEvidenceBuilder`, and completion/tool/operation callbacks. Storage is an MCP feature (`lisa-storage`), not a kernel seam. |
 | `synthesis/` | Post-collection intelligence pipeline: extension-owned stages (local analysis → synthesis → memory) and stage execution contracts. |
 | `testing/` | `extension_harness` for validating connectors and data sources without a host app. |
 | `context/` | Context seam defaults (guards, event bus, content registry). Context brokerage lives in MCP. |

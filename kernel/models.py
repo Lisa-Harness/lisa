@@ -1256,6 +1256,33 @@ class WorkflowSessionState(BaseModel):
     stage_data: dict[str, Any] = Field(default_factory=dict)
 
 
+class CheckpointBundle(BaseModel):
+    """Serialized snapshot of kernel + host state at a named point.
+
+    The kernel builds this from ``UnifiedState`` (via the host's
+    ``state_provider``) and ``WorkflowSessionState`` (via the host's
+    ``workflow_session`` hook) at checkpoint time. The host's
+    ``on_checkpoint`` hook persists it — typically by calling
+    ``save_checkpoint`` on the ``lisa-storage`` MCP server through the
+    tool pool. On restore, the host deserializes the bundle and feeds
+    the ``unified_state`` and ``workflow_session_state`` dicts back into
+    the turn runner's next invocation.
+
+    ``turn_history`` is host-owned: the kernel leaves it empty; the host
+    appends its own conversation thread before persisting.
+    """
+
+    checkpoint_id: str
+    created_at: str
+    label: str = ""
+    mode_id: str = ""
+    stage_id: str = ""
+    turn_count: int = 0
+    unified_state: dict[str, Any] = Field(default_factory=dict)
+    workflow_session_state: dict[str, Any] = Field(default_factory=dict)
+    turn_history: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class WorkflowTransitionRequest(BaseModel):
     """Structured transition request returned by model tool-calling."""
 

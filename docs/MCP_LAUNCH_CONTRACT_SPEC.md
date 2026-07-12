@@ -713,14 +713,43 @@ The adapter opens a stdio session, calls `validate_input`/`validate_output`,
 parses the JSON response, and returns a `GuardResult`. The server handles
 audit logging internally — the adapter does not need an event bus.
 
-### `kernel/context/mcp_storage.py`
+### `lisa-storage` — file I/O and checkpoint server
 
-```python
-class MCPBlobIO:
-    """BlobIO backed by an MCP storage server."""
-    def __init__(self, config: MCPClientConfig) -> None: ...
-    # All 22 BlobIO methods, each calling the corresponding MCP tool.
-```
+**Package**: `mcp_server/storage/`
+**Entry point**: `mcp_server.storage.server:main`
+**Script**: `lisa-storage`
+
+Storage is an MCP feature, not a kernel seam. There is no `BlobIO` Protocol in
+`kernel/seams/protocols.py` and no `MCPBlobIO` adapter in `kernel/context/`.
+The model calls `read_file` / `write_file` / etc. directly through the MCP tool
+pool like any other tool server. Hosts that need full blob semantics (leases,
+content-type, range reads) wire their own MCP server — the kernel does not care.
+
+Tools (9 total — 6 file I/O + 3 checkpoint):
+
+| Tool | Args | Returns |
+| --- | --- | --- |
+| `read_file` | `path: str`, `encoding: str = "utf-8"` | Text content or JSON error |
+| `write_file` | `path: str`, `content: str` | `{"ok": true, "path": "...", "bytes": N}` |
+| `list_files` | `prefix: str = ""` | JSON array of relative paths |
+| `delete_file` | `path: str` | `{"ok": true}` |
+| `stat_file` | `path: str` | `{"size": N, "modified": "...", "is_dir": bool}` |
+| `make_dir` | `path: str` | `{"ok": true}` |
+| `save_checkpoint` | `bundle: dict` | `{"checkpoint_id": "..."}` |
+| `restore_checkpoint` | `checkpoint_id: str` | Full bundle JSON |
+| `list_checkpoints` | `prefix: str = ""` | JSON array of summary objects |
+
+Behavior:
+
+- File sandbox: all paths scoped to `data_dir / "files"`. Path traversal
+  (`..` segments, absolute paths) is rejected. Binary files return a clear
+  error on `read_file`.
+- Checkpoints: stored as JSON under `data_dir / "checkpoints" / "{id}.json"`.
+  The kernel builds `CheckpointBundle` from `UnifiedState` +
+  `WorkflowSessionState`; the host's `on_checkpoint` hook calls
+  `save_checkpoint` through the MCP tool pool.
+- `--readonly` disables `write_file`, `delete_file`, `make_dir`, and
+  `save_checkpoint`. Read-only hosts get file access without mutation.
 
 ### `kernel/context/mcp_content_registry.py`
 
@@ -745,9 +774,12 @@ Add to `kernel/context/__init__.py`:
 
 ```python
 from kernel.context.mcp_guard import MCPInputGuard, MCPOutputGuard
-from kernel.context.mcp_storage import MCPBlobIO
 from kernel.context.mcp_content_registry import MCPContentRegistry
 ```
+
+> **Note:** There is no `MCPBlobIO` adapter. Storage is an MCP feature
+> (`lisa-storage`), not a kernel seam. The model calls `read_file` /
+> `write_file` / `save_checkpoint` etc. directly through the MCP tool pool.
 
 ### ContextSeams
 
@@ -875,7 +907,7 @@ All existing first-party servers must adopt the shared CLI contract.
 ### Phase 3: Tier 1 servers
 
 1. Create `mcp_server/src/lisa_guard/server.py` — guard server (3 tools).
-2. Create `mcp_server/src/lisa_storage/server.py` — storage server (22 tools).
+2. Create `mcp_server/storage/server.py` — storage server (9 tools: 6 file I/O + 3 checkpoint).
 3. Create `mcp_server/src/lisa_content/server.py` — content server (3 tools).
 4. Create `mcp_server/src/lisa_guard/py.typed`, `lisa_storage/py.typed`,
     `lisa_content/py.typed`.
@@ -883,9 +915,9 @@ All existing first-party servers must adopt the shared CLI contract.
 ### Phase 4: Kernel adapters
 
 1. Create `kernel/context/mcp_guard.py` — `MCPInputGuard`, `MCPOutputGuard`.
-2. Create `kernel/context/mcp_storage.py` — `MCPBlobIO`.
-3. Create `kernel/context/mcp_content_registry.py` — `MCPContentRegistry`.
-4. Update `kernel/context/__init__.py` — add 4 new exports.
+2. Create `kernel/context/mcp_content_registry.py` — `MCPContentRegistry`.
+3. Update `kernel/context/__init__.py` — add new exports.
+   (No `MCPBlobIO` — storage is an MCP feature, not a kernel seam.)
 
 ### Phase 5: Host wiring
 
@@ -902,7 +934,7 @@ All existing first-party servers must adopt the shared CLI contract.
 3. Create `kernel/tests/test_mcp_launch.py` — test policy validation,
     runtime adapter compilation, env/cwd projection, tool filtering.
 4. Create `kernel/tests/test_mcp_adapters.py` — test `MCPInputGuard`,
-    `MCPOutputGuard`, `MCPBlobIO`, `MCPContentRegistry` via in-process MCP.
+    `MCPOutputGuard`, `MCPContentRegistry` via in-process MCP.
 5. Update `mcp_server/tests/test_mcp_servers.py` — update existing tests
     for new CLI contract (pass `--data-dir` in test fixtures).
 
@@ -964,7 +996,7 @@ All existing first-party servers must adopt the shared CLI contract.
 | `mcp_server/src/lisa_guard/server.py` | Guard server (3 tools) |
 | `mcp_server/src/lisa_guard/py.typed` | Type marker |
 | `mcp_server/src/lisa_storage/__init__.py` | Storage server package |
-| `mcp_server/src/lisa_storage/server.py` | Storage server (22 tools) |
+| `mcp_server/src/lisa_storage/server.py` | Storage server (9 tools: 6 file + 3 checkpoint) |
 | `mcp_server/src/lisa_storage/py.typed` | Type marker |
 | `mcp_server/src/lisa_content/__init__.py` | Content server package |
 | `mcp_server/src/lisa_content/server.py` | Content server (3 tools) |
@@ -974,7 +1006,6 @@ All existing first-party servers must adopt the shared CLI contract.
 | `kernel/mcp_launch/compiler.py` | Runtime adapter + config compiler |
 | `kernel/mcp_launch/tool_filter.py` | Tool allow/deny filter |
 | `kernel/context/mcp_guard.py` | `MCPInputGuard` + `MCPOutputGuard` |
-| `kernel/context/mcp_storage.py` | `MCPBlobIO` |
 | `kernel/context/mcp_content_registry.py` | `MCPContentRegistry` |
 | `kernel/tests/test_mcp_launch.py` | Policy + compiler tests |
 | `kernel/tests/test_mcp_adapters.py` | Adapter tests |

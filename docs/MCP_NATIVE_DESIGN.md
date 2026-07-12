@@ -154,8 +154,8 @@ private app:
 | `conversation_digest.py` | `app.model_policy`, `app.providers`, `app.config`, `app.content_registry` | `ModelPolicy` + `ProviderGatewayProvider` + `ContentRegistry` | `ManifestModelPolicy` + `KernelProviderGatewayProvider` + `DiskContentRegistry` |
 | `memory_consolidation.py` | `app.config`, `app.memory_store` | `settings` + `MemoryStore` (already a seam) | n/a |
 | `memory_recall.py` | `app.model_policy`, `app.providers`, `app.config`, `app.content_registry`, `app.memory_store` | `ModelPolicy` + `ProviderGatewayProvider` + `ContentRegistry` + `MemoryStore` | all four defaults |
-| `memory_store.py` | `app.config`, `app.blob_client`, `app.providers`, `app.data_sanitizer`, `app.event_bus` | `settings` + `BlobIO` + `ProviderGatewayProvider` + `DataSanitizer` + `EventBus` | `InProcessEventBus` + `PassThroughSanitizer` |
-| `passive_intelligence.py` | `app.blob_client`, `app.config`, `app.memory_store`, `app.thread_store` | `BlobIO` + `settings` + `MemoryStore` + `ThreadStore` | n/a |
+| `memory_store.py` | `app.config`, `app.blob_client`, `app.providers`, `app.data_sanitizer`, `app.event_bus` | `settings` + `ProviderGatewayProvider` + `DataSanitizer` + `EventBus` | `InProcessEventBus` + `PassThroughSanitizer` (storage via `lisa-storage` MCP) |
+| `passive_intelligence.py` | `app.blob_client`, `app.config`, `app.memory_store`, `app.thread_store` | `settings` + `ThreadStore` (storage via `lisa-storage` MCP) | n/a |
 
 ### Wiring through `TurnHooks`
 
@@ -193,7 +193,8 @@ guard for the breach that exists today.
 | Tool schema for the provider | Kernel translator | MCP schema → OpenAI/Anthropic |
 | Operation execution | `kernel.operations.registry` | in-process (Protocol) |
 | Memory recall/store | `MemoryStore` Protocol | in-process; MCP is one impl |
-| State, blob, browser | `BlobIO` / `StateProvider` / `BrowserAutomation` | in-process (Protocol) |
+| State, browser | `StateProvider` / `BrowserAutomation` | in-process (Protocol) |
+| File I/O, checkpoints | `lisa-storage` MCP server | MCP (not a kernel seam) |
 
 Operations are **not** tools. Operations are internal reusable behaviors called by
 modes (pre-turn, post-turn, entry). Tools are LLM-callable capabilities surfaced in the
@@ -412,9 +413,9 @@ These stay as in-process `Protocol` seams, **not** MCP:
 | Seam | Why not MCP |
 | --- | --- |
 | `MemoryStore` | MCP-only; the store lives behind the `lisa-context` MCP server. |
-| `BlobIO` | Host-owned storage layout; in-process. |
 | `StateProvider` | Hot cache of `UnifiedState`; in-process. |
 | `BrowserAutomation` | Playwright session; in-process. |
+| ~~`BlobIO`~~ | **Removed.** Storage is an MCP feature (`lisa-storage`); not a kernel seam. |
 | `ContentRegistry` | Filesystem reads; in-process. |
 | `ModelPolicy` | Alias resolution; in-process. |
 | `ProviderGateway` | HTTP to provider; in-process. |
