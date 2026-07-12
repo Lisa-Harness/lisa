@@ -31,6 +31,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from kernel.mcp_launch.compiler import compile_registry
+from kernel.mcp_launch.policy import MCPServerRegistry
+from kernel.mcp_launch.server_manifest import (
+    MCPServerManifestError,
+    load_mcp_server_manifest,
+)
+from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
+from kernel.tools.mcp_client import MCPClientConfig
+
 from hosts.core.config import HostConfig
 from hosts.core.content_roots import (
     host_mcp_manifest_path,
@@ -42,14 +51,6 @@ from hosts.core.content_roots import (
     unique_paths,
 )
 from hosts.core.runtime import HostRuntime
-from kernel.mcp_launch.compiler import compile_registry
-from kernel.mcp_launch.policy import MCPServerRegistry
-from kernel.mcp_launch.server_manifest import (
-    MCPServerManifestError,
-    load_mcp_server_manifest,
-)
-from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
-from kernel.tools.mcp_client import MCPClientConfig
 
 logger = logging.getLogger(__name__)
 
@@ -187,9 +188,9 @@ def setup_framework(runtime: HostRuntime) -> None:
 
     from kernel.ipsar_fsm import register_content_mcp, register_operation_callbacks  # noqa: PLC0415
     from kernel.operations.registry import (  # noqa: PLC0415
+        execute_operation,
         get_operation_catalog,
         register_operation_mcp,
-        execute_operation,
     )
     from kernel.tools.registry import register_tool_mcp  # noqa: PLC0415
 
