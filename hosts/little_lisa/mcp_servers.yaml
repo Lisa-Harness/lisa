@@ -99,11 +99,28 @@ servers:
     warm: true
     required: true
     tool_policy:
+      # File-reading tools are internal-only; the kernel's
+      # MCPContentRegistry calls them via its own stdio sessions.
+      allowed_tools: []
+
+  - server_id: lisa-catalog
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    warm: true
+    required: true
+    tool_policy:
       allowed_tools:
         - list_modes
         - list_operations
         - list_tools
+
   # ── First-party servers (cold — lazily connected on first use) ──
   - server_id: lisa-guard
     runtime_kind: venv_bin
     venv_dir: "${FRAMEWORK_ROOT}/.venv"
+
+  - server_id: lisa-storage
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    warm: false
+    data_dir_subdir: storage
