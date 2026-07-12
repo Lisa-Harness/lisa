@@ -84,14 +84,16 @@ pack_policy:
 # as <server_id>.<tool_name>.
 servers:
   # ── First-party servers (warm — always on, load-bearing) ──
-  - server_id: lisa-context
+  - server_id: lisa-catalog
     runtime_kind: venv_bin
     venv_dir: "${FRAMEWORK_ROOT}/.venv"
-    cli_args: ["--timezone", "${LITTLE_LISA_TIMEZONE}"]
     warm: true
     required: true
     tool_policy:
-      allowed_tools: []
+      allowed_tools:
+        - list_modes
+        - list_operations
+        - list_tools
 
   - server_id: lisa-content
     runtime_kind: venv_bin
@@ -103,16 +105,14 @@ servers:
       # MCPContentRegistry calls them via its own stdio sessions.
       allowed_tools: []
 
-  - server_id: lisa-catalog
+  - server_id: lisa-context
     runtime_kind: venv_bin
     venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    cli_args: ["--timezone", "${LITTLE_LISA_TIMEZONE}"]
     warm: true
     required: true
     tool_policy:
-      allowed_tools:
-        - list_modes
-        - list_operations
-        - list_tools
+      allowed_tools: []
 
   # ── First-party servers (cold — lazily connected on first use) ──
   - server_id: lisa-guard
