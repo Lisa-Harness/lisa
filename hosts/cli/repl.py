@@ -155,6 +155,17 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
     console._lisa_runtime = runtime  # type: ignore[attr-defined]
     transport = RichTransport(console=console, debug=runtime.config.debug)
 
+    # Set the initial route preview so the status line shows the
+    # default model before the first turn is executed.
+    from hosts.core.commands import set_runtime_route_preview
+    from hosts.core.commands import frontdoor_model_alias
+
+    set_runtime_route_preview(
+        runtime,
+        mode_id="default",
+        preferred_model_id=frontdoor_model_alias(),
+    )
+
     # Start the MCP pool inside this event loop (anyio cancel-scope binding).
     try:
         await runtime.start()

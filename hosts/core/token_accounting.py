@@ -203,8 +203,24 @@ def _extract_frontdoor_tokens(frontdoor_routing: dict[str, Any] | None) -> dict[
     tokens["reasoning"] = coerce_non_negative_int(frontdoor_routing.get("planner_reasoning_tokens"))
     tokens["duration_ms"] = coerce_non_negative_float(frontdoor_routing.get("planner_duration_ms"))
     tokens["latency_ms"] = coerce_non_negative_int(frontdoor_routing.get("planner_latency_ms"))
-    tokens["model_id"] = str(frontdoor_routing.get("resolved_model_id") or "").strip()
+    tokens["model_id"] = _extract_frontdoor_model_id(frontdoor_routing)
     return tokens
+
+
+def _extract_frontdoor_model_id(frontdoor_routing: dict[str, Any]) -> str:
+    """Extract the resolved model ID from the front-door debug dict.
+
+    The debug dict has ``resolved_model`` as a nested dict with ``model_id``,
+    not a flat ``resolved_model_id`` key. Check both shapes for safety.
+    """
+    # Nested shape (from frontdoor_routing._resolve_planner_model)
+    resolved_model = frontdoor_routing.get("resolved_model")
+    if isinstance(resolved_model, dict):
+        mid = str(resolved_model.get("model_id") or "").strip()
+        if mid:
+            return mid
+    # Flat shape (from run_context["frontdoor_route"])
+    return str(frontdoor_routing.get("resolved_model_id") or "").strip()
 
 
 def _combine_turn_tokens(main: dict[str, Any], fd: dict[str, Any]) -> dict[str, Any]:
