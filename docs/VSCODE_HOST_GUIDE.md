@@ -40,11 +40,20 @@ flowchart TD
 
 ```powershell
 cd hosts\vscode\extension
-npm install
-npm run compile
+pnpm install
+pnpm run compile
 ```
 
 This produces `out/extension.js` from `src/extension.ts`.
+
+> **pnpm**: The extension uses `pnpm` as its package manager. The
+> `package.json` declares `"packageManager": "pnpm@9.7.1"` and the
+> `.npmrc` sets `node-linker=hoisted` so VS Code can resolve the
+> compiled extension's dependencies. If you don't have pnpm:
+>
+> ```powershell
+> npm install -g pnpm
+> ```
 
 ### Step 2: Install the extension in VS Code
 
@@ -63,15 +72,21 @@ participant should appear in the Chat view.
 
 ```powershell
 # Install vsce if you don't have it
-npm install -g @vscode/vsce
+pnpm add -g @vscode/vsce
 
-# Package
+# Package (pnpm runs the prepublish script automatically)
 cd hosts\vscode\extension
-vsce package
+vsce package --no-dependencies
 
 # Install
 code --install-extension lisa-framework-0.1.0.vsix
 ```
+
+> **`--no-dependencies`**: When packaging with `vsce`, pass this flag
+> to skip dependency resolution — `pnpm` handles that via `pnpm install`.
+> The extension has no runtime npm dependencies (only devDependencies
+> for TypeScript compilation), so the `.vsix` only needs the compiled
+> `out/extension.js`.
 
 ### Step 3: Chat with @lisa
 
