@@ -99,7 +99,7 @@ def _resolve_tool_catalog() -> dict[str, Any]:
 
 
 def register_operation_mcp(config: MCPClientConfig) -> None:
-    """Inject the ``lisa-content`` MCP server config for operation catalog loading.
+    """Inject the ``lisa-catalog`` MCP server config for operation catalog loading.
 
     Rebuilds and re-validates ``_OPERATION_CATALOG`` immediately by calling
     ``list_operations`` on the server. The server does all filesystem access;

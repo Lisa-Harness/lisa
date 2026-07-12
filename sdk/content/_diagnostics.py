@@ -1,4 +1,4 @@
-"""Catalog diagnostics for the ``lisa-content`` MCP server.
+"""Catalog diagnostics for the ``lisa-catalog`` MCP server.
 
 Collects failures that are normally silently swallowed (broken entry points,
 missing metadata siblings, malformed front-matter, missing ``_mode.md``) so
@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from kernel.content_roots import _CONTENT_ROOT_ENTRY_POINT_GROUP
+from kernel.content_roots import CONTENT_ROOT_ENTRY_POINT_GROUP
 from kernel.pack_activation import load_disabled_pack_names_from_env
 
 from sdk.content._catalog import (
@@ -44,7 +44,7 @@ def _collect_root_discovery_failures(
     """Re-scan entry points and capture load failures + missing dirs."""
     failures: list[dict[str, Any]] = []
     try:
-        eps = importlib.metadata.entry_points(group=_CONTENT_ROOT_ENTRY_POINT_GROUP)
+        eps = importlib.metadata.entry_points(group=CONTENT_ROOT_ENTRY_POINT_GROUP)
     except Exception:  # pylint: disable=broad-except
         failures.append({
             "source": "entry_point_group",

@@ -5,8 +5,10 @@ lived under ``kernel/context/``. Hosts inject them through
 ``TurnHooks.context_seams``; the production app may override any of them
 with its own implementation.
 
-All content access is mediated through the ``lisa-content`` MCP server.
-The kernel never touches the filesystem directly for content loading.
+All content access is mediated through the ``lisa-content`` and
+``lisa-catalog`` MCP servers. The kernel never touches the filesystem
+directly for content loading — ``lisa-content`` handles authored-text
+reading; ``lisa-catalog`` handles mode/operation/tool catalogs and diagnostics.
 """
 
 from kernel.context.data_sanitizer import PassThroughSanitizer

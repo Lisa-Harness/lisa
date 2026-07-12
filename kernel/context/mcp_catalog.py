@@ -1,11 +1,11 @@
 """MCP-backed catalog adapters for workflow modes and operations.
 
-Calls ``list_modes`` and ``list_operations`` on a ``lisa-content`` MCP server
+Calls ``list_modes`` and ``list_operations`` on a ``lisa-catalog`` MCP server
 via per-call stdio sessions, deserializes the JSON into kernel model objects,
 and for runtime operations imports the implementation module locally.
 
 The kernel never touches the filesystem for content discovery; it delegates
-all scanning and front-matter parsing to the ``lisa-content`` server.
+all scanning and front-matter parsing to the ``lisa-catalog`` server.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def _extract_text(result: Any) -> str:
 
 
 class MCPModeCatalog:
-    """Workflow mode catalog backed by the ``lisa-content`` MCP server.
+    """Workflow mode catalog backed by the ``lisa-catalog`` MCP server.
 
     Calls ``list_modes`` and deserializes the JSON response into
     ``WorkflowModeConfig`` objects.
@@ -176,7 +176,7 @@ def _deserialize_stage(data: dict[str, Any]) -> WorkflowStageConfig:
 
 
 class MCPOperationCatalog:
-    """Operation catalog backed by the ``lisa-content`` MCP server.
+    """Operation catalog backed by the ``lisa-catalog`` MCP server.
 
     Calls ``list_operations`` and deserializes the JSON response into
     ``OperationDefinition`` objects. For runtime operations, the
@@ -330,7 +330,7 @@ def _import_operation_module(module_path: str) -> Any:
 
 
 class MCPToolCatalog:
-    """Internal tool catalog backed by the ``lisa-content`` MCP server.
+    """Internal tool catalog backed by the ``lisa-catalog`` MCP server.
 
     Calls ``list_tools`` and deserializes the JSON response into
     ``ToolDefinition`` objects. The implementation module is imported locally

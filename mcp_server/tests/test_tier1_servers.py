@@ -97,7 +97,7 @@ async def test_content_lists_three_tools(content_setup: None) -> None:
 
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
-    assert {"read_authored_text", "list_content_roots", "invalidate_cache"}.issubset(names)
+    assert {"read_authored_text", "list_content_roots", "invalidate_cache"} == names
 
 
 @pytest.mark.asyncio
@@ -127,7 +127,7 @@ async def test_content_list_roots_returns_array(content_setup: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_content_lists_all_eight_tools(content_setup: None) -> None:
+async def test_content_lists_all_three_tools(content_setup: None) -> None:
     from mcp_server.content.server import mcp
 
     tools = await mcp.list_tools()
@@ -135,13 +135,8 @@ async def test_content_lists_all_eight_tools(content_setup: None) -> None:
     assert {
         "read_authored_text",
         "list_content_roots",
-        "list_modes",
-        "list_operations",
-        "list_tools",
         "invalidate_cache",
-        "invalidate_catalog",
-        "list_catalog_diagnostics",
-    } <= names
+    } == names
 
 
 @pytest.mark.asyncio
@@ -228,9 +223,36 @@ async def test_content_cache_invalidates_on_roots_change(tmp_path: Path) -> None
     assert _tool_text(result_b) == "from root B"
 
 
+# ── lisa_catalog ────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def catalog_setup() -> None:
+    from mcp_server.catalog.server import init_catalog, reset_catalog_state
+
+    reset_catalog_state()
+    init_catalog()
+
+
 @pytest.mark.asyncio
-async def test_content_invalidate_catalog(content_setup: None) -> None:
-    from mcp_server.content.server import mcp
+async def test_catalog_lists_all_tools(catalog_setup: None) -> None:
+    from mcp_server.catalog.server import mcp
+
+    tools = await mcp.list_tools()
+    names = {t.name for t in tools}
+    assert {
+        "list_content_roots",
+        "list_modes",
+        "list_operations",
+        "list_tools",
+        "invalidate_catalog",
+        "list_catalog_diagnostics",
+    } == names
+
+
+@pytest.mark.asyncio
+async def test_catalog_invalidate_catalog(catalog_setup: None) -> None:
+    from mcp_server.catalog.server import mcp
 
     result = await mcp.call_tool("invalidate_catalog", {})
     data = json.loads(_tool_text(result))
@@ -238,8 +260,8 @@ async def test_content_invalidate_catalog(content_setup: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_content_list_modes_returns_json(content_setup: None) -> None:
-    from mcp_server.content.server import mcp
+async def test_catalog_list_modes_returns_json(catalog_setup: None) -> None:
+    from mcp_server.catalog.server import mcp
 
     result = await mcp.call_tool("list_modes", {})
     data = json.loads(_tool_text(result))
@@ -247,8 +269,8 @@ async def test_content_list_modes_returns_json(content_setup: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_content_list_operations_returns_json(content_setup: None) -> None:
-    from mcp_server.content.server import mcp
+async def test_catalog_list_operations_returns_json(catalog_setup: None) -> None:
+    from mcp_server.catalog.server import mcp
 
     result = await mcp.call_tool("list_operations", {})
     data = json.loads(_tool_text(result))
@@ -256,21 +278,21 @@ async def test_content_list_operations_returns_json(content_setup: None) -> None
 
 
 @pytest.mark.asyncio
-async def test_content_list_tools_returns_json(content_setup: None) -> None:
-    from mcp_server.content.server import mcp
+async def test_catalog_list_tools_returns_json(catalog_setup: None) -> None:
+    from mcp_server.catalog.server import mcp
 
     result = await mcp.call_tool("list_tools", {})
     data = json.loads(_tool_text(result))
     assert isinstance(data, dict)
 
 
-# ── lisa_content diagnostics ────────────────────────────────────────────────
+# ── lisa_catalog diagnostics ──────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_content_diagnostics_returns_report(content_setup: None) -> None:
+async def test_catalog_diagnostics_returns_report(catalog_setup: None) -> None:
     """list_catalog_diagnostics returns a JSON report with expected keys."""
-    from mcp_server.content.server import mcp
+    from mcp_server.catalog.server import mcp
 
     result = await mcp.call_tool("list_catalog_diagnostics", {})
     data = json.loads(_tool_text(result))
@@ -284,16 +306,16 @@ async def test_content_diagnostics_returns_report(content_setup: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_content_diagnostics_detects_missing_mode_config(tmp_path: Path, monkeypatch) -> None:
+async def test_catalog_diagnostics_detects_missing_mode_config(tmp_path: Path, monkeypatch) -> None:
     """A mode directory without _mode.md should be reported as an issue."""
-    from mcp_server.content import server
-    from mcp_server.content.server import init_content, mcp
+    from mcp_server.catalog import server
+    from mcp_server.catalog.server import init_catalog, mcp
 
     root = tmp_path / "root"
     mode_dir = root / "modes" / "broken_mode"
     mode_dir.mkdir(parents=True, exist_ok=True)
 
-    init_content(extra_roots=[root])
+    init_catalog(extra_roots=[root])
     monkeypatch.setattr(server, "_all_roots", lambda: [root])
     result = await mcp.call_tool("list_catalog_diagnostics", {})
     data = json.loads(_tool_text(result))
@@ -304,17 +326,17 @@ async def test_content_diagnostics_detects_missing_mode_config(tmp_path: Path, m
 
 
 @pytest.mark.asyncio
-async def test_content_diagnostics_detects_missing_operation_metadata(tmp_path: Path, monkeypatch) -> None:
+async def test_catalog_diagnostics_detects_missing_operation_metadata(tmp_path: Path, monkeypatch) -> None:
     """A .py operation module without a .yml sibling should be reported."""
-    from mcp_server.content import server
-    from mcp_server.content.server import init_content, mcp
+    from mcp_server.catalog import server
+    from mcp_server.catalog.server import init_catalog, mcp
 
     root = tmp_path / "root"
     ops_dir = root / "operations" / "research"
     ops_dir.mkdir(parents=True, exist_ok=True)
     (ops_dir / "orphan.py").write_text("# no yml sibling\n", encoding="utf-8")
 
-    init_content(extra_roots=[root])
+    init_catalog(extra_roots=[root])
     monkeypatch.setattr(server, "_all_roots", lambda: [root])
     result = await mcp.call_tool("list_catalog_diagnostics", {})
     data = json.loads(_tool_text(result))
@@ -324,17 +346,17 @@ async def test_content_diagnostics_detects_missing_operation_metadata(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_content_diagnostics_detects_missing_tool_metadata(tmp_path: Path, monkeypatch) -> None:
+async def test_catalog_diagnostics_detects_missing_tool_metadata(tmp_path: Path, monkeypatch) -> None:
     """A .py tool module without a .tool.yml sibling should be reported."""
-    from mcp_server.content import server
-    from mcp_server.content.server import init_content, mcp
+    from mcp_server.catalog import server
+    from mcp_server.catalog.server import init_catalog, mcp
 
     root = tmp_path / "root"
     tools_dir = root / "tools" / "broken_tool"
     tools_dir.mkdir(parents=True, exist_ok=True)
     (tools_dir / "broken_tool.py").write_text("# no tool yml sibling\n", encoding="utf-8")
 
-    init_content(extra_roots=[root])
+    init_catalog(extra_roots=[root])
     monkeypatch.setattr(server, "_all_roots", lambda: [root])
     result = await mcp.call_tool("list_catalog_diagnostics", {})
     data = json.loads(_tool_text(result))
@@ -344,10 +366,10 @@ async def test_content_diagnostics_detects_missing_tool_metadata(tmp_path: Path,
 
 
 @pytest.mark.asyncio
-async def test_content_diagnostics_clean_report(tmp_path: Path, monkeypatch) -> None:
+async def test_catalog_diagnostics_clean_report(tmp_path: Path, monkeypatch) -> None:
     """A valid content root with proper files should produce zero issues."""
-    from mcp_server.content import server
-    from mcp_server.content.server import init_content, mcp
+    from mcp_server.catalog import server
+    from mcp_server.catalog.server import init_catalog, mcp
 
     root = tmp_path / "root"
     mode_dir = root / "modes" / "good_mode"
@@ -357,7 +379,7 @@ async def test_content_diagnostics_clean_report(tmp_path: Path, monkeypatch) -> 
         encoding="utf-8",
     )
 
-    init_content(extra_roots=[root])
+    init_catalog(extra_roots=[root])
     monkeypatch.setattr(server, "_all_roots", lambda: [root])
     result = await mcp.call_tool("list_catalog_diagnostics", {})
     data = json.loads(_tool_text(result))

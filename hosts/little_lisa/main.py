@@ -173,7 +173,7 @@ from kernel.operations.registry import (  # noqa: E402
     register_operation_mcp,
 )
 from kernel.operations.structured_output import parse_structured_payload  # noqa: E402
-from kernel.pack_activation import load_disabled_pack_names  # noqa: E402
+from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name  # noqa: E402
 from kernel.slice import SliceOutcome  # noqa: E402
 from kernel.token_usage import (  # noqa: E402
     TokenUsageTelemetryHandler,
@@ -655,12 +655,6 @@ def _host_mcp_manifest_path() -> Path:
     return FRAMEWORK_ROOT / "hosts" / "little_lisa" / "mcp_servers.yaml"
 
 
-def _normalize_pack_name(raw: str) -> str:
-    value = raw.strip().lower().replace("_", "-")
-    value = re.sub(r"[^a-z0-9-]+", "-", value).strip("-")
-    return value
-
-
 def _infer_pack_package_name(root: Path) -> str:
     """Infer the pack package name for one discovered content root."""
     pyproject = root / "pyproject.toml"
@@ -673,9 +667,9 @@ def _infer_pack_package_name(root: Path) -> str:
         if isinstance(project, dict):
             name = project.get("name")
             if isinstance(name, str) and name.strip():
-                return _normalize_pack_name(name)
+                return normalize_pack_name(name)
 
-    root_name = _normalize_pack_name(root.name)
+    root_name = normalize_pack_name(root.name)
     if root.parent.name == "packs" and root.parent.parent.name == "sdk" and root_name:
         return f"lisa-pack-{root_name}"
     if root_name.startswith("lisa-pack-"):
@@ -685,20 +679,20 @@ def _infer_pack_package_name(root: Path) -> str:
 
 def _pack_aliases(package_name: str, *, root: Path | None = None) -> set[str]:
     aliases: set[str] = set()
-    normalized = _normalize_pack_name(package_name)
+    normalized = normalize_pack_name(package_name)
     if normalized:
         aliases.add(normalized)
         if normalized.startswith("lisa-pack-"):
             aliases.add(normalized[len("lisa-pack-"):])
     if root is not None:
-        root_alias = _normalize_pack_name(root.name)
+        root_alias = normalize_pack_name(root.name)
         if root_alias:
             aliases.add(root_alias)
     return aliases
 
 
 def _always_on_pack_names(host_manifest_path: Path | None = None) -> set[str]:
-    always_on = {_normalize_pack_name(name) for name in _DEFAULT_ALWAYS_ON_PACKAGES}
+    always_on = {normalize_pack_name(name) for name in _DEFAULT_ALWAYS_ON_PACKAGES}
     manifest_path = host_manifest_path or _host_mcp_manifest_path()
     policy = _load_pack_policy_dict(manifest_path, warning_subject="pack activation policy")
 
@@ -709,7 +703,7 @@ def _always_on_pack_names(host_manifest_path: Path | None = None) -> set[str]:
     for item in configured:
         if not isinstance(item, str):
             continue
-        normalized = _normalize_pack_name(item)
+        normalized = normalize_pack_name(item)
         if normalized:
             always_on.add(normalized)
     return always_on
@@ -727,7 +721,7 @@ def _runtime_installed_pack_names(lock: dict[str, Any]) -> set[str]:
         source_kind = str(entry.get("source_kind") or "").strip().lower()
         if source_kind not in _RUNTIME_INSTALL_SOURCE_KINDS:
             continue
-        package_name = _normalize_pack_name(str(entry.get("package_name") or ""))
+        package_name = normalize_pack_name(str(entry.get("package_name") or ""))
         if package_name:
             runtime_installed.add(package_name)
     return runtime_installed
@@ -742,7 +736,7 @@ def _runtime_enabled_pack_map(lock: dict[str, Any]) -> dict[str, bool]:
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        package_name = _normalize_pack_name(str(entry.get("package_name") or ""))
+        package_name = normalize_pack_name(str(entry.get("package_name") or ""))
         if not package_name:
             continue
         enabled_map[package_name] = bool(entry.get("enabled", True))
@@ -864,23 +858,49 @@ def _build_content_mcp_config() -> MCPClientConfig:
     )
 
 
-def setup_framework() -> None:
-    """Wire the lisa-content MCP server for content discovery and stub tools.
+def _build_catalog_mcp_config() -> MCPClientConfig:
+    """Build an MCPClientConfig that spawns lisa-catalog for catalog tools.
 
-    All content (modes, operations, authored text) is loaded through the
-    ``lisa-content`` MCP server. The kernel never touches the filesystem
-    directly — it calls ``list_modes``, ``list_operations``, and
-    ``read_authored_text`` on the server, which does all scanning and
-    front-matter parsing.
+    The kernel calls ``list_modes``, ``list_operations``, and ``list_tools``
+    on this server to discover and load all content-pack catalogs. The
+    server does all filesystem access; the kernel never touches the
+    filesystem directly.
+
+    Shares the same env/roots setup as the content server — the only
+    difference is the module (``mcp_server.catalog.server`` vs
+    ``mcp_server.content.server``).
     """
     content_config = _build_content_mcp_config()
+    return MCPClientConfig(
+        server_id="lisa-catalog",
+        command=content_config.command,
+        args=[
+            "-m",
+            "mcp_server.catalog.server",
+            "--data-dir",
+            str(_DEFAULT_DATA_DIR),
+        ],
+        env=content_config.env,
+    )
+
+
+def setup_framework() -> None:
+    """Wire the lisa-content and lisa-catalog MCP servers.
+
+    File-reading (``read_authored_text``) goes through ``lisa-content``.
+    Catalog queries (``list_modes``, ``list_operations``, ``list_tools``)
+    go through ``lisa-catalog``. The kernel never touches the filesystem
+    directly — it calls these tools on the appropriate server.
+    """
+    content_config = _build_content_mcp_config()
+    catalog_config = _build_catalog_mcp_config()
     # Order matters: operation MCP first, then operation callbacks, then
     # content MCP. validate_workflow_catalog calls _validate_mode_operation_bindings
     # which needs the operation callbacks registered before it can validate.
-    register_operation_mcp(content_config)
-    register_tool_mcp(content_config)
+    register_operation_mcp(catalog_config)
+    register_tool_mcp(catalog_config)
     register_operation_callbacks(get_operation_catalog, execute_operation)
-    register_content_mcp(content_config)
+    register_content_mcp(catalog_config)
     # Wire the MCPContentRegistry as the content registry for context frames.
     from kernel.context.context_frames import set_content_registry  # noqa: PLC0415
     from kernel.context.mcp_content_registry import MCPContentRegistry  # noqa: PLC0415
@@ -3629,7 +3649,7 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
             namespaced = dataclasses.replace(spec, server_id=f"{pack_slug}.{spec.server_id}")
             registry.register(namespaced)
 
-    selected_memory_provider = _normalize_pack_name(
+    selected_memory_provider = normalize_pack_name(
         str(selected_capability_providers.get("memory") or "")
     )
     selected_memory_owner = _select_capability_provider_owner(
@@ -3755,13 +3775,13 @@ def _parse_provider_priority_mapping(raw: Any) -> dict[str, list[str]]:
 
         providers: list[str]
         if isinstance(provider_values, str):
-            normalized = _normalize_pack_name(provider_values)
+            normalized = normalize_pack_name(provider_values)
             providers = [normalized] if normalized else []
         elif isinstance(provider_values, list):
             providers = [
-                _normalize_pack_name(item)
+                normalize_pack_name(item)
                 for item in provider_values
-                if isinstance(item, str) and _normalize_pack_name(item)
+                if isinstance(item, str) and normalize_pack_name(item)
             ]
         else:
             providers = []
@@ -3820,10 +3840,10 @@ def _load_capability_provider_preferences(host_manifest_path: Path) -> dict[str,
 
 def _provider_identifiers_for_pack(*, package_name: str, pack_slug: str) -> set[str]:
     identifiers = {
-        _normalize_pack_name(package_name),
-        _normalize_pack_name(pack_slug),
+        normalize_pack_name(package_name),
+        normalize_pack_name(pack_slug),
     }
-    normalized_package = _normalize_pack_name(package_name)
+    normalized_package = normalize_pack_name(package_name)
     if normalized_package.startswith("lisa-pack-"):
         identifiers.add(normalized_package[len("lisa-pack-"):])
     return {identifier for identifier in identifiers if identifier}
@@ -3849,7 +3869,7 @@ def _select_capability_provider_owner(
     if not candidates:
         return None
 
-    selected = _normalize_pack_name(selected_provider)
+    selected = normalize_pack_name(selected_provider)
     if selected:
         for candidate in candidates:
             identifiers = _provider_identifiers_for_pack(
@@ -3860,8 +3880,8 @@ def _select_capability_provider_owner(
                 return candidate
 
     def _sort_key(candidate: dict[str, Any]) -> tuple[int, int, str, str]:
-        package_name = _normalize_pack_name(str(candidate.get("package_name") or ""))
-        pack_slug = _normalize_pack_name(str(candidate.get("pack_slug") or ""))
+        package_name = normalize_pack_name(str(candidate.get("package_name") or ""))
+        pack_slug = normalize_pack_name(str(candidate.get("pack_slug") or ""))
         identifiers = _provider_identifiers_for_pack(package_name=package_name, pack_slug=pack_slug)
         preference_rank = _provider_preference_rank(identifiers, preferred_providers)
         runtime_rank = 0 if package_name in runtime_installed_packages else 1
@@ -4213,7 +4233,7 @@ def _load_installed_packs_lock() -> dict[str, Any]:
     for item in packs:
         if not isinstance(item, dict):
             continue
-        package_name = _normalize_pack_name(str(item.get("package_name") or ""))
+        package_name = normalize_pack_name(str(item.get("package_name") or ""))
         if not package_name:
             continue
         source_kind = str(item.get("source_kind") or "package").strip().lower() or "package"
@@ -4233,7 +4253,7 @@ def _load_installed_packs_lock() -> dict[str, Any]:
             if not isinstance(capability_raw, str) or not isinstance(provider_raw, str):
                 continue
             capability_id = capability_raw.strip().lower()
-            provider_id = _normalize_pack_name(provider_raw)
+            provider_id = normalize_pack_name(provider_raw)
             if capability_id and provider_id:
                 selected_map[capability_id] = provider_id
 
@@ -4276,7 +4296,7 @@ def _pack_alias_map(lock: dict[str, Any]) -> dict[str, str]:
     for entry in entries if isinstance(entries, list) else []:
         if not isinstance(entry, dict):
             continue
-        package_name = _normalize_pack_name(str(entry.get("package_name") or ""))
+        package_name = normalize_pack_name(str(entry.get("package_name") or ""))
         if not package_name:
             continue
         for alias in _pack_aliases(package_name):
@@ -4286,7 +4306,7 @@ def _pack_alias_map(lock: dict[str, Any]) -> dict[str, str]:
 
 
 def _resolve_pack_name(raw: str, lock: dict[str, Any] | None = None) -> str:
-    normalized = _normalize_pack_name(raw)
+    normalized = normalize_pack_name(raw)
     if not normalized:
         return ""
 
@@ -4309,7 +4329,7 @@ def _clear_selected_provider_for_package(lock: dict[str, Any], package_name: str
     for capability_id, provider_id in list(selected.items()):
         if not isinstance(capability_id, str) or not isinstance(provider_id, str):
             continue
-        if _normalize_pack_name(provider_id) != package_name:
+        if normalize_pack_name(provider_id) != package_name:
             continue
         selected.pop(capability_id, None)
         cleared.append(capability_id)
@@ -4317,7 +4337,7 @@ def _clear_selected_provider_for_package(lock: dict[str, Any], package_name: str
 
 
 def _pack_contributes_memory_capability(package_name: str) -> bool:
-    normalized = _normalize_pack_name(package_name)
+    normalized = normalize_pack_name(package_name)
     if not normalized:
         return False
 
@@ -4381,7 +4401,7 @@ def _set_pack_enabled(package_name: str, *, enabled: bool) -> tuple[bool, str]:
         (
             i
             for i, entry in enumerate(entries)
-            if _normalize_pack_name(str(entry.get("package_name") or "")) == resolved
+            if normalize_pack_name(str(entry.get("package_name") or "")) == resolved
         ),
         -1,
     )
@@ -4599,7 +4619,7 @@ async def _run_pack_install(spec: str) -> tuple[bool, str]:
         preview = "\n".join(output.splitlines()[-12:]).strip()
         return False, f"Install failed for '{spec}'.\n{preview}"
 
-    package_name = _normalize_pack_name(_extract_package_name_from_spec(spec))
+    package_name = normalize_pack_name(_extract_package_name_from_spec(spec))
     if not package_name:
         return False, f"Install succeeded for '{spec}' but package name could not be inferred."
     source_kind = (
@@ -4613,7 +4633,7 @@ async def _run_pack_install(spec: str) -> tuple[bool, str]:
     filtered = [
         entry
         for entry in entries
-        if _normalize_pack_name(str(entry.get("package_name") or "")) != package_name
+        if normalize_pack_name(str(entry.get("package_name") or "")) != package_name
     ]
     filtered.append(
         {
@@ -4643,7 +4663,7 @@ async def _run_pack_uninstall(package_name: str) -> tuple[bool, str]:
         return False, "Usage: /pack uninstall <package-name>"
 
     lock = _load_installed_packs_lock()
-    normalized = _resolve_pack_name(requested, lock) or _normalize_pack_name(requested)
+    normalized = _resolve_pack_name(requested, lock) or normalize_pack_name(requested)
     if not normalized:
         return False, "Usage: /pack uninstall <package-name>"
 
@@ -4667,7 +4687,7 @@ async def _run_pack_uninstall(package_name: str) -> tuple[bool, str]:
     filtered = [
         entry
         for entry in entries
-        if _normalize_pack_name(str(entry.get("package_name") or "")) != normalized
+        if normalize_pack_name(str(entry.get("package_name") or "")) != normalized
     ]
     lock["packs"] = filtered
     cleared = _clear_selected_provider_for_package(lock, normalized)
@@ -4747,9 +4767,9 @@ def _render_pack_list() -> str:
     runtime_installed = _runtime_installed_pack_names(lock)
     enabled_map = _runtime_enabled_pack_map(lock)
     entry_map = {
-        _normalize_pack_name(str(entry.get("package_name") or "")): entry
+        normalize_pack_name(str(entry.get("package_name") or "")): entry
         for entry in entries
-        if _normalize_pack_name(str(entry.get("package_name") or ""))
+        if normalize_pack_name(str(entry.get("package_name") or ""))
     }
 
     all_packages = set(installed_roots) | set(entry_map) | always_on

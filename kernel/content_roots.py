@@ -9,11 +9,11 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from kernel.config import settings
-from kernel.pack_activation import _normalize_pack_name
+from kernel.pack_activation import normalize_pack_name
 
 logger = logging.getLogger(__name__)
 
-_CONTENT_ROOT_ENTRY_POINT_GROUP = "lisa.extensions.content_roots"
+CONTENT_ROOT_ENTRY_POINT_GROUP = "lisa.extensions.content_roots"
 
 
 def _entry_point_pack_name(ep: importlib.metadata.EntryPoint) -> str:
@@ -22,7 +22,7 @@ def _entry_point_pack_name(ep: importlib.metadata.EntryPoint) -> str:
     if dist is None:
         return ""
     name = dist.metadata.get("Name", "") if dist.metadata else ""
-    return _normalize_pack_name(str(name or ""))
+    return normalize_pack_name(str(name or ""))
 
 
 def _dedupe_paths(paths: Iterable[Path]) -> list[Path]:
@@ -50,7 +50,7 @@ def discover_installed_content_roots(
     """
 
     roots: list[Path] = []
-    for ep in importlib.metadata.entry_points(group=_CONTENT_ROOT_ENTRY_POINT_GROUP):
+    for ep in importlib.metadata.entry_points(group=CONTENT_ROOT_ENTRY_POINT_GROUP):
         if excluded_packs and _entry_point_pack_name(ep) in excluded_packs:
             continue
         try:
@@ -101,6 +101,7 @@ def resolve_content_subdir_roots(roots: Iterable[Path], subdir: str) -> list[Pat
 
 
 __all__ = [
+    "CONTENT_ROOT_ENTRY_POINT_GROUP",
     "discover_configured_content_roots",
     "discover_installed_content_roots",
     "resolve_content_subdir_roots",

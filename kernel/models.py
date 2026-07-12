@@ -903,7 +903,7 @@ class UnifiedState(BaseModel):
 # IPSAR memory
 # ---------------------------------------------------------------------------
 
-MemoryTier = Literal["daily", "weekly", "long_term"]
+MemoryTier = Literal["daily", "weekly", "long_term", "permanent"]
 
 
 class MemoryRecord(BaseModel):

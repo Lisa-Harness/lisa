@@ -28,6 +28,9 @@ mcp_server.guard.server.main  # noqa: Vulture
 # reason: console_script target — lisa-content MCP server
 mcp_server.content.server.main  # noqa: Vulture
 
+# reason: console_script target — lisa-catalog MCP server
+mcp_server.catalog.server.main  # noqa: Vulture
+
 # ──────────────────────────────────────────────────────────────────────────
 # importlib.metadata entry-point targets — loaded via ep.load().
 # ──────────────────────────────────────────────────────────────────────────

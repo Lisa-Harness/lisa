@@ -50,7 +50,6 @@ from kernel.mcp_launch.policy import (
 __all__ = [
     "MemoryBackendConfig",
     "MemoryBackendSpec",
-    "ArgTranslation",
     "MCPServerManifestError",
     "load_mcp_server_manifest",
 ]
@@ -89,53 +88,6 @@ class MemoryBackendSpec:
     env: dict[str, str] = field(default_factory=dict)
     cwd: str | None = None
     agent_id: str = "lisa"
-    # Declarative argument translation: when present, the host builds arg
-    # maps generically from this config instead of hardcoding backend ids.
-    # See :data:`ArgTranslation` for the shape. ``None`` means the backend
-    # takes the generic shape natively (no translation needed).
-    arg_translation: "ArgTranslation | None" = None
-
-
-@dataclass(frozen=True, slots=True)
-class ArgTranslation:
-    """Declarative arg-map config for a memory backend.
-
-    Describes how to translate the generic ``memory.*`` argument shape
-    (``content`` / ``user_slug`` / ``memory_scope`` / …) to a backend's
-    native argument names, and which fields are ambient-injected from the
-    host runtime (so the model cannot escape the privacy boundary).
-
-    Declared in YAML under ``arg_translation:`` on a backend entry. The
-    host builds three arg maps (add / search / list) from this single
-    config — no backend-specific code in the host.
-    """
-
-    #: Maps generic argument names to native argument names. E.g.
-    #: ``{"content": "text"}`` means the generic ``content`` field is
-    #: sent as ``text`` to the backend tool. Fields not listed here are
-    #: passed through under their generic name.
-    field_map: dict[str, str] = field(default_factory=dict)
-
-    #: Fields injected from the host runtime, not from model arguments.
-    #: Each entry maps a native argument name to a runtime source:
-    #: ``"user_id"``, ``"agent_id"``, ``"app_id"``. The host resolves
-    #: these from ``_runtime_user_slug()``, ``_runtime_current_mode_id()``,
-    #: and the configured app id respectively. The model cannot override them.
-    ambient: dict[str, str] = field(default_factory=dict)
-
-    #: Fields stuffed into a nested ``metadata`` sub-dict (backends that
-    #: don't have native fields for workspace_id / memory_scope / etc).
-    #: Keys are the generic field names, values are the metadata keys.
-    metadata_fields: dict[str, str] = field(default_factory=dict)
-
-    #: When True, search and list use structured ``filters.AND`` syntax.
-    #: The ambient fields are injected as ``{"key": value}`` entries in
-    #: the AND list. When False, ambient fields are top-level arguments.
-    structured_filters: bool = False
-
-    #: When True, list uses pagination (``page`` / ``page_size``) instead
-    #: of a flat ``limit``. The generic ``limit`` maps to ``page_size``.
-    paginated_list: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,10 +232,6 @@ def _parse_memory_backends(raw: Any) -> tuple[MemoryBackendSpec, ...]:
             )
         tool_names = {str(alias): str(tool) for alias, tool in tool_names_raw.items()}
         agent_id = str(entry.get("agent_id") or "lisa")
-        arg_translation = _parse_arg_translation(
-            entry.get("arg_translation"),
-            f"memory.backends[{index}] {backend_id!r}",
-        )
         if kind == "http":
             url = str(entry.get("url") or "").strip()
             if not url:
@@ -304,7 +252,6 @@ def _parse_memory_backends(raw: Any) -> tuple[MemoryBackendSpec, ...]:
                     url=url,
                     headers=headers,
                     agent_id=agent_id,
-                    arg_translation=arg_translation,
                 )
             )
         else:  # stdio
@@ -338,63 +285,9 @@ def _parse_memory_backends(raw: Any) -> tuple[MemoryBackendSpec, ...]:
                     env=env,
                     cwd=cwd,
                     agent_id=agent_id,
-                    arg_translation=arg_translation,
                 )
             )
     return tuple(specs)
-
-
-def _parse_arg_translation(
-    raw: Any,
-    context: str,
-) -> "ArgTranslation | None":
-    """Parse the optional ``arg_translation`` block on a backend entry.
-
-    Returns ``None`` when absent (the backend takes the generic shape
-    natively). Validates that the sub-keys are mappings and that the
-    ``ambient`` values are known runtime sources.
-    """
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        raise MCPServerManifestError(f"{context}: 'arg_translation' must be a mapping")
-
-    field_map_raw = raw.get("field_map") or {}
-    if not isinstance(field_map_raw, dict):
-        raise MCPServerManifestError(f"{context}: 'arg_translation.field_map' must be a mapping")
-    field_map = {str(k): str(v) for k, v in field_map_raw.items()}
-
-    ambient_raw = raw.get("ambient") or {}
-    if not isinstance(ambient_raw, dict):
-        raise MCPServerManifestError(f"{context}: 'arg_translation.ambient' must be a mapping")
-    valid_sources = {"user_id", "agent_id", "app_id"}
-    ambient: dict[str, str] = {}
-    for native_field, source in ambient_raw.items():
-        source_str = str(source).strip()
-        if source_str not in valid_sources:
-            raise MCPServerManifestError(
-                f"{context}: 'arg_translation.ambient.{native_field}' "
-                f"must be one of {sorted(valid_sources)}, got {source_str!r}"
-            )
-        ambient[str(native_field)] = source_str
-
-    metadata_fields_raw = raw.get("metadata_fields") or {}
-    if not isinstance(metadata_fields_raw, dict):
-        raise MCPServerManifestError(
-            f"{context}: 'arg_translation.metadata_fields' must be a mapping"
-        )
-    metadata_fields = {str(k): str(v) for k, v in metadata_fields_raw.items()}
-
-    structured_filters = bool(raw.get("structured_filters", False))
-    paginated_list = bool(raw.get("paginated_list", False))
-
-    return ArgTranslation(
-        field_map=field_map,
-        ambient=ambient,
-        metadata_fields=metadata_fields,
-        structured_filters=structured_filters,
-        paginated_list=paginated_list,
-    )
 
 
 def _parse_server_entries(raw_servers: Any, path: Path) -> list[MCPServerSpec]:

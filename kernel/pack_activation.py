@@ -25,7 +25,7 @@ _PACK_LOCK_FILE_NAME = "installed-packs.json"
 _DISABLED_PACKS_ENV = "LISA_DISABLED_PACKS"
 
 
-def _normalize_pack_name(raw: str) -> str:
+def normalize_pack_name(raw: str) -> str:
     """Normalize a pack name for comparison (lower-case, hyphen-separated)."""
     value = raw.strip().lower().replace("_", "-")
     value = re.sub(r"[^a-z0-9-]+", "-", value).strip("-")
@@ -68,7 +68,7 @@ def load_disabled_pack_names(data_dir: Path) -> set[str]:
             continue
         if bool(item.get("enabled", True)):
             continue
-        package_name = _normalize_pack_name(str(item.get("package_name") or ""))
+        package_name = normalize_pack_name(str(item.get("package_name") or ""))
         if package_name:
             disabled.add(package_name)
 
@@ -91,7 +91,7 @@ def load_disabled_pack_names_from_env() -> set[str]:
 
     disabled: set[str] = set()
     for part in raw.split(os.pathsep):
-        normalized = _normalize_pack_name(part.strip())
+        normalized = normalize_pack_name(part.strip())
         if normalized:
             disabled.add(normalized)
     return disabled
@@ -100,4 +100,5 @@ def load_disabled_pack_names_from_env() -> set[str]:
 __all__ = [
     "load_disabled_pack_names",
     "load_disabled_pack_names_from_env",
+    "normalize_pack_name",
 ]

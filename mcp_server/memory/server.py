@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -74,10 +73,34 @@ async def add_memory(
     memory_scope: str = "personal",
     workspace_id: str = "default",
     surface_id: str = "",
+    memory_tier: str = "daily",
+    operation_id: str = "mcp.add_memory",
+    instruction_id: str = "mcp.v1",
+    content_json: dict[str, Any] | None = None,
+    salience: float = 0.0,
 ) -> str:
     """Store a new memory snippet scoped to the provided user identity and surface.
 
     Enforces Lisa's surface-scoped privacy isolation.
+
+    Optional metadata fields (``memory_tier``, ``operation_id``,
+    ``instruction_id``, ``content_json``, ``salience``) let callers control
+    retention, provenance, and ranking. When omitted, sensible defaults
+    are applied so the tool remains usable as a simple "store this" call.
+
+    Args:
+        user_slug: The user identity to scope the memory to.
+        content: The memory text to store.
+        memory_scope: Privacy scope (``personal``, ``shared``, ``channel``).
+        workspace_id: Workspace isolation key.
+        surface_id: Surface isolation key (e.g. channel id).
+        memory_tier: Retention tier (``daily``, ``weekly``, ``long_term``,
+            ``permanent``). Controls TTL expiry.
+        operation_id: Provenance tag identifying the operation that
+            created this memory.
+        instruction_id: Provenance tag for the instruction version.
+        content_json: Structured metadata dict stored alongside content.
+        salience: Ranking weight (0.0–1.0) for recall ordering.
     """
     store = _store_instance()
     record = await store.record_memory(
@@ -87,10 +110,11 @@ async def add_memory(
             memory_scope=memory_scope,  # type: ignore[arg-type]
             workspace_id=workspace_id,
             surface_id=surface_id,
-            operation_id="mcp.add_memory",
-            instruction_id="mcp.v1",
-            memory_tier="daily",
-            content_json={"source": "mcp_tool"},
+            operation_id=operation_id,
+            instruction_id=instruction_id,
+            memory_tier=memory_tier,  # type: ignore[arg-type]
+            content_json=content_json or {"source": "mcp_tool"},
+            salience=salience,
         )
     )
     return f"Memory stored with ID {record.id}"
@@ -108,6 +132,10 @@ async def search_memory(
     """Search for surface-scoped memories for a specific user.
 
     Records from other surfaces or users cannot be accessed.
+
+    The recall engine uses lexical-overlap ranking with a salience boost.
+    When no query tokens match any stored content, the most recent records
+    are returned (ordered by id DESC) so the caller always gets context.
     """
     store = _store_instance()
     result = await store.recall(

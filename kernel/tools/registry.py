@@ -67,7 +67,7 @@ def get_tool_catalog() -> dict[str, ToolDefinition]:
 
 
 def register_tool_mcp(config: MCPClientConfig) -> None:
-    """Inject the ``lisa-content`` MCP server config for tool catalog loading.
+    """Inject the ``lisa-catalog`` MCP server config for tool catalog loading.
 
     Rebuilds and re-validates ``_TOOL_CATALOG`` immediately by calling
     ``list_tools`` on the server. The server does all filesystem access; the

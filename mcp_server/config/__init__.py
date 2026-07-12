@@ -1,8 +1,8 @@
 """Shared configuration helpers for all first-party Lisa MCP servers.
 
 This package owns the standard CLI argument contract. Every first-party
-server calls :func:`lisa_mcp_config.cli.build_parser` in ``main()`` and
-resolves its data directory via :func:`lisa_mcp_config.cli.resolve_data_dir`.
+server calls :func:`mcp_server.config.cli.build_parser` in ``main()`` and
+resolves its data directory via :func:`mcp_server.config.cli.resolve_data_dir`.
 
 Env vars are for behavioral configuration only (API keys, feature flags,
 endpoints). Path-like configuration comes exclusively from CLI args.

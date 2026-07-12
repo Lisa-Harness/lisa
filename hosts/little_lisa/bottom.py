@@ -34,7 +34,7 @@ from kernel.intake.contracts import (
     ProcessedState,
 )
 from kernel.models import UnifiedState
-from kernel.pack_activation import _normalize_pack_name, load_disabled_pack_names
+from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def _entry_point_pack_name(ep: importlib.metadata.EntryPoint) -> str:
     if dist is None:
         return ""
     name = dist.metadata.get("Name", "") if dist.metadata else ""
-    return _normalize_pack_name(str(name or ""))
+    return normalize_pack_name(str(name or ""))
 
 
 def _discover_processing_loops(

@@ -106,7 +106,7 @@ def register_operation_callbacks(
 
 
 def register_content_mcp(config: MCPClientConfig) -> None:
-    """Inject the ``lisa-content`` MCP server config for catalog loading.
+    """Inject the ``lisa-catalog`` MCP server config for catalog loading.
 
     Must be called before the workflow catalog is first accessed (before any
     call to ``get_workflow_catalog()``). The kernel calls ``list_modes`` on the
@@ -623,7 +623,7 @@ _workflow_catalog: dict[str, WorkflowModeConfig] | None = None
 
 
 def _ensure_catalog_loaded() -> None:
-    """Lazy-load the workflow catalog on first access via the lisa-content MCP server.
+    """Lazy-load the workflow catalog on first access via the lisa-catalog MCP server.
 
     Deferred from module-import time so the host app has a chance to register
     operation callbacks and the content MCP config before validation runs.
@@ -646,7 +646,7 @@ def _ensure_catalog_loaded() -> None:
 def get_workflow_catalog() -> dict[str, WorkflowModeConfig]:
     """Return the validated workflow mode catalog.
 
-    The catalog is populated lazily on first access via the ``lisa-content`` MCP
+    The catalog is populated lazily on first access via the ``lisa-catalog`` MCP
     server. The host must call ``register_content_mcp()`` at startup before any
     code accesses the catalog. A restart is required to pick up new or modified
     instruction folders.

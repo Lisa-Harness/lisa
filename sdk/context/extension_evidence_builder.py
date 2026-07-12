@@ -17,7 +17,7 @@ import logging
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any
 
-from kernel.pack_activation import _normalize_pack_name
+from kernel.pack_activation import normalize_pack_name
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def _entry_point_pack_name(ep: EntryPoint) -> str:
     if dist is None:
         return ""
     name = dist.metadata.get("Name", "") if dist.metadata else ""
-    return _normalize_pack_name(str(name or ""))
+    return normalize_pack_name(str(name or ""))
 
 
 class EntryPointExtensionEvidenceBuilder:

@@ -1,6 +1,6 @@
 """Shared test fixture for MCP-mediated catalog loading.
 
-Spawns the ``lisa-content`` MCP server with the ``sdk/packs/core`` content root
+Spawns the ``lisa-catalog`` MCP server with the ``sdk/packs/core`` content root
 and registers it with the kernel so ``get_workflow_catalog()`` and
 ``get_operation_catalog()`` work in tests.
 """
@@ -22,14 +22,14 @@ _LEARNING_ROOT: Path = (
 ).resolve()
 
 
-def _make_content_mcp_config() -> MCPClientConfig:
-    """Build an MCPClientConfig that spawns lisa-content with the core pack."""
+def _make_catalog_mcp_config() -> MCPClientConfig:
+    """Build an MCPClientConfig that spawns lisa-catalog with the core pack."""
     return MCPClientConfig(
-        server_id="lisa-content-test",
+        server_id="lisa-catalog-test",
         command=sys.executable,
         args=[
             "-m",
-            "mcp_server.content.server",
+            "mcp_server.catalog.server",
             "--data-dir",
             str(_CORE_ROOT),
         ],
@@ -41,7 +41,7 @@ def _make_content_mcp_config() -> MCPClientConfig:
 
 @pytest.fixture(scope="module", autouse=True)
 def _mcp_catalog_setup() -> None:
-    """Wire the content MCP and operation callbacks so the kernel can load catalogs.
+    """Wire the catalog MCP and operation callbacks so the kernel can load catalogs.
 
     Order matters: operation MCP first, then operation callbacks, then content MCP.
     ``validate_workflow_catalog`` calls ``_validate_mode_operation_bindings`` which
@@ -50,7 +50,7 @@ def _mcp_catalog_setup() -> None:
     The catalog is eagerly loaded here during module setup (sync context) so async
     tests don't need to call ``asyncio.run()`` from inside a running event loop.
     """
-    config = _make_content_mcp_config()
+    config = _make_catalog_mcp_config()
     register_operation_mcp(config)
     register_operation_callbacks(get_operation_catalog, execute_operation)
     register_content_mcp(config)

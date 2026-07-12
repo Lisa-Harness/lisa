@@ -1,4 +1,4 @@
-"""Lisa Content MCP server — the sole content mediator for the kernel."""
+"""Lisa Content MCP server — authored-text file reading for the kernel."""
 
 from __future__ import annotations
 
