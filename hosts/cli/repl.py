@@ -90,11 +90,13 @@ try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter
     from prompt_toolkit.history import FileHistory, History
+    from prompt_toolkit.key_binding import KeyBindings
 except ImportError:  # pragma: no cover - optional dependency
     PromptSession = None
     WordCompleter = None
     FileHistory = None
     History = None
+    KeyBindings = None
 
 
 class _SurrogateSafeFileHistory(History):
@@ -232,8 +234,8 @@ async def _read_repl_input(console: Console, prompt_session: Any) -> str | None:
     try:
         _render_status_line(console)
         if prompt_session is not None:
-            return (await prompt_session.prompt_async("> ")).strip()
-        return console.input(f"[{STYLE_PROMPT}]> [/]").strip()
+            return (await prompt_session.prompt_async("🤖 ")).strip()
+        return console.input(f"[{STYLE_PROMPT}]🤖 [/]").strip()
     except KeyboardInterrupt:
         console.print()
         return ""
@@ -380,18 +382,48 @@ def _render_session_exit_summary(runtime: HostRuntime, console: Console) -> None
 def _build_repl_prompt_session(runtime: HostRuntime, console: Console) -> Any:
     """Build a prompt_toolkit PromptSession with history + completion.
 
-    Returns ``None`` when prompt_toolkit is unavailable.
+    Returns ``None`` when prompt_toolkit is unavailable. When available,
+    the session is multi-line: Enter submits the turn, Esc→Enter inserts
+    a newline (chat-box semantics).
     """
     if PromptSession is None or FileHistory is None or WordCompleter is None:
         return None
     history_path = runtime.data_dir / _REPL_HISTORY_FILE_NAME
     history_path.parent.mkdir(parents=True, exist_ok=True)
+    bindings = _build_repl_key_bindings() if KeyBindings is not None else None
     return PromptSession(
         history=_SurrogateSafeFileHistory(str(history_path)),
         completer=WordCompleter(list(_repl_command_hints()), ignore_case=True),
         complete_while_typing=True,
-        multiline=False,
+        multiline=True,
+        key_bindings=bindings,
+        prompt_continuation="… ",
     )
+
+
+def _build_repl_key_bindings() -> Any:
+    """Build chat-box key bindings for the multi-line REPL prompt.
+
+    - Enter: submit the current buffer (chat-box semantics).
+    - Esc→Enter: insert a newline (for multi-line input).
+
+    Without these bindings, prompt_toolkit's default ``multiline=True``
+    behaviour is the reverse (Enter inserts a newline; Esc→Enter submits),
+    which surprises chat users.
+    """
+    if KeyBindings is None:
+        return None
+    bindings = KeyBindings()
+
+    @bindings.add("enter")
+    def _submit(event: Any) -> None:
+        event.current_buffer.validate_and_handle()
+
+    @bindings.add("escape", "enter")
+    def _newline(event: Any) -> None:
+        event.current_buffer.insert_text("\n")
+
+    return bindings
 
 
 # ── Status line ──────────────────────────────────────────────────────
