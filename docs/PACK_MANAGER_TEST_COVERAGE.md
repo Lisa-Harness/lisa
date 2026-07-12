@@ -4,7 +4,7 @@ This document summarizes the high-depth test coverage for runtime pack managemen
 
 ## Test File
 
-- [hosts/little_lisa/test_pack_manager.py](hosts/little_lisa/test_pack_manager.py)
+- [hosts/core/tests/test_pack_manager.py](hosts/core/tests/test_pack_manager.py)
 
 ## Covered Areas
 
@@ -51,18 +51,17 @@ This document summarizes the high-depth test coverage for runtime pack managemen
 Targeted run:
 
 ```powershell
-uv run pytest hosts/little_lisa/test_pack_manager.py -q
+uv run pytest hosts/core/tests/test_pack_manager.py -q
 ```
 
 Focused run by behavior:
 
 ```powershell
-uv run pytest hosts/little_lisa/test_pack_manager.py -k "namespace or exclusion or validate_pack_spec" -q
+uv run pytest hosts/core/tests/test_pack_manager.py -k "namespace or exclusion or validate_pack_spec" -q
 ```
 
-Broader little_lisa suite:
+Broader core suite:
 
 ```powershell
-uv run pytest hosts/little_lisa/test_little_lisa.py hosts/little_lisa/test_pack_manager.py -q
+uv run pytest hosts/core/tests/ -q
 ```
-

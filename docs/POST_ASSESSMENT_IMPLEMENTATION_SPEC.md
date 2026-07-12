@@ -370,9 +370,9 @@ Each gateway's `complete_stream()` method is an `async def` generator that yield
 `StreamedChunk` objects. The gateway handles provider-specific SSE parsing
 internally.
 
-### 2.5 Little Lisa Streaming
+### 2.5 CLI Host Streaming
 
-Little Lisa's `_complete_live` gains a streaming mode:
+The CLI host's `_complete_live` gains a streaming mode:
 
 ```python
 async def _complete_live_streaming(
@@ -383,7 +383,7 @@ async def _complete_live_streaming(
     # Use rich's Live context manager for in-place token rendering
 ```
 
-When `--stream` flag is passed (or streaming is enabled in config), Little Lisa
+When `--stream` flag is passed (or streaming is enabled in config), the CLI host
 wires `complete_stream` instead of `complete`.
 
 ---
@@ -842,10 +842,10 @@ lisa-sdk-ts/
                 mode-with-operations/
                 extension-basic/
     hosts/
-        little-lisa-ts/
+        cli-ts/
             package.json
             src/
-                main.ts           # TypeScript port of Little Lisa
+                main.ts           # TypeScript port of the CLI host
 ```
 
 ### 6.2 Core Types (mirror of Python contracts)

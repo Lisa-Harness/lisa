@@ -22,7 +22,7 @@ not first-class kernel concepts.
 
 ```mermaid
 flowchart TD
-    subgraph Host[Host App — Little Lisa or production]
+    subgraph Host[Host — cli/web/vscode transport]
         Transport[Transport adapter]
         HostHooks[TurnHooks wiring]
     end
@@ -443,15 +443,15 @@ Per the "no compat or migration" preference, this is one cutover, not a staged m
 2. ✅ Add `kernel/tools/schema_translator.py` (`mcp_tool_to_openai_function`, `openai_tool_call_to_mcp`, Anthropic stubs).
 3. ✅ Replace `TurnHooks.build_extra_tool_schemas` and `execute_tool` with `mcp_tool_servers: list[MCPClientConfig]`.
 4. ✅ Rewrite the turn runner's tool loop: `pool.list_tools()` → translate to OpenAI → send → translate back → `pool.call_tool()`.
-5. ✅ Remove `build_openai_operation_schema` (operations no longer advertised as tools). `kernel/openai_function_tools.py` deferred to Phase 4 (still used by operation registry for declarative operation tool schemas and by `get_transition_tool_schema`). `kernel/mcp_client.py` (`MCPMemoryClient`) deferred to Phase 3 (still used by Little Lisa for memory).
-6. ✅ Update Little Lisa: removed `execute_tool` from `TurnHooks`, wired `mcp_tool_servers=[]` (empty until Phase 4 creates `lisa-search` etc.), removed `operation_catalog` kwarg from `run_turn` call.
+5. ✅ Remove `build_openai_operation_schema` (operations no longer advertised as tools). `kernel/openai_function_tools.py` deferred to Phase 4 (still used by operation registry for declarative operation tool schemas and by `get_transition_tool_schema`). `kernel/mcp_client.py` (`MCPMemoryClient`) deferred to Phase 3 (still used by `hosts/core` for memory).
+6. ✅ Update `hosts/core`: removed `execute_tool` from `TurnHooks`, wired `mcp_tool_servers=[]` (empty until Phase 4 creates `lisa-search` etc.), removed `operation_catalog` kwarg from `run_turn` call.
 
 ### Phase 3 — Memory discovery (1–2 days)
 
 1. Add `kernel/memory/providers.py` with `MemoryProviderSpec` and `discover_memory_providers`.
 2. Move `SQLiteMemoryStore` into the `lisa-context` MCP server (no kernel fallback).
 3. Remove in-process `MemoryStore` implementations from the kernel.
-4. Update Little Lisa to use the MCP memory server directly (no `recall_memory` / `store_memory` hooks).
+4. Update `hosts/core` to use the MCP memory server directly (no `recall_memory` / `store_memory` hooks).
 5. Delete `LiteMemoryStore` from the public path.
 
 ### Phase 4 — Kernel-owned MCP servers (1–2 days)
@@ -489,4 +489,3 @@ implemented when needed. OpenAI translation ships in Phase 2.
    is surfaced as MCP tools.
 4. **mem0 as default.** mem0 can be installed as an alternative MCP memory server,
     but `lisa-context` remains the default. No kernel fallback.
-

@@ -109,7 +109,7 @@ Authored text should live under `content/` and be loaded by host-provided reader
 
 ## Hello World Pack
 
-The fastest end-to-end path is a local external pack folder. Little Lisa discovers these packs from `SDK_CONTENT_ROOTS`, so you do not need a private app or a published wheel just to prove the pack shape.
+The fastest end-to-end path is a local external pack folder. The CLI host discovers these packs from `SDK_CONTENT_ROOTS`, so you do not need a private app or a published wheel just to prove the pack shape.
 
 Create this folder outside the framework repo (example path shown):
 
@@ -170,13 +170,13 @@ From `lisa_framework/` on Windows:
 
 ```powershell
 $env:SDK_CONTENT_ROOTS = "C:\Code\lisa-pack-hello-world"
-uv run little-lisa modes
-uv run little-lisa once "/hello framework"
+uv run lisa modes
+uv run lisa once "/hello framework"
 ```
 
 Expected outcome:
 
-- `modes` shows `hello` under supported Little Lisa modes.
+- `modes` shows `hello` under supported modes.
 - `/hello framework` prints `Hello from custom pack: framework`.
 
 Use single quotes around regex-based `command_pattern` values in YAML front matter so backslashes like `\s` are not treated as YAML escape sequences.
@@ -204,14 +204,14 @@ hello_world = "sdk.packs.hello_world:get_content_root"
 2. Load the mode catalog and operation catalog.
 3. Validate operation allowlists against discovered modes.
 4. Run deterministic unit tests without live APIs.
-5. Run Little Lisa for one command path when practical.
+5. Run the CLI host for one command path when practical.
 6. Add opt-in live tests only for integrations that need them.
 
 Focused local checks from `lisa_framework/`:
 
 ```powershell
-uv run little-lisa modes
-uv run little-lisa once "/markdown Draft a quick checklist"
-uv run little-lisa once "/hello framework"  # after setting SDK_CONTENT_ROOTS
+uv run lisa modes
+uv run lisa once "/markdown Draft a quick checklist"
+uv run lisa once "/hello framework"  # after setting SDK_CONTENT_ROOTS
 uv run ruff check sdk mcp_server hosts
 ```

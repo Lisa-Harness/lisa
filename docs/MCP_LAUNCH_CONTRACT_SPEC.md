@@ -19,7 +19,7 @@ prior conversation context.
 | How do servers discover their data directory? | **CLI args only.** The host passes `--data-dir` explicitly. Servers do not hardcode fallback paths. |
 | What are env vars for? | **Behavioral config only** — feature flags, API keys, backend selection, log level defaults. Not path resolution. |
 | Can servers read `LISA_DATA_DIR` from env? | **No.** Path-like arguments come exclusively from CLI args. Env is supplemental for behaviors. |
-| Does the host have a default data-dir? | **Yes, the host may default** (e.g. Little Lisa defaults to `hosts/little_lisa/artifacts/`). But the host must pass it as a CLI arg to every server. The server never assumes a default. |
+| Does the host have a default data-dir? | **Yes, the host may default** (e.g. `hosts/core` defaults to `./artifacts/`). But the host must pass it as a CLI arg to every server. The server never assumes a default. |
 | How are third-party MCP servers controlled? | **Approval registry.** Hosts register approved server specs with explicit env/cwd/runtime/tool policy. Unregistered specs are rejected. |
 | How do we handle multiple runtimes (uv, node, npx, binary)? | **Runtime adapter layer.** Abstract runtime specs compile to concrete `MCPClientConfig`. The host declares the runtime kind; the adapter builds the command/args. |
 | Do existing servers need migration? | **Yes.** All first-party servers adopt the shared argparse contract. Legacy env-var path resolution is removed (hard cutover, no compat). |
@@ -788,9 +788,9 @@ from kernel.context.mcp_content_registry import MCPContentRegistry
 Hosts that want MCP-backed seams override the fields with the MCP adapters.
 This is additive — no cutover, no dual path, just two first-class options.
 
-## Part 6 — Host Wiring (Little Lisa + General Hosts)
+## Part 6 — Host Wiring (CLI Host + General Hosts)
 
-### Little Lisa changes
+### hosts/core changes
 
 1. **Resolve `--data-dir` once** at startup (already exists via Typer `--data-dir`).
 2. **Build an `MCPServerRegistry`** with approved server specs for all first-party
@@ -921,7 +921,7 @@ All existing first-party servers must adopt the shared CLI contract.
 
 ### Phase 5: Host wiring
 
-1. Update `hosts/little_lisa/main.py` — build `MCPServerRegistry`, compile
+1. Update `hosts/core/main.py` — build `MCPServerRegistry`, compile
     to `MCPClientConfig` list, populate `TurnHooks.mcp_tool_servers`.
 2. Replace ad-hoc `_mcp_server_env()` with the new compiler-based approach.
 
@@ -1022,7 +1022,7 @@ All existing first-party servers must adopt the shared CLI contract.
 | `mcp_server/src/lisa_surf/server.py` | Add argparse |
 | `mcp_server/pyproject.toml` | Add 3 script entries + `lisa_mcp_config` package |
 | `kernel/context/__init__.py` | Add 4 new exports |
-| `hosts/little_lisa/main.py` | Build registry, compile configs, populate `mcp_tool_servers` |
+| `hosts/core/main.py` | Build registry, compile configs, populate `mcp_tool_servers` |
 | `mcp_server/tests/test_mcp_servers.py` | Update for CLI contract |
 | `mcp_server/README.md` | Document new servers + CLI contract |
 | `docs/MCP_NATIVE_DESIGN.md` | Update built-in servers table |

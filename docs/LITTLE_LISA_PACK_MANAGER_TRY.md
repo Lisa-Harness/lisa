@@ -1,4 +1,4 @@
-# Little Lisa Pack Manager: Try Guide
+# Pack Manager: Try Guide
 
 This guide lets you exercise the new runtime pack capabilities in a local dev loop.
 
@@ -32,25 +32,25 @@ Use your local venv if needed:
 List pack activation state (always-on, bundled, runtime-installed):
 
 ```powershell
-uv run little-lisa packs list --no-log
+uv run lisa packs list --no-log
 ```
 
 From chat/REPL, same operation:
 
 ```powershell
-uv run little-lisa once "/pack list" --no-log
+uv run lisa once "/pack list" --no-log
 ```
 
 Enable a bundled pack explicitly:
 
 ```powershell
-uv run little-lisa once "/pack enable cloudflare" --no-log
+uv run lisa once "/pack enable cloudflare" --no-log
 ```
 
 Disable it again:
 
 ```powershell
-uv run little-lisa once "/pack disable cloudflare" --no-log
+uv run lisa once "/pack disable cloudflare" --no-log
 ```
 
 ## 2) Trust Policy Checks
@@ -60,13 +60,13 @@ By default, allowed package prefixes are `lisa-pack-` and allowed Git host is `g
 Expected rejection (wrong package prefix):
 
 ```powershell
-uv run little-lisa once "/pack install requests" --no-log
+uv run lisa once "/pack install requests" --no-log
 ```
 
 Expected rejection (wrong Git host):
 
 ```powershell
-uv run little-lisa once "/pack install git+https://evil.example.com/acme/lisa-pack-cloudflare.git@main#egg=lisa-pack-cloudflare" --no-log
+uv run lisa once "/pack install git+https://evil.example.com/acme/lisa-pack-cloudflare.git@main#egg=lisa-pack-cloudflare" --no-log
 ```
 
 ## 3) Configure Policy via Env Vars
@@ -74,25 +74,25 @@ uv run little-lisa once "/pack install git+https://evil.example.com/acme/lisa-pa
 Allow custom package prefixes:
 
 ```powershell
-$env:LITTLE_LISA_PACK_ALLOWED_PREFIXES = "lisa-pack-,acme-pack-"
+$env:LISA_PACK_ALLOWED_PREFIXES = "lisa-pack-,acme-pack-"
 ```
 
 Allow additional Git hosts:
 
 ```powershell
-$env:LITTLE_LISA_PACK_GIT_ALLOW_HOSTS = "github.com,dev.azure.com"
+$env:LISA_PACK_GIT_ALLOW_HOSTS = "github.com,dev.azure.com"
 ```
 
 Require pinned Git refs (`@tag`, `@branch`, or `@sha`) (default: true):
 
 ```powershell
-$env:LITTLE_LISA_PACK_REQUIRE_GIT_REF = "true"
+$env:LISA_PACK_REQUIRE_GIT_REF = "true"
 ```
 
 Disable auto-restart after install/uninstall:
 
 ```powershell
-$env:LITTLE_LISA_AUTO_RESTART = "false"
+$env:LISA_AUTO_RESTART = "false"
 ```
 
 ## 4) Install From Git
@@ -100,13 +100,13 @@ $env:LITTLE_LISA_AUTO_RESTART = "false"
 Example shape (replace with your real repo/ref):
 
 ```powershell
-uv run little-lisa packs install "git+https://github.com/the-migus-group/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare" --no-log
+uv run lisa packs install "git+https://github.com/the-migus-group/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare" --no-log
 ```
 
 From REPL/host command surface:
 
 ```powershell
-uv run little-lisa once "/pack install git+https://github.com/the-migus-group/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare" --no-log
+uv run lisa once "/pack install git+https://github.com/the-migus-group/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare" --no-log
 ```
 
 ## 4b) Install From Local Folder (Split-Repos Workflow)
@@ -116,13 +116,13 @@ Local folder installs are supported so you can iterate on packs before publishin
 Example learning pack path:
 
 ```powershell
-uv run little-lisa packs install "C:\Code\lisa-pack-learning" --no-log
+uv run lisa packs install "C:\Code\lisa-pack-learning" --no-log
 ```
 
 Example cloudflare pack path:
 
 ```powershell
-uv run little-lisa packs install "C:\Code\lisa-pack-cloudflare" --no-log
+uv run lisa packs install "C:\Code\lisa-pack-cloudflare" --no-log
 ```
 
 Requirements for local folder install:
@@ -133,7 +133,7 @@ Requirements for local folder install:
 
 ## 4c) Mode/Tool Provider Preferences (No Core Edits)
 
-Little Lisa host policy can prefer specific providers for duplicate mode/operation/tool IDs. This is configured in [hosts/little_lisa/mcp_servers.yaml](hosts/little_lisa/mcp_servers.yaml)
+The host policy can prefer specific providers for duplicate mode/operation/tool IDs. This is configured in [hosts/core/mcp_servers.yaml](hosts/core/mcp_servers.yaml)
 under `pack_policy.preferred_providers`:
 
 ```yaml
@@ -172,12 +172,12 @@ You can attach a resume message to install/uninstall in REPL command form:
 /pack install git+https://github.com/acme/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare --resume check cloudflare zone status for my workspace
 ```
 
-On next process start, Little Lisa consumes that message and runs it as the first turn.
+On next process start, the CLI host consumes that message and runs it as the first turn.
 
 ## 6) Uninstall a Pack
 
 ```powershell
-uv run little-lisa packs uninstall lisa-pack-cloudflare --no-log
+uv run lisa packs uninstall lisa-pack-cloudflare --no-log
 ```
 
 ## 7) Inspect Installed Pack Metadata
@@ -197,7 +197,7 @@ The lock now persists:
 Default data-dir:
 
 ```plaintext
-C:\Code\lisa_framework\hosts\little_lisa\artifacts
+<data-dir>
 ```
 
 ## 8) MCP Pack Server Coexistence + Exclusions
@@ -213,7 +213,7 @@ This allows multiple packs with the same declared `server_id` to co-exist.
 To exclude specific pack-contributed server instances, edit:
 
 ```plaintext
-hosts/little_lisa/mcp_servers.yaml
+hosts/core/mcp_servers.yaml
 ```
 
 Use:
@@ -235,9 +235,9 @@ Supported exclusion formats:
 ## 9) Suggested Quick Validation Sequence
 
 ```powershell
-uv run little-lisa packs list --no-log
-uv run little-lisa once "/pack install requests" --no-log
-uv run little-lisa once "/pack list" --no-log
+uv run lisa packs list --no-log
+uv run lisa once "/pack install requests" --no-log
+uv run lisa once "/pack list" --no-log
 ```
 
 Then test a real Git pack install with your own repo ref.

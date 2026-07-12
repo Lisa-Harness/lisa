@@ -289,7 +289,7 @@ A real host must inject concrete implementations for these seams:
 | Scheduler | Host-owned | For signal connector polling and heartbeat jobs |
 | Browser automation | Host-owned | For surf workflow execution |
 
-Little Lisa (`hosts/little_lisa/`) is the reference host. It wires a minimal subset of these seams for local development and pack authoring.
+The shared host runtime (`hosts/core`) is the reference host. It wires a minimal subset of these seams for local development and pack authoring, shared by the CLI, web, and VS Code transport hosts.
 
 ## Privacy Model
 
@@ -316,5 +316,5 @@ Import-boundary tests across all packages (`sdk/tests/test_import_boundaries.py`
 - [BOUNDARIES.md](BOUNDARIES.md) — public/private boundary definition
 - [PACK_AUTHORING_GUIDE.md](PACK_AUTHORING_GUIDE.md) — how to create modes, operations, and content packs
 - [SDK_EXTENSIONS_GUIDE.md](SDK_EXTENSIONS_GUIDE.md) — how to create signal connectors and data sources
-- [LITTLE_LISA_GUIDE.md](LITTLE_LISA_GUIDE.md) — reference host usage and configuration
+- [HOSTS_GUIDE.md](HOSTS_GUIDE.md) — reference host usage and configuration
 
