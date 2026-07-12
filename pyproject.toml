@@ -20,6 +20,7 @@ dependencies = [
     "lisa-host-core",
     "lisa-host-cli",
     "lisa-host-web",
+    "lisa-host-vscode",
     "rich>=13.7.0",
     "typer>=0.12.3",
 ]
@@ -51,6 +52,7 @@ members = [
     "hosts/core",
     "hosts/cli",
     "hosts/web",
+    "hosts/vscode",
     "hosts/little_lisa",
     "lisa_pack_cloudflare",
     "lisa_pack_github",
@@ -76,6 +78,7 @@ little-lisa = { workspace = true }
 lisa-host-core = { workspace = true }
 lisa-host-cli = { workspace = true }
 lisa-host-web = { workspace = true }
+lisa-host-vscode = { workspace = true }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
