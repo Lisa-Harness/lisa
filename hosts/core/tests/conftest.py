@@ -47,7 +47,7 @@ def _make_catalog_mcp_config() -> MCPClientConfig:
     )
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(scope="session", autouse=True)
 def _mcp_catalog_setup() -> None:
     """Wire the catalog MCP, operation callbacks, and content registry.
 

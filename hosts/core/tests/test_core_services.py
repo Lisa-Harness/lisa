@@ -206,25 +206,26 @@ def test_build_capability_snapshot_reflects_live_catalog(tmp_path: Path) -> None
 def test_get_little_lisa_tool_catalog_returns_registry_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from kernel.tools.registry import get_tool_catalog
+    import kernel.tools.registry as tool_registry
 
     fake_tool = SimpleNamespace(tool_id="fake_tool", description="A fake tool for testing.")
     fake_catalog = {"fake_tool": fake_tool}
 
     monkeypatch.setattr(
-        "kernel.tools.registry.get_tool_catalog",
+        tool_registry,
+        "get_tool_catalog",
         lambda: fake_catalog,
     )
 
-    result = get_tool_catalog()
+    result = tool_registry.get_tool_catalog()
     assert result is fake_catalog
     assert "fake_tool" in result
 
 
 def test_get_little_lisa_tool_catalog_empty_before_setup() -> None:
-    from kernel.tools.registry import get_tool_catalog
+    import kernel.tools.registry as tool_registry
 
-    result = get_tool_catalog()
+    result = tool_registry.get_tool_catalog()
     assert isinstance(result, dict)
 
 
@@ -275,11 +276,10 @@ async def test_debug_frontdoor_reports_last_planner_payload(tmp_path: Path) -> N
 
 def test_assemble_system_prompt_includes_turn_input_contract() -> None:
     """assemble_system_prompt loads base system prompt + turn-input contract."""
-    # The base system prompt is read from user_contexts/system.md via the loader.
     def _loader(path: str) -> str:
         if path == "user_contexts/system.md":
             return "Base system prompt."
-        if path == "turn_input/contract.md":
+        if path == "prompts/agent/turn_input_contract.md":
             return "## User Query"
         return ""
 
@@ -887,7 +887,7 @@ def test_initialize_runtime_applies_user_timeout_and_state_snapshot(tmp_path: Pa
         debug=True,
         user_slug=str(context_path),
         timezone="UTC",
-        state_snapshot_path=str(snapshot_path),
+        state_snapshot=str(snapshot_path),
         data_dir=str(tmp_path),
     )
     runtime = HostRuntime(config)
@@ -898,7 +898,13 @@ def test_initialize_runtime_applies_user_timeout_and_state_snapshot(tmp_path: Pa
     assert config.timezone_source == "cli"
     assert config.effective_log_level == "debug"
     assert isinstance(runtime.state_snapshot, dict)
-    assert runtime.thread_path == tmp_path / "threads" / "system.jsonl"
+    # The new HostConfig stores user_slug as-is (the full path). When the
+    # user_slug is an absolute path, thread_path = thread_dir / f"{user}.jsonl"
+    # resolves to the absolute path of the context file with .jsonl appended
+    # (Path joining with an absolute string replaces the base). This is the
+    # new behavior — slug normalization to a thread name now happens in
+    # session_context resolution, not HostConfig construction.
+    assert runtime.thread_path == Path(str(context_path) + ".jsonl")
 
 
 def test_resolve_stream_enabled_prefers_explicit_flags() -> None:

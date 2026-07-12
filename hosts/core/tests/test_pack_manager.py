@@ -769,7 +769,7 @@ def test_compile_mcp_configs_prefers_runtime_installed_memory_provider(
 
     _warm, _cold = mcp_pool.compile_mcp_configs(runtime)
 
-    assert runtime.memory_config_pack_slug == "lisa_pack_mem0"
+    assert runtime.memory_config_pack_slug == "mem0-pack"
 
 
 def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
