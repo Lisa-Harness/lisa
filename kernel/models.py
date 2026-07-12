@@ -1270,6 +1270,12 @@ class CheckpointBundle(BaseModel):
 
     ``turn_history`` is host-owned: the kernel leaves it empty; the host
     appends its own conversation thread before persisting.
+
+    The enrichment fields (``overview``, ``work_done``,
+    ``important_files``, ``next_steps``) are populated by a
+    checkpoint-pack operation that calls the model to summarize the
+    session at checkpoint time. They default to empty so the kernel's
+    bare bundle still works without enrichment.
     """
 
     checkpoint_id: str
@@ -1281,6 +1287,11 @@ class CheckpointBundle(BaseModel):
     unified_state: dict[str, Any] = Field(default_factory=dict)
     workflow_session_state: dict[str, Any] = Field(default_factory=dict)
     turn_history: list[dict[str, Any]] = Field(default_factory=list)
+    # ── Enrichment fields (populated by checkpoint-pack operations) ──
+    overview: str = ""
+    work_done: str = ""
+    important_files: list[str] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
 
 
 class WorkflowTransitionRequest(BaseModel):

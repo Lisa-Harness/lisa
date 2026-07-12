@@ -30,6 +30,7 @@ pack_policy:
     - lisa-pack-core
     - lisa-pack-learning
     - lisa-pack-search
+    - lisa-pack-checkpoint
   preferred_providers:
     modes:
       default:

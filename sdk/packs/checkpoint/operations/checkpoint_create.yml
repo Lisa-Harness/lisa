@@ -1,0 +1,7 @@
+operation_id: checkpoint_create
+description: Create an LLM-enriched checkpoint of the current session and persist it to lisa-storage. Call when the user wants to save their progress or mark a restore point.
+mode_allowlist: [default, discuss, learn]
+tool_ids: [save_checkpoint]
+timeout_seconds: 30
+max_calls_per_turn: 1
+preferred_model_id: deep

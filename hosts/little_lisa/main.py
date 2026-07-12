@@ -4431,6 +4431,20 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
             logger.debug("on_checkpoint: no warm pool available; skipping")
             return
         try:
+            # Populate turn history from the thread JSONL so automatic
+            # checkpoints carry the conversation. Enrichment (overview,
+            # work_done, etc.) is reserved for explicit /checkpoint calls
+            # that go through the checkpoint_create operation.
+            thread_entries = _load_recent_thread_entries(limit=30)
+            bundle.turn_history = [
+                {
+                    "timestamp_utc": entry.get("timestamp_utc", ""),
+                    "mode_id": entry.get("mode_id", ""),
+                    "query": entry.get("query", ""),
+                    "response_text": entry.get("response_text", ""),
+                }
+                for entry in thread_entries
+            ]
             bundle_dict = bundle.model_dump(mode="json")
             await pool.call_tool(
                 "save_checkpoint",
@@ -4558,41 +4572,75 @@ async def _run_explicit_slice_command(*, message: str) -> str:
 
 
 async def _handle_checkpoint_command(stripped: str, message: str) -> str:
-    """Handle ``/checkpoint [label]`` — create an explicit checkpoint.
+    """Handle ``/checkpoint [label]`` — create an enriched checkpoint.
 
-    Builds a CheckpointBundle from current state and persists it via
-    lisa-storage's ``save_checkpoint`` tool through the MCP tool pool.
+    Delegates to the ``checkpoint_create`` operation from lisa-pack-checkpoint,
+    which calls the model to summarize the conversation, then persists an
+    enriched ``CheckpointBundle`` via ``lisa-storage``.
     """
-    from kernel.models import CheckpointBundle  # noqa: PLC0415
-    from kernel.turn_runner import _build_checkpoint_bundle  # noqa: PLC0415
+    from kernel.models import OperationExecutionContext  # noqa: PLC0415
+    from kernel.operations.registry import execute_operation  # noqa: PLC0415
 
     parts = stripped.split(None, 1)
     label = parts[1].strip() if len(parts) > 1 else ""
 
-    hooks = _build_turn_hooks()
-    bundle = _build_checkpoint_bundle(
-        mode_id=str(_RUNTIME_STATE.get("current_mode_id") or "default"),
-        transitioned_to=None,
-        is_workflow=hooks.workflow_session is not None,
-        hooks=hooks,
-    )
-    if bundle is None:
-        return "Nothing to checkpoint — no state or workflow session available."
+    # Load turn history from the thread JSONL.
+    turn_history = _load_recent_thread_entries(limit=50)
+    # Normalize thread entries to the checkpoint format.
+    normalized_history = [
+        {
+            "timestamp_utc": entry.get("timestamp_utc", ""),
+            "mode_id": entry.get("mode_id", ""),
+            "query": entry.get("query", ""),
+            "response_text": entry.get("response_text", ""),
+        }
+        for entry in turn_history
+    ]
 
-    bundle.label = label
+    # Read current UnifiedState.
+    state = _state_provider()
+
+    # Build a custom tool executor that routes to lisa-storage with
+    # server-scoped dispatch (the operation calls save_checkpoint, which
+    # is on the cold lisa-storage server and needs server_id to connect).
     pool = _runtime_warm_pool()
     if pool is None:
-        return "Checkpoint created but no storage pool available to persist it."
+        return "No storage pool available to persist checkpoint."
+
+    async def _checkpoint_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
+        """Route checkpoint tools to lisa-storage via server-scoped dispatch."""
+        import json as _json  # noqa: PLC0415
+
+        params = getattr(_ctx, "parameters", {}) or {}
+        mcp_result = await pool.call_tool(tool_id, params, server_id="lisa-storage")
+        return ToolResult(
+            tool_id=tool_id,
+            output_text=mcp_result.output_text,
+            error=mcp_result.output_text if mcp_result.is_error else "",
+        )
+
+    ctx = OperationExecutionContext(
+        workspace_id="lite-host",
+        user_id=str(_runtime_user_slug() or "lite-user"),
+        user_slug=str(_runtime_user_slug() or "default"),
+        surface_type="personal_dm",
+        surface_id="lite-host-console",
+        memory_scope="personal",
+        mode_id=str(_RUNTIME_STATE.get("current_mode_id") or "default"),
+        query=message,
+        complete_fn=_complete_live,
+        resolve_model_fn=_resolve_model,
+        execute_tool_fn=_checkpoint_tool_executor,
+        state_provider=lambda: state,
+        params={
+            "label": label,
+            "turn_history": normalized_history,
+        },
+    )
 
     try:
-        bundle_dict = bundle.model_dump(mode="json")
-        result = await pool.call_tool("save_checkpoint", {"bundle": bundle_dict}, server_id="lisa-storage")
-        result_text = getattr(result, "output_text", "") or ""
-        data = json.loads(result_text)
-        if "error" in data:
-            return f"Checkpoint failed: {data['error']}"
-        cid = data.get("checkpoint_id", "")
-        return f"Checkpoint saved: {cid}" + (f" (label: {label})" if label else "")
+        result = await execute_operation("checkpoint_create", ctx)
+        return result.output_text or "Checkpoint created."
     except Exception as exc:  # pylint: disable=broad-except
         return f"Checkpoint failed: {exc}"
 
@@ -4600,10 +4648,14 @@ async def _handle_checkpoint_command(stripped: str, message: str) -> str:
 async def _handle_restore_command(stripped: str, message: str) -> str:
     """Handle ``/restore <checkpoint_id>`` — restore state from a checkpoint.
 
-    Loads a CheckpointBundle via lisa-storage's ``restore_checkpoint`` tool,
-    then restores UnifiedState into runtime state and WorkflowSessionState
-    via the workflow_session_updater hook.
+    Delegates to the ``checkpoint_restore`` operation from lisa-pack-checkpoint,
+    which loads the bundle via ``lisa-storage`` and returns the full contents.
+    The host then restores UnifiedState and WorkflowSessionState from the
+    returned ``output_json``.
     """
+    from kernel.models import OperationExecutionContext, WorkflowSessionState  # noqa: PLC0415
+    from kernel.operations.registry import execute_operation  # noqa: PLC0415
+
     parts = stripped.split(None, 1)
     if len(parts) < 2 or not parts[1].strip():
         return "Usage: /restore <checkpoint_id>"
@@ -4613,28 +4665,43 @@ async def _handle_restore_command(stripped: str, message: str) -> str:
     if pool is None:
         return "No storage pool available to restore from."
 
-    try:
-        result = await pool.call_tool(
-            "restore_checkpoint",
-            {"checkpoint_id": checkpoint_id},
-            server_id="lisa-storage",
+    async def _checkpoint_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
+        """Route checkpoint tools to lisa-storage via server-scoped dispatch."""
+        params = getattr(_ctx, "parameters", {}) or {}
+        mcp_result = await pool.call_tool(tool_id, params, server_id="lisa-storage")
+        return ToolResult(
+            tool_id=tool_id,
+            output_text=mcp_result.output_text,
+            error=mcp_result.output_text if mcp_result.is_error else "",
         )
-        result_text = getattr(result, "output_text", "") or ""
 
-        data = json.loads(result_text)
-        if "error" in data:
-            return f"Restore failed: {data['error']}"
+    ctx = OperationExecutionContext(
+        workspace_id="lite-host",
+        user_id=str(_runtime_user_slug() or "lite-user"),
+        user_slug=str(_runtime_user_slug() or "default"),
+        surface_type="personal_dm",
+        surface_id="lite-host-console",
+        memory_scope="personal",
+        mode_id=str(_RUNTIME_STATE.get("current_mode_id") or "default"),
+        query=message,
+        execute_tool_fn=_checkpoint_tool_executor,
+        params={"checkpoint_id": checkpoint_id},
+    )
 
-        # Restore UnifiedState into runtime state snapshot
-        unified_state_dict = data.get("unified_state") or {}
+    try:
+        result = await execute_operation("checkpoint_restore", ctx)
+
+        # Restore state from the returned bundle.
+        bundle_data = result.output_json or {}
+        if not isinstance(bundle_data, dict):
+            bundle_data = {}
+
+        unified_state_dict = bundle_data.get("unified_state") or {}
         if unified_state_dict:
             _RUNTIME_STATE["state_snapshot"] = unified_state_dict
 
-        # Restore WorkflowSessionState via the updater hook
-        wf_session_dict = data.get("workflow_session_state") or {}
+        wf_session_dict = bundle_data.get("workflow_session_state") or {}
         if wf_session_dict:
-            from kernel.models import WorkflowSessionState  # noqa: PLC0415
-
             try:
                 session = WorkflowSessionState.model_validate(wf_session_dict)
                 hooks = _build_turn_hooks()
@@ -4643,15 +4710,7 @@ async def _handle_restore_command(stripped: str, message: str) -> str:
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning("restore: workflow session restore failed: %s", exc)
 
-        label = data.get("label") or ""
-        stage = data.get("stage_id") or ""
-        turn_count = data.get("turn_count") or 0
-        return (
-            f"Restored checkpoint {checkpoint_id}"
-            + (f" (label: {label})" if label else "")
-            + (f" stage={stage}" if stage else "")
-            + (f" turns={turn_count}" if turn_count else "")
-        )
+        return result.output_text or f"Restored checkpoint {checkpoint_id}"
     except Exception as exc:  # pylint: disable=broad-except
         return f"Restore failed: {exc}"
 
