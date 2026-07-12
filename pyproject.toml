@@ -16,7 +16,6 @@ dependencies = [
     "lisa-pack-checkpoint",
     "lisa-pack-mem0",
     "lisa-pack-brave-search",
-    "little-lisa",
     "lisa-host-core",
     "lisa-host-cli",
     "lisa-host-web",
@@ -53,7 +52,6 @@ members = [
     "hosts/cli",
     "hosts/web",
     "hosts/vscode",
-    "hosts/little_lisa",
     "lisa_pack_cloudflare",
     "lisa_pack_github",
     "lisa_pack_stripe",
@@ -74,7 +72,6 @@ lisa-pack-search = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
 lisa-pack-mem0 = { workspace = true }
 lisa-pack-brave-search = { workspace = true }
-little-lisa = { workspace = true }
 lisa-host-core = { workspace = true }
 lisa-host-cli = { workspace = true }
 lisa-host-web = { workspace = true }

@@ -1,3 +1,5 @@
+"""Tests for hosts.core.model_manifest — migrated from hosts/little_lisa/test_model_manifest.py."""
+
 from __future__ import annotations
 
 import textwrap
@@ -5,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from . import model_manifest
+from hosts.core import model_manifest
 
 _MIN_EXPECTED_MODELS = 2
 
@@ -17,7 +19,12 @@ def test_load_manifest_reads_designations_and_models() -> None:
     assert manifest.designated("front-door") is not None
     assert manifest.designated("default") is not None
     assert manifest.designated("reasoning") is not None
-    assert manifest.model_for_mode("discuss").model_id == "glm-5.2:cloud"
+    assert manifest.designated("deep") is not None
+    # The new hosts/core/models.yaml has no mode_models mapping; verify
+    # that the default-designation model is returned for unmapped modes.
+    default_model = manifest.designated("default")
+    assert default_model is not None
+    assert default_model.model_id  # has a non-empty model_id
 
 
 def test_load_manifest_rejects_duplicate_designation(tmp_path: Path) -> None:

@@ -1,3 +1,21 @@
+"""Tests for the web host system tray launcher.
+
+Migrated from ``hosts/little_lisa/test_little_lisa_tray.py``.
+
+The tray launcher was re-homed from ``hosts/little_lisa/tray.py`` to
+``hosts/web/tray.py``. The desktop-subprocess concept became the
+web-host subprocess:
+
+- ``tray._desktop_subprocess_command`` → ``hosts.web.tray._web_subprocess_command``
+- ``tray._DesktopProcess`` → ``hosts.web.tray._WebHostProcess``
+- ``TrayConfig.desktop_args`` → ``TrayConfig.web_args``
+- ``little_lisa.main`` module → ``hosts.web.main``
+- Token header / url helpers moved to ``hosts.web.server``.
+
+The tray icon, health-check, logs-dir, and pystray integration logic is
+unchanged — only the import target and the subprocess module name differ.
+"""
+
 from __future__ import annotations
 
 import builtins
@@ -9,7 +27,7 @@ from typing import Self
 
 import pytest
 
-from . import tray
+from hosts.web import tray
 
 
 class _FakeProcess:
@@ -30,7 +48,7 @@ class _FakeProcess:
     def wait(self, timeout: float) -> None:
         self.wait_calls += 1
         if self.wait_times_out:
-            raise subprocess.TimeoutExpired(cmd="little_lisa", timeout=timeout)
+            raise subprocess.TimeoutExpired(cmd="hosts.web", timeout=timeout)
 
     def kill(self) -> None:
         self.kill_calls += 1
@@ -42,40 +60,40 @@ def _tray_config(tmp_path: Path, *, open_on_start: bool = False) -> tray.TrayCon
         host="127.0.0.1",
         port=8765,
         token="secret",
-        desktop_args=["desktop", "--port", "8765"],
+        web_args=["web", "--port", "8765"],
         open_on_start=open_on_start,
         logs_dir=tmp_path / "logs",
     )
 
 
-def test_desktop_subprocess_command_for_module_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_web_subprocess_command_for_module_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delattr(sys, "frozen", raising=False)
     monkeypatch.setattr(sys, "executable", "C:/Python312/python.exe")
 
-    command = tray._desktop_subprocess_command(["desktop", "--port", "8765"])
+    command = tray._web_subprocess_command(["web", "--port", "8765"])
 
     assert command == [
         "C:/Python312/python.exe",
         "-m",
-        "little_lisa.main",
-        "desktop",
+        "hosts.web.main",
+        "web",
         "--port",
         "8765",
     ]
 
 
-def test_desktop_subprocess_command_for_frozen_executable(
+def test_web_subprocess_command_for_frozen_executable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", "C:/dist/little_lisa.exe")
+    monkeypatch.setattr(sys, "executable", "C:/dist/lisa-web.exe")
 
-    command = tray._desktop_subprocess_command(["desktop", "--port", "9000"])
+    command = tray._web_subprocess_command(["web", "--port", "9000"])
 
-    assert command == ["C:/dist/little_lisa.exe", "desktop", "--port", "9000"]
+    assert command == ["C:/dist/lisa-web.exe", "web", "--port", "9000"]
 
 
-def test_desktop_process_start_and_stop(
+def test_web_host_process_start_and_stop(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -94,7 +112,7 @@ def test_desktop_process_start_and_stop(
     monkeypatch.setattr(tray.subprocess, "Popen", _fake_popen)
     monkeypatch.setattr(tray, "_wait_for_health", _fake_wait_for_health)
 
-    manager = tray._DesktopProcess(config)
+    manager = tray._WebHostProcess(config)
     manager.start()
     manager.start()
 
@@ -107,9 +125,9 @@ def test_desktop_process_start_and_stop(
     assert fake_process.wait_calls == 1
 
 
-def test_desktop_process_stop_kills_after_timeout(tmp_path: Path) -> None:
+def test_web_host_process_stop_kills_after_timeout(tmp_path: Path) -> None:
     config = _tray_config(tmp_path)
-    manager = tray._DesktopProcess(config)
+    manager = tray._WebHostProcess(config)
     fake_process = _FakeProcess(wait_times_out=True)
     manager._process = fake_process
 
@@ -120,14 +138,14 @@ def test_desktop_process_stop_kills_after_timeout(tmp_path: Path) -> None:
     assert fake_process.kill_calls == 1
 
 
-def test_desktop_process_stop_noops_when_process_is_missing(tmp_path: Path) -> None:
-    manager = tray._DesktopProcess(_tray_config(tmp_path))
+def test_web_host_process_stop_noops_when_process_is_missing(tmp_path: Path) -> None:
+    manager = tray._WebHostProcess(_tray_config(tmp_path))
 
     manager.stop()
 
 
-def test_desktop_process_stop_clears_finished_process(tmp_path: Path) -> None:
-    manager = tray._DesktopProcess(_tray_config(tmp_path))
+def test_web_host_process_stop_clears_finished_process(tmp_path: Path) -> None:
+    manager = tray._WebHostProcess(_tray_config(tmp_path))
     fake_process = _FakeProcess()
     fake_process._running = False
     manager._process = fake_process
@@ -138,11 +156,11 @@ def test_desktop_process_stop_clears_finished_process(tmp_path: Path) -> None:
     assert fake_process.terminate_calls == 0
 
 
-def test_desktop_process_restart_invokes_stop_then_start(
+def test_web_host_process_restart_invokes_stop_then_start(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    manager = tray._DesktopProcess(_tray_config(tmp_path))
+    manager = tray._WebHostProcess(_tray_config(tmp_path))
     events: list[str] = []
 
     monkeypatch.setattr(manager, "stop", lambda: events.append("stop"))
@@ -281,27 +299,27 @@ def test_run_tray_raises_when_pystray_import_fails(
         tray.run_tray(config)
 
 
-def test_run_tray_starts_desktop_and_runs_icon(  # noqa: C901 — integration test with many setup branches
+def test_run_tray_starts_web_host_and_runs_icon(  # noqa: C901 — integration test with many setup branches
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     config = _tray_config(tmp_path, open_on_start=True)
-    desktop_events: list[str] = []
+    web_events: list[str] = []
     opened_urls: list[str] = []
     opened_log_paths: list[Path] = []
 
-    class _FakeDesktopProcess:
+    class _FakeWebHostProcess:
         def __init__(self, _config: tray.TrayConfig) -> None:
             self.launch_url = "http://127.0.0.1:8765/?token=secret"
 
         def start(self) -> None:
-            desktop_events.append("start")
+            web_events.append("start")
 
         def stop(self) -> None:
-            desktop_events.append("stop")
+            web_events.append("stop")
 
         def restart(self) -> None:
-            desktop_events.append("restart")
+            web_events.append("restart")
 
     fake_pystray = ModuleType("pystray")
     created_icons: list[object] = []
@@ -341,7 +359,7 @@ def test_run_tray_starts_desktop_and_runs_icon(  # noqa: C901 — integration te
         opened_urls.append(url)
         return True
 
-    monkeypatch.setattr(tray, "_DesktopProcess", _FakeDesktopProcess)
+    monkeypatch.setattr(tray, "_WebHostProcess", _FakeWebHostProcess)
     monkeypatch.setattr(tray, "_build_tray_icon_image", lambda: object())  # noqa: PLW0108
     monkeypatch.setattr(tray, "_open_logs_dir", opened_log_paths.append)  # type: ignore[arg-type]
     monkeypatch.setattr(tray.webbrowser, "open", _fake_open)
@@ -349,7 +367,7 @@ def test_run_tray_starts_desktop_and_runs_icon(  # noqa: C901 — integration te
 
     tray.run_tray(config)
 
-    assert desktop_events == ["start", "start", "restart", "stop", "stop"]
+    assert web_events == ["start", "start", "restart", "stop", "stop"]
     assert opened_urls == [
         "http://127.0.0.1:8765/?token=secret",
         "http://127.0.0.1:8765/?token=secret",

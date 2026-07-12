@@ -175,7 +175,6 @@ def build_turn_hooks(
             session_context_loader=_session_context_loader,
             thread_digest_loader=_thread_digest_loader,
             recent_thread_excerpt_builder=_recent_thread_excerpt_builder,
-            host_name="little_lisa",
             capability_manifest=capability_manifest,
         )
 

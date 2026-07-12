@@ -28,7 +28,6 @@ members = [
     "lisa-pack-search",
     "lisa-pack-stripe",
     "lisa-sdk",
-    "little-lisa",
 ]
 
 [[package]]
@@ -893,7 +892,6 @@ dependencies = [
     { name = "lisa-pack-search" },
     { name = "lisa-pack-stripe" },
     { name = "lisa-sdk" },
-    { name = "little-lisa" },
     { name = "rich" },
     { name = "typer" },
 ]
@@ -928,7 +926,6 @@ requires-dist = [
     { name = "lisa-pack-search", editable = "sdk/packs/search" },
     { name = "lisa-pack-stripe", editable = "lisa_pack_stripe" },
     { name = "lisa-sdk", editable = "sdk" },
-    { name = "little-lisa", editable = "hosts/little_lisa" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
@@ -1459,70 +1456,6 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
     { name = "sqlite-vec", specifier = ">=0.1.9" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "little-lisa"
-version = "0.1.0"
-source = { editable = "hosts/little_lisa" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "httpx" },
-    { name = "lisa-kernel" },
-    { name = "lisa-pack-checkpoint" },
-    { name = "lisa-pack-cloudflare" },
-    { name = "lisa-pack-core" },
-    { name = "lisa-pack-github" },
-    { name = "lisa-pack-learning" },
-    { name = "lisa-pack-search" },
-    { name = "lisa-pack-stripe" },
-    { name = "lisa-sdk" },
-    { name = "openai" },
-    { name = "pillow" },
-    { name = "prompt-toolkit" },
-    { name = "pydantic" },
-    { name = "pystray" },
-    { name = "pyyaml" },
-    { name = "rich" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pyinstaller" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-    { name = "types-pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp", specifier = ">=3.10.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "lisa-kernel" },
-    { name = "lisa-pack-checkpoint" },
-    { name = "lisa-pack-cloudflare" },
-    { name = "lisa-pack-core" },
-    { name = "lisa-pack-github" },
-    { name = "lisa-pack-learning" },
-    { name = "lisa-pack-search" },
-    { name = "lisa-pack-stripe" },
-    { name = "lisa-sdk" },
-    { name = "openai", specifier = ">=1.30.0" },
-    { name = "pillow", specifier = ">=10.0.0" },
-    { name = "prompt-toolkit", specifier = ">=3.0.43" },
-    { name = "pydantic", specifier = ">=2.7.0" },
-    { name = "pyinstaller", marker = "extra == 'dev'", specifier = ">=6.10.0" },
-    { name = "pystray", specifier = ">=0.19.5" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "rich", specifier = ">=13.7.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
-    { name = "typer", specifier = ">=0.12.3" },
-    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
 provides-extras = ["dev"]
 

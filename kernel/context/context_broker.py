@@ -8,10 +8,31 @@ live third-party polling.
 from __future__ import annotations
 
 import math
+import os
 import re
+import socket
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+
+def resolve_host_name() -> str:
+    """Resolve the OS hostname for ambient context injection.
+
+    Honors the platform-conventional env vars first so a user can override
+    what the model sees (``HOSTNAME`` on POSIX, ``COMPUTERNAME`` on Windows),
+    then falls back to :func:`socket.gethostname`. Returns an empty string
+    only if every source is unavailable.
+    """
+
+    for env_var in ("HOSTNAME", "COMPUTERNAME"):
+        value = os.environ.get(env_var, "").strip()
+        if value:
+            return value
+    try:
+        return socket.gethostname() or ""
+    except OSError:
+        return ""
 
 from kernel.config import settings
 from kernel.context.context_frames import render_ranked_evidence_namespace_frame

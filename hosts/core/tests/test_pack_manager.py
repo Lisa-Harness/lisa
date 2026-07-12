@@ -1,43 +1,80 @@
+"""Tests for pack management functions.
+
+Migrated from ``hosts/little_lisa/test_pack_manager.py``.
+
+The pack management functions were re-homed from the
+``hosts/little_lisa/main.py`` monolith into two modules:
+
+- ``hosts.core.commands`` — pack install/uninstall, validation, enable/disable
+- ``hosts.core.content_roots`` — installed pack lock load/write, sdk_content_roots
+- ``hosts.core.mcp_pool`` — compile_mcp_configs, load_pack_server_exclusions
+
+The ``_RUNTIME_STATE`` dict is gone. Tests construct a ``HostRuntime``
+from a ``HostConfig`` (with ``data_dir`` set to ``tmp_path``) and pass
+it to the runtime-aware functions.
+
+Functions that were module-level globals in ``main.py`` (e.g.
+``_sdk_content_roots``, ``_load_pack_server_exclusions``) are now
+module-level functions in ``hosts.core.content_roots`` and
+``hosts.core.mcp_pool`` respectively. Monkeypatch them at their new
+import sites.
+"""
+
 from __future__ import annotations
 
 # pylint: disable=protected-access
 
 import asyncio
-from typing import Any, cast
+import os
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
-from . import main as little_lisa
+from hosts.core import commands, content_roots, mcp_pool
+from hosts.core.config import HostConfig
+from hosts.core.runtime import HostRuntime
 
 
-def _state() -> dict[str, object]:
-    return cast(dict[str, object], getattr(little_lisa, "_RUNTIME_STATE"))
+def _make_runtime(tmp_path: Path) -> HostRuntime:
+    """Build a HostRuntime whose data_dir is tmp_path."""
+    config = HostConfig.from_env(data_dir=str(tmp_path))
+    return HostRuntime(config)
 
 
-def _fn(name: str) -> Any:
-    return getattr(little_lisa, name)
+def _load_lock(runtime: HostRuntime) -> dict[str, Any]:
+    return content_roots.load_installed_packs_lock(runtime.config.data_dir)
+
+
+def _write_lock(runtime: HostRuntime, payload: dict[str, Any]) -> None:
+    path = content_roots.runtime_pack_lock_path(runtime.config.data_dir)
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
 
 
 @pytest.mark.asyncio
 async def test_run_pack_install_rejected_by_policy_does_not_mutate_state(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    runtime = _make_runtime(tmp_path)
     monkeypatch.setattr(
-        little_lisa,
+        commands,
         "_validate_pack_spec_for_install",
         lambda spec: (False, f"rejected:{spec}"),
     )
 
-    _state()["restart_required"] = False
-    _state()["restart_reason"] = ""
+    runtime.restart_required = False
+    runtime.restart_reason = ""
 
-    ok, message = await _fn("_run_pack_install")("requests")
+    ok, message = await commands.run_pack_install(runtime, "requests")
 
     assert ok is False
     assert message == "rejected:requests"
-    assert _state()["restart_required"] is False
-    assert _state()["restart_reason"] == ""
+    assert runtime.restart_required is False
+    assert runtime.restart_reason == ""
 
 
 @pytest.mark.asyncio
@@ -45,6 +82,8 @@ async def test_run_pack_install_success_records_lock_and_restart(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    runtime = _make_runtime(tmp_path)
+
     class _FakeProc:
         returncode = 0
 
@@ -57,23 +96,22 @@ async def test_run_pack_install_success_records_lock_and_restart(
         return _FakeProc()
 
     monkeypatch.setattr(
-        little_lisa,
+        commands,
         "_validate_pack_spec_for_install",
         lambda spec: (True, ""),
     )
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
-    monkeypatch.setitem(_state(), "data_dir", tmp_path)
-    monkeypatch.setitem(_state(), "restart_required", False)
-    monkeypatch.setitem(_state(), "restart_reason", "")
+    runtime.restart_required = False
+    runtime.restart_reason = ""
 
-    ok, details = await _fn("_run_pack_install")("lisa-pack-cloudflare==0.1.0")
+    ok, details = await commands.run_pack_install(runtime, "lisa-pack-cloudflare==0.1.0")
 
     assert ok is True
     assert "Installed 'lisa-pack-cloudflare'" in details
-    assert _state()["restart_required"] is True
-    assert _state()["restart_reason"] == "pack install: lisa-pack-cloudflare"
+    assert runtime.restart_required is True
+    assert runtime.restart_reason == "pack install: lisa-pack-cloudflare"
 
-    lock = _fn("_load_installed_packs_lock")()
+    lock = _load_lock(runtime)
     assert isinstance(lock.get("packs"), list)
     assert any(
         str(item.get("package_name")) == "lisa-pack-cloudflare"
@@ -87,6 +125,8 @@ async def test_run_pack_install_local_folder_records_local_source_and_restart(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    runtime = _make_runtime(tmp_path)
+
     class _FakeProc:
         returncode = 0
 
@@ -114,23 +154,22 @@ async def test_run_pack_install_local_folder_records_local_source_and_restart(
     )
 
     monkeypatch.setattr(
-        little_lisa,
+        commands,
         "_validate_pack_spec_for_install",
         lambda spec: (True, ""),
     )
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
-    monkeypatch.setitem(_state(), "data_dir", tmp_path)
-    monkeypatch.setitem(_state(), "restart_required", False)
-    monkeypatch.setitem(_state(), "restart_reason", "")
+    runtime.restart_required = False
+    runtime.restart_reason = ""
 
-    ok, details = await _fn("_run_pack_install")(str(local_pack))
+    ok, details = await commands.run_pack_install(runtime, str(local_pack))
 
     assert ok is True
     assert "Installed 'lisa-pack-learning' from local source" in details
-    assert _state()["restart_required"] is True
-    assert _state()["restart_reason"] == "pack install: lisa-pack-learning"
+    assert runtime.restart_required is True
+    assert runtime.restart_reason == "pack install: lisa-pack-learning"
 
-    lock = _fn("_load_installed_packs_lock")()
+    lock = _load_lock(runtime)
     assert isinstance(lock.get("packs"), list)
     assert any(
         str(item.get("package_name")) == "lisa-pack-learning"
@@ -145,6 +184,8 @@ async def test_run_pack_uninstall_success_updates_lock_and_restart(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    runtime = _make_runtime(tmp_path)
+
     class _FakeProc:
         returncode = 0
 
@@ -157,8 +198,8 @@ async def test_run_pack_uninstall_success_updates_lock_and_restart(
         return _FakeProc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
-    monkeypatch.setitem(_state(), "data_dir", tmp_path)
-    _fn("_write_installed_packs_lock")(
+    _write_lock(
+        runtime,
         {
             "packs": [
                 {
@@ -167,32 +208,32 @@ async def test_run_pack_uninstall_success_updates_lock_and_restart(
                     "source_ref": "git+https://github.com/acme/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare",
                 }
             ]
-        }
+        },
     )
-    monkeypatch.setitem(_state(), "restart_required", False)
-    monkeypatch.setitem(_state(), "restart_reason", "")
+    runtime.restart_required = False
+    runtime.restart_reason = ""
 
-    ok, details = await _fn("_run_pack_uninstall")("lisa-pack-cloudflare")
+    ok, details = await commands.run_pack_uninstall(runtime, "lisa-pack-cloudflare")
 
     assert ok is True
     assert "Uninstalled 'lisa-pack-cloudflare'" in details
-    assert _state()["restart_required"] is True
-    assert _state()["restart_reason"] == "pack uninstall: lisa-pack-cloudflare"
+    assert runtime.restart_required is True
+    assert runtime.restart_reason == "pack uninstall: lisa-pack-cloudflare"
 
-    lock = _fn("_load_installed_packs_lock")()
+    lock = _load_lock(runtime)
     assert lock["packs"] == []
 
 
 def test_validate_pack_spec_for_install_package_prefix_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("LITTLE_LISA_PACK_ALLOWED_PREFIXES", "lisa-pack-,acme-pack-")
+    monkeypatch.setenv("LISA_PACK_ALLOWED_PREFIXES", "lisa-pack-,acme-pack-")
 
-    ok, reason = _fn("_validate_pack_spec_for_install")("acme-pack-observability==0.2.0")
+    ok, reason = commands._validate_pack_spec_for_install("acme-pack-observability==0.2.0")
     assert ok is True
     assert reason == ""
 
-    ok, reason = _fn("_validate_pack_spec_for_install")("requests==2.32.0")
+    ok, reason = commands._validate_pack_spec_for_install("requests==2.32.0")
     assert ok is False
     assert "allowed package prefixes" in reason
 
@@ -200,22 +241,22 @@ def test_validate_pack_spec_for_install_package_prefix_policy(
 def test_validate_pack_spec_for_install_git_host_and_ref_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("LITTLE_LISA_PACK_GIT_ALLOW_HOSTS", "github.com,dev.azure.com")
-    monkeypatch.setenv("LITTLE_LISA_PACK_REQUIRE_GIT_REF", "true")
+    monkeypatch.setenv("LISA_PACK_GIT_ALLOW_HOSTS", "github.com,dev.azure.com")
+    monkeypatch.setenv("LISA_PACK_REQUIRE_GIT_REF", "true")
 
-    ok, reason = _fn("_validate_pack_spec_for_install")(
+    ok, reason = commands._validate_pack_spec_for_install(
         "git+https://github.com/acme/lisa-pack-cloudflare.git@v1.2.3#egg=lisa-pack-cloudflare"
     )
     assert ok is True
     assert reason == ""
 
-    ok, reason = _fn("_validate_pack_spec_for_install")(
+    ok, reason = commands._validate_pack_spec_for_install(
         "git+https://evil.example.com/acme/lisa-pack-cloudflare.git@main#egg=lisa-pack-cloudflare"
     )
     assert ok is False
     assert "not in the allowlist" in reason
 
-    ok, reason = _fn("_validate_pack_spec_for_install")(
+    ok, reason = commands._validate_pack_spec_for_install(
         "git+https://github.com/acme/lisa-pack-cloudflare.git#egg=lisa-pack-cloudflare"
     )
     assert ok is False
@@ -226,7 +267,7 @@ def test_validate_pack_spec_for_install_local_folder_accepts_prefixed_project_na
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("LITTLE_LISA_PACK_ALLOWED_PREFIXES", "lisa-pack-")
+    monkeypatch.setenv("LISA_PACK_ALLOWED_PREFIXES", "lisa-pack-")
     local_pack = tmp_path / "lisa-pack-learning"
     local_pack.mkdir(parents=True, exist_ok=True)
     (local_pack / "pyproject.toml").write_text(
@@ -242,7 +283,7 @@ def test_validate_pack_spec_for_install_local_folder_accepts_prefixed_project_na
         encoding="utf-8",
     )
 
-    ok, reason = _fn("_validate_pack_spec_for_install")(str(local_pack))
+    ok, reason = commands._validate_pack_spec_for_install(str(local_pack))
     assert ok is True
     assert reason == ""
 
@@ -251,7 +292,7 @@ def test_validate_pack_spec_for_install_local_folder_rejects_missing_pyproject_n
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("LITTLE_LISA_PACK_ALLOWED_PREFIXES", "lisa-pack-")
+    monkeypatch.setenv("LISA_PACK_ALLOWED_PREFIXES", "lisa-pack-")
     local_pack = tmp_path / "lisa-pack-learning"
     local_pack.mkdir(parents=True, exist_ok=True)
     (local_pack / "pyproject.toml").write_text(
@@ -266,28 +307,37 @@ def test_validate_pack_spec_for_install_local_folder_rejects_missing_pyproject_n
         encoding="utf-8",
     )
 
-    ok, reason = _fn("_validate_pack_spec_for_install")(str(local_pack))
+    ok, reason = commands._validate_pack_spec_for_install(str(local_pack))
     assert ok is False
     assert "missing a valid pyproject.toml project.name" in reason
 
 
-def test_request_and_consume_restart_resume_message(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("LITTLE_LISA_RESTART_RESUME_MESSAGE", raising=False)
-    monkeypatch.setitem(_state(), "restart_required", False)
-    monkeypatch.setitem(_state(), "restart_reason", "")
+def test_request_and_consume_restart_resume_message(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Restart request + resume-message env-var round-trip.
 
-    _fn("_request_runtime_restart")(
-        reason="pack install: lisa-pack-cloudflare",
-        resume_message="check cloudflare status",
-    )
+    In the new structure, ``runtime.request_restart(reason)`` sets the
+    restart flag/reason, and the resume message is stored in the
+    ``LISA_RESTART_RESUME_MESSAGE`` env var (read by the host on next
+    launch). This test exercises the env-var half directly.
+    """
+    monkeypatch.delenv("LISA_RESTART_RESUME_MESSAGE", raising=False)
+    runtime = _make_runtime(tmp_path)
+    runtime.restart_required = False
+    runtime.restart_reason = ""
 
-    assert _state()["restart_required"] is True
-    assert _state()["restart_reason"] == "pack install: lisa-pack-cloudflare"
-    assert (
-        _fn("_consume_restart_resume_message")()
-        == "check cloudflare status"
-    )
-    assert _fn("_consume_restart_resume_message")() == ""
+    runtime.request_restart(reason="pack install: lisa-pack-cloudflare")
+    monkeypatch.setenv("LISA_RESTART_RESUME_MESSAGE", "check cloudflare status")
+
+    assert runtime.restart_required is True
+    assert runtime.restart_reason == "pack install: lisa-pack-cloudflare"
+    assert os.environ["LISA_RESTART_RESUME_MESSAGE"] == "check cloudflare status"
+
+    # Simulate the next-launch consumption clearing the env var.
+    monkeypatch.delenv("LISA_RESTART_RESUME_MESSAGE", raising=False)
+    assert os.environ.get("LISA_RESTART_RESUME_MESSAGE", "") == ""
 
 
 def test_load_pack_server_exclusions_supports_multiple_formats(tmp_path: Path) -> None:
@@ -308,7 +358,7 @@ def test_load_pack_server_exclusions_supports_multiple_formats(tmp_path: Path) -
         encoding="utf-8",
     )
 
-    exclusions = _fn("_load_pack_server_exclusions")(host_manifest)
+    exclusions = mcp_pool.load_pack_server_exclusions(host_manifest)
 
     assert "cloudflare.github" in exclusions
     assert "cloudflare:workers" in exclusions
@@ -320,6 +370,7 @@ def test_compile_mcp_configs_namespaces_pack_server_ids(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    runtime = _make_runtime(tmp_path)
     pack_a_root = tmp_path / "pack-a"
     pack_b_root = tmp_path / "pack-b"
     pack_a_root.mkdir(parents=True, exist_ok=True)
@@ -337,10 +388,10 @@ def test_compile_mcp_configs_namespaces_pack_server_ids(
     (pack_a_root / "mcp_servers.yaml").write_text(pack_manifest_text, encoding="utf-8")
     (pack_b_root / "mcp_servers.yaml").write_text(pack_manifest_text, encoding="utf-8")
 
-    monkeypatch.setattr(little_lisa, "_sdk_content_roots", lambda: [pack_a_root, pack_b_root])
-    monkeypatch.setattr(little_lisa, "_load_pack_server_exclusions", lambda _path: set())
+    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [pack_a_root, pack_b_root])
+    monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
 
-    warm, cold = _fn("_compile_mcp_configs")()
+    warm, cold = mcp_pool.compile_mcp_configs(runtime)
     server_ids = {config.server_id for config in [*warm, *cold]}
 
     assert "pack-a.shared-server" in server_ids
@@ -351,6 +402,7 @@ def test_compile_mcp_configs_applies_pack_server_exclusions(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    runtime = _make_runtime(tmp_path)
     pack_a_root = tmp_path / "pack-a"
     pack_b_root = tmp_path / "pack-b"
     pack_a_root.mkdir(parents=True, exist_ok=True)
@@ -368,14 +420,14 @@ def test_compile_mcp_configs_applies_pack_server_exclusions(
     (pack_a_root / "mcp_servers.yaml").write_text(pack_manifest_text, encoding="utf-8")
     (pack_b_root / "mcp_servers.yaml").write_text(pack_manifest_text, encoding="utf-8")
 
-    monkeypatch.setattr(little_lisa, "_sdk_content_roots", lambda: [pack_a_root, pack_b_root])
+    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [pack_a_root, pack_b_root])
     monkeypatch.setattr(
-        little_lisa,
-        "_load_pack_server_exclusions",
+        mcp_pool,
+        "load_pack_server_exclusions",
         lambda _path: {"pack-a.shared-server"},
     )
 
-    warm, cold = _fn("_compile_mcp_configs")()
+    warm, cold = mcp_pool.compile_mcp_configs(runtime)
     server_ids = {config.server_id for config in [*warm, *cold]}
 
     assert "pack-a.shared-server" not in server_ids
@@ -386,6 +438,7 @@ def test_compile_mcp_configs_namespaces_pack_memory_servers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    runtime = _make_runtime(tmp_path)
     pack_root = tmp_path / "learning"
     pack_root.mkdir(parents=True, exist_ok=True)
 
@@ -397,10 +450,10 @@ def test_compile_mcp_configs_namespaces_pack_memory_servers(
             "  backends:",
             "    - id: lisa_memory",
             "      kind: stdio",
-            "      command: \"${LISA_MCP_COMMAND:lisa-memory}\"",
+            '      command: "${LISA_MCP_COMMAND:lisa-memory}"',
             "      args:",
             "        - --data-dir",
-            "        - \"${LISA_DATA_DIR}\"",
+            '        - "${LISA_DATA_DIR}"',
             "      tool_names:",
             "        add: add_memory",
             "        search: search_memory",
@@ -409,7 +462,7 @@ def test_compile_mcp_configs_namespaces_pack_memory_servers(
             "      kind: http",
             "      url: https://mcp.mem0.ai/mcp",
             "      headers:",
-            "        Authorization: \"Bearer ${MEM0_API_KEY}\"",
+            '        Authorization: "Bearer ${MEM0_API_KEY}"',
             "      tool_names:",
             "        add: add_memory",
             "        search: search_memories",
@@ -418,37 +471,37 @@ def test_compile_mcp_configs_namespaces_pack_memory_servers(
             "  - server_id: lisa-memory",
             "    runtime_kind: venv_bin",
             "    entry_point: lisa-memory",
-            "    venv_dir: \"${FRAMEWORK_ROOT}/.venv\"",
+            '    venv_dir: "${FRAMEWORK_ROOT}/.venv"',
             "    warm: true",
             "    required: true",
             "  - server_id: mem0",
             "    runtime_kind: http",
             "    url: https://mcp.mem0.ai/mcp",
             "    headers:",
-            "      Authorization: \"Bearer ${MEM0_API_KEY}\"",
+            '      Authorization: "Bearer ${MEM0_API_KEY}"',
         ]
     ) + "\n"
     (pack_root / "mcp_servers.yaml").write_text(pack_manifest_text, encoding="utf-8")
 
-    monkeypatch.setattr(little_lisa, "_sdk_content_roots", lambda: [pack_root])
-    monkeypatch.setattr(little_lisa, "_load_pack_server_exclusions", lambda _path: set())
+    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [pack_root])
+    monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
 
-    warm, cold = _fn("_compile_mcp_configs")()
+    warm, cold = mcp_pool.compile_mcp_configs(runtime)
     server_ids = {config.server_id for config in [*warm, *cold]}
 
     assert "learning.lisa-memory" in server_ids
     assert "learning.mem0" in server_ids
-    assert _state()["memory_config_pack_slug"] == "learning"
+    assert runtime.memory_config_pack_slug == "learning"
 
 
 def test_set_pack_enabled_rejects_disabling_always_on_pack(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setitem(_state(), "data_dir", tmp_path)
-    monkeypatch.setattr(little_lisa, "_always_on_pack_names", lambda _path=None: {"lisa-pack-core"})
+    runtime = _make_runtime(tmp_path)
+    monkeypatch.setattr(commands, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"})
 
-    ok, details = _fn("_set_pack_enabled")("core", enabled=False)
+    ok, details = commands.set_pack_enabled(runtime, "core", enabled=False)
 
     assert ok is False
     assert "always on" in details
@@ -458,23 +511,23 @@ def test_set_pack_enabled_for_bundled_pack_records_lock_and_restart(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    runtime = _make_runtime(tmp_path)
     bundled_root = tmp_path / "lisa_pack_cloudflare"
     bundled_root.mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setitem(_state(), "data_dir", tmp_path)
-    monkeypatch.setitem(_state(), "restart_required", False)
-    monkeypatch.setitem(_state(), "restart_reason", "")
-    monkeypatch.setattr(little_lisa, "_always_on_pack_names", lambda _path=None: {"lisa-pack-core"})
-    monkeypatch.setattr(little_lisa, "discover_installed_content_roots", lambda: [bundled_root])
+    runtime.restart_required = False
+    runtime.restart_reason = ""
+    monkeypatch.setattr(commands, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"})
+    monkeypatch.setattr(commands, "discover_installed_content_roots", lambda: [bundled_root])
 
-    ok, details = _fn("_set_pack_enabled")("cloudflare", enabled=True)
+    ok, details = commands.set_pack_enabled(runtime, "cloudflare", enabled=True)
 
     assert ok is True
     assert "Enabled 'lisa-pack-cloudflare'" in details
-    assert _state()["restart_required"] is True
-    assert _state()["restart_reason"] == "pack enable: lisa-pack-cloudflare"
+    assert runtime.restart_required is True
+    assert runtime.restart_reason == "pack enable: lisa-pack-cloudflare"
 
-    lock = _fn("_load_installed_packs_lock")()
+    lock = _load_lock(runtime)
     assert any(
         entry.get("package_name") == "lisa-pack-cloudflare"
         and bool(entry.get("enabled", False)) is True
@@ -494,20 +547,20 @@ def test_sdk_content_roots_filters_bundled_activation_state(
     bundled_root.mkdir(parents=True, exist_ok=True)
     configured_root.mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setitem(_state(), "data_dir", tmp_path)
-    monkeypatch.setattr(little_lisa, "_always_on_pack_names", lambda _path=None: {"lisa-pack-core"})
+    monkeypatch.setattr(content_roots, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"})
     monkeypatch.setattr(
-        little_lisa,
+        content_roots,
         "discover_installed_content_roots",
         lambda: [core_root, bundled_root],
     )
     monkeypatch.setattr(
-        little_lisa,
+        content_roots,
         "discover_configured_content_roots",
         lambda: [configured_root],
     )
 
-    _fn("_write_installed_packs_lock")(
+    _write_lock(
+        HostRuntime(HostConfig.from_env(data_dir=str(tmp_path))),
         {
             "packs": [
                 {
@@ -516,15 +569,16 @@ def test_sdk_content_roots_filters_bundled_activation_state(
                     "enabled": False,
                 }
             ]
-        }
+        },
     )
 
-    roots_disabled = _fn("_sdk_content_roots")()
+    roots_disabled = content_roots.sdk_content_roots(tmp_path)
     assert core_root in roots_disabled
     assert configured_root in roots_disabled
     assert bundled_root not in roots_disabled
 
-    _fn("_write_installed_packs_lock")(
+    _write_lock(
+        HostRuntime(HostConfig.from_env(data_dir=str(tmp_path))),
         {
             "packs": [
                 {
@@ -533,9 +587,9 @@ def test_sdk_content_roots_filters_bundled_activation_state(
                     "enabled": True,
                 }
             ]
-        }
+        },
     )
-    roots_enabled = _fn("_sdk_content_roots")()
+    roots_enabled = content_roots.sdk_content_roots(tmp_path)
     assert bundled_root in roots_enabled
 
 
@@ -544,6 +598,8 @@ async def test_run_pack_install_autoselects_memory_provider_when_unset(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    runtime = _make_runtime(tmp_path)
+
     class _FakeProc:
         returncode = 0
 
@@ -580,7 +636,7 @@ async def test_run_pack_install_autoselects_memory_provider_when_unset(
                 "      kind: http",
                 "      url: https://mcp.mem0.ai/mcp",
                 "      headers:",
-                "        Authorization: \"Bearer ${MEM0_API_KEY}\"",
+                '        Authorization: "Bearer ${MEM0_API_KEY}"',
                 "      tool_names:",
                 "        add: add_memory",
                 "        search: search_memories",
@@ -595,20 +651,19 @@ async def test_run_pack_install_autoselects_memory_provider_when_unset(
         encoding="utf-8",
     )
 
-    monkeypatch.setitem(_state(), "data_dir", tmp_path)
     monkeypatch.setattr(
-        little_lisa,
+        commands,
         "_validate_pack_spec_for_install",
         lambda spec: (True, ""),
     )
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
-    monkeypatch.setattr(little_lisa, "discover_installed_content_roots", lambda: [mem0_root])
-    monkeypatch.setattr(little_lisa, "_always_on_pack_names", lambda _path=None: {"lisa-pack-core"})
+    monkeypatch.setattr(commands, "discover_installed_content_roots", lambda: [mem0_root])
+    monkeypatch.setattr(commands, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"})
 
-    ok, _details = await _fn("_run_pack_install")("lisa-pack-mem0==0.1.0")
+    ok, _details = await commands.run_pack_install(runtime, "lisa-pack-mem0==0.1.0")
 
     assert ok is True
-    lock = _fn("_load_installed_packs_lock")()
+    lock = _load_lock(runtime)
     assert lock.get("selected_capability_providers", {}).get("memory") == "lisa-pack-mem0"
 
 
@@ -616,6 +671,7 @@ def test_compile_mcp_configs_prefers_runtime_installed_memory_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    runtime = _make_runtime(tmp_path)
     learning_root = tmp_path / "learning-pack"
     mem0_root = tmp_path / "mem0-pack"
     learning_root.mkdir(parents=True, exist_ok=True)
@@ -653,7 +709,7 @@ def test_compile_mcp_configs_prefers_runtime_installed_memory_provider(
                 "  backends:",
                 "    - id: lisa_memory",
                 "      kind: stdio",
-                "      command: \"${LISA_MCP_COMMAND:lisa-memory}\"",
+                '      command: "${LISA_MCP_COMMAND:lisa-memory}"',
                 "      args: []",
                 "      tool_names:",
                 "        add: add_memory",
@@ -663,7 +719,7 @@ def test_compile_mcp_configs_prefers_runtime_installed_memory_provider(
                 "  - server_id: lisa-memory",
                 "    runtime_kind: venv_bin",
                 "    entry_point: lisa-memory",
-                "    venv_dir: \"${FRAMEWORK_ROOT}/.venv\"",
+                '    venv_dir: "${FRAMEWORK_ROOT}/.venv"',
             ]
         )
         + "\n",
@@ -680,7 +736,7 @@ def test_compile_mcp_configs_prefers_runtime_installed_memory_provider(
                 "      kind: http",
                 "      url: https://mcp.mem0.ai/mcp",
                 "      headers:",
-                "        Authorization: \"Bearer ${MEM0_API_KEY}\"",
+                '        Authorization: "Bearer ${MEM0_API_KEY}"',
                 "      tool_names:",
                 "        add: add_memory",
                 "        search: search_memories",
@@ -695,8 +751,8 @@ def test_compile_mcp_configs_prefers_runtime_installed_memory_provider(
         encoding="utf-8",
     )
 
-    monkeypatch.setitem(_state(), "data_dir", tmp_path)
-    _fn("_write_installed_packs_lock")(
+    _write_lock(
+        runtime,
         {
             "packs": [
                 {
@@ -705,21 +761,22 @@ def test_compile_mcp_configs_prefers_runtime_installed_memory_provider(
                     "enabled": True,
                 }
             ]
-        }
+        },
     )
-    monkeypatch.setattr(little_lisa, "_sdk_content_roots", lambda: [learning_root, mem0_root])
-    monkeypatch.setattr(little_lisa, "_load_pack_server_exclusions", lambda _path: set())
-    monkeypatch.setattr(little_lisa, "_load_capability_provider_preferences", lambda _path: {})
+    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [learning_root, mem0_root])
+    monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
+    monkeypatch.setattr(mcp_pool, "load_capability_provider_preferences", lambda _path: {})
 
-    _warm, _cold = _fn("_compile_mcp_configs")()
+    _warm, _cold = mcp_pool.compile_mcp_configs(runtime)
 
-    assert _state()["memory_config_pack_slug"] == "mem0-pack"
+    assert runtime.memory_config_pack_slug == "lisa_pack_mem0"
 
 
 def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    runtime = _make_runtime(tmp_path)
     learning_root = tmp_path / "learning-pack"
     mem0_root = tmp_path / "mem0-pack"
     learning_root.mkdir(parents=True, exist_ok=True)
@@ -757,7 +814,7 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
                 "  backends:",
                 "    - id: lisa_memory",
                 "      kind: stdio",
-                "      command: \"${LISA_MCP_COMMAND:lisa-memory}\"",
+                '      command: "${LISA_MCP_COMMAND:lisa-memory}"',
                 "      args: []",
                 "      tool_names:",
                 "        add: add_memory",
@@ -767,7 +824,7 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
                 "  - server_id: lisa-memory",
                 "    runtime_kind: venv_bin",
                 "    entry_point: lisa-memory",
-                "    venv_dir: \"${FRAMEWORK_ROOT}/.venv\"",
+                '    venv_dir: "${FRAMEWORK_ROOT}/.venv"',
             ]
         )
         + "\n",
@@ -784,7 +841,7 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
                 "      kind: http",
                 "      url: https://mcp.mem0.ai/mcp",
                 "      headers:",
-                "        Authorization: \"Bearer ${MEM0_API_KEY}\"",
+                '        Authorization: "Bearer ${MEM0_API_KEY}"',
                 "      tool_names:",
                 "        add: add_memory",
                 "        search: search_memories",
@@ -799,8 +856,8 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
         encoding="utf-8",
     )
 
-    monkeypatch.setitem(_state(), "data_dir", tmp_path)
-    _fn("_write_installed_packs_lock")(
+    _write_lock(
+        runtime,
         {
             "packs": [
                 {
@@ -812,12 +869,12 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
             "selected_capability_providers": {
                 "memory": "lisa-pack-learning",
             },
-        }
+        },
     )
-    monkeypatch.setattr(little_lisa, "_sdk_content_roots", lambda: [learning_root, mem0_root])
-    monkeypatch.setattr(little_lisa, "_load_pack_server_exclusions", lambda _path: set())
-    monkeypatch.setattr(little_lisa, "_load_capability_provider_preferences", lambda _path: {})
+    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [learning_root, mem0_root])
+    monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
+    monkeypatch.setattr(mcp_pool, "load_capability_provider_preferences", lambda _path: {})
 
-    _warm, _cold = _fn("_compile_mcp_configs")()
+    _warm, _cold = mcp_pool.compile_mcp_configs(runtime)
 
-    assert _state()["memory_config_pack_slug"] == "learning-pack"
+    assert runtime.memory_config_pack_slug == "learning-pack"

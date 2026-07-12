@@ -36,6 +36,7 @@ from kernel.capability_manifest import render_capability_manifest_context
 from kernel.context.context_broker import (
     build_ambient_facts,
     render_context_packet_markdown,
+    resolve_host_name,
     select_ranked_context,
 )
 from kernel.context.context_budget import ContextBudgetAllocator, ContextLane
@@ -361,7 +362,7 @@ def assemble_dynamic_user_context(
     session_context_loader: Callable[[], str],
     thread_digest_loader: Callable[[], str],
     recent_thread_excerpt_builder: Callable[[int], str],
-    host_name: str = "little_lisa",
+    host_name: str | None = None,
     host_os: str | None = None,
     capability_manifest: CapabilityManifest | None = None,
     capability_snapshot_builder: Callable[[], dict[str, Any]] | None = None,
@@ -413,7 +414,7 @@ def assemble_dynamic_user_context(
         f"- mode_kind: {mode_kind}",
         f"- query_chars: {len(query)}",
         f"- pre_turn_briefing_present: {'true' if bool(pre_turn_briefing.strip()) else 'false'}",
-        f"- host: {host_name}",
+        f"- host: {host_name or resolve_host_name()}",
     ]
     lines.insert(2, f"- user_slug: {user_slug or 'none'}")
     if mode_description:
@@ -423,7 +424,7 @@ def assemble_dynamic_user_context(
     ambient_facts = build_ambient_facts(
         timezone=timezone,
         host_os=host_os or platform.system(),
-        host_name=host_name,
+        host_name=host_name or resolve_host_name(),
     )
 
     # --- Raw sections, tagged by budget lane -----------------------------

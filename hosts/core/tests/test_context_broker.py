@@ -1,5 +1,12 @@
 """Integration test for the wired context broker + budget allocator.
 
+Migrated from ``hosts/little_lisa/test_context_broker_integration.py``.
+
+The framework registration that the original module-scope autouse fixture
+performed via ``little_lisa.setup_framework()`` is now handled by the
+``hosts/core/tests/conftest.py`` module-scope autouse fixture, which
+wires the catalog MCP and operation callbacks.
+
 Exercises the full chain: populated ``UnifiedState`` →
 ``build_context_evidence_catalog`` → ``select_ranked_context`` →
 ``ContextBudgetAllocator.allocate`` → rendered prompt markdown.
@@ -31,13 +38,6 @@ from sdk.context.context_broker import (
     render_context_packet_markdown,
     select_ranked_context,
 )
-
-from . import main as little_lisa
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _registered_framework() -> None:
-    little_lisa.setup_framework()
 
 
 def _make_populated_state() -> UnifiedState:
@@ -171,7 +171,7 @@ class TestContextBudgetAllocator:
         # Allocate a large section that exceeds the budget.
         large_text = "x" * 5000
         result = allocator.allocate(
-            key="big_section",
+            key="big_sections",
             lane="retrieval",
             text=large_text,
             allow_truncate=True,

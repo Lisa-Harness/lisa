@@ -49,11 +49,25 @@ def _make_catalog_mcp_config() -> MCPClientConfig:
 
 @pytest.fixture(scope="module", autouse=True)
 def _mcp_catalog_setup() -> None:
-    """Wire the catalog MCP and operation callbacks so the kernel can load catalogs."""
+    """Wire the catalog MCP, operation callbacks, and content registry.
+
+    This mirrors what ``hosts.core.mcp_pool.setup_framework(runtime)`` does,
+    but without requiring a HostRuntime: it builds the catalog and content
+    MCP configs directly and registers them so the kernel can load catalogs
+    and read authored text via the content registry.
+    """
     config = _make_catalog_mcp_config()
     register_operation_mcp(config)
     register_operation_callbacks(get_operation_catalog, execute_operation)
     register_content_mcp(config)
+
+    # Wire the MCPContentRegistry as the content registry for context frames.
+    # This is needed by render_context_packet_markdown and turn hooks.
+    from kernel.context.context_frames import set_content_registry  # noqa: PLC0415
+    from kernel.context.mcp_content_registry import MCPContentRegistry  # noqa: PLC0415
+
+    set_content_registry(MCPContentRegistry(config))
+
     # Eagerly load the workflow catalog now (sync context, before any async test runs)
     from kernel.ipsar_fsm import get_workflow_catalog
 
