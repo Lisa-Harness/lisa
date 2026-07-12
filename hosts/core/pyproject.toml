@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["hosts_core*"]
+
+[project]
+name = "lisa-host-core"
+version = "0.1.0"
+description = "Shared transport-neutral host runtime for Lisa framework hosts (cli, web, vscode)"
+requires-python = ">=3.11"
+dependencies = [
+    "lisa-kernel",
+    "lisa-sdk",
+    "lisa-mcp-servers",
+    "lisa-pack-learning",
+    "lisa-pack-search",
+    "lisa-pack-core",
+    "lisa-pack-checkpoint",
+    "openai>=1.30.0",
+    "pyyaml>=6.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.8.0",
+    "types-PyYAML>=6.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["../.."]
+testpaths = ["tests"]
+markers = [
+    "live: hits real external signal or provider APIs and prints a tester-visible summary",
+    "integration: multi-module in-process test; may require local services",
+    "eval: deterministic agent regression evals (no model calls, no I/O)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "PL", "C90", "RET", "RUF"]
+ignore = ["PLR0913"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
