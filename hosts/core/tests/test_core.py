@@ -296,9 +296,22 @@ class TestHandleMessage:
         assert result.text in received  # transport received the response
 
     @pytest.mark.asyncio
-    async def test_model_turn_placeholder(self, tmp_path: Path) -> None:
+    async def test_model_turn_no_content_registry(self, tmp_path: Path) -> None:
+        """Without setup_framework, a model turn fails gracefully with an error result."""
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
         result = await handle_message(runtime, "hello world")
         assert isinstance(result, HostCommandResult)
-        assert "not yet wired" in result.text
+        assert result.is_error is True
+        assert "Turn failed" in result.text
+
+    @pytest.mark.asyncio
+    async def test_unknown_command_falls_through(self, tmp_path: Path) -> None:
+        """An unknown slash command that is not a host shortcut falls through to model routing."""
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+        result = await handle_message(runtime, "/unknowncommand test")
+        assert isinstance(result, HostCommandResult)
+        # /unknown is not a host command, so it falls through to model routing,
+        # which will fail because the content registry is not set.
+        assert result.is_error is True
