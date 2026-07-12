@@ -236,18 +236,16 @@ def _resolve_cli_timezone(cli_timezone: str) -> tuple[str, str] | None:
 
 
 def _resolve_explicit_env_timezone() -> tuple[str, str] | None:
-    for env_name in ("LISA_TIMEZONE", "LITTLE_LISA_TIMEZONE"):
-        raw = os.getenv(env_name, "").strip()
-        if not raw:
-            continue
-        normalized = _normalize_timezone_name(raw)
-        if normalized is None:
-            raise ValueError(
-                f"Timezone '{raw}' from {env_name} is not resolvable. "
-                "Use an IANA timezone such as 'UTC' or 'America/New_York'."
-            )
-        return normalized, f"env:{env_name}"
-    return None
+    raw = os.getenv("LISA_TIMEZONE", "").strip()
+    if not raw:
+        return None
+    normalized = _normalize_timezone_name(raw)
+    if normalized is None:
+        raise ValueError(
+            f"Timezone '{raw}' from LISA_TIMEZONE is not resolvable. "
+            "Use an IANA timezone such as 'UTC' or 'America/New_York'."
+        )
+    return normalized, "env:LISA_TIMEZONE"
 
 
 def _resolve_env_timezone(env_name: str) -> tuple[str, str] | None:

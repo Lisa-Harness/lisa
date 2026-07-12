@@ -33,23 +33,6 @@ LISA_SLICE_BUDGET_MS_ENV = "LISA_SLICE_BUDGET_MS"
 LISA_THREAD_MAX_ENTRIES_ENV = "LISA_THREAD_MAX_ENTRIES"
 LISA_MEMORY_MAX_RECORDS_ENV = "LISA_MEMORY_MAX_RECORDS"
 
-# Legacy env var aliases (Little Lisa compatibility during migration).
-_LITTLE_LISA_PREFIX = "LITTLE_LISA_"
-_LITTLE_LISA_ALIASES: dict[str, str] = {
-    "LITTLE_LISA_TIMEZONE": LISA_TIMEZONE_ENV,
-    "LITTLE_LISA_LOG_LEVEL": LISA_LOG_LEVEL_ENV,
-    "LITTLE_LISA_DATA_DIR": LISA_DATA_DIR_ENV,
-    "LITTLE_LISA_MEMORY_DB": LISA_MEMORY_DB_ENV,
-    "LITTLE_LISA_THREAD_DIR": LISA_THREAD_DIR_ENV,
-    "LITTLE_LISA_MODELS_FILE": LISA_MODELS_FILE_ENV,
-    "LITTLE_LISA_SLICE_PRE_TURN": LISA_SLICE_PRE_TURN_ENV,
-    "LITTLE_LISA_SLICE_POST_TURN": LISA_SLICE_POST_TURN_ENV,
-    "LITTLE_LISA_SLICE_EXPLICIT": LISA_SLICE_EXPLICIT_ENV,
-    "LITTLE_LISA_SLICE_BUDGET_MS": LISA_SLICE_BUDGET_MS_ENV,
-    "LITTLE_LISA_THREAD_MAX_ENTRIES": LISA_THREAD_MAX_ENTRIES_ENV,
-    "LITTLE_LISA_MEMORY_MAX_RECORDS": LISA_MEMORY_MAX_RECORDS_ENV,
-}
-
 # ── Default values ────────────────────────────────────────────────────
 
 _DEFAULT_THREAD_MAX_ENTRIES = 50
@@ -58,16 +41,9 @@ _DEFAULT_SLICE_EXPLICIT_BUDGET_MS = 2000
 
 
 def _resolve_env(name: str, default: str = "") -> str:
-    """Read an env var, falling back to legacy LITTLE_LISA_* aliases."""
+    """Read an env var and return the stripped value or default."""
     value = os.getenv(name, "").strip()
-    if value:
-        return value
-    legacy = _LITTLE_LISA_ALIASES.get(name)
-    if legacy is None:
-        # Try the reverse: if the caller passed a LITTLE_LISA_* name, use it.
-        return os.getenv(name, default).strip()
-    legacy_value = os.getenv(legacy, "").strip()
-    return legacy_value if legacy_value else default
+    return value if value else default
 
 
 def _resolve_env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -79,15 +55,6 @@ def _resolve_env_int(name: str, default: int, *, minimum: int = 1) -> int:
     except ValueError:
         logger.warning("invalid %s value %r; using default %d", name, raw, default)
         return default
-
-
-def _normalize_log_level(value: str) -> str | None:
-    cleaned = value.strip().lower()
-    if not cleaned:
-        return None
-    if cleaned in {"debug", "info", "warning", "error", "critical"}:
-        return cleaned
-    return None
 
 
 def _normalize_slice_flag(value: str) -> bool | None:
@@ -246,7 +213,11 @@ class HostConfig:
         # ── Timezone ──────────────────────────────────────────────────
         from hosts.core.config_resolver import resolve_timezone
 
-        resolved_tz, tz_source = resolve_timezone(timezone or _resolve_env(LISA_TIMEZONE_ENV))
+        # CLI arg takes precedence; only pass it to resolve_timezone when
+        # the caller explicitly provided one. Otherwise let resolve_timezone
+        # read the env var itself so the source label is "env:..." not "cli".
+        cli_tz = timezone.strip()
+        resolved_tz, tz_source = resolve_timezone(cli_tz)
 
         # ── Log level ─────────────────────────────────────────────────
         # When debug=True and no explicit log_level is passed, leave it

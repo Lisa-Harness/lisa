@@ -62,11 +62,12 @@ class TestHostConfig:
         assert config.slice_config.pre_turn_enabled is True
         assert config.slice_config.explicit_budget_ms == 5000
 
-    def test_legacy_env_alias(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """LITTLE_LISA_* env vars should still work during migration."""
-        monkeypatch.setenv("LITTLE_LISA_TIMEZONE", "Europe/London")
+    def test_env_timezone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """LISA_TIMEZONE env var should resolve correctly."""
+        monkeypatch.setenv("LISA_TIMEZONE", "Europe/London")
         config = HostConfig.from_env()
         assert config.timezone == "Europe/London"
+        assert "env:" in config.timezone_source
 
     def test_frozen(self, tmp_path: Path) -> None:
         config = HostConfig.from_env(data_dir=str(tmp_path))
