@@ -143,6 +143,11 @@ from kernel.content_roots import (  # noqa: E402
     discover_installed_content_roots,
     resolve_content_subdir_roots,
 )
+from kernel.context.context_broker import (  # noqa: E402
+    build_ambient_facts,
+    render_context_packet_markdown,
+    select_ranked_context,
+)
 from kernel.context.context_budget import ContextBudgetAllocator, ContextLane  # noqa: E402
 from kernel.ipsar import parse_route  # noqa: E402
 from kernel.ipsar_fsm import (  # noqa: E402
@@ -155,6 +160,7 @@ from kernel.ipsar_fsm import (  # noqa: E402
 from kernel.model_manifest import ModelManifest  # noqa: E402
 from kernel.models import (  # noqa: E402
     AnomalyAlert,
+    CapabilityManifest,
     DomainKnowledgeArtifact,
     IntelCollection,
     OperationExecutionContext,
@@ -189,11 +195,6 @@ from kernel.tools.registry import (  # noqa: E402
     register_tool_mcp,
 )
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn  # noqa: E402
-from kernel.context.context_broker import (  # noqa: E402
-    build_ambient_facts,
-    render_context_packet_markdown,
-    select_ranked_context,
-)
 
 try:
     from .model_manifest import load_model_manifest
@@ -242,7 +243,6 @@ try:
         generate_desktop_token,
         run_desktop_server,
     )
-
     from .tray import TrayConfig, run_tray
 except ImportError:  # pragma: no cover - direct script execution fallback
     import frontdoor_routing  # type: ignore[no-redef]
@@ -1960,7 +1960,12 @@ def _summarize_turn_messages(messages: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _assemble_dynamic_user_context(mode_id: str, query: str, pre_turn_briefing: str) -> str:
+def _assemble_dynamic_user_context(
+    mode_id: str,
+    query: str,
+    pre_turn_briefing: str,
+    capability_manifest: CapabilityManifest | None = None,
+) -> str:
     mode = get_workflow_catalog().get(mode_id)
     mode_kind = mode.mode_kind if mode is not None else "unknown"
     mode_description = (mode.description or "").strip() if mode is not None else ""
@@ -2019,16 +2024,24 @@ def _assemble_dynamic_user_context(mode_id: str, query: str, pre_turn_briefing: 
         "mode",
     )
     if any(keyword in query_lower for keyword in capability_keywords):
-        capability = _build_capability_snapshot()
-        raw_sections.append(
-            (
-                "capability_context",
-                "operational",
+        if capability_manifest is not None:
+            from kernel.capability_manifest import render_capability_manifest_context
+
+            capability_block = render_capability_manifest_context(capability_manifest)
+        else:
+            capability = _build_capability_snapshot()
+            capability_block = (
                 "## Capability Context\n\n"
                 f"- supported_modes: {len(capability['supported_modes'])}\n"
                 f"- operations: {len(capability['operations'])}\n"
                 f"- tools: {len(capability['tools'])}\n"
-                f"- models: {len(capability['models'])}",
+                f"- models: {len(capability['models'])}"
+            )
+        raw_sections.append(
+            (
+                "capability_context",
+                "operational",
+                capability_block,
             )
         )
 
@@ -4419,7 +4432,11 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
             return
         try:
             bundle_dict = bundle.model_dump(mode="json")
-            await pool.call_tool("lisa-storage.save_checkpoint", {"bundle": bundle_dict})
+            await pool.call_tool(
+                "save_checkpoint",
+                {"bundle": bundle_dict},
+                server_id="lisa-storage",
+            )
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("on_checkpoint: save_checkpoint failed: %s", exc)
 
@@ -4569,17 +4586,8 @@ async def _handle_checkpoint_command(stripped: str, message: str) -> str:
 
     try:
         bundle_dict = bundle.model_dump(mode="json")
-        result = await pool.call_tool("lisa-storage.save_checkpoint", {"bundle": bundle_dict})
-        # Extract text from the MCP result
-        result_text = ""
-        if isinstance(result, tuple) and len(result) >= 1:
-            blocks = result[0]
-            if blocks and hasattr(blocks[0], "text"):
-                result_text = blocks[0].text
-            elif blocks:
-                result_text = str(blocks[0])
-        else:
-            result_text = str(result)
+        result = await pool.call_tool("save_checkpoint", {"bundle": bundle_dict}, server_id="lisa-storage")
+        result_text = getattr(result, "output_text", "") or ""
         data = json.loads(result_text)
         if "error" in data:
             return f"Checkpoint failed: {data['error']}"
@@ -4607,18 +4615,11 @@ async def _handle_restore_command(stripped: str, message: str) -> str:
 
     try:
         result = await pool.call_tool(
-            "lisa-storage.restore_checkpoint",
+            "restore_checkpoint",
             {"checkpoint_id": checkpoint_id},
+            server_id="lisa-storage",
         )
-        result_text = ""
-        if isinstance(result, tuple) and len(result) >= 1:
-            blocks = result[0]
-            if blocks and hasattr(blocks[0], "text"):
-                result_text = blocks[0].text
-            elif blocks:
-                result_text = str(blocks[0])
-        else:
-            result_text = str(result)
+        result_text = getattr(result, "output_text", "") or ""
 
         data = json.loads(result_text)
         if "error" in data:
@@ -4662,16 +4663,8 @@ async def _handle_list_checkpoints_command(message: str) -> str:
         return "No storage pool available to list checkpoints."
 
     try:
-        result = await pool.call_tool("lisa-storage.list_checkpoints", {})
-        result_text = ""
-        if isinstance(result, tuple) and len(result) >= 1:
-            blocks = result[0]
-            if blocks and hasattr(blocks[0], "text"):
-                result_text = blocks[0].text
-            elif blocks:
-                result_text = str(blocks[0])
-        else:
-            result_text = str(result)
+        result = await pool.call_tool("list_checkpoints", {}, server_id="lisa-storage")
+        result_text = getattr(result, "output_text", "") or ""
 
         data = json.loads(result_text)
         if isinstance(data, dict) and "error" in data:
