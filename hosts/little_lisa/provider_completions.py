@@ -15,7 +15,7 @@ import json
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from kernel.operations.structured_output import parse_structured_payload
 
@@ -47,50 +47,10 @@ def _extract_anthropic_error_detail(response: httpx.Response) -> str:
     return top_level_message or "no error payload provided by Anthropic"
 
 
-def _is_pydantic_model_class(obj: Any) -> bool:
-    """Return True when obj is a Pydantic BaseModel class."""
-    return isinstance(obj, type) and issubclass(obj, BaseModel)
-
-
-def _build_json_schema_response_format(
-    response_format: type[Any],
-) -> dict[str, Any]:
-    """Build an OpenAI-compatible json_schema response_format dict from a Pydantic model.
-
-    Emits the full schema so the provider can constrain the model to the declared
-    shape, not merely ``json_object``. ``strict`` is left unset (defaults to
-    false on the provider side) because ``RouteDecision`` has optional fields
-    with defaults that would otherwise violate strict-schema constraints.
-    """
-    schema = response_format.model_json_schema()
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": getattr(response_format, "__name__", "response") or "response",
-            "schema": schema,
-        },
-    }
-
-
-def _normalize_response_format(response_format: type[Any] | None) -> dict[str, Any] | None:
-    """Return the OpenAI-compatible response_format dict, or None.
-
-    When ``response_format`` is a Pydantic ``BaseModel`` subclass, emit a
-    ``json_schema`` response_format so the provider receives the full schema and
-    can constrain the model to the declared shape. This replaces the prior
-    behavior of unconditionally degrading to ``{"type": "json_object"}``, which
-    discarded the schema and let models emit prose like
-    ``plaintext\nReasoning: ...\nconfidence_score: 1.0``.
-
-    Non-Pydantic dict values are passed through unchanged so callers that
-    pre-build a response_format dict are not disrupted.
-    """
+def _normalize_response_format(response_format: type[Any] | None) -> dict[str, str] | None:
+    """Return the OpenAI-compatible response_format dict, or None."""
     if response_format is None:
         return None
-    if _is_pydantic_model_class(response_format):
-        return _build_json_schema_response_format(response_format)
-    if isinstance(response_format, dict):
-        return dict(response_format)
     return {"type": "json_object"}
 
 

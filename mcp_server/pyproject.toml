@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mcp_server*"]
+
+[tool.uv.sources]
+lisa-kernel = { workspace = true }
+lisa-sdk = { workspace = true }
+
+[project]
+name = "lisa-mcp-servers"
+version = "0.1.0"
+description = "Lisa first-party MCP servers — context, memory, guard, content, and shared CLI config"
+requires-python = ">=3.11"
+
+dependencies = [
+    "lisa-kernel",
+    "lisa-sdk",
+    "mcp>=1.28.0",
+    "pydantic>=2.13.4",
+]
+
+[project.scripts]
+lisa-context = "mcp_server.context.server:main"
+lisa-memory = "mcp_server.memory.server:main"
+lisa-guard = "mcp_server.guard.server:main"
+lisa-content = "mcp_server.content.server:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+    "live: hits real external signal or provider APIs and prints a tester-visible summary",
+    "integration: multi-module in-process test; may require local services",
+    "eval: deterministic agent regression evals (no model calls, no I/O)",
+]

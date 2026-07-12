@@ -7,7 +7,7 @@ or are public API surface declared in ``__all__`` but never imported internally.
 Every entry carries a ``# reason:`` comment explaining why vulture should
 ignore it.  Run::
 
-    uv run vulture kernel sdk sdk_packs hosts/little_lisa vulture_allowlist.py
+    uv run vulture kernel sdk mcp_server hosts/little_lisa vulture_allowlist.py
 """
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -17,16 +17,16 @@ ignore it.  Run::
 hosts.little_lisa.main.main  # noqa: Vulture
 
 # reason: console_script target — lisa-context MCP server
-sdk.lisa_context.server.main  # noqa: Vulture
+mcp_server.context.server.main  # noqa: Vulture
 
 # reason: console_script target — lisa-memory MCP server
-sdk.lisa_memory.server.main  # noqa: Vulture
+mcp_server.memory.server.main  # noqa: Vulture
 
 # reason: console_script target — lisa-guard MCP server
-sdk.lisa_guard.server.main  # noqa: Vulture
+mcp_server.guard.server.main  # noqa: Vulture
 
 # reason: console_script target — lisa-content MCP server
-sdk.lisa_content.server.main  # noqa: Vulture
+mcp_server.content.server.main  # noqa: Vulture
 
 # ──────────────────────────────────────────────────────────────────────────
 # importlib.metadata entry-point targets — loaded via ep.load().
@@ -35,7 +35,7 @@ sdk.lisa_content.server.main  # noqa: Vulture
 sdk.get_content_root  # noqa: Vulture
 
 # reason: lisa.extensions.content_roots entry-point target
-sdk_packs.core.get_content_root  # noqa: Vulture
+sdk.packs.core.get_content_root  # noqa: Vulture
 
 # reason: lisa.extensions.signal_connectors entry-point target (cloudflare)
 lisa_pack_cloudflare.connector.CloudflareSignalCollector  # noqa: Vulture
@@ -51,44 +51,44 @@ lisa_pack_stripe.connector.StripeSignalCollector  # noqa: Vulture
 # at kernel/operations/registry.py.
 # ──────────────────────────────────────────────────────────────────────────
 # reason: operation dispatch via getattr(module, "execute")
-sdk_packs.learning.operations.memory.recall.execute  # noqa: Vulture
+sdk.packs.learning.operations.memory.recall.execute  # noqa: Vulture
 
 # reason: operation dispatch via getattr(module, "execute")
-sdk_packs.learning.operations.memory.synthesize_learning.execute  # noqa: Vulture
+sdk.packs.learning.operations.memory.synthesize_learning.execute  # noqa: Vulture
 
 # reason: operation dispatch via getattr(module, "execute")
-sdk_packs.core.operations.research.workshop_run.execute  # noqa: Vulture
+sdk.packs.core.operations.research.workshop_run.execute  # noqa: Vulture
 
 # reason: operation dispatch via getattr(module, "execute")
-sdk_packs.core.operations.self_model.self_model.execute  # noqa: Vulture
+sdk.packs.core.operations.self_model.self_model.execute  # noqa: Vulture
 
 # ──────────────────────────────────────────────────────────────────────────
 # Pydantic structured-output models — loaded via _resolve_model_class()
 # string dispatch at kernel/context/mcp_catalog.py.
 # ──────────────────────────────────────────────────────────────────────────
 # reason: response-format model loaded via _resolve_model_class string dispatch
-sdk_packs.search.operations.research.discussion_briefing.DiscussionBriefingStructuredOutput  # noqa: Vulture
+sdk.packs.search.operations.research.discussion_briefing.DiscussionBriefingStructuredOutput  # noqa: Vulture
 
 # reason: response-format model loaded via _resolve_model_class string dispatch
-sdk_packs.search.operations.research.web_search.WebSearchStructuredOutput  # noqa: Vulture
+sdk.packs.search.operations.research.web_search.WebSearchStructuredOutput  # noqa: Vulture
 
 # reason: response-format model loaded via _resolve_model_class string dispatch
-sdk_packs.core.operations.research.workshop_run.WorkshopSynthesis  # noqa: Vulture
+sdk.packs.core.operations.research.workshop_run.WorkshopSynthesis  # noqa: Vulture
 
 # reason: response-format model loaded via _resolve_model_class string dispatch
-sdk_packs.core.operations.self_model.architecture_atlas.ArchitectureAtlasOutput  # noqa: Vulture
+sdk.packs.core.operations.self_model.architecture_atlas.ArchitectureAtlasOutput  # noqa: Vulture
 
 # reason: response-format model loaded via _resolve_model_class string dispatch
-sdk_packs.core.operations.self_model.reflect_self.ReflectSelfOutput  # noqa: Vulture
+sdk.packs.core.operations.self_model.reflect_self.ReflectSelfOutput  # noqa: Vulture
 
 # reason: operation parameter model loaded via _resolve_model_class string dispatch
-sdk_packs.learning.operations.memory.recall.Parameters  # noqa: Vulture
+sdk.packs.learning.operations.memory.recall.Parameters  # noqa: Vulture
 
 # reason: operation parameter model loaded via _resolve_model_class string dispatch
-sdk_packs.learning.operations.memory.synthesize_learning.Parameters  # noqa: Vulture
+sdk.packs.learning.operations.memory.synthesize_learning.Parameters  # noqa: Vulture
 
 # reason: operation result model loaded via _resolve_model_class string dispatch
-sdk_packs.learning.operations.memory.synthesize_learning.DistilledLearning  # noqa: Vulture
+sdk.packs.learning.operations.memory.synthesize_learning.DistilledLearning  # noqa: Vulture
 
 # ──────────────────────────────────────────────────────────────────────────
 # Test-seam re-exports — imported into main.py so monkeypatch.setattr
@@ -113,4 +113,4 @@ kernel.seams.protocols.OutputGuard.validate.surface  # noqa: Vulture
 kernel.state_providers.BlankStateProvider.__call__  # noqa: Vulture
 
 # reason: EmbeddingProvider Protocol parameter — interface contract
-sdk.lisa_memory.store.EmbeddingProvider.embed.texts  # noqa: Vulture
+sdk.memory.store.EmbeddingProvider.embed.texts  # noqa: Vulture

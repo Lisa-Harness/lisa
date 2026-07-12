@@ -31,16 +31,16 @@ jobs:
         run: uv sync --extra dev
 
       - name: Format check (ruff)
-        run: uv run ruff format --check kernel sdk sdk_packs hosts
+        run: uv run ruff format --check kernel sdk mcp_server hosts
 
       - name: Lint (ruff)
-        run: uv run ruff check kernel sdk sdk_packs hosts
+        run: uv run ruff check kernel sdk mcp_server hosts
 
       - name: Type check (mypy — all public packages)
-        run: uv run mypy kernel sdk sdk_packs
+        run: uv run mypy kernel sdk mcp_server
 
       - name: Dead code (vulture)
-        run: uv run vulture kernel sdk sdk_packs hosts/little_lisa vulture_allowlist.py
+        run: uv run vulture kernel sdk mcp_server hosts/little_lisa vulture_allowlist.py
 
       - name: Unit tests (no live)
         run: uv run pytest -m "not live" --tb=short -v

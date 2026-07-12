@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "lisa-kernel",
     "lisa-sdk",
+    "lisa-mcp-servers",
     "lisa-pack-learning",
     "lisa-pack-cloudflare",
     "lisa-pack-github",
@@ -38,9 +39,10 @@ package = false
 members = [
     "kernel",
     "sdk",
-    "sdk_packs/core",
-    "sdk_packs/learning",
-    "sdk_packs/search",
+    "mcp_server",
+    "sdk/packs/core",
+    "sdk/packs/learning",
+    "sdk/packs/search",
     "hosts/little_lisa",
     "lisa_pack_cloudflare",
     "lisa_pack_github",
@@ -52,6 +54,7 @@ members = [
 [tool.uv.sources]
 lisa-kernel = { workspace = true }
 lisa-sdk = { workspace = true }
+lisa-mcp-servers = { workspace = true }
 lisa-pack-learning = { workspace = true }
 lisa-pack-cloudflare = { workspace = true }
 lisa-pack-github = { workspace = true }

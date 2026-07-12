@@ -13,6 +13,7 @@ resolution-markers = [
 members = [
     "lisa-framework-workspace",
     "lisa-kernel",
+    "lisa-mcp-servers",
     "lisa-pack-brave-search",
     "lisa-pack-cloudflare",
     "lisa-pack-core",
@@ -872,6 +873,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "lisa-kernel" },
+    { name = "lisa-mcp-servers" },
     { name = "lisa-pack-brave-search" },
     { name = "lisa-pack-cloudflare" },
     { name = "lisa-pack-core" },
@@ -901,13 +903,14 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "lisa-kernel", editable = "kernel" },
+    { name = "lisa-mcp-servers", editable = "mcp_server" },
     { name = "lisa-pack-brave-search", editable = "lisa_pack_brave_search" },
     { name = "lisa-pack-cloudflare", editable = "lisa_pack_cloudflare" },
-    { name = "lisa-pack-core", editable = "sdk_packs/core" },
+    { name = "lisa-pack-core", editable = "sdk/packs/core" },
     { name = "lisa-pack-github", editable = "lisa_pack_github" },
-    { name = "lisa-pack-learning", editable = "sdk_packs/learning" },
+    { name = "lisa-pack-learning", editable = "sdk/packs/learning" },
     { name = "lisa-pack-mem0", editable = "lisa_pack_mem0" },
-    { name = "lisa-pack-search", editable = "sdk_packs/search" },
+    { name = "lisa-pack-search", editable = "sdk/packs/search" },
     { name = "lisa-pack-stripe", editable = "lisa_pack_stripe" },
     { name = "lisa-sdk", editable = "sdk" },
     { name = "little-lisa", editable = "hosts/little_lisa" },
@@ -971,6 +974,38 @@ requires-dist = [
 provides-extras = ["dev", "memory"]
 
 [[package]]
+name = "lisa-mcp-servers"
+version = "0.1.0"
+source = { editable = "mcp_server" }
+dependencies = [
+    { name = "lisa-kernel" },
+    { name = "lisa-sdk" },
+    { name = "mcp" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lisa-kernel", editable = "kernel" },
+    { name = "lisa-sdk", editable = "sdk" },
+    { name = "mcp", specifier = ">=1.28.0" },
+    { name = "pydantic", specifier = ">=2.13.4" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "lisa-pack-brave-search"
 version = "0.1.0"
 source = { editable = "lisa_pack_brave_search" }
@@ -1027,7 +1062,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "lisa-pack-core"
 version = "0.1.0"
-source = { editable = "sdk_packs/core" }
+source = { editable = "sdk/packs/core" }
 
 [package.optional-dependencies]
 dev = [
@@ -1079,7 +1114,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "lisa-pack-learning"
 version = "0.1.0"
-source = { editable = "sdk_packs/learning" }
+source = { editable = "sdk/packs/learning" }
 
 [package.optional-dependencies]
 dev = [
@@ -1104,7 +1139,7 @@ source = { editable = "lisa_pack_mem0" }
 [[package]]
 name = "lisa-pack-search"
 version = "0.1.0"
-source = { editable = "sdk_packs/search" }
+source = { editable = "sdk/packs/search" }
 
 [package.optional-dependencies]
 dev = [
@@ -1158,7 +1193,6 @@ source = { editable = "sdk" }
 dependencies = [
     { name = "httpx" },
     { name = "lisa-kernel" },
-    { name = "mcp" },
     { name = "pydantic" },
     { name = "sqlite-vec" },
 ]
@@ -1175,7 +1209,6 @@ dev = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "lisa-kernel", editable = "kernel" },
-    { name = "mcp", specifier = ">=1.28.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },

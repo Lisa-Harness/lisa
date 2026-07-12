@@ -790,8 +790,8 @@ And the pack's modes appear in the mode catalog automatically.
 
 | Current location | New location | Rationale |
 | --- | --- | --- |
-| `sdk_packs/core/` | Stays in framework repo | Reference implementation; always shipped with the framework |
-| `sdk_packs/extras/` | Stays in framework repo | Optional general-purpose modes; shipped with the framework |
+| `sdk/packs/core/` | Stays in framework repo | Reference implementation; always shipped with the framework |
+| `sdk/packs/extras/` | Stays in framework repo | Optional general-purpose modes; shipped with the framework |
 | New community packs | `lisa-packs/` repo | Community-contributed; separate release cadence |
 
 ---

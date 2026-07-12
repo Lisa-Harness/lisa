@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from sdk.lisa_content._catalog import build_tool_catalog_json, resolve_tool_roots
+from sdk.content._catalog import build_tool_catalog_json, resolve_tool_roots
 
 from lisa_pack_brave_search import get_content_root
 

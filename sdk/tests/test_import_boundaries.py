@@ -57,7 +57,7 @@ def test_sdk_package_imports_no_app_modules() -> None:
     violations = _collect_violations(
         _SDK_ROOT,
         forbidden_prefixes={"app."},
-        allowed_prefixes={"kernel.", "sdk_packs."},
+        allowed_prefixes={"kernel.", "sdk.packs."},
     )
     if violations:
         lines = [f"  {path}:{lineno}: {text}" for path, lineno, text in violations]

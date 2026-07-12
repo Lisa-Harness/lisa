@@ -10,7 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from kernel.models import OperationExecutionContext, OperationResult
-from sdk_packs.core.operations.self_model.reflect_self import ReflectSelfOutput
+from sdk.packs.core.operations.self_model.reflect_self import ReflectSelfOutput
 
 
 class _StubModelDef(BaseModel):

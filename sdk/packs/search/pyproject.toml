@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["../.."]
+include = ["sdk.packs.search*"]
+
+[tool.setuptools.package-data]
+"sdk.packs.search" = ["content/**/*.md", "content/**/*.yml", "content/**/*.yaml", "content/**/*.txt", "modes/**/*.md", "operations/**/*.md", "operations/**/*.yml", "tools/**/*.yml"]
+
+[project]
+name = "lisa-pack-search"
+version = "0.1.0"
+description = "Lisa search and reasoning pack - discuss/search/thinkabout modes, research operations, fetch_page tool, and a generic web_search provider stub"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.14.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["../.."]
+testpaths = ["tests"]
+
+[project.entry-points."lisa.extensions.content_roots"]
+search = "sdk.packs.search:get_content_root"

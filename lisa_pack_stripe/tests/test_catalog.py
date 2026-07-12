@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 from lisa_pack_stripe import get_content_root
-from sdk.lisa_content._catalog import (
+from sdk.content._catalog import (
     build_mode_catalog_json,
     build_operation_catalog_json,
     resolve_mode_roots,

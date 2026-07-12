@@ -26,7 +26,7 @@ from kernel.models import (
     IntelCollection,
     UnifiedState,
 )
-from sdk.lisa_context.context_broker import (
+from sdk.context.context_broker import (
     build_context_evidence_catalog,
     render_context_packet_markdown,
     select_ranked_context,

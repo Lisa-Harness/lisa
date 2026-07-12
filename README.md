@@ -6,9 +6,9 @@ This directory stages the public Lisa framework packages before they are moved t
 
 - `kernel/`: runtime-neutral contracts, mode routing, workflow state, operation registry, tool protocols, and testing helpers.
 - `sdk/`: author-facing helper contracts for packs, workshop execution, rendering, and integration contracts.
-- `sdk_packs/core/`: baseline public modes (`default`, `workshop`) and shared prompt assets.
-- `sdk_packs/learning/`: memory-backed learning behaviors (`learn`, learning ops, and default override candidate).
-- `sdk_packs/search/`: search/reasoning modes, operations, and tools.
+- `sdk/packs/core/`: baseline public modes (`default`, `workshop`) and shared prompt assets.
+- `sdk/packs/learning/`: memory-backed learning behaviors (`learn`, learning ops, and default override candidate).
+- `sdk/packs/search/`: search/reasoning modes, operations, and tools.
 - `hosts/little_lisa/`: a local non-production terminal host that loads public packs with manifest-driven model routing and OpenAI-compatible provider calls.
 - `mcp_server/`: an MCP (Model Context Protocol) memory server that exposes Lisa's surface-scoped memory tools over stdio.
 
@@ -96,8 +96,8 @@ uv run python -c "import kernel, sdk; print(kernel.__file__); print(sdk.__file__
 uv run little-lisa verify
 uv run little-lisa modes
 uv run little-lisa models
-uv run pytest --import-mode=importlib hosts/little_lisa/test_little_lisa.py kernel/tests sdk/tests sdk_packs/cloudflare/tests sdk_packs/github/tests sdk_packs/stripe/tests -m "not live" -v --tb=short
-uv run --extra dev ruff check --select F,I kernel sdk sdk_packs hosts
+uv run pytest --import-mode=importlib hosts/little_lisa/test_little_lisa.py kernel/tests sdk/tests sdk/packs/cloudflare/tests sdk/packs/github/tests sdk/packs/stripe/tests -m "not live" -v --tb=short
+uv run --extra dev ruff check --select F,I kernel sdk mcp_server hosts
 ```
 
 See `docs/BOUNDARIES.md`, `docs/PACK_AUTHORING_GUIDE.md`, `docs/SDK_EXTENSIONS_GUIDE.md`, `docs/LITTLE_LISA_GUIDE.md`, and `docs/KERNEL_ARCHITECTURE.md` for authoring, host-boundary, and architecture details.

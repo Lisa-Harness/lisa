@@ -263,7 +263,7 @@ and selects memory ownership deterministically from:
 This removes discovery-order dependence.
 
 ```yaml
-# sdk_packs/learning/mcp_servers.yaml
+# sdk/packs/learning/mcp_servers.yaml
 memory:
   default_backend: lisa_memory
   backends:
@@ -316,9 +316,9 @@ servers:
 | `kernel/tools/synthetic.py` | `mcp_alias_tool` — the builder the synthetic aliases use. |
 | `hosts/little_lisa/main.py` | `_register_memory_synthetic_tools` (pool-backed aliases), warm-pool wiring, generic operation callback injection. |
 | `hosts/little_lisa/turn_hooks.py` | Generic host callbacks for completion, tool execution, introspection, and slice delegation. |
-| `sdk_packs/learning/operations/memory/synthesize_learning.py` | Persists via `ctx.execute_tool_fn("memory.add")`. |
-| `sdk_packs/learning/operations/memory/recall.py` | Calls `memory.list` directly and ranks results in-pack. |
-| `sdk_packs/learning/mcp_servers.yaml` | Bundled fallback memory manifest (`lisa_memory`). |
+| `sdk/packs/learning/operations/memory/synthesize_learning.py` | Persists via `ctx.execute_tool_fn("memory.add")`. |
+| `sdk/packs/learning/operations/memory/recall.py` | Calls `memory.list` directly and ranks results in-pack. |
+| `sdk/packs/learning/mcp_servers.yaml` | Bundled fallback memory manifest (`lisa_memory`). |
 | `lisa_pack_mem0/mcp_servers.yaml` | External Mem0 memory provider manifest. |
 | `hosts/little_lisa/mcp_servers.yaml` | Host-owned (non-memory) servers only; no `memory:` section. |
 | `hosts/little_lisa/main.py` | `_compile_mcp_configs` selects memory owner by capability policy and lock state; `_register_memory_synthetic_tools` resolves namespaced default-backend ids. |

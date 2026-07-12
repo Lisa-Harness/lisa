@@ -64,9 +64,9 @@ CloudServers operations and market-intel extensions are intentionally not includ
 Run package tests without live API calls by default:
 
 ```powershell
-uv run pytest sdk_packs/github/tests -m "not live"
-uv run pytest sdk_packs/cloudflare/tests -m "not live"
-uv run pytest sdk_packs/stripe/tests -m "not live"
+uv run pytest sdk/packs/github/tests -m "not live"
+uv run pytest sdk/packs/cloudflare/tests -m "not live"
+uv run pytest sdk/packs/stripe/tests -m "not live"
 ```
 
 Live tests must be explicit, opt-in, and secret-safe. Do not make live tests part of default local or CI validation.
@@ -77,7 +77,7 @@ For a minimal extension, start with one signal connector package and validate it
 
 ```plaintext
 C:\Code\lisa-pack-hello-world\
-  sdk_packs/
+  sdk/packs/
     hello_world/
       __init__.py
       connector.py
@@ -87,7 +87,7 @@ C:\Code\lisa-pack-hello-world\
   test_import_boundaries.py
 ```
 
-`C:\Code\lisa-pack-hello-world\sdk_packs\hello_world\models.py`
+`C:\Code\lisa-pack-hello-world\hello_world\models.py`
 
 ```python
 from pydantic import BaseModel
@@ -99,7 +99,7 @@ class HelloWorldSnapshot(BaseModel):
   message: str = "hello world"
 ```
 
-`C:\Code\lisa-pack-hello-world\sdk_packs\hello_world\connector.py`
+`C:\Code\lisa-pack-hello-world\hello_world\connector.py`
 
 ```python
 import httpx
@@ -145,7 +145,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["sdk_packs.hello_world*"]
+include = ["sdk.packs.hello_world*"]
 
 [project]
 name = "lisa-pack-hello-world"
@@ -154,7 +154,7 @@ requires-python = ">=3.11"
 dependencies = ["lisa-kernel", "httpx>=0.27.0"]
 
 [project.entry-points."lisa.extensions.signal_connectors"]
-hello_world = "sdk_packs.hello_world.connector:HelloWorldSignalConnector"
+hello_world = "sdk.packs.hello_world.connector:HelloWorldSignalConnector"
 ```
 
 From `lisa_framework/` on Windows:

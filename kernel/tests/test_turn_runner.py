@@ -20,7 +20,7 @@ from kernel.operations.registry import (
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn
 
 # ── Module-level setup ────────────────────────────────────────────
-_CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk_packs" / "core").resolve()
+_CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
 
 # The shared conftest fixture (_mcp_catalog_setup) handles all catalog wiring.
 

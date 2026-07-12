@@ -47,7 +47,7 @@ pack_policy:
 # ──────────────────────────────────────────────────────────────────────────
 # Memory backends + memory MCP tool servers
 # ──────────────────────────────────────────────────────────────────────────
-# Memory is pack-owned: the learning pack (sdk_packs/learning/mcp_servers.yaml)
+# Memory is pack-owned: the learning pack (sdk/packs/learning/mcp_servers.yaml)
 # declares the ``memory.backends`` list and the ``lisa-memory`` / ``mem0``
 # server entries. The host loads that pack manifest, merges the servers into
 # the pool under namespaced ids (``learning.lisa-memory`` / ``learning.mem0``),

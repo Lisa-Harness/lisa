@@ -7,7 +7,7 @@ Packs add modes, operations, and authored content without changing host code. Th
 A pack normally contains:
 
 ```plaintext
-sdk_packs/example/
+sdk/packs/example/
   __init__.py
   pyproject.toml
   modes/
@@ -195,7 +195,7 @@ def get_content_root() -> Path:
 
 ```toml
 [project.entry-points."lisa.extensions.content_roots"]
-hello_world = "sdk_packs.hello_world:get_content_root"
+hello_world = "sdk.packs.hello_world:get_content_root"
 ```
 
 ## Testing Checklist
@@ -213,5 +213,5 @@ Focused local checks from `lisa_framework/`:
 uv run little-lisa modes
 uv run little-lisa once "/markdown Draft a quick checklist"
 uv run little-lisa once "/hello framework"  # after setting SDK_CONTENT_ROOTS
-uv run ruff check sdk_packs hosts
+uv run ruff check sdk mcp_server hosts
 ```

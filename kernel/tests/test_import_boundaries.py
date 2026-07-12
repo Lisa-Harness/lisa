@@ -47,7 +47,7 @@ def test_kernel_package_imports_no_app_or_sdk_modules() -> None:
     """kernel/ must remain isolated from app and SDK-layer packages."""
     violations = _collect_violations(
         _KERNEL_ROOT,
-        forbidden_prefixes={"app.", "sdk.", "sdk_packs."},
+        forbidden_prefixes={"app.", "sdk.", "sdk.packs."},
     )
     if violations:
         lines = [f"  {path}:{lineno}: {text}" for path, lineno, text in violations]

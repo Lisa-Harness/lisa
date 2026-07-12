@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sdk.lisa_content._catalog import (
+from sdk.content._catalog import (
     build_mode_catalog_json,
     build_operation_catalog_json,
     build_tool_catalog_json,

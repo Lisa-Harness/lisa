@@ -12,7 +12,7 @@ from kernel.models import (
     McpServerHealth,
     OperationExecutionContext,
 )
-from sdk_packs.core.operations.self_model.self_model import build_self_model_vibe
+from sdk.packs.core.operations.self_model.self_model import build_self_model_vibe
 
 
 def _make_artifact():
@@ -70,8 +70,8 @@ def test_build_self_model_vibe_without_telemetry() -> None:
 @pytest.mark.asyncio
 async def test_self_model_execute_with_introspect_fn(monkeypatch: pytest.MonkeyPatch) -> None:
     """self_model.execute() populates telemetry fields when introspect_fn is wired."""
-    from sdk_packs.core.operations.self_model.self_model import execute
-    from sdk_packs.core.operations.self_model import self_model as self_model_module
+    from sdk.packs.core.operations.self_model.self_model import execute
+    from sdk.packs.core.operations.self_model import self_model as self_model_module
 
     monkeypatch.setattr(self_model_module, "get_workflow_catalog", lambda: {})
 
@@ -118,8 +118,8 @@ async def test_self_model_execute_with_introspect_fn(monkeypatch: pytest.MonkeyP
 @pytest.mark.asyncio
 async def test_self_model_execute_without_introspect_fn(monkeypatch: pytest.MonkeyPatch) -> None:
     """self_model.execute() works without introspect_fn — telemetry fields are empty."""
-    from sdk_packs.core.operations.self_model.self_model import execute
-    from sdk_packs.core.operations.self_model import self_model as self_model_module
+    from sdk.packs.core.operations.self_model.self_model import execute
+    from sdk.packs.core.operations.self_model import self_model as self_model_module
 
     monkeypatch.setattr(self_model_module, "get_workflow_catalog", lambda: {})
 
@@ -150,8 +150,8 @@ async def test_self_model_tool_count_from_registry_not_ctx(
     perpetual "0 tools" identity summary even when the runtime catalog had
     tools. The fix reads ``get_tool_catalog()`` directly.
     """
-    from sdk_packs.core.operations.self_model.self_model import execute
-    from sdk_packs.core.operations.self_model import self_model as self_model_module
+    from sdk.packs.core.operations.self_model.self_model import execute
+    from sdk.packs.core.operations.self_model import self_model as self_model_module
 
     monkeypatch.setattr(self_model_module, "get_workflow_catalog", lambda: {})
 

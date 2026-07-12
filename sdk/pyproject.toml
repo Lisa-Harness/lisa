@@ -18,16 +18,9 @@ requires-python = ">=3.11"
 dependencies = [
     "lisa-kernel",
     "httpx>=0.27.0",
-    "mcp>=1.28.0",
     "pydantic>=2.13.4",
     "sqlite-vec>=0.1.9",
 ]
-
-[project.scripts]
-lisa-context = "sdk.lisa_context.server:main"
-lisa-memory = "sdk.lisa_memory.server:main"
-lisa-guard = "sdk.lisa_guard.server:main"
-lisa-content = "sdk.lisa_content.server:main"
 
 [project.optional-dependencies]
 dev = [

@@ -614,8 +614,8 @@ of spawning a subprocess.
 | Eval datasets | `kernel/tests/eval/datasets/{mode_id}.csv` |
 | Snapshots | `kernel/tests/snapshots/{name}.snapshot.txt` |
 | SDK tests | `sdk/tests/test_{module}.py` |
-| Integration pack tests | `sdk_packs/{pack}/tests/test_{module}.py` |
-| Pack tests | `sdk_packs/{pack}/tests/` (new — packs currently have no tests) |
+| Integration pack tests | `sdk/packs/{pack}/tests/test_{module}.py` |
+| Pack tests | `sdk/packs/{pack}/tests/` (new — packs currently have no tests) |
 
 ### CI integration
 
@@ -675,7 +675,7 @@ uv run pytest -m "not slow"
 | Deliverable | Location |
 | --- | --- |
 | `sdk/testing/__init__.py` — re-exports from `kernel.testing` | `sdk/testing/__init__.py` |
-| Pack test template | `sdk_packs/core/tests/` |
+| Pack test template | `sdk/packs/core/tests/` |
 | Extension test template updates | Existing extension test files |
 
 ---

@@ -487,7 +487,7 @@ def test_sdk_content_roots_filters_bundled_activation_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    core_root = tmp_path / "sdk_packs" / "core"
+    core_root = tmp_path / "sdk" / "packs" / "core"
     bundled_root = tmp_path / "lisa_pack_cloudflare"
     configured_root = tmp_path / "configured_root"
     core_root.mkdir(parents=True, exist_ok=True)

@@ -189,7 +189,7 @@ from kernel.tools.registry import (  # noqa: E402
     register_tool_mcp,
 )
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn  # noqa: E402
-from sdk.lisa_context.context_broker import (  # noqa: E402
+from sdk.context.context_broker import (  # noqa: E402
     build_ambient_facts,
     render_context_packet_markdown,
     select_ranked_context,
@@ -676,7 +676,7 @@ def _infer_pack_package_name(root: Path) -> str:
                 return _normalize_pack_name(name)
 
     root_name = _normalize_pack_name(root.name)
-    if root.parent.name == "sdk_packs" and root_name:
+    if root.parent.name == "packs" and root.parent.parent.name == "sdk" and root_name:
         return f"lisa-pack-{root_name}"
     if root_name.startswith("lisa-pack-"):
         return root_name
@@ -856,7 +856,7 @@ def _build_content_mcp_config() -> MCPClientConfig:
         command=sys.executable,
         args=[
             "-m",
-            "sdk.lisa_content.server",
+            "mcp_server.content.server",
             "--data-dir",
             str(_DEFAULT_DATA_DIR),
         ],
@@ -890,7 +890,7 @@ def setup_framework() -> None:
     # Wire the production extension-evidence builder so the context broker's
     # catalog builder picks up evidence from installed SDK extensions
     # (Cloudflare, GitHub, Stripe) via entry-point discovery.
-    from sdk.lisa_context.extension_evidence_builder import (  # noqa: PLC0415
+    from sdk.context.extension_evidence_builder import (  # noqa: PLC0415
         set_production_extension_evidence_builder,
     )
 
@@ -956,7 +956,7 @@ def _runtime_host_log_path() -> Path:
 def _configure_root_logging() -> None:
     """Own the stdlib root logger so FastMCP's RichHandler stops spamming stderr.
 
-    ``FastMCP.__init__`` (imported eagerly via ``sdk.lisa_content`` etc.)
+    ``FastMCP.__init__`` (imported eagerly via ``mcp_server.content`` etc.)
     calls ``configure_logging``, which installs a ``RichHandler`` on the
     root logger at INFO with a stderr console. That makes every
     ``logger.info(...)`` in the host process render to stderr with Rich's
@@ -3577,7 +3577,7 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
     # them through to MCPClientConfig. The host manifest no longer carries
     # a ``memory:`` section or memory server entries; memory backends +
     # memory tool servers are contributed by the learning pack (see
-    # sdk_packs/learning/mcp_servers.yaml) and merged below.
+    # sdk/packs/learning/mcp_servers.yaml) and merged below.
     specs, memory_config = load_mcp_server_manifest(host_manifest_path)
     for spec in specs:
         registry.register(spec)

@@ -62,7 +62,7 @@ REGISTRY: list[Endpoint] = [
         group="lisa.extensions.context_evidence",
         contract_module="kernel.extension_runtime",
         contract_name="ExtensionContextEvidenceBuilder",
-        consumer_site="sdk.lisa_context.extension_evidence_builder.EntryPointExtensionEvidenceBuilder",
+        consumer_site="sdk.context.extension_evidence_builder.EntryPointExtensionEvidenceBuilder",
         description=(
             "Contributes ranked context evidence from installed extensions. "
             "Each callable accepts ``(runtime_context, state)`` and returns "

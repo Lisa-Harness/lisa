@@ -74,7 +74,7 @@ def test_build_content_mcp_config_uses_discovered_roots_and_host_data_dir(
     configured_roots = [part for part in roots_value.split(os.pathsep) if part]
     assert str(pack_root) in configured_roots
     assert str(pack_root / "content") in configured_roots
-    assert not any("sdk_packs/core" in root for root in configured_roots)
+    assert not any("sdk/packs/core" in root for root in configured_roots)
 
 
 def test_build_content_mcp_config_without_discovered_roots_keeps_empty_sdk_content_roots(
@@ -1970,7 +1970,7 @@ async def test_synthesize_learning_prompt_mentions_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     synthesize_learning = pytest.importorskip(
-        "sdk_packs.learning.operations.memory.synthesize_learning"
+        "sdk.packs.learning.operations.memory.synthesize_learning"
     )
     captured: dict[str, object] = {}
 
