@@ -6215,7 +6215,10 @@ def _status_time_badge() -> tuple[str, str]:
     try:
         status_dt = datetime.now(ZoneInfo(timezone_name))
     except ZoneInfoNotFoundError:
-        status_dt = datetime.now()
+        # tzdata unavailable — fall back to system-local tzinfo so tzname()
+        # returns a real abbreviation (e.g. "Eastern Daylight Time") instead
+        # of None from a naive datetime (which would degrade to "NY").
+        status_dt = datetime.now().astimezone()
     timezone_label = timezone_name
     if "/" in timezone_name:
         tz_abbrev_raw = str(status_dt.tzname() or "").strip()

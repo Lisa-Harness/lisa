@@ -8,6 +8,7 @@ import textwrap
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from zoneinfo import ZoneInfoNotFoundError
 
 import httpx
 import pytest
@@ -1750,6 +1751,9 @@ def test_status_time_badge_compacts_long_timezone_name(monkeypatch: pytest.Monke
         def strftime(self, _fmt: str) -> str:
             return "13:24:16"
 
+        def astimezone(self) -> "_FakeStatusDateTime":
+            return self
+
     monkeypatch.setitem(little_lisa._RUNTIME_STATE, "timezone", "America/New_York")
     monkeypatch.setattr(little_lisa, "datetime", _FakeDateTime)
 
@@ -1757,6 +1761,56 @@ def test_status_time_badge_compacts_long_timezone_name(monkeypatch: pytest.Monke
 
     assert "EDT" in label
     assert "EASTERN DAYLIGHT TIME" not in label
+
+
+def test_status_time_badge_zoneinfo_unavailable_uses_system_local_abbrev(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tzdata missing → ZoneInfoNotFoundError → fall back to system-local.
+
+    The fallback must call astimezone() so tzname() returns a real name
+    (e.g. "Eastern Daylight Time") that compacts to "EDT", not a naive
+    datetime whose None tzname degrades to the tail initialism "NY".
+    """
+
+    class _AwareLocal:
+        def tzname(self) -> str:
+            return "Eastern Daylight Time"
+
+        def dst(self) -> object:
+            return object()
+
+        def strftime(self, _fmt: str) -> str:
+            return "13:24:16"
+
+    class _NaiveLocal:
+        def tzname(self) -> str:
+            return ""  # naive datetime → None-ish
+
+        def strftime(self, _fmt: str) -> str:
+            return "13:24:16"
+
+    class _FakeDateTime:
+        @staticmethod
+        def now(tz: object | None = None) -> object:
+            if tz is not None:
+                # ZoneInfo not available → raise like the real one would.
+                raise ZoneInfoNotFoundError("No time zone found")
+            # No-arg now() returns a naive datetime; .astimezone() makes it aware.
+            class _Naive:
+                def astimezone(self) -> _AwareLocal:
+                    return _AwareLocal()
+
+            return _Naive()
+
+    monkeypatch.setitem(little_lisa._RUNTIME_STATE, "timezone", "America/New_York")
+    monkeypatch.setattr(little_lisa, "datetime", _FakeDateTime)
+
+    label, _ = little_lisa._status_time_badge()
+
+    assert "EDT" in label
+    assert "NY" not in label
+    assert "America/New_York" not in label
 
 
 def test_resolve_timezone_maps_windows_daylight_display_name_to_iana(
