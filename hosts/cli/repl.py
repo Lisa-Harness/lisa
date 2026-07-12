@@ -257,9 +257,17 @@ async def _process_repl_turn(
 ) -> None:
     """Execute one REPL turn via handle_message and render the response."""
     turn_start = time.perf_counter()
+    # Start the thinking spinner immediately so the terminal is not dead
+    # between submit and the first pipeline stage callback. The spinner
+    # is stopped by the transport on the first on_stage/on_response/
+    # on_error/on_text_chunk.
+    if isinstance(transport, RichTransport):
+        transport.start_thinking("routing")
     try:
         result = await handle_message(runtime, message, transport)
     except Exception as exc:  # pylint: disable=broad-except
+        if isinstance(transport, RichTransport):
+            transport.stop_thinking()
         elapsed_ms = (time.perf_counter() - turn_start) * 1000.0
         runtime.tokens.session_error_count += 1
         runtime.tokens.session_total_latency_ms += elapsed_ms
@@ -384,7 +392,8 @@ def _build_repl_prompt_session(runtime: HostRuntime, console: Console) -> Any:
 
     Returns ``None`` when prompt_toolkit is unavailable. When available,
     the session is multi-line: Enter submits the turn, Esc→Enter inserts
-    a newline (chat-box semantics).
+    a newline (chat-box semantics). A bottom toolbar shows live char/line
+    count and control hints while the prompt is active.
     """
     if PromptSession is None or FileHistory is None or WordCompleter is None:
         return None
@@ -398,7 +407,39 @@ def _build_repl_prompt_session(runtime: HostRuntime, console: Console) -> Any:
         multiline=True,
         key_bindings=bindings,
         prompt_continuation="… ",
+        bottom_toolbar=_repl_bottom_toolbar,
     )
+
+
+def _repl_bottom_toolbar() -> Any:
+    """Render the bottom toolbar: live char/line count + control hints.
+
+    Called by prompt_toolkit on every buffer mutation. Returns
+    ``FormattedText`` (a list of ``(style, text)`` tuples) so the toolbar
+    updates in real time as the user types.
+    """
+    # Import inside the function so the module imports cleanly when
+    # prompt_toolkit is absent (the toolbar is only used when it is present).
+    from prompt_toolkit.formatted_text import FormattedText
+
+    # prompt_toolkit stores the active buffer on the current application.
+    # We reach it via get_app() rather than capturing a session closure so
+    # the toolbar works regardless of which PromptSession calls it.
+    try:
+        from prompt_toolkit.application import get_app
+        buffer = get_app().current_buffer
+        text = buffer.text
+    except Exception:  # pylint: disable=broad-except
+        text = ""
+
+    char_count = len(text)
+    line_count = text.count("\n") + 1 if text else 0
+
+    return FormattedText([
+        ("class:bottom-toolbar", " Enter submit · Esc+Enter newline · ↑/↓ history · Tab complete "),
+        ("class:bottom-toolbar.text", "│ "),
+        ("class:bottom-toolbar.metric", f"{line_count} line{'s' if line_count != 1 else ''}, {char_count} char{'s' if char_count != 1 else ''}"),
+    ])
 
 
 def _build_repl_key_bindings() -> Any:

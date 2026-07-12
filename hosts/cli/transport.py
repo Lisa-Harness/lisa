@@ -16,9 +16,11 @@ import json
 import logging
 from typing import Any
 
-from rich.console import Console
+from rich.console import Console, RenderableType
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.spinner import Spinner
 from rich.text import Text
 
 logger = logging.getLogger(__name__)
@@ -45,9 +47,45 @@ class RichTransport:
     def __init__(self, *, console: Console | None = None, debug: bool = False) -> None:
         self.console: Console = console or Console()
         self.debug = debug
+        self._thinking_live: Live | None = None
+        self._thinking_stage: str = ""
+
+    def start_thinking(self, stage: str = "routing") -> None:
+        """Start a spinner overlay so the user sees the turn is active.
+
+        Renders a Rich ``Live`` spinner with the current stage label. The
+        spinner is stopped by the first ``on_stage``, ``on_response``,
+        ``on_error``, or ``on_text_chunk`` callback, so the gap between
+        submit and the first pipeline event is no longer a dead terminal.
+        """
+        self.stop_thinking()
+        self._thinking_stage = stage
+        renderable: RenderableType = Spinner(
+            "dots",
+            text=Text(f" thinking… ({stage})", style=STYLE_STAGE),
+            style=STYLE_STAGE,
+        )
+        self._thinking_live = Live(
+            renderable,
+            console=self.console,
+            transient=True,
+            refresh_per_second=8,
+        )
+        self._thinking_live.start()
+
+    def stop_thinking(self) -> None:
+        """Stop the thinking spinner if it is running."""
+        live = self._thinking_live
+        self._thinking_live = None
+        if live is not None:
+            try:
+                live.stop()
+            except Exception:  # pylint: disable=broad-except
+                pass
 
     async def on_stage(self, label: str, data: dict[str, Any] | None = None) -> None:
         """Render a dim stage status line (e.g. 'frontdoor', 'model_call')."""
+        self.stop_thinking()
         suffix = ""
         if data:
             # Compact one-line rendering of stage metadata.
@@ -64,11 +102,13 @@ class RichTransport:
 
     async def on_text_chunk(self, text: str) -> None:
         """Print a streamed text chunk inline (no panel, no newline)."""
+        self.stop_thinking()
         self.console.file.write(text)
         self.console.file.flush()
 
     async def on_response(self, text: str, data: dict[str, Any] | None = None) -> None:
         """Render the final response in a Rich Panel."""
+        self.stop_thinking()
         self.console.print(
             Panel(
                 Markdown(text),
@@ -91,6 +131,7 @@ class RichTransport:
 
     async def on_error(self, message: str, exc: Exception | None = None) -> None:
         """Render an error in a red Rich Panel."""
+        self.stop_thinking()
         body = message
         if exc is not None:
             body = f"{type(exc).__name__}: {exc}\n\n{message}"
