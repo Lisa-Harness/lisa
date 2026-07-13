@@ -142,7 +142,7 @@ class HostRuntime:
             self.tokens.session_started_utc = datetime.now(UTC)
 
         # ── Runtime route state ───────────────────────────────────────
-        self.current_mode_id: str = "default"
+        self.current_mode_id: str = config.start_mode or "default"
         self.current_stage_id: str = "-"
         self.next_model_id: str = "-"
         self.next_model_provider: str = "-"
@@ -160,6 +160,10 @@ class HostRuntime:
         # ── Restart state ─────────────────────────────────────────────
         self.restart_required: bool = False
         self.restart_reason: str = ""
+        # Stashed by the CLI host from the LISA_RESTART_RESUME_MESSAGE env
+        # var on startup; the REPL replays it as the first turn, then clears
+        # it. ``None`` means no resume pending.
+        self.pending_resume_message: str | None = None
 
         # ── Token usage handler ───────────────────────────────────────
         self._token_usage_handler: Any = None

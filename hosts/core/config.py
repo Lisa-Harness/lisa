@@ -152,6 +152,12 @@ class HostConfig:
         "lisa-pack-search",
     )
 
+    # ── Session-context controls (front-matter overrides) ────────────
+    # Populated at config-build time from the session context's front
+    # matter. ``start_mode`` bypasses front-door routing when set.
+    start_mode: str = ""
+    session_controls: Any = None  # SessionContextControls | None
+
     @property
     def resolved_memory_db_path(self) -> Path:
         return self.memory_db_path or (self.data_dir / "memory.json")
@@ -298,17 +304,20 @@ class HostConfig:
         # ── User / session ─────────────────────────────────────────────
         resolved_session_context = session_context.strip()
 
-        # Resolve user_slug from the session context's ``name`` front
-        # matter so the thread file and status line show the declared
-        # name rather than a raw file path or slug. Falls back to the
-        # stem-based name from context_slug_to_thread_name when no
-        # front matter is present. When no explicit --session-context was
-        # passed AND no user_slug was given, auto-discover
-        # session_context.md or session_context/ in CWD or the data dir.
+        # Resolve user_slug and runtime controls from the session context's
+        # front matter. When no explicit --session-context was passed AND
+        # no user_slug was given, auto-discover session_context.md or
+        # session_context/ in CWD or the data dir.
         raw_user_slug = user_slug.strip()
-        if resolved_session_context or not raw_user_slug:
-            from hosts.core.session_context import resolve_session_context_identity
+        from hosts.core.session_context import (
+            SessionContextControls,
+            extract_session_context_controls,
+            resolve_session_context_identity,
+        )
 
+        resolved_start_mode = ""
+        session_controls: SessionContextControls | None = None
+        if resolved_session_context or not raw_user_slug:
             _resolved_ref, resolved_user_slug_from_ctx = (
                 resolve_session_context_identity(
                     session_context=resolved_session_context,
@@ -317,13 +326,35 @@ class HostConfig:
             )
             if _resolved_ref:
                 resolved_session_context = _resolved_ref
+                # Extract front-matter controls from the resolved file.
+                controls_path = Path(_resolved_ref)
+                if controls_path.is_file():
+                    session_controls = extract_session_context_controls(controls_path)
         else:
             resolved_user_slug_from_ctx = ""
         resolved_user_slug = resolved_user_slug_from_ctx or raw_user_slug
 
-        # ── Surface ────────────────────────────────────────────────────
+        # Apply session-context controls (front matter > CLI/env > defaults).
         resolved_surface_type = surface_type.strip() or "personal_dm"
         resolved_surface_id = surface_id.strip() or "host-console"
+        resolved_memory_scope = "personal"
+        resolved_always_on_packs: tuple[str, ...] = (
+            "lisa-pack-core",
+            "lisa-pack-learning",
+            "lisa-pack-search",
+        )
+        if session_controls is not None:
+            # name already applied via resolve_session_context_identity.
+            if session_controls.surface.surface_type:
+                resolved_surface_type = session_controls.surface.surface_type
+            if session_controls.surface.surface_id:
+                resolved_surface_id = session_controls.surface.surface_id
+            if session_controls.surface.memory_scope:
+                resolved_memory_scope = session_controls.surface.memory_scope
+            if session_controls.start_mode:
+                resolved_start_mode = session_controls.start_mode
+            if session_controls.policy.always_on_packs:
+                resolved_always_on_packs = session_controls.policy.always_on_packs
 
         return cls(
             data_dir=resolved_data_dir,
@@ -352,4 +383,8 @@ class HostConfig:
             memory_max_records=memory_max,
             surface_type=resolved_surface_type,
             surface_id=resolved_surface_id,
+            memory_scope=resolved_memory_scope,
+            always_on_packs=resolved_always_on_packs,
+            start_mode=resolved_start_mode,
+            session_controls=session_controls,
         )

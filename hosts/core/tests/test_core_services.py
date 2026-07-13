@@ -440,6 +440,168 @@ def test_resolve_session_context_reads_display_name_from_front_matter(tmp_path: 
     assert is_file is True
 
 
+# ── Session context controls (front-matter runtime overrides) ───────
+
+
+def test_extract_session_context_controls_surface_block(tmp_path: Path) -> None:
+    """Surface block overrides surface_type, surface_id, memory_scope."""
+    path = tmp_path / "ctx.md"
+    path.write_text(
+        '---\n'
+        'name: "team-session"\n'
+        'surface:\n'
+        '  type: team_channel\n'
+        '  id: channel-42\n'
+        '  memory_scope: shared\n'
+        '---\n# body\n',
+        encoding="utf-8",
+    )
+    controls = session_context.extract_session_context_controls(path)
+    assert controls.name == "team-session"
+    assert controls.surface.surface_type == "team_channel"
+    assert controls.surface.surface_id == "channel-42"
+    assert controls.surface.memory_scope == "shared"
+
+
+def test_extract_session_context_controls_flat_surface_keys(tmp_path: Path) -> None:
+    """Flat top-level surface_type/surface_id/memory_scope also work."""
+    path = tmp_path / "ctx.md"
+    path.write_text(
+        '---\n'
+        'surface_type: vscode\n'
+        'surface_id: vscode-chat\n'
+        'memory_scope: project\n'
+        '---\n# body\n',
+        encoding="utf-8",
+    )
+    controls = session_context.extract_session_context_controls(path)
+    assert controls.surface.surface_type == "vscode"
+    assert controls.surface.surface_id == "vscode-chat"
+    assert controls.surface.memory_scope == "project"
+
+
+def test_extract_session_context_controls_start_mode(tmp_path: Path) -> None:
+    """start_mode is extracted from front matter."""
+    path = tmp_path / "ctx.md"
+    path.write_text('---\nstart_mode: research\n---\n# body\n', encoding="utf-8")
+    controls = session_context.extract_session_context_controls(path)
+    assert controls.start_mode == "research"
+
+
+def test_extract_session_context_controls_packs_map(tmp_path: Path) -> None:
+    """packs map with qualified pack names is parsed correctly."""
+    path = tmp_path / "ctx.md"
+    path.write_text(
+        '---\n'
+        'packs:\n'
+        '  lisa-pack-search:\n'
+        '    enabled: true\n'
+        '  lisa-pack-mem0:\n'
+        '    enabled: false\n'
+        '---\n# body\n',
+        encoding="utf-8",
+    )
+    controls = session_context.extract_session_context_controls(path)
+    assert "lisa-pack-search" in controls.packs.preferences
+    assert controls.packs.preferences["lisa-pack-search"]["enabled"] is True
+    assert controls.packs.preferences["lisa-pack-mem0"]["enabled"] is False
+
+
+def test_extract_session_context_controls_policy_block(tmp_path: Path) -> None:
+    """policy block with always_on_packs, exclude_servers, preferred_capability_providers."""
+    path = tmp_path / "ctx.md"
+    path.write_text(
+        '---\n'
+        'policy:\n'
+        '  always_on_packs:\n'
+        '    - lisa-pack-core\n'
+        '    - lisa-pack-learning\n'
+        '  exclude_servers:\n'
+        '    - lisa-pack-mem0.memory\n'
+        '  preferred_capability_providers:\n'
+        '    memory: lisa-pack-learning\n'
+        '    web_search: lisa-pack-brave-search\n'
+        '---\n# body\n',
+        encoding="utf-8",
+    )
+    controls = session_context.extract_session_context_controls(path)
+    assert controls.policy.always_on_packs == ("lisa-pack-core", "lisa-pack-learning")
+    assert controls.policy.exclude_servers == ("lisa-pack-mem0.memory",)
+    assert controls.policy.preferred_capability_providers["memory"] == "lisa-pack-learning"
+    assert controls.policy.preferred_capability_providers["web_search"] == "lisa-pack-brave-search"
+
+
+def test_extract_session_context_controls_empty_file(tmp_path: Path) -> None:
+    """No front matter → all controls are no-override defaults."""
+    path = tmp_path / "ctx.md"
+    path.write_text('# just a body\n', encoding="utf-8")
+    controls = session_context.extract_session_context_controls(path)
+    assert controls.name is None
+    assert controls.surface.surface_type is None
+    assert controls.start_mode is None
+    assert controls.packs.preferences == {}
+    assert controls.policy.always_on_packs == ()
+
+
+def test_hostconfig_applies_session_context_surface_and_start_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """HostConfig.from_env reads surface, start_mode from auto-discovered session_context.md."""
+    monkeypatch.chdir(tmp_path)
+    ctx = tmp_path / "session_context.md"
+    ctx.write_text(
+        '---\n'
+        'name: "my-session"\n'
+        'surface:\n'
+        '  type: team_channel\n'
+        '  id: chan-1\n'
+        '  memory_scope: shared\n'
+        'start_mode: research\n'
+        '---\n# body\n',
+        encoding="utf-8",
+    )
+    config = HostConfig.from_env(data_dir=str(tmp_path), no_thread=True)
+    assert config.user_slug == "my-session"
+    assert config.surface_type == "team_channel"
+    assert config.surface_id == "chan-1"
+    assert config.memory_scope == "shared"
+    assert config.start_mode == "research"
+    assert config.session_controls is not None
+    assert config.session_controls.start_mode == "research"
+
+
+def test_hostconfig_applies_session_context_policy_always_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """HostConfig.from_env reads policy.always_on_packs from session_context.md."""
+    monkeypatch.chdir(tmp_path)
+    ctx = tmp_path / "session_context.md"
+    ctx.write_text(
+        '---\n'
+        'policy:\n'
+        '  always_on_packs:\n'
+        '    - lisa-pack-core\n'
+        '---\n# body\n',
+        encoding="utf-8",
+    )
+    config = HostConfig.from_env(data_dir=str(tmp_path), no_thread=True)
+    assert config.always_on_packs == ("lisa-pack-core",)
+
+
+def test_runtime_start_mode_initializes_current_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """HostRuntime.current_mode_id is seeded from start_mode when set."""
+    monkeypatch.chdir(tmp_path)
+    ctx = tmp_path / "session_context.md"
+    ctx.write_text('---\nstart_mode: research\n---\n# body\n', encoding="utf-8")
+    config = HostConfig.from_env(data_dir=str(tmp_path), no_thread=True)
+    runtime = HostRuntime(config)
+    assert runtime.current_mode_id == "research"
+
+
+def test_runtime_no_start_mode_defaults_to_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without start_mode, current_mode_id stays 'default'."""
+    monkeypatch.chdir(tmp_path)
+    config = HostConfig.from_env(data_dir=str(tmp_path), no_thread=True)
+    runtime = HostRuntime(config)
+    assert runtime.current_mode_id == "default"
+
+
 # ── Token accounting ──────────────────────────────────────────────────
 
 

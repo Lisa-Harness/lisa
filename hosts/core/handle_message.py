@@ -266,9 +266,12 @@ async def _route_model_turn(
     Routing order:
     1. ``/deep`` prefix → default mode with deep-designated model.
     2. Other slash commands → ``kernel.ipsar.parse_route``.
-    3. Natural language → front-door routing with direct-response shortcut
-       and clarification attempts.
-    4. Execute the resolved mode turn via ``kernel.turn_runner.run_turn``.
+    3. Natural language → check ``start_mode`` override from session
+       context front matter. When set, bypass front-door routing entirely
+       and route directly to the declared mode.
+    4. Otherwise → front-door routing with direct-response shortcut and
+       clarification attempts.
+    5. Execute the resolved mode turn via ``kernel.turn_runner.run_turn``.
     """
     deep_query = explicit_deep_query(message)
     deep_route = deep_query is not None
@@ -278,19 +281,34 @@ async def _route_model_turn(
     elif message.lstrip().startswith("/"):
         mode_id, query = parse_route(message)
     else:
-        # Try front-door direct-response shortcut.
-        direct = await _try_frontdoor_shortcut(runtime, message, transport)
-        if direct is not None:
-            return direct
+        # Check for start_mode override from session-context front matter.
+        # When set, bypass front-door routing and go directly to the
+        # declared mode (unless the user has already switched modes via
+        # an explicit /mode command during this session).
+        start_mode = runtime.config.start_mode
+        if start_mode and runtime.current_mode_id == start_mode:
+            mode_id = start_mode
+            query = message
+            logger.debug(
+                "start_mode bypass: routing directly to mode %r "
+                "(front-door skipped)", start_mode,
+            )
+        else:
+            # Try front-door direct-response shortcut.
+            direct = await _try_frontdoor_shortcut(runtime, message, transport)
+            if direct is not None:
+                return direct
 
-        # Plan the full front-door route.
-        route_decision = await _plan_frontdoor_route(runtime, message)
-        clarification = _try_frontdoor_clarification(runtime, message, route_decision, transport)
-        if clarification is not None:
-            return clarification
+            # Plan the full front-door route.
+            route_decision = await _plan_frontdoor_route(runtime, message)
+            clarification = _try_frontdoor_clarification(
+                runtime, message, route_decision, transport,
+            )
+            if clarification is not None:
+                return clarification
 
-        mode_id = route_decision.selected_mode_id
-        query = route_decision.normalized_query or message
+            mode_id = route_decision.selected_mode_id
+            query = route_decision.normalized_query or message
 
     return await _execute_mode_turn(runtime, message, mode_id, query, deep_route, transport)
 

@@ -48,6 +48,7 @@ from hosts.core.content_roots import (
     load_pack_policy_dict,
     runtime_installed_pack_names,
     sdk_content_roots,
+    seed_bundled_packs_lock,
     unique_paths,
 )
 from hosts.core.runtime import HostRuntime
@@ -171,6 +172,15 @@ def setup_framework(runtime: HostRuntime) -> None:
     """
     config = runtime.config
     data_dir = runtime.data_dir
+
+    # Seed the installed-packs lock with any discovered bundled packs that
+    # have no lock entry yet. This closes the lifecycle hole where an
+    # unlisted bundled pack was treated as enabled by intake/evidence
+    # (fail-open) but disabled by content roots (default-off). Seeding
+    # runs before any activation read below so all consumers see one
+    # consistent source of truth.
+    seed_bundled_packs_lock(data_dir)
+
     manifest_path = _resolve_host_manifest_path(config)
     roots = sdk_content_roots(
         data_dir,
@@ -178,6 +188,12 @@ def setup_framework(runtime: HostRuntime) -> None:
         always_on_packs=config.always_on_packs,
     )
     disabled_packs = load_disabled_pack_names(data_dir)
+    # Merge session-context front-matter packs.<name>.enabled: false.
+    session_controls = config.session_controls
+    if session_controls is not None:
+        for pack_name, prefs in session_controls.packs.preferences.items():
+            if isinstance(prefs, dict) and prefs.get("enabled") is False:
+                disabled_packs.add(normalize_pack_name(pack_name))
     content_config = build_content_mcp_config(
         data_dir=data_dir,
         content_roots=roots,
@@ -288,6 +304,40 @@ def compile_mcp_configs(runtime: HostRuntime) -> tuple[list[Any], list[Any]]:
         else {}
     )
 
+    # ── Session-context front-matter policy overrides ──
+    # Merge session-context controls on top of manifest/lock values so the
+    # session context wins for the current runtime only (no persistence).
+    session_controls = config.session_controls
+    session_disabled_packs: set[str] = set()
+    session_exclude_servers: set[str] = set()
+    session_cap_preferences: dict[str, list[str]] = {}
+    if session_controls is not None:
+        # packs.<name>.enabled: false → disabled set
+        for pack_name, prefs in session_controls.packs.preferences.items():
+            if isinstance(prefs, dict) and prefs.get("enabled") is False:
+                session_disabled_packs.add(normalize_pack_name(pack_name))
+        # policy.exclude_servers
+        for entry in session_controls.policy.exclude_servers:
+            normalized = entry.strip().lower()
+            if normalized:
+                session_exclude_servers.add(normalized)
+        # policy.preferred_capability_providers
+        for cap, pack in session_controls.policy.preferred_capability_providers.items():
+            session_cap_preferences.setdefault(cap, []).append(pack)
+
+    # Merge capability preferences (session > manifest).
+    if session_cap_preferences:
+        for cap, providers in session_cap_preferences.items():
+            existing = capability_preferences.get(cap, [])
+            merged = [*providers, *[p for p in existing if p not in providers]]
+            capability_preferences[cap] = merged
+
+    # Merge selected capability providers from session front matter.
+    if session_controls is not None and session_controls.policy.preferred_capability_providers:
+        for cap, pack in session_controls.policy.preferred_capability_providers.items():
+            if cap not in selected_capability_providers:
+                selected_capability_providers[cap] = pack
+
     # Make FRAMEWORK_ROOT available for ${FRAMEWORK_ROOT} expansion in
     # the manifest's path-like fields (venv_dir, command_path, etc.).
     os.environ.setdefault("FRAMEWORK_ROOT", workspace_root)
@@ -306,6 +356,7 @@ def compile_mcp_configs(runtime: HostRuntime) -> tuple[list[Any], list[Any]]:
         registry.register(spec)
 
     excluded_pack_servers = load_pack_server_exclusions(host_manifest_path)
+    excluded_pack_servers |= session_exclude_servers
     used_pack_slugs: set[str] = set()
     memory_owner_slug: str | None = None
     memory_candidates: list[dict[str, Any]] = []

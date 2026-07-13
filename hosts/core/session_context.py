@@ -36,7 +36,12 @@ Public surface
 - :func:`resolve_session_context_artifacts_session_context`
 - :func:`resolve_session_context_user_contexts`
 - :func:`resolve_session_context_identity`
+- :func:`extract_session_context_controls`
 - :func:`extract_front_matter_thread_name`
+- :class:`SessionContextControls`
+- :class:`SurfaceControls`
+- :class:`PackPreferences`
+- :class:`PolicyControls`
 - :func:`load_selected_session_context_text`
 - :func:`load_active_session_context_text`
 - :func:`load_session_context_directory`
@@ -47,6 +52,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +61,66 @@ from kernel.ipsar_fsm import parse_front_matter
 from hosts.core.lisa_config import context_slug_to_thread_name
 
 logger = logging.getLogger(__name__)
+
+
+# ── Session-context front-matter controls ───────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class SurfaceControls:
+    """Privacy surface identity from session-context front matter.
+
+    All fields are optional — a missing field means "no override" so the
+    host's CLI/env/default value is used.
+    """
+
+    surface_type: str | None = None
+    surface_id: str | None = None
+    memory_scope: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PackPreferences:
+    """Per-pack preferences from the ``packs`` front-matter map.
+
+    Each key is a qualified pack name; each value is a dict of
+    preferences. Currently recognised preference keys:
+    - ``enabled`` (bool): intent for lock-state; startup-only.
+    """
+
+    preferences: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyControls:
+    """Global pack-policy controls from the ``policy`` front-matter block.
+
+    Currently recognised keys:
+    - ``always_on_packs`` (list[str]): packs that cannot be disabled.
+    - ``exclude_servers`` (list[str]): pack MCP server IDs to suppress.
+    - ``preferred_capability_providers`` (dict[str, str]): capability → pack.
+    """
+
+    always_on_packs: tuple[str, ...] = ()
+    exclude_servers: tuple[str, ...] = ()
+    preferred_capability_providers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionContextControls:
+    """All runtime controls extracted from session-context front matter.
+
+    Every field defaults to "no override" so the host's existing
+    CLI/env/default resolution is used when the front matter doesn't
+    declare a key. This dataclass is transport-neutral; the host wires
+    it into ``HostConfig`` / ``HostRuntime`` at startup.
+    """
+
+    name: str | None = None
+    surface: SurfaceControls = field(default_factory=SurfaceControls)
+    start_mode: str | None = None
+    packs: PackPreferences = field(default_factory=PackPreferences)
+    policy: PolicyControls = field(default_factory=PolicyControls)
 
 
 def resolve_session_context(
@@ -253,6 +319,117 @@ def resolve_session_context_identity(
 
     # Registry slug or unknown — use stem-based name.
     return s, context_slug_to_thread_name(s)
+
+
+def extract_session_context_controls(path: Path) -> SessionContextControls:
+    """Extract all runtime controls from a session-context file's front matter.
+
+    Returns an empty :class:`SessionContextControls` (all fields "no
+    override") when the file cannot be read or has no front matter.
+    Unknown keys are ignored with debug logging. Invalid values
+    degrade gracefully — the offending key is skipped rather than
+    raising.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:  # pylint: disable=broad-except
+        return SessionContextControls()
+    front_matter, _ = parse_front_matter(text)
+    if not isinstance(front_matter, dict) or not front_matter:
+        return SessionContextControls()
+
+    name = front_matter.get("name")
+    name_str = name.strip() if isinstance(name, str) else None
+
+    # ── surface block ──
+    surface = SurfaceControls()
+    surface_raw = front_matter.get("surface")
+    if isinstance(surface_raw, dict):
+        surface = SurfaceControls(
+            surface_type=_str_or_none(surface_raw.get("surface_type"))
+            or _str_or_none(surface_raw.get("type")),
+            surface_id=_str_or_none(surface_raw.get("surface_id"))
+            or _str_or_none(surface_raw.get("id")),
+            memory_scope=_str_or_none(surface_raw.get("memory_scope")),
+        )
+    else:
+        # Allow flat top-level keys as a convenience.
+        st = _str_or_none(front_matter.get("surface_type"))
+        sid = _str_or_none(front_matter.get("surface_id"))
+        ms = _str_or_none(front_matter.get("memory_scope"))
+        if st or sid or ms:
+            surface = SurfaceControls(
+                surface_type=st, surface_id=sid, memory_scope=ms
+            )
+
+    # ── start_mode ──
+    start_mode = _str_or_none(front_matter.get("start_mode"))
+
+    # ── packs map ──
+    packs = PackPreferences()
+    packs_raw = front_matter.get("packs")
+    if isinstance(packs_raw, dict):
+        normalized: dict[str, dict[str, Any]] = {}
+        for pack_name, prefs in packs_raw.items():
+            if not isinstance(pack_name, str):
+                continue
+            if not isinstance(prefs, dict):
+                logger.debug(
+                    "session-context: packs.%s ignored (not a dict)",
+                    pack_name,
+                )
+                continue
+            normalized[pack_name] = prefs
+        if normalized:
+            packs = PackPreferences(preferences=normalized)
+
+    # ── policy block ──
+    policy = PolicyControls()
+    policy_raw = front_matter.get("policy")
+    if isinstance(policy_raw, dict):
+        always_on = _str_list(policy_raw.get("always_on_packs"))
+        exclude = _str_list(policy_raw.get("exclude_servers"))
+        cap_prefs_raw = policy_raw.get("preferred_capability_providers")
+        cap_prefs: dict[str, str] = {}
+        if isinstance(cap_prefs_raw, dict):
+            for cap, pack in cap_prefs_raw.items():
+                cap_s = cap.strip() if isinstance(cap, str) else ""
+                pack_s = pack.strip() if isinstance(pack, str) else ""
+                if cap_s and pack_s:
+                    cap_prefs[cap_s] = pack_s
+        policy = PolicyControls(
+            always_on_packs=tuple(always_on),
+            exclude_servers=tuple(exclude),
+            preferred_capability_providers=cap_prefs,
+        )
+
+    return SessionContextControls(
+        name=name_str,
+        surface=surface,
+        start_mode=start_mode,
+        packs=packs,
+        policy=policy,
+    )
+
+
+def _str_or_none(value: Any) -> str | None:
+    """Return a stripped string or ``None`` for non-string / empty values."""
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    return s or None
+
+
+def _str_list(value: Any) -> list[str]:
+    """Coerce a YAML value into a list of non-empty strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        s = value.strip()
+        return [s] if s else []
+    if isinstance(value, list):
+        return [v.strip() for v in value if isinstance(v, str) and v.strip()]
+    return []
 
 
 def load_selected_session_context_text(

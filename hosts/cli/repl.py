@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -89,14 +90,19 @@ _HOST_REPL_SHORTCUTS: tuple[str, ...] = (
 try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter
+    from prompt_toolkit.cursor_shapes import CursorShape, ModalCursorShapeConfig
     from prompt_toolkit.history import FileHistory, History
     from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.styles import Style
 except ImportError:  # pragma: no cover - optional dependency
     PromptSession = None
     WordCompleter = None
     FileHistory = None
     History = None
     KeyBindings = None
+    CursorShape = None
+    ModalCursorShapeConfig = None
+    Style = None
 
 
 class _SurrogateSafeFileHistory(History):
@@ -158,14 +164,21 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
     transport = RichTransport(console=console, debug=runtime.config.debug)
 
     # Set the initial route preview so the status line shows the
-    # default model before the first turn is executed.
+    # resolved model before the first turn is executed. When start_mode
+    # is set in the session context, use it instead of "default".
     from hosts.core.commands import set_runtime_route_preview
-    from hosts.core.commands import frontdoor_model_alias
+    from hosts.core.commands import frontdoor_model_alias, model_alias_for_mode
 
+    initial_mode = runtime.config.start_mode or "default"
+    initial_model_alias = (
+        model_alias_for_mode(initial_mode)
+        if runtime.config.start_mode
+        else frontdoor_model_alias()
+    )
     set_runtime_route_preview(
         runtime,
-        mode_id="default",
-        preferred_model_id=frontdoor_model_alias(),
+        mode_id=initial_mode,
+        preferred_model_id=initial_model_alias,
     )
 
     # Start the MCP pool inside this event loop (anyio cancel-scope binding).
@@ -189,8 +202,30 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
     if prompt_session is None:
         console.print(f"[{STYLE_TEXT_MUTED}]prompt_toolkit unavailable; using basic input mode.[/]")
 
+    # Replay a pending resume message (set by `/pack ... --resume <msg>` in
+    # the prior session via the LISA_RESTART_RESUME_MESSAGE env var) as the
+    # first turn. Cleared after one replay.
+    pending_resume = runtime.pending_resume_message
+    runtime.pending_resume_message = None
+
     restart_requested = False
     try:
+        if pending_resume:
+            console.print(
+                Panel(
+                    f"Resuming after restart: {pending_resume}",
+                    title="Resume",
+                    border_style=STYLE_BORDER_SESSION,
+                )
+            )
+            await _process_repl_turn(runtime, transport, console, pending_resume)
+            if runtime.restart_required:
+                _render_restart_required_notice_if_needed(runtime, console)
+                _render_session_exit_summary(runtime, console)
+                console.print(
+                    f"[{STYLE_TEXT_MUTED}]Applying restart now...[/]"
+                )
+                return True
         restart_requested = await _run_repl_loop(runtime, transport, console, prompt_session)
     finally:
         await runtime.aclose()
@@ -220,7 +255,12 @@ async def _run_repl_loop(
         if runtime.restart_required:
             _render_restart_required_notice_if_needed(runtime, console)
             _render_session_exit_summary(runtime, console)
-            if runtime.restart_reason:
+            if os.name == "nt":
+                console.print(
+                    f"[{STYLE_TEXT_MUTED}]Please restart `lisa` manually to "
+                    f"reload packs and MCP manifests.[/]"
+                )
+            elif runtime.restart_reason:
                 console.print(f"[{STYLE_TEXT_MUTED}]Applying restart now...[/]")
             else:
                 console.print(
@@ -234,8 +274,18 @@ async def _read_repl_input(console: Console, prompt_session: Any) -> str | None:
     try:
         _render_status_line(console)
         if prompt_session is not None:
-            return (await prompt_session.prompt_async("🤖 ")).strip()
-        return console.input(f"[{STYLE_PROMPT}]🤖 [/]").strip()
+            cursor = (
+                ModalCursorShapeConfig()
+                if ModalCursorShapeConfig is not None
+                else None
+            )
+            return (
+                await prompt_session.prompt_async(
+                    [(f"class:prompt", "❯ ")],
+                    cursor=cursor,
+                )
+            ).strip()
+        return console.input(f"[{STYLE_PROMPT}]❯ [/]").strip()
     except KeyboardInterrupt:
         console.print()
         return ""
@@ -406,9 +456,23 @@ def _build_repl_prompt_session(runtime: HostRuntime, console: Console) -> Any:
         complete_while_typing=True,
         multiline=True,
         key_bindings=bindings,
-        prompt_continuation="… ",
+        prompt_continuation=[("class:prompt-continuation", "… ")],
         bottom_toolbar=_repl_bottom_toolbar,
+        style=Style.from_dict(_REPL_PROMPT_STYLE) if Style is not None else None,
     )
+
+
+# prompt_toolkit style: maps the class: names used in the prompt and
+# toolbar to hex colors (prompt_toolkit does not accept Rich color names
+# like 'steel_blue3'). Steel_blue3 is ANSI-256 #74 -> #5fafff; grey58
+# is #5f5f5f; grey39 is #626262.
+_REPL_PROMPT_STYLE = {
+    "prompt": "bold #5fafff",
+    "prompt-continuation": "#5f5f5f",
+    "bottom-toolbar": "reverse",
+    "bottom-toolbar.text": "#626262",
+    "bottom-toolbar.metric": "bold #5fafff",
+}
 
 
 def _repl_bottom_toolbar() -> Any:

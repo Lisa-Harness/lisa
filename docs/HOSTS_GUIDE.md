@@ -249,6 +249,54 @@ All commands are handled by `hosts/core/commands.py` and produce plain text (not
 
 Memory is capability-owned by policy. The bundled learning pack provides the `lisa_memory` fallback in `sdk/packs/learning/mcp_servers.yaml`; external providers (for example `lisa-pack-mem0`) can be installed and selected as the memory owner via host policy/lock state. The host wires generic `memory.*` aliases to the selected provider's backend config.
 
+## Session Context Front Matter
+
+A `session_context.md` file (or `session_context/` directory) in the project root or data directory is auto-discovered at startup. The file's YAML front matter can declare runtime controls that override the host's defaults:
+
+```yaml
+---
+name: my-session
+surface:
+  type: personal_dm
+  id: host-console
+  memory_scope: personal
+start_mode: default
+applies_to:
+  - default
+  - discuss
+packs:
+  lisa-pack-search:
+    enabled: true
+  lisa-pack-mem0:
+    enabled: false
+policy:
+  always_on_packs:
+    - lisa-pack-core
+    - lisa-pack-learning
+  exclude_servers:
+    - lisa-pack-mem0.memory
+  preferred_capability_providers:
+    memory: lisa-pack-learning
+---
+```
+
+| Key | Type | Effect | Scope |
+| --- | --- | --- | --- |
+| `name` | `str` | Thread file name + status display | Per-turn |
+| `applies_to` | `list[str]` | Mode filter — file only loads when current mode is in the list | Per-turn |
+| `surface.type` | `str` | Overrides `surface_type` for tool/guard/token identity | Per-turn |
+| `surface.id` | `str` | Overrides `surface_id` | Per-turn |
+| `surface.memory_scope` | `str` | Overrides `memory_scope` for tool/guard identity | Per-turn |
+| `start_mode` | `str` | Initial mode; **bypasses front-door routing** entirely | Startup |
+| `packs.<name>.enabled` | `bool` | `false` disables the pack for this runtime | Startup |
+| `policy.always_on_packs` | `list[str]` | Packs that cannot be disabled | Startup |
+| `policy.exclude_servers` | `list[str]` | Pack MCP server IDs to suppress | Startup |
+| `policy.preferred_capability_providers` | `map[str,str]` | Capability → pack ownership preference | Startup |
+
+Precedence: session-context front matter > CLI/env > defaults. Flat top-level `surface_type`/`surface_id`/`memory_scope` keys are accepted as a convenience when no `surface` block is present.
+
+When `start_mode` is set, the runtime seeds `current_mode_id` to that mode and `_route_model_turn` skips the front-door planner entirely. An explicit `/mode` command overrides `start_mode` for the remainder of the session.
+
 ## Building a New Host
 
 A new host (e.g. Slack, Microsoft Teams, custom web app) follows this pattern:
