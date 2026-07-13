@@ -385,6 +385,10 @@ def assemble_dynamic_user_context(
                 "operations": len(snapshot["operations"]),
                 "tools": len(snapshot["tools"]),
                 "modes": len(snapshot["supported_modes"]),
+                # Full name lists so the renderer can compute inactive caps
+                # via set difference and group them by reason.
+                "operation_names": list(snapshot["operations"]),
+                "tool_names": list(snapshot["tools"]),
             }
         # Build a compact mode→capability routing map from the workflow
         # catalog. Each mode's allowed_operation_ids and allowed_tool_ids
