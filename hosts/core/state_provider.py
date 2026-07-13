@@ -54,6 +54,7 @@ from kernel.slice import SliceOutcome
 from pydantic import ValidationError
 
 from hosts.core.lisa_config import _DEFAULT_THREAD_MAX_ENTRIES, _THREAD_DIGEST_FILE_NAME
+from hosts.core.thread import _is_host_command_query
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +239,13 @@ class FileBackedStateProvider:
             query = str(entry.get("query") or "").strip()
             response = str(entry.get("response_text") or "").strip()
             if not query and not response:
+                continue
+            # Strip host-only commands (``/pack``, ``/help``, ``/tokens`` ...)
+            # from the digest sidecar too: they are operator UI gestures,
+            # not dialogue, and would otherwise accumulate in the digest
+            # forever (every ``/pack disable`` you ever ran would live on
+            # in the model's "prior conversation digest" lane).
+            if _is_host_command_query(query):
                 continue
             preview = response[:200] if response else query[:200]
             digest_parts.append(f"- {query or 'unknown'}: {preview}")

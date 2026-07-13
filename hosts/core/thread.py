@@ -41,6 +41,65 @@ from hosts.core.lisa_config import _THREAD_DIGEST_FILE_NAME
 logger = logging.getLogger(__name__)
 
 
+# ── Host-only command prefixes ───────────────────────────────────────
+# Canonical set of slash-command prefixes that are host control directives
+# (not conversational content). Entries whose ``query`` field starts with
+# one of these (case-insensitive, after lstrip) are stripped from the
+# conversation transcript fed back to the model. The model already
+# observes their *effect* via the live capability manifest / pack lock;
+# replaying the raw ``/pack disable ...`` text as "conversation" makes the
+# model treat an operator UI gesture as dialogue (the bug surfaced in the
+# testing session_context).
+#
+# ``/deep`` is deliberately excluded: it routes to the model and the
+# query body IS the conversation. ``/quit`` is CLI-only and never appended
+# to the thread. Bare-word aliases (``help``, ``tokens``, ...) are matched
+# by the exact-match form below.
+#
+# Keep in sync with ``hosts/core/handle_message._dispatch_host_command``.
+_HOST_COMMAND_PREFIXES: tuple[str, ...] = (
+    "/help",
+    "/tokens",
+    "/settings",
+    "/consolidate",
+    "/slice",
+    "/checkpoint",
+    "/restore",
+    "/checkpoints",
+    "/pack",
+    "/debug",
+)
+_HOST_COMMAND_EXACT: frozenset[str] = frozenset(
+    {
+        "help",
+        "tokens",
+        "settings",
+        "consolidate",
+        "slice",
+        "checkpoints",
+    }
+)
+
+
+def _is_host_command_query(query: str) -> bool:
+    """Return ``True`` when ``query`` is a host-only command, not dialogue.
+
+    Used by :func:`build_recent_thread_excerpt` and the thread digest
+    compactor to strip operator UI gestures (``/pack disable github``,
+    ``/help``, ``/tokens``, ...) from the conversation transcript that
+    gets injected back into the model's context. The model observes the
+    *effect* of these commands through the live capability manifest and
+    pack lock; replaying the raw command text as "recent conversation"
+    makes the model treat a UI gesture as something the user said.
+    """
+    stripped = query.strip().lower()
+    if not stripped:
+        return False
+    if stripped in _HOST_COMMAND_EXACT:
+        return True
+    return stripped.startswith(_HOST_COMMAND_PREFIXES)
+
+
 def load_recent_thread_entries(
     *,
     thread_path: Path | None,
@@ -118,16 +177,44 @@ def build_recent_thread_excerpt(
     Returns an empty string when there are no entries. Each line shows the
     query and a preview of the response (or the query itself if the
     response is empty).
+
+    Host-only command entries (``/pack disable github``, ``/help``,
+    ``/tokens``, ...) are stripped: they are operator UI gestures, not
+    dialogue, and replaying them as "recent conversation" makes the model
+    treat a UI gesture as something the user said. The model already
+    observes their effect via the live capability manifest / pack lock.
+
+    The loader reads up to ``limit * 4`` raw entries (a bounded over-read)
+    so that after stripping host commands the excerpt can still yield up
+    to ``limit`` genuine dialogue turns in normal sessions.
     """
-    entries = load_recent_thread_entries(thread_path=thread_path, limit=limit)
+    # Bounded over-read so we can filter host commands and still fill the
+    # excerpt with real dialogue. ``* 4`` is a heuristic: most sessions are
+    # dominated by dialogue, with occasional ``/pack`` or ``/help`` runs.
+    # If a user fires many host commands in a row the excerpt may run
+    # short, which is the correct outcome (there is no fresh dialogue to
+    # surface). Capped to avoid loading a pathological thread in full.
+    raw_limit = max(limit, min(limit * 4, 200))
+    entries = load_recent_thread_entries(thread_path=thread_path, limit=raw_limit)
     if not entries:
         return ""
     lines = ["Recent thread context:"]
-    for entry in entries[-limit:]:
+    emitted = 0
+    for entry in reversed(entries):
+        if emitted >= limit:
+            break
         query = str(entry.get("query") or "").strip()
         response = str(entry.get("response_text") or "").strip()
         if not query and not response:
             continue
+        # Strip host-only commands (``/pack``, ``/help``, ``/tokens`` ...)
+        # from the conversation transcript fed back to the model.
+        if _is_host_command_query(query):
+            continue
         body = response or query
         lines.append(f"- {query or 'unknown'}: {body}")
-    return "\n".join(lines)
+        emitted += 1
+    if emitted == 0:
+        return ""
+    # Restore chronological order (oldest first) for readability.
+    return "\n".join([lines[0], *reversed(lines[1:])])
