@@ -93,7 +93,7 @@ from hosts.core.content_roots import (
     pack_is_active,
     runtime_enabled_pack_map,
     runtime_installed_pack_names,
-    runtime_pack_lock_path,
+    save_installed_packs_lock,
 )
 from hosts.core.content_roots import (
     load_installed_packs_lock as _content_roots_load_lock,
@@ -973,13 +973,12 @@ def _load_installed_packs_lock(runtime: HostRuntime) -> dict[str, Any]:
 
 
 def _write_installed_packs_lock(runtime: HostRuntime, payload: dict[str, Any]) -> None:
-    """Persist installed pack provenance metadata to disk."""
-    path = runtime_pack_lock_path(runtime.config.data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
-        encoding="utf-8",
-    )
+    """Persist installed pack provenance metadata to disk.
+
+    Delegates to :func:`hosts.core.content_roots.save_installed_packs_lock`
+    so the lock file has one writer with a consistent serialization format.
+    """
+    save_installed_packs_lock(runtime.config.data_dir, payload)
 
 
 def installed_pack_roots_by_name() -> dict[str, Path]:

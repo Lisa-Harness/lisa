@@ -43,6 +43,7 @@ from kernel.intake.contracts import (
 )
 from kernel.models import UnifiedState
 from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
+from hosts.core.content_roots import seed_bundled_packs_lock
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,10 @@ async def run_intake(*, data_dir: Path) -> UnifiedState:
     """
     logger.info("Intake tick starting")
 
+    # Seed bundled packs into the lock so disabled-pack exclusion sees the
+    # complete inventory. Intake runs as a one-shot process outside the
+    # host's setup_framework, so it must seed independently.
+    seed_bundled_packs_lock(data_dir)
     excluded_packs = load_disabled_pack_names(data_dir)
 
     # 1. Collect signals

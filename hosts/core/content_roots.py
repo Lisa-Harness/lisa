@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +139,21 @@ def runtime_pack_lock_path(data_dir: Path) -> Path:
     return data_dir / _PACK_LOCK_FILE_NAME
 
 
+def save_installed_packs_lock(data_dir: Path, payload: dict[str, Any]) -> None:
+    """Persist installed pack provenance metadata to disk.
+
+    Single writer for the lock file. Both startup seeding and the pack
+    management commands go through this helper so the serialization format
+    (indent, trailing newline, ensure_ascii) stays consistent.
+    """
+    path = runtime_pack_lock_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def load_installed_packs_lock(data_dir: Path) -> dict[str, Any]:
     """Load installed pack provenance metadata from disk."""
     path = runtime_pack_lock_path(data_dir)
@@ -190,6 +206,67 @@ def load_installed_packs_lock(data_dir: Path) -> dict[str, Any]:
         "packs": normalized_packs,
         "selected_capability_providers": selected_map,
     }
+
+
+def seed_bundled_packs_lock(data_dir: Path) -> bool:
+    """Seed the lock with all discovered bundled packs on startup.
+
+    Closes the installed-packs lifecycle hole: without this, bundled packs
+    that have never been explicitly toggled are absent from the lock, so
+    ``load_disabled_pack_names`` (fail-open) treats them as enabled while
+    ``pack_is_active`` (content roots) treats them as disabled — two
+    conflicting defaults for the same question.
+
+    Seeding runs on every startup. It is merge-safe and idempotent:
+
+    - Packs already present in the lock are never touched (their
+      ``enabled`` / ``source_kind`` / ``source_ref`` / ``updated_at``
+      survive unchanged, including explicit ``enabled: false``).
+    - Only packs discovered via ``discover_installed_content_roots()`` that
+      have no lock entry are appended, with ``enabled: true``,
+      ``source_kind: "bundled"``, ``source_ref: "bundled"``.
+    - ``selected_capability_providers`` and any runtime-installed entries
+      are preserved verbatim.
+
+    Args:
+        data_dir: Host data directory containing ``installed-packs.json``.
+
+    Returns:
+        ``True`` if the lock was written (new bundled entries were added),
+        ``False`` if no change was needed.
+    """
+    lock = load_installed_packs_lock(data_dir)
+    entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
+    known = {
+        normalize_pack_name(str(entry.get("package_name") or ""))
+        for entry in entries
+        if normalize_pack_name(str(entry.get("package_name") or ""))
+    }
+
+    added = False
+    now_iso = datetime.now(UTC).isoformat()
+    for root in discover_installed_content_roots():
+        package_name = infer_pack_package_name(root)
+        if not package_name or package_name in known:
+            continue
+        entries.append(
+            {
+                "package_name": package_name,
+                "enabled": True,
+                "source_kind": "bundled",
+                "source_ref": "bundled",
+                "updated_at": now_iso,
+            }
+        )
+        known.add(package_name)
+        added = True
+
+    if not added:
+        return False
+
+    lock["packs"] = entries
+    save_installed_packs_lock(data_dir, lock)
+    return True
 
 
 def always_on_pack_names(
@@ -376,8 +453,10 @@ __all__ = [
     "runtime_enabled_pack_map",
     "runtime_installed_pack_names",
     "runtime_pack_lock_path",
+    "save_installed_packs_lock",
     "sdk_content_roots",
     "sdk_mode_roots",
     "sdk_operation_roots",
+    "seed_bundled_packs_lock",
     "unique_paths",
 ]

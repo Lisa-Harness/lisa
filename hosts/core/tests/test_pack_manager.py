@@ -878,3 +878,168 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
     _warm, _cold = mcp_pool.compile_mcp_configs(runtime)
 
     assert runtime.memory_config_pack_slug == "learning-pack"
+
+
+# ---------------------------------------------------------------------------
+# Bundled pack lock seeding (lifecycle closure)
+# ---------------------------------------------------------------------------
+
+
+def _bundled_root(tmp_path: Path, slug: str, package_name: str) -> Path:
+    """Create a fake discovered pack root with a pyproject.toml name."""
+    root = tmp_path / slug
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                f'name = "{package_name}"',
+                'version = "0.1.0"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_seed_bundled_packs_lock_first_boot_seeds_discovered_packs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """First-boot seeding writes enabled=true bundled entries for discovered packs."""
+    cloudflare_root = _bundled_root(tmp_path, "lisa_pack_cloudflare", "lisa-pack-cloudflare")
+    github_root = _bundled_root(tmp_path, "lisa_pack_github", "lisa-pack-github")
+    monkeypatch.setattr(
+        content_roots,
+        "discover_installed_content_roots",
+        lambda: [cloudflare_root, github_root],
+    )
+
+    written = content_roots.seed_bundled_packs_lock(tmp_path)
+
+    assert written is True
+    lock = content_roots.load_installed_packs_lock(tmp_path)
+    by_name = {entry["package_name"]: entry for entry in lock["packs"]}
+    assert set(by_name) == {"lisa-pack-cloudflare", "lisa-pack-github"}
+    for entry in lock["packs"]:
+        assert entry["enabled"] is True
+        assert entry["source_kind"] == "bundled"
+        assert entry["source_ref"] == "bundled"
+        assert entry["updated_at"]
+
+
+def test_seed_bundled_packs_lock_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Second seed call does not duplicate or mutate existing entries."""
+    cloudflare_root = _bundled_root(tmp_path, "lisa_pack_cloudflare", "lisa-pack-cloudflare")
+    monkeypatch.setattr(
+        content_roots,
+        "discover_installed_content_roots",
+        lambda: [cloudflare_root],
+    )
+
+    assert content_roots.seed_bundled_packs_lock(tmp_path) is True
+    first = content_roots.load_installed_packs_lock(tmp_path)
+    first_updated_at = first["packs"][0]["updated_at"]
+
+    assert content_roots.seed_bundled_packs_lock(tmp_path) is False
+    second = content_roots.load_installed_packs_lock(tmp_path)
+
+    assert len(second["packs"]) == 1
+    assert second["packs"][0]["updated_at"] == first_updated_at
+
+
+def test_seed_bundled_packs_lock_preserves_explicit_disabled_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An explicitly disabled bundled pack stays disabled across seeding."""
+    cloudflare_root = _bundled_root(tmp_path, "lisa_pack_cloudflare", "lisa-pack-cloudflare")
+    monkeypatch.setattr(
+        content_roots,
+        "discover_installed_content_roots",
+        lambda: [cloudflare_root],
+    )
+
+    _write_lock(
+        HostRuntime(HostConfig.from_env(data_dir=str(tmp_path))),
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-pack-cloudflare",
+                    "source_kind": "bundled",
+                    "source_ref": "bundled",
+                    "enabled": False,
+                    "updated_at": "2026-07-12T00:00:00+00:00",
+                }
+            ]
+        },
+    )
+
+    written = content_roots.seed_bundled_packs_lock(tmp_path)
+
+    assert written is False
+    lock = content_roots.load_installed_packs_lock(tmp_path)
+    assert len(lock["packs"]) == 1
+    assert lock["packs"][0]["enabled"] is False
+    assert lock["packs"][0]["updated_at"] == "2026-07-12T00:00:00+00:00"
+
+
+def test_seed_bundled_packs_lock_preserves_runtime_installed_and_provider_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Seeding adds only missing bundled packs; runtime + provider state survives."""
+    github_root = _bundled_root(tmp_path, "lisa_pack_github", "lisa-pack-github")
+    monkeypatch.setattr(
+        content_roots,
+        "discover_installed_content_roots",
+        lambda: [github_root],
+    )
+
+    _write_lock(
+        HostRuntime(HostConfig.from_env(data_dir=str(tmp_path))),
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-pack-mem0",
+                    "source_kind": "package",
+                    "source_ref": "mem0==0.1.0",
+                    "enabled": True,
+                    "installed_at": "2026-07-12T00:00:00+00:00",
+                }
+            ],
+            "selected_capability_providers": {"memory": "lisa-pack-mem0"},
+        },
+    )
+
+    written = content_roots.seed_bundled_packs_lock(tmp_path)
+
+    assert written is True
+    lock = content_roots.load_installed_packs_lock(tmp_path)
+    by_name = {entry["package_name"]: entry for entry in lock["packs"]}
+    assert set(by_name) == {"lisa-pack-github", "lisa-pack-mem0"}
+    # Runtime-installed entry untouched
+    assert by_name["lisa-pack-mem0"]["source_kind"] == "package"
+    assert by_name["lisa-pack-mem0"]["source_ref"] == "mem0==0.1.0"
+    # Seeded bundled entry
+    assert by_name["lisa-pack-github"]["source_kind"] == "bundled"
+    assert by_name["lisa-pack-github"]["enabled"] is True
+    # Provider selection preserved
+    assert lock["selected_capability_providers"] == {"memory": "lisa-pack-mem0"}
+
+
+def test_seed_bundled_packs_lock_empty_discovery_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No discovered packs → no write, no lock file created."""
+    monkeypatch.setattr(content_roots, "discover_installed_content_roots", lambda: [])
+
+    written = content_roots.seed_bundled_packs_lock(tmp_path)
+
+    assert written is False
+    assert not content_roots.runtime_pack_lock_path(tmp_path).exists()
