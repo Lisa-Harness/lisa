@@ -17,6 +17,7 @@ Transport hosts construct a ``HostRuntime`` from a ``HostConfig``, call
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -131,6 +132,13 @@ class HostRuntime:
         self._mcp_warm_configs: list[Any] = []
         self._mcp_cold_configs: list[Any] = []
         self._mcp_started: bool = False
+        self._mcp_start_task: asyncio.Task[None] | None = None
+        """Background task started by start_pool_deferred(); awaited by
+        ensure_pool_ready() before any pool read. When None, the pool
+        was either started synchronously (start()) or never started."""
+        self._mcp_start_exc: BaseException | None = None
+        """Cached exception from a failed deferred start, consumed once by
+        ensure_pool_ready() so it doesn't re-raise on every subsequent call."""
 
         # ── Memory config (selected by capability provider policy) ───
         self.memory_config: Any = None
@@ -279,16 +287,67 @@ class HostRuntime:
         self._mcp_cold_configs = cold
 
     async def start(self) -> None:
-        """Start the MCP tool pool inside the host's event loop.
+        """Start the MCP tool pool synchronously inside the host's loop.
 
-        This is the async entry point that transport hosts call after
-        constructing the runtime. It creates and starts the ``MCPToolPool``
-        from the compiled warm configs. Must run in the same event loop
-        that will execute turns — anyio cancel scopes bind to the task
-        that entered them.
+        Awaits the full warm-server spawn before returning. Transport hosts
+        that need the prompt up immediately should call
+        :meth:`start_pool_deferred` instead and :meth:`ensure_pool_ready`
+        before the first turn.
         """
+        await self._start_pool_impl(deferred=False)
+
+    def start_pool_deferred(self) -> asyncio.Task[None]:
+        """Start the MCP pool as a background task; return immediately.
+
+        Schedules :meth:`_start_pool_impl` as an :class:`asyncio.Task` so
+        the host can render the prompt while warm servers spawn. Callers
+        that read :attr:`mcp_tool_pool` must ``await`` :meth:`ensure_pool_ready`
+        first. Idempotent: if a deferred start is already in flight,
+        returns the existing task.
+        """
+        if self._mcp_start_task is not None and not self._mcp_start_task.done():
+            return self._mcp_start_task
+        if self._mcp_started and self._mcp_start_task is None:
+            # Already started synchronously; return a completed no-op task.
+            loop = asyncio.get_running_loop()
+            self._mcp_start_task = loop.create_task(asyncio.sleep(0))
+            return self._mcp_start_task
+        self._mcp_start_task = asyncio.create_task(
+            self._start_pool_impl(deferred=True)
+        )
+        return self._mcp_start_task
+
+    async def ensure_pool_ready(self) -> None:
+        """Await the deferred pool start if one is in flight.
+
+        Call this before reading :attr:`mcp_tool_pool` when the host used
+        :meth:`start_pool_deferred`. If the pool was started synchronously
+        via :meth:`start`, this is a no-op. If no start was ever scheduled,
+        runs :meth:`start` inline (back-compat for hosts that never
+        deferred).
+
+        If the deferred start failed, the exception is raised once and
+        cached — subsequent calls re-raise the cached exception so the
+        caller fails loudly but doesn't re-await a completed task.
+        """
+        if self._mcp_start_exc is not None:
+            raise self._mcp_start_exc
+        if self._mcp_start_task is not None:
+            try:
+                await self._mcp_start_task
+            except BaseException as exc:
+                # Cache the exception so subsequent callers don't re-await
+                # a completed task (which would re-raise). The task object
+                # is consumed; future calls hit the cached exc path above.
+                self._mcp_start_exc = exc
+                raise
+            return
+        if not self._mcp_started:
+            await self.start()
+
+    async def _start_pool_impl(self, *, deferred: bool) -> None:
+        """Shared pool-start implementation for start() and deferred start."""
         if self._mcp_started:
-            logger.debug("HostRuntime.start: pool already started; skip")
             return
 
         if not self._mcp_warm_configs:
@@ -299,24 +358,51 @@ class HostRuntime:
         from kernel.tools.mcp_client import MCPToolPool  # noqa: PLC0415
 
         self._mcp_tool_pool = MCPToolPool(self._mcp_warm_configs)
-        await self._mcp_tool_pool.start()
+        try:
+            await self._mcp_tool_pool.start()
+        except BaseException:
+            # start() failed — the pool may have partially-started warm
+            # servers with open subprocesses. Close the pool to kill them,
+            # then re-raise so the caller knows startup failed.
+            try:
+                await self._mcp_tool_pool.aclose()
+            except Exception:  # pylint: disable=broad-except
+                logger.debug("HostRuntime: pool aclose after failed start", exc_info=True)
+            self._mcp_tool_pool = None
+            raise
         self._mcp_started = True
         logger.info(
-            "HostRuntime: MCP pool started with %d warm server(s)",
+            "HostRuntime: MCP pool started with %d warm server(s)%s",
             len(self._mcp_warm_configs),
+            " (deferred)" if deferred else "",
         )
 
     async def aclose(self) -> None:
         """Close the MCP tool pool in the same event loop that started it.
 
-        Must be called from the same event loop that called ``start()``.
-        After this, the runtime is no longer usable — construct a new one
-        for a fresh session.
+        Must be called from the same event loop that called ``start()``
+        or ``start_pool_deferred()``. If a deferred start is still in
+        flight, it is awaited first so the pool is fully constructed
+        before we close it. After this, the runtime is no longer usable
+        — construct a new one for a fresh session.
         """
+        # If a deferred start is still in flight, await it first so the
+        # pool is fully constructed before we close it. On failure, the
+        # task stored the exception; swallow it — we're tearing down.
+        if self._mcp_start_task is not None and not self._mcp_start_task.done():
+            try:
+                await self._mcp_start_task
+            except Exception:  # pylint: disable=broad-except
+                logger.debug(
+                    "HostRuntime: deferred start failed during aclose",
+                    exc_info=True,
+                )
         if self._mcp_tool_pool is not None:
             await self._mcp_tool_pool.aclose()
             self._mcp_tool_pool = None
         self._mcp_started = False
+        self._mcp_start_task = None
+        self._mcp_start_exc = None
         logger.debug("HostRuntime: MCP pool closed")
 
     # ── State snapshot ────────────────────────────────────────────────

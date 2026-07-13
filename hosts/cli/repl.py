@@ -181,9 +181,13 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
         preferred_model_id=initial_model_alias,
     )
 
-    # Start the MCP pool inside this event loop (anyio cancel-scope binding).
+    # Start the MCP pool in the background so the prompt appears immediately
+    # while warm servers spawn. The first turn (or any slash command reading
+    # the pool) awaits ensure_pool_ready() in handle_message before touching
+    # the pool. Anyio cancel-scope binding is preserved: the task runs on
+    # this event loop and is awaited on this same loop.
     try:
-        await runtime.start()
+        runtime.start_pool_deferred()
     except Exception as exc:  # pylint: disable=broad-except
         _render_runtime_error(console, exc, title="MCP Startup Error")
         return False

@@ -25,9 +25,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
 
-import httpx
 import typer
-from openai import AsyncAzureOpenAI, AsyncOpenAI
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -51,11 +49,15 @@ try:
 except ImportError:  # pragma: no cover — python-dotenv is optional
     pass
 
-from hosts.cli.repl import run_repl
 from hosts.cli.render import render_models, render_modes, render_pack_list_panel
 from hosts.core.config import HostConfig
 from hosts.core.handle_message import handle_message
-from hosts.core.mcp_pool import compile_mcp_configs, configure_runtime, setup_framework
+from hosts.core.mcp_pool import (
+    compile_mcp_configs,
+    configure_runtime,
+    discover_framework,
+    setup_framework,
+)
 from hosts.core.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
@@ -301,13 +303,13 @@ def _initialize_runtime(
         streaming=streaming,
     )
 
-    # Configure stdlib logging to the host-log path at the resolved level.
     _configure_root_logging(config)
 
     runtime = HostRuntime(config)
-    setup_framework(runtime)
+    discovery = discover_framework(runtime)
+    setup_framework(runtime, discovery=discovery)
     configure_runtime(runtime)
-    warm, cold = compile_mcp_configs(runtime)
+    warm, cold = compile_mcp_configs(runtime, discovery=discovery)
     runtime.set_mcp_configs(warm, cold)
     return runtime
 
@@ -393,6 +395,8 @@ def _run_default_no_args_mode(
     if runtime is None:
         return
     _consume_restart_resume_message(runtime)
+    from hosts.cli.repl import run_repl  # noqa: PLC0415 — deferred to keep
+    #                                   --version/modes/verify fast
     restart_requested = asyncio.run(run_repl(runtime, console=console))
     if restart_requested:
         _restart_current_process()
@@ -525,6 +529,8 @@ def _cli_command(
     if runtime is None:
         return
     _consume_restart_resume_message(runtime)
+    from hosts.cli.repl import run_repl  # noqa: PLC0415 — deferred to keep
+    #                                   --version/modes/verify fast
     restart_requested = asyncio.run(run_repl(runtime, console=console))
     if restart_requested:
         _restart_current_process()
@@ -601,6 +607,8 @@ def _verify_check_pack_catalog() -> tuple[str, str]:
 
 def _verify_check_ollama() -> tuple[str, str]:
     import os
+
+    import httpx  # noqa: PLC0415 — deferred to keep --version/modes fast
 
     configured_host = os.getenv("LISA_OLLAMA_HOST", "").strip() or os.getenv(
         "OLLAMA_HOST", ""
@@ -782,6 +790,8 @@ def _setup_write_env(env_path: Path, updates: dict[str, str]) -> None:
 
 
 async def _setup_validate_ollama() -> tuple[bool, str]:
+    import httpx  # noqa: PLC0415 — deferred to keep --version/modes fast
+
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get("http://127.0.0.1:11434/api/tags")
@@ -793,6 +803,8 @@ async def _setup_validate_ollama() -> tuple[bool, str]:
 
 
 async def _setup_validate_openai(api_key: str) -> tuple[bool, str]:
+    from openai import AsyncOpenAI  # noqa: PLC0415 — deferred to keep --version/modes fast
+
     try:
         client = AsyncOpenAI(api_key=api_key)
         await client.models.list()
@@ -802,6 +814,8 @@ async def _setup_validate_openai(api_key: str) -> tuple[bool, str]:
 
 
 async def _setup_validate_google(api_key: str) -> tuple[bool, str]:
+    from openai import AsyncOpenAI  # noqa: PLC0415 — deferred to keep --version/modes fast
+
     try:
         client = AsyncOpenAI(
             api_key=api_key,
@@ -814,6 +828,8 @@ async def _setup_validate_google(api_key: str) -> tuple[bool, str]:
 
 
 async def _setup_validate_azure(endpoint: str, api_key: str) -> tuple[bool, str]:
+    from openai import AsyncAzureOpenAI  # noqa: PLC0415 — deferred to keep --version/modes fast
+
     try:
         client = AsyncAzureOpenAI(
             api_version="2024-10-21",
@@ -827,6 +843,8 @@ async def _setup_validate_azure(endpoint: str, api_key: str) -> tuple[bool, str]
 
 
 async def _setup_validate_anthropic(api_key: str) -> tuple[bool, str]:
+    import httpx  # noqa: PLC0415 — deferred to keep --version/modes fast
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(

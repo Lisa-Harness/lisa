@@ -52,7 +52,12 @@ from typing import Any
 
 from hosts.core.config import HostConfig
 from hosts.core.handle_message import handle_message
-from hosts.core.mcp_pool import compile_mcp_configs, configure_runtime, setup_framework
+from hosts.core.mcp_pool import (
+    compile_mcp_configs,
+    configure_runtime,
+    discover_framework,
+    setup_framework,
+)
 from hosts.core.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
@@ -129,9 +134,10 @@ def _initialize_runtime(data_dir: str) -> HostRuntime:
     )
     _configure_logging(config)
     runtime = HostRuntime(config)
-    setup_framework(runtime)
+    discovery = discover_framework(runtime)
+    setup_framework(runtime, discovery=discovery)
     configure_runtime(runtime)
-    warm, cold = compile_mcp_configs(runtime)
+    warm, cold = compile_mcp_configs(runtime, discovery=discovery)
     runtime.set_mcp_configs(warm, cold)
     return runtime
 

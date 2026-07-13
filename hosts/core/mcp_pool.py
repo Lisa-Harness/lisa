@@ -67,6 +67,74 @@ _LISA_DISABLED_PACKS_ENV = "LISA_DISABLED_PACKS"
 FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
 
 
+# ── Shared discovery cache ─────────────────────────────────────────
+
+
+@dataclasses.dataclass(slots=True)
+class _FrameworkDiscovery:
+    """Shared discovery result for setup_framework + compile_mcp_configs.
+
+    Both functions need the same sdk_content_roots walk, disabled-pack
+    set, and installed-packs lock. Computing it once in
+    :func:`discover_framework` and passing it to both avoids a redundant
+    filesystem walk + lock read on every startup.
+    """
+
+    roots: list[Path]
+    disabled_packs: set[str]
+    lock: dict[str, Any]
+    host_manifest_path: Path
+
+
+def discover_framework(
+    runtime: HostRuntime,
+    *,
+    seed_lock: bool = True,
+) -> _FrameworkDiscovery:
+    """Compute the shared discovery data once for a runtime.
+
+    Call this in the host's ``_initialize_runtime`` after constructing the
+    runtime, then pass the result to :func:`setup_framework` and
+    :func:`compile_mcp_configs` via their optional ``discovery`` parameter.
+    When the caller does not pass ``discovery``, each function falls back
+    to calling this internally (preserving standalone-test back-compat).
+
+    When ``seed_lock`` is True (default), the installed-packs lock is
+    seeded with any discovered bundled packs before reading. This matches
+    the original :func:`setup_framework` behavior. Callers that must not
+    seed (e.g. :func:`compile_mcp_configs` falling back standalone)
+    pass ``seed_lock=False``.
+    """
+    config = runtime.config
+    manifest_path = _resolve_host_manifest_path(config)
+    # Seed before reading the lock so discovery sees a consistent state.
+    # This closes the lifecycle hole where an unlisted bundled pack was
+    # treated as enabled by intake/evidence (fail-open) but disabled by
+    # content roots (default-off). compile_mcp_configs skips seeding to
+    # preserve its original standalone behavior (no side effects).
+    if seed_lock:
+        seed_bundled_packs_lock(runtime.data_dir)
+    roots = sdk_content_roots(
+        runtime.data_dir,
+        host_manifest_path=manifest_path,
+        always_on_packs=config.always_on_packs,
+    )
+    disabled_packs = load_disabled_pack_names(runtime.data_dir)
+    # Merge session-context front-matter packs.<name>.enabled: false.
+    session_controls = config.session_controls
+    if session_controls is not None:
+        for pack_name, prefs in session_controls.packs.preferences.items():
+            if isinstance(prefs, dict) and prefs.get("enabled") is False:
+                disabled_packs.add(normalize_pack_name(pack_name))
+    lock = load_installed_packs_lock(runtime.data_dir)
+    return _FrameworkDiscovery(
+        roots=roots,
+        disabled_packs=disabled_packs,
+        lock=lock,
+        host_manifest_path=manifest_path,
+    )
+
+
 # ── Content / catalog server configs ─────────────────────────────────
 
 
@@ -157,7 +225,11 @@ def build_catalog_mcp_config(*, content_config: MCPClientConfig, data_dir: Path)
 # ── Framework wiring ─────────────────────────────────────────────────
 
 
-def setup_framework(runtime: HostRuntime) -> None:
+def setup_framework(
+    runtime: HostRuntime,
+    *,
+    discovery: _FrameworkDiscovery | None = None,
+) -> None:
     """Wire the lisa-content and lisa-catalog MCP servers onto the runtime.
 
     File-reading (``read_authored_text``) goes through ``lisa-content``.
@@ -169,31 +241,22 @@ def setup_framework(runtime: HostRuntime) -> None:
     content MCP. ``validate_workflow_catalog`` calls
     ``_validate_mode_operation_bindings`` which needs the operation
     callbacks registered before it can validate.
+
+    When ``discovery`` is provided (computed once by
+    :func:`discover_framework`), the shared roots / disabled-packs / lock
+    are reused instead of recomputed. When ``None``, this function calls
+    :func:`discover_framework` internally (back-compat for standalone
+    callers like tests).
     """
     config = runtime.config
     data_dir = runtime.data_dir
 
-    # Seed the installed-packs lock with any discovered bundled packs that
-    # have no lock entry yet. This closes the lifecycle hole where an
-    # unlisted bundled pack was treated as enabled by intake/evidence
-    # (fail-open) but disabled by content roots (default-off). Seeding
-    # runs before any activation read below so all consumers see one
-    # consistent source of truth.
-    seed_bundled_packs_lock(data_dir)
+    if discovery is None:
+        discovery = discover_framework(runtime, seed_lock=True)
+    roots = discovery.roots
+    disabled_packs = discovery.disabled_packs
+    manifest_path = discovery.host_manifest_path
 
-    manifest_path = _resolve_host_manifest_path(config)
-    roots = sdk_content_roots(
-        data_dir,
-        host_manifest_path=manifest_path,
-        always_on_packs=config.always_on_packs,
-    )
-    disabled_packs = load_disabled_pack_names(data_dir)
-    # Merge session-context front-matter packs.<name>.enabled: false.
-    session_controls = config.session_controls
-    if session_controls is not None:
-        for pack_name, prefs in session_controls.packs.preferences.items():
-            if isinstance(prefs, dict) and prefs.get("enabled") is False:
-                disabled_packs.add(normalize_pack_name(pack_name))
     content_config = build_content_mcp_config(
         data_dir=data_dir,
         content_roots=roots,
@@ -229,7 +292,7 @@ def setup_framework(runtime: HostRuntime) -> None:
     )
 
     set_production_extension_evidence_builder(
-        excluded_packs=load_disabled_pack_names(data_dir),
+        excluded_packs=disabled_packs,
     )
 
 
@@ -275,7 +338,11 @@ def build_mcp_tool_servers(runtime: HostRuntime) -> list[Any]:
     return [*warm_configs, *cold_configs]
 
 
-def compile_mcp_configs(runtime: HostRuntime) -> tuple[list[Any], list[Any]]:
+def compile_mcp_configs(
+    runtime: HostRuntime,
+    *,
+    discovery: _FrameworkDiscovery | None = None,
+) -> tuple[list[Any], list[Any]]:
     """Compile all MCP servers from mcp_servers.yaml and split into (warm, cold).
 
     All servers (first-party and external) are declared in
@@ -289,13 +356,22 @@ def compile_mcp_configs(runtime: HostRuntime) -> tuple[list[Any], list[Any]]:
     The manifest's memory-backend designation (which server_id backs the
     generic ``memory.*`` aliases) is stashed on the runtime for
     ``_build_turn_hooks`` to consume.
+
+    When ``discovery`` is provided (computed once by
+    :func:`discover_framework`), the shared roots / lock / manifest path
+    are reused instead of recomputed. When ``None``, this function calls
+    :func:`discover_framework` internally (back-compat for standalone
+    callers like tests).
     """
     config = runtime.config
     data_dir = str(runtime.data_dir)
     workspace_root = str(FRAMEWORK_ROOT)
-    host_manifest_path = _resolve_host_manifest_path(config)
+    if discovery is None:
+        discovery = discover_framework(runtime, seed_lock=False)
+    host_manifest_path = discovery.host_manifest_path
+    roots = discovery.roots
+    lock = discovery.lock
     capability_preferences = load_capability_provider_preferences(host_manifest_path)
-    lock = load_installed_packs_lock(runtime.data_dir)
     runtime_installed_packages = runtime_installed_pack_names(lock)
     selected_capability_providers_raw = lock.get("selected_capability_providers")
     selected_capability_providers = (
@@ -360,11 +436,6 @@ def compile_mcp_configs(runtime: HostRuntime) -> tuple[list[Any], list[Any]]:
     used_pack_slugs: set[str] = set()
     memory_owner_slug: str | None = None
     memory_candidates: list[dict[str, Any]] = []
-    roots = sdk_content_roots(
-        runtime.data_dir,
-        host_manifest_path=host_manifest_path,
-        always_on_packs=config.always_on_packs,
-    )
     for root in roots:
         pack_manifest_path = root / "mcp_servers.yaml"
         if not pack_manifest_path.exists():

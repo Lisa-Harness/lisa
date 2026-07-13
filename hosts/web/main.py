@@ -22,7 +22,12 @@ from typing import Annotated, Any
 import typer
 
 from hosts.core.config import HostConfig
-from hosts.core.mcp_pool import compile_mcp_configs, configure_runtime, setup_framework
+from hosts.core.mcp_pool import (
+    compile_mcp_configs,
+    configure_runtime,
+    discover_framework,
+    setup_framework,
+)
 from hosts.core.runtime import HostRuntime
 from hosts.web.server import (
     DEFAULT_WEB_HOST,
@@ -184,9 +189,10 @@ def _initialize_runtime(
     _configure_root_logging(config)
 
     runtime = HostRuntime(config)
-    setup_framework(runtime)
+    discovery = discover_framework(runtime)
+    setup_framework(runtime, discovery=discovery)
     configure_runtime(runtime)
-    warm, cold = compile_mcp_configs(runtime)
+    warm, cold = compile_mcp_configs(runtime, discovery=discovery)
     runtime.set_mcp_configs(warm, cold)
     return runtime
 
