@@ -153,13 +153,13 @@ def frontdoor_mode_ids(
     catalog: _WorkflowCatalog,
     mode_supported: _ModeSupported | None = None,
 ) -> list[str]:
-    """Return front-door-routable chat and action modes in priority order."""
+    """Return front-door-routable modes in priority order."""
 
     ordered_modes = sorted(
         (
             (mode_id, mode_cfg)
             for mode_id, mode_cfg in catalog.items()
-            if getattr(mode_cfg, "mode_kind", "") in {"chat", "action"}
+            if getattr(mode_cfg, "mode_kind", "") in {"workflow", "chat", "action"}
             and bool(getattr(mode_cfg, "frontdoor_routable", False))
             and (mode_supported is None or mode_supported(mode_id, mode_cfg))
         ),

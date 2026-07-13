@@ -1242,6 +1242,11 @@ class WorkflowModeConfig(BaseModel):
     workshop_rendering: WorkshopRenderConfig = Field(default_factory=WorkshopRenderConfig)
     # Natural-language intent bridges: declarative routing from default chat to modes (SDK-owned).
     default_intent_bridges: list[DefaultIntentBridge] = Field(default_factory=list)
+    # Opaque extension front matter the kernel does not interpret. Carries
+    # app/pack-owned keys (e.g. ``lenses``) from ``_mode.md`` and ``_overrides.yaml``
+    # so the kernel never has to name or allowlist app-owned concepts. Hosts and
+    # packs read this dict directly; the kernel only persists and passes it through.
+    extra_front_matter: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowSessionState(BaseModel):

@@ -26,11 +26,13 @@ Called by: host apps (session management, stage transitions, context injection)
 from __future__ import annotations
 
 import logging
+import re
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, Literal, cast
 
 import yaml
 
@@ -38,6 +40,8 @@ from kernel.config import settings
 from kernel.intake.connector_discovery import discover_installed_signal_collectors
 from kernel.models import (
     CallLedger,
+    DefaultIntentBridge,
+    ModeKind,
     OperationExecutionContext,
     OperationResult,
     ToolExecutionContext,
@@ -48,6 +52,8 @@ from kernel.models import (
     WorkflowStageConfig,
     WorkflowTransitionRequest,
     WorkshopBudgetConfig,
+    WorkshopPanelModeConfig,
+    WorkshopRenderConfig,
 )
 from kernel.openai_function_tools import build_strict_openai_function_tool
 from kernel.tools.mcp_client import MCPClientConfig
@@ -62,6 +68,13 @@ _EXIT_STAGE_ID = "exit"
 
 # Front-matter delimiter used in instruction markdown files.
 _FRONT_MATTER_DELIMITER = "---"
+
+# Baseline instructions root for ``load_catalog_from_disk()``. Injected by the
+# host at startup via ``register_instructions_root()``; when ``None`` the disk
+# loader requires an explicit ``instructions_dir`` argument (the MCP catalog
+# path, used at runtime, is unaffected). Mirrors the ``_content_mcp_config``
+# injection contract: the kernel stays decoupled from any fixed filesystem path.
+_INSTRUCTIONS_ROOT: Path | None = None
 
 # Callbacks injected by the host app layer so the kernel stays decoupled
 # from the concrete operation registry module. Set at startup via
@@ -115,6 +128,18 @@ def register_content_mcp(config: MCPClientConfig) -> None:
     """
     global _content_mcp_config  # noqa: PLW0603
     _content_mcp_config = config
+
+
+def register_instructions_root(root: Path | None) -> None:
+    """Inject the baseline instructions root for ``load_catalog_from_disk()``.
+
+    Optional: only needed when the disk loader is invoked without an explicit
+    ``instructions_dir`` (e.g. from a host that wants the kernel's own baseline
+    scan root). Test code always passes ``instructions_dir`` explicitly, so it
+    does not depend on this registration.
+    """
+    global _INSTRUCTIONS_ROOT  # noqa: PLW0603
+    _INSTRUCTIONS_ROOT = root
 
 
 def _known_connector_ids() -> frozenset[str]:
@@ -249,8 +274,717 @@ def parse_front_matter(text: str) -> tuple[dict[str, Any], str]:
 
 
 # ---------------------------------------------------------------------------
-# Front-matter parsing (pure string function, no filesystem access)
+# Mode-level front-matter overrides (_overrides.yaml)
 # ---------------------------------------------------------------------------
+
+
+_MODE_OVERRIDES_FILENAME = "_overrides.yaml"
+# Kernel-owned front-matter keys that overrides may NOT touch. This is a
+# denylist, not an allowlist: the kernel names only the keys it owns and
+# protects (routing, FSM, operation bindings), and passes every other key
+# through opaquely as extension data. App-owned concepts like ``lenses`` are
+# never named here — they flow through ``extra_front_matter`` untouched.
+_MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
+    {
+        "mode_id",
+        "start_stage_id",
+        "mode_kind",
+        "command_pattern",
+        "require_query",
+        "entry_operation_ids",
+        "pre_turn_operation_ids",
+        "post_turn_operation_ids",
+        "allowed_operation_ids",
+        "frontdoor_routable",
+        "frontdoor_priority",
+        "frontdoor_fast_path_patterns",
+        "workshop_panels",
+        "workshop_budget",
+        "workshop_planner_prompt_file",
+        "workshop_synthesis_prompt_file",
+        "workshop_rendering",
+        "default_intent_bridges",
+        "artifact_type",
+    }
+)
+# Every front-matter key the loader reads into a typed WorkflowModeConfig field.
+# Used to compute ``extra_front_matter`` (the opaque remainder) so the kernel
+# never has to name app-owned keys. Kept in sync with the field reads in
+# load_catalog_from_disk(); ``description`` is included because it is read
+# into ``mode_description`` even though overrides may freely replace it.
+_KERNEL_OWNED_FRONT_MATTER_KEYS: frozenset[str] = _MODE_OVERRIDES_PROTECTED_KEYS | frozenset(
+    {
+        "description",
+        "default_model",
+        "frontdoor_route_hints",
+        "frontdoor_examples",
+    }
+)
+
+
+def _deep_merge_overrides(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    """Deep-merge ``overrides`` on top of ``base`` for list/dict values.
+
+    - Dict values are merged recursively.
+    - List values from overrides replace list values from base (no concatenation);
+      this keeps extension sets deterministic and avoids duplicate-accumulation bugs.
+    - Scalar values from overrides replace scalars from base.
+    """
+    merged = dict(base)
+    for key, override_value in overrides.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(override_value, dict)
+        ):
+            merged[key] = _deep_merge_overrides(merged[key], override_value)
+        else:
+            merged[key] = override_value
+    return merged
+
+
+def _apply_mode_overrides(
+    mode_dir: Path,
+    base_front_matter: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply an optional sibling ``_overrides.yaml`` to mode front matter.
+
+    The overrides file is a YAML mapping deep-merged on top of the ``_mode.md``
+    front matter. The kernel protects its own owned keys (routing, FSM,
+    operation bindings) via ``_MODE_OVERRIDES_PROTECTED_KEYS`` — attempting to
+    override any of them is a startup ``WorkflowValidationError``. Every other
+    key is app/pack-owned extension data and passes through untouched; the
+    kernel does not name, interpret, or allowlist those keys.
+
+    Args:
+        mode_dir: Directory containing ``_mode.md`` and the optional overrides file.
+        base_front_matter: Parsed front matter from ``_mode.md``.
+
+    Returns:
+        A new front-matter dict with overrides deep-merged on top. If no
+        overrides file exists, ``base_front_matter`` is returned unchanged.
+    """
+    overrides_path = mode_dir / _MODE_OVERRIDES_FILENAME
+    if not overrides_path.exists():
+        return base_front_matter
+
+    try:
+        raw = overrides_path.read_text(encoding="utf-8")
+        overrides = yaml.safe_load(raw) or {}
+    except yaml.YAMLError as exc:
+        raise WorkflowValidationError(
+            f"Invalid YAML in overrides file '{overrides_path}': {exc}"
+        ) from exc
+
+    if not isinstance(overrides, dict):
+        raise WorkflowValidationError(
+            f"Overrides file '{overrides_path}' must be a YAML mapping, "
+            f"got {type(overrides).__name__}."
+        )
+
+    protected = sorted(set(overrides) & _MODE_OVERRIDES_PROTECTED_KEYS)
+    if protected:
+        raise WorkflowValidationError(
+            f"Overrides file '{overrides_path}' cannot override kernel-owned keys: "
+            f"{protected}."
+        )
+
+    return _deep_merge_overrides(base_front_matter, overrides)
+
+
+# ---------------------------------------------------------------------------
+# Disk-scanning catalog loader
+# ---------------------------------------------------------------------------
+
+
+def load_catalog_from_disk(
+    instructions_dir: Path | None = None,
+) -> dict[str, WorkflowModeConfig]:
+    """Discover and load all workflow modes from the instructions directory.
+
+    Scans `instructions_dir` (default: injected baseline mode root) for subdirectories.
+    Each subdirectory becomes one workflow mode.  The discovery contract is:
+
+    {mode_name}/_mode.md       — required; front-matter must include:
+                        mode_id, start_stage_id.  It may also
+                        declare mode_kind, command_pattern,
+                        require_query, and operation bindings.
+      {mode_name}/{stage_id}.md  — one file per stage; front-matter must include:
+                                    stage_id, terminal, allowed_next_stages,
+                                    allow_user_questions, required_connectors.
+
+    Stage files whose name starts with `_` are skipped (reserved for mode-level
+    config files like `_mode.md`).
+
+    The body text below each stage's front-matter delimiter is stored in
+    WorkflowStageConfig.instruction_body so runtime prompt injection never
+    needs a disk read after startup.
+
+    Args:
+        instructions_dir: Override the default scan root.  Useful in tests.
+
+    Returns:
+        Dict mapping mode_id -> WorkflowModeConfig, not yet validated.
+        Call validate_workflow_catalog() on the result before use.
+
+    Raises:
+        WorkflowValidationError: If a required front-matter field is missing
+            or if the YAML is malformed.
+    """
+    root = instructions_dir or _INSTRUCTIONS_ROOT
+    if root is None:
+        raise RuntimeError(
+            "Instructions root not configured. Pass instructions_dir explicitly "
+            "or call register_instructions_root() at startup before using "
+            "load_catalog_from_disk()."
+        )
+    catalog: dict[str, WorkflowModeConfig] = {}
+
+    for mode_dir in sorted(root.iterdir()):
+        if not mode_dir.is_dir():
+            continue
+
+        mode_config_path = mode_dir / "_mode.md"
+        if not mode_config_path.exists():
+            logger.warning("Skipping instructions folder '%s': missing _mode.md", mode_dir.name)
+            continue
+
+        mode_front_matter, mode_body = parse_front_matter(
+            mode_config_path.read_text(encoding="utf-8")
+        )
+        # Apply host/pack-authored front-matter overrides from a sibling
+        # ``_overrides.yaml`` file so apps can manage extension front matter
+        # (e.g. lens specs) without editing pack-owned ``_mode.md`` files.
+        # Overrides are deep-merged on top of the authored front matter; the
+        # override file is optional and may be absent. The kernel protects its
+        # own owned keys and passes everything else through opaquely.
+        mode_front_matter = _apply_mode_overrides(mode_dir, mode_front_matter)
+
+        mode_id = _require_str_field(mode_front_matter, "mode_id", mode_config_path)
+        start_stage_id = _require_str_field(mode_front_matter, "start_stage_id", mode_config_path)
+        mode_kind = cast(
+            ModeKind,
+            _require_str_field(mode_front_matter, "mode_kind", mode_config_path),
+        )
+        mode_description = _require_str_field(mode_front_matter, "description", mode_config_path)
+        # command_pattern can be empty for fallback chat modes (e.g. default),
+        # but the key must exist in front-matter for explicitness.
+        raw_pattern = _require_field(mode_front_matter, "command_pattern", mode_config_path)
+        command_pattern = str(raw_pattern)
+        require_query = bool(mode_front_matter.get("require_query", False))
+        mode_default_model = str(mode_front_matter.get("default_model", "") or "") or None
+        workshop_planner_prompt_file = _resolve_mode_relative_file(
+            mode_dir=mode_dir,
+            authored_path=str(mode_front_matter.get("workshop_planner_prompt_file", "") or ""),
+            mode_config_path=mode_config_path,
+            location="workshop_planner_prompt_file",
+        )
+        workshop_synthesis_prompt_file = _resolve_mode_relative_file(
+            mode_dir=mode_dir,
+            authored_path=str(mode_front_matter.get("workshop_synthesis_prompt_file", "") or ""),
+            mode_config_path=mode_config_path,
+            location="workshop_synthesis_prompt_file",
+        )
+        workshop_rendering = _parse_workshop_rendering(mode_front_matter, mode_config_path)
+
+        stages: dict[str, WorkflowStageConfig] = {}
+
+        for stage_path in sorted(mode_dir.glob("*.md")):
+            # Skip reserved files (e.g. _mode.md).
+            if stage_path.name.startswith("_"):
+                continue
+
+            stage_front_matter, stage_body = parse_front_matter(
+                stage_path.read_text(encoding="utf-8")
+            )
+
+            # Non-workflow modes may carry additional authored markdown assets
+            # (for example workshop planner/synthesis prompt blocks) that are
+            # not workflow stage definitions.
+            if "stage_id" not in stage_front_matter:
+                if mode_kind in {"chat", "action"}:
+                    continue
+                raise WorkflowValidationError(
+                    f"Front-matter in '{stage_path}' is missing required field 'stage_id'."
+                )
+
+            stage_id = _require_str_field(stage_front_matter, "stage_id", stage_path)
+            terminal = _require_bool_field(stage_front_matter, "terminal", stage_path)
+            allowed_next_stages = _require_list_field(
+                stage_front_matter,
+                "allowed_next_stages",
+                stage_path,
+            )
+            allow_user_questions = _require_bool_field(
+                stage_front_matter,
+                "allow_user_questions",
+                stage_path,
+            )
+            required_connectors = _require_list_field(
+                stage_front_matter,
+                "required_connectors",
+                stage_path,
+            )
+            stage_description = _require_str_field(stage_front_matter, "description", stage_path)
+            stage_default_model = str(stage_front_matter.get("default_model", "") or "") or None
+
+            stages[stage_id] = WorkflowStageConfig(
+                stage_id=stage_id,
+                instruction_markdown_path=str(stage_path),
+                instruction_body=stage_body,
+                description=stage_description,
+                default_model=stage_default_model,
+                required_connectors=required_connectors,
+                allowed_next_stages=allowed_next_stages,
+                allow_user_questions=allow_user_questions,
+                terminal=terminal,
+            )
+
+        entry_operation_ids = [
+            str(operation_id)
+            for operation_id in (mode_front_matter.get("entry_operation_ids") or [])
+        ]
+        pre_turn_operation_ids = [
+            str(operation_id)
+            for operation_id in (mode_front_matter.get("pre_turn_operation_ids") or [])
+        ]
+        post_turn_operation_ids = [
+            str(operation_id)
+            for operation_id in (mode_front_matter.get("post_turn_operation_ids") or [])
+        ]
+        allowed_operation_ids = [
+            str(operation_id)
+            for operation_id in (mode_front_matter.get("allowed_operation_ids") or [])
+        ]
+        frontdoor_routable = mode_front_matter.get("frontdoor_routable", False)
+        if not isinstance(frontdoor_routable, bool):
+            raise WorkflowValidationError(
+                f"frontdoor_routable must be a boolean in {mode_config_path}"
+            )
+        frontdoor_priority = mode_front_matter.get("frontdoor_priority", 0)
+        if isinstance(frontdoor_priority, bool) or not isinstance(frontdoor_priority, int):
+            raise WorkflowValidationError(
+                f"frontdoor_priority must be an integer in {mode_config_path}"
+            )
+        frontdoor_fast_path_patterns_raw = mode_front_matter.get("frontdoor_fast_path_patterns")
+        if frontdoor_fast_path_patterns_raw is None:
+            frontdoor_fast_path_patterns_raw = []
+        if not isinstance(frontdoor_fast_path_patterns_raw, list):
+            raise WorkflowValidationError(
+                f"frontdoor_fast_path_patterns must be a list in {mode_config_path}"
+            )
+        frontdoor_fast_path_patterns: list[str] = []
+        for idx, raw_pattern in enumerate(frontdoor_fast_path_patterns_raw):
+            if not isinstance(raw_pattern, str):
+                raise WorkflowValidationError(
+                    "frontdoor_fast_path_patterns"
+                    f"[{idx}] must be a string in {mode_config_path}"
+                )
+            pattern = raw_pattern.strip()
+            if not pattern:
+                raise WorkflowValidationError(
+                    "frontdoor_fast_path_patterns"
+                    f"[{idx}] cannot be empty in {mode_config_path}"
+                )
+            try:
+                re.compile(pattern, re.IGNORECASE)
+            except re.error as exc:
+                raise WorkflowValidationError(
+                    "frontdoor_fast_path_patterns"
+                    f"[{idx}] is not a valid regex in {mode_config_path}: {exc}"
+                ) from exc
+            frontdoor_fast_path_patterns.append(pattern)
+
+        frontdoor_route_hints_raw = mode_front_matter.get("frontdoor_route_hints")
+        if frontdoor_route_hints_raw is None:
+            frontdoor_route_hints_raw = []
+        if not isinstance(frontdoor_route_hints_raw, list):
+            raise WorkflowValidationError(
+                f"frontdoor_route_hints must be a list in {mode_config_path}"
+            )
+        frontdoor_route_hints: list[str] = []
+        for idx, raw_hint in enumerate(frontdoor_route_hints_raw):
+            if not isinstance(raw_hint, str):
+                raise WorkflowValidationError(
+                    f"frontdoor_route_hints[{idx}] must be a string in {mode_config_path}"
+                )
+            hint = raw_hint.strip()
+            if not hint:
+                raise WorkflowValidationError(
+                    f"frontdoor_route_hints[{idx}] cannot be empty in {mode_config_path}"
+                )
+            frontdoor_route_hints.append(hint)
+
+        frontdoor_examples_raw = mode_front_matter.get("frontdoor_examples")
+        if frontdoor_examples_raw is None:
+            frontdoor_examples_raw = []
+        if not isinstance(frontdoor_examples_raw, list):
+            raise WorkflowValidationError(
+                f"frontdoor_examples must be a list in {mode_config_path}"
+            )
+        frontdoor_examples: list[str] = []
+        for idx, raw_example in enumerate(frontdoor_examples_raw):
+            if not isinstance(raw_example, str):
+                raise WorkflowValidationError(
+                    f"frontdoor_examples[{idx}] must be a string in {mode_config_path}"
+                )
+            example = raw_example.strip()
+            if not example:
+                raise WorkflowValidationError(
+                    f"frontdoor_examples[{idx}] cannot be empty in {mode_config_path}"
+                )
+            frontdoor_examples.append(example)
+
+        workshop_budget = _parse_workshop_budget(mode_front_matter, mode_config_path)
+        workshop_panels: list[WorkshopPanelModeConfig] = []
+        workshop_panels_raw = mode_front_matter.get("workshop_panels") or []
+        if not isinstance(workshop_panels_raw, list):
+            raise WorkflowValidationError(
+                "workshop_panels must be a list, got "
+                f"{type(workshop_panels_raw).__name__} in {mode_config_path}"
+            )
+        for idx, panel_config in enumerate(workshop_panels_raw):
+            if not isinstance(panel_config, dict):
+                raise WorkflowValidationError(
+                    f"workshop_panels[{idx}] must be a dict, got "
+                    f"{type(panel_config).__name__} in {mode_config_path}"
+                )
+            mode_id_value = _require_str_field(
+                panel_config,
+                "mode_id",
+                mode_config_path,
+                location=f"workshop_panels[{idx}]",
+            )
+            panel_id_value = str(panel_config.get("panel_id", "") or "").strip()
+            title_value = str(panel_config.get("title", "") or "").strip()
+            model_alias_value = str(panel_config.get("model_alias", "") or "").strip()
+            query_prefix_value = str(panel_config.get("query_prefix", "") or "").strip()
+            query_prompt_file_value = _resolve_mode_relative_file(
+                mode_dir=mode_dir,
+                authored_path=str(panel_config.get("query_prompt_file", "") or ""),
+                mode_config_path=mode_config_path,
+                location=f"workshop_panels[{idx}].query_prompt_file",
+            )
+            workshop_panels.append(
+                WorkshopPanelModeConfig(
+                    panel_id=panel_id_value,
+                    title=title_value,
+                    mode_id=mode_id_value,
+                    model_alias=model_alias_value,
+                    query_prefix=query_prefix_value,
+                    query_prompt_file=query_prompt_file_value,
+                )
+            )
+
+        # Parse default_intent_bridges: list of bridge configs from mode front-matter.
+        default_intent_bridges = []
+        bridges_raw = mode_front_matter.get("default_intent_bridges") or []
+        if not isinstance(bridges_raw, list):
+            raise WorkflowValidationError(
+                "default_intent_bridges must be a list, got "
+                f"{type(bridges_raw).__name__} in {mode_config_path}"
+            )
+        for idx, bridge_config in enumerate(bridges_raw):
+            if not isinstance(bridge_config, dict):
+                raise WorkflowValidationError(
+                    f"default_intent_bridges[{idx}] must be a dict, got "
+                    f"{type(bridge_config).__name__} in {mode_config_path}"
+                )
+            target_mode_id = _require_str_field(
+                bridge_config,
+                "target_mode_id",
+                mode_config_path,
+                location=f"default_intent_bridges[{idx}]",
+            )
+            matcher_patterns = _require_list_field(
+                bridge_config,
+                "matcher_patterns",
+                mode_config_path,
+                location=f"default_intent_bridges[{idx}]",
+            )
+            matcher_patterns = [str(p) for p in matcher_patterns]
+            query_extraction_strategy = str(
+                bridge_config.get("query_extraction_strategy", "passthrough")
+            )
+            prerequisites = [str(p) for p in (bridge_config.get("prerequisites") or [])]
+            recent_handoff_source_modes = [
+                str(source_mode)
+                for source_mode in (bridge_config.get("recent_handoff_source_modes") or [])
+            ]
+            recent_handoff_required_artifact_keys = [
+                str(artifact_key)
+                for artifact_key in (
+                    bridge_config.get("recent_handoff_required_artifact_keys") or []
+                )
+            ]
+            recent_handoff_context_key = str(
+                bridge_config.get("recent_handoff_context_key", "") or ""
+            )
+            response_appendix = str(bridge_config.get("response_appendix", ""))
+
+            default_intent_bridges.append(
+                DefaultIntentBridge(
+                    target_mode_id=target_mode_id,
+                    matcher_patterns=matcher_patterns,
+                    query_extraction_strategy=query_extraction_strategy,
+                    prerequisites=prerequisites,
+                    recent_handoff_source_modes=recent_handoff_source_modes,
+                    recent_handoff_required_artifact_keys=recent_handoff_required_artifact_keys,
+                    recent_handoff_context_key=recent_handoff_context_key,
+                    response_appendix=response_appendix,
+                )
+            )
+
+        # Collect app/pack-owned extension keys the kernel does not interpret.
+        # Everything in the (possibly overridden) front matter that is not a
+        # kernel-owned field flows through opaquely as ``extra_front_matter``.
+        # This keeps the boundary honest: the kernel names only what it owns and
+        # never has to allowlist or curate app-owned concepts like ``lenses``.
+        extra_front_matter = {
+            key: value
+            for key, value in mode_front_matter.items()
+            if key not in _KERNEL_OWNED_FRONT_MATTER_KEYS
+        }
+
+        catalog[mode_id] = WorkflowModeConfig(
+            mode_id=mode_id,
+            start_stage_id=start_stage_id,
+            stages=stages,
+            mode_kind=mode_kind,
+            artifact_type=str(mode_front_matter.get("artifact_type", "workflow_summary")),
+            description=mode_description,
+            instruction_body=mode_body.strip(),
+            mode_markdown_path=str(mode_config_path),
+            default_model=mode_default_model,
+            frontdoor_routable=frontdoor_routable,
+            frontdoor_priority=frontdoor_priority,
+            frontdoor_fast_path_patterns=frontdoor_fast_path_patterns,
+            frontdoor_route_hints=frontdoor_route_hints,
+            frontdoor_examples=frontdoor_examples,
+            command_pattern=command_pattern,
+            require_query=require_query,
+            entry_operation_ids=entry_operation_ids,
+            pre_turn_operation_ids=pre_turn_operation_ids,
+            post_turn_operation_ids=post_turn_operation_ids,
+            allowed_operation_ids=allowed_operation_ids,
+            workshop_panels=workshop_panels,
+            workshop_budget=workshop_budget,
+            workshop_planner_prompt_file=workshop_planner_prompt_file,
+            workshop_synthesis_prompt_file=workshop_synthesis_prompt_file,
+            workshop_rendering=workshop_rendering,
+            default_intent_bridges=default_intent_bridges,
+            extra_front_matter=extra_front_matter,
+        )
+
+    return catalog
+
+
+def _require_str_field(data: dict[str, Any], field: str, source: Path, location: str = "") -> str:
+    """Extract a required string field from a front-matter dict.
+
+    Args:
+        data: Parsed front-matter dictionary.
+        field: Field name that must be present and non-empty.
+        source: File path, used only in the error message for debugging.
+        location: Optional nested location (e.g. "default_intent_bridges[0]") for context.
+
+    Returns:
+        The string value for the given field.
+
+    Raises:
+        WorkflowValidationError: If the field is missing or empty.
+    """
+    value = data.get(field)
+    if not value:
+        loc_str = f" at {location}" if location else ""
+        raise WorkflowValidationError(
+            f"Front-matter in '{source}'{loc_str} is missing required field '{field}'."
+        )
+    return str(value)
+
+
+def _resolve_mode_relative_file(
+    *,
+    mode_dir: Path,
+    authored_path: str,
+    mode_config_path: Path,
+    location: str,
+) -> str:
+    """Validate a mode-authored relative file path and return normalized relative path."""
+
+    raw = authored_path.strip()
+    if not raw:
+        return ""
+
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        raise WorkflowValidationError(
+            f"Front-matter field '{location}' in '{mode_config_path}' must be a relative path."
+        )
+
+    mode_root = mode_dir.resolve()
+    resolved = (mode_root / candidate).resolve()
+    if not resolved.is_relative_to(mode_root):
+        raise WorkflowValidationError(
+            f"Front-matter field '{location}' in '{mode_config_path}' "
+            "must stay within the mode folder."
+        )
+    if not resolved.is_file():
+        raise WorkflowValidationError(
+            f"Front-matter field '{location}' in '{mode_config_path}' "
+            f"points to a missing file '{candidate.as_posix()}'."
+        )
+    return resolved.relative_to(mode_root).as_posix()
+
+
+def _require_field(data: dict[str, Any], field: str, source: Path) -> Any:
+    """Extract one required front-matter field regardless of value type."""
+    if field not in data:
+        raise WorkflowValidationError(
+            f"Front-matter in '{source}' is missing required field '{field}'."
+        )
+    return data[field]
+
+
+def _require_bool_field(data: dict[str, Any], field: str, source: Path) -> bool:
+    """Extract one required boolean front-matter field."""
+    value = _require_field(data, field, source)
+    if not isinstance(value, bool):
+        raise WorkflowValidationError(
+            f"Front-matter field '{field}' in '{source}' must be a boolean."
+        )
+    return value
+
+
+def _require_list_field(
+    data: dict[str, Any], field: str, source: Path, location: str = ""
+) -> list[str]:
+    """Extract one required list[str] front-matter field."""
+    if field not in data:
+        loc_str = f" at {location}" if location else ""
+        raise WorkflowValidationError(
+            f"Front-matter in '{source}'{loc_str} is missing required field '{field}'."
+        )
+    raw = data[field]
+    if not isinstance(raw, list):
+        loc_str = f" at {location}" if location else ""
+        raise WorkflowValidationError(
+            f"Front-matter field '{field}' in '{source}'{loc_str} must be a list."
+        )
+    return [str(item) for item in raw]
+
+
+def _optional_int_field(
+    data: dict[str, Any],
+    field: str,
+    source: Path,
+    *,
+    location: str = "",
+    minimum: int = 0,
+) -> int | None:
+    """Extract one optional integer field with a minimum bound."""
+
+    if field not in data:
+        return None
+    value = data[field]
+    if not isinstance(value, int):
+        loc_str = f" at {location}" if location else ""
+        raise WorkflowValidationError(
+            f"Front-matter field '{field}' in '{source}'{loc_str} must be an integer."
+        )
+    if value < minimum:
+        loc_str = f" at {location}" if location else ""
+        raise WorkflowValidationError(
+            f"Front-matter field '{field}' in '{source}'{loc_str} must be >= {minimum}."
+        )
+    return value
+
+
+def _parse_workshop_budget(
+    mode_front_matter: dict[str, Any],
+    mode_config_path: Path,
+) -> WorkshopBudgetConfig:
+    """Parse one authored workshop budget block with host-backed defaults."""
+
+    workshop_budget_raw = mode_front_matter.get("workshop_budget") or {}
+    if not isinstance(workshop_budget_raw, dict):
+        raise WorkflowValidationError(
+            "workshop_budget must be a dict, got "
+            f"{type(workshop_budget_raw).__name__} in {mode_config_path}"
+        )
+
+    shared_context_tokens = _optional_int_field(
+        workshop_budget_raw,
+        "shared_context_tokens",
+        mode_config_path,
+        location="workshop_budget",
+        minimum=0,
+    )
+    per_panel_context_tokens = _optional_int_field(
+        workshop_budget_raw,
+        "per_panel_context_tokens",
+        mode_config_path,
+        location="workshop_budget",
+        minimum=1,
+    )
+    synthesis_max_tokens = _optional_int_field(
+        workshop_budget_raw,
+        "synthesis_max_tokens",
+        mode_config_path,
+        location="workshop_budget",
+        minimum=1,
+    )
+    max_parallel_panels = _optional_int_field(
+        workshop_budget_raw,
+        "max_parallel_panels",
+        mode_config_path,
+        location="workshop_budget",
+        minimum=1,
+    )
+
+    return WorkshopBudgetConfig(
+        shared_context_tokens=(
+            shared_context_tokens
+            if shared_context_tokens is not None
+            else settings.workshop_default_shared_context_tokens
+        ),
+        per_panel_context_tokens=(
+            per_panel_context_tokens
+            if per_panel_context_tokens is not None
+            else settings.workshop_default_per_panel_context_tokens
+        ),
+        synthesis_max_tokens=(
+            synthesis_max_tokens
+            if synthesis_max_tokens is not None
+            else settings.workshop_default_synthesis_max_tokens
+        ),
+        max_parallel_panels=(
+            max_parallel_panels
+            if max_parallel_panels is not None
+            else settings.workshop_default_max_parallel_panels
+        ),
+    )
+
+
+def _parse_workshop_rendering(
+    mode_front_matter: dict[str, Any],
+    mode_config_path: Path,
+) -> WorkshopRenderConfig:
+    """Parse optional workshop rendering preferences from mode front-matter."""
+
+    workshop_rendering_raw = mode_front_matter.get("workshop_rendering") or {}
+    if not isinstance(workshop_rendering_raw, dict):
+        raise WorkflowValidationError(
+            "workshop_rendering must be a dict, got "
+            f"{type(workshop_rendering_raw).__name__} in {mode_config_path}"
+        )
+
+    try:
+        return WorkshopRenderConfig.model_validate(workshop_rendering_raw)
+    except Exception as exc:  # pylint: disable=broad-except
+        raise WorkflowValidationError(
+            f"Invalid workshop_rendering in '{mode_config_path}': {exc}"
+        ) from exc
 
 
 def _derived_workshop_panel_limit(budget: WorkshopBudgetConfig) -> int:

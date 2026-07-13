@@ -74,6 +74,46 @@ frontdoor_examples:
 - `frontdoor_route_hints` and `frontdoor_examples` are prompt-only guidance for the bounded router.
 - Use `frontdoor_fast_path_patterns` only for high-precision regex candidates suitable for verifier confirmation.
 
+### Extension Front Matter (`extra_front_matter`)
+
+The kernel owns a fixed set of front-matter keys (routing, FSM, operation bindings, workshop config). Every other key in `_mode.md` front matter is **extension data** the kernel does not interpret: it is collected into `WorkflowModeConfig.extra_front_matter` and passed through untouched. Hosts and packs read `extra_front_matter` directly to pick up app-owned concepts like `lenses` (mode perspectives) without the kernel ever naming or curating them.
+
+```markdown
+---
+mode_id: thinkabout
+lenses: [lens.conversation, lens.reflection, lens.founder_journal]
+...
+---
+```
+
+The kernel never validates or allowlists extension keys — it only knows what it owns and protects. Adding a new app-owned front-matter key requires no kernel change.
+
+### Front-Matter Overrides (`_overrides.yaml`)
+
+Apps that need to manage extension front matter (or a small set of kernel-owned but overridable fields) without editing pack-owned `_mode.md` files can place an `_overrides.yaml` file beside the `_mode.md`:
+
+```plaintext
+sdk_packs/example/modes/example/
+  _mode.md
+  _overrides.yaml
+```
+
+```yaml
+# _overrides.yaml
+lenses: [lens.conversation, lens.reflection]
+description: "Overridden description for the app's deployment."
+frontdoor_route_hints:
+  - "Prefer `example` when the user asks for a deep-dive."
+```
+
+Overrides are deep-merged on top of the `_mode.md` front matter at load time. The boundary is a **denylist**, not an allowlist: the kernel names only the keys it owns and protects (routing, FSM, operation bindings, workshop config). Attempting to override any kernel-owned key is rejected with a startup validation error. Every other key is app/pack-owned and passes through untouched — the kernel does not name, interpret, or allowlist those keys.
+
+Kernel-owned keys that overrides may **not** touch include: `mode_id`, `start_stage_id`, `mode_kind`, `command_pattern`, `require_query`, `entry_operation_ids`, `pre_turn_operation_ids`, `post_turn_operation_ids`, `allowed_operation_ids`, `frontdoor_routable`, `frontdoor_priority`, `frontdoor_fast_path_patterns`, `workshop_panels`, `workshop_budget`, `workshop_planner_prompt_file`, `workshop_synthesis_prompt_file`, `workshop_rendering`, `default_intent_bridges`, `artifact_type`.
+
+Kernel-owned keys that overrides **may** replace (read into typed fields but not security-sensitive): `description`, `default_model`, `frontdoor_route_hints`, `frontdoor_examples`.
+
+List values from overrides replace (not concatenate) list values from the base front matter, so extension sets stay deterministic.
+
 ## Operation Files
 
 Runtime operations use colocated YAML metadata and Python implementation:

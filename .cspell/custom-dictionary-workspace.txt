@@ -3,6 +3,7 @@ asyncio
 dataclasses
 deepseek
 evals
+fastmcp
 frontdoor
 isort
 mypy
