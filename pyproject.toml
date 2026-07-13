@@ -16,6 +16,7 @@ dependencies = [
     "lisa-pack-checkpoint",
     "lisa-pack-mem0",
     "lisa-pack-brave-search",
+    "lisa-pack-gmail",
     "lisa-host-core",
     "lisa-host-cli",
     "lisa-host-web",
@@ -57,6 +58,7 @@ members = [
     "lisa_pack_stripe",
     "lisa_pack_mem0",
     "lisa_pack_brave_search",
+    "lisa_pack_gmail",
 ]
 
 [tool.uv.sources]
@@ -72,6 +74,7 @@ lisa-pack-search = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
 lisa-pack-mem0 = { workspace = true }
 lisa-pack-brave-search = { workspace = true }
+lisa-pack-gmail = { workspace = true }
 lisa-host-core = { workspace = true }
 lisa-host-cli = { workspace = true }
 lisa-host-web = { workspace = true }

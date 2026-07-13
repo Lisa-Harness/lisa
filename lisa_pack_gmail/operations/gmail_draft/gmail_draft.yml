@@ -1,0 +1,6 @@
+operation_id: gmail_draft
+description: Draft an email from the user's request and create it as a Gmail draft.
+mode_allowlist: [gmail]
+tool_ids: [gmail_create_draft]
+timeout_seconds: 60
+max_calls_per_turn: 1

@@ -1,0 +1,5 @@
+tool_id: gmail_create_draft
+description: "Create a draft email in the authenticated user's Gmail account."
+mode_allowlist: [gmail]
+timeout_seconds: 30
+max_calls_per_turn: 1
