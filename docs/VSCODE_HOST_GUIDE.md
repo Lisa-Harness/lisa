@@ -123,7 +123,7 @@ The bridge uses `hosts/core/models.yaml` by default. Override with
 `LISA_MODELS_FILE`:
 
 ```env
-LISA_MODELS_FILE=hosts/core/models-cloud.yaml
+LISA_MODELS_FILE=models.yaml
 ```
 
 ### Data Directory

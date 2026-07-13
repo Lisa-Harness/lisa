@@ -79,7 +79,7 @@ LISA_OLLAMA_HOST=127.0.0.1:11434
 
 ```env
 # Use the cloud models manifest (Ollama cloud models)
-LISA_MODELS_FILE=hosts/core/models-cloud.yaml
+LISA_MODELS_FILE=models.yaml
 ```
 
 Two manifests ship in `hosts/core/`:
