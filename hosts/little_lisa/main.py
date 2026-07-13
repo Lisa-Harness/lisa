@@ -5882,176 +5882,6 @@ def _is_empty_auth_header(value: str) -> bool:
     return token == ""
 
 
-def _register_memory_synthetic_tools(pool: Any) -> None:
-    """Register the generic memory.* synthetic tools on a started pool.
-
-    The three generic aliases (``memory.add`` / ``memory.search`` /
-    ``memory.list``) route through the pool to whichever MCP server the
-    manifest wired as the default memory backend (``lisa-memory`` by
-    default, ``mem0`` when its HTTP endpoint is configured). Modes and
-    operations (and the model) get the default backend's three core tools
-    without knowing their concrete MCP tool names. Modes that want a
-    backend's full surface (e.g. Mem0's ``update_memory`` /
-    ``delete_memory`` / ``list_entities``) declare those tools directly —
-    they are in the catalog because the backend is also registered as a
-    tool server.
-
-    Call this after ``pool.start()`` so the alias handlers forward to live
-    server sessions. The default backend's tool names come from the
-    manifest's ``memory.tool_names`` mapping.
-
-    Ambient scope (user_id) is injected by the proxy layer
-    (:class:`~kernel.mcp_launch.policy.ProxyPolicy` on the server's
-    config), not by these aliases. The aliases only do generic→native
-    field renaming (e.g. ``content``→``text`` for mem0). The proxy strips
-    the user_id field from the schema the model sees and injects it at
-    dispatch time — covering both the alias path and direct native-tool
-    calls (``mem0.get_memories``) from the same chokepoint. agent_id and
-    app_id were dropped from the mem0 policy because they were metadata-
-    only and broke store→retrieve round-trip (add_memory injects them
-    top-level while get_memories filters via filters.AND).
-    """
-    from kernel.tools.synthetic import mcp_alias_tool  # noqa: PLC0415
-
-    memory_config = _RUNTIME_STATE.get("memory_config")
-    default_backend_id = getattr(memory_config, "default_backend", None)
-    declared = getattr(memory_config, "backends", ()) or ()
-    default_spec = next((s for s in declared if s.id == default_backend_id), None)
-    # Memory backends + memory tool servers are contributed by a pack (the
-    # learning pack by default). Pack-contributed servers are compiled into
-    # namespaced runtime ids (``<pack_slug>.<server_id>``); the synthetic
-    # aliases pin dispatch to the namespaced default-backend id. When no
-    # pack owns memory, fall back to the bare first-party ``lisa-memory``
-    # server id (registered in code, not via a pack).
-    owning_slug = _RUNTIME_STATE.get("memory_config_pack_slug")
-    prefix = f"{owning_slug}." if owning_slug else ""
-    _BACKEND_ID_TO_SERVER_ID = {"lisa_memory": f"{prefix}lisa-memory"}
-    if default_spec is None:
-        # No external default declared: lisa-memory is the first-party default.
-        # Its tool names are the generic aliases themselves.
-        tool_names = {"add": "add_memory", "search": "search_memory", "list": "list_memories"}
-        # Pin dispatch to lisa-memory explicitly so the alias routes to it
-        # even if another server in the pool also exposes the same tool names.
-        # When a pack owns memory, the server is registered as
-        # ``<pack_slug>.lisa-memory``; otherwise it is the bare
-        # first-party ``lisa-memory``.
-        target_server_id = f"{prefix}lisa-memory"
-        # lisa-memory's tools take the generic shape (user_slug, memory_scope,
-        # memory_tier) natively — no field renaming needed. Ambient scope
-        # is not proxy-enforced for lisa-memory (it has no proxy_policy),
-        # so the generic user_slug field is passed through and the model
-        # controls it (lisa-memory is local SQLite, no cross-user risk).
-        add_arg_map = None
-        search_arg_map = None
-        list_arg_map = None
-    else:
-        tool_names = dict(default_spec.tool_names)
-        # Pin dispatch to the declared default backend's server. This
-        # bypasses the pool's first-registered-wins bare-name index so the
-        # default backend serves the alias even when its tool name collides
-        # with another server's (e.g. mem0's add_memory vs lisa-memory's
-        # add_memory). The backend id in the manifest is bare (``mem0`` or
-        # ``lisa_memory``); the pool's server id is namespaced when memory
-        # is pack-owned (``<pack_slug>.<server_id>``). The lisa_memory
-        # backend id maps to the ``lisa-memory`` server id; any other
-        # backend id is its own server id.
-        lisa_memory_server_id = _BACKEND_ID_TO_SERVER_ID.get("lisa_memory", "lisa-memory")
-        target_server_id = (
-            lisa_memory_server_id
-            if default_spec.id == "lisa_memory"
-            else f"{prefix}{default_spec.id}"
-        )
-        # Per-backend field renaming: the generic aliases expose a stable
-        # shape (content/user_slug/memory_scope/...) but each backend's MCP
-        # tools may expect different argument names. Mem0's add_memory
-        # requires `text` (not `content`). Ambient scope injection (user_id,
-        # agent_id, app_id) is handled by the proxy layer — the alias only
-        # renames fields, it does not inject ambient values.
-        if default_spec.id == "mem0":
-            def _mem0_add_arg_map(args: dict[str, Any]) -> dict[str, Any]:
-                mapped = {
-                    "text": args.get("content", ""),
-                    "user_slug": args.get("user_slug", "default"),
-                    "memory_scope": args.get("memory_scope", "personal"),
-                    "memory_tier": args.get("memory_tier", "daily"),
-                }
-                return {k: v for k, v in mapped.items() if v is not None}
-
-            def _mem0_search_or_list_arg_map(args: dict[str, Any]) -> dict[str, Any]:
-                return {k: v for k, v in args.items() if k != "user_slug"}
-
-            # Mem0 add_memory: content → text. The proxy injects user_id /
-            # agent_id / app_id from the runtime; we only rename content→text
-            # and pass through the rest (user_slug is kept for the alias's
-            # generic schema; the proxy overrides user_id at dispatch time).
-            add_arg_map = _mem0_add_arg_map
-            # search_memories / get_memories: query + limit pass through.
-            # The proxy injects the filters.AND with ambient scope.
-            search_arg_map = _mem0_search_or_list_arg_map
-            list_arg_map = _mem0_search_or_list_arg_map
-        else:
-            add_arg_map = None
-            search_arg_map = None
-            list_arg_map = None
-
-    add_schema = {
-        "type": "object",
-        "properties": {
-            "content": {"type": "string", "description": "Memory content to store."},
-            "user_slug": {"type": "string", "default": "default"},
-            "memory_scope": {"type": "string", "default": "personal"},
-            "memory_tier": {"type": "string", "default": "daily"},
-        },
-        "required": ["content"],
-    }
-    search_schema = {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string"},
-            "user_slug": {"type": "string", "default": "default"},
-            "limit": {"type": "integer", "default": 5},
-        },
-        "required": ["query"],
-    }
-    list_schema = {
-        "type": "object",
-        "properties": {
-            "user_slug": {"type": "string", "default": "default"},
-            "limit": {"type": "integer", "default": 20},
-        },
-    }
-
-    pool.add_synthetic_tools([
-        mcp_alias_tool(
-            name="memory.add",
-            description="Persist a memory record via the default memory backend.",
-            pool=pool,
-            target_tool=tool_names["add"],
-            input_schema=add_schema,
-            target_server_id=target_server_id,
-            arg_map=add_arg_map,
-        ),
-        mcp_alias_tool(
-            name="memory.search",
-            description="Recall memories matching a free-text query via the default backend.",
-            pool=pool,
-            target_tool=tool_names["search"],
-            input_schema=search_schema,
-            target_server_id=target_server_id,
-            arg_map=search_arg_map,
-        ),
-        mcp_alias_tool(
-            name="memory.list",
-            description="List recent memory records for a user scope via the default backend.",
-            pool=pool,
-            target_tool=tool_names["list"],
-            input_schema=list_schema,
-            target_server_id=target_server_id,
-            arg_map=list_arg_map,
-        ),
-    ])
-
-
 async def astart_warm_mcp_pool() -> None:
     """Eagerly start the warm MCP pool inside the host's event loop.
 
@@ -6068,17 +5898,21 @@ async def astart_warm_mcp_pool() -> None:
     except MCPConnectionError as exc:
         _render_runtime_error(exc, title="MCP Startup Error")
         raise typer.Exit(code=2) from exc
-    # Register ambient resolvers so the proxy layer can inject runtime
-    # scope (user_slug, mode_id, app_id) into tool arguments at dispatch
-    # time. The proxy strips these fields from the schema the model sees
-    # and injects the resolved values before forwarding to the MCP server.
-    pool.set_ambient_resolver("user_slug", _runtime_user_slug)
-    pool.set_ambient_resolver("mode_id", _runtime_current_mode_id)
-    pool.set_ambient_resolver("app_id", lambda: "little-lisa")
-    # Register host-owned synthetic tools (generic memory aliases) on the
-    # now-live pool. Done after start() so handlers can close over the live
-    # router; the aliases dispatch in-process via the pool.
-    _register_memory_synthetic_tools(pool)
+    # Register ambient resolvers + the generic ``memory.*`` synthetic
+    # aliases on the now-live pool. The shared helper lives in
+    # ``hosts.core.memory_aliases`` and is the same code path every
+    # transport host (cli, web, vscode) uses via ``HostRuntime.start``;
+    # Little Lisa calls it directly here because it owns its own pool.
+    from hosts.core.memory_aliases import register_memory_aliases  # noqa: PLC0415
+
+    register_memory_aliases(
+        pool,
+        memory_config=_RUNTIME_STATE.get("memory_config"),
+        memory_config_pack_slug=_RUNTIME_STATE.get("memory_config_pack_slug"),
+        user_slug=_runtime_user_slug() or "",
+        current_mode_id=_runtime_current_mode_id() or "default",
+        app_id="little-lisa",
+    )
     _append_log_event(
         level="info",
         event="mcp.warm_pool.started",
