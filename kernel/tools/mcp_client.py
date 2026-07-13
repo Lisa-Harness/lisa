@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -201,9 +202,12 @@ class MCPToolPool:
     ``required`` (only meaningful with ``warm=True``) designates whether a
     startup failure is fatal (raise :class:`MCPConnectionError` after
     bounded retry) or non-fatal (log and proceed without the server's
-    tools). Mid-session crashes of warm servers are recovered
-    event-drivenly via :meth:`restart_warm` from :meth:`call_tool` /
-    :meth:`list_tools`, not via a background scheduler.
+    tools). Mid-session crashes of warm servers are detected by the data
+    path (``call_tool`` / ``_refresh_tool_index``), which marks the
+    session dead and returns an error — it does NOT restart the server.
+    Recovery is the host's responsibility via :meth:`restart_warm`, which
+    enforces a restart budget (OTP MaxRestarts/MaxSeconds) to prevent
+    infinite spawn loops.
     """
 
     # Retry-with-backoff for warm server (re)starts. Bounded so a
@@ -211,18 +215,28 @@ class MCPToolPool:
     _WARM_STARTUP_ATTEMPTS = 3
     _WARM_BACKOFF_SECONDS = (0.2, 0.4, 0.8)
 
+    # ── Supervised lifecycle: restart budget ──────────────────────────
+    # At most _MAX_RESTARTS restarts within _RESTART_WINDOW_S seconds.
+    # If exceeded, the server is permanently FAILED — no more spawns.
+    # This is the OTP one_for_one MaxRestarts/MaxSeconds pattern: it
+    # prevents infinite restart loops when a warm server starts (stdio
+    # + initialize succeed) but crashes immediately after.
+    _MAX_RESTARTS = 3
+    _RESTART_WINDOW_S = 60.0
+
     def __init__(self, configs: list[MCPClientConfig]) -> None:
         self._configs = list(configs)
         self._warm_configs = [c for c in self._configs if c.warm]
         self._cold_configs = [c for c in self._configs if not c.warm]
         self._sessions: dict[str, Any] = {}
-        self._exit_stack: AsyncExitStack | None = None
         self._child_stacks: dict[str, AsyncExitStack] = {}
-        """Per-server child AsyncExitStacks. Keyed by server_id. Each
-        entry is the child stack that owns the server's stdio_client +
-        ClientSession contexts. Tracked so restart_warm can close the old
-        child before creating a new one — without this, restarting a warm
-        server would leak the previous subprocess."""
+        """Per-server AsyncExitStacks. Keyed by server_id. Each entry is
+        an INDEPENDENT stack that owns the server's stdio_client +
+        ClientSession contexts. The pool does NOT push these onto a
+        parent stack — each server's lifecycle is independent so that
+        restart_warm can close one server's stack and create a new one
+        without affecting other servers or accumulating dead entries on
+        a parent."""
         self._tool_index: dict[str, tuple[str, MCPToolSpec]] = {}
         # Per-server tool index: server_id -> {tool_name -> spec}. Unlike
         # _tool_index (first-registered-wins across the whole pool), this keeps
@@ -235,16 +249,28 @@ class MCPToolPool:
         self._warm_failed: set[str] = set()
         """Server ids of warm servers whose (re)start failed non-fatally."""
         self._connect_lock: asyncio.Lock = asyncio.Lock()
-        """Serializes enter_async_context pushes onto the parent exit stack
-        when warm servers are started in parallel (see start()). Each
-        parallel connect uses its own child AsyncExitStack so anyio cancel
-        scopes nest correctly; the lock only guards the momentary
-        parent-stack push, not the subprocess spawn."""
+        """Serializes _child_stacks mutations when warm servers are started
+        in parallel (see start()). Each parallel connect creates its own
+        AsyncExitStack independently — the lock only guards dict access."""
         self._restarting: set[str] = set()
         """Server ids of warm servers currently being restarted. Guards against
         restart storms: if list_tools fails for a server that is already
         being restarted (by a concurrent caller), the concurrent caller
         skips the restart instead of spawning a second subprocess."""
+        self._restart_timestamps: dict[str, list[float]] = {}
+        """Per-server restart timestamps for budget enforcement. Keyed by
+        server_id, each value is a list of monotonic timestamps. Restart
+        budget: at most _MAX_RESTARTS within _RESTART_WINDOW_S seconds.
+        When exceeded, the server is permanently FAILED and no more
+        subprocess spawns are attempted."""
+        self._permanently_failed: set[str] = set()
+        """Server ids that have exhausted their restart budget. Once in this
+        set, restart_warm() returns False immediately without spawning."""
+        self._cold_failed: set[str] = set()
+        """Server ids of cold servers that failed to connect. Once in this
+        set, ``_ensure_all_cold_connected`` skips them instead of retrying
+        on every ``list_tools()`` call (which would cause an unbounded
+        re-spawn loop for cold servers that can't start)."""
         self._synthetic_handlers: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {}
         """Host-owned in-process handlers keyed by tool name. Populated by
         :meth:`add_synthetic_tools`. Synthetic tools dispatch through here
@@ -564,8 +590,6 @@ class MCPToolPool:
 
         if self._started:
             return
-        self._exit_stack = AsyncExitStack()
-        await self._exit_stack.__aenter__()
 
         if not self._warm_configs:
             self._started = True
@@ -664,7 +688,6 @@ class MCPToolPool:
         from mcp.client.session import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
-        assert self._exit_stack is not None
         if config.url is not None:
             await self._connect_http(config)
             return
@@ -682,83 +705,80 @@ class MCPToolPool:
             env=config.env,
             cwd=config.cwd,
         )
-        # Use a CHILD AsyncExitStack for this server's stdio_client +
-        # ClientSession so warm servers can be started in parallel without
-        # racing on the parent stack. The child is pushed onto the parent
-        # under _connect_lock; anyio cancel scopes nest correctly because
-        # each server's contexts are entered inside its own stack/task.
-        # Close the old child stack for this server before creating a new
-        # one. Without this, restart_warm would leak the previous subprocess
-        # (the old child stack stays on the parent exit stack, keeping the
-        # old stdio subprocess alive while a new one is spawned).
-        old_child = self._child_stacks.pop(config.server_id, None)
-        if old_child is not None:
-            try:
-                await old_child.aclose()
-            except Exception:  # pylint: disable=broad-except
-                logger.debug(
-                    "Old child stack close for %r failed during reconnect",
-                    config.server_id,
-                    exc_info=True,
-                )
-        child = AsyncExitStack()
-        await child.__aenter__()
+        # Each server gets its OWN independent AsyncExitStack — NOT pushed
+        # onto a parent. This is critical for restart correctness: when a
+        # server is restarted, its old stack is closed (subprocess killed)
+        # and a new stack is created. If children were pushed onto a parent,
+        # the parent would accumulate dead entries and double-close them.
+        stack = AsyncExitStack()
+        await stack.__aenter__()
         try:
-            read, write = await child.enter_async_context(stdio_client(params))
-            session = await child.enter_async_context(ClientSession(read, write))
+            read, write = await stack.enter_async_context(stdio_client(params))
+            session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
         except BaseException:
-            await child.aclose()
+            await stack.aclose()
             raise
         async with self._connect_lock:
-            await self._exit_stack.push_async_exit(child)
-        self._child_stacks[config.server_id] = child
+            self._child_stacks[config.server_id] = stack
         self._sessions[config.server_id] = session
 
     async def _connect_http(self, config: MCPClientConfig) -> None:
         """Connect one streamable-HTTP MCP server.
 
-        Uses the same child-AsyncExitStack discipline as stdio so warm
-        HTTP servers can also be started in parallel. The child stack is
-        pushed onto the parent under _connect_lock so anyio cancel scopes
-        nest correctly under concurrent start().
+        Uses the same independent-AsyncExitStack discipline as stdio.
         """
         from mcp.client.session import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 
-        assert self._exit_stack is not None
         assert config.url is not None
-        old_child = self._child_stacks.pop(config.server_id, None)
-        if old_child is not None:
-            try:
-                await old_child.aclose()
-            except Exception:  # pylint: disable=broad-except
-                logger.debug(
-                    "Old child stack close for %r failed during HTTP reconnect",
-                    config.server_id,
-                    exc_info=True,
-                )
-        child = AsyncExitStack()
-        await child.__aenter__()
+        stack = AsyncExitStack()
+        await stack.__aenter__()
         try:
-            read, write, _ = await child.enter_async_context(
+            read, write, _ = await stack.enter_async_context(
                 streamablehttp_client(config.url, headers=config.headers)
             )
-            session = await child.enter_async_context(ClientSession(read, write))
+            session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
         except BaseException:
-            await child.aclose()
+            await stack.aclose()
             raise
         async with self._connect_lock:
-            await self._exit_stack.push_async_exit(child)
-        self._child_stacks[config.server_id] = child
+            self._child_stacks[config.server_id] = stack
         self._sessions[config.server_id] = session
+
+    async def _disconnect_server(self, server_id: str) -> None:
+        """Close and clean up one server's session + stack.
+
+        Pops the session from ``_sessions`` and closes the server's
+        ``AsyncExitStack`` from ``_child_stacks``. This kills the
+        subprocess. Called by the data path (``call_tool`` exception) when
+        a session is dead, and by ``restart_warm`` before reconnecting.
+        """
+        self._sessions.pop(server_id, None)
+        async with self._connect_lock:
+            stack = self._child_stacks.pop(server_id, None)
+        if stack is not None:
+            try:
+                await stack.aclose()
+            except Exception:  # pylint: disable=broad-except
+                logger.debug(
+                    "Stack close for %r failed during disconnect",
+                    server_id,
+                    exc_info=True,
+                )
 
     async def _refresh_tool_index(self) -> None:
         """Merge tool lists from all connected servers into one index.
 
-        Host-owned synthetic tools are preserved across refreshes (they are
-        not rediscovered from MCP servers) via :meth:`_reindex_synthetic_tools`.
+        This is a READ-ONLY operation: it queries ``list_tools()`` on
+        connected sessions and rebuilds the catalog. If a session is dead
+        or ``list_tools()`` fails, the server's tools are simply absent
+        from the catalog. This method NEVER spawns or restarts subprocesses
+        — that is the job of :meth:`restart_warm` (called by the host, not
+        by the data path). This prevents restart loops where a server
+        starts but crashes immediately after, causing every
+        ``list_tools()`` call to trigger a new subprocess spawn.
         """
 
         from kernel.mcp_launch.tool_filter import filter_tools
@@ -774,17 +794,12 @@ class MCPToolPool:
                 result = await session.list_tools()
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning(
-                    "MCP server %r list_tools failed: %s: %s",
+                    "MCP server %r list_tools failed: %s: %s; "
+                    "tools absent from catalog (no restart from data path)",
                     config.server_id,
                     type(exc).__name__,
                     exc,
                 )
-                # Warm server session may have died; attempt a restart.
-                # Guard against restart storms: if another caller is already
-                # restarting this server, skip the restart instead of spawning
-                # a second subprocess.
-                if config.warm and config.server_id not in self._restarting:
-                    await self._maybe_restart_warm(config)
                 continue
             server_tools = [
                 MCPToolSpec(
@@ -875,21 +890,27 @@ class MCPToolPool:
         await self._refresh_tool_index()
 
     async def _ensure_connected(self, config: MCPClientConfig) -> bool:
-        """Lazily connect a cold server if it is not yet connected.
+        """Ensure a server has a live session, connecting or restarting if needed.
 
         Returns True when the server has a live session after the call
-        (was already connected, or was just connected). Returns False
-        when the cold server could not be started (the error is logged).
+        (was already connected, or was just connected/restarted). Returns
+        False when the server could not be started (logged and skipped).
 
-        Warm servers are never lazily connected here — they are either
-        already up (connected at ``start`` or restarted via
-        ``restart_warm``) or in ``_warm_failed``. A warm server that is
-        down gets one restart attempt via ``_maybe_restart_warm``.
+        Warm servers: if the session is dead, :meth:`restart_warm` is
+        called (which enforces the restart budget). If the server is
+        permanently failed (budget exhausted), returns False immediately.
+        Cold servers: connected on demand via :meth:`_connect` (no budget
+        — cold servers are spawned and torn down per use).
         """
         if config.server_id in self._sessions:
             return True
         if config.warm:
-            # Warm server that is down — try one restart.
+            if config.server_id in self._permanently_failed:
+                logger.debug(
+                    "Warm MCP server %r is permanently failed; not restarting",
+                    config.server_id,
+                )
+                return False
             await self._maybe_restart_warm(config)
             return config.server_id in self._sessions
         # Cold server — connect on demand, best-effort.
@@ -911,11 +932,15 @@ class MCPToolPool:
         """Best-effort connect every cold server that is not yet connected.
 
         Used by ``list_tools`` so the initial tool catalog reflects all
-        servers' tools. Cold servers that fail to start are skipped —
-        their tools are simply absent from the catalog.
+        servers' tools. Cold servers that fail to start are recorded in
+        ``_cold_failed`` and skipped on subsequent calls — this prevents
+        an unbounded re-spawn loop where every ``list_tools()`` call
+        retries failed cold servers.
         """
         for config in self._cold_configs:
             if config.server_id in self._sessions:
+                continue
+            if config.server_id in self._cold_failed:
                 continue
             try:
                 await self._connect(config)
@@ -926,16 +951,21 @@ class MCPToolPool:
                     type(exc).__name__,
                     exc,
                 )
+                self._cold_failed.add(config.server_id)
         await self._refresh_tool_index()
 
     async def restart_warm(self, server_id: str) -> bool:
-        """Re-spawn one warm server after a mid-session crash.
+        """Re-spawn one warm server after a mid-session crash (supervised).
 
         Returns True if the server is (re)connected after the attempt,
-        False if it remains down. Uses the same bounded retry-with-backoff
-        as :meth:`start`. A non-required warm server that fails is recorded
-        in ``warm_failed_ids()``; a required one raises
-        :class:`MCPConnectionError`.
+        False if it remains down or is permanently failed.
+
+        Supervised lifecycle — restart budget (OTP MaxRestarts/MaxSeconds):
+        at most :attr:`_MAX_RESTARTS` restarts within
+        :attr:`_RESTART_WINDOW_S` seconds. If exceeded, the server is
+        permanently FAILED and this method returns False without
+        spawning. This prevents infinite restart loops when a warm server
+        starts (stdio + initialize succeed) but crashes immediately after.
 
         Thread-safety: uses ``_restarting`` to guard against concurrent
         restart calls. If a restart is already in flight for this server,
@@ -945,17 +975,65 @@ class MCPToolPool:
         if config is None:
             logger.warning("restart_warm: %r is not a warm server in this pool", server_id)
             return False
-        # Guard against concurrent restart calls. If another caller is already
-        # restarting this server, don't spawn a second subprocess — just return
-        # the current (likely-down) state.
+
+        # Permanently failed — budget exhausted. No more spawns.
+        if server_id in self._permanently_failed:
+            logger.warning(
+                "restart_warm: %r is permanently failed (restart budget exhausted); "
+                "not spawning",
+                server_id,
+            )
+            return False
+
+        # Guard against concurrent restart calls.
         if server_id in self._restarting:
             logger.debug("restart_warm: %r already being restarted; skip", server_id)
             return server_id in self._sessions
+
+        # Enforce restart budget: count restarts within the window.
+        now = time.monotonic()
+        timestamps = self._restart_timestamps.get(server_id, [])
+        # Drop timestamps outside the window.
+        timestamps = [t for t in timestamps if now - t < self._RESTART_WINDOW_S]
+        if len(timestamps) >= self._MAX_RESTARTS:
+            logger.error(
+                "Warm MCP server %r exceeded restart budget (%d restarts in %.0fs); "
+                "marking permanently failed. No more spawns will be attempted.",
+                server_id,
+                len(timestamps),
+                self._RESTART_WINDOW_S,
+            )
+            self._permanently_failed.add(server_id)
+            self._warm_failed.add(server_id)
+            return False
+
         self._restarting.add(server_id)
+        timestamps.append(now)
+        self._restart_timestamps[server_id] = timestamps
         try:
-            # Drop any stale session for this server before retrying.
-            self._sessions.pop(server_id, None)
-            await self._connect_warm(config)
+            # Close the old session + child stack (kills old subprocess)
+            # before attempting a new connection.
+            await self._disconnect_server(server_id)
+            # SINGLE attempt — no retry loop. The _connect_warm retry loop
+            # is for initial startup only. Using it here would spawn up to
+            # 3 subprocesses per restart_warm call, causing a child explosion
+            # when the server starts but crashes immediately after.
+            try:
+                await self._connect(config)
+                self._warm_failed.discard(server_id)
+            except Exception as exc:
+                logger.warning(
+                    "Warm MCP server %r restart failed: %s: %s",
+                    server_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                self._warm_failed.add(server_id)
+                if config.required:
+                    raise MCPConnectionError(
+                        f"Required warm MCP server '{server_id}' restart failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    ) from exc
             return server_id in self._sessions
         finally:
             self._restarting.discard(server_id)
@@ -1077,16 +1155,18 @@ class MCPToolPool:
         try:
             result = await session.call_tool(bare_name, arguments=mapped)
         except Exception as exc:  # pylint: disable=broad-except
-            # Session may have died mid-call; attempt one warm restart.
+            # Session died mid-call. Close the child stack to kill the
+            # subprocess immediately — do NOT restart from the data path.
+            await self._disconnect_server(server_id)
             if config is not None and config.warm:
-                try:
-                    await self.restart_warm(server_id)
-                except MCPConnectionError:
-                    if config.required:
-                        raise
+                self._warm_failed.add(server_id)
             return MCPToolResult(
                 tool_id=tool_id,
-                output_text=f"MCP tool '{tool_id}' failed: {type(exc).__name__}: {exc}",
+                output_text=(
+                    f"MCP tool '{tool_id}' failed: {type(exc).__name__}: {exc}. "
+                    f"Server '{server_id}' session dropped; "
+                    f"restart may be needed."
+                ),
                 is_error=True,
             )
         return self._build_result(tool_id, result)
@@ -1156,15 +1236,18 @@ class MCPToolPool:
         try:
             result = await session.call_tool(tool_id, arguments=mapped)
         except Exception as exc:  # pylint: disable=broad-except
+            # Session died mid-call. Close the child stack to kill the
+            # subprocess immediately — do NOT restart from the data path.
+            await self._disconnect_server(server_id)
             if config.warm:
-                try:
-                    await self.restart_warm(server_id)
-                except MCPConnectionError:
-                    if config.required:
-                        raise
+                self._warm_failed.add(server_id)
             return MCPToolResult(
                 tool_id=tool_id,
-                output_text=f"MCP tool '{tool_id}' failed: {type(exc).__name__}: {exc}",
+                output_text=(
+                    f"MCP tool '{tool_id}' failed: {type(exc).__name__}: {exc}. "
+                    f"Server '{server_id}' session dropped; "
+                    f"restart may be needed."
+                ),
                 is_error=True,
             )
         return self._build_result(tool_id, result)
@@ -1185,17 +1268,26 @@ class MCPToolPool:
         )
 
     async def aclose(self) -> None:
-        """Close every session and terminate every subprocess."""
+        """Close every session and terminate every subprocess.
 
+        Iterates ``_child_stacks`` and closes each one independently.
+        Each server owns its own AsyncExitStack — there is no parent stack
+        to close. This avoids the double-close bug that child-stacks-on-
+        parent caused when servers were restarted mid-session.
+        """
         self._sessions.clear()
-        self._child_stacks.clear()
-        self._restarting.clear()
-        if self._exit_stack is not None:
+        async with self._connect_lock:
+            stacks = list(self._child_stacks.values())
+            self._child_stacks.clear()
+        for stack in stacks:
             try:
-                await self._exit_stack.aclose()
+                await stack.aclose()
             except Exception:  # pylint: disable=broad-except
-                logger.debug("MCP exit stack close failed", exc_info=True)
-        self._exit_stack = None
+                logger.debug("Server stack close failed during aclose", exc_info=True)
+        self._restarting.clear()
+        self._restart_timestamps.clear()
+        self._permanently_failed.clear()
+        self._cold_failed.clear()
         self._tool_index.clear()
         self._tool_index_by_server.clear()
         self._tools = []
