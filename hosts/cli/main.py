@@ -577,10 +577,9 @@ def _verify_check_env(runtime: HostRuntime) -> tuple[str, str]:
 
 def _verify_check_manifest(runtime: HostRuntime) -> tuple[str, str]:
     from hosts.core.model_manifest import load_model_manifest
-    from hosts.core.model_runtime import manifest_path_from_env
 
     try:
-        path = runtime.config.models_file or manifest_path_from_env()
+        path = runtime.models_path
         manifest = load_model_manifest(path)
         model_count = len(manifest.models)
         if model_count == 0:

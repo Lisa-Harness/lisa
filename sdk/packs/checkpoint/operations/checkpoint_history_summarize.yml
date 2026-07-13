@@ -1,0 +1,7 @@
+operation_id: checkpoint_history_summarize
+description: Condense older turn history into one structured summary record while retaining the most recent turns verbatim for checkpoint persistence.
+mode_allowlist: [default, discuss, learn]
+tool_ids: []
+timeout_seconds: 20
+max_calls_per_turn: 1
+preferred_model_id: deep

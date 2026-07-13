@@ -1049,7 +1049,25 @@ async def _run_turn_inner(
     if is_workflow:
         tool_schemas.extend(get_transition_tool_schema())
 
-    # Compile a deterministic capability manifest from the live tool schemas
+    # Apply one final model-facing prune pass so the payload sent to the
+    # provider cannot include stale/duplicate/disallowed tool schemas.
+    tool_schemas, tool_prune_stats = _prune_model_tool_schemas(
+        tool_schemas=tool_schemas,
+        mode_config=mode_config,
+        is_workflow=is_workflow,
+    )
+    if tool_prune_stats["input_count"] != tool_prune_stats["output_count"]:
+        _log.debug(
+            "tool schema prune mode=%s in=%d out=%d dup=%d disallowed=%d invalid=%d",
+            mode_id,
+            tool_prune_stats["input_count"],
+            tool_prune_stats["output_count"],
+            tool_prune_stats["dropped_duplicate"],
+            tool_prune_stats["dropped_disallowed"],
+            tool_prune_stats["dropped_invalid"],
+        )
+
+    # Compile a deterministic capability manifest from the final tool payload
     # so the model's self-knowledge context matches what it can actually call.
     capability_manifest = compile_capability_manifest(
         tool_schemas, mode_config=mode_config
@@ -1620,6 +1638,141 @@ def _build_in_process_tool_schemas(
             )
         )
     return schemas
+
+
+def _tool_schema_name(schema: dict[str, Any]) -> str:
+    """Return the function name from an OpenAI tool schema."""
+    function = schema.get("function")
+    if not isinstance(function, dict):
+        return ""
+    name = function.get("name")
+    return str(name).strip() if isinstance(name, str) else ""
+
+
+def _mode_bound_operation_ids(mode_config: Any) -> set[str]:
+    """Return operation ids explicitly bound by one mode definition."""
+    if mode_config is None:
+        return set()
+    return set(
+        list(getattr(mode_config, "entry_operation_ids", []) or [])
+        + list(getattr(mode_config, "pre_turn_operation_ids", []) or [])
+        + list(getattr(mode_config, "post_turn_operation_ids", []) or [])
+        + list(getattr(mode_config, "allowed_operation_ids", []) or [])
+    )
+
+
+def _operation_allowed_for_mode(
+    *,
+    operation_id: str,
+    definition: Any,
+    mode_config: Any,
+    tools_authoritative: bool,
+    mode_bound_ids: set[str],
+) -> bool:
+    """Return whether one operation should be advertised for this mode."""
+    if mode_config is None:
+        return True
+
+    mode_id = str(getattr(mode_config, "mode_id", "") or "")
+    mode_allowlist = getattr(definition, "mode_allowlist", None)
+    if mode_allowlist and mode_id in mode_allowlist:
+        return True
+    if operation_id in mode_bound_ids:
+        return True
+
+    if tools_authoritative:
+        return False
+    if mode_allowlist:
+        return False
+    return True
+
+
+def _prune_model_tool_schemas(
+    *,
+    tool_schemas: list[dict[str, Any]],
+    mode_config: Any,
+    is_workflow: bool,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Apply one final model-facing prune pass over assembled tool schemas.
+
+    Assembly-time filtering can evolve across MCP/operation/tool catalog paths.
+    This final pass is the payload contract: only the allowed tool set reaches
+    the model completion call.
+    """
+
+    operation_catalog = get_operation_catalog()
+    tool_catalog = get_tool_catalog()
+    tools_authoritative = bool(mode_config and getattr(mode_config, "tools_authoritative", False))
+    allowed_tool_ids: set[str] | None = None
+    if mode_config and (getattr(mode_config, "allowed_tool_ids", []) or tools_authoritative):
+        allowed_tool_ids = set(getattr(mode_config, "allowed_tool_ids", []) or [])
+
+    mode_id = str(getattr(mode_config, "mode_id", "") or "")
+    mode_bound_ids = _mode_bound_operation_ids(mode_config)
+    seen_names: set[str] = set()
+    pruned: list[dict[str, Any]] = []
+    dropped_duplicate = 0
+    dropped_disallowed = 0
+    dropped_invalid = 0
+
+    for schema in tool_schemas:
+        name = _tool_schema_name(schema)
+        if not name:
+            dropped_invalid += 1
+            continue
+        if name in seen_names:
+            dropped_duplicate += 1
+            continue
+        seen_names.add(name)
+
+        if name == _TRANSITION_TOOL_NAME:
+            if is_workflow:
+                pruned.append(schema)
+            else:
+                dropped_disallowed += 1
+            continue
+
+        op_def = operation_catalog.get(name)
+        if op_def is not None:
+            if _operation_allowed_for_mode(
+                operation_id=name,
+                definition=op_def,
+                mode_config=mode_config,
+                tools_authoritative=tools_authoritative,
+                mode_bound_ids=mode_bound_ids,
+            ):
+                pruned.append(schema)
+            else:
+                dropped_disallowed += 1
+            continue
+
+        tool_def = tool_catalog.get(name)
+        if tool_def is not None:
+            mode_allowlist = getattr(tool_def, "mode_allowlist", None)
+            if allowed_tool_ids is not None and name not in allowed_tool_ids:
+                dropped_disallowed += 1
+                continue
+            if mode_allowlist and mode_id and mode_id not in mode_allowlist:
+                dropped_disallowed += 1
+                continue
+            pruned.append(schema)
+            continue
+
+        # Unknown tools are MCP tools. Restrict them by mode allowlist when
+        # one is active (including authoritative-empty => no unknown tools).
+        if allowed_tool_ids is not None and name not in allowed_tool_ids:
+            dropped_disallowed += 1
+            continue
+        pruned.append(schema)
+
+    stats = {
+        "input_count": len(tool_schemas),
+        "output_count": len(pruned),
+        "dropped_duplicate": dropped_duplicate,
+        "dropped_disallowed": dropped_disallowed,
+        "dropped_invalid": dropped_invalid,
+    }
+    return pruned, stats
 
 
 def _coerce_non_negative_int(value: Any) -> int:

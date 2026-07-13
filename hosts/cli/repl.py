@@ -29,6 +29,7 @@ from typing import Any
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.prompt import Confirm
 from rich.rule import Rule
 from rich.text import Text
 
@@ -73,6 +74,11 @@ _HOST_REPL_SHORTCUTS: tuple[str, ...] = (
     "/pack disable ",
     "/pack install ",
     "/pack uninstall ",
+    "/models show",
+    "/models discover",
+    "/models apply",
+    "/models reload",
+    "/models edit",
     "/settings",
     "/tokens",
     "/debug context",
@@ -90,7 +96,7 @@ _HOST_REPL_SHORTCUTS: tuple[str, ...] = (
 try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import WordCompleter
-    from prompt_toolkit.cursor_shapes import CursorShape, ModalCursorShapeConfig
+    from prompt_toolkit.cursor_shapes import ModalCursorShapeConfig
     from prompt_toolkit.history import FileHistory, History
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.styles import Style
@@ -196,7 +202,7 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
     console.print(
         Panel(
             "Type /help, /help capabilities, /debug context, "
-            "/debug frontdoor, /pack list, /search <query>, /deep <query>, or /quit.",
+            "/debug frontdoor, /pack list, /models discover, /search <query>, /deep <query>, or /quit.",
             title="Session",
             border_style=STYLE_BORDER_SESSION,
         )
@@ -225,11 +231,19 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
             await _process_repl_turn(runtime, transport, console, pending_resume)
             if runtime.restart_required:
                 _render_restart_required_notice_if_needed(runtime, console)
-                _render_session_exit_summary(runtime, console)
-                console.print(
-                    f"[{STYLE_TEXT_MUTED}]Applying restart now...[/]"
-                )
-                return True
+                if not _confirm_restart(runtime, console):
+                    runtime.restart_required = False
+                    runtime.restart_reason = ""
+                    console.print(
+                        f"[{STYLE_TEXT_MUTED}]Restart deferred. "
+                        f"Run /quit then relaunch `lisa` manually when ready.[/]"
+                    )
+                else:
+                    _render_session_exit_summary(runtime, console)
+                    console.print(
+                        f"[{STYLE_TEXT_MUTED}]Applying restart now...[/]"
+                    )
+                    return True
         restart_requested = await _run_repl_loop(runtime, transport, console, prompt_session)
     finally:
         await runtime.aclose()
@@ -258,6 +272,14 @@ async def _run_repl_loop(
         await _process_repl_turn(runtime, transport, console, message)
         if runtime.restart_required:
             _render_restart_required_notice_if_needed(runtime, console)
+            if not _confirm_restart(runtime, console):
+                runtime.restart_required = False
+                runtime.restart_reason = ""
+                console.print(
+                    f"[{STYLE_TEXT_MUTED}]Restart deferred. "
+                    f"Run /quit then relaunch `lisa` manually when ready.[/]"
+                )
+                continue
             _render_session_exit_summary(runtime, console)
             if os.name == "nt":
                 console.print(
@@ -425,6 +447,31 @@ def _render_restart_required_notice_if_needed(
             border_style="gold3",
         )
     )
+
+
+def _confirm_restart(runtime: HostRuntime, console: Console) -> bool:
+    """Ask the user yes/no before exiting the session to apply a restart.
+
+    Returns ``True`` to proceed with the restart (exit/relaunch), or
+    ``False`` to defer and keep the current session alive. On EOF
+    (Ctrl+D) or KeyboardInterrupt, the restart is deferred so the
+    user is not forced out of the session unexpectedly.
+    """
+    reason = runtime.restart_reason.strip() or "runtime change"
+    prompt_text = f"Exit now to reload ({reason})? [Y/n]"
+    try:
+        return bool(
+            Confirm.ask(
+                prompt_text,
+                console=console,
+                default=True,
+                show_choices=False,
+                show_default=False,
+            )
+        )
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        return False
 
 
 def _render_session_exit_summary(runtime: HostRuntime, console: Console) -> None:

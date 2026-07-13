@@ -98,10 +98,11 @@ def build_turn_hooks(
     # ── Model resolution ──────────────────────────────────────────
     def _resolve_model(model_id: str) -> StubModelDefinition:
         if runtime.manifest is None:
-            runtime.manifest = load_manifest({})
+            runtime.manifest = load_manifest({}, data_dir=runtime.data_dir)
         return resolve_little_lisa_model(
             model_id,
             runtime_state={"manifest": runtime.manifest},
+            data_dir=runtime.data_dir,
         )
 
     # ── Completion ────────────────────────────────────────────────

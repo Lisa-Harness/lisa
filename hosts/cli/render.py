@@ -24,7 +24,6 @@ from hosts.core.commands import (
     render_pack_list,
 )
 from hosts.core.model_manifest import load_model_manifest
-from hosts.core.model_runtime import manifest_path_from_env
 from hosts.core.runtime import HostRuntime
 from kernel.ipsar_fsm import get_workflow_catalog
 
@@ -64,11 +63,10 @@ def render_modes(runtime: HostRuntime, *, console: Console | None = None) -> Tab
 def render_models(runtime: HostRuntime, *, console: Console | None = None) -> Table:
     """Build a Rich Table of configured models from the model manifest.
 
-    Uses ``hosts.core.model_manifest.load_model_manifest`` honoring the
-    runtime's configured ``models_file`` (falls back to the env var and the
-    colocated default manifest).
+    Uses ``hosts.core.model_manifest.load_model_manifest`` against the
+    canonical runtime data-dir path.
     """
-    path = runtime.config.models_file or manifest_path_from_env()
+    path = runtime.models_path
     manifest = load_model_manifest(path)
     table = Table(title="Lisa Models")
     table.add_column("Model", style="bold")

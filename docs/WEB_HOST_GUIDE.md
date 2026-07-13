@@ -77,17 +77,20 @@ LISA_OLLAMA_HOST=127.0.0.1:11434
 
 ### Model manifest
 
-```env
-# Use the cloud models manifest (Ollama cloud models)
-LISA_MODELS_FILE=models.yaml
+Model manifests are stored in the web host data directory:
+
+- Active: `<data-dir>/models.yaml`
+- Proposal: `<data-dir>/models.proposed.yaml`
+
+Generate and apply manifests through host commands:
+
+```text
+/models discover
+/models apply
 ```
 
-Two manifests ship in `hosts/core/`:
-
-| File | Models | Use case |
-| --- | --- | --- |
-| `models.yaml` | Local Ollama (`gemma3:latest`, `llama3.2:latest`) | Local development |
-| `models-cloud.yaml` | Cloud Ollama (`gemma4:cloud`, `glm-5.2:cloud`) | Cloud inference |
+Edit `<data-dir>/models.proposed.yaml` before apply when you want to adjust
+designation or mode-model mappings.
 
 ### Session context
 

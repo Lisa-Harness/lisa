@@ -12,16 +12,33 @@ from hosts.core import model_manifest
 _MIN_EXPECTED_MODELS = 2
 
 
-def test_load_manifest_reads_designations_and_models() -> None:
-    manifest = model_manifest.load_model_manifest(model_manifest.default_manifest_path())
+def test_load_manifest_reads_designations_and_models(tmp_path: Path) -> None:
+    manifest_file = tmp_path / "models.yaml"
+    manifest_file.write_text(
+        textwrap.dedent(
+            """\
+            version: 1
+            models:
+              - model_id: test-frontdoor
+                provider: ollama
+                designations: [front-door, default]
+              - model_id: test-deep
+                provider: ollama
+                reasoning_model: true
+                designations: [deep, reasoning]
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = model_manifest.load_model_manifest(manifest_file)
 
     assert len(manifest.models) >= _MIN_EXPECTED_MODELS
     assert manifest.designated("front-door") is not None
     assert manifest.designated("default") is not None
     assert manifest.designated("reasoning") is not None
     assert manifest.designated("deep") is not None
-    # The new hosts/core/models.yaml has no mode_models mapping; verify
-    # that the default-designation model is returned for unmapped modes.
+    # No mode_models mapping is required; designation lookup should still work.
     default_model = manifest.designated("default")
     assert default_model is not None
     assert default_model.model_id  # has a non-empty model_id

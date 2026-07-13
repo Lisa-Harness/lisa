@@ -119,12 +119,18 @@ in your terminal environment before launching VS Code.
 
 ### Model Manifest
 
-The bridge uses `hosts/core/models.yaml` by default. Override with
-`LISA_MODELS_FILE`:
+The bridge reads the active model manifest from `<data-dir>/models.yaml`.
+Generate and manage it with host commands:
 
-```env
-LISA_MODELS_FILE=models.yaml
+```text
+/models discover
+/models apply
+/models show
+/models reload
 ```
+
+`/models discover` writes `<data-dir>/models.proposed.yaml` first so you can
+edit it before applying.
 
 ### Data Directory
 
@@ -257,7 +263,7 @@ participant. The two paths are complementary:
 - Check `artifacts/vscode-bridge.log` for Python-side errors.
 - Run `uv run lisa verify` to check the environment.
 - Make sure your `.env` has `LISA_*` provider credentials set.
-- Make sure your model manifest (`LISA_MODELS_FILE`) has valid models.
+- Make sure `<data-dir>/models.yaml` is valid (or run `/models discover` then `/models apply`).
 
 ### The bridge process crashes
 

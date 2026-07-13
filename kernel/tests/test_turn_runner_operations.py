@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,7 +24,7 @@ from kernel.operations.registry import (
     execute_operation,
     get_operation_catalog,
 )
-from kernel.turn_runner import TurnHooks, run_turn
+from kernel.turn_runner import TurnHooks, _prune_model_tool_schemas, run_turn
 
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
 
@@ -42,6 +43,17 @@ def _make_tool_call(call_id: str, name: str, arguments: dict[str, Any]) -> dict[
     return {
         "id": call_id,
         "function": {"name": name, "arguments": json.dumps(arguments)},
+    }
+
+
+def _make_tool_schema(name: str, description: str = "") -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description or f"Execute {name}.",
+            "parameters": {"type": "object", "properties": {}},
+        },
     }
 
 
@@ -428,3 +440,93 @@ async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
     # No MCP tools should appear (allowed_tool_ids is empty + authoritative)
     assert "memory.add" not in tool_names
     assert "test.browse_url" not in tool_names
+
+
+def test_prune_model_tool_schemas_dedupes_and_filters_non_workflow_transition() -> None:
+    """Final prune pass removes duplicates and transition tool in non-workflow modes."""
+    mode_config = SimpleNamespace(
+        mode_id="default",
+        allowed_tool_ids=[],
+        tools_authoritative=False,
+        entry_operation_ids=[],
+        pre_turn_operation_ids=[],
+        post_turn_operation_ids=[],
+        allowed_operation_ids=[],
+    )
+    schemas = [
+        _make_tool_schema("memory.add"),
+        _make_tool_schema("memory.add"),
+        _make_tool_schema("transition_stage"),
+    ]
+
+    pruned, stats = _prune_model_tool_schemas(
+        tool_schemas=schemas,
+        mode_config=mode_config,
+        is_workflow=False,
+    )
+
+    names = [schema["function"]["name"] for schema in pruned]
+    assert names == ["memory.add"]
+    assert stats["dropped_duplicate"] == 1
+    assert stats["dropped_disallowed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_turn_prunes_duplicate_tools_before_model_call() -> None:
+    """The model-facing tools payload is deduplicated by final prune pass."""
+    from kernel.tools.mcp_client import MCPToolSpec
+
+    captured_tools: list[dict[str, Any]] = []
+
+    async def capture_then_respond(**kwargs: Any) -> _StubCompletion:
+        tools = kwargs.get("tools") or []
+        captured_tools.extend(tools)
+        return _StubCompletion(content="Done.")
+
+    class _StubPool:
+        async def list_tools(self) -> list[MCPToolSpec]:
+            return [
+                MCPToolSpec(
+                    server_id="__synthetic__",
+                    name="memory.add",
+                    description="Add memory",
+                    input_schema={"type": "object", "properties": {}},
+                ),
+                MCPToolSpec(
+                    server_id="shadow",
+                    name="memory.add",
+                    description="Duplicate alias entry",
+                    input_schema={"type": "object", "properties": {}},
+                ),
+            ]
+
+        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> Any:
+            return type("_R", (), {"output_text": "done", "is_error": False})()
+
+        async def __aenter__(self) -> "_StubPool":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    from kernel.ipsar_fsm import get_workflow_catalog
+
+    catalog = get_workflow_catalog()
+    default_mode = catalog.get("default")
+    assert default_mode is not None
+    original_authoritative = default_mode.tools_authoritative
+    default_mode.tools_authoritative = False
+    try:
+        hooks = TurnHooks(complete=capture_then_respond, mcp_tool_pool=_StubPool())
+        await run_turn(mode_id="default", query="test", hooks=hooks)
+    finally:
+        default_mode.tools_authoritative = original_authoritative
+
+    tool_names = [t["function"]["name"] for t in captured_tools if "function" in t]
+    assert tool_names.count("memory.add") == 1

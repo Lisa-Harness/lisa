@@ -211,6 +211,14 @@ class HostRuntime:
     def token_usage_path(self) -> Path:
         return self.data_dir / "token-usage.jsonl"
 
+    @property
+    def models_path(self) -> Path:
+        return self.config.resolved_models_path
+
+    @property
+    def models_proposal_path(self) -> Path:
+        return self.config.resolved_models_proposal_path
+
     # ── Provider client accessors (lazy) ──────────────────────────────
 
     @property
@@ -357,7 +365,16 @@ class HostRuntime:
 
         from kernel.tools.mcp_client import MCPToolPool  # noqa: PLC0415
 
-        self._mcp_tool_pool = MCPToolPool(self._mcp_warm_configs)
+        # The pool MUST carry both warm AND cold configs. Cold servers (e.g.
+        # mem0, lisa-guard) are lazily connected on first scoped dispatch
+        # (memory.* aliases route to the default backend, which may be cold).
+        # If cold configs are omitted from the pool, server-scoped dispatch
+        # (_call_tool_scoped) cannot resolve the server_id and returns
+        # "Unknown MCP server '<pack>.mem0'" — breaking all memory operations
+        # when the default backend is a cold HTTP server. The `warm` flag on
+        # each config controls eager-vs-lazy start; cold servers stay down
+        # at start() and connect best-effort on first call.
+        self._mcp_tool_pool = MCPToolPool([*self._mcp_warm_configs, *self._mcp_cold_configs])
         try:
             await self._mcp_tool_pool.start()
         except BaseException:

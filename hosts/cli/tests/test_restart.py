@@ -98,6 +98,83 @@ def test_exit_restart_required_raises_typer_exit(tmp_path: Path) -> None:
     assert exc_info.value.exit_code == cli_main._RESTART_REQUIRED_EXIT
 
 
+# ── _confirm_restart (REPL yes/no before exiting to reload) ───────────
+
+
+def test_confirm_restart_yes_proceeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the user answers yes, _confirm_restart returns True."""
+    from rich.console import Console
+
+    from hosts.cli import repl as cli_repl
+
+    runtime = _make_runtime(tmp_path)
+    runtime.request_restart("pack install: lisa-pack-cloudflare")
+    console = Console(quiet=True)
+
+    monkeypatch.setattr(
+        cli_repl.Confirm, "ask", staticmethod(lambda *a, **k: True)
+    )
+
+    assert cli_repl._confirm_restart(runtime, console) is True
+
+
+def test_confirm_restart_no_defers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the user answers no, _confirm_restart returns False (defer)."""
+    from rich.console import Console
+
+    from hosts.cli import repl as cli_repl
+
+    runtime = _make_runtime(tmp_path)
+    runtime.request_restart("pack install: lisa-pack-cloudflare")
+    console = Console(quiet=True)
+
+    monkeypatch.setattr(
+        cli_repl.Confirm, "ask", staticmethod(lambda *a, **k: False)
+    )
+
+    assert cli_repl._confirm_restart(runtime, console) is False
+
+
+def test_confirm_restart_eof_defers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """On EOF (Ctrl+D), _confirm_restart defers rather than forcing exit."""
+
+    def _raise_eof(*a: Any, **k: Any) -> bool:
+        raise EOFError
+
+    from rich.console import Console
+
+    from hosts.cli import repl as cli_repl
+
+    runtime = _make_runtime(tmp_path)
+    runtime.request_restart("pack enable: lisa-pack-cloudflare")
+    console = Console(quiet=True)
+
+    monkeypatch.setattr(cli_repl.Confirm, "ask", staticmethod(_raise_eof))
+
+    assert cli_repl._confirm_restart(runtime, console) is False
+
+
+def test_confirm_restart_keyboard_interrupt_defers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Ctrl+C, _confirm_restart defers rather than forcing exit."""
+
+    def _raise_interrupt(*a: Any, **k: Any) -> bool:
+        raise KeyboardInterrupt
+
+    from rich.console import Console
+
+    from hosts.cli import repl as cli_repl
+
+    runtime = _make_runtime(tmp_path)
+    runtime.request_restart("pack enable: lisa-pack-cloudflare")
+    console = Console(quiet=True)
+
+    monkeypatch.setattr(cli_repl.Confirm, "ask", staticmethod(_raise_interrupt))
+
+    assert cli_repl._confirm_restart(runtime, console) is False
+
+
 # ── Resume-message consumption ────────────────────────────────────────
 
 

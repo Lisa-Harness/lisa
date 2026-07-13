@@ -23,6 +23,7 @@ members = [
     "lisa-pack-cloudflare",
     "lisa-pack-core",
     "lisa-pack-github",
+    "lisa-pack-gmail",
     "lisa-pack-learning",
     "lisa-pack-mem0",
     "lisa-pack-search",
@@ -887,6 +888,7 @@ dependencies = [
     { name = "lisa-pack-cloudflare" },
     { name = "lisa-pack-core" },
     { name = "lisa-pack-github" },
+    { name = "lisa-pack-gmail" },
     { name = "lisa-pack-learning" },
     { name = "lisa-pack-mem0" },
     { name = "lisa-pack-search" },
@@ -921,6 +923,7 @@ requires-dist = [
     { name = "lisa-pack-cloudflare", editable = "lisa_pack_cloudflare" },
     { name = "lisa-pack-core", editable = "sdk/packs/core" },
     { name = "lisa-pack-github", editable = "lisa_pack_github" },
+    { name = "lisa-pack-gmail", editable = "lisa_pack_gmail" },
     { name = "lisa-pack-learning", editable = "sdk/packs/learning" },
     { name = "lisa-pack-mem0", editable = "lisa_pack_mem0" },
     { name = "lisa-pack-search", editable = "sdk/packs/search" },
@@ -1328,6 +1331,36 @@ provides-extras = ["dev"]
 name = "lisa-pack-github"
 version = "0.1.0"
 source = { editable = "lisa_pack_github" }
+dependencies = [
+    { name = "httpx" },
+    { name = "lisa-kernel" },
+    { name = "lisa-sdk" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "lisa-kernel", editable = "kernel" },
+    { name = "lisa-sdk", editable = "sdk" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-gmail"
+version = "0.1.0"
+source = { editable = "lisa_pack_gmail" }
 dependencies = [
     { name = "httpx" },
     { name = "lisa-kernel" },

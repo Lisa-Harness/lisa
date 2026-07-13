@@ -25,7 +25,6 @@ LISA_LOG_LEVEL_ENV = "LISA_LOG_LEVEL"
 LISA_DATA_DIR_ENV = "LISA_DATA_DIR"
 LISA_MEMORY_DB_ENV = "LISA_MEMORY_DB"
 LISA_THREAD_DIR_ENV = "LISA_THREAD_DIR"
-LISA_MODELS_FILE_ENV = "LISA_MODELS_FILE"
 LISA_SLICE_PRE_TURN_ENV = "LISA_SLICE_PRE_TURN"
 LISA_SLICE_POST_TURN_ENV = "LISA_SLICE_POST_TURN"
 LISA_SLICE_EXPLICIT_ENV = "LISA_SLICE_EXPLICIT"
@@ -115,7 +114,6 @@ class HostConfig:
     data_dir: Path = field(default_factory=lambda: Path.cwd() / "artifacts")
     memory_db_path: Path | None = None
     thread_dir: Path | None = None
-    models_file: Path | None = None
     mcp_manifest_path: Path | None = None
     state_snapshot_path: Path | None = None
 
@@ -175,6 +173,14 @@ class HostConfig:
         return self.host_log_path or (self.data_dir / "host.log")
 
     @property
+    def resolved_models_path(self) -> Path:
+        return self.data_dir / "models.yaml"
+
+    @property
+    def resolved_models_proposal_path(self) -> Path:
+        return self.data_dir / "models.proposed.yaml"
+
+    @property
     def effective_log_level(self) -> str:
         """Return the log level, falling back to debug when debug is on.
 
@@ -205,7 +211,6 @@ class HostConfig:
         session_context: str = "",
         user_slug: str = "",
         state_snapshot: str = "",
-        models_file: str = "",
         mcp_manifest_path: str = "",
         streaming: str = "none",
         surface_type: str = "",
@@ -260,11 +265,6 @@ class HostConfig:
         raw_host_log = host_log_path.strip()
         if raw_host_log:
             resolved_host_log_path = Path(raw_host_log).expanduser().resolve()
-
-        resolved_models_file: Path | None = None
-        raw_models = models_file.strip() or _resolve_env(LISA_MODELS_FILE_ENV)
-        if raw_models:
-            resolved_models_file = Path(raw_models).expanduser().resolve()
 
         resolved_mcp_manifest: Path | None = None
         raw_mcp = mcp_manifest_path.strip()
@@ -360,7 +360,6 @@ class HostConfig:
             data_dir=resolved_data_dir,
             memory_db_path=resolved_memory_db,
             thread_dir=resolved_thread_dir,
-            models_file=resolved_models_file,
             mcp_manifest_path=resolved_mcp_manifest,
             state_snapshot_path=resolved_snapshot,
             debug=debug,

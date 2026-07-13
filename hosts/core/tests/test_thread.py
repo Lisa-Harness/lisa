@@ -42,6 +42,7 @@ class TestIsHostCommandQuery:
         assert is_host_command_query("/consolidate")
         assert is_host_command_query("/checkpoints")
         assert is_host_command_query("/restore my-snapshot")
+        assert is_host_command_query("/models show")
 
     def test_bare_word_aliases_match(self) -> None:
         assert is_host_command_query("help")
@@ -76,7 +77,7 @@ class TestIsHostCommandQuery:
     def test_registry_populated_by_handle_message_import(self) -> None:
         """The dispatch layer must register its prefixes on import."""
         prefixes = host_command_prefixes()
-        # All ten dispatch-table prefixes should be registered.
+        # All dispatch-table prefixes should be registered.
         assert "/help" in prefixes
         assert "/tokens" in prefixes
         assert "/settings" in prefixes
@@ -86,6 +87,7 @@ class TestIsHostCommandQuery:
         assert "/restore" in prefixes
         assert "/checkpoints" in prefixes
         assert "/pack" in prefixes
+        assert "/models" in prefixes
         assert "/debug" in prefixes
         # ``/deep`` must NOT be registered (routes to model).
         assert "/deep" not in prefixes

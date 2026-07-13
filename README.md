@@ -37,7 +37,7 @@ uv run little-lisa desktop
 uv run little-lisa
 ```
 
-Little Lisa uses a model manifest (`hosts/little_lisa/models.yaml`) with `front-door`, `default`, and `deep` designations. It supports live completion through `azure_openai`, `openai`, `anthropic`, and local `ollama` providers, plus local action/chat packs discovered through `SDK_CONTENT_ROOTS`; heavier workflow modes still report the missing host wiring they require.
+Little Lisa uses a generated model manifest in `artifacts/models.yaml` (or your configured data-dir) with `front-door`, `default`, and `deep` designations. Use `/models discover` then `/models apply` to generate and activate it. It supports live completion through `azure_openai`, `openai`, `anthropic`, and local `ollama` providers, plus local action/chat packs discovered through `SDK_CONTENT_ROOTS`; heavier workflow modes still report the missing host wiring they require.
 
 `lisa-pack-learning` is now an opt-in pack in this workspace. Install it through the host pack manager when you want memory-backed learning behavior:
 

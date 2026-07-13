@@ -224,6 +224,81 @@ async def test_checkpoint_create_tool_error() -> None:
     assert "failed" in result.output_text.lower()
 
 
+@pytest.mark.asyncio
+async def test_checkpoint_history_summarize_with_model() -> None:
+    """checkpoint_history_summarize condenses old turns and keeps recent turns."""
+    from sdk.packs.checkpoint.operations.checkpoint_history_summarize import execute
+
+    summary_json = json.dumps({
+        "condensed_narrative": "Earlier turns selected a checkpoint strategy.",
+        "key_points": ["Use checkpoint pack", "Keep recent turns verbatim"],
+    })
+    turn_history = [
+        {"query": "q1", "response_text": "a1"},
+        {"query": "q2", "response_text": "a2"},
+        {"query": "q3", "response_text": "a3"},
+        {"query": "q4", "response_text": "a4"},
+    ]
+
+    ctx = _make_ctx(
+        params={"turn_history": turn_history, "retention_count": 2},
+        complete_fn=_mock_complete(summary_json),
+        resolve_model_fn=_mock_resolve_model(),
+    )
+
+    result = await execute(ctx)
+
+    assert "Condensed 2 turn(s)" in result.output_text
+    output_history = result.output_json.get("turn_history")
+    assert isinstance(output_history, list)
+    assert len(output_history) == 3
+    assert output_history[0]["source"] == "checkpoint_history_summarize"
+    assert output_history[1]["query"] == "q3"
+    assert output_history[2]["query"] == "q4"
+    assert result.output_json.get("was_summarized") is True
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_history_summarize_noop_when_under_retention() -> None:
+    """checkpoint_history_summarize no-ops when history length is within retention."""
+    from sdk.packs.checkpoint.operations.checkpoint_history_summarize import execute
+
+    turn_history = [{"query": "q1", "response_text": "a1"}]
+    ctx = _make_ctx(params={"turn_history": turn_history, "retention_count": 3})
+
+    result = await execute(ctx)
+
+    assert "no summarization needed" in result.output_text.lower()
+    assert result.output_json.get("was_summarized") is False
+    assert result.output_json.get("turn_history") == turn_history
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_history_summarize_fallback_on_invalid_model_payload() -> None:
+    """checkpoint_history_summarize falls back deterministically on parse failure."""
+    from sdk.packs.checkpoint.operations.checkpoint_history_summarize import execute
+
+    turn_history = [
+        {"query": "q1", "response_text": "a1"},
+        {"query": "q2", "response_text": "a2"},
+        {"query": "q3", "response_text": "a3"},
+    ]
+
+    ctx = _make_ctx(
+        params={"turn_history": turn_history, "retention_count": 1},
+        complete_fn=_mock_complete("not-json"),
+        resolve_model_fn=_mock_resolve_model(),
+    )
+
+    result = await execute(ctx)
+
+    summary_turn = result.output_json.get("summary_turn")
+    assert isinstance(summary_turn, dict)
+    assert summary_turn.get("source") == "checkpoint_history_summarize"
+    assert summary_turn.get("summarized_turn_count") == 2
+    assert result.output_json.get("was_summarized") is True
+
+
 # ── checkpoint_restore ────────────────────────────────────────────────
 
 

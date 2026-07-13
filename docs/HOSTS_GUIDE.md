@@ -144,7 +144,7 @@ The `TransportCallbacks` protocol is the Option B seam — the runtime delivers 
 
 `handle_message(runtime, message, transport)` is the transport-neutral entry point all hosts call. It:
 
-1. Dispatches host shortcut commands (`/help`, `/settings`, `/tokens`, `/debug`, `/consolidate`, `/checkpoint`, `/restore`, `/pack`).
+1. Dispatches host shortcut commands (`/help`, `/settings`, `/tokens`, `/debug`, `/consolidate`, `/checkpoint`, `/restore`, `/pack`, `/models`).
 2. Routes natural-language turns through the front-door router.
 3. Executes the mode turn via `kernel.turn_runner.run_turn`.
 4. Persists thread entries and updates token counters.
@@ -154,10 +154,17 @@ The `TransportCallbacks` protocol is the Option B seam — the runtime delivers 
 
 Model selection is intentionally small and explicit.
 
-- Default manifest path: `hosts/core/models.yaml`.
-- Override path with `LISA_MODELS_FILE`.
+- Active manifest path: `<data-dir>/models.yaml`.
+- Proposal manifest path: `<data-dir>/models.proposed.yaml`.
 - Supported providers: `azure_openai`, `openai`, `anthropic`, `ollama`, `google`.
 - Supported designations: `front-door`, `default`, `deep`, `reasoning`.
+
+Model manifests are now generated and managed through host commands:
+
+- `/models discover` probes configured providers and writes `models.proposed.yaml`.
+- You can edit `models.proposed.yaml` manually to resolve non-obvious choices.
+- `/models apply` validates and promotes the proposal to `models.yaml`.
+- `/models reload` reloads `models.yaml` from disk.
 
 Example manifest:
 
@@ -219,7 +226,6 @@ All hosts share the same runtime flags via `HostConfig.from_env()`:
 | `--session-context` | — | — | Session context slug or path |
 | `--state-snapshot` | — | — | JSON snapshot file for context injection |
 | `--streaming` | — | `none` | Streaming mode: none, stage, text, hybrid |
-| `--models-file` | `LISA_MODELS_FILE` | `hosts/core/models.yaml` | Model manifest path |
 
 ## Commands
 
@@ -244,6 +250,10 @@ All commands are handled by `hosts/core/commands.py` and produce plain text (not
 | `/pack disable <name>` | Disable a pack (restart required) |
 | `/pack install <spec>` | Install a pack from package, git, or local folder |
 | `/pack uninstall <name>` | Uninstall a pack |
+| `/models show` | Show active model manifest from `<data-dir>/models.yaml` |
+| `/models discover` | Probe providers and write `<data-dir>/models.proposed.yaml` |
+| `/models apply` | Validate and promote proposal manifest |
+| `/models reload` | Reload active manifest from disk |
 | `/deep <query>` | Route through the deep-designated model |
 | `/quit` | Exit (transport-owned) |
 

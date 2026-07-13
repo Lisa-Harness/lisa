@@ -14,9 +14,9 @@ _SUPPORTED_DESIGNATIONS: set[str] = {"front-door", "default", "deep", "reasoning
 
 
 def default_manifest_path() -> Path:
-    """Return the colocated default manifest path for the host."""
+    """Return the default manifest path rooted under the runtime data-dir."""
 
-    return Path(__file__).resolve().with_name("models.yaml")
+    return (Path.cwd() / "artifacts" / "models.yaml").resolve()
 
 
 def load_model_manifest(path: Path | None = None) -> ModelManifest:

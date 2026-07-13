@@ -5,7 +5,7 @@ This is the core ``handle_message`` entry point that all transport hosts
 
 1. **Host command dispatch** — delegates to ``hosts.core.commands`` for
    ``/help``, ``/settings``, ``/tokens``, ``/debug``, ``/consolidate``,
-   ``/checkpoint``, ``/restore``, ``/checkpoints``, ``/pack``.
+    ``/checkpoint``, ``/restore``, ``/checkpoints``, ``/pack``, ``/models``.
 2. **Model turn routing** — for non-command messages: checks for ``/deep``
    prefix, parses slash-command routes, plans front-door routes for natural
    language, tries the front-door direct-response shortcut, tries the
@@ -46,6 +46,7 @@ from hosts.core.commands import (
     handle_debug_command,
     handle_help_command,
     handle_list_checkpoints_command,
+    handle_models_command,
     handle_pack_command,
     handle_restore_command,
     handle_simple_command,
@@ -235,6 +236,7 @@ register_host_command_prefixes(
         "/restore",
         "/checkpoints",
         "/pack",
+        "/models",
         "/debug",
     )
 )
@@ -286,6 +288,8 @@ async def _dispatch_host_command(
         response_text = await handle_list_checkpoints_command(runtime, message)
     elif lowered.startswith("/pack"):
         response_text = await handle_pack_command(runtime, stripped, message)
+    elif lowered.startswith("/models"):
+        response_text = await handle_models_command(runtime, stripped, message)
     elif lowered.startswith("/debug"):
         response_text = handle_debug_command(runtime, stripped, message)
 

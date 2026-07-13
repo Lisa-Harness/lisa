@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,7 +11,6 @@ from hosts.core.model_manifest import load_model_manifest
 
 logger = logging.getLogger(__name__)
 
-MANIFEST_ENV = "LISA_MODELS_FILE"
 _DEFAULT_DESIGNATIONS = frozenset({"front-door", "default", "deep", "reasoning"})
 _MANIFEST_CACHE_KEY = "manifest"
 
@@ -46,24 +44,29 @@ class StubCompletion:
     duration_ms: float = 0.0
 
 
-def manifest_path_from_env(*, env_var: str = MANIFEST_ENV) -> Path | None:
-    """Return the optional manifest path configured through the environment."""
+def active_manifest_path(*, data_dir: Path) -> Path:
+    """Return the canonical active model-manifest path under one data directory."""
 
-    configured = os.getenv(env_var, "").strip()
-    return Path(configured) if configured else None
+    return data_dir / "models.yaml"
+
+
+def proposal_manifest_path(*, data_dir: Path) -> Path:
+    """Return the canonical proposal model-manifest path under one data directory."""
+
+    return data_dir / "models.proposed.yaml"
 
 
 def load_manifest(
     runtime_state: dict[str, Any],
     *,
-    env_var: str = MANIFEST_ENV,
+    data_dir: Path,
 ) -> ModelManifest:
     """Return the cached manifest snapshot, loading it from disk on first use."""
 
     manifest = runtime_state.get(_MANIFEST_CACHE_KEY)
     if manifest is None:
         logger.debug("manifest cache miss; loading from disk")
-        manifest = load_model_manifest(manifest_path_from_env(env_var=env_var))
+        manifest = load_model_manifest(active_manifest_path(data_dir=data_dir))
         runtime_state[_MANIFEST_CACHE_KEY] = manifest
     return manifest
 
@@ -71,12 +74,12 @@ def load_manifest(
 def reload_manifest(
     runtime_state: dict[str, Any],
     *,
-    env_var: str = MANIFEST_ENV,
+    data_dir: Path,
 ) -> ModelManifest:
     """Reload the manifest from disk and return the new snapshot."""
 
     logger.debug("reloading model manifest from disk")
-    manifest = load_model_manifest(manifest_path_from_env(env_var=env_var))
+    manifest = load_model_manifest(active_manifest_path(data_dir=data_dir))
     runtime_state[_MANIFEST_CACHE_KEY] = manifest
     return manifest
 
@@ -84,11 +87,11 @@ def reload_manifest(
 def require_models_present(
     runtime_state: dict[str, Any],
     *,
-    env_var: str = MANIFEST_ENV,
+    data_dir: Path,
 ) -> None:
     """Assert that the active host manifest contains at least one model."""
 
-    manifest = load_manifest(runtime_state, env_var=env_var)
+    manifest = load_manifest(runtime_state, data_dir=data_dir)
     if not manifest.models:
         logger.error("manifest has no models configured")
         raise ValueError("The host requires at least one model in models.yaml.")
@@ -98,11 +101,11 @@ def resolve_little_lisa_model(
     model_id: str,
     *,
     runtime_state: dict[str, Any],
-    env_var: str = MANIFEST_ENV,
+    data_dir: Path,
 ) -> StubModelDefinition:
     """Resolve one model id or designation against the host's manifest."""
 
-    manifest = load_manifest(runtime_state, env_var=env_var)
+    manifest = load_manifest(runtime_state, data_dir=data_dir)
     requested = (model_id or "default").strip()
     normalized = requested.lower()
 
