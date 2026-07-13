@@ -318,3 +318,64 @@ class TestHandleMessage:
         # /unknown is not a host command, so it falls through to model routing,
         # which will fail because the content registry is not set.
         assert result.is_error is True
+
+    @pytest.mark.asyncio
+    async def test_models_help_command(self, tmp_path: Path) -> None:
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+        result = await handle_message(runtime, "/models")
+        assert isinstance(result, HostCommandResult)
+        assert "## /models" in result.text
+        assert "/models discover" in result.text
+
+    @pytest.mark.asyncio
+    async def test_models_show_without_manifest(self, tmp_path: Path) -> None:
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+        result = await handle_message(runtime, "/models show")
+        assert isinstance(result, HostCommandResult)
+        assert "No active models manifest is available yet." in result.text
+
+    @pytest.mark.asyncio
+    async def test_models_discover_then_apply(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from hosts.core.model_discovery import (
+            DiscoveredModel,
+            DiscoveryReport,
+            ProbeResult,
+            ProbeStatus,
+        )
+
+        async def _fake_discover_models() -> DiscoveryReport:
+            return DiscoveryReport(
+                results=(
+                    ProbeResult(
+                        provider="ollama",
+                        status=ProbeStatus.OK,
+                        models=(
+                            DiscoveredModel(model_id="gemma3:latest", provider="ollama"),
+                            DiscoveredModel(
+                                model_id="deepseek-r1:latest",
+                                provider="ollama",
+                                reasoning_model=True,
+                            ),
+                        ),
+                    ),
+                )
+            )
+
+        monkeypatch.setattr("hosts.core.commands.discover_models", _fake_discover_models)
+
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+
+        discover_result = await handle_message(runtime, "/models discover")
+        assert "proposal_written" in discover_result.text
+        assert runtime.models_proposal_path.exists()
+
+        apply_result = await handle_message(runtime, "/models apply")
+        assert "Applied models proposal." in apply_result.text
+        assert runtime.models_path.exists()

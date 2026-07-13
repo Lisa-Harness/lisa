@@ -57,7 +57,27 @@ from hosts.core.token_accounting import apply_turn_usage, format_session_exit_su
 
 
 def _make_runtime(tmp_path: Path, **config_kwargs) -> HostRuntime:
-    """Build a HostRuntime whose data_dir is tmp_path."""
+    """Build a HostRuntime whose data_dir is tmp_path.
+
+    Seeds a minimal models.yaml so manifest-dependent code paths
+    (capability snapshot, model resolution) have at least one model.
+    """
+    (tmp_path / "models.yaml").write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "models:",
+                "  - model_id: gemma3:latest",
+                "    provider: ollama",
+                "    designations: [front-door, default]",
+                "  - model_id: deepseek-r1:latest",
+                "    provider: ollama",
+                "    reasoning_model: true",
+                "    designations: [deep, reasoning]",
+            ]
+        ),
+        encoding="utf-8",
+    )
     config = HostConfig.from_env(data_dir=str(tmp_path), **config_kwargs)
     return HostRuntime(config)
 
@@ -824,29 +844,59 @@ def test_normalize_response_format_emits_json_schema_for_route_decision() -> Non
 # ── Model resolution ───────────────────────────────────────────────────
 
 
-def test_resolve_model_supports_designations_and_concrete_ids() -> None:
+def test_resolve_model_supports_designations_and_concrete_ids(tmp_path: Path) -> None:
+    (tmp_path / "models.yaml").write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "models:",
+                "  - model_id: gemma3:latest",
+                "    provider: ollama",
+                "    designations: [front-door, default]",
+                "  - model_id: deepseek-r1:latest",
+                "    provider: ollama",
+                "    reasoning_model: true",
+                "    designations: [deep, reasoning]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
     front_door_model_id = resolve_little_lisa_model(
-        "front-door", runtime_state={}
+        "front-door", runtime_state={}, data_dir=tmp_path
     ).model_id
     default_model_id = resolve_little_lisa_model(
-        "default", runtime_state={}
+        "default", runtime_state={}, data_dir=tmp_path
     ).model_id
     deep_model_id = resolve_little_lisa_model(
-        "deep", runtime_state={}
+        "deep", runtime_state={}, data_dir=tmp_path
     ).model_id
 
     assert front_door_model_id
     assert default_model_id
     assert deep_model_id
     resolved_front_door = resolve_little_lisa_model(
-        front_door_model_id, runtime_state={}
+        front_door_model_id, runtime_state={}, data_dir=tmp_path
     ).model_id
     assert resolved_front_door == front_door_model_id
 
 
-def test_resolve_model_rejects_unknown_manifest_id() -> None:
+def test_resolve_model_rejects_unknown_manifest_id(tmp_path: Path) -> None:
+    (tmp_path / "models.yaml").write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "models:",
+                "  - model_id: gemma3:latest",
+                "    provider: ollama",
+                "    designations: [front-door, default]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
     with pytest.raises(ValueError, match="not in the host's manifest"):
-        resolve_little_lisa_model("not-a-real-model", runtime_state={})
+        resolve_little_lisa_model("not-a-real-model", runtime_state={}, data_dir=tmp_path)
 
 
 # ── Ollama host normalization ────────────────────────────────────────

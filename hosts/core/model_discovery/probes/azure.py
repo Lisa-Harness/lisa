@@ -1,0 +1,126 @@
+"""Azure OpenAI probe — data-plane deployment listing.
+
+Root-cause of the prior "Azure doesn't work" bug: the previous probe
+appended ``/openai/deployments`` to the endpoint verbatim, doubling the
+``/openai`` segment for users who (reasonably) set ``AZURE_OPENAI_ENDPOINT``
+to ``https://resource.openai.azure.com/openai``. This probe normalises
+the endpoint to strip any trailing ``/openai`` so the constructed URL
+is always ``<base>/openai/deployments`` exactly once.
+"""
+
+from __future__ import annotations
+
+import httpx
+
+from ..classify import env_any
+from ..types import DiscoveredModel, ProbeResult, ProbeStatus
+from .base import ProviderProbe, _extract_rows, _model
+
+_LISA_AZURE_ENDPOINT_ENV = "LISA_AZURE_OPENAI_ENDPOINT"
+_LISA_AZURE_API_KEY_ENV = "LISA_AZURE_OPENAI_API_KEY"
+_LISA_AZURE_API_VERSION_ENV = "LISA_AZURE_OPENAI_API_VERSION"
+
+# Default API version for chat completions. The deployments list
+# endpoint on AI Foundry does NOT accept this version — it needs the
+# legacy ``2022-12-01`` which is the only version that returns
+# ``/openai/deployments`` on ``*.services.ai.azure.com`` endpoints.
+_DEFAULT_API_VERSION = "2024-10-21"
+_DEPLOYMENTS_API_VERSION = "2022-12-01"
+
+
+def normalize_azure_endpoint(endpoint: str) -> str:
+    """Return ``endpoint`` with any trailing ``/openai`` removed.
+
+    Ensures ``f"{base}/openai/deployments"`` never doubles the segment.
+    """
+
+    endpoint = endpoint.strip().rstrip("/")
+    if endpoint.endswith("/openai"):
+        endpoint = endpoint[: -len("/openai")]
+    return endpoint
+
+
+class AzureOpenAIProbe(ProviderProbe):
+    provider = "azure_openai"
+
+    async def probe(
+        self,
+        client: httpx.AsyncClient,
+        timeout: float,
+    ) -> ProbeResult:
+        endpoint = env_any(_LISA_AZURE_ENDPOINT_ENV, "AZURE_OPENAI_ENDPOINT")
+        api_key = env_any(_LISA_AZURE_API_KEY_ENV, "AZURE_OPENAI_API_KEY")
+        if not endpoint or not api_key:
+            return ProbeResult(provider=self.provider, status=ProbeStatus.SKIPPED)
+        return await super().probe(client, timeout)
+
+    async def _probe(
+        self,
+        client: httpx.AsyncClient,
+        timeout: float,
+    ) -> tuple[DiscoveredModel, ...] | None:
+        endpoint = env_any(_LISA_AZURE_ENDPOINT_ENV, "AZURE_OPENAI_ENDPOINT")
+        api_key = env_any(_LISA_AZURE_API_KEY_ENV, "AZURE_OPENAI_API_KEY")
+        api_version = env_any(_LISA_AZURE_API_VERSION_ENV) or _DEFAULT_API_VERSION
+
+        base = normalize_azure_endpoint(endpoint)
+
+        # Strategy: list *deployments* (the models actually deployed in this
+        # project), not the full catalog. The ``/openai/deployments`` endpoint
+        # accepts different API versions depending on the endpoint type:
+        #   - Classic Azure OpenAI (``*.openai.azure.com``): accepts the
+        #     configured ``api_version`` (typically ``2024-10-21``).
+        #   - AI Foundry (``*.services.ai.azure.com``): rejects
+        #     ``2024-10-21`` with 404, but accepts the legacy
+        #     ``2022-12-01`` version which returns only deployed models.
+        # We try the configured version first, then fall back to the legacy
+        # version, then fall back to ``/openai/models`` (catalog) with
+        # ``chat_completion`` filtering as a last resort.
+        response = await client.get(
+            f"{base}/openai/deployments",
+            params={"api-version": api_version},
+            headers={"api-key": api_key},
+            timeout=timeout,
+        )
+        if response.status_code == 404:
+            # Retry with the legacy deployments API version (AI Foundry).
+            response = await client.get(
+                f"{base}/openai/deployments",
+                params={"api-version": _DEPLOYMENTS_API_VERSION},
+                headers={"api-key": api_key},
+                timeout=timeout,
+            )
+        if response.status_code == 404:
+            # Last resort: list catalog models (not deployments) and filter
+            # to chat-completion-capable ones. This over-lists (returns the
+            # full catalog, not just deployed models) but is better than
+            # reporting nothing.
+            response = await client.get(
+                f"{base}/openai/models",
+                params={"api-version": api_version},
+                headers={"api-key": api_key},
+                timeout=timeout,
+            )
+        response.raise_for_status()
+        payload = response.json()
+        rows = _extract_rows(payload, "data")
+        models: list[DiscoveredModel] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            # Deployments have ``model`` (the underlying model) and ``id``
+            # (the deployment name). Catalog models have ``id`` only.
+            # Use the deployment ``id`` since that's what the OpenAI SDK
+            # passes as the ``model`` parameter for chat completions.
+            model_id = str(row.get("id") or row.get("model") or "").strip()
+            if not model_id:
+                continue
+            # On the catalog fallback, only list models that support chat
+            # completions (the deployments list already filters to deployed
+            # models).
+            capabilities = row.get("capabilities")
+            if isinstance(capabilities, dict):
+                if not capabilities.get("chat_completion", False):
+                    continue
+            models.append(_model(model_id, self.provider))
+        return tuple(models) if models else None

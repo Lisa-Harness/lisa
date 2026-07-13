@@ -99,7 +99,21 @@ from hosts.core.content_roots import (
     load_installed_packs_lock as _content_roots_load_lock,
 )
 from hosts.core.lisa_config import _resolve_slice_tuning
-from hosts.core.model_runtime import StubModelDefinition, load_manifest, resolve_little_lisa_model
+from hosts.core.model_discovery import (
+    build_manifest_payload,
+    discover_models,
+    write_manifest_yaml,
+)
+from hosts.core.model_discovery import DiscoveryReport, ProbeStatus
+from hosts.core.model_manifest import load_model_manifest
+from hosts.core.model_runtime import (
+    StubModelDefinition,
+    active_manifest_path,
+    load_manifest,
+    proposal_manifest_path,
+    reload_manifest,
+    resolve_little_lisa_model,
+)
 from hosts.core.runtime import HostRuntime, TurnContext
 from hosts.core.state_provider import FileBackedStateProvider, build_unified_state
 from hosts.core.thread import append_thread_entry, load_recent_thread_entries
@@ -185,10 +199,11 @@ _MIN_RESTORE_ARGS = 2
 def _resolve_model(runtime: HostRuntime, model_id: str) -> StubModelDefinition:
     """Resolve one model identifier against the runtime's manifest cache."""
     if runtime.manifest is None:
-        runtime.manifest = load_manifest({})
+        runtime.manifest = load_manifest({}, data_dir=runtime.data_dir)
     return resolve_little_lisa_model(
         model_id,
         runtime_state={"manifest": runtime.manifest},
+        data_dir=runtime.data_dir,
     )
 
 
@@ -325,7 +340,7 @@ def build_capability_snapshot(runtime: HostRuntime) -> dict[str, Any]:
     """Build a capability snapshot dict for diagnostics and help rendering."""
     catalog = get_workflow_catalog()
     if runtime.manifest is None:
-        runtime.manifest = load_manifest({})
+        runtime.manifest = load_manifest({}, data_dir=runtime.data_dir)
     manifest = runtime.manifest
     operations = get_operation_catalog()
     tools = get_tool_catalog()
@@ -962,6 +977,219 @@ async def handle_list_checkpoints_command(
         return "\n".join(lines)
     except Exception as exc:  # pylint: disable=broad-except
         return f"List failed: {exc}"
+
+
+# ── /models ─────────────────────────────────────────────────────────
+
+
+def _render_models_manifest(runtime: HostRuntime) -> str:
+    active_path = active_manifest_path(data_dir=runtime.data_dir)
+    proposal_path = proposal_manifest_path(data_dir=runtime.data_dir)
+
+    try:
+        manifest = runtime.manifest or load_model_manifest(active_path)
+    except Exception as exc:  # pylint: disable=broad-except
+        return (
+            "No active models manifest is available yet.\n\n"
+            f"- expected_path: {active_path}\n"
+            "- next_step: run /models discover to generate models.proposed.yaml, "
+            "then edit and run /models apply\n"
+            f"- load_error: {exc}"
+        )
+
+    lines = [
+        "## Models",
+        f"- active_manifest: {active_path}",
+        f"- proposal_manifest: {proposal_path}",
+        f"- model_count: {len(manifest.models)}",
+    ]
+    for model in manifest.models:
+        designations = ", ".join(sorted(model.designations)) or "-"
+        reasoning = "yes" if model.reasoning_model else "no"
+        lines.append(
+            f"- {model.model_id} (provider={model.provider}, "
+            f"reasoning={reasoning}, designations={designations})"
+        )
+    if manifest.mode_models:
+        mode_map = ", ".join(
+            f"{mode_id}->{model_id}" for mode_id, model_id in sorted(manifest.mode_models.items())
+        )
+        lines.append(f"- mode_models: {mode_map}")
+    return "\n".join(lines)
+
+
+def _models_help_text(runtime: HostRuntime) -> str:
+    active_path = active_manifest_path(data_dir=runtime.data_dir)
+    proposal_path = proposal_manifest_path(data_dir=runtime.data_dir)
+    return "\n".join(
+        [
+            "## /models",
+            "- /models show: show active models from data-dir manifest.",
+            "- /models discover: probe configured providers and write a proposal manifest.",
+            "- /models discover --force: overwrite an existing proposal.",
+            "- /models apply: validate and promote the proposal as active manifest.",
+            "- /models reload: reload active manifest from disk.",
+            "",
+            f"- active_path: {active_path}",
+            f"- proposal_path: {proposal_path}",
+        ]
+    )
+
+
+def _parse_models_subcommand(stripped: str) -> tuple[str, tuple[str, ...]]:
+    """Tokenize ``/models ...`` into ``(subcommand, args)``.
+
+    Tolerates any whitespace between ``/models`` and the subcommand, and
+    rejects ``/modelsdiscover`` (no space) by returning ``("", ())`` which
+    routes to the help branch.
+    """
+
+    parts = stripped.split()
+    if not parts or parts[0].lower() != "/models":
+        return "", ()
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    args = tuple(parts[2:])
+    return sub, args
+
+
+def _render_discover_notes(report: DiscoveryReport) -> list[str]:
+    """Render UI-safe per-provider notes from a discovery report.
+
+    Only non-OK/non-SKIPPED results produce a note line. The safe
+    messages have already been redacted at the probe layer, so no raw
+    exception text (and no API key) can reach the UI through this path.
+    """
+
+    lines: list[str] = []
+    for result in report.results:
+        note = result.note_line()
+        if note is not None:
+            lines.append(f"- {note}")
+    return lines
+
+
+async def handle_models_command(
+    runtime: HostRuntime,
+    stripped: str,
+    message: str,
+) -> str:
+    """Handle ``/models`` workflows (show/discover/apply/reload/help)."""
+
+    subcommand, args = _parse_models_subcommand(stripped)
+    active_path = active_manifest_path(data_dir=runtime.data_dir)
+    proposal_path = proposal_manifest_path(data_dir=runtime.data_dir)
+
+    if subcommand in {"", "help"}:
+        response_text = _models_help_text(runtime)
+        return handle_simple_command(runtime, message, "models", response_text)
+
+    if subcommand == "show":
+        response_text = _render_models_manifest(runtime)
+        return handle_simple_command(runtime, message, "models", response_text)
+
+    if subcommand == "reload":
+        try:
+            runtime.manifest = reload_manifest({}, data_dir=runtime.data_dir)
+            response_text = _render_models_manifest(runtime)
+        except Exception as exc:  # pylint: disable=broad-except
+            response_text = (
+                f"Failed to reload models from {active_path}: {exc}\n"
+                "Run /models discover to generate a proposal first."
+            )
+        return handle_simple_command(runtime, message, "models", response_text)
+
+    if subcommand == "discover":
+        force = "--force" in args
+        if proposal_path.exists() and not force:
+            response_text = "\n".join(
+                [
+                    f"Proposal already exists at {proposal_path}.",
+                    "Use /models discover --force to overwrite (your edits will be lost).",
+                ]
+            )
+            return handle_simple_command(runtime, message, "models", response_text)
+
+        report = await discover_models()
+        payload = build_manifest_payload(report.models)
+        if not payload.get("models"):
+            notes_lines = _render_discover_notes(report) or ["- none"]
+            response_text = "\n".join(
+                [
+                    "No models were discovered from configured providers.",
+                    "Set provider credentials/endpoints first, then rerun /models discover.",
+                    "",
+                    "Notes:",
+                    *notes_lines,
+                ]
+            )
+            return handle_simple_command(runtime, message, "models", response_text)
+
+        write_manifest_yaml(proposal_path, payload)
+        provider_summary: dict[str, int] = {}
+        for item in report.models:
+            provider_summary[item.provider] = provider_summary.get(item.provider, 0) + 1
+        provider_text = ", ".join(
+            f"{provider}:{count}" for provider, count in sorted(provider_summary.items())
+        )
+        skipped = [
+            result.provider
+            for result in report.results
+            if result.status is ProbeStatus.SKIPPED
+        ]
+        notes_lines = _render_discover_notes(report)
+        lines = [
+            "Model discovery completed.",
+            f"- discovered_models: {len(report.models)} ({provider_text})",
+            f"- proposal_written: {proposal_path}",
+            "- next_step: edit proposal as needed, then run /models apply",
+        ]
+        if skipped:
+            lines.append(f"- skipped (not configured): {', '.join(skipped)}")
+        lines.append("- notes:")
+        lines.extend(notes_lines if notes_lines else ["- none"])
+        response_text = "\n".join(lines)
+        return handle_simple_command(runtime, message, "models", response_text)
+
+    if subcommand == "apply":
+        if not proposal_path.exists():
+            response_text = (
+                f"Proposal manifest not found at {proposal_path}. "
+                "Run /models discover first."
+            )
+            return handle_simple_command(runtime, message, "models", response_text)
+
+        try:
+            manifest = load_model_manifest(proposal_path)
+            active_path.parent.mkdir(parents=True, exist_ok=True)
+            active_path.write_text(proposal_path.read_text(encoding="utf-8"), encoding="utf-8")
+            runtime.manifest = manifest
+            response_text = "\n".join(
+                [
+                    "Applied models proposal.",
+                    f"- active_manifest: {active_path}",
+                    f"- model_count: {len(manifest.models)}",
+                    f"- proposal_retained: {proposal_path}",
+                ]
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            response_text = (
+                f"Failed to apply proposal from {proposal_path}: {exc}\n"
+                "Fix the proposal file and retry /models apply."
+            )
+        return handle_simple_command(runtime, message, "models", response_text)
+
+    if subcommand == "edit":
+        response_text = (
+            "CLI editor integration is handled by the CLI host layer. "
+            f"Edit either {proposal_path} or {active_path}, then run /models reload."
+        )
+        return handle_simple_command(runtime, message, "models", response_text)
+
+    response_text = (
+        f"Unknown /models command '{subcommand}'. "
+        "Supported: show, discover, apply, reload, help."
+    )
+    return handle_simple_command(runtime, message, "models", response_text)
 
 
 # ── /pack ────────────────────────────────────────────────────────────
