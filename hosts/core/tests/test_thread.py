@@ -10,7 +10,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hosts.core.host_commands import is_host_command_query
+# Importing handle_message triggers the registration of host-command
+# prefixes in the dynamic registry (host_commands.py). The tests below
+# verify both the registry and the transcript filter that depends on it.
+import hosts.core.handle_message  # noqa: F401
+from hosts.core.host_commands import (
+    host_command_exact,
+    host_command_prefixes,
+    is_host_command_query,
+    register_host_command_exact,
+    register_host_command_prefix,
+)
 from hosts.core.thread import (
     append_thread_entry,
     build_recent_thread_excerpt,
@@ -62,6 +72,43 @@ class TestIsHostCommandQuery:
     def test_empty_or_whitespace_only(self) -> None:
         assert not is_host_command_query("")
         assert not is_host_command_query("   ")
+
+    def test_registry_populated_by_handle_message_import(self) -> None:
+        """The dispatch layer must register its prefixes on import."""
+        prefixes = host_command_prefixes()
+        # All ten dispatch-table prefixes should be registered.
+        assert "/help" in prefixes
+        assert "/tokens" in prefixes
+        assert "/settings" in prefixes
+        assert "/consolidate" in prefixes
+        assert "/slice" in prefixes
+        assert "/checkpoint" in prefixes
+        assert "/restore" in prefixes
+        assert "/checkpoints" in prefixes
+        assert "/pack" in prefixes
+        assert "/debug" in prefixes
+        # ``/deep`` must NOT be registered (routes to model).
+        assert "/deep" not in prefixes
+
+    def test_registry_exact_populated_by_handle_message_import(self) -> None:
+        exact = host_command_exact()
+        assert "help" in exact
+        assert "tokens" in exact
+        assert "settings" in exact
+        assert "consolidate" in exact
+        assert "slice" in exact
+        assert "checkpoints" in exact
+
+    def test_dynamic_registration_works(self) -> None:
+        """A newly registered prefix is immediately recognised."""
+        register_host_command_prefix("/custom-cmd")
+        assert is_host_command_query("/custom-cmd do something")
+        assert not is_host_command_query("/custom-other thing")
+
+    def test_dynamic_registration_exact_works(self) -> None:
+        register_host_command_exact("custom-alias")
+        assert is_host_command_query("custom-alias")
+        assert not is_host_command_query("custom-other")
 
 
 # ── build_recent_thread_excerpt ──────────────────────────────────────

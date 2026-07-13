@@ -38,8 +38,9 @@ from kernel.turn_runner import TurnResult, run_turn
 
 from hosts.core.commands import (
     explicit_deep_query,
-    format_unsupported_mode,
     format_operation_error,
+    format_token_stats,
+    format_unsupported_mode,
     frontdoor_model_alias,
     handle_checkpoint_command,
     handle_debug_command,
@@ -48,21 +49,23 @@ from hosts.core.commands import (
     handle_pack_command,
     handle_restore_command,
     handle_simple_command,
-    model_alias_for_mode,
     mode_support_gap,
+    model_alias_for_mode,
     preferred_model_id_for_route,
     render_runtime_settings,
-    format_token_stats,
     run_explicit_slice_command,
     set_runtime_route_preview,
 )
 from hosts.core.context_assembly import build_turn_context
 from hosts.core.frontdoor_routing import plan_frontdoor_route
+from hosts.core.host_commands import (
+    register_host_command_exacts,
+    register_host_command_prefixes,
+)
 from hosts.core.thread import append_thread_entry, build_recent_thread_excerpt
 from hosts.core.token_accounting import apply_turn_usage, coerce_non_negative_int
 from hosts.core.turn_hooks_builder import build_turn_hooks
 from hosts.core.types import HostCommandResult
-
 
 # ── Token-accounting adapter ──────────────────────────────────────────
 
@@ -152,7 +155,7 @@ def _apply_turn_usage(
     _sync_token_state(runtime, state)
 
 if TYPE_CHECKING:
-    from hosts.core.callbacks import NullTransport, TransportCallbacks
+    from hosts.core.callbacks import TransportCallbacks
     from hosts.core.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
@@ -211,6 +214,41 @@ async def handle_message(
 
 # ── Host command dispatch ──────────────────────────────────────────────
 
+# Register the host-command prefixes and bare-word aliases with the
+# dynamic registry in ``hosts.core.host_commands``. This is the single
+# source of truth: the dispatch table below is the authority on what gets
+# intercepted, and the registry feeds the transcript filter (``thread.py``
+# and ``state_provider.py``) so the persistence layer never owns command
+# vocabulary.
+#
+# ``/deep`` is deliberately NOT registered: it routes to the model and the
+# query body IS the conversation. ``/quit`` is CLI-only and never appended
+# to the thread.
+register_host_command_prefixes(
+    (
+        "/help",
+        "/tokens",
+        "/settings",
+        "/consolidate",
+        "/slice",
+        "/checkpoint",
+        "/restore",
+        "/checkpoints",
+        "/pack",
+        "/debug",
+    )
+)
+register_host_command_exacts(
+    (
+        "help",
+        "tokens",
+        "settings",
+        "consolidate",
+        "slice",
+        "checkpoints",
+    )
+)
+
 
 async def _dispatch_host_command(
     runtime: HostRuntime,
@@ -225,6 +263,11 @@ async def _dispatch_host_command(
     Each handler returns a plain text string; this function wraps it in a
     ``HostCommandResult`` and emits the transport callback.
     """
+    # Ensure the (possibly deferred) MCP pool is ready before any slash
+    # command touches runtime.mcp_tool_pool (/settings, /debug, /checkpoint,
+    # /restore, /pack). Cheap commands (/help, /quit) don't need the pool,
+    # but awaiting a completed no-op task is free.
+    await runtime.ensure_pool_ready()
     response_text: str | None = None
 
     if lowered.startswith("/help") or lowered == "help":
@@ -273,6 +316,9 @@ async def _route_model_turn(
        clarification attempts.
     5. Execute the resolved mode turn via ``kernel.turn_runner.run_turn``.
     """
+    # Ensure the (possibly deferred) MCP pool is ready before building
+    # turn hooks, which snapshot runtime.mcp_tool_pool.
+    await runtime.ensure_pool_ready()
     deep_query = explicit_deep_query(message)
     deep_route = deep_query is not None
     if deep_route:
@@ -418,10 +464,9 @@ async def _plan_frontdoor_route(
     """
     from hosts.core.commands import _resolve_model as _resolve_model_cmd
     from hosts.core.context_assembly import (
-        build_frontdoor_route_catalog_markdown as _build_catalog,
         build_frontdoor_user_prompt,
-        load_frontdoor_route_prompt,
         load_frontdoor_fast_path_verifier_prompt,
+        load_frontdoor_route_prompt,
     )
     from hosts.core.frontdoor_routing import last_debug_dict
     from hosts.core.providers import complete_live
