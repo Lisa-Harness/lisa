@@ -1103,27 +1103,32 @@ async def _run_once_with_teardown(runtime: HostRuntime, message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# bottom command
+# intake command
 # ---------------------------------------------------------------------------
 
 
-@app.command("bottom", help="Run one bottom-half tick: collect signals, process, write state.")
-def _bottom_command(
+@app.command("intake", help="Run one intake tick: collect signals, process, write state.")
+def _intake_command(
     data_dir: DataDirOption = "",
     log_level: LogLevelOption = "",
     host_log: HostLogOption = "",
 ) -> None:
-    """One-shot bottom-half process. Triggered by systemd timer or cron."""
+    """One-shot intake process. Triggered by systemd timer or cron.
+
+    Collects signals from installed pack signal connectors, runs processing
+    loops, and writes the merged UnifiedState to ``<data-dir>/state.json``.
+    The next turn reads that state so the model has fresh ambient data.
+    """
     resolved_data_dir = Path(data_dir).expanduser() if data_dir else Path.cwd() / "artifacts"
     try:
-        from hosts.core.bottom import run_tick  # noqa: PLC0415
+        from hosts.core.intake import run_intake  # noqa: PLC0415
     except ImportError:
-        console.print("[red]bottom-half module not available in this host.[/red]")
+        console.print("[red]intake module not available in this host.[/red]")
         raise typer.Exit(code=2)
 
-    state = asyncio.run(run_tick(data_dir=resolved_data_dir))
+    state = asyncio.run(run_intake(data_dir=resolved_data_dir))
     console.print(
-        f"[green]Bottom-half tick complete.[/green] "
+        f"[green]Intake tick complete.[/green] "
         f"{len(state.signal_snapshots)} signal(s), "
         f"{len(state.active_alerts)} alert(s). "
         f"State written to {resolved_data_dir / 'state.json'}"
