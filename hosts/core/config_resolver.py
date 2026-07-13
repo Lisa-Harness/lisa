@@ -199,7 +199,7 @@ def resolve_timezone(cli_timezone: str) -> tuple[str, str]:
 
     Precedence (first wins):
     1. ``--timezone`` CLI flag
-    2. ``LISA_TIMEZONE`` / ``LITTLE_LISA_TIMEZONE`` env var
+    2. ``LISA_TIMEZONE`` env var
     3. OS-specific env-var candidates (``TZ``, ``TIMEZONE``, etc.)
     4. System-local tzinfo (with Windows display-name mapping)
     5. ``UTC`` fallback

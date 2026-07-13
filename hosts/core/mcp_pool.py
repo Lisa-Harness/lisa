@@ -418,6 +418,12 @@ def compile_mcp_configs(
     # the manifest's path-like fields (venv_dir, command_path, etc.).
     os.environ.setdefault("FRAMEWORK_ROOT", workspace_root)
 
+    # Propagate the resolved timezone so ${LISA_TIMEZONE} expansion in
+    # mcp_servers.yaml (e.g. lisa-context --timezone) works even when the
+    # user hasn't set the env var explicitly — the host resolved it from
+    # CLI flags or the system-local tzinfo.
+    os.environ.setdefault("LISA_TIMEZONE", config.timezone)
+
     registry = MCPServerRegistry()
 
     # All host-owned servers (first-party) from mcp_servers.yaml. The

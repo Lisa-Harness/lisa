@@ -129,8 +129,14 @@ def build_ambient_facts(
     try:
         target_zone = ZoneInfo(configured_timezone)
     except ZoneInfoNotFoundError:
-        target_zone = UTC
-        timezone_used = "UTC"
+        # ZoneInfo may fail when the IANA tz database is unavailable
+        # (e.g. Windows without the ``tzdata`` package).  Fall back to
+        # the system local timezone rather than silently reporting UTC,
+        # so the model sees the correct local time when the configured
+        # zone can't be loaded.  This mirrors the status-line badge
+        # fallback in ``hosts/cli/repl.py``.
+        target_zone = datetime.now().astimezone().tzinfo or UTC
+        timezone_used = str(target_zone) if target_zone is not UTC else "UTC"
     local_now = now_utc.astimezone(target_zone)
 
     lines = [
