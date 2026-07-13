@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import platform
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -64,6 +66,52 @@ app = typer.Typer(
     no_args_is_help=False,
     help="Run the Lisa framework terminal host.",
 )
+
+# Exit code returned when a restart is required (e.g. after a pack lifecycle
+# change). Scripts can detect this to distinguish "restart needed" from a
+# clean exit. Matches the BSD sysexits.h value for EX_UNAVAILABLE.
+_RESTART_REQUIRED_EXIT = 69
+
+# Env var carrying a message to replay as the first turn on the next launch
+# after a restart. Set by `/pack install ... --resume <msg>` in
+# hosts.core.commands; consumed once on startup by the CLI host.
+_RESTART_RESUME_MESSAGE_ENV = "LISA_RESTART_RESUME_MESSAGE"
+
+
+def _restart_current_process() -> None:
+    """Restart the CLI process after a runtime change.
+
+    - Unix (``os.name != "nt"``): true in-place re-exec via
+      :func:`os.execv`. The process keeps its terminal, stdin/stdout, and
+      environment; the new image re-enters :func:`main` with the same argv.
+    - Windows (``os.name == "nt"``): do NOT spawn a child. A spawned
+      process loses its parent terminal link and breaks the interactive
+      REPL. Instead, print a clear restart-required notice and exit with
+      :data:`_RESTART_REQUIRED_EXIT` so the user manually re-runs ``lisa``.
+
+    Uses :data:`sys.argv` (not ``sys.orig_argv``) for args continuity —
+    ``sys.orig_argv`` on Windows contains the Store launcher, not the
+    venv interpreter, which corrupts re-execs.
+    """
+    if os.name == "nt":
+        # Do not attempt to spawn a child process on Windows — it detaches
+        # from the parent terminal and breaks the interactive REPL. Just
+        # exit with a clear, script-detectable restart-required code.
+        console.print(
+            Panel(
+                "A runtime change requires a restart to reload entry points,\n"
+                "pack catalogs, and MCP manifests.\n\n"
+                "Please re-run [bold]lisa[/bold] manually to continue.",
+                title="Restart Required",
+                border_style="gold3",
+            )
+        )
+        raise typer.Exit(code=_RESTART_REQUIRED_EXIT)
+    else:
+        # True in-place exec replacement on Unix. The current process image
+        # is replaced; the terminal, file descriptors, and environment are
+        # preserved. os.execv does not return on success.
+        os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
 def _get_version() -> str:
@@ -344,7 +392,53 @@ def _run_default_no_args_mode(
     )
     if runtime is None:
         return
-    asyncio.run(run_repl(runtime, console=console))
+    _consume_restart_resume_message(runtime)
+    restart_requested = asyncio.run(run_repl(runtime, console=console))
+    if restart_requested:
+        _restart_current_process()
+
+
+# ---------------------------------------------------------------------------
+# Restart helpers
+# ---------------------------------------------------------------------------
+
+
+def _consume_restart_resume_message(runtime: HostRuntime) -> None:
+    """Consume the resume-message env var on startup if present.
+
+    If ``LISA_RESTART_RESUME_MESSAGE`` is set (by a `/pack ... --resume <msg>`
+    command in the prior session), stash it on the runtime so the REPL can
+    replay it as the first turn, then clear the env var to avoid replay
+    loops on subsequent restarts.
+
+    Only consumed in interactive REPL startup; one-shot ``once``/``packs``
+    modes ignore it for deterministic one-shot UX.
+    """
+    resume_msg = os.environ.pop(_RESTART_RESUME_MESSAGE_ENV, "").strip()
+    if resume_msg:
+        runtime.pending_resume_message = resume_msg
+
+
+def _exit_restart_required() -> None:
+    """Print a restart-required notice and exit for one-shot commands.
+
+    Used by ``once`` and ``packs install/uninstall`` after a successful
+    pack lifecycle change. Unlike the REPL path, one-shot commands do
+    NOT re-exec (re-running the same command would redo the mutation).
+    Instead, print a clear notice and exit with
+    :data:`_RESTART_REQUIRED_EXIT` on all platforms so the user manually
+    restarts the interactive session.
+    """
+    console.print(
+        Panel(
+            "A runtime change requires a restart to reload entry points,\n"
+            "pack catalogs, and MCP manifests.\n\n"
+            "Please re-run [bold]lisa[/bold] to continue.",
+            title="Restart Required",
+            border_style="gold3",
+        )
+    )
+    raise typer.Exit(code=_RESTART_REQUIRED_EXIT)
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +524,10 @@ def _cli_command(
     )
     if runtime is None:
         return
-    asyncio.run(run_repl(runtime, console=console))
+    _consume_restart_resume_message(runtime)
+    restart_requested = asyncio.run(run_repl(runtime, console=console))
+    if restart_requested:
+        _restart_current_process()
 
 
 # ---------------------------------------------------------------------------
@@ -1017,6 +1114,8 @@ def _packs_command(
             console.print(f"[red]{details}[/red]")
             raise typer.Exit(code=1)
         console.print(details)
+        if runtime.restart_required:
+            _exit_restart_required()
         raise typer.Exit(code=0)
     if normalized == "uninstall":
         ok, details = asyncio.run(_run_pack_uninstall(runtime, target))
@@ -1024,6 +1123,8 @@ def _packs_command(
             console.print(f"[red]{details}[/red]")
             raise typer.Exit(code=1)
         console.print(details)
+        if runtime.restart_required:
+            _exit_restart_required()
         raise typer.Exit(code=0)
 
     console.print("[red]Unknown action. Use: list, install, uninstall.[/red]")
@@ -1087,11 +1188,18 @@ def _once_command(
     )
     if runtime is None:
         return
-    asyncio.run(_run_once_with_teardown(runtime, message))
+    restart_required = asyncio.run(_run_once_with_teardown(runtime, message))
+    if restart_required:
+        _exit_restart_required()
 
 
-async def _run_once_with_teardown(runtime: HostRuntime, message: str) -> None:
-    """Run one turn, then close the MCP pool."""
+async def _run_once_with_teardown(runtime: HostRuntime, message: str) -> bool:
+    """Run one turn, then close the MCP pool.
+
+    Returns ``True`` if the runtime flagged a restart as required (e.g.
+    a pack lifecycle command), so the caller can exit with a restart
+    notice instead of a clean exit.
+    """
     from hosts.cli.transport import RichTransport
 
     transport = RichTransport(console=console, debug=runtime.config.debug)
@@ -1100,6 +1208,7 @@ async def _run_once_with_teardown(runtime: HostRuntime, message: str) -> None:
         await handle_message(runtime, message, transport)
     finally:
         await runtime.aclose()
+    return runtime.restart_required
 
 
 # ---------------------------------------------------------------------------
