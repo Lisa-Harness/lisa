@@ -199,6 +199,8 @@ $env:LISA_LOG_LEVEL = "info"                        # optional: debug|info|warni
 
 Fallback env vars are also supported: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `OLLAMA_HOST`.
 
+> **Azure AI Foundry / AI Services endpoint:** Use the **resource root** URL (e.g. `https://<resource>.services.ai.azure.com`), **not** the Foundry project path (`/api/projects/<project>`). The OpenAI SDK appends `/openai/deployments/<model>/chat/completions?api-version=...` to the endpoint — including the project path causes `API version not supported` errors.
+
 ## CLI Flags
 
 All hosts share the same runtime flags via `HostConfig.from_env()`:
