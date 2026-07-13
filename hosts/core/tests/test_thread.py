@@ -10,63 +10,58 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from hosts.core.host_commands import is_host_command_query
 from hosts.core.thread import (
-    _is_host_command_query,
     append_thread_entry,
     build_recent_thread_excerpt,
     load_recent_thread_entries,
 )
 
-# ── _is_host_command_query ───────────────────────────────────────────
+# ── is_host_command_query ────────────────────────────────────────────
 
 
 class TestIsHostCommandQuery:
     def test_slash_prefix_commands_match(self) -> None:
-        assert _is_host_command_query("/pack disable github")
-        assert _is_host_command_query("/pack list")
-        assert _is_command_query_returns_true("/help")
-        assert _is_host_command_query("/tokens")
-        assert _is_host_command_query("/settings")
-        assert _is_host_command_query("/debug context")
-        assert _is_host_command_query("/checkpoint")
-        assert _is_host_command_query("/consolidate")
-        assert _is_host_command_query("/checkpoints")
-        assert _is_host_command_query("/restore my-snapshot")
+        assert is_host_command_query("/pack disable github")
+        assert is_host_command_query("/pack list")
+        assert is_host_command_query("/help")
+        assert is_host_command_query("/tokens")
+        assert is_host_command_query("/settings")
+        assert is_host_command_query("/debug context")
+        assert is_host_command_query("/checkpoint")
+        assert is_host_command_query("/consolidate")
+        assert is_host_command_query("/checkpoints")
+        assert is_host_command_query("/restore my-snapshot")
 
     def test_bare_word_aliases_match(self) -> None:
-        assert _is_host_command_query("help")
-        assert _is_host_command_query("tokens")
-        assert _is_host_command_query("settings")
-        assert _is_host_command_query("consolidate")
-        assert _is_host_command_query("checkpoints")
+        assert is_host_command_query("help")
+        assert is_host_command_query("tokens")
+        assert is_host_command_query("settings")
+        assert is_host_command_query("consolidate")
+        assert is_host_command_query("checkpoints")
 
     def test_case_insensitive(self) -> None:
-        assert _is_host_command_query("/PACK DISABLE GITHUB")
-        assert _is_host_command_query("/Help")
-        assert _is_host_command_query("  /pack list  ")
+        assert is_host_command_query("/PACK DISABLE GITHUB")
+        assert is_host_command_query("/Help")
+        assert is_host_command_query("  /pack list  ")
 
     def test_whitespace_stripped(self) -> None:
-        assert _is_host_command_query("   /pack list   ")
+        assert is_host_command_query("   /pack list   ")
 
     def test_normal_dialogue_does_not_match(self) -> None:
-        assert not _is_host_command_query("tell me about your context")
-        assert not _is_host_command_query("what is /pack?")
-        assert not _is_host_command_query("explain /help to me")
+        assert not is_host_command_query("tell me about your context")
+        assert not is_host_command_query("what is /pack?")
+        assert not is_host_command_query("explain /help to me")
         # ``/deep`` is deliberately excluded — it routes to the model and
         # the query body IS the conversation.
-        assert not _is_host_command_query("/deep design a retry strategy")
-        assert not _is_host_command_query("/quit")
-        assert not _is_host_command_query("deep")
-        assert not _is_host_command_query("")
+        assert not is_host_command_query("/deep design a retry strategy")
+        assert not is_host_command_query("/quit")
+        assert not is_host_command_query("deep")
+        assert not is_host_command_query("")
 
     def test_empty_or_whitespace_only(self) -> None:
-        assert not _is_host_command_query("")
-        assert not _is_host_command_query("   ")
-
-
-def _is_command_query_returns_true(query: str) -> bool:
-    """Helper so the test list above reads symmetrically."""
-    return _is_host_command_query(query)
+        assert not is_host_command_query("")
+        assert not is_host_command_query("   ")
 
 
 # ── build_recent_thread_excerpt ──────────────────────────────────────

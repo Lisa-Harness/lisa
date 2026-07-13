@@ -20,6 +20,9 @@ Dependency direction
 ``thread.py`` ← ``main.py`` / ``handle_message.py``  (callers import from
 thread; thread never imports main or any transport code)
 
+``thread.py`` → ``hosts.core.host_commands`` (leaf: command-prefix registry),
+``hosts.core.lisa_config`` (constants). Neither imports thread back.
+
 Public surface
 --------------
 - :func:`load_recent_thread_entries`
@@ -36,68 +39,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from hosts.core.host_commands import is_host_command_query as _is_host_command_query
 from hosts.core.lisa_config import _THREAD_DIGEST_FILE_NAME
 
 logger = logging.getLogger(__name__)
 
-
-# ── Host-only command prefixes ───────────────────────────────────────
-# Canonical set of slash-command prefixes that are host control directives
-# (not conversational content). Entries whose ``query`` field starts with
-# one of these (case-insensitive, after lstrip) are stripped from the
-# conversation transcript fed back to the model. The model already
-# observes their *effect* via the live capability manifest / pack lock;
-# replaying the raw ``/pack disable ...`` text as "conversation" makes the
-# model treat an operator UI gesture as dialogue (the bug surfaced in the
-# testing session_context).
-#
-# ``/deep`` is deliberately excluded: it routes to the model and the
-# query body IS the conversation. ``/quit`` is CLI-only and never appended
-# to the thread. Bare-word aliases (``help``, ``tokens``, ...) are matched
-# by the exact-match form below.
-#
-# Keep in sync with ``hosts/core/handle_message._dispatch_host_command``.
-_HOST_COMMAND_PREFIXES: tuple[str, ...] = (
-    "/help",
-    "/tokens",
-    "/settings",
-    "/consolidate",
-    "/slice",
-    "/checkpoint",
-    "/restore",
-    "/checkpoints",
-    "/pack",
-    "/debug",
-)
-_HOST_COMMAND_EXACT: frozenset[str] = frozenset(
-    {
-        "help",
-        "tokens",
-        "settings",
-        "consolidate",
-        "slice",
-        "checkpoints",
-    }
-)
-
-
-def _is_host_command_query(query: str) -> bool:
-    """Return ``True`` when ``query`` is a host-only command, not dialogue.
-
-    Used by :func:`build_recent_thread_excerpt` and the thread digest
-    compactor to strip operator UI gestures (``/pack disable github``,
-    ``/help``, ``/tokens``, ...) from the conversation transcript that
-    gets injected back into the model's context. The model observes the
-    *effect* of these commands through the live capability manifest and
-    pack lock; replaying the raw command text as "recent conversation"
-    makes the model treat a UI gesture as something the user said.
-    """
-    stripped = query.strip().lower()
-    if not stripped:
-        return False
-    if stripped in _HOST_COMMAND_EXACT:
-        return True
-    return stripped.startswith(_HOST_COMMAND_PREFIXES)
+# ``_is_host_command_query`` is re-exported here for backward compatibility
+# only — callers should import directly from ``hosts.core.host_commands``.
+# The persistence layer (this module) must not own command-name vocabulary;
+# the registry lives in ``host_commands`` (a leaf module with no
+# ``hosts.core`` imports) so both the command dispatch layer and the
+# persistence layer can share it without a cycle.
+__all__ = [
+    "append_thread_entry",
+    "build_recent_thread_excerpt",
+    "load_recent_thread_entries",
+    "load_thread_digest",
+]
 
 
 def load_recent_thread_entries(

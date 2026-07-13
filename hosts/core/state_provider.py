@@ -53,8 +53,8 @@ from kernel.models import (
 from kernel.slice import SliceOutcome
 from pydantic import ValidationError
 
+from hosts.core.host_commands import is_host_command_query as _is_host_command_query
 from hosts.core.lisa_config import _DEFAULT_THREAD_MAX_ENTRIES, _THREAD_DIGEST_FILE_NAME
-from hosts.core.thread import _is_host_command_query
 
 logger = logging.getLogger(__name__)
 
