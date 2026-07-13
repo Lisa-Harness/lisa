@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 _PACK_LOCK_FILE_NAME = "installed-packs.json"
 _DISABLED_PACKS_ENV = "LISA_DISABLED_PACKS"
 
+#: Package names that register a ``lisa.extensions.content_roots`` entry point
+#: but are *not* packs — they are umbrella/meta packages (e.g. ``lisa-sdk``)
+#: that host the real bundled packs under ``sdk/packs/*``. Listing them in
+#: ``/pack list`` is misleading, so discovery and seeding skip them.
+EXCLUDED_PACK_NAMES: frozenset[str] = frozenset({"lisa-sdk"})
+
 
 def normalize_pack_name(raw: str) -> str:
     """Normalize a pack name for comparison (lower-case, hyphen-separated)."""
@@ -98,6 +104,7 @@ def load_disabled_pack_names_from_env() -> set[str]:
 
 
 __all__ = [
+    "EXCLUDED_PACK_NAMES",
     "load_disabled_pack_names",
     "load_disabled_pack_names_from_env",
     "normalize_pack_name",

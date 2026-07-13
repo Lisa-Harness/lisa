@@ -82,7 +82,7 @@ from kernel.operations.registry import (
     execute_operation,
     get_operation_catalog,
 )
-from kernel.pack_activation import normalize_pack_name
+from kernel.pack_activation import EXCLUDED_PACK_NAMES, normalize_pack_name
 from kernel.slice import SliceMode, SliceOutcome, SlicePolicy
 from kernel.tools.registry import get_tool_catalog
 
@@ -1706,6 +1706,9 @@ def render_pack_list(runtime: HostRuntime) -> str:
     }
 
     all_packages = set(installed_roots) | set(entry_map) | always_on
+    all_packages = {
+        name for name in all_packages if name not in EXCLUDED_PACK_NAMES
+    }
     if not all_packages:
         return "No packs discovered yet."
 

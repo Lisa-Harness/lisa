@@ -1043,3 +1043,75 @@ def test_seed_bundled_packs_lock_empty_discovery_writes_nothing(
 
     assert written is False
     assert not content_roots.runtime_pack_lock_path(tmp_path).exists()
+
+
+def test_seed_bundled_packs_lock_excludes_lisa_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The ``lisa-sdk`` umbrella package is never seeded into the lock."""
+    sdk_root = _bundled_root(tmp_path, "sdk", "lisa-sdk")
+    cloudflare_root = _bundled_root(tmp_path, "lisa_pack_cloudflare", "lisa-pack-cloudflare")
+    monkeypatch.setattr(
+        content_roots,
+        "discover_installed_content_roots",
+        lambda: [sdk_root, cloudflare_root],
+    )
+
+    written = content_roots.seed_bundled_packs_lock(tmp_path)
+
+    assert written is True
+    lock = content_roots.load_installed_packs_lock(tmp_path)
+    by_name = {entry["package_name"]: entry for entry in lock["packs"]}
+    assert "lisa-sdk" not in by_name
+    assert set(by_name) == {"lisa-pack-cloudflare"}
+
+
+def test_render_pack_list_excludes_lisa_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """``lisa-sdk`` never appears in the ``/pack list`` output, even if a stale
+    lock entry still references it."""
+    runtime = _make_runtime(tmp_path)
+    sdk_root = _bundled_root(tmp_path, "sdk", "lisa-sdk")
+    cloudflare_root = _bundled_root(tmp_path, "lisa_pack_cloudflare", "lisa-pack-cloudflare")
+    monkeypatch.setattr(
+        commands,
+        "installed_pack_roots_by_name",
+        lambda: {
+            "lisa-sdk": sdk_root,
+            "lisa-pack-cloudflare": cloudflare_root,
+        },
+    )
+    monkeypatch.setattr(
+        commands,
+        "always_on_pack_names",
+        lambda *args, **kwargs: set(),
+    )
+    _write_lock(
+        runtime,
+        {
+            "packs": [
+                {
+                    "package_name": "lisa-sdk",
+                    "enabled": True,
+                    "source_kind": "bundled",
+                    "source_ref": "bundled",
+                    "updated_at": "2026-07-13T00:00:00+00:00",
+                },
+                {
+                    "package_name": "lisa-pack-cloudflare",
+                    "enabled": True,
+                    "source_kind": "bundled",
+                    "source_ref": "bundled",
+                    "updated_at": "2026-07-13T00:00:00+00:00",
+                },
+            ]
+        },
+    )
+
+    rendered = commands.render_pack_list(runtime)
+
+    assert "lisa-sdk" not in rendered
+    assert "lisa-pack-cloudflare" in rendered

@@ -33,7 +33,11 @@ from kernel.content_roots import (
     discover_installed_content_roots,
     resolve_content_subdir_roots,
 )
-from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
+from kernel.pack_activation import (
+    EXCLUDED_PACK_NAMES,
+    load_disabled_pack_names,
+    normalize_pack_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +252,8 @@ def seed_bundled_packs_lock(data_dir: Path) -> bool:
     for root in discover_installed_content_roots():
         package_name = infer_pack_package_name(root)
         if not package_name or package_name in known:
+            continue
+        if package_name in EXCLUDED_PACK_NAMES:
             continue
         entries.append(
             {
