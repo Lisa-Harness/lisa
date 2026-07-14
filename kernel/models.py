@@ -740,28 +740,21 @@ class AnomalyAlert(BaseModel):
     detected_at: str
 
 
-ContextEvidenceNamespace = Literal[
-    "conversational_style_context",
-    "operational_state",
-    "product_repo_knowledge",
-    "long_term_memory",
-    "long_term_strategic_memory",
-    "external_signal",
-    "market_signal",
-    "general_context",
-]
-ContextEvidenceSourceType = Literal[
-    "signal_collector",
-    "operational_alert",
-    "developer_state",
-    "domain_knowledge",
-    "memory",
-    "market_intel",
-    "reflection",
-    "strategy_memory",
-    "extension",
-    "general",
-]
+ContextEvidenceNamespace = str
+ContextEvidenceSourceType = str
+
+class ContextRoutingNamespaceConfig(BaseModel):
+    """Routing rules for mapping evidence to a specific namespace."""
+    match_sources: list[str] = Field(default_factory=list)
+    match_types: list[str] = Field(default_factory=list)
+    match_tags: list[str] = Field(default_factory=list)
+    is_fallback: bool = False
+
+class ContextRoutingConfig(BaseModel):
+    """User-facing configuration for how evidence is categorized and ordered."""
+    render_order: list[str] = Field(default_factory=list)
+    namespaces: dict[str, ContextRoutingNamespaceConfig] = Field(default_factory=dict)
+
 ContextConflictRisk = Literal["low", "medium", "high"]
 
 
@@ -896,6 +889,7 @@ class DomainKnowledgeArtifact(BaseModel):
 
 class UnifiedState(BaseModel):
     compiled_at: str
+    context_routing: ContextRoutingConfig | None = None
     signal_snapshots: dict[str, dict[str, Any]] = Field(default_factory=dict)
     intel_collections: dict[str, IntelCollection] = Field(default_factory=dict)
     intel_analysis: dict[str, IntelSynthesis] = Field(default_factory=dict)

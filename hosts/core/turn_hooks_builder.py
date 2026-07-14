@@ -128,7 +128,10 @@ def build_turn_hooks(
         capability_manifest: Any = None,
     ) -> str:
         # Build the UnifiedState from the runtime snapshot for the broker.
-        state = build_unified_state(state_snapshot=runtime.state_snapshot)
+        state = build_unified_state(
+            state_snapshot=runtime.state_snapshot,
+            context_routing=runtime.config.context_routing,
+        )
 
         def _session_context_loader() -> str:
             from hosts.core.session_context import (
@@ -231,7 +234,10 @@ def build_turn_hooks(
 
     # ── UnifiedState provider callable ─────────────────────────────
     def _state_provider() -> Any:
-        return build_unified_state(state_snapshot=runtime.state_snapshot)
+        return build_unified_state(
+            state_snapshot=runtime.state_snapshot,
+            context_routing=runtime.config.context_routing,
+        )
 
     # ── Workflow session factory ───────────────────────────────────
     from kernel.ipsar_fsm import create_workflow_session

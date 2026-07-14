@@ -8,6 +8,12 @@ packs:
 policy:
   preferred_capability_providers:
     memory: lisa-pack-memory
+context_routing:
+  namespaces:
+    operational_state:
+      match_types: ["alert"]
+    general_context:
+      is_fallback: true
 surface:
   type: personal_dm
   id: host-console

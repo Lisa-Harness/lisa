@@ -44,6 +44,7 @@ from typing import Any
 from kernel.models import (
     AnomalyAlert,
     ContextPacket,
+    ContextRoutingConfig,
     DomainKnowledgeArtifact,
     IntelCollection,
     UnifiedState,
@@ -62,6 +63,7 @@ logger = logging.getLogger(__name__)
 def build_unified_state(
     *,
     state_snapshot: dict[str, Any] | None,
+    context_routing: ContextRoutingConfig | None = None,
 ) -> UnifiedState:
     """Return a compiled :class:`UnifiedState` for operations and the context broker.
 
@@ -78,12 +80,13 @@ def build_unified_state(
     compiled_at = datetime.now(UTC).isoformat()
     snapshot = state_snapshot
     if not snapshot:
-        return UnifiedState(compiled_at=compiled_at)
+        return UnifiedState(compiled_at=compiled_at, context_routing=context_routing)
 
     state = UnifiedState(
         compiled_at=str(
             snapshot.get("compiled_at") or snapshot.get("generated_at") or compiled_at
         ),
+        context_routing=context_routing,
     )
 
     raw_signals = snapshot.get("signal_snapshots")

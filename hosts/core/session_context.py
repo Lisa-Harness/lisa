@@ -106,6 +106,8 @@ class PolicyControls:
     preferred_capability_providers: dict[str, str] = field(default_factory=dict)
 
 
+from kernel.models import ContextRoutingConfig
+
 @dataclass(frozen=True, slots=True)
 class SessionContextControls:
     """All runtime controls extracted from session-context front matter.
@@ -121,6 +123,7 @@ class SessionContextControls:
     start_mode: str | None = None
     packs: PackPreferences = field(default_factory=PackPreferences)
     policy: PolicyControls = field(default_factory=PolicyControls)
+    context_routing: ContextRoutingConfig | None = None
 
 
 def resolve_session_context(
@@ -403,12 +406,22 @@ def extract_session_context_controls(path: Path) -> SessionContextControls:
             preferred_capability_providers=cap_prefs,
         )
 
+    # ── context_routing block ──
+    context_routing: ContextRoutingConfig | None = None
+    routing_raw = front_matter.get("context_routing")
+    if isinstance(routing_raw, dict):
+        try:
+            context_routing = ContextRoutingConfig.model_validate(routing_raw)
+        except Exception as e:
+            logger.warning("Failed to validate context_routing block: %s", e)
+
     return SessionContextControls(
         name=name_str,
         surface=surface,
         start_mode=start_mode,
         packs=packs,
         policy=policy,
+        context_routing=context_routing,
     )
 
 

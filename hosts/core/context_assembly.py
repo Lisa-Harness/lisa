@@ -270,10 +270,11 @@ def build_brokered_context_markdown(
         mode_id=mode_id,
         mode_provider_id=mode_provider_id,
         context_evidence_packs=context_evidence_packs or None,
+        routing_config=state.context_routing if state else None,
     )
     if not packet.selected_evidence:
         return ""
-    return render_context_packet_markdown(packet)
+    return render_context_packet_markdown(packet, routing_config=state.context_routing if state else None)
 
 
 # ---------------------------------------------------------------------------

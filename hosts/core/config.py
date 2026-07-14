@@ -127,6 +127,7 @@ class HostConfig:
     user_slug: str = ""
     session_context: str = ""
     no_thread: bool = False
+    context_routing: Any | None = None
 
     # ── Streaming (transport hint) ─────────────────────────────────────
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
@@ -378,6 +379,7 @@ class HostConfig:
                 explicit_enabled=explicit,
                 explicit_budget_ms=explicit_budget,
             ),
+            context_routing=session_controls.context_routing if session_controls else None,
             thread_max_entries=thread_max,
             memory_max_records=memory_max,
             surface_type=resolved_surface_type,

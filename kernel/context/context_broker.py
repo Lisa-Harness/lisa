@@ -45,6 +45,7 @@ from kernel.models import (
     ContextEvidenceNamespace,
     ContextEvidenceSourceType,
     ContextPacket,
+    ContextRoutingConfig,
     IntelCollection,
     UnifiedState,
 )
@@ -287,31 +288,36 @@ def _compute_combined_score(evidence: ContextEvidence) -> float:
     return round(min(max(score, 0.0), 1.0), 4)
 
 
-def _classify_evidence_namespace(evidence: ContextEvidence) -> ContextEvidenceNamespace:
+def _classify_evidence_namespace(evidence: ContextEvidence, routing: ContextRoutingConfig | None = None) -> ContextEvidenceNamespace:
     source = evidence.source.lower()
     evidence_type = evidence.evidence_type.lower()
     tags = {tag.lower() for tag in evidence.tags}
-    evidence_id = evidence.evidence_id.lower()
-    signal_sources = set(discover_installed_signal_collectors())
+    
+    if routing:
+        for ns_id, ns_config in routing.namespaces.items():
+            if ns_config.is_fallback:
+                continue
+            if (source in ns_config.match_sources or 
+                evidence_type in ns_config.match_types or 
+                any(t in ns_config.match_tags for t in tags)):
+                return ns_id
+                
+        for ns_id, ns_config in routing.namespaces.items():
+            if ns_config.is_fallback:
+                return ns_id
 
+    # Base fallback if no routing config is given
+    signal_sources = set(discover_installed_signal_collectors())
     if evidence_type == "alert" or source in signal_sources or source.endswith("_ops_trends"):
         return "operational_state"
     if source == "dev_state" or evidence_type in {"recent_work", "domain_knowledge"}:
         return "product_repo_knowledge"
-    if (
-        source in _MARKET_SIGNAL_SOURCES
-        or "market" in source
-        or "market" in evidence_id
-        or "market" in tags
-        or source == "clarity"
-    ):
-        return "market_signal"
     if "style" in tags or "preference" in tags or evidence_type == "conversation_style":
         return "conversational_style_context"
     return "general_context"
 
 
-def _classify_evidence_source_type(evidence: ContextEvidence) -> ContextEvidenceSourceType:
+def _classify_evidence_source_type(evidence: ContextEvidence, routing: ContextRoutingConfig | None = None) -> ContextEvidenceSourceType:
     source = evidence.source.lower()
     evidence_type = evidence.evidence_type.lower()
     signal_sources = set(discover_installed_signal_collectors())
@@ -324,18 +330,16 @@ def _classify_evidence_source_type(evidence: ContextEvidence) -> ContextEvidence
         return "developer_state"
     if source == "domain_knowledge" or evidence_type == "domain_knowledge":
         return "domain_knowledge"
-    if _classify_evidence_namespace(evidence) == "market_signal":
-        return "market_intel"
     if evidence.metadata.get("extension_id") or evidence.metadata.get("extension_name"):
         return "extension"
     return "general"
 
 
-def _apply_evidence_identity(evidence: ContextEvidence) -> ContextEvidence:
+def _apply_evidence_identity(evidence: ContextEvidence, routing: ContextRoutingConfig | None = None) -> ContextEvidence:
     if evidence.namespace == "general_context":
-        evidence.namespace = _classify_evidence_namespace(evidence)
+        evidence.namespace = _classify_evidence_namespace(evidence, routing)
     if evidence.source_type == "general":
-        evidence.source_type = _classify_evidence_source_type(evidence)
+        evidence.source_type = _classify_evidence_source_type(evidence, routing)
     return evidence
 
 
@@ -362,6 +366,7 @@ def _new_evidence(
     salience_score: float = 0.5,
     tags: Iterable[str] | None = None,
     metadata: dict[str, object] | None = None,
+    routing: ContextRoutingConfig | None = None,
 ) -> ContextEvidence:
     evidence = ContextEvidence(
         evidence_id=evidence_id,
@@ -377,7 +382,7 @@ def _new_evidence(
         tags=[tag for tag in (tags or []) if tag],
         metadata=dict(metadata or {}),
     )
-    return _apply_evidence_identity(evidence)
+    return _apply_evidence_identity(evidence, routing)
 
 
 def _build_extension_evidence(
@@ -390,7 +395,7 @@ def _build_extension_evidence(
     return active_builder.build_extension_context_evidence(runtime_context, state)
 
 
-def _build_alert_evidence(state: UnifiedState) -> list[ContextEvidence]:
+def _build_alert_evidence(state: UnifiedState, routing: ContextRoutingConfig | None = None) -> list[ContextEvidence]:
     evidence: list[ContextEvidence] = []
     for index, alert in enumerate(state.active_alerts, start=1):
         evidence.append(
@@ -405,12 +410,13 @@ def _build_alert_evidence(state: UnifiedState) -> list[ContextEvidence]:
                 confidence=0.95,
                 salience_score=_SEVERITY_SALIENCE.get(alert.severity, 0.65),
                 tags=["alert", alert.source, alert.severity],
+                routing=routing,
             )
         )
     return evidence
 
 
-def _build_dev_state_evidence(state: UnifiedState) -> list[ContextEvidence]:
+def _build_dev_state_evidence(state: UnifiedState, routing: ContextRoutingConfig | None = None) -> list[ContextEvidence]:
     if state.dev_state is None or not state.dev_state.recent_accomplishments:
         return []
     recent = state.dev_state.recent_accomplishments[-3:]
@@ -425,6 +431,7 @@ def _build_dev_state_evidence(state: UnifiedState) -> list[ContextEvidence]:
             collected_at=state.dev_state.last_updated or _default_collected_at(state),
             salience_score=0.4,
             tags=["developer", "outbox", "recent-work"],
+            routing=routing,
         )
     ]
 
@@ -437,6 +444,7 @@ def _build_collection_evidence(
     title: str,
     evidence_type: str,
     salience_score: float,
+    routing: ContextRoutingConfig | None = None,
 ) -> list[ContextEvidence]:
     if collection is None:
         return []
@@ -459,6 +467,7 @@ def _build_collection_evidence(
             collected_at=collected_at,
             salience_score=salience_score,
             tags=[source, evidence_type],
+            routing=routing,
         )
     ]
 
@@ -473,6 +482,7 @@ def _build_all_collection_evidence(
     state: UnifiedState,
     *,
     skipped_sources: set[str],
+    routing: ContextRoutingConfig | None = None,
 ) -> list[ContextEvidence]:
     """Render ambient evidence for cached intel collections not owned by extensions."""
 
@@ -488,12 +498,13 @@ def _build_all_collection_evidence(
                 title=_collection_title(source),
                 evidence_type="intel_collection",
                 salience_score=0.5,
+                routing=routing,
             )
         )
     return evidence
 
 
-def _build_domain_knowledge_evidence(state: UnifiedState) -> list[ContextEvidence]:
+def _build_domain_knowledge_evidence(state: UnifiedState, routing: ContextRoutingConfig | None = None) -> list[ContextEvidence]:
     evidence: list[ContextEvidence] = []
 
     for artifact_id, artifact in sorted(state.domain_knowledge.items()):
@@ -516,6 +527,7 @@ def _build_domain_knowledge_evidence(state: UnifiedState) -> list[ContextEvidenc
                     "artifact_id": artifact_id,
                     **artifact.metadata,
                 },
+                routing=routing,
             )
         )
 
@@ -526,6 +538,7 @@ def build_context_evidence_catalog(
     state: UnifiedState,
     *,
     extension_evidence_builder: ExtensionEvidenceBuilder | None = None,
+    routing: ContextRoutingConfig | None = None,
 ) -> list[ContextEvidence]:
     """Build the full structured evidence catalog from the current hot state.
 
@@ -544,17 +557,18 @@ def build_context_evidence_catalog(
     }
     catalog: list[ContextEvidence] = []
     catalog.extend(extension_evidence)
-    catalog.extend(_build_alert_evidence(state))
-    catalog.extend(_build_dev_state_evidence(state))
+    catalog.extend(_build_alert_evidence(state, routing))
+    catalog.extend(_build_dev_state_evidence(state, routing))
     catalog.extend(
         _build_all_collection_evidence(
             state,
             skipped_sources=extension_owned_collection_sources,
+            routing=routing,
         )
     )
-    catalog.extend(_build_domain_knowledge_evidence(state))
+    catalog.extend(_build_domain_knowledge_evidence(state, routing))
     for item in catalog:
-        _apply_evidence_identity(item)
+        _apply_evidence_identity(item, routing)
     return catalog
 
 
@@ -595,6 +609,7 @@ def select_ranked_context(
     extension_evidence_builder: ExtensionEvidenceBuilder | None = None,
     mode_provider_id: str = "",
     context_evidence_packs: list[str] | None = None,
+    routing_config: ContextRoutingConfig | None = None,
 ) -> ContextPacket:
     """Select one ranked ContextPacket for the current turn.
 
@@ -626,6 +641,7 @@ def select_ranked_context(
     candidates = state.context_evidence_catalog or build_context_evidence_catalog(
         state,
         extension_evidence_builder=extension_evidence_builder,
+        routing=routing_config,
     )
     scored: list[ContextEvidence] = []
 
@@ -649,7 +665,7 @@ def select_ranked_context(
         evidence.match_reasons = match_reasons
         if evidence.freshness_score < 1.0:
             evidence.match_reasons.append("stale-but-usable fallback")
-        _apply_evidence_identity(evidence)
+        _apply_evidence_identity(evidence, routing_config)
         evidence.conflict_risk = _compute_conflict_risk(evidence)
         evidence.combined_score = _compute_combined_score(evidence)
         if evidence.combined_score < settings.context_broker_min_evidence_score:
@@ -702,9 +718,11 @@ def select_ranked_context(
 
 def _ordered_selected_namespaces(
     selected_evidence: list[ContextEvidence],
+    routing_config: ContextRoutingConfig | None = None,
 ) -> list[ContextEvidenceNamespace]:
     selected = set(item.namespace for item in selected_evidence)
-    ordered = [namespace for namespace in _NAMESPACE_RENDER_ORDER if namespace in selected]
+    order = routing_config.render_order if routing_config else _NAMESPACE_RENDER_ORDER
+    ordered = [namespace for namespace in order if namespace in selected]
     ordered.extend(
         namespace
         for namespace in dict.fromkeys(item.namespace for item in selected_evidence)
@@ -726,7 +744,7 @@ def _render_evidence_insert(evidence: ContextEvidence) -> str:
     )
 
 
-def render_context_packet_markdown(packet: ContextPacket) -> str:
+def render_context_packet_markdown(packet: ContextPacket, routing_config: ContextRoutingConfig | None = None) -> str:
     """Render one ContextPacket into prompt-safe markdown."""
     if not packet.selected_evidence:
         return "- No ranked context evidence was selected for this turn."
@@ -735,7 +753,7 @@ def render_context_packet_markdown(packet: ContextPacket) -> str:
         f"- Context packet built at: {packet.compiled_at}",
         "- Consumption rule: keep namespace boundaries intact unless the user asks for synthesis.",
     ]
-    for namespace in _ordered_selected_namespaces(packet.selected_evidence):
+    for namespace in _ordered_selected_namespaces(packet.selected_evidence, routing_config):
         namespace_evidence = [
             item for item in packet.selected_evidence if item.namespace == namespace
         ]
