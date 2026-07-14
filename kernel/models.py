@@ -381,41 +381,12 @@ class SelfKnowledgeEntry(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class LisaSelfModelArtifact(BaseModel):
-    """Persisted, surface-scoped operational self-model for Lisa."""
-
-    generated_at: str
-    version: str = "1"
-    workspace_id: str = "default"
-    user_slug: str = "default"
-    surface_type: ConversationSurface = "personal_dm"
-    surface_id: str = ""
-    memory_scope: MemoryScope = "personal"
-    identity_summary: str = ""
-    grounding_summary: str = ""
-    identity: list[SelfKnowledgeEntry] = Field(default_factory=list)
-    capabilities: list[SelfKnowledgeEntry] = Field(default_factory=list)
-    limitations: list[SelfKnowledgeEntry] = Field(default_factory=list)
-    architecture: list[SelfKnowledgeEntry] = Field(default_factory=list)
-    memory_awareness: list[SelfKnowledgeEntry] = Field(default_factory=list)
-    grounding: list[SelfKnowledgeEntry] = Field(default_factory=list)
-    known_unknowns: list[SelfKnowledgeEntry] = Field(default_factory=list)
-    source_manifest_generated_at: str = ""
-    # ── Live runtime telemetry (populated by introspection, not catalog walk) ──
-    uptime_seconds: float = 0.0
-    asyncio_tasks: int = 0
-    python_threads: int = 0
-    process_rss_mb: float = 0.0
-    mcp_pool_health: dict[str, "McpServerHealth"] = Field(default_factory=dict)
-    token_usage_24h: "TokenUsageSummary | None" = None
-    recent_log_errors: list["LogErrorEntry"] = Field(default_factory=list)
-    operational_health: str = "unknown"  # healthy|degraded|critical|unknown
-    operational_health_reasons: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
 # ---------------------------------------------------------------------------
 # Live introspection (Python-level runtime snapshot)
+#
+# These helpers are defined BEFORE the artifacts that reference them so the
+# module resolves top-down. With `from __future__ import annotations` already
+# in effect, no forward-reference quotes are needed or wanted.
 # ---------------------------------------------------------------------------
 
 McpConnectionStatus = Literal["warm", "cold", "failed", "unknown"]
@@ -452,6 +423,39 @@ class LogErrorEntry(BaseModel):
 
 
 OperationalHealth = Literal["healthy", "degraded", "critical", "unknown"]
+
+
+class LisaSelfModelArtifact(BaseModel):
+    """Persisted, surface-scoped operational self-model for Lisa."""
+
+    generated_at: str
+    version: str = "1"
+    workspace_id: str = "default"
+    user_slug: str = "default"
+    surface_type: ConversationSurface = "personal_dm"
+    surface_id: str = ""
+    memory_scope: MemoryScope = "personal"
+    identity_summary: str = ""
+    grounding_summary: str = ""
+    identity: list[SelfKnowledgeEntry] = Field(default_factory=list)
+    capabilities: list[SelfKnowledgeEntry] = Field(default_factory=list)
+    limitations: list[SelfKnowledgeEntry] = Field(default_factory=list)
+    architecture: list[SelfKnowledgeEntry] = Field(default_factory=list)
+    memory_awareness: list[SelfKnowledgeEntry] = Field(default_factory=list)
+    grounding: list[SelfKnowledgeEntry] = Field(default_factory=list)
+    known_unknowns: list[SelfKnowledgeEntry] = Field(default_factory=list)
+    source_manifest_generated_at: str = ""
+    # ── Live runtime telemetry (populated by introspection, not catalog walk) ──
+    uptime_seconds: float = 0.0
+    asyncio_tasks: int = 0
+    python_threads: int = 0
+    process_rss_mb: float = 0.0
+    mcp_pool_health: dict[str, McpServerHealth] = Field(default_factory=dict)
+    token_usage_24h: TokenUsageSummary | None = None
+    recent_log_errors: list[LogErrorEntry] = Field(default_factory=list)
+    operational_health: str = "unknown"  # healthy|degraded|critical|unknown
+    operational_health_reasons: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntrospectSnapshot(BaseModel):

@@ -1,0 +1,21 @@
+{
+  "include": [
+    "kernel",
+    "sdk",
+    "hosts",
+    "mcp_server",
+    "lisa_pack_cloudflare",
+    "lisa_pack_github",
+    "lisa_pack_stripe",
+    "lisa_pack_mem0",
+    "lisa_pack_brave_search",
+    "lisa_pack_gmail"
+  ],
+  "typeCheckingMode": "standard",
+  "reportUnknownParameterType": "warning",
+  "reportMissingParameterType": "error",
+  "reportUnknownMemberType": "warning",
+  "reportUnknownVariableType": "warning",
+  "reportUnknownArgumentType": "warning",
+  "pythonVersion": "3.11"
+}
