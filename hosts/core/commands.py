@@ -69,15 +69,10 @@ from kernel.content_roots import discover_installed_content_roots
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import (
     CapabilityManifest,
-    ConversationSurface,
-    OperationExecutionContext,
-    ToolResult,
     WorkflowModeConfig,
-    WorkflowSessionState,
 )
 from kernel.operations.registry import (
     OperationExecutionError,
-    execute_operation,
     get_operation_catalog,
 )
 from kernel.pack_activation import EXCLUDED_PACK_NAMES, normalize_pack_name

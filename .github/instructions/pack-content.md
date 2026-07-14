@@ -69,6 +69,47 @@ always have it. Unit tests that need to exercise the handler inject a
 fake `read_authored_text_fn` that returns the authored text (or the real
 file via the pack's content root).
 
+### Required inputs are required (no silent downgrade)
+
+The "no fallback to missing content" rule extends to the *inputs* the
+authored content needs: a completion function (`ctx.complete_fn`), a
+resolvable model (`ctx.resolve_model_fn`), and non-empty turn history.
+When any required input is missing, the operation **raises `RuntimeError`**
+naming the missing dependency. It must **not**:
+
+- silently persist a bare/raw/unenriched record instead of the modeled one,
+- catch a distillation/enrichment failure with a broad `except` and store
+  the raw input,
+- substitute a hardcoded `_fallback_summary` / `_fallback_*` helper for the
+  authored model output.
+
+The only allowed "deterministic rendering" path is honest status reporting
+when the *upstream content* genuinely produced nothing (e.g. all workshop
+panels failed/timed out) — that renders the failure, not a substitute for
+missing content.
+
+### Mode-relative prompt files
+
+Operations that load prompts relative to the active mode's content root
+(via `mode.mode_markdown_path`) must fail loudly when:
+
+- the mode has no `mode_markdown_path` (no content root to load from),
+- the authored prompt file (`planner.md`, `synthesis.md`, or a configured
+  `*_prompt_file`) is missing on disk.
+
+Raise `RuntimeError` naming the mode and the missing file. Do **not** keep
+embedded `_PLANNER_PROMPT_FALLBACK` / `_SYNTHESIS_PROMPT_FALLBACK` string
+constants — author the prompt as `.md` and ship it with the mode.
+
+### No deterministic default panels/config
+
+A workshop-style operation must not embed `_deterministic_default_panels()`
+(or any equivalent) to substitute for a mode that forgot to author
+`workshop_panels`. Panels are required authored content: the mode's
+`_mode.md` must declare `workshop_panels`, or the caller must pass them via
+`params["workshop_panels"]`. If neither is present, raise `RuntimeError` —
+do not synthesize two default panels in Python.
+
 ## Template substitution
 
 Authored templates may use `{placeholder}` tokens. Substitution is the

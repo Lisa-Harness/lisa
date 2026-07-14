@@ -21,6 +21,29 @@ from kernel.operations.structured_output import parse_structured_payload
 
 logger = logging.getLogger(__name__)
 
+# Authored-text path — loaded via ctx.read_authored_text_fn (SDK loader).
+_SYSTEM_PROMPT_PATH = "operations/memory/prompts/synthesize_learning_system.md"
+
+
+def _load_system_prompt(ctx: OperationExecutionContext) -> str:
+    """Load the distillation system prompt via the SDK content-registry loader.
+
+    Fails loudly when the loader is not wired, returns empty/None, or raises.
+    Per the pack-content rule: no fallbacks to missing content.
+    """
+
+    if not callable(ctx.read_authored_text_fn):
+        raise RuntimeError(
+            f"read_authored_text_fn is not wired; cannot load authored content at {_SYSTEM_PROMPT_PATH}"
+        )
+    try:
+        loaded = str(ctx.read_authored_text_fn(_SYSTEM_PROMPT_PATH) or "").strip()
+    except Exception as exc:  # pylint: disable=broad-except
+        raise RuntimeError(f"read_authored_text_fn failed for {_SYSTEM_PROMPT_PATH}: {exc}") from exc
+    if not loaded:
+        raise RuntimeError(f"Authored text at {_SYSTEM_PROMPT_PATH} is empty or missing")
+    return loaded
+
 
 class Parameters(BaseModel):
     content: str = Field(
@@ -107,41 +130,40 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # Keep learning records under one canonical operation id so recall queries stay stable.
     memory_operation_id = "save_learning"
 
-    # Step 1: Distill with LLM if complete_fn is available; otherwise store raw
-    distilled_text = raw_content
-    if ctx.complete_fn and callable(ctx.resolve_model_fn):
-        model_id = ctx.preferred_model_id
-        model_def = ctx.resolve_model_fn(model_id)
-        if model_def is None:
-            model_def = ctx.resolve_model_fn("deep")
+    # Step 1: Distill with the LLM. Distillation is required (not optional) —
+    # a missing completion function, unresolved model, or authored prompt
+    # raises rather than silently persisting the raw conversation text.
+    if ctx.complete_fn is None or not callable(ctx.resolve_model_fn):
+        raise RuntimeError(
+            "synthesize_and_store_learning requires complete_fn and resolve_model_fn"
+        )
+    model_id = ctx.preferred_model_id
+    model_def = ctx.resolve_model_fn(model_id)
+    if model_def is None:
+        model_def = ctx.resolve_model_fn("deep")
+    if model_def is None:
+        raise RuntimeError("synthesize_and_store_learning could not resolve a model")
 
-        if model_def is not None:
-            try:
-                raw = await ctx.complete_fn(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a memory curator. Extract 1-3 concise, self-contained, "
-                                "durable facts from the input. Each fact must make sense without "
-                                "the original conversation context. Be specific and operational. "
-                                "Return the distilled facts as a JSON object with a facts array."
-                            ),
-                        },
-                        {"role": "user", "content": raw_content},
-                    ],
-                    model_def=model_def,
-                    max_tokens=300,
-                    temperature=0.1,
-                    response_format=DistilledLearning,
-                )
-                distilled = _parse_distilled_learning(raw.content)
-                distilled_text = " | ".join(distilled.facts)
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                logger.warning(
-                    "synthesize_and_store_learning distillation failed, storing raw: %s", exc
-                )
-                distilled_text = raw_content
+    system_prompt = _load_system_prompt(ctx)
+    try:
+        raw = await ctx.complete_fn(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": raw_content},
+            ],
+            model_def=model_def,
+            max_tokens=300,
+            temperature=0.1,
+            response_format=DistilledLearning,
+        )
+        distilled = _parse_distilled_learning(raw.content)
+        distilled_text = " | ".join(distilled.facts)
+    except RuntimeError:
+        raise
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        raise RuntimeError(
+            f"synthesize_and_store_learning distillation failed: {exc}"
+        ) from exc
 
     # Step 2: Persist via the memory.add MCP tool (default memory backend).
     content_json: dict[str, object] = {"query": ctx.query, "model": ctx.model_id}

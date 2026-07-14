@@ -104,6 +104,15 @@ Rules during refactoring:
 - **Narrow exceptions.** Replace `except Exception:` with the concrete
   exception type(s). Top-level process boundaries may keep a broad catch if
   it is followed by structured logging + re-raise or clean exit.
+- **No missing-content fallbacks.** When refactoring a pack operation or
+  mode handler, preserve the fail-loudly contract from
+  `.github/instructions/pack-content.md`: required authored content and
+  required inputs (completion fn, model, turn history) raise `RuntimeError`
+  when missing. Do **not** reintroduce embedded `_FALLBACK_*` prompt
+  constants, `_deterministic_default_panels()`, or broad-except paths that
+  swallow a distillation/enrichment failure into a raw/bare record. A
+  refactor that would re-add a silent fallback is a behavior regression —
+  stop and report it.
 - **One responsibility per function.** If the docstring needs "and", split.
 - **Thin CLI handlers.** `@app.command()` bodies parse args and print output
   only. Move logic to imported functions returning plain objects.

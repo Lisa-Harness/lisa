@@ -42,21 +42,11 @@ from sdk.workshop_execution import (
 
 logger = logging.getLogger(__name__)
 
-# Deterministic fallbacks used only when a mode has no authored workshop_panels.
 # The model alias is a manifest designation (resolved by the host's model
 # manifest), not a hard-coded model ID. Hosts must register a "reasoning"
 # designation in their model manifest for workshop panels to resolve.
 _PANEL_MODE_ID = "thinkabout"
 _DEFAULT_PANEL_MODEL_ALIAS = "reasoning"
-_PLANNER_PROMPT_FALLBACK = (
-    "Use your mode's native analytical style to evaluate the user's problem. "
-    "Deliver one panel-quality answer that is concrete, evidence-aware, "
-    "and explicit about tradeoffs."
-)
-_SYNTHESIS_PROMPT_FALLBACK = (
-    "You are the workshop coordinator. Synthesize panel outputs into one answer. "
-    "Resolve disagreements, surface converging signal, and finish with concrete next moves."
-)
 
 
 class WorkshopSynthesis(BaseModel):
@@ -96,8 +86,8 @@ def _load_prompt_file(path_text: str) -> str:
     path = Path(path_text)
     try:
         text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return ""
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Authored workshop prompt file is missing: {path}") from exc
     return text.strip()
 
 
@@ -129,18 +119,18 @@ def _load_mode_prompt(
     *,
     configured_file: str,
     default_file: str,
-    fallback: str,
+    prompt_kind: str,
 ) -> str:
     mode_root = _mode_content_root(mode)
     if mode_root is None:
-        return fallback
+        raise RuntimeError(
+            f"workshop {prompt_kind} prompt requires a mode with a mode_markdown_path "
+            "(no authored content root to load from)"
+        )
 
-    if configured_file.strip():
-        authored = _load_prompt_file(str((mode_root / configured_file.strip()).resolve()))
-        return authored or fallback
-
-    authored = _load_prompt_file(str((mode_root / default_file).resolve()))
-    return authored or fallback
+    target = configured_file.strip() or default_file
+    resolved = (mode_root / target).resolve()
+    return _load_prompt_file(str(resolved))
 
 
 def _planner_prompt(mode: WorkflowModeConfig | None) -> str:
@@ -148,7 +138,7 @@ def _planner_prompt(mode: WorkflowModeConfig | None) -> str:
         mode,
         configured_file=str(getattr(mode, "workshop_planner_prompt_file", "") or ""),
         default_file="planner.md",
-        fallback=_PLANNER_PROMPT_FALLBACK,
+        prompt_kind="planner",
     )
 
 
@@ -157,27 +147,8 @@ def _synthesis_prompt(mode: WorkflowModeConfig | None) -> str:
         mode,
         configured_file=str(getattr(mode, "workshop_synthesis_prompt_file", "") or ""),
         default_file="synthesis.md",
-        fallback=_SYNTHESIS_PROMPT_FALLBACK,
+        prompt_kind="synthesis",
     )
-
-
-def _deterministic_default_panels() -> list[WorkshopPanelModeConfig]:
-    return [
-        WorkshopPanelModeConfig(
-            panel_id="analysis",
-            title="Strongest Case",
-            mode_id=_PANEL_MODE_ID,
-            model_alias=_DEFAULT_PANEL_MODEL_ALIAS,
-            query_prefix="Build the strongest operator-grade case for this proposal.",
-        ),
-        WorkshopPanelModeConfig(
-            panel_id="challenge",
-            title="Risk Review",
-            mode_id=_PANEL_MODE_ID,
-            model_alias=_DEFAULT_PANEL_MODEL_ALIAS,
-            query_prefix="Stress-test this proposal and identify the strongest risks.",
-        ),
-    ]
 
 
 def _configured_panel_modes(ctx: OperationExecutionContext) -> list[WorkshopPanelModeConfig]:
@@ -189,15 +160,20 @@ def _configured_panel_modes(ctx: OperationExecutionContext) -> list[WorkshopPane
                 continue
             try:
                 parsed.append(WorkshopPanelModeConfig.model_validate(item))
-            except Exception:  # pylint: disable=broad-except
-                continue
+            except Exception as exc:  # pylint: disable=broad-except
+                raise RuntimeError(
+                    f"workshop panel in params failed validation: {exc}"
+                ) from exc
         if parsed:
             return parsed
 
     mode = _active_mode_config(ctx)
     if mode and mode.workshop_panels:
         return [panel.model_copy(deep=True) for panel in mode.workshop_panels]
-    return _deterministic_default_panels()
+    raise RuntimeError(
+        "workshop_run requires authored workshop_panels (in the mode's "
+        "_mode.md or via params[\"workshop_panels\"]); none were found."
+    )
 
 
 def _resolved_workshop_budget(ctx: OperationExecutionContext) -> WorkshopBudgetConfig:
@@ -221,13 +197,19 @@ def _panel_query(
 ) -> str:
     prompt_file = panel.query_prompt_file.strip()
     prefix = panel.query_prefix.strip()
-    if prompt_file and mode_root is not None:
-        file_prompt = _load_prompt_file(str((mode_root / prompt_file).resolve()))
-        if file_prompt:
-            prefix = file_prompt
+    if prompt_file:
+        if mode_root is None:
+            raise RuntimeError(
+                f"workshop panel '{panel.panel_id}' declares query_prompt_file "
+                "but the mode has no authored content root"
+            )
+        prefix = _load_prompt_file(str((mode_root / prompt_file).resolve()))
     if not prefix:
-        return user_query
-    return f"{prefix}\n\n{user_query}"
+        raise RuntimeError(
+            f"workshop panel '{panel.panel_id}' has no query_prefix and no "
+            "query_prompt_file content; cannot build panel query"
+        )
+    return f"{prefix}\n\n{user_query}",
 
 
 def _build_plan_from_roster(ctx: OperationExecutionContext, query: str) -> WorkshopPlan:
@@ -254,18 +236,8 @@ def _build_plan_from_roster(ctx: OperationExecutionContext, query: str) -> Works
             )
         )
 
-    if not panel_specs:
-        for panel in _deterministic_default_panels():
-            panel_specs.append(
-                WorkshopPanelSpec(
-                    panel_id=panel.panel_id,
-                    title=panel.title,
-                    mode_id=panel.mode_id,
-                    query=_panel_query(query, panel, mode_root),
-                    model_alias=panel.model_alias.strip() or _DEFAULT_PANEL_MODEL_ALIAS,
-                    panel_kind="analysis",
-                )
-            )
+    if not panel_specs:  # pragma: no cover - _configured_panel_modes raises when empty
+        raise RuntimeError("workshop_run produced no panel specs")
 
     return WorkshopPlan(
         workshop_id=workshop_id,
@@ -451,14 +423,17 @@ async def _synthesize_workshop(
     rendering = _resolved_workshop_rendering(mode)
     successful_results = [result for result in execution_summary.results if result.status == "ok"]
     if not successful_results:
+        # Genuine empty input: all panels failed/timed out. Render their
+        # statuses honestly — this is status reporting, not a content
+        # substitute for the authored synthesis prompt.
         return _fallback_synthesis_text(plan, execution_summary, rendering), {}
 
     if ctx.complete_fn is None or ctx.resolve_model_fn is None:
-        return _fallback_synthesis_text(plan, execution_summary, rendering), {}
+        raise RuntimeError("workshop synthesis requires complete_fn and resolve_model_fn")
 
     synthesis_model = ctx.resolve_model_fn(ctx.model_id or "default")
     if synthesis_model is None:
-        return _fallback_synthesis_text(plan, execution_summary, rendering), {}
+        raise RuntimeError("workshop synthesis could not resolve a model")
 
     panel_report_lines: list[str] = []
     for result in execution_summary.results:
@@ -501,11 +476,7 @@ async def _synthesize_workshop(
             ),
         )
     except Exception as exc:  # pylint: disable=broad-except
-        logger.warning(
-            "workshop synthesis failed, falling back to deterministic rendering: %s",
-            exc,
-        )
-        return _fallback_synthesis_text(plan, execution_summary, rendering), {}
+        raise RuntimeError(f"workshop synthesis model call failed: {exc}") from exc
 
     lines = [f"## {plan.title}"]
     verdict_heading = rendering.verdict_heading.strip()
