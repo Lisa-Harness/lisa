@@ -45,8 +45,10 @@ def _make_ctx(
     resolve_model_fn: Any = None,
     execute_tool_fn: Any = None,
     state_provider: Any = None,
+    read_authored_text_fn: Any = None,
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for checkpoint operations."""
+    authored_text = read_authored_text_fn or (lambda _path: "Test authored prompt.")
     return OperationExecutionContext(
         workspace_id="test",
         user_id="test-user",
@@ -58,6 +60,7 @@ def _make_ctx(
         query="test query",
         complete_fn=complete_fn,
         resolve_model_fn=resolve_model_fn,
+        read_authored_text_fn=authored_text,
         execute_tool_fn=execute_tool_fn,
         state_provider=state_provider,
         params=params or {},
@@ -76,7 +79,7 @@ def _mock_tool_executor(return_text: str, is_error: bool = False) -> Callable[[s
 def _mock_complete(enrichment_json: str) -> Callable[..., Awaitable[_StubCompletion]]:
     """Build a mock complete_fn that returns enrichment JSON."""
 
-    async def _complete(**kwargs: Any) -> _StubCompletion:  # noqa: ARG001
+    async def _complete(**_kwargs: Any) -> _StubCompletion:
         return _StubCompletion(content=enrichment_json)
 
     return _complete
@@ -193,6 +196,43 @@ async def test_checkpoint_create_without_model() -> None:
 
 
 @pytest.mark.asyncio
+async def test_checkpoint_create_uses_prompt_override() -> None:
+    """checkpoint_create prefers an explicit NL prompt over authored text."""
+    from sdk.packs.checkpoint.operations.checkpoint_create import execute
+
+    captured_system_prompts: list[str] = []
+
+    async def _capture_complete(**kwargs: Any) -> _StubCompletion:
+        messages = kwargs.get("messages") or []
+        captured_system_prompts.append(str(messages[0]["content"]))
+        return _StubCompletion(
+            content=json.dumps(
+                {
+                    "overview": "override used",
+                    "work_done": "done",
+                    "important_files": [],
+                    "next_steps": [],
+                }
+            )
+        )
+
+    ctx = _make_ctx(
+        params={
+            "turn_history": [{"query": "hello", "response_text": "hi"}],
+            "prompt": "Use this custom checkpoint prompt.",
+        },
+        complete_fn=_capture_complete,
+        resolve_model_fn=_mock_resolve_model(),
+        execute_tool_fn=_mock_tool_executor(json.dumps({"checkpoint_id": "abc123"})),
+        read_authored_text_fn=lambda _path: "ignored authored prompt",
+    )
+
+    await execute(ctx)
+
+    assert captured_system_prompts == ["Use this custom checkpoint prompt."]
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_create_no_tool_executor() -> None:
     """checkpoint_create returns an error when no tool executor is wired."""
     from sdk.packs.checkpoint.operations.checkpoint_create import execute
@@ -244,6 +284,7 @@ async def test_checkpoint_history_summarize_with_model() -> None:
         params={"turn_history": turn_history, "retention_count": 2},
         complete_fn=_mock_complete(summary_json),
         resolve_model_fn=_mock_resolve_model(),
+        read_authored_text_fn=lambda _path: "Authored summarize prompt.",
     )
 
     result = await execute(ctx)
@@ -256,6 +297,43 @@ async def test_checkpoint_history_summarize_with_model() -> None:
     assert output_history[1]["query"] == "q3"
     assert output_history[2]["query"] == "q4"
     assert result.output_json.get("was_summarized") is True
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_history_summarize_reads_authored_prompt() -> None:
+    """checkpoint_history_summarize uses the authored-text seam when no override is given."""
+    from sdk.packs.checkpoint.operations.checkpoint_history_summarize import execute
+
+    captured_system_prompts: list[str] = []
+
+    async def _capture_complete(**kwargs: Any) -> _StubCompletion:
+        messages = kwargs.get("messages") or []
+        captured_system_prompts.append(str(messages[0]["content"]))
+        return _StubCompletion(
+            content=json.dumps(
+                {
+                    "condensed_narrative": "Earlier turns selected a checkpoint strategy.",
+                    "key_points": ["Use checkpoint pack"],
+                }
+            )
+        )
+
+    ctx = _make_ctx(
+        params={
+            "turn_history": [
+                {"query": "q1", "response_text": "a1"},
+                {"query": "q2", "response_text": "a2"},
+            ],
+            "retention_count": 1,
+        },
+        complete_fn=_capture_complete,
+        resolve_model_fn=_mock_resolve_model(),
+        read_authored_text_fn=lambda _path: "Authored summarize prompt.",
+    )
+
+    await execute(ctx)
+
+    assert captured_system_prompts == ["Authored summarize prompt."]
 
 
 @pytest.mark.asyncio

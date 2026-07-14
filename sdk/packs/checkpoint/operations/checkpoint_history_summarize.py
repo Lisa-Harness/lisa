@@ -33,6 +33,10 @@ class Parameters(BaseModel):
         le=100,
         description="Number of most-recent turns to keep verbatim.",
     )
+    prompt: str = Field(
+        default="",
+        description="Optional natural-language prompt override for history summarization.",
+    )
 
 
 class HistorySummary(BaseModel):
@@ -89,6 +93,7 @@ def _fallback_summary(old_turns: list[dict[str, Any]]) -> HistorySummary:
 async def _summarize_old_turns(
     ctx: OperationExecutionContext,
     old_turns: list[dict[str, Any]],
+    prompt_override: str = "",
 ) -> HistorySummary:
     """Call the model to summarize older turns, with graceful fallback."""
     transcript = _format_turns(old_turns)
@@ -102,11 +107,14 @@ async def _summarize_old_turns(
     if model_def is None:
         return _fallback_summary(old_turns)
 
-    system_prompt = (
-        "Summarize earlier conversation turns for checkpoint compaction. "
-        "Preserve concrete decisions, constraints, and open tasks. "
-        "Return JSON matching the schema. Keep it concise and factual."
-    )
+    system_prompt = prompt_override.strip()
+    if not system_prompt and callable(ctx.read_authored_text_fn):
+        system_prompt = str(
+            ctx.read_authored_text_fn("operations/prompts/checkpoint_history_summarize.md")
+            or ""
+        ).strip()
+    if not system_prompt:
+        return _fallback_summary(old_turns)
 
     try:
         raw = await ctx.complete_fn(
@@ -147,7 +155,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
     old_turns = turn_history[:-retention_count]
     recent_turns = turn_history[-retention_count:]
-    summary = await _summarize_old_turns(ctx, old_turns)
+    summary = await _summarize_old_turns(ctx, old_turns, parsed.prompt)
 
     summary_turn = {
         "role": "system",

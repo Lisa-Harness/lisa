@@ -830,6 +830,13 @@ async def handle_checkpoint_command(
             error=mcp_result.output_text if mcp_result.is_error else "",
         )
 
+    try:
+        from hosts.core.turn_hooks_builder import content_loader  # noqa: PLC0415
+
+        read_authored_text_fn = content_loader(runtime)
+    except RuntimeError:
+        read_authored_text_fn = None
+
     ctx = OperationExecutionContext(
         workspace_id="lite-host",
         user_id=str(runtime.config.user_slug or "lite-user"),
@@ -841,6 +848,7 @@ async def handle_checkpoint_command(
         query=message,
         complete_fn=getattr(runtime, "complete_fn", None),
         resolve_model_fn=lambda model_id: _resolve_model(runtime, model_id),
+        read_authored_text_fn=read_authored_text_fn,
         execute_tool_fn=_checkpoint_tool_executor,
         state_provider=lambda: state,
         params={

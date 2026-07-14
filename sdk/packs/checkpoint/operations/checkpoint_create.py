@@ -55,6 +55,10 @@ class Parameters(BaseModel):
         description="Serialized WorkflowSessionState to include. When empty, "
         "the operation omits it.",
     )
+    prompt: str = Field(
+        default="",
+        description="Optional natural-language prompt override for checkpoint enrichment.",
+    )
 
 
 class CheckpointEnrichment(BaseModel):
@@ -110,6 +114,7 @@ def _format_conversation_for_model(turn_history: list[dict[str, Any]]) -> str:
 async def _enrich_checkpoint(
     ctx: OperationExecutionContext,
     turn_history: list[dict[str, Any]],
+    prompt_override: str = "",
 ) -> CheckpointEnrichment:
     """Call the model to produce structured enrichment for the checkpoint.
 
@@ -127,17 +132,14 @@ async def _enrich_checkpoint(
     if model_def is None:
         return CheckpointEnrichment()
 
-    system_prompt = (
-        "You are a session checkpoint curator. Your job is to produce a "
-        "structured summary of the conversation so far that will help a "
-        "user or agent resume work after restoring from this checkpoint.\n\n"
-        "Produce:\n"
-        "- overview: 2-3 sentence narrative of what happened in this session\n"
-        "- work_done: what was accomplished or decided (outcomes, not process)\n"
-        "- important_files: file paths mentioned, read, or written\n"
-        "- next_steps: 2-5 concrete actions to take after restore\n\n"
-        "Return as JSON matching the declared response schema."
-    )
+    system_prompt = prompt_override.strip()
+    if not system_prompt and callable(ctx.read_authored_text_fn):
+        system_prompt = str(
+            ctx.read_authored_text_fn("operations/prompts/checkpoint_create_enrichment.md")
+            or ""
+        ).strip()
+    if not system_prompt:
+        return CheckpointEnrichment()
 
     try:
         raw = await ctx.complete_fn(
@@ -180,7 +182,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     workflow_session_state = dict(parsed.workflow_session_state or {})
 
     # Enrichment: call the model to summarize the conversation.
-    enrichment = await _enrich_checkpoint(ctx, turn_history)
+    enrichment = await _enrich_checkpoint(ctx, turn_history, parsed.prompt)
 
     bundle = {
         "checkpoint_id": _checkpoint_id(),

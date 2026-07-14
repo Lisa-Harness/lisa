@@ -33,6 +33,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from kernel.capability_manifest import compile_capability_manifest
 from kernel.ipsar_fsm import (
     apply_transition,
     get_mode_system_intro,
@@ -42,7 +43,6 @@ from kernel.ipsar_fsm import (
     run_mode_entry_operations,
     run_mode_pre_turn_operations,
 )
-from kernel.capability_manifest import compile_capability_manifest
 from kernel.models import (
     CallLedger,
     CapabilityManifest,
@@ -53,15 +53,14 @@ from kernel.models import (
     ToolExecutionContext,
     ToolResult,
     TurnBudget,
-    WorkflowSessionState,
     WorkflowTransitionRequest,
 )
+from kernel.openai_function_tools import build_strict_openai_function_tool
 from kernel.operations.registry import (
     build_operation_tool_schemas,
     execute_operation,
     get_operation_catalog,
 )
-from kernel.openai_function_tools import build_strict_openai_function_tool
 from kernel.provider_core import StreamedChunk, StreamedCompletion, _aggregate_streamed_chunks
 from kernel.seams.protocols import (
     ContentRegistry,
@@ -916,6 +915,11 @@ async def _run_turn_inner(
             query=query,
             resolve_model_fn=resolve_model,
             complete_fn=complete,
+            read_authored_text_fn=getattr(
+                hooks.context_seams.content_registry,
+                "read_authored_text",
+                None,
+            ),
             execute_tool_fn=_mcp_tool_executor,
             execute_operation_fn=exec_op,
             workflow_turn_runner=hooks.workflow_turn_runner,
@@ -936,6 +940,11 @@ async def _run_turn_inner(
         query=query,
         resolve_model_fn=resolve_model,
         complete_fn=complete,
+        read_authored_text_fn=getattr(
+            hooks.context_seams.content_registry,
+            "read_authored_text",
+            None,
+        ),
         execute_tool_fn=_mcp_tool_executor,
         execute_operation_fn=exec_op,
         workflow_turn_runner=hooks.workflow_turn_runner,
@@ -1533,6 +1542,7 @@ def _build_minimal_context(
     query: str,
     resolve_model_fn: Any,
     complete_fn: Any,
+    read_authored_text_fn: Any,
     execute_tool_fn: Any,
     execute_operation_fn: Any,
     workflow_turn_runner: Any = None,
@@ -1555,6 +1565,7 @@ def _build_minimal_context(
         model_id="default",
         complete_fn=complete_fn,
         resolve_model_fn=resolve_model_fn,
+        read_authored_text_fn=read_authored_text_fn,
         execute_tool_fn=execute_tool_fn,
         execute_operation_fn=execute_operation_fn,
         workflow_turn_runner=workflow_turn_runner,
