@@ -297,12 +297,8 @@ async def test_debug_frontdoor_reports_last_planner_payload(tmp_path: Path) -> N
 def test_assemble_system_prompt_includes_turn_input_contract() -> None:
     """assemble_system_prompt loads base system prompt + turn-input contract."""
     def _loader(path: str) -> str:
-        if path == "user_contexts/harness.md":
-            return "# Kernel Harness\nYou are a multi-model AI agent."
-        if path == "user_contexts/guardrails.md":
-            return "# Guardrails\nAlways enforce all rules."
-        if path == "user_contexts/identity.md":
-            return "# Identity & Personality\nYou are Lisa."
+        if path == "prompts/system-prompt.md":
+            return "# System Prompt\nYou are Lisa."
         if path == "prompts/agent/turn_input_contract.md":
             return "## User Query"
         return ""
@@ -311,9 +307,7 @@ def test_assemble_system_prompt_includes_turn_input_contract() -> None:
         "Mode instruction", None, content_loader=_loader
     )
 
-    assert "Kernel Harness" in system_prompt
-    assert "Guardrails" in system_prompt
-    assert "Identity & Personality" in system_prompt
+    assert "System Prompt" in system_prompt
     assert "Mode instruction" in system_prompt
     assert "## User Query" in system_prompt
 

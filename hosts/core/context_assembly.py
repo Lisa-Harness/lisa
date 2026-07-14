@@ -56,27 +56,16 @@ from hosts.core.model_runtime import StubModelDefinition
 
 
 def load_system_prompt(content_loader: Callable[[str], str]) -> str:
-    """Load the base system prompt from the three core authored assets.
+    """Load the base system prompt from the authored system prompt asset.
 
-    The base system prompt is composed of three always-on documents that
-    define the kernel harness rules, guardrails, and identity/personality.
-    These are loaded into **every** turn — they are not optional session
-    contexts. If a file is missing it is silently skipped so partial
-    installs still produce a usable prompt.
+    The system prompt is always-on authored content loaded into every turn
+    and is not optional session context. If the file is missing, return an
+    empty prompt so partial installs still produce a usable payload.
     """
-    parts: list[str] = []
-    for asset in (
-        "user_contexts/harness.md",
-        "user_contexts/guardrails.md",
-        "user_contexts/identity.md",
-    ):
-        try:
-            text = content_loader(asset).strip()
-        except FileNotFoundError:
-            continue
-        if text:
-            parts.append(text)
-    return "\n\n".join(parts)
+    try:
+        return content_loader("prompts/system-prompt.md").strip()
+    except FileNotFoundError:
+        return ""
 
 
 def load_turn_input_contract(content_loader: Callable[[str], str]) -> str:
