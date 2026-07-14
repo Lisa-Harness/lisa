@@ -226,8 +226,8 @@ post_install_guidance() {
                 printf "       %s: uncomment and set %s\n" "$label" "${joined#, }"
             fi
         done
-        printf "    2. Run: cd %s; uv run little-lisa setup\n" "$install_dir"
-        printf "       (or use the wizard to walk through each provider interactively)\n"
+        printf "    2. Run: cd %s; uv run little-lisa verify\n" "$install_dir"
+        printf "       (to verify everything is working correctly)\n"
         printf "\n"
     fi
 

@@ -73,7 +73,6 @@ uv run lisa once "/discuss capability tradeoffs" --session-context system
 
 # Environment and config
 uv run lisa verify
-uv run lisa setup
 uv run lisa modes
 uv run lisa models
 ```

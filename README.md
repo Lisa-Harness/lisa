@@ -25,7 +25,6 @@ From this directory:
 ```powershell
 uv sync --extra dev
 uv run little-lisa verify
-uv run little-lisa setup
 uv run little-lisa modes
 uv run little-lisa models
 uv run little-lisa once "/search public sdk design"

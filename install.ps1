@@ -241,8 +241,8 @@ function Write-PostInstallGuidance {
                 Write-Host "       $($meta.Label): uncomment and set $fillThese" -ForegroundColor Yellow
             }
         }
-        Write-Host "    2. Run: cd $InstallDir; uv run little-lisa setup" -ForegroundColor Yellow
-        Write-Host "       (or use the wizard to walk through each provider interactively)"
+        Write-Host "    2. Run: cd $InstallDir; uv run little-lisa verify" -ForegroundColor Yellow
+        Write-Host "       (to verify everything is working correctly)"
         Write-Host ""
     }
 
