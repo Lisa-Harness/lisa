@@ -174,6 +174,9 @@ def build_recent_thread_excerpt(
         if _is_host_command_query(query):
             continue
         body = response or query
+        prov = entry.get("provenance")
+        if prov:
+            body = f"{body} [system_provenance: {prov.get('source', 'observed')}, model_id: {prov.get('model_id', 'unknown')}]"
         lines.append(f"- {query or 'unknown'}: {body}")
         emitted += 1
     if emitted == 0:

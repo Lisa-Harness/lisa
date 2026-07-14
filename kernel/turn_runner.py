@@ -1269,6 +1269,8 @@ async def _run_turn_inner(
         tool_calls = getattr(completion, "tool_calls", None) or []
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
+        if hasattr(completion, "model"):
+            assistant_msg["extra"] = {"provenance": {"source": "observed", "model": getattr(completion, "model", "")}}
         messages.append(assistant_msg)
 
         if not tool_calls:

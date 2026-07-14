@@ -445,6 +445,7 @@ async def _try_frontdoor_shortcut(
         mode_id="default",
         query=route_decision.normalized_query or message,
         response_text=response_text,
+        provenance={"source": "system-verified", "finish_reason": "frontdoor", "model_id": "none"},
     )
     _apply_turn_usage(
         runtime,
@@ -492,6 +493,7 @@ def _try_frontdoor_clarification(
         mode_id="front-door",
         query=message,
         response_text=response_text,
+        provenance={"source": "system-verified", "finish_reason": "frontdoor-clarification", "model_id": "none"},
     )
     return response_text
 
