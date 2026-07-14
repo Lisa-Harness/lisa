@@ -5,7 +5,11 @@ This is the core ``handle_message`` entry point that all transport hosts
 
 1. **Host command dispatch** — delegates to ``hosts.core.commands`` for
    ``/help``, ``/settings``, ``/tokens``, ``/debug``, ``/consolidate``,
-    ``/checkpoint``, ``/restore``, ``/checkpoints``, ``/pack``, ``/models``.
+    ``/intake``, ``/pack``, ``/models``. Pack-registered commands
+    (``/checkpoint``, ``/restore``, ``/checkpoints``, ``/summarize-history``)
+    are discovered via ``lisa.extensions.host_commands`` and dispatched
+    after built-in host commands.
+    ``/models``.
 2. **Model turn routing** — for non-command messages: checks for ``/deep``
    prefix, parses slash-command routes, plans front-door routes for natural
    language, tries the front-door direct-response shortcut, tries the
@@ -42,13 +46,11 @@ from hosts.core.commands import (
     format_token_stats,
     format_unsupported_mode,
     frontdoor_model_alias,
-    handle_checkpoint_command,
     handle_debug_command,
     handle_help_command,
-    handle_list_checkpoints_command,
+    handle_intake_command,
     handle_models_command,
     handle_pack_command,
-    handle_restore_command,
     handle_simple_command,
     mode_support_gap,
     model_alias_for_mode,
@@ -61,12 +63,33 @@ from hosts.core.context_assembly import build_turn_context
 from hosts.core.frontdoor_routing import plan_frontdoor_route
 from hosts.core.host_commands import (
     register_host_command_exacts,
+    register_host_command_prefix,
     register_host_command_prefixes,
 )
 from hosts.core.thread import append_thread_entry, build_recent_thread_excerpt
 from hosts.core.token_accounting import apply_turn_usage, coerce_non_negative_int
 from hosts.core.turn_hooks_builder import build_turn_hooks
 from hosts.core.types import HostCommandResult
+
+# ── Pack-command discovery (lazy) ────────────────────────────────────
+
+_pack_command_cache: list[Any] | None = None
+
+
+def _pack_host_commands() -> list[Any]:
+    """Return cached pack-registered host command entries.
+
+    Discovers ``lisa.extensions.host_commands`` entry points on first call
+    and caches the result. Pack commands are consulted after built-in host
+    commands in ``_dispatch_host_command``.
+    """
+    global _pack_command_cache
+    if _pack_command_cache is not None:
+        return _pack_command_cache
+    from kernel.host_command_discovery import discover_pack_host_commands
+
+    _pack_command_cache = discover_pack_host_commands()
+    return _pack_command_cache
 
 # ── Token-accounting adapter ──────────────────────────────────────────
 
@@ -232,9 +255,7 @@ register_host_command_prefixes(
         "/settings",
         "/consolidate",
         "/slice",
-        "/checkpoint",
-        "/restore",
-        "/checkpoints",
+        "/intake",
         "/pack",
         "/models",
         "/debug",
@@ -247,9 +268,15 @@ register_host_command_exacts(
         "settings",
         "consolidate",
         "slice",
-        "checkpoints",
     )
 )
+
+# Register pack-discovered command prefixes for transcript filtering.
+# Pack commands are discovered via lisa.extensions.host_commands and their
+# prefixes must be registered so the thread excerpt builder strips them.
+for _entry in _pack_host_commands():
+    for _spec in _entry.specs:
+        register_host_command_prefix(_spec.prefix)
 
 
 async def _dispatch_host_command(
@@ -280,12 +307,8 @@ async def _dispatch_host_command(
         response_text = handle_simple_command(runtime, message, "settings", render_runtime_settings(runtime))
     elif lowered in {"/consolidate", "consolidate", "/slice", "slice"}:
         response_text = await run_explicit_slice_command(runtime, message=message)
-    elif lowered.startswith("/checkpoint"):
-        response_text = await handle_checkpoint_command(runtime, stripped, message)
-    elif lowered.startswith("/restore"):
-        response_text = await handle_restore_command(runtime, stripped, message)
-    elif lowered in {"/checkpoints", "checkpoints"}:
-        response_text = await handle_list_checkpoints_command(runtime, message)
+    elif lowered in {"/intake", "intake"}:
+        response_text = await handle_intake_command(runtime, message=message)
     elif lowered.startswith("/pack"):
         response_text = await handle_pack_command(runtime, stripped, message)
     elif lowered.startswith("/models"):
@@ -296,6 +319,22 @@ async def _dispatch_host_command(
     if response_text is not None:
         await transport.on_response(response_text)
         return HostCommandResult(text=response_text)
+
+    # ── Pack-registered commands ────────────────────────────────────
+    # Packs register slash commands via lisa.extensions.host_commands.
+    # The host owns only the dispatch mechanism and host-intrinsic
+    # commands; pack-owned commands (e.g. /checkpoint, /restore) live in
+    # the pack that owns the operations they call.
+    for entry in _pack_host_commands():
+        for spec in entry.specs:
+            if lowered.startswith(spec.prefix):
+                try:
+                    response_text = await spec.handler(runtime, stripped, message)
+                except Exception as exc:  # pylint: disable=broad-except
+                    response_text = f"Command {spec.prefix} failed: {exc}"
+                if response_text is not None:
+                    await transport.on_response(response_text)
+                    return HostCommandResult(text=response_text)
 
     return None
 

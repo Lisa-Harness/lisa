@@ -2,7 +2,7 @@
 
 This module consolidates the slash-command handlers that do not require the
 model: ``/help``, ``/settings``, ``/tokens``, ``/debug``, ``/consolidate``
-(``/slice``), ``/checkpoint``, ``/restore``, ``/checkpoints``, and ``/pack``.
+(``/slice``), ``/intake``, ``/pack``.
 All functions produce plain text output (Markdown strings) — no Rich
 panels, no console printing, no transport-specific rendering.
 
@@ -28,9 +28,7 @@ Public surface
 - :func:`handle_help_command`
 - :func:`handle_debug_command`
 - :func:`run_explicit_slice_command`
-- :func:`handle_checkpoint_command`
-- :func:`handle_restore_command`
-- :func:`handle_list_checkpoints_command`
+- :func:`handle_intake_command`
 - :func:`handle_pack_command`
 - :func:`format_help`
 - :func:`render_capability_help`
@@ -581,9 +579,8 @@ def format_help() -> str:
             "- /tokens shows detailed session token breakdown by model, mode, and stage.",
             "- /debug context|capabilities|self|frontdoor shows local diagnostics.",
             "- /consolidate (or /slice) runs the explicit thread/memory compaction slice.",
-            "- /checkpoint [label] saves a state+workflow checkpoint to lisa-storage.",
-            "- /restore <checkpoint_id> restores state from a saved checkpoint.",
-            "- /checkpoints lists all saved checkpoints (newest first).",
+            "- /intake runs one intake tick (collect signals, process, write state) in-process.",
+            "- /pack list|enable|disable|install|uninstall manages packs.",
             "- /quit exits the interactive console loop.",
         ]
     )
@@ -781,210 +778,78 @@ async def run_explicit_slice_command(
     )
 
 
-# ── /checkpoint ──────────────────────────────────────────────────────
+# ── /intake ──────────────────────────────────────────────────────────
 
 
-async def handle_checkpoint_command(
+async def handle_intake_command(
     runtime: HostRuntime,
-    stripped: str,
     message: str,
 ) -> str:
-    """Handle ``/checkpoint [label]`` — create an enriched checkpoint.
+    """Handle ``/intake`` — run one intake tick in-process.
 
-    Delegates to the ``checkpoint_create`` operation from lisa-pack-checkpoint,
-    which calls the model to summarize the conversation, then persists an
-    enriched ``CheckpointBundle`` via ``lisa-storage``.
+    The CLI exposes this as a one-shot ``lisa intake`` process. The slash
+    command runs the same :func:`hosts.core.intake.run_intake` inside the
+    host's live event loop so the running REPL/VsCode/web session can refresh
+    ambient state (GitHub PR status, Stripe billing health, Cloudflare zone
+    state, etc.) on demand. The next model turn reads the written
+    ``state.json`` via the host's state provider.
     """
-    parts = stripped.split(None, 1)
-    label = parts[1].strip() if len(parts) > 1 else ""
-
-    # Load turn history from the thread JSONL.
-    turn_history = load_recent_thread_entries(
-        thread_path=runtime.thread_path,
-        limit=50,
-    )
-    normalized_history = [
-        {
-            "timestamp_utc": entry.get("timestamp_utc", ""),
-            "mode_id": entry.get("mode_id", ""),
-            "query": entry.get("query", ""),
-            "response_text": entry.get("response_text", ""),
-        }
-        for entry in turn_history
-    ]
-
-    # Read current UnifiedState.
-    state = build_unified_state(state_snapshot=runtime.state_snapshot)
-
-    pool = runtime.mcp_tool_pool
-    if pool is None:
-        return "No storage pool available to persist checkpoint."
-
-    async def _checkpoint_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
-        """Route checkpoint tools to lisa-storage via server-scoped dispatch."""
-        params = getattr(_ctx, "parameters", {}) or {}
-        mcp_result = await pool.call_tool(tool_id, params, server_id="lisa-storage")
-        return ToolResult(
-            tool_id=tool_id,
-            output_text=mcp_result.output_text,
-            error=mcp_result.output_text if mcp_result.is_error else "",
-        )
-
     try:
-        from hosts.core.turn_hooks_builder import content_loader  # noqa: PLC0415
+        from hosts.core.intake import run_intake  # noqa: PLC0415
+    except ImportError:
+        return "intake module not available in this host."
 
-        read_authored_text_fn = content_loader(runtime)
-    except RuntimeError:
-        read_authored_text_fn = None
+    started = _time.monotonic()
+    try:
+        state = await run_intake(data_dir=runtime.data_dir)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("Intake tick failed: %s", exc)
+        return f"Intake tick failed: {exc}"
+    elapsed_ms = (_time.monotonic() - started) * 1000.0
 
-    ctx = OperationExecutionContext(
-        workspace_id="lite-host",
-        user_id=str(runtime.config.user_slug or "lite-user"),
-        user_slug=str(runtime.config.user_slug or "default"),
-        surface_type=cast(ConversationSurface, runtime.config.surface_type),
-        surface_id=runtime.config.surface_id,
-        memory_scope="personal",
-        mode_id=str(runtime.current_mode_id or "default"),
-        query=message,
-        complete_fn=getattr(runtime, "complete_fn", None),
-        resolve_model_fn=lambda model_id: _resolve_model(runtime, model_id),
-        read_authored_text_fn=read_authored_text_fn,
-        execute_tool_fn=_checkpoint_tool_executor,
-        state_provider=lambda: state,
-        params={
-            "label": label,
-            "turn_history": normalized_history,
+    timestamp_utc = datetime.now(UTC).isoformat()
+    intake_data = {
+        "elapsed_ms": round(elapsed_ms, 3),
+        "signal_count": len(state.signal_snapshots),
+        "alert_count": len(state.active_alerts),
+        "intel_count": len(state.intel_collections),
+    }
+    _set_turn_context(
+        runtime,
+        timestamp_utc=timestamp_utc,
+        raw_message=message,
+        mode_id="intake",
+        handoff="intake tick command",
+        turn_input={"intake": intake_data},
+    )
+    _append_turn_log(
+        context={
+            "timestamp_utc": timestamp_utc,
+            "raw_message": message,
+            "mode_id": "intake",
+            "handoff": "intake tick command",
+            "intake": intake_data,
         },
+        response_text="",
     )
-
-    try:
-        result = await execute_operation("checkpoint_create", ctx)
-        return result.output_text or "Checkpoint created."
-    except Exception as exc:  # pylint: disable=broad-except
-        return f"Checkpoint failed: {exc}"
-
-
-# ── /restore ─────────────────────────────────────────────────────────
-
-
-async def handle_restore_command(
-    runtime: HostRuntime,
-    stripped: str,
-    message: str,
-) -> str:
-    """Handle ``/restore <checkpoint_id>`` — restore state from a checkpoint.
-
-    Delegates to the ``checkpoint_restore`` operation from lisa-pack-checkpoint,
-    which loads the bundle via ``lisa-storage`` and returns the full contents.
-    The host then restores UnifiedState from the returned ``output_json``.
-    """
-    parts = stripped.split(None, 1)
-    if len(parts) < _MIN_RESTORE_ARGS or not parts[1].strip():
-        return "Usage: /restore <checkpoint_id>"
-
-    checkpoint_id = parts[1].strip()
-    pool = runtime.mcp_tool_pool
-    if pool is None:
-        return "No storage pool available to restore from."
-
-    async def _checkpoint_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
-        """Route checkpoint tools to lisa-storage via server-scoped dispatch."""
-        params = getattr(_ctx, "parameters", {}) or {}
-        mcp_result = await pool.call_tool(tool_id, params, server_id="lisa-storage")
-        return ToolResult(
-            tool_id=tool_id,
-            output_text=mcp_result.output_text,
-            error=mcp_result.output_text if mcp_result.is_error else "",
-        )
-
-    ctx = OperationExecutionContext(
-        workspace_id="lite-host",
-        user_id=str(runtime.config.user_slug or "lite-user"),
-        user_slug=str(runtime.config.user_slug or "default"),
-        surface_type=cast(ConversationSurface, runtime.config.surface_type),
-        surface_id=runtime.config.surface_id,
-        memory_scope="personal",
-        mode_id=str(runtime.current_mode_id or "default"),
+    _append_thread_entry(
+        runtime,
+        mode_id="intake",
         query=message,
-        execute_tool_fn=_checkpoint_tool_executor,
-        params={"checkpoint_id": checkpoint_id},
+        response_text="",
     )
+    runtime.current_mode_id = "intake"
+    runtime.current_stage_id = "-"
+    runtime.next_model_id = "-"
 
-    try:
-        result = await execute_operation("checkpoint_restore", ctx)
-
-        # Restore state from the returned bundle.
-        bundle_data = result.output_json or {}
-        if not isinstance(bundle_data, dict):
-            bundle_data = {}
-
-        unified_state_dict = bundle_data.get("unified_state") or {}
-        if unified_state_dict:
-            runtime.state_snapshot = unified_state_dict
-
-        # Workflow session restore requires turn hooks wiring not yet
-        # available in the core runtime. When the runtime exposes a
-        # ``workflow_session_updater``, this will be wired here.
-        wf_session_dict = bundle_data.get("workflow_session_state") or {}
-        if wf_session_dict:
-            updater = getattr(runtime, "workflow_session_updater", None)
-            if updater is not None:
-                try:
-                    session = WorkflowSessionState.model_validate(wf_session_dict)
-                    updater(session)
-                except Exception as exc:  # pylint: disable=broad-except
-                    logger.warning("restore: workflow session restore failed: %s", exc)
-            else:
-                logger.debug(
-                    "restore: workflow session state present but no updater wired on runtime"
-                )
-
-        return result.output_text or f"Restored checkpoint {checkpoint_id}"
-    except Exception as exc:  # pylint: disable=broad-except
-        return f"Restore failed: {exc}"
-
-
-# ── /checkpoints ─────────────────────────────────────────────────────
-
-
-async def handle_list_checkpoints_command(
-    runtime: HostRuntime,
-    message: str,
-) -> str:
-    """Handle ``/checkpoints`` — list all saved checkpoints.
-
-    ``message`` is accepted for API symmetry with other command handlers but
-    is not used in the list path.
-    """
-    del message
-    pool = runtime.mcp_tool_pool
-    if pool is None:
-        return "No storage pool available to list checkpoints."
-
-    try:
-        result = await pool.call_tool("list_checkpoints", {}, server_id="lisa-storage")
-        result_text = getattr(result, "output_text", "") or ""
-
-        data = json.loads(result_text)
-        if isinstance(data, dict) and "error" in data:
-            return f"List failed: {data['error']}"
-        if not isinstance(data, list) or not data:
-            return "No checkpoints saved."
-
-        lines = ["Saved checkpoints (newest first):"]
-        for entry in data:
-            cid = entry.get("checkpoint_id", "")
-            label = entry.get("label") or ""
-            created = entry.get("created_at", "")[:19]
-            stage = entry.get("stage_id") or ""
-            turns = entry.get("turn_count") or 0
-            lines.append(
-                f"  {cid}  {created}  stage={stage}  turns={turns}"
-                + (f"  label={label}" if label else "")
-            )
-        return "\n".join(lines)
-    except Exception as exc:  # pylint: disable=broad-except
-        return f"List failed: {exc}"
+    state_path = runtime.data_dir / "state.json"
+    return (
+        f"Intake tick complete in {elapsed_ms:.1f} ms. "
+        f"{len(state.signal_snapshots)} signal(s), "
+        f"{len(state.active_alerts)} alert(s), "
+        f"{len(state.intel_collections)} intel collection(s). "
+        f"State written to {state_path}"
+    )
 
 
 # ── /models ─────────────────────────────────────────────────────────
@@ -1037,6 +902,7 @@ def _models_help_text(runtime: HostRuntime) -> str:
             "- /models discover --force: overwrite an existing proposal.",
             "- /models apply: validate and promote the proposal as active manifest.",
             "- /models reload: reload active manifest from disk.",
+            "- /models advise: hint for NL model editing via the model-advisor pack.",
             "",
             f"- active_path: {active_path}",
             f"- proposal_path: {proposal_path}",
@@ -1193,9 +1059,19 @@ async def handle_models_command(
         )
         return handle_simple_command(runtime, message, "models", response_text)
 
+    if subcommand == "advise":
+        response_text = (
+            "Natural-language model editing is provided by the model-advisor pack.\n"
+            "Install it with: /pack install lisa-pack-model-advisor\n"
+            "Then use: /advise-models \"<your instruction>\"\n\n"
+            "Example: /advise-models \"make claude-sonnet-5 the default "
+            "for code reasoning, mark all o-series as premium\""
+        )
+        return handle_simple_command(runtime, message, "models", response_text)
+
     response_text = (
         f"Unknown /models command '{subcommand}'. "
-        "Supported: show, discover, apply, reload, help."
+        "Supported: show, discover, apply, reload, advise, edit, help."
     )
     return handle_simple_command(runtime, message, "models", response_text)
 

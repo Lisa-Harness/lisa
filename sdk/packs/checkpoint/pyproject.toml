@@ -32,3 +32,6 @@ testpaths = ["tests"]
 
 [project.entry-points."lisa.extensions.content_roots"]
 checkpoint = "sdk.packs.checkpoint:get_content_root"
+
+[project.entry-points."lisa.extensions.host_commands"]
+checkpoint = "sdk.packs.checkpoint.commands:get_host_commands"

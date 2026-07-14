@@ -242,9 +242,10 @@ All commands are handled by `hosts/core/commands.py` and produce plain text (not
 | `/debug capabilities` | Show full capability snapshot JSON |
 | `/debug self` | Show compact self-model summary |
 | `/consolidate` | Run explicit slice (thread/memory compaction) |
-| `/checkpoint [label]` | Create an enriched checkpoint |
-| `/restore <id>` | Restore state from a checkpoint |
-| `/checkpoints` | List all saved checkpoints |
+| `/checkpoint [label]` | Create an enriched checkpoint (pack-registered) |
+| `/restore <id>` | Restore state from a checkpoint (pack-registered) |
+| `/checkpoints` | List all saved checkpoints (pack-registered) |
+| `/summarize-history [prompt]` | Condense older turns into a summary (pack-registered) |
 | `/pack list` | List discovered packs and activation state |
 | `/pack enable <name>` | Enable a pack (restart required) |
 | `/pack disable <name>` | Disable a pack (restart required) |

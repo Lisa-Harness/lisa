@@ -38,10 +38,8 @@ class TestIsHostCommandQuery:
         assert is_host_command_query("/tokens")
         assert is_host_command_query("/settings")
         assert is_host_command_query("/debug context")
-        assert is_host_command_query("/checkpoint")
         assert is_host_command_query("/consolidate")
-        assert is_host_command_query("/checkpoints")
-        assert is_host_command_query("/restore my-snapshot")
+        assert is_host_command_query("/intake")
         assert is_host_command_query("/models show")
 
     def test_bare_word_aliases_match(self) -> None:
@@ -49,7 +47,6 @@ class TestIsHostCommandQuery:
         assert is_host_command_query("tokens")
         assert is_host_command_query("settings")
         assert is_host_command_query("consolidate")
-        assert is_host_command_query("checkpoints")
 
     def test_case_insensitive(self) -> None:
         assert is_host_command_query("/PACK DISABLE GITHUB")
@@ -83,12 +80,14 @@ class TestIsHostCommandQuery:
         assert "/settings" in prefixes
         assert "/consolidate" in prefixes
         assert "/slice" in prefixes
-        assert "/checkpoint" in prefixes
-        assert "/restore" in prefixes
-        assert "/checkpoints" in prefixes
+        assert "/intake" in prefixes
         assert "/pack" in prefixes
         assert "/models" in prefixes
         assert "/debug" in prefixes
+        # Pack-registered commands (checkpoint pack) should also be registered.
+        assert "/checkpoint" in prefixes
+        assert "/restore" in prefixes
+        assert "/checkpoints" in prefixes
         # ``/deep`` must NOT be registered (routes to model).
         assert "/deep" not in prefixes
 
@@ -99,7 +98,6 @@ class TestIsHostCommandQuery:
         assert "settings" in exact
         assert "consolidate" in exact
         assert "slice" in exact
-        assert "checkpoints" in exact
 
     def test_dynamic_registration_works(self) -> None:
         """A newly registered prefix is immediately recognised."""

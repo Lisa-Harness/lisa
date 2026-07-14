@@ -71,10 +71,22 @@ REGISTRY: list[Endpoint] = [
         ),
     ),
     Endpoint(
+        group="lisa.extensions.host_commands",
+        contract_module="kernel.host_commands",
+        contract_name="HostCommandHandler",
+        consumer_site="kernel.host_command_discovery.discover_pack_host_commands",
+        description=(
+            "Registers pack-owned slash commands (e.g. /checkpoint, /restore). "
+            "Each entry point returns a list[HostCommandSpec]. The host "
+            "dispatch layer consults discovered commands after built-in "
+            "host commands."
+        ),
+    ),
+    Endpoint(
         group="lisa.extensions.processing_loops",
         contract_module="kernel.intake.contracts",
         contract_name="ProcessingLoop",
-        consumer_site="hosts.little_lisa.bottom.run_tick",
+        consumer_site="hosts.core.intake._discover_processing_loops",
         description=(
             "Background processing chain triggered after signal collection. "
             "Each loop takes ``ProcessContext`` (with collection results) and "
