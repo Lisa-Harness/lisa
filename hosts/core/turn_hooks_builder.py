@@ -20,10 +20,11 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from kernel.context import context_frames as _context_frames
 from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from kernel.operations.registry import execute_operation
 from kernel.slice import SliceTuning
-from kernel.turn_runner import CheckpointTuning, TurnHooks
+from kernel.turn_runner import CheckpointTuning, ContextSeams, TurnHooks
 
 from hosts.core.context_assembly import (
     assemble_dynamic_user_context,
@@ -89,10 +90,16 @@ def build_turn_hooks(
     slice_config = runtime.config.slice_config
     slice_tuning = SliceTuning.from_mapping(slice_config.to_tuning_dict())
 
+    replay_controls = getattr(getattr(runtime.config, "session_controls", None), "replay", None)
+    digest_max_lines = getattr(replay_controls, "digest_max_lines", None)
+    digest_summary_max_chars = getattr(replay_controls, "digest_summary_max_chars", None)
+
     # ── State provider (FileBackedStateProvider) ──────────────────
     file_state_provider = FileBackedStateProvider(
         thread_path=runtime.thread_path,
         max_thread_entries=runtime.config.thread_max_entries,
+        digest_max_lines=digest_max_lines,
+        digest_summary_max_chars=digest_summary_max_chars,
     )
 
     # ── Model resolution ──────────────────────────────────────────
@@ -159,6 +166,15 @@ def build_turn_hooks(
                 content_loader=loader,
             )
 
+        def _replay_controls_loader() -> Any:
+            controls = getattr(runtime.config, "session_controls", None)
+            replay = getattr(controls, "replay", None)
+            if replay is not None:
+                return replay
+            from hosts.core.session_context import ReplayControls
+
+            return ReplayControls()
+
         def _thread_digest_loader() -> str:
             return load_thread_digest(thread_path=runtime.thread_path)
 
@@ -179,6 +195,7 @@ def build_turn_hooks(
             session_context_loader=_session_context_loader,
             thread_digest_loader=_thread_digest_loader,
             recent_thread_excerpt_builder=_recent_thread_excerpt_builder,
+            replay_controls_loader=_replay_controls_loader,
             capability_manifest=capability_manifest,
         )
 
@@ -290,5 +307,15 @@ def build_turn_hooks(
             enabled=True,
             on_stage_transition=True,
             every_n_turns=10,
+        ),
+        # Wire the content registry into context_seams so the turn runner's
+        # _build_minimal_context can resolve read_authored_text_fn for
+        # operations that load authored prompts (e.g. synthesize_and_store_learning,
+        # advise_models). The registry is the same module-level singleton that
+        # content_loader() reads; setup_framework(runtime) populates it at host
+        # startup. When unset, content_registry stays None and operations fail at
+        # call time with their authored-text error (preserving graceful failure).
+        context_seams=ContextSeams(
+            content_registry=_context_frames._content_registry,
         ),
     )

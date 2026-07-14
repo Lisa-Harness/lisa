@@ -109,6 +109,25 @@ class PolicyControls:
     preferred_capability_providers: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayControls:
+    """Replay-policy controls from the ``replay`` front-matter block.
+
+    All fields are optional and default to "no override" so host/runtime
+    defaults remain authoritative when a key is absent.
+    """
+
+    trigger_mode: str | None = None
+    include_prior_conversation_digest: bool | None = None
+    include_recent_conversation: bool | None = None
+    include_diagnostic_reflection: bool | None = None
+    history_max_tokens: int | None = None
+    reflection_max_tokens: int | None = None
+    min_query_chars: int | None = None
+    digest_max_lines: int | None = None
+    digest_summary_max_chars: int | None = None
+
+
 from kernel.models import ContextRoutingConfig
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +145,7 @@ class SessionContextControls:
     start_mode: str | None = None
     packs: PackPreferences = field(default_factory=PackPreferences)
     policy: PolicyControls = field(default_factory=PolicyControls)
+    replay: ReplayControls = field(default_factory=ReplayControls)
     context_routing: ContextRoutingConfig | None = None
 
 
@@ -494,6 +514,29 @@ def extract_session_context_controls(path: Path) -> SessionContextControls:
             preferred_capability_providers=cap_prefs,
         )
 
+    # ── replay block ──
+    replay = ReplayControls()
+    replay_raw = front_matter.get("replay")
+    if isinstance(replay_raw, dict):
+        replay = ReplayControls(
+            trigger_mode=_normalize_replay_trigger_mode(replay_raw.get("trigger_mode"))
+            or _normalize_replay_trigger_mode(replay_raw.get("trigger")),
+            include_prior_conversation_digest=_bool_or_none(
+                replay_raw.get("include_prior_conversation_digest")
+            ),
+            include_recent_conversation=_bool_or_none(
+                replay_raw.get("include_recent_conversation")
+            ),
+            include_diagnostic_reflection=_bool_or_none(
+                replay_raw.get("include_diagnostic_reflection")
+            ),
+            history_max_tokens=_int_or_none(replay_raw.get("history_max_tokens")),
+            reflection_max_tokens=_int_or_none(replay_raw.get("reflection_max_tokens")),
+            min_query_chars=_int_or_none(replay_raw.get("min_query_chars")),
+            digest_max_lines=_int_or_none(replay_raw.get("digest_max_lines")),
+            digest_summary_max_chars=_int_or_none(replay_raw.get("digest_summary_max_chars")),
+        )
+
     # ── context_routing block ──
     context_routing: ContextRoutingConfig | None = None
     routing_raw = front_matter.get("context_routing")
@@ -509,6 +552,7 @@ def extract_session_context_controls(path: Path) -> SessionContextControls:
         start_mode=start_mode,
         packs=packs,
         policy=policy,
+        replay=replay,
         context_routing=context_routing,
     )
 
@@ -531,6 +575,49 @@ def _str_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [v.strip() for v in value if isinstance(v, str) and v.strip()]
     return []
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    """Coerce a YAML bool-ish value to bool or None."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "on", "1"}:
+            return True
+        if lowered in {"false", "no", "off", "0"}:
+            return False
+    return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    """Coerce a YAML numeric/string value to int or None."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_replay_trigger_mode(value: Any) -> str | None:
+    """Normalize replay trigger mode to one of: always/conditional/manual/hybrid."""
+
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"always", "conditional", "manual", "hybrid"}:
+        return normalized
+    return None
 
 
 def load_selected_session_context_text(

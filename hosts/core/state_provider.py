@@ -227,9 +227,13 @@ class FileBackedStateProvider:
         *,
         thread_path: Path | None,
         max_thread_entries: int = _DEFAULT_THREAD_MAX_ENTRIES,
+        digest_max_lines: int | None = None,
+        digest_summary_max_chars: int | None = None,
     ) -> None:
         self._thread_path = thread_path
         self._max_thread_entries = max(1, max_thread_entries)
+        self._digest_max_lines = max(1, digest_max_lines or 200)
+        self._digest_summary_max_chars = max(60, digest_summary_max_chars or 240)
 
     def __call__(self) -> Any:
         return None
@@ -304,6 +308,7 @@ class FileBackedStateProvider:
             existing = digest_path.read_text(encoding="utf-8").strip()
         new_block = "\n".join(digest_parts)
         digest_text = f"{existing}\n\n{new_block}" if existing else new_block
+        digest_text = self._apply_digest_cap(digest_text)
         digest_path.write_text(digest_text, encoding="utf-8")
 
         remaining_lines = lines[overflow_count:]
@@ -314,6 +319,25 @@ class FileBackedStateProvider:
 
         note = f"compacted {overflow_count} thread entries into digest"
         return overflow_count, f"thread:{overflow_count} entries", note
+
+    def _apply_digest_cap(self, digest_text: str) -> str:
+        """Bound digest growth and prepend one lossy summary when capped."""
+
+        lines = [line for line in digest_text.splitlines() if line.strip()]
+        if len(lines) <= self._digest_max_lines:
+            return "\n".join(lines)
+
+        dropped_count = len(lines) - self._digest_max_lines
+        kept = lines[-self._digest_max_lines :]
+        summary = (
+            f"- [lossy_summary] Omitted {dropped_count} older digest lines "
+            f"to enforce digest_max_lines={self._digest_max_lines}."
+        )
+        summary = summary[: self._digest_summary_max_chars].rstrip()
+
+        if self._digest_max_lines == 1:
+            return summary
+        return "\n".join([summary, *kept[-(self._digest_max_lines - 1) :]])
 
 
 def build_workshop_context_bundle(

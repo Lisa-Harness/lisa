@@ -279,6 +279,8 @@ Memory is capability-owned by policy. The bundled learning pack provides the `li
 
 ## Session Context Front Matter
 
+For full authoring guidance, examples, and the replay control schema, see `docs/SESSION_CONTEXT_AUTHORING_GUIDE.md`.
+
 A `session_context.md` file (or `session_context/` directory) in the project root or data directory is auto-discovered at startup. The file's YAML front matter can declare runtime controls that override the host's defaults:
 
 ```yaml
@@ -320,6 +322,15 @@ policy:
 | `policy.always_on_packs` | `list[str]` | Packs that cannot be disabled | Startup |
 | `policy.exclude_servers` | `list[str]` | Pack MCP server IDs to suppress | Startup |
 | `policy.preferred_capability_providers` | `map[str,str]` | Capability → pack ownership preference | Startup |
+| `replay.trigger_mode` | `always\|conditional\|manual\|hybrid` | Replay trigger policy for history sections | Per-turn |
+| `replay.include_prior_conversation_digest` | `bool` | Include/exclude digest replay section | Per-turn |
+| `replay.include_recent_conversation` | `bool` | Include/exclude recent conversation replay section | Per-turn |
+| `replay.include_diagnostic_reflection` | `bool` | Include/exclude diagnostic reflection section | Per-turn |
+| `replay.min_query_chars` | `int` | Threshold gate for conditional/hybrid replay | Per-turn |
+| `replay.history_max_tokens` | `int` | Tighten-only cap for history lane budget | Per-turn |
+| `replay.reflection_max_tokens` | `int` | Tighten-only cap for reflection lane budget | Per-turn |
+| `replay.digest_max_lines` | `int` | Max digest lines during replay and compaction | Per-turn + slice |
+| `replay.digest_summary_max_chars` | `int` | Lossy-summary max chars when digest is capped | Slice |
 
 Precedence: session-context front matter > CLI/env > defaults. Flat top-level `surface_type`/`surface_id`/`memory_scope` keys are accepted as a convenience when no `surface` block is present.
 

@@ -23,6 +23,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 from datetime import UTC
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -53,6 +54,7 @@ from hosts.core.config_resolver import resolve_log_level, resolve_stream_enabled
 from hosts.core.handle_message import handle_message
 from hosts.core.model_runtime import StubCompletion, StubModelDefinition, resolve_little_lisa_model
 from hosts.core.runtime import HostRuntime, TurnContext
+from hosts.core.state_provider import FileBackedStateProvider
 from hosts.core.token_accounting import apply_turn_usage, format_session_exit_summary_lines
 
 
@@ -564,6 +566,37 @@ def test_extract_session_context_controls_empty_file(tmp_path: Path) -> None:
     assert controls.policy.always_on_packs == ()
 
 
+def test_extract_session_context_controls_replay_block(tmp_path: Path) -> None:
+    """Replay controls are parsed from front matter."""
+    path = tmp_path / "ctx.md"
+    path.write_text(
+        "---\n"
+        "replay:\n"
+        "  trigger_mode: conditional\n"
+        "  include_prior_conversation_digest: false\n"
+        "  include_recent_conversation: true\n"
+        "  include_diagnostic_reflection: true\n"
+        "  history_max_tokens: 800\n"
+        "  reflection_max_tokens: 600\n"
+        "  min_query_chars: 25\n"
+        "  digest_max_lines: 40\n"
+        "  digest_summary_max_chars: 120\n"
+        "---\n"
+        "# body\n",
+        encoding="utf-8",
+    )
+    controls = session_context.extract_session_context_controls(path)
+    assert controls.replay.trigger_mode == "conditional"
+    assert controls.replay.include_prior_conversation_digest is False
+    assert controls.replay.include_recent_conversation is True
+    assert controls.replay.include_diagnostic_reflection is True
+    assert controls.replay.history_max_tokens == 800
+    assert controls.replay.reflection_max_tokens == 600
+    assert controls.replay.min_query_chars == 25
+    assert controls.replay.digest_max_lines == 40
+    assert controls.replay.digest_summary_max_chars == 120
+
+
 def test_hostconfig_applies_session_context_surface_and_start_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """HostConfig.from_env reads surface, start_mode from auto-discovered session_context.md."""
     monkeypatch.chdir(tmp_path)
@@ -621,6 +654,48 @@ def test_runtime_no_start_mode_defaults_to_default(tmp_path: Path, monkeypatch: 
     config = HostConfig.from_env(data_dir=str(tmp_path), no_thread=True)
     runtime = HostRuntime(config)
     assert runtime.current_mode_id == "default"
+
+
+def test_file_backed_state_provider_caps_digest_with_lossy_summary(tmp_path: Path) -> None:
+    """Thread compaction bounds digest growth and prepends a lossy summary."""
+
+    thread_path = tmp_path / "session.jsonl"
+    digest_path = tmp_path / "thread_digest.md"
+
+    entries = [
+        {
+            "query": f"q{i}",
+            "response_text": f"response {i}",
+        }
+        for i in range(8)
+    ]
+    thread_path.write_text(
+        "\n".join(json.dumps(item) for item in entries) + "\n",
+        encoding="utf-8",
+    )
+    digest_path.write_text(
+        "\n".join(f"- seed {i}" for i in range(6)),
+        encoding="utf-8",
+    )
+
+    provider = FileBackedStateProvider(
+        thread_path=thread_path,
+        max_thread_entries=3,
+        digest_max_lines=5,
+        digest_summary_max_chars=120,
+    )
+
+    class _Policy:
+        budget_ms = 1000
+
+    compacted, last_item, note = provider._compact_thread(_Policy(), time.monotonic())
+    assert compacted == 5
+    assert last_item.startswith("thread:")
+    assert "compacted" in note
+
+    digest_lines = digest_path.read_text(encoding="utf-8").splitlines()
+    assert len([line for line in digest_lines if line.strip()]) <= 5
+    assert digest_lines[0].startswith("- [lossy_summary]")
 
 
 # ── Token accounting ──────────────────────────────────────────────────

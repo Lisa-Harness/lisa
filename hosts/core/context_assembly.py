@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from kernel.config import settings
 from kernel import frontdoor as shared_frontdoor
 from kernel.capability_manifest import render_capability_manifest_context
 from kernel.context.context_broker import (
@@ -53,6 +54,7 @@ from kernel.models import (
 )
 
 from hosts.core.model_runtime import StubModelDefinition
+from hosts.core.session_context import ReplayControls
 
 # ---------------------------------------------------------------------------
 # Authored-text loaders (formerly lru_cache wrappers around _read_authored_text)
@@ -386,6 +388,7 @@ def assemble_dynamic_user_context(
     session_context_loader: Callable[[], str],
     thread_digest_loader: Callable[[], str],
     recent_thread_excerpt_builder: Callable[[int], str],
+    replay_controls_loader: Callable[[], ReplayControls] | None = None,
     host_name: str | None = None,
     host_os: str | None = None,
     capability_manifest: CapabilityManifest | None = None,
@@ -464,6 +467,15 @@ def assemble_dynamic_user_context(
         ("dynamic_context", "core", "## Dynamic User Context\n\n" + "\n".join(lines)),
     ]
 
+    replay_controls = (
+        replay_controls_loader() if replay_controls_loader is not None else ReplayControls()
+    )
+    replay_policy = _resolve_replay_policy(
+        replay_controls,
+        query=query,
+        thread_digest_loader=thread_digest_loader,
+    )
+
     user_context = session_context_loader().strip()
     if user_context:
         # Normalize authored markdown (which may use provenance fences)
@@ -474,13 +486,26 @@ def assemble_dynamic_user_context(
             normalize_markdown_to_tagged(user_context),
         ))
 
-    thread_digest = thread_digest_loader()
-    if thread_digest:
+    thread_digest = replay_policy.thread_digest_text
+    if replay_policy.include_prior_conversation_digest and thread_digest:
         raw_sections.append(("prior_conversation_digest", "history", thread_digest))
 
     conversation_excerpt = recent_thread_excerpt_builder(6)
-    if conversation_excerpt:
+    if replay_policy.include_recent_conversation and conversation_excerpt:
         raw_sections.append(("recent_conversation", "history", conversation_excerpt))
+
+    if replay_policy.include_diagnostic_reflection:
+        diagnostic_reflection = _build_diagnostic_reflection_block(
+            trigger_mode=replay_policy.trigger_mode,
+            min_query_chars=replay_policy.min_query_chars,
+            effective_history_max_tokens=replay_policy.effective_history_max_tokens,
+            effective_reflection_max_tokens=replay_policy.effective_reflection_max_tokens,
+            digest_max_lines=replay_policy.digest_max_lines,
+            query=query,
+            thread_digest_present=bool(thread_digest),
+            recent_conversation_present=bool(conversation_excerpt),
+        )
+        raw_sections.append(("diagnostic_reflection", "reflection", diagnostic_reflection))
 
     # Ranked context evidence from the broker (no MCP round-trip — the
     # broker is a pure ranking function over the in-process UnifiedState).
@@ -514,6 +539,16 @@ def assemble_dynamic_user_context(
     # default to ``authoritative`` (the runtime-state default).
     section_provenance = _SECTION_PROVENANCE
     allocator = ContextBudgetAllocator.for_turn(reasoning_model=False)
+    # Tighten-only override: session front matter may reduce lane budgets,
+    # never increase kernel defaults.
+    allocator.lane_limits["history"] = min(
+        allocator.lane_limits.get("history", replay_policy.effective_history_max_tokens),
+        replay_policy.effective_history_max_tokens,
+    )
+    allocator.lane_limits["reflection"] = min(
+        allocator.lane_limits.get("reflection", replay_policy.effective_reflection_max_tokens),
+        replay_policy.effective_reflection_max_tokens,
+    )
     rendered_sections: list[str] = []
     for key, lane, text in raw_sections:
         elected = allocator.allocate(
@@ -542,6 +577,145 @@ _SECTION_PROVENANCE: dict[str, str] = {
     "selected_user_context": "authoritative",
     "prior_conversation_digest": "inferred",
     "recent_conversation": "authoritative",
+    "diagnostic_reflection": "diagnostic",
     "ranked_context": "recalled_memory",
     "capability_context": "authoritative",
 }
+
+
+class _ReplayPolicy:
+    """Resolved replay controls after tighten-only clamping."""
+
+    __slots__ = (
+        "trigger_mode",
+        "include_prior_conversation_digest",
+        "include_recent_conversation",
+        "include_diagnostic_reflection",
+        "effective_history_max_tokens",
+        "effective_reflection_max_tokens",
+        "min_query_chars",
+        "digest_max_lines",
+        "thread_digest_text",
+    )
+
+    def __init__(
+        self,
+        *,
+        trigger_mode: str,
+        include_prior_conversation_digest: bool,
+        include_recent_conversation: bool,
+        include_diagnostic_reflection: bool,
+        effective_history_max_tokens: int,
+        effective_reflection_max_tokens: int,
+        min_query_chars: int,
+        digest_max_lines: int,
+        thread_digest_text: str,
+    ) -> None:
+        self.trigger_mode = trigger_mode
+        self.include_prior_conversation_digest = include_prior_conversation_digest
+        self.include_recent_conversation = include_recent_conversation
+        self.include_diagnostic_reflection = include_diagnostic_reflection
+        self.effective_history_max_tokens = effective_history_max_tokens
+        self.effective_reflection_max_tokens = effective_reflection_max_tokens
+        self.min_query_chars = min_query_chars
+        self.digest_max_lines = digest_max_lines
+        self.thread_digest_text = thread_digest_text
+
+
+def _resolve_replay_policy(
+    controls: ReplayControls,
+    *,
+    query: str,
+    thread_digest_loader: Callable[[], str],
+) -> _ReplayPolicy:
+    """Resolve replay controls with tighten-only clamping and trigger gating."""
+
+    trigger_mode = controls.trigger_mode or "hybrid"
+    min_query_chars = max(0, controls.min_query_chars or 0)
+    query_gate_passed = len(query.strip()) >= min_query_chars
+
+    digest_text = thread_digest_loader() or ""
+    digest_max_lines = max(1, controls.digest_max_lines or 200)
+    digest_text = _truncate_digest_lines(digest_text, digest_max_lines)
+
+    include_prior = True if controls.include_prior_conversation_digest is not False else False
+    include_recent = True if controls.include_recent_conversation is not False else False
+    include_diag = (
+        True if controls.include_diagnostic_reflection is not False else False
+    )
+
+    if trigger_mode == "manual":
+        include_prior = False
+        include_recent = False
+    elif trigger_mode in {"conditional", "hybrid"}:
+        if not query_gate_passed:
+            include_prior = False
+            include_recent = False
+
+    effective_history_max_tokens = _tighten_cap(
+        settings.context_budget_history_max_tokens,
+        controls.history_max_tokens,
+    )
+    effective_reflection_max_tokens = _tighten_cap(
+        settings.context_budget_reflection_max_tokens,
+        controls.reflection_max_tokens,
+    )
+
+    return _ReplayPolicy(
+        trigger_mode=trigger_mode,
+        include_prior_conversation_digest=include_prior,
+        include_recent_conversation=include_recent,
+        include_diagnostic_reflection=include_diag,
+        effective_history_max_tokens=effective_history_max_tokens,
+        effective_reflection_max_tokens=effective_reflection_max_tokens,
+        min_query_chars=min_query_chars,
+        digest_max_lines=digest_max_lines,
+        thread_digest_text=digest_text,
+    )
+
+
+def _tighten_cap(default_value: int, candidate: int | None) -> int:
+    """Return a tighten-only cap: front matter may reduce defaults, never raise."""
+
+    if candidate is None:
+        return default_value
+    if candidate <= 0:
+        return default_value
+    return min(default_value, candidate)
+
+
+def _truncate_digest_lines(text: str, max_lines: int) -> str:
+    """Keep only the most recent digest lines under ``max_lines``."""
+
+    if not text.strip():
+        return ""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    return "\n".join(lines[-max_lines:])
+
+
+def _build_diagnostic_reflection_block(
+    *,
+    trigger_mode: str,
+    min_query_chars: int,
+    effective_history_max_tokens: int,
+    effective_reflection_max_tokens: int,
+    digest_max_lines: int,
+    query: str,
+    thread_digest_present: bool,
+    recent_conversation_present: bool,
+) -> str:
+    """Render a compact diagnostic reflection section."""
+
+    return (
+        "## Diagnostic Reflection\n\n"
+        f"- replay_trigger_mode: {trigger_mode}\n"
+        f"- replay_min_query_chars: {min_query_chars}\n"
+        f"- replay_effective_history_max_tokens: {effective_history_max_tokens}\n"
+        f"- replay_effective_reflection_max_tokens: {effective_reflection_max_tokens}\n"
+        f"- replay_digest_max_lines: {digest_max_lines}\n"
+        f"- replay_query_chars: {len(query.strip())}\n"
+        f"- replay_thread_digest_present: {'true' if thread_digest_present else 'false'}\n"
+        f"- replay_recent_conversation_present: {'true' if recent_conversation_present else 'false'}"
+    )

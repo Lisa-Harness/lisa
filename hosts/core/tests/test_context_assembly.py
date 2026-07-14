@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from hosts.core import context_assembly
+from hosts.core.session_context import ReplayControls
 
 
 def test_assemble_dynamic_user_context_includes_ambient_facts(
@@ -74,3 +75,66 @@ def test_assemble_dynamic_user_context_skips_user_context_when_absent(
 
     assert "Selected User Context" not in context
     assert "user_slug: none" in context
+
+
+def test_assemble_dynamic_user_context_replay_manual_disables_history_sections() -> None:
+    context = context_assembly.assemble_dynamic_user_context(
+        "default",
+        "hello there",
+        "",
+        content_loader=lambda _path: "",
+        user_slug="adam",
+        timezone="UTC",
+        state=None,
+        session_context_loader=lambda: "",
+        thread_digest_loader=lambda: "- old summary",
+        recent_thread_excerpt_builder=lambda _n: "Recent thread context:\n- hi: there",
+        replay_controls_loader=lambda: ReplayControls(trigger_mode="manual"),
+    )
+
+    assert 'source="prior_conversation_digest"' not in context
+    assert 'source="recent_conversation"' not in context
+    assert "replay_trigger_mode: manual" in context
+
+
+def test_assemble_dynamic_user_context_replay_conditional_min_query_chars() -> None:
+    context = context_assembly.assemble_dynamic_user_context(
+        "default",
+        "short",
+        "",
+        content_loader=lambda _path: "",
+        user_slug="adam",
+        timezone="UTC",
+        state=None,
+        session_context_loader=lambda: "",
+        thread_digest_loader=lambda: "- old summary",
+        recent_thread_excerpt_builder=lambda _n: "Recent thread context:\n- hi: there",
+        replay_controls_loader=lambda: ReplayControls(
+            trigger_mode="conditional",
+            min_query_chars=20,
+        ),
+    )
+
+    assert 'source="prior_conversation_digest"' not in context
+    assert 'source="recent_conversation"' not in context
+    assert "replay_min_query_chars: 20" in context
+
+
+def test_assemble_dynamic_user_context_replay_includes_diagnostic_reflection_toggle() -> None:
+    context = context_assembly.assemble_dynamic_user_context(
+        "default",
+        "hello there",
+        "",
+        content_loader=lambda _path: "",
+        user_slug="adam",
+        timezone="UTC",
+        state=None,
+        session_context_loader=lambda: "",
+        thread_digest_loader=lambda: "- old summary",
+        recent_thread_excerpt_builder=lambda _n: "Recent thread context:\n- hi: there",
+        replay_controls_loader=lambda: ReplayControls(
+            include_diagnostic_reflection=False,
+        ),
+    )
+
+    assert "Diagnostic Reflection" not in context
