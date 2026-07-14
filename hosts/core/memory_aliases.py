@@ -155,14 +155,15 @@ def _register_memory_synthetic_tools(
 
 
 # Implicit first-party lisa_memory backend spec, used when the manifest does
-# not declare a memory.backends list. Mirrors MemoryBackendSpec's shape.
+# not declare a memory.backends list. Mirrors MemoryBackendSpec's shape
+# (id, kind, tool_names — no server_id field; server id is derived from id).
 _LISA_MEMORY_IMPLICIT_SPEC = [
     type(
         "MemoryBackendSpec",
         (),
         {
             "id": "lisa_memory",
-            "server_id": "lisa-memory",
+            "kind": "stdio",
             "tool_names": {
                 "add": "add_memory",
                 "search": "search_memory",
@@ -171,6 +172,12 @@ _LISA_MEMORY_IMPLICIT_SPEC = [
         },
     )()
 ]
+
+
+# Map backend id → MCP server id. ``lisa_memory`` uses the canonical
+# ``lisa-memory`` server id; all other backends use their own id as the
+# server id (prefixed by the owning pack slug at call sites).
+_BACKEND_ID_TO_SERVER_ID: dict[str, str] = {"lisa_memory": "lisa-memory"}
 
 
 def _register_backend_surface(
@@ -183,11 +190,8 @@ def _register_backend_surface(
 ) -> None:
     """Register one backend's explicit synthetic surface (``<backend>.add`` …)."""
     backend_id = spec.id
-    server_id = (
-        f"{prefix}{spec.server_id}"
-        if backend_id != "lisa_memory"
-        else f"{prefix}lisa-memory"
-    )
+    raw_server_id = _BACKEND_ID_TO_SERVER_ID.get(backend_id, backend_id)
+    server_id = f"{prefix}{raw_server_id}"
     tool_names = dict(spec.tool_names)
     add_arg_map, search_arg_map, list_arg_map = _backend_arg_maps(backend_id)
 
@@ -234,11 +238,8 @@ def _register_generic_router(
 ) -> None:
     """Register the generic ``memory.*`` aliases → default backend."""
     backend_id = default_spec.id
-    server_id = (
-        f"{prefix}lisa-memory"
-        if backend_id == "lisa_memory"
-        else f"{prefix}{default_spec.server_id}"
-    )
+    raw_server_id = _BACKEND_ID_TO_SERVER_ID.get(backend_id, backend_id)
+    server_id = f"{prefix}{raw_server_id}"
     tool_names = dict(default_spec.tool_names)
     add_arg_map, search_arg_map, list_arg_map = _backend_arg_maps(backend_id)
 

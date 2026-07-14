@@ -22,6 +22,12 @@ from hosts.core.memory_aliases import register_memory_aliases
 
 @dataclass
 class FakeSpec:
+    """Mirrors MemoryBackendSpec's shape (id, kind, tool_names — no server_id).
+
+    The server id is derived from the backend id at registration time:
+    lisa_memory → lisa-memory; everything else uses its own id.
+    """
+
     id: str = "lisa_memory"
     kind: str = "stdio"
     tool_names: dict[str, str] = field(
@@ -38,7 +44,6 @@ class FakeSpec:
     env: dict[str, str] = field(default_factory=dict)
     cwd: str | None = None
     agent_id: str = "lisa"
-    server_id: str = "lisa-memory"
 
 
 @dataclass
@@ -129,9 +134,8 @@ class TestMem0AndLisaMemoryDeclared:
             id="mem0",
             kind="http",
             tool_names={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
-            server_id="mem0",
         )
-        lisa_spec = FakeSpec(id="lisa_memory", server_id="lisa-memory")
+        lisa_spec = FakeSpec(id="lisa_memory")
         pool = FakePool()
         register_memory_aliases(
             pool,
@@ -163,9 +167,8 @@ class TestMem0AndLisaMemoryDeclared:
             id="mem0",
             kind="http",
             tool_names={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
-            server_id="mem0",
         )
-        lisa_spec = FakeSpec(id="lisa_memory", server_id="lisa-memory")
+        lisa_spec = FakeSpec(id="lisa_memory")
         pool = FakePool()
         register_memory_aliases(
             pool,
@@ -189,7 +192,7 @@ class TestMem0AndLisaMemoryDeclared:
         assert generic_add["arg_map"] is not None
 
     def test_lisa_memory_surface_has_no_arg_map(self) -> None:
-        lisa_spec = FakeSpec(id="lisa_memory", server_id="lisa-memory")
+        lisa_spec = FakeSpec(id="lisa_memory")
         pool = FakePool()
         register_memory_aliases(
             pool,
@@ -217,7 +220,6 @@ class TestMem0ArgMap:
             id="mem0",
             kind="http",
             tool_names={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
-            server_id="mem0",
         )
         pool = FakePool()
         register_memory_aliases(
