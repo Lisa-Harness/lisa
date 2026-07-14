@@ -72,6 +72,11 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
 
     Non-obvious role assignments are intentionally left for user review by
     writing to ``models.proposed.yaml`` before ``/models apply``.
+
+    Enrichment fields (``display_name``, ``capabilities``, ``cost_tier``,
+    ``latency_tier``, ``thinking_model``, ``context_window``,
+    ``description``) are written when the probe populated them. Fields
+    that remain empty/default are omitted to keep the YAML clean.
     """
 
     if not models:
@@ -101,6 +106,20 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
         }
         if model.reasoning_model:
             entry["reasoning_model"] = True
+        if model.thinking_model:
+            entry["thinking_model"] = True
+        if model.display_name:
+            entry["display_name"] = model.display_name
+        if model.capabilities:
+            entry["capabilities"] = list(model.capabilities)
+        if model.cost_tier:
+            entry["cost_tier"] = model.cost_tier
+        if model.latency_tier:
+            entry["latency_tier"] = model.latency_tier
+        if model.context_window:
+            entry["context_window"] = model.context_window
+        if model.description:
+            entry["description"] = model.description
         if designations:
             entry["designations"] = sorted(set(designations))
         rows.append(entry)

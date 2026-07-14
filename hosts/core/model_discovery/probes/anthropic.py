@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import httpx
 
-from ..classify import env_any
+from ..classify import apply_known_override, env_any
 from ..types import DiscoveredModel, ProbeError, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _model
 
@@ -73,7 +73,7 @@ class AnthropicProbe(ProviderProbe):
             model_id = str(row.get("id") or "").strip()
             if not model_id:
                 continue
-            models.append(_model(model_id, self.provider))
+            models.append(_enrich_anthropic_model(model_id, row))
         if models:
             return tuple(models)
         # 200 but empty list — fall back rather than reporting zero.
@@ -89,7 +89,7 @@ class AnthropicProbe(ProviderProbe):
         result = await self.probe(client, timeout)
         if result.status is ProbeStatus.EMPTY:
             fallback_models = tuple(
-                _model(model_id, self.provider) for model_id in _FALLBACK_MODELS
+                _enrich_anthropic_model(model_id, {}) for model_id in _FALLBACK_MODELS
             )
             return ProbeResult(
                 provider=self.provider,
@@ -106,3 +106,62 @@ class AnthropicProbe(ProviderProbe):
                 elapsed_ms=result.elapsed_ms,
             )
         return result
+
+
+def _enrich_anthropic_model(model_id: str, row: dict) -> DiscoveredModel:
+    """Build a :class:`DiscoveredModel` enriched from Anthropic's model metadata.
+
+    Anthropic's ``/v1/models`` response carries ``display_name`` and
+    ``type`` alongside ``id``. We infer the rest from the model family:
+
+    - Claude Opus: premium tier, extended thinking (4+ models).
+    - Claude Sonnet: standard tier, medium latency.
+    - Claude Haiku: budget tier, low latency.
+    - All Claude models support text, tools, structured_output, and vision.
+    """
+
+    display_name = str(row.get("display_name") or "").strip()
+    lowered = model_id.lower()
+
+    capabilities: tuple[str, ...] = ("text", "tools", "structured_output", "vision")
+    thinking_model = False
+    cost_tier = ""
+    latency_tier = ""
+
+    if "opus" in lowered:
+        cost_tier = "frontier"
+        latency_tier = "high"
+        thinking_model = True
+    elif "sonnet" in lowered:
+        cost_tier = "standard"
+        latency_tier = "medium"
+    elif "haiku" in lowered:
+        cost_tier = "budget"
+        latency_tier = "low"
+    elif "fable" in lowered:
+        cost_tier = "premium"
+        latency_tier = "medium"
+
+    if not display_name:
+        display_name = f"Claude {model_id.split('-', 1)[1].title()}" if "-" in model_id else model_id
+
+    enrichment = apply_known_override(
+        "anthropic",
+        model_id,
+        {
+            "thinking_model": thinking_model,
+            "display_name": display_name,
+            "capabilities": capabilities,
+            "cost_tier": cost_tier,
+            "latency_tier": latency_tier,
+        },
+    )
+    return _model(
+        model_id,
+        "anthropic",
+        thinking_model=bool(enrichment.get("thinking_model", thinking_model)),
+        display_name=str(enrichment.get("display_name", display_name)),
+        capabilities=tuple(enrichment.get("capabilities", capabilities)),
+        cost_tier=str(enrichment.get("cost_tier", cost_tier)),
+        latency_tier=str(enrichment.get("latency_tier", latency_tier)),
+    )

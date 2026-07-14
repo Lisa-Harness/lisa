@@ -39,11 +39,27 @@ class ProbeStatus(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class DiscoveredModel:
-    """A single model candidate discovered from a provider."""
+    """A single model candidate discovered from a provider.
+
+    The enrichment fields (``display_name``, ``thinking_model``,
+    ``capabilities``, ``cost_tier``, ``latency_tier``, ``context_window``,
+    ``description``) are optional and populated best-effort by each provider
+    probe from the metadata the provider's list endpoint already returns.
+    Probes only fill what they can prove from the API response; the static
+    registry in ``known_models.yaml`` is the fallback for fields the
+    provider does not expose.
+    """
 
     model_id: str
     provider: str
     reasoning_model: bool = False
+    thinking_model: bool = False
+    display_name: str = ""
+    capabilities: tuple[str, ...] = ()
+    cost_tier: str = ""
+    latency_tier: str = ""
+    context_window: int = 0
+    description: str = ""
 
 
 @dataclass(frozen=True, slots=True)

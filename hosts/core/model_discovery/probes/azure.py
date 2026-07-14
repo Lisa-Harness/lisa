@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import httpx
 
-from ..classify import env_any
+from ..classify import apply_known_override, env_any
 from ..types import DiscoveredModel, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _extract_rows, _model
 
@@ -122,5 +122,83 @@ class AzureOpenAIProbe(ProviderProbe):
             if isinstance(capabilities, dict):
                 if not capabilities.get("chat_completion", False):
                     continue
-            models.append(_model(model_id, self.provider))
+            models.append(_enrich_azure_model(model_id, row))
         return tuple(models) if models else None
+
+
+def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
+    """Build a :class:`DiscoveredModel` enriched from Azure OpenAI metadata.
+
+    Azure's deployments list carries ``model`` (underlying model family) and
+    ``capabilities`` (a dict with ``chat_completion``, ``tools``, ``vision``,
+    etc.) on the catalog endpoint. Deployments only carry ``id`` and ``model``,
+    so we fall back to family-based inference for the enrichment fields.
+    """
+
+    lowered = model_id.lower()
+    capabilities_list: list[str] = ["text", "tools", "structured_output"]
+    thinking_model = False
+    cost_tier = ""
+    latency_tier = ""
+    display_name = str(row.get("model") or "").strip() or model_id
+
+    # Parse the Azure catalog capabilities dict if present.
+    raw_capabilities = row.get("capabilities")
+    if isinstance(raw_capabilities, dict):
+        capability_set: set[str] = set()
+        if raw_capabilities.get("chat_completion"):
+            capability_set.add("text")
+        if raw_capabilities.get("tools"):
+            capability_set.add("tools")
+        if raw_capabilities.get("structured_output") or raw_capabilities.get("json_object"):
+            capability_set.add("structured_output")
+        if raw_capabilities.get("vision"):
+            capability_set.add("vision")
+        if raw_capabilities.get("reasoning"):
+            capability_set.add("reasoning")
+        if capability_set:
+            capabilities_list = sorted(capability_set)
+
+    if lowered.startswith("o1") or lowered.startswith("o3") or lowered.startswith("o4"):
+        thinking_model = True
+        capabilities_list = sorted(set(capabilities_list) | {"reasoning"})
+        cost_tier = "premium" if "pro" in lowered else "standard"
+        latency_tier = "high"
+    elif lowered.startswith("gpt-5"):
+        capabilities_list = sorted(set(capabilities_list) | {"code"})
+        if "mini" in lowered:
+            cost_tier = "standard"
+            latency_tier = "medium"
+        else:
+            cost_tier = "frontier"
+            latency_tier = "medium"
+    elif lowered.startswith("gpt-chat"):
+        cost_tier = "standard"
+        latency_tier = "low"
+    elif "image" in lowered:
+        capabilities_list = ["image"]
+        cost_tier = "standard"
+    elif "embedding" in lowered:
+        capabilities_list = ["embedding"]
+        cost_tier = "budget"
+
+    enrichment = apply_known_override(
+        "azure_openai",
+        model_id,
+        {
+            "thinking_model": thinking_model,
+            "display_name": display_name,
+            "capabilities": tuple(capabilities_list),
+            "cost_tier": cost_tier,
+            "latency_tier": latency_tier,
+        },
+    )
+    return _model(
+        model_id,
+        "azure_openai",
+        thinking_model=bool(enrichment.get("thinking_model", thinking_model)),
+        display_name=str(enrichment.get("display_name", display_name)),
+        capabilities=tuple(enrichment.get("capabilities", tuple(capabilities_list))),
+        cost_tier=str(enrichment.get("cost_tier", cost_tier)),
+        latency_tier=str(enrichment.get("latency_tier", latency_tier)),
+    )

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import httpx
 
-from ..classify import env_any
+from ..classify import apply_known_override, env_any
 from ..types import DiscoveredModel, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _extract_rows, _model
 
@@ -149,5 +149,80 @@ class GoogleProbe(ProviderProbe):
             model_id = name.replace("models/", "", 1)
             if not _is_chat_model(model_id, row):
                 continue
-            models.append(_model(model_id, self.provider))
+            models.append(_enrich_google_model(model_id, row))
         return tuple(models) if models else None
+
+
+def _enrich_google_model(model_id: str, row: dict) -> DiscoveredModel:
+    """Build a :class:`DiscoveredModel` enriched from Google's model metadata.
+
+    Google's ``/v1beta/models`` response carries rich metadata that we were
+    previously discarding: ``displayName``, ``description``,
+    ``supportedGenerationMethods``, ``inputTokenLimit``,
+    ``outputTokenLimit``. This helper maps that metadata into the
+    enrichment fields on :class:`DiscoveredModel`.
+    """
+
+    display_name = str(row.get("displayName") or "").strip()
+    description = str(row.get("description") or "").strip()
+    methods = row.get("supportedGenerationMethods")
+    capabilities: tuple[str, ...] = ()
+    if isinstance(methods, list):
+        capability_set: set[str] = set()
+        if "generateContent" in methods:
+            capability_set.add("text")
+            capability_set.add("tools")
+            capability_set.add("structured_output")
+        if "countTokens" in methods:
+            capability_set.add("text")
+        capabilities = tuple(sorted(capability_set))
+
+    # Google exposes thinking via the "thinking" method or model-id markers.
+    methods_list = methods if isinstance(methods, list) else []
+    thinking_model = "thinking" in methods_list or "thinking" in model_id.lower()
+
+    # Context window is the input token limit (Google also reports output).
+    context_window = 0
+    input_limit = row.get("inputTokenLimit")
+    if isinstance(input_limit, int) and input_limit > 0:
+        context_window = input_limit
+
+    # Cost/latency inference from the model id — Gemini Flash = budget/low,
+    # Gemini Pro = premium/medium, everything else standard/medium.
+    lowered = model_id.lower()
+    cost_tier = ""
+    latency_tier = ""
+    if "flash-lite" in lowered or "flash_lite" in lowered:
+        cost_tier = "budget"
+        latency_tier = "low"
+    elif "flash" in lowered:
+        cost_tier = "budget"
+        latency_tier = "low"
+    elif "pro" in lowered:
+        cost_tier = "premium"
+        latency_tier = "medium"
+
+    enrichment = apply_known_override(
+        "google",
+        model_id,
+        {
+            "thinking_model": thinking_model,
+            "display_name": display_name,
+            "capabilities": capabilities,
+            "cost_tier": cost_tier,
+            "latency_tier": latency_tier,
+            "context_window": context_window,
+            "description": description,
+        },
+    )
+    return _model(
+        model_id,
+        "google",
+        thinking_model=bool(enrichment.get("thinking_model", thinking_model)),
+        display_name=str(enrichment.get("display_name", display_name)),
+        capabilities=tuple(enrichment.get("capabilities", capabilities)),
+        cost_tier=str(enrichment.get("cost_tier", cost_tier)),
+        latency_tier=str(enrichment.get("latency_tier", latency_tier)),
+        context_window=int(enrichment.get("context_window", context_window)),
+        description=str(enrichment.get("description", description)),
+    )

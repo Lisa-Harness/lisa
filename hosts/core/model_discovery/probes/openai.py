@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import httpx
 
-from ..classify import env_any
+from ..classify import apply_known_override, env_any
 from ..types import DiscoveredModel, ProbeResult, ProbeStatus
 from .base import ProviderProbe, _extract_rows, _model
 
@@ -60,7 +60,7 @@ class OpenAIProbe(ProviderProbe):
             model_id = str(row.get("id") or "").strip()
             if not model_id or not _is_supported(model_id):
                 continue
-            models.append(_model(model_id, self.provider))
+            models.append(_enrich_openai_model(model_id))
         return tuple(models) if models else None
 
     async def probe(
@@ -74,6 +74,78 @@ class OpenAIProbe(ProviderProbe):
         if not api_key:
             return ProbeResult(provider=self.provider, status=ProbeStatus.SKIPPED)
         return await super().probe(client, timeout)
+
+
+def _enrich_openai_model(model_id: str) -> DiscoveredModel:
+    """Build a :class:`DiscoveredModel` with OpenAI-family capability inference.
+
+    OpenAI's ``/v1/models`` endpoint returns only ``id``, ``owned_by`` and
+    ``created`` — no capability or pricing metadata. We infer capabilities,
+    cost tier, and latency tier from the model-id family:
+
+    - ``gpt-5*`` models: tools + structured_output + vision (multimodal).
+    - ``o*-`` reasoning models: reasoning + structured_output (no vision by default).
+    - ``gpt-chat-*``: text + tools + structured_output (fast-chat tier).
+    - ``mini`` suffix: low-latency / budget tier.
+    - ``codex`` suffix: code capability.
+    """
+
+    lowered = model_id.lower()
+    capabilities: list[str] = ["text", "tools", "structured_output"]
+    thinking_model = False
+    cost_tier = ""
+    latency_tier = ""
+    display_name = model_id
+
+    if lowered.startswith("o1") or lowered.startswith("o3") or lowered.startswith("o4"):
+        capabilities = ["text", "reasoning", "structured_output"]
+        thinking_model = True
+        cost_tier = "premium" if "pro" in lowered else "standard"
+        latency_tier = "high"
+    elif lowered.startswith("gpt-5"):
+        capabilities = ["text", "tools", "structured_output", "code"]
+        if "mini" in lowered:
+            cost_tier = "standard"
+            latency_tier = "medium"
+            display_name = f"GPT-5 Mini ({model_id})"
+        else:
+            cost_tier = "frontier"
+            latency_tier = "medium"
+            display_name = f"GPT-5 ({model_id})"
+    elif lowered.startswith("gpt-chat"):
+        capabilities = ["text", "tools", "structured_output"]
+        cost_tier = "standard"
+        latency_tier = "low"
+        display_name = f"GPT Chat ({model_id})"
+    elif "codex" in lowered:
+        capabilities = ["text", "tools", "structured_output", "code"]
+        cost_tier = "premium"
+        latency_tier = "medium"
+
+    if "mini" in lowered and not cost_tier:
+        cost_tier = "budget"
+        latency_tier = "low"
+
+    enrichment = apply_known_override(
+        "openai",
+        model_id,
+        {
+            "thinking_model": thinking_model,
+            "display_name": display_name,
+            "capabilities": tuple(capabilities),
+            "cost_tier": cost_tier,
+            "latency_tier": latency_tier,
+        },
+    )
+    return _model(
+        model_id,
+        "openai",
+        thinking_model=bool(enrichment.get("thinking_model", thinking_model)),
+        display_name=str(enrichment.get("display_name", display_name)),
+        capabilities=tuple(enrichment.get("capabilities", tuple(capabilities))),
+        cost_tier=str(enrichment.get("cost_tier", cost_tier)),
+        latency_tier=str(enrichment.get("latency_tier", latency_tier)),
+    )
 
 
 class _Skipped(Exception):

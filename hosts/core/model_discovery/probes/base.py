@@ -89,13 +89,37 @@ class ProviderProbe:
         raise NotImplementedError
 
 
-def _model(model_id: str, provider: str) -> DiscoveredModel:
-    """Construct a :class:`DiscoveredModel` with the shared heuristic."""
+def _model(
+    model_id: str,
+    provider: str,
+    *,
+    thinking_model: bool = False,
+    display_name: str = "",
+    capabilities: tuple[str, ...] = (),
+    cost_tier: str = "",
+    latency_tier: str = "",
+    context_window: int = 0,
+    description: str = "",
+) -> DiscoveredModel:
+    """Construct a :class:`DiscoveredModel` with the shared heuristic.
+
+    The ``reasoning_model`` flag is always derived from the shared
+    ``is_reasoning_model`` substring heuristic for consistency. The
+    enrichment fields are optional and populated by each probe from the
+    metadata the provider's list endpoint returns.
+    """
 
     return DiscoveredModel(
         model_id=model_id,
         provider=provider,
         reasoning_model=is_reasoning_model(model_id),
+        thinking_model=thinking_model,
+        display_name=display_name,
+        capabilities=capabilities,
+        cost_tier=cost_tier,
+        latency_tier=latency_tier,
+        context_window=context_window,
+        description=description,
     )
 
 
