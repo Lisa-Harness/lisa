@@ -4,10 +4,11 @@ start_mode: default
 packs:
   lisa-pack-core: { enabled: true }
   lisa-pack-learning: { enabled: true }
+  lisa-pack-mem0: { enabled: true }
   lisa-pack-search: { enabled: true }
 policy:
   preferred_capability_providers:
-    memory: lisa-pack-learning
+    memory: lisa-pack-mem0
 context_routing:
   namespaces:
     operational_state:
