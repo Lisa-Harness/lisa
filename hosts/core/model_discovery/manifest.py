@@ -15,7 +15,7 @@ from typing import Any
 
 from .classify import is_low_latency_model, is_reasoning_model
 from .types import DiscoveredModel
-from .yaml_emit import dump_manifest
+from .yaml_emit import compact_list, dump_manifest
 
 _HEADER = "# generated-by: lisa /models discover\n"
 
@@ -110,7 +110,7 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
         if model.display_name:
             entry["display_name"] = model.display_name
         if model.capabilities:
-            entry["capabilities"] = list(model.capabilities)
+            entry["capabilities"] = compact_list(list(model.capabilities))
         if model.cost_tier:
             entry["cost_tier"] = model.cost_tier
         if model.latency_tier:
