@@ -1,13 +1,16 @@
 """Tests for the advise_models operation.
 
 Tests inject a real content-registry loader (`read_authored_text_fn`) that
-reads the actual authored prompt files from the pack's content root. Per the
-pack-content rule, the operation has no fallbacks — tests must wire the
-loader exactly as production hosts do.
+reads the actual authored prompt files from the pack's content root, and a
+fake `execute_tool_fn` that simulates the lisa-storage
+`read_model_manifest`/`write_model_manifest` tools. Per the pack-content rule,
+the operation has no fallbacks — tests must wire both callbacks exactly as
+production hosts do.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,7 +18,7 @@ from typing import Any
 import pytest
 import yaml
 
-from kernel.models import OperationExecutionContext, OperationResult
+from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from lisa_pack_model_advisor.operations.advise_models.advise_models import (
     _extract_yaml_block,
     _render_diff_summary,
@@ -57,6 +60,45 @@ class _FakeCompletion:
     request_id: str = "test"
     tool_calls: list = None
     usage: Any = None
+
+
+def _make_storage_executor(
+    *,
+    proposal: str | None = None,
+    active: str | None = None,
+) -> tuple[Any, dict[str, str]]:
+    """Return a fake ``execute_tool_fn`` simulating lisa-storage manifest tools.
+
+    Returns ``(executor, written)`` where ``written`` captures every
+    ``write_model_manifest`` call keyed by ``which`` so tests can assert what
+    the operation persisted.
+    """
+
+    store: dict[str, str | None] = {"proposal": proposal, "active": active}
+    written: dict[str, str] = {}
+
+    async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
+        params = ctx.parameters or {}
+        which = str(params.get("which") or "proposal")
+        if tool_id == "read_model_manifest":
+            content = store.get(which)
+            if content is None:
+                return ToolResult(
+                    tool_id=tool_id,
+                    output_text=json.dumps({"error": f"manifest not found: {which}"}),
+                )
+            return ToolResult(tool_id=tool_id, output_text=content)
+        if tool_id == "write_model_manifest":
+            content = str(params.get("content") or "")
+            store[which] = content
+            written[which] = content
+            return ToolResult(
+                tool_id=tool_id,
+                output_text=json.dumps({"ok": True, "which": which, "bytes": len(content)}),
+            )
+        return ToolResult(tool_id=tool_id, error=f"unknown tool: {tool_id}")
+
+    return execute_tool_fn, written
 
 
 _VALID_MANIFEST = """\
@@ -126,19 +168,19 @@ class TestValidateManifestYaml:
 
 class TestRenderDiffSummary:
     def test_detects_cost_tier_change(self) -> None:
-        summary = _render_diff_summary(_VALID_MANIFEST, _EDITED_MANIFEST, Path("models.yaml"))
+        summary = _render_diff_summary(_VALID_MANIFEST, _EDITED_MANIFEST)
         assert "Manifest updated" in summary
         assert "gpt-chat-latest" in summary
         assert "cost_tier" in summary
 
     def test_no_changes_detected(self) -> None:
-        summary = _render_diff_summary(_VALID_MANIFEST, _VALID_MANIFEST, Path("models.yaml"))
+        summary = _render_diff_summary(_VALID_MANIFEST, _VALID_MANIFEST)
         assert "no changes detected" in summary
 
 
 class TestExecuteOperation:
     @pytest.mark.asyncio
-    async def test_empty_instruction_returns_usage(self, tmp_path: Path) -> None:
+    async def test_empty_instruction_returns_usage(self) -> None:
         ctx = OperationExecutionContext(
             query="",
             read_authored_text_fn=_make_loader(),
@@ -147,20 +189,19 @@ class TestExecuteOperation:
         assert "Usage:" in result.output_text
 
     @pytest.mark.asyncio
-    async def test_no_manifest_returns_error(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("LISA_DATA_DIR", str(tmp_path))
+    async def test_no_manifest_returns_error(self) -> None:
+        storage_fn, _ = _make_storage_executor()  # no proposal, no active
         ctx = OperationExecutionContext(
             query="make gpt-5 the default",
             read_authored_text_fn=_make_loader(),
+            execute_tool_fn=storage_fn,
         )
         result = await execute(ctx)
         assert "No model manifest" in result.output_text
 
     @pytest.mark.asyncio
-    async def test_writes_edited_manifest(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("LISA_DATA_DIR", str(tmp_path))
-        proposal_path = tmp_path / "models.proposed.yaml"
-        proposal_path.write_text(_VALID_MANIFEST, encoding="utf-8")
+    async def test_writes_edited_manifest_via_storage_tool(self) -> None:
+        storage_fn, written = _make_storage_executor(proposal=_VALID_MANIFEST)
 
         async def fake_complete(**kwargs: Any) -> _FakeCompletion:
             return _FakeCompletion(content=f"```yaml\n{_EDITED_MANIFEST}```")
@@ -173,17 +214,39 @@ class TestExecuteOperation:
             complete_fn=fake_complete,
             resolve_model_fn=fake_resolve,
             read_authored_text_fn=_make_loader(),
+            execute_tool_fn=storage_fn,
         )
         result = await execute(ctx)
         assert "Manifest updated" in result.output_text
-        written = proposal_path.read_text(encoding="utf-8")
-        assert "premium" in written
+        # The operation must have written the edited manifest to the proposal.
+        assert "proposal" in written
+        assert "premium" in written["proposal"]
 
     @pytest.mark.asyncio
-    async def test_invalid_llm_output_returns_error(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("LISA_DATA_DIR", str(tmp_path))
-        proposal_path = tmp_path / "models.proposed.yaml"
-        proposal_path.write_text(_VALID_MANIFEST, encoding="utf-8")
+    async def test_reads_active_when_no_proposal(self) -> None:
+        storage_fn, written = _make_storage_executor(active=_VALID_MANIFEST)
+
+        async def fake_complete(**kwargs: Any) -> _FakeCompletion:
+            return _FakeCompletion(content=f"```yaml\n{_EDITED_MANIFEST}```")
+
+        def fake_resolve(model_id: str) -> _FakeModel:
+            return _FakeModel()
+
+        ctx = OperationExecutionContext(
+            query="mark o3 as premium tier",
+            complete_fn=fake_complete,
+            resolve_model_fn=fake_resolve,
+            read_authored_text_fn=_make_loader(),
+            execute_tool_fn=storage_fn,
+        )
+        result = await execute(ctx)
+        assert "Manifest updated" in result.output_text
+        # When no proposal exists, the operation still writes the edit to the proposal.
+        assert "proposal" in written
+
+    @pytest.mark.asyncio
+    async def test_invalid_llm_output_returns_error(self) -> None:
+        storage_fn, _ = _make_storage_executor(proposal=_VALID_MANIFEST)
 
         async def fake_complete(**kwargs: Any) -> _FakeCompletion:
             return _FakeCompletion(content="sorry, I can't help with that")
@@ -196,16 +259,14 @@ class TestExecuteOperation:
             complete_fn=fake_complete,
             resolve_model_fn=fake_resolve,
             read_authored_text_fn=_make_loader(),
+            execute_tool_fn=storage_fn,
         )
         result = await execute(ctx)
         assert "did not return a fenced YAML block" in result.output_text
 
     @pytest.mark.asyncio
-    async def test_validation_failure_returns_error(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("LISA_DATA_DIR", str(tmp_path))
-        proposal_path = tmp_path / "models.proposed.yaml"
-        proposal_path.write_text(_VALID_MANIFEST, encoding="utf-8")
-
+    async def test_validation_failure_returns_error(self) -> None:
+        storage_fn, _ = _make_storage_executor(proposal=_VALID_MANIFEST)
         invalid_manifest = "version: 1\nmodels: []\n"
 
         async def fake_complete(**kwargs: Any) -> _FakeCompletion:
@@ -219,6 +280,7 @@ class TestExecuteOperation:
             complete_fn=fake_complete,
             resolve_model_fn=fake_resolve,
             read_authored_text_fn=_make_loader(),
+            execute_tool_fn=storage_fn,
         )
         result = await execute(ctx)
         assert "failed validation" in result.output_text
@@ -237,21 +299,8 @@ class TestAuthoredTextLoader:
         assert "advise-models" in result.output_text
 
     @pytest.mark.asyncio
-    async def test_no_manifest_loaded_from_authored_text(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("LISA_DATA_DIR", str(tmp_path))
-        ctx = OperationExecutionContext(
-            query="do something",
-            read_authored_text_fn=_make_loader(),
-        )
-        result = await execute(ctx)
-        assert "No model manifest" in result.output_text
-
-    @pytest.mark.asyncio
-    async def test_system_prompt_loaded_from_authored_text(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("LISA_DATA_DIR", str(tmp_path))
-        proposal_path = tmp_path / "models.proposed.yaml"
-        proposal_path.write_text(_VALID_MANIFEST, encoding="utf-8")
-
+    async def test_system_prompt_loaded_from_authored_text(self) -> None:
+        storage_fn, _ = _make_storage_executor(proposal=_VALID_MANIFEST)
         captured_messages: list[dict[str, Any]] = []
 
         async def fake_complete(**kwargs: Any) -> _FakeCompletion:
@@ -266,37 +315,13 @@ class TestAuthoredTextLoader:
             complete_fn=fake_complete,
             resolve_model_fn=fake_resolve,
             read_authored_text_fn=_make_loader(),
+            execute_tool_fn=storage_fn,
         )
         await execute(ctx)
-        system_messages = [
-            msg for msg in captured_messages if msg.get("role") == "system"
-        ]
+        system_messages = [msg for msg in captured_messages if msg.get("role") == "system"]
         assert system_messages
         # The authored system prompt mentions "model-manifest editor".
         assert "model-manifest editor" in system_messages[0].get("content", "")
-
-    @pytest.mark.asyncio
-    async def test_validation_error_loaded_from_authored_text(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("LISA_DATA_DIR", str(tmp_path))
-        proposal_path = tmp_path / "models.proposed.yaml"
-        proposal_path.write_text(_VALID_MANIFEST, encoding="utf-8")
-
-        invalid_manifest = "version: 1\nmodels: []\n"
-
-        async def fake_complete(**kwargs: Any) -> _FakeCompletion:
-            return _FakeCompletion(content=f"```yaml\n{invalid_manifest}```")
-
-        def fake_resolve(model_id: str) -> _FakeModel:
-            return _FakeModel()
-
-        ctx = OperationExecutionContext(
-            query="delete everything",
-            complete_fn=fake_complete,
-            resolve_model_fn=fake_resolve,
-            read_authored_text_fn=_make_loader(),
-        )
-        result = await execute(ctx)
-        assert "failed validation" in result.output_text
 
 
 class TestNoLoaderFailure:
@@ -331,3 +356,54 @@ class TestNoLoaderFailure:
         )
         with pytest.raises(RuntimeError, match="read_authored_text_fn failed"):
             await execute(ctx)
+
+
+class TestNoStorageToolFailure:
+    """Missing execute_tool_fn must fail loudly, not silently no-op."""
+
+    @pytest.mark.asyncio
+    async def test_missing_execute_tool_fn_raises(self) -> None:
+        ctx = OperationExecutionContext(
+            query="do something",
+            read_authored_text_fn=_make_loader(),
+        )
+        with pytest.raises(RuntimeError, match="execute_tool_fn"):
+            await execute(ctx)
+
+    @pytest.mark.asyncio
+    async def test_storage_read_error_raises(self) -> None:
+        async def failing_storage(tool_id: str, ctx: Any) -> ToolResult:
+            return ToolResult(tool_id=tool_id, error="storage offline")
+
+        op_ctx = OperationExecutionContext(
+            query="do something",
+            read_authored_text_fn=_make_loader(),
+            execute_tool_fn=failing_storage,
+        )
+        with pytest.raises(RuntimeError, match="read_model_manifest failed"):
+            await execute(op_ctx)
+
+    @pytest.mark.asyncio
+    async def test_storage_write_error_raises(self) -> None:
+        async def fake_complete(**kwargs: Any) -> _FakeCompletion:
+            return _FakeCompletion(content=f"```yaml\n{_EDITED_MANIFEST}```")
+
+        def fake_resolve(model_id: str) -> _FakeModel:
+            return _FakeModel()
+
+        async def failing_write_storage(tool_id: str, ctx: Any) -> ToolResult:
+            if tool_id == "read_model_manifest":
+                return ToolResult(tool_id=tool_id, output_text=_VALID_MANIFEST)
+            if tool_id == "write_model_manifest":
+                return ToolResult(tool_id=tool_id, error="disk full")
+            return ToolResult(tool_id=tool_id, output_text="{}")
+
+        op_ctx = OperationExecutionContext(
+            query="mark o3 as premium",
+            complete_fn=fake_complete,
+            resolve_model_fn=fake_resolve,
+            read_authored_text_fn=_make_loader(),
+            execute_tool_fn=failing_write_storage,
+        )
+        with pytest.raises(RuntimeError, match="write_model_manifest failed"):
+            await execute(op_ctx)

@@ -47,7 +47,7 @@ def storage_readonly(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_storage_lists_nine_tools(storage_setup: None) -> None:
+async def test_storage_lists_eleven_tools(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
     tools = await mcp.list_tools()
@@ -62,6 +62,8 @@ async def test_storage_lists_nine_tools(storage_setup: None) -> None:
         "save_checkpoint",
         "restore_checkpoint",
         "list_checkpoints",
+        "read_model_manifest",
+        "write_model_manifest",
     } == names
 
 
@@ -276,5 +278,71 @@ async def test_readonly_blocks_save_checkpoint(storage_readonly: None) -> None:
     from mcp_server.storage.server import mcp
 
     result = await mcp.call_tool("save_checkpoint", {"bundle": {"label": "x"}})
+    data = json.loads(_tool_text(result))
+    assert "error" in data
+
+
+# ── Model manifest ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_write_read_model_manifest_roundtrip(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    write = await mcp.call_tool(
+        "write_model_manifest",
+        {"content": "version: 1\nmodels: []\n", "which": "proposal"},
+    )
+    data = json.loads(_tool_text(write))
+    assert data["ok"] is True
+    assert data["which"] == "proposal"
+    assert data["bytes"] > 0
+
+    read = await mcp.call_tool("read_model_manifest", {"which": "proposal"})
+    text = _tool_text(read)
+    assert "version: 1" in text
+
+
+@pytest.mark.asyncio
+async def test_read_model_manifest_not_found(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    result = await mcp.call_tool("read_model_manifest", {"which": "active"})
+    data = json.loads(_tool_text(result))
+    assert "error" in data
+    assert "not found" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_read_model_manifest_invalid_kind(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    result = await mcp.call_tool("read_model_manifest", {"which": "bogus"})
+    data = json.loads(_tool_text(result))
+    assert "error" in data
+    assert "active" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_write_model_manifest_active(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    write = await mcp.call_tool(
+        "write_model_manifest",
+        {"content": "version: 1\nmodels: []\n", "which": "active"},
+    )
+    data = json.loads(_tool_text(write))
+    assert data["ok"] is True
+    assert data["which"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_readonly_blocks_write_model_manifest(storage_readonly: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    result = await mcp.call_tool(
+        "write_model_manifest",
+        {"content": "version: 1\n", "which": "proposal"},
+    )
     data = json.loads(_tool_text(result))
     assert "error" in data

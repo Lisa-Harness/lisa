@@ -79,6 +79,26 @@ def _checkpoints_root() -> Path:
     return _data_dir / _CHECKPOINTS_SUBDIR
 
 
+def _manifest_path(which: str) -> Path:
+    """Return the path to the active or proposed model manifest.
+
+    Manifests are first-class framework artifacts (like checkpoints), so
+    they live directly under ``data_dir`` — not under the ``files/`` sandbox.
+    The ``which`` argument selects the active manifest (``"active"`` →
+    ``models.yaml``) or the proposal (``"proposal"`` →
+    ``models.proposed.yaml``).
+    """
+
+    if _data_dir is None:
+        raise RuntimeError("lisa-storage is not initialized. Call init_storage(data_dir).")
+    normalized = which.strip().lower()
+    if normalized == "active":
+        return _data_dir / "models.yaml"
+    if normalized == "proposal":
+        return _data_dir / "models.proposed.yaml"
+    raise ValueError(f"manifest kind must be 'active' or 'proposal', got {which!r}")
+
+
 def _resolve_file_path(relative_path: str) -> Path | None:
     """Resolve a user-supplied relative path against the files root.
 
@@ -334,6 +354,63 @@ async def list_checkpoints(prefix: str = "") -> str:
 
     summaries.sort(key=lambda s: s["created_at"], reverse=True)
     return json.dumps(summaries, default=str)
+
+
+# ── Model manifest tools ────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def read_model_manifest(which: str = "proposal") -> str:
+    """Read the active or proposed model manifest as text.
+
+    Args:
+        which: ``"active"`` for ``models.yaml`` or ``"proposal"`` for
+            ``models.proposed.yaml`` (default ``"proposal"``).
+
+    Returns:
+        The manifest file content as text, or a JSON error object if the
+        kind is invalid or the file does not exist.
+    """
+
+    try:
+        path = _manifest_path(which)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    if not path.is_file():
+        return json.dumps({"error": f"manifest not found: {which} ({path.name})"})
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return json.dumps({"error": f"read_model_manifest failed: {exc}"})
+
+
+@mcp.tool()
+async def write_model_manifest(content: str, which: str = "proposal") -> str:
+    """Write text content to the active or proposed model manifest.
+
+    Creates the parent directory if needed. Respects ``--readonly``.
+
+    Args:
+        content: The full manifest text (YAML) to write.
+        which: ``"active"`` for ``models.yaml`` or ``"proposal"`` for
+            ``models.proposed.yaml`` (default ``"proposal"``).
+
+    Returns:
+        JSON object with ``ok``, ``which``, and ``bytes``.
+    """
+
+    if _readonly:
+        return json.dumps({"error": "server is read-only"})
+    try:
+        path = _manifest_path(which)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return json.dumps({"ok": True, "which": which, "bytes": len(content.encode("utf-8"))})
+    except OSError as exc:
+        return json.dumps({"error": f"write_model_manifest failed: {exc}"})
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────

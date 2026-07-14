@@ -5,11 +5,11 @@ it + the user's natural-language instruction through an LLM, validates the
 edited YAML against the kernel's manifest loader, and writes the result
 back to the proposal file. The user still runs ``/models apply`` to promote.
 
-This operation is declarative-prompt in spirit but carries imperative logic
-because it must read/write files and validate the manifest deterministically.
-The LLM call goes through ``ctx.complete_fn`` (injected by the host), so the
-operation uses the host's configured provider gateway and model — no direct
-httpx calls.
+The operation does NOT touch the filesystem directly. It reads and writes
+the manifest through the ``lisa-storage`` MCP server's
+``read_model_manifest`` and ``write_model_manifest`` tools, invoked via
+``ctx.execute_tool_fn`` — exactly the pattern used by the checkpoint pack.
+The host owns ``data_dir``; the pack never assumes where the manifest lives.
 
 All system prompts, user-facing text, and error messages are externalized
 as authored markdown under ``operations/advise_models/prompts/`` and loaded
@@ -20,24 +20,26 @@ substitution.
 
 from __future__ import annotations
 
+import json
 import logging
-import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from kernel.models import OperationExecutionContext, OperationResult
+from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DATA_DIR = Path.cwd() / "artifacts"
-_DATA_DIR_ENV = "LISA_DATA_DIR"
-_PROPOSAL_NAME = "models.proposed.yaml"
-_ACTIVE_NAME = "models.yaml"
 _MAX_MANIFEST_CHARS = 24_000
 _MAX_EDITED_TOKENS = 8000
+
+# Storage tool ids — declared in the operation YAML ``tool_ids`` and routed
+# through ``ctx.execute_tool_fn`` to the ``lisa-storage`` MCP server.
+_READ_TOOL_ID = "read_model_manifest"
+_WRITE_TOOL_ID = "write_model_manifest"
 
 # Authored-text paths — loaded via ctx.read_authored_text_fn (SDK loader).
 # Paths are relative to the pack's content root, matching the checkpoint
@@ -102,19 +104,20 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     if not instruction:
         return OperationResult(output_text=_load_text(ctx, _USAGE_PATH))
 
-    data_dir = _resolve_data_dir(ctx)
-    proposal_path = data_dir / _PROPOSAL_NAME
-    active_path = data_dir / _ACTIVE_NAME
-    target_path = proposal_path if proposal_path.exists() else active_path
+    if not callable(ctx.execute_tool_fn):
+        raise RuntimeError(
+            "advise_models requires execute_tool_fn to call lisa-storage tools"
+        )
 
-    if not target_path.exists():
+    current_yaml = await _read_manifest(ctx, "proposal")
+    if current_yaml is None:
+        current_yaml = await _read_manifest(ctx, "active")
+    if current_yaml is None:
         return OperationResult(output_text=_load_text(ctx, _NO_MANIFEST_PATH))
 
-    current_yaml = target_path.read_text(encoding="utf-8")
     if len(current_yaml) > _MAX_MANIFEST_CHARS:
         text = _format_template(
             _load_text(ctx, _TOO_LARGE_PATH),
-            target_path=str(target_path),
             manifest_chars=len(current_yaml),
         )
         return OperationResult(output_text=text)
@@ -139,21 +142,96 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         )
         return OperationResult(output_text=text)
 
-    target_path.write_text(edited_yaml, encoding="utf-8")
-    summary = _render_diff_summary(current_yaml, edited_yaml, target_path)
+    await _write_manifest(ctx, edited_yaml, "proposal")
+    summary = _render_diff_summary(current_yaml, edited_yaml)
     return OperationResult(output_text=summary)
 
 
-def _resolve_data_dir(ctx: OperationExecutionContext) -> Path:
-    """Resolve the host data directory from env or context extra."""
+async def _read_manifest(ctx: OperationExecutionContext, which: str) -> str | None:
+    """Read the active or proposed manifest via the lisa-storage tool.
 
-    env_value = os.getenv(_DATA_DIR_ENV, "").strip()
-    if env_value:
-        return Path(env_value)
-    extra_dir = ctx.extra.get("data_dir") if ctx.extra else None
-    if extra_dir:
-        return Path(str(extra_dir))
-    return _DEFAULT_DATA_DIR
+    Returns the manifest text, or ``None`` if it does not exist. Raises
+    ``RuntimeError`` on any other tool failure.
+    """
+
+    tool_result = await ctx.execute_tool_fn(
+        _READ_TOOL_ID,
+        ToolExecutionContext(
+            tool_id=_READ_TOOL_ID,
+            workspace_id=ctx.workspace_id,
+            user_id=ctx.user_id,
+            user_slug=ctx.user_slug,
+            surface_type=ctx.surface_type,
+            surface_id=ctx.surface_id,
+            memory_scope=ctx.memory_scope,
+            mode_id=ctx.mode_id,
+            parameters={"which": which},
+        ),
+    )
+    return _parse_storage_text_result(tool_result, which)
+
+
+async def _write_manifest(ctx: OperationExecutionContext, content: str, which: str) -> None:
+    """Write the manifest text via the lisa-storage tool.
+
+    Raises ``RuntimeError`` on any tool failure.
+    """
+
+    tool_result = await ctx.execute_tool_fn(
+        _WRITE_TOOL_ID,
+        ToolExecutionContext(
+            tool_id=_WRITE_TOOL_ID,
+            workspace_id=ctx.workspace_id,
+            user_id=ctx.user_id,
+            user_slug=ctx.user_slug,
+            surface_type=ctx.surface_type,
+            surface_id=ctx.surface_id,
+            memory_scope=ctx.memory_scope,
+            mode_id=ctx.mode_id,
+            parameters={"content": content, "which": which},
+        ),
+    )
+    _raise_on_storage_error(tool_result, _WRITE_TOOL_ID)
+
+
+def _parse_storage_text_result(tool_result: Any, which: str) -> str | None:
+    """Extract manifest text from a read_model_manifest tool result.
+
+    Returns ``None`` when the storage server reports the manifest is not
+    found (a normal condition — the proposal may not exist yet). Any other
+    error raises ``RuntimeError``.
+    """
+
+    output_text = getattr(tool_result, "output_text", "") or str(tool_result)
+    error_text = getattr(tool_result, "error", "") or ""
+    if error_text:
+        raise RuntimeError(f"{_READ_TOOL_ID} failed: {error_text}")
+    if not output_text.strip():
+        return None
+    try:
+        data = json.loads(output_text)
+    except (json.JSONDecodeError, TypeError):
+        return output_text
+    if isinstance(data, dict) and "error" in data:
+        if "not found" in str(data["error"]):
+            return None
+        raise RuntimeError(f"{_READ_TOOL_ID} failed: {data['error']}")
+    return output_text
+
+
+def _raise_on_storage_error(tool_result: Any, tool_id: str) -> None:
+    """Raise if a storage tool result carries an error."""
+
+    error_text = getattr(tool_result, "error", "") or ""
+    if error_text:
+        raise RuntimeError(f"{tool_id} failed: {error_text}")
+    output_text = getattr(tool_result, "output_text", "") or str(tool_result)
+    try:
+        data = json.loads(output_text)
+    except (json.JSONDecodeError, TypeError):
+        return
+    if isinstance(data, dict) and "error" in data:
+        raise RuntimeError(f"{tool_id} failed: {data['error']}")
 
 
 async def _call_llm(
@@ -228,8 +306,6 @@ def _validate_manifest_yaml(edited_yaml: str) -> str:
         return "Edited manifest must include a non-empty 'models' list."
 
     # Full validation through the kernel loader via a temp file.
-    import tempfile  # local: avoid importing at module load
-
     try:
         from kernel.model_manifest import load_model_manifest  # noqa: PLC0415
 
@@ -255,7 +331,6 @@ def _validate_manifest_yaml(edited_yaml: str) -> str:
 def _render_diff_summary(
     current_yaml: str,
     edited_yaml: str,
-    target_path: Path,
 ) -> str:
     """Render a concise bullet-list summary of what changed."""
 
@@ -313,7 +388,7 @@ def _render_diff_summary(
             if mode_id not in edited_modes:
                 changes.append(f"- mode_models: {mode_id} removed")
 
-    header = f"Manifest updated at {target_path}\n"
+    header = "Manifest updated.\n"
     if not changes:
         return header + "(no changes detected)"
     return header + "\n" + "\n".join(changes[:40])
