@@ -105,13 +105,11 @@ _SEVERITY_SALIENCE = {"critical": 1.0, "warn": 0.85, "info": 0.65}
 _NAMESPACE_RENDER_ORDER: tuple[ContextEvidenceNamespace, ...] = (
     "operational_state",
     "product_repo_knowledge",
-    "long_term_strategic_memory",
     "market_signal",
     "conversational_style_context",
     "general_context",
 )
 _MARKET_SIGNAL_SOURCES = {"market", "clarity"}
-_LONG_TERM_MEMORY_SOURCES = {"strategy", "thinking"}
 
 
 def build_ambient_facts(
@@ -239,12 +237,6 @@ def _base_relevance_for_evidence(evidence: ContextEvidence) -> tuple[float, str]
     if evidence.evidence_type == "alert":
         return 0.85, "baseline: alert"
 
-    if evidence.source == "self_model" or evidence.evidence_type == "self_model_runtime":
-        return 0.8, "baseline: self model"
-
-    if evidence.source_type in {"reflection", "strategy_memory"}:
-        return 0.75, f"baseline: {evidence.source_type}"
-
     if evidence.source_type == "domain_knowledge":
         return 0.65, "baseline: domain knowledge"
 
@@ -302,18 +294,10 @@ def _classify_evidence_namespace(evidence: ContextEvidence) -> ContextEvidenceNa
     evidence_id = evidence.evidence_id.lower()
     signal_sources = set(discover_installed_signal_collectors())
 
-    if source == "self_model" or evidence_type == "self_model_runtime":
-        return "operational_state"
-
     if evidence_type == "alert" or source in signal_sources or source.endswith("_ops_trends"):
         return "operational_state"
     if source == "dev_state" or evidence_type in {"recent_work", "domain_knowledge"}:
         return "product_repo_knowledge"
-    if source in _LONG_TERM_MEMORY_SOURCES or evidence_type in {
-        "active_thoughts",
-        "strategy_memory",
-    }:
-        return "long_term_strategic_memory"
     if (
         source in _MARKET_SIGNAL_SOURCES
         or "market" in source
@@ -332,9 +316,6 @@ def _classify_evidence_source_type(evidence: ContextEvidence) -> ContextEvidence
     evidence_type = evidence.evidence_type.lower()
     signal_sources = set(discover_installed_signal_collectors())
 
-    if source == "self_model" or evidence_type == "self_model_runtime":
-        return "reflection"
-
     if evidence_type == "alert":
         return "operational_alert"
     if source in signal_sources or evidence.collector_id:
@@ -345,10 +326,6 @@ def _classify_evidence_source_type(evidence: ContextEvidence) -> ContextEvidence
         return "domain_knowledge"
     if _classify_evidence_namespace(evidence) == "market_signal":
         return "market_intel"
-    if source == "thinking" or evidence_type == "active_thoughts":
-        return "reflection"
-    if source == "strategy" or evidence_type == "strategy_memory":
-        return "strategy_memory"
     if evidence.metadata.get("extension_id") or evidence.metadata.get("extension_name"):
         return "extension"
     return "general"
@@ -365,7 +342,7 @@ def _apply_evidence_identity(evidence: ContextEvidence) -> ContextEvidence:
 def _compute_conflict_risk(evidence: ContextEvidence) -> ContextConflictRisk:
     if evidence.confidence < 0.45 or evidence.freshness_score < 0.35:
         return "high"
-    if evidence.namespace in {"market_signal", "long_term_strategic_memory"}:
+    if evidence.namespace in {"market_signal"}:
         return "medium"
     if evidence.confidence < 0.7 or evidence.freshness_score < 0.8:
         return "medium"
@@ -516,66 +493,6 @@ def _build_all_collection_evidence(
     return evidence
 
 
-def _build_analysis_evidence(state: UnifiedState) -> list[ContextEvidence]:
-    evidence: list[ContextEvidence] = []
-
-    if state.thinking_vibe:
-        evidence.append(
-            _new_evidence(
-                evidence_id="thinking:active_vibe",
-                source="thinking",
-                evidence_type="active_thoughts",
-                title="Lisa active thoughts",
-                body=state.thinking_vibe,
-                collected_at=state.compiled_at,
-                salience_score=0.55,
-                tags=["thinking", "reflection"],
-            )
-        )
-
-    if state.strategy_vibe:
-        evidence.append(
-            _new_evidence(
-                evidence_id="strategy:promoted_memory",
-                source="strategy",
-                evidence_type="strategy_memory",
-                title="Promoted strategy memory",
-                body=state.strategy_vibe,
-                collected_at=state.compiled_at,
-                salience_score=0.75,
-                tags=["strategy", "memory"],
-            )
-        )
-
-    return evidence
-
-
-def _self_model_salience(body: str) -> float:
-    body_lower = body.lower()
-    if "health=critical" in body_lower or "critical" in body_lower:
-        return 0.95
-    if "health=degraded" in body_lower or "degraded" in body_lower:
-        return 0.8
-    return 0.65
-
-
-def _build_self_model_evidence(state: UnifiedState) -> list[ContextEvidence]:
-    if not state.self_model_vibe:
-        return []
-    return [
-        _new_evidence(
-            evidence_id="self_model:runtime_vibe",
-            source="self_model",
-            evidence_type="self_model_runtime",
-            title="Live self-model runtime state",
-            body=state.self_model_vibe,
-            collected_at=state.compiled_at,
-            salience_score=_self_model_salience(state.self_model_vibe),
-            tags=["self_model", "runtime", "operational"],
-        )
-    ]
-
-
 def _build_domain_knowledge_evidence(state: UnifiedState) -> list[ContextEvidence]:
     evidence: list[ContextEvidence] = []
 
@@ -629,7 +546,6 @@ def build_context_evidence_catalog(
     catalog.extend(extension_evidence)
     catalog.extend(_build_alert_evidence(state))
     catalog.extend(_build_dev_state_evidence(state))
-    catalog.extend(_build_self_model_evidence(state))
     catalog.extend(
         _build_all_collection_evidence(
             state,
@@ -637,7 +553,6 @@ def build_context_evidence_catalog(
         )
     )
     catalog.extend(_build_domain_knowledge_evidence(state))
-    catalog.extend(_build_analysis_evidence(state))
     for item in catalog:
         _apply_evidence_identity(item)
     return catalog

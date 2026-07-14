@@ -70,7 +70,7 @@ def build_context_evidence(
             cloudflare.edge_5xx_rate / 5.0,
             cloudflare.d1_max_utilization_pct / 100.0,
             0.75 if cloudflare.pages_any_failed else 0.0,
-            0.4,
+            0.5 if cloudflare.status != "ok" else 0.0,
         ),
     )
     collected_at = _default_collected_at(state)
