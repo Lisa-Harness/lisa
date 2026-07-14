@@ -20,7 +20,7 @@ from rich.console import Console, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.spinner import Spinner
+from rich.status import Status
 from rich.text import Text
 
 logger = logging.getLogger(__name__)
@@ -47,58 +47,46 @@ class RichTransport:
     def __init__(self, *, console: Console | None = None, debug: bool = False) -> None:
         self.console: Console = console or Console()
         self.debug = debug
-        self._thinking_live: Live | None = None
+        self._status: Status | None = None
         self._thinking_stage: str = ""
 
     def start_thinking(self, stage: str = "routing") -> None:
-        """Start a spinner overlay so the user sees the turn is active.
-
-        Renders a Rich ``Live`` spinner with the current stage label. The
-        spinner is stopped by the first ``on_stage``, ``on_response``,
-        ``on_error``, or ``on_text_chunk`` callback, so the gap between
-        submit and the first pipeline event is no longer a dead terminal.
+        """Start a status spinner so the user sees the turn is active.
         """
         self.stop_thinking()
         self._thinking_stage = stage
-        renderable: RenderableType = Spinner(
-            "dots",
-            text=Text(f" thinking… ({stage})", style=STYLE_STAGE),
-            style=STYLE_STAGE,
-        )
-        self._thinking_live = Live(
-            renderable,
-            console=self.console,
-            transient=True,
-            refresh_per_second=8,
-        )
-        self._thinking_live.start()
+        self._status = self.console.status(f"thinking… ({stage})", spinner="dots", spinner_style=STYLE_STAGE)
+        self._status.start()
 
     def stop_thinking(self) -> None:
         """Stop the thinking spinner if it is running."""
-        live = self._thinking_live
-        self._thinking_live = None
-        if live is not None:
+        status = self._status
+        self._status = None
+        if status is not None:
             try:
-                live.stop()
+                status.stop()
             except Exception:  # pylint: disable=broad-except
                 pass
 
     async def on_stage(self, label: str, data: dict[str, Any] | None = None) -> None:
-        """Render a dim stage status line (e.g. 'frontdoor', 'model_call')."""
-        self.stop_thinking()
+        """Update the status spinner with the current stage."""
         suffix = ""
         if data:
             # Compact one-line rendering of stage metadata.
             parts: list[str] = []
-            for key in ("model_id", "provider", "mode_id", "iteration"):
+            for key in ("model_id", "provider", "mode_id", "iteration", "tool", "name"):
                 value = data.get(key)
                 if value not in (None, "", 0):
                     parts.append(f"{key}={value}")
             if parts:
                 suffix = f" ({', '.join(parts)})"
-        self.console.print(
-            Text(f"stage: {label}{suffix}", style=STYLE_STAGE),
-        )
+                
+        text = f"stage: {label}{suffix}"
+        
+        if self._status is not None:
+            self._status.update(text)
+        else:
+            self.console.print(Text(text, style=STYLE_STAGE))
 
     async def on_text_chunk(self, text: str) -> None:
         """Print a streamed text chunk inline (no panel, no newline)."""
@@ -121,9 +109,11 @@ class RichTransport:
         """Render turn context in a Rich Panel (only when debug is on)."""
         if not self.debug:
             return
+            
+        from rich.pretty import Pretty
         self.console.print(
             Panel(
-                json.dumps(context, indent=2, ensure_ascii=True),
+                Pretty(context, expand_all=True),
                 title="Turn Context",
                 border_style=STYLE_BORDER_CONTEXT,
             )

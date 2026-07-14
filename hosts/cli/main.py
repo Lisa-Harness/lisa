@@ -61,11 +61,13 @@ from hosts.core.mcp_pool import (
 from hosts.core.runtime import HostRuntime
 from hosts.core.state_provider import load_state_snapshot
 
+from rich.traceback import install
+install(show_locals=True)
+
 logger = logging.getLogger(__name__)
 
 console = Console()
 app = typer.Typer(
-    add_completion=False,
     no_args_is_help=False,
     help="Run the Lisa framework terminal host.",
 )

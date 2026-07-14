@@ -96,6 +96,7 @@ _HOST_REPL_SHORTCUTS: tuple[str, ...] = (
 # ── prompt_toolkit: optional dependency with graceful fallback ───────
 try:
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
     from prompt_toolkit.completion import WordCompleter
     from prompt_toolkit.cursor_shapes import ModalCursorShapeConfig
     from prompt_toolkit.history import FileHistory, History
@@ -103,6 +104,7 @@ try:
     from prompt_toolkit.styles import Style
 except ImportError:  # pragma: no cover - optional dependency
     PromptSession = None
+    AutoSuggestFromHistory = None
     WordCompleter = None
     FileHistory = None
     History = None
@@ -504,6 +506,7 @@ def _build_repl_prompt_session(runtime: HostRuntime, console: Console) -> Any:
     bindings = _build_repl_key_bindings() if KeyBindings is not None else None
     return PromptSession(
         history=_SurrogateSafeFileHistory(str(history_path)),
+        auto_suggest=AutoSuggestFromHistory() if AutoSuggestFromHistory is not None else None,
         completer=WordCompleter(list(_repl_command_hints()), ignore_case=True),
         complete_while_typing=True,
         multiline=True,
