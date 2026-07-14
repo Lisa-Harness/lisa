@@ -97,60 +97,205 @@ def _register_memory_synthetic_tools(
     memory_config: Any,
     memory_config_pack_slug: str | None,
 ) -> None:
-    """Register the generic ``memory.*`` synthetic tools on a started pool.
+    """Register explicit memory synthetics on a started pool.
 
-    The three generic aliases route through the pool to whichever MCP server
-    the manifest wired as the default memory backend (``lisa-memory`` by
-    default, ``mem0`` when its HTTP endpoint is configured). The default
-    backend's tool names come from the manifest's ``memory.tool_names``
-    mapping. Ambient scope (user_id) is injected by the proxy layer, not by
-    these aliases — they only do generic→native field renaming (e.g.
+    Each declared memory backend gets its own explicit synthetic surface
+    (``mem0.add`` / ``mem0.search`` / ``mem0.list``, or
+    ``lisa_memory.add`` / ``lisa_memory.search`` / ``lisa_memory.list``)
+    so the model can address a specific backend by name rather than through
+    an opaque generic alias.
+
+    The generic ``memory.*`` aliases are also registered as a convenience
+    router to the default backend, preserving backwards compatibility with
+    existing authored prompts and packs that call ``memory.add``.
+
+    Ambient scope (user_id) is injected by the proxy layer, not by these
+    aliases — they only do generic→native field renaming (e.g.
     ``content``→``text`` for mem0).
     """
     from kernel.tools.synthetic import mcp_alias_tool  # noqa: PLC0415
 
     default_backend_id = getattr(memory_config, "default_backend", None)
-    declared = getattr(memory_config, "backends", ()) or ()
-    default_spec = next((s for s in declared if s.id == default_backend_id), None)
+    declared = list(getattr(memory_config, "backends", ()) or ())
     prefix = f"{memory_config_pack_slug}." if memory_config_pack_slug else ""
-    _BACKEND_ID_TO_SERVER_ID = {"lisa_memory": f"{prefix}lisa-memory"}
 
-    if default_spec is None:
-        # No external default declared: lisa-memory is the first-party default.
-        tool_names = {"add": "add_memory", "search": "search_memory", "list": "list_memories"}
-        target_server_id = f"{prefix}lisa-memory"
-        add_arg_map = None
-        search_arg_map = None
-        list_arg_map = None
-    else:
-        tool_names = dict(default_spec.tool_names)
-        lisa_memory_server_id = _BACKEND_ID_TO_SERVER_ID.get("lisa_memory", "lisa-memory")
-        target_server_id = (
-            lisa_memory_server_id
-            if default_spec.id == "lisa_memory"
-            else f"{prefix}{default_spec.id}"
+    # Always include the first-party lisa_memory backend, even when it is
+    # not explicitly declared in the manifest — it is the implicit default.
+    declared_ids = {s.id for s in declared}
+    if "lisa_memory" not in declared_ids:
+        declared = [
+            *_LISA_MEMORY_IMPLICIT_SPEC,
+            *declared,
+        ]
+
+    # Register an explicit synthetic surface per declared backend.
+    for spec in declared:
+        _register_backend_surface(
+            pool,
+            spec=spec,
+            prefix=prefix,
+            mcp_alias_tool=mcp_alias_tool,
+            is_default=(spec.id == default_backend_id) or (
+                default_backend_id is None and spec.id == "lisa_memory"
+            ),
         )
-        if default_spec.id == "mem0":
-            def _mem0_add_arg_map(args: dict[str, Any]) -> dict[str, Any]:
-                mapped = {
-                    "text": args.get("content", ""),
-                    "user_slug": args.get("user_slug", "default"),
-                    "memory_scope": args.get("memory_scope", "personal"),
-                    "memory_tier": args.get("memory_tier", "daily"),
-                }
-                return {k: v for k, v in mapped.items() if v is not None}
 
-            def _mem0_search_or_list_arg_map(args: dict[str, Any]) -> dict[str, Any]:
-                return {k: v for k, v in args.items() if k != "user_slug"}
+    # Register the generic memory.* router → default backend.
+    default_spec = next(
+        (s for s in declared if s.id == (default_backend_id or "lisa_memory")),
+        declared[0] if declared else None,
+    )
+    if default_spec is not None:
+        _register_generic_router(
+            pool,
+            default_spec=default_spec,
+            prefix=prefix,
+            mcp_alias_tool=mcp_alias_tool,
+        )
 
-            add_arg_map = _mem0_add_arg_map
-            search_arg_map = _mem0_search_or_list_arg_map
-            list_arg_map = _mem0_search_or_list_arg_map
-        else:
-            add_arg_map = None
-            search_arg_map = None
-            list_arg_map = None
 
+# Implicit first-party lisa_memory backend spec, used when the manifest does
+# not declare a memory.backends list. Mirrors MemoryBackendSpec's shape.
+_LISA_MEMORY_IMPLICIT_SPEC = [
+    type(
+        "MemoryBackendSpec",
+        (),
+        {
+            "id": "lisa_memory",
+            "server_id": "lisa-memory",
+            "tool_names": {
+                "add": "add_memory",
+                "search": "search_memory",
+                "list": "list_memories",
+            },
+        },
+    )()
+]
+
+
+def _register_backend_surface(
+    pool: Any,
+    *,
+    spec: Any,
+    prefix: str,
+    mcp_alias_tool: Any,
+    is_default: bool,
+) -> None:
+    """Register one backend's explicit synthetic surface (``<backend>.add`` …)."""
+    backend_id = spec.id
+    server_id = (
+        f"{prefix}{spec.server_id}"
+        if backend_id != "lisa_memory"
+        else f"{prefix}lisa-memory"
+    )
+    tool_names = dict(spec.tool_names)
+    add_arg_map, search_arg_map, list_arg_map = _backend_arg_maps(backend_id)
+
+    add_schema, search_schema, list_schema = _memory_schemas()
+    default_note = " (default backend)" if is_default else ""
+
+    pool.add_synthetic_tools([
+        mcp_alias_tool(
+            name=f"{backend_id}.add",
+            description=f"Persist a memory record via the {backend_id} backend{default_note}.",
+            pool=pool,
+            target_tool=tool_names["add"],
+            input_schema=add_schema,
+            target_server_id=server_id,
+            arg_map=add_arg_map,
+        ),
+        mcp_alias_tool(
+            name=f"{backend_id}.search",
+            description=f"Recall memories matching a query via the {backend_id} backend{default_note}.",
+            pool=pool,
+            target_tool=tool_names["search"],
+            input_schema=search_schema,
+            target_server_id=server_id,
+            arg_map=search_arg_map,
+        ),
+        mcp_alias_tool(
+            name=f"{backend_id}.list",
+            description=f"List recent memory records via the {backend_id} backend{default_note}.",
+            pool=pool,
+            target_tool=tool_names["list"],
+            input_schema=list_schema,
+            target_server_id=server_id,
+            arg_map=list_arg_map,
+        ),
+    ])
+
+
+def _register_generic_router(
+    pool: Any,
+    *,
+    default_spec: Any,
+    prefix: str,
+    mcp_alias_tool: Any,
+) -> None:
+    """Register the generic ``memory.*`` aliases → default backend."""
+    backend_id = default_spec.id
+    server_id = (
+        f"{prefix}lisa-memory"
+        if backend_id == "lisa_memory"
+        else f"{prefix}{default_spec.server_id}"
+    )
+    tool_names = dict(default_spec.tool_names)
+    add_arg_map, search_arg_map, list_arg_map = _backend_arg_maps(backend_id)
+
+    add_schema, search_schema, list_schema = _memory_schemas()
+
+    pool.add_synthetic_tools([
+        mcp_alias_tool(
+            name="memory.add",
+            description="Persist a memory record via the default memory backend.",
+            pool=pool,
+            target_tool=tool_names["add"],
+            input_schema=add_schema,
+            target_server_id=server_id,
+            arg_map=add_arg_map,
+        ),
+        mcp_alias_tool(
+            name="memory.search",
+            description="Recall memories matching a free-text query via the default backend.",
+            pool=pool,
+            target_tool=tool_names["search"],
+            input_schema=search_schema,
+            target_server_id=server_id,
+            arg_map=search_arg_map,
+        ),
+        mcp_alias_tool(
+            name="memory.list",
+            description="List recent memory records for a user scope via the default backend.",
+            pool=pool,
+            target_tool=tool_names["list"],
+            input_schema=list_schema,
+            target_server_id=server_id,
+            arg_map=list_arg_map,
+        ),
+    ])
+
+
+def _backend_arg_maps(backend_id: str) -> tuple[Any, Any, Any]:
+    """Return (add_arg_map, search_arg_map, list_arg_map) for a backend."""
+    if backend_id == "mem0":
+        def _mem0_add_arg_map(args: dict[str, Any]) -> dict[str, Any]:
+            mapped = {
+                "text": args.get("content", ""),
+                "user_slug": args.get("user_slug", "default"),
+                "memory_scope": args.get("memory_scope", "personal"),
+                "memory_tier": args.get("memory_tier", "daily"),
+            }
+            return {k: v for k, v in mapped.items() if v is not None}
+
+        def _mem0_search_or_list_arg_map(args: dict[str, Any]) -> dict[str, Any]:
+            return {k: v for k, v in args.items() if k != "user_slug"}
+
+        return _mem0_add_arg_map, _mem0_search_or_list_arg_map, _mem0_search_or_list_arg_map
+    return None, None, None
+
+
+def _memory_schemas() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Return the (add, search, list) input schemas shared by all surfaces."""
     add_schema = {
         "type": "object",
         "properties": {
@@ -177,33 +322,4 @@ def _register_memory_synthetic_tools(
             "limit": {"type": "integer", "default": 20},
         },
     }
-
-    pool.add_synthetic_tools([
-        mcp_alias_tool(
-            name="memory.add",
-            description="Persist a memory record via the default memory backend.",
-            pool=pool,
-            target_tool=tool_names["add"],
-            input_schema=add_schema,
-            target_server_id=target_server_id,
-            arg_map=add_arg_map,
-        ),
-        mcp_alias_tool(
-            name="memory.search",
-            description="Recall memories matching a free-text query via the default backend.",
-            pool=pool,
-            target_tool=tool_names["search"],
-            input_schema=search_schema,
-            target_server_id=target_server_id,
-            arg_map=search_arg_map,
-        ),
-        mcp_alias_tool(
-            name="memory.list",
-            description="List recent memory records for a user scope via the default backend.",
-            pool=pool,
-            target_tool=tool_names["list"],
-            input_schema=list_schema,
-            target_server_id=target_server_id,
-            arg_map=list_arg_map,
-        ),
-    ])
+    return add_schema, search_schema, list_schema

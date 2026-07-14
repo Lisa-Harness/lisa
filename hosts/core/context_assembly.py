@@ -40,6 +40,10 @@ from kernel.context.context_broker import (
     select_ranked_context,
 )
 from kernel.context.context_budget import ContextBudgetAllocator, ContextLane
+from kernel.context.provenance import (
+    normalize_markdown_to_tagged,
+    wrap_section,
+)
 from kernel.ipsar_fsm import get_workflow_catalog, parse_front_matter
 from kernel.models import (
     CapabilityManifest,
@@ -72,7 +76,7 @@ def load_turn_input_contract(content_loader: Callable[[str], str]) -> str:
     """Load and format the turn-input contract from ``prompts/agent/turn_input_contract.md``."""
     try:
         return (
-            content_loader("prompts/agent/turn_input_contract.md")
+            "#" + content_loader("prompts/agent/turn_input_contract.md")
             .strip()
             .format(user_query_sentinel="## User Query")
         )
@@ -452,6 +456,9 @@ def assemble_dynamic_user_context(
     )
 
     # --- Raw sections, tagged by budget lane -----------------------------
+    # Each section carries a provenance kind so the emitted context uses
+    # XML tags as the canonical envelope (see kernel.context.provenance).
+    # ``_SECTION_PROVENANCE`` maps the section key to its provenance kind.
     raw_sections: list[tuple[str, ContextLane, str]] = [
         ("ambient_facts", "core", "## Ambient Facts\n\n" + ambient_facts),
         ("dynamic_context", "core", "## Dynamic User Context\n\n" + "\n".join(lines)),
@@ -459,7 +466,13 @@ def assemble_dynamic_user_context(
 
     user_context = session_context_loader().strip()
     if user_context:
-        raw_sections.append(("selected_user_context", "memory", user_context))
+        # Normalize authored markdown (which may use provenance fences)
+        # into the canonical tagged representation before emission.
+        raw_sections.append((
+            "selected_user_context",
+            "memory",
+            normalize_markdown_to_tagged(user_context),
+        ))
 
     thread_digest = thread_digest_loader()
     if thread_digest:
@@ -497,6 +510,9 @@ def assemble_dynamic_user_context(
         raw_sections.append(("capability_context", "operational", capability_block))
 
     # --- Route through the budget allocator ------------------------------
+    # Map each section key to its provenance kind. Sections not in the map
+    # default to ``authoritative`` (the runtime-state default).
+    section_provenance = _SECTION_PROVENANCE
     allocator = ContextBudgetAllocator.for_turn(reasoning_model=False)
     rendered_sections: list[str] = []
     for key, lane, text in raw_sections:
@@ -508,7 +524,24 @@ def assemble_dynamic_user_context(
             allow_truncate=True,
         )
         if elected:
-            rendered_sections.append(elected)
+            provenance = section_provenance.get(key, "authoritative")
+            wrapped = wrap_section(provenance, elected, source=key)
+            if wrapped:
+                rendered_sections.append(wrapped)
 
     publish_context_usage_event(allocator=allocator, mode_id=mode_id, query=query)
     return "\n\n".join(rendered_sections)
+
+
+# Provenance kind per section key. Keys absent from this map default to
+# ``authoritative``. Keep this table co-located with
+# ``assemble_dynamic_user_context`` so the mapping is auditable in one place.
+_SECTION_PROVENANCE: dict[str, str] = {
+    "ambient_facts": "system_observed",
+    "dynamic_context": "authoritative",
+    "selected_user_context": "authoritative",
+    "prior_conversation_digest": "inferred",
+    "recent_conversation": "authoritative",
+    "ranked_context": "recalled_memory",
+    "capability_context": "authoritative",
+}

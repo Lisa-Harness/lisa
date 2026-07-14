@@ -1,0 +1,243 @@
+"""Tests for memory alias registration with explicit backend surfaces.
+
+Verifies that:
+- Each declared backend (mem0, lisa_memory) gets its own explicit synthetic
+  surface (``<backend>.add`` / ``.search`` / ``.list``).
+- The generic ``memory.*`` router is also registered → default backend.
+- When no backends are declared, the implicit lisa_memory surface is still
+  registered and is the default for the generic router.
+- mem0 arg maps translate ``content`` → ``text`` while lisa_memory passes
+  args through unchanged.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import pytest
+
+from hosts.core.memory_aliases import register_memory_aliases
+
+
+@dataclass
+class FakeSpec:
+    id: str = "lisa_memory"
+    kind: str = "stdio"
+    tool_names: dict[str, str] = field(
+        default_factory=lambda: {
+            "add": "add_memory",
+            "search": "search_memory",
+            "list": "list_memories",
+        }
+    )
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    cwd: str | None = None
+    agent_id: str = "lisa"
+    server_id: str = "lisa-memory"
+
+
+@dataclass
+class FakeMemoryConfig:
+    default_backend: str | None = None
+    backends: tuple[Any, ...] = ()
+
+
+class FakePool:
+    """Captures synthetic tool registrations without a real MCP connection."""
+
+    def __init__(self) -> None:
+        self.registered: list[dict[str, Any]] = []
+        self.ambient: dict[str, Any] = {}
+
+    def set_ambient_resolver(self, key: str, resolver: Any) -> None:
+        self.ambient[key] = resolver
+
+    def add_synthetic_tools(self, tools: list[Any]) -> None:
+        for tool in tools:
+            # SyntheticToolSpec has name, description, input_schema, handler.
+            # target_tool and target_server_id are captured in the handler's
+            # closure (by mcp_alias_tool), so we inspect __closure__ + co_freevars
+            # to extract them for test assertions.
+            name = getattr(tool, "name", None)
+            handler = getattr(tool, "handler", None)
+            closure_vars: dict[str, Any] = {}
+            if handler is not None and hasattr(handler, "__closure__") and handler.__closure__:
+                freevars = handler.__code__.co_freevars
+                for var_name, cell in zip(freevars, handler.__closure__):
+                    closure_vars[var_name] = cell.cell_contents
+            self.registered.append({
+                "name": name,
+                "target_tool": closure_vars.get("target_tool"),
+                "target_server_id": closure_vars.get("target_server_id"),
+                "arg_map": closure_vars.get("arg_map"),
+                "description": getattr(tool, "description", ""),
+            })
+
+
+def _registered_names(pool: FakePool) -> list[str]:
+    return [r["name"] for r in pool.registered]
+
+
+class TestImplicitLisaMemoryOnly:
+    """When no backends are declared, only lisa_memory (implicit) is registered."""
+
+    def test_registers_lisa_memory_surface_and_generic_router(self) -> None:
+        pool = FakePool()
+        register_memory_aliases(
+            pool,
+            memory_config=FakeMemoryConfig(),
+            memory_config_pack_slug=None,
+            user_slug="alice",
+            current_mode_id="default",
+            app_id="test",
+        )
+        names = _registered_names(pool)
+        # Explicit lisa_memory surface
+        assert "lisa_memory.add" in names
+        assert "lisa_memory.search" in names
+        assert "lisa_memory.list" in names
+        # Generic router → default (lisa_memory)
+        assert "memory.add" in names
+        assert "memory.search" in names
+        assert "memory.list" in names
+
+    def test_ambient_resolvers_set(self) -> None:
+        pool = FakePool()
+        register_memory_aliases(
+            pool,
+            memory_config=FakeMemoryConfig(),
+            memory_config_pack_slug=None,
+            user_slug="alice",
+            current_mode_id="default",
+            app_id="test",
+        )
+        assert pool.ambient["user_slug"]() == "alice"
+        assert pool.ambient["mode_id"]() == "default"
+        assert pool.ambient["app_id"]() == "test"
+
+
+class TestMem0AndLisaMemoryDeclared:
+    """When both mem0 and lisa_memory are declared, both get explicit surfaces."""
+
+    def test_registers_both_explicit_surfaces(self) -> None:
+        mem0_spec = FakeSpec(
+            id="mem0",
+            kind="http",
+            tool_names={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
+            server_id="mem0",
+        )
+        lisa_spec = FakeSpec(id="lisa_memory", server_id="lisa-memory")
+        pool = FakePool()
+        register_memory_aliases(
+            pool,
+            memory_config=FakeMemoryConfig(
+                default_backend="mem0",
+                backends=(mem0_spec, lisa_spec),
+            ),
+            memory_config_pack_slug="lisa-pack-mem0",
+            user_slug="alice",
+            current_mode_id="default",
+            app_id="test",
+        )
+        names = _registered_names(pool)
+        # Explicit mem0 surface
+        assert "mem0.add" in names
+        assert "mem0.search" in names
+        assert "mem0.list" in names
+        # Explicit lisa_memory surface
+        assert "lisa_memory.add" in names
+        assert "lisa_memory.search" in names
+        assert "lisa_memory.list" in names
+        # Generic router → default (mem0)
+        assert "memory.add" in names
+        assert "memory.search" in names
+        assert "memory.list" in names
+
+    def test_generic_router_targets_default_backend(self) -> None:
+        mem0_spec = FakeSpec(
+            id="mem0",
+            kind="http",
+            tool_names={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
+            server_id="mem0",
+        )
+        lisa_spec = FakeSpec(id="lisa_memory", server_id="lisa-memory")
+        pool = FakePool()
+        register_memory_aliases(
+            pool,
+            memory_config=FakeMemoryConfig(
+                default_backend="mem0",
+                backends=(mem0_spec, lisa_spec),
+            ),
+            memory_config_pack_slug="lisa-pack-mem0",
+            user_slug="alice",
+            current_mode_id="default",
+            app_id="test",
+        )
+        # The generic memory.add should target the mem0 server with the
+        # mem0 arg map (content→text). Find it among the registrations.
+        generic_add = next(
+            r for r in pool.registered if r["name"] == "memory.add"
+        )
+        assert generic_add["target_tool"] == "add_memory"
+        assert generic_add["target_server_id"] == "lisa-pack-mem0.mem0"
+        # mem0 arg map translates content→text
+        assert generic_add["arg_map"] is not None
+
+    def test_lisa_memory_surface_has_no_arg_map(self) -> None:
+        lisa_spec = FakeSpec(id="lisa_memory", server_id="lisa-memory")
+        pool = FakePool()
+        register_memory_aliases(
+            pool,
+            memory_config=FakeMemoryConfig(
+                default_backend="lisa_memory",
+                backends=(lisa_spec,),
+            ),
+            memory_config_pack_slug=None,
+            user_slug="alice",
+            current_mode_id="default",
+            app_id="test",
+        )
+        lisa_add = next(
+            r for r in pool.registered if r["name"] == "lisa_memory.add"
+        )
+        assert lisa_add["arg_map"] is None
+        assert lisa_add["target_server_id"] == "lisa-memory"
+
+
+class TestMem0ArgMap:
+    """Verify the mem0 arg map translates generic→native fields."""
+
+    def test_mem0_add_arg_map_translates_content_to_text(self) -> None:
+        mem0_spec = FakeSpec(
+            id="mem0",
+            kind="http",
+            tool_names={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
+            server_id="mem0",
+        )
+        pool = FakePool()
+        register_memory_aliases(
+            pool,
+            memory_config=FakeMemoryConfig(
+                default_backend="mem0",
+                backends=(mem0_spec,),
+            ),
+            memory_config_pack_slug=None,
+            user_slug="alice",
+            current_mode_id="default",
+            app_id="test",
+        )
+        mem0_add = next(
+            r for r in pool.registered if r["name"] == "mem0.add"
+        )
+        arg_map = mem0_add["arg_map"]
+        assert arg_map is not None
+        mapped = arg_map({"content": "hello", "user_slug": "bob"})
+        assert mapped["text"] == "hello"
+        assert mapped["user_slug"] == "bob"
+        # content should not leak through
+        assert "content" not in mapped

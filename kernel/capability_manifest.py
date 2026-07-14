@@ -202,6 +202,12 @@ def render_capability_manifest_context(manifest: CapabilityManifest) -> str:
         f"- tools_authoritative: {'yes' if tools_authoritative else 'no'}",
     ]
 
+    # Mode routing map: intentionally NOT emitted into the model-facing
+    # context. Naming capabilities owned by other modes leaks dormant
+    # affordances and primes the model toward tools it cannot call this
+    # turn. The routing map remains available in manifest.metadata for
+    # developer-side introspection / debugging only.
+
     total_horizon = meta.get("total_horizon")
     if total_horizon and isinstance(total_horizon, dict):
         horizon_parts: list[str] = []
@@ -215,55 +221,10 @@ def render_capability_manifest_context(manifest: CapabilityManifest) -> str:
                 f"(available in other modes; only the {len(manifest.entries)} listed below are callable this turn)"
             )
 
-    # Mode routing map: which mode owns which capabilities, so the model
-    # can tell the user which mode to transition to for a capability not in
-    # the active set. Only includes modes other than the current one.
-    mode_routing = meta.get("mode_routing_map")
-    if mode_routing and isinstance(mode_routing, dict):
-        routing_parts: list[str] = []
-        for route_mode_id, caps in sorted(mode_routing.items()):
-            if route_mode_id == (mode_id or "default"):
-                continue
-            if isinstance(caps, dict):
-                caps_list = sorted(caps.get("capabilities", []))
-                if caps_list:
-                    routing_parts.append(f"{route_mode_id}→[{', '.join(caps_list)}]")
-        if routing_parts:
-            lines.append(f"- mode_routing: {'; '.join(routing_parts)}")
-
-    # Inactive capabilities with reasons: compute the set difference between
-    # the total horizon and the active set, then group by reason using sets
-    # so we emit one compact line per reason group rather than one per cap.
-    # Reason "routable_via_other_mode" = appears in some other mode's routing
-    # entry. Reason "disabled_by_mode_scope" = not routable; blocked purely by
-    # the current mode's authoritative scope with no known transition target.
-    active_names = {e.capability_id for e in manifest.entries}
-    horizon_names: set[str] = set()
-    if total_horizon and isinstance(total_horizon, dict):
-        horizon_names.update(total_horizon.get("operation_names", []))
-        horizon_names.update(total_horizon.get("tool_names", []))
-    inactive_names = horizon_names - active_names
-    if inactive_names:
-        # Build a reverse index: cap_name -> set of mode_ids that own it
-        routable_caps: set[str] = set()
-        if mode_routing and isinstance(mode_routing, dict):
-            for route_mode_id, caps in mode_routing.items():
-                if route_mode_id == (mode_id or "default"):
-                    continue
-                if isinstance(caps, dict):
-                    routable_caps.update(caps.get("capabilities", []))
-        via_other_mode = inactive_names & routable_caps
-        blocked_by_scope = inactive_names - routable_caps
-        if via_other_mode:
-            lines.append(
-                f"- inactive_routable ({len(via_other_mode)}): "
-                f"{', '.join(sorted(via_other_mode))} — switch mode to access"
-            )
-        if blocked_by_scope:
-            lines.append(
-                f"- inactive_blocked ({len(blocked_by_scope)}): "
-                f"{', '.join(sorted(blocked_by_scope))} — not available in any mode"
-            )
+    # Inactive capabilities are intentionally NOT listed in the model-facing
+    # context. Emitting dormant capability names (even as "unavailable") primes
+    # the model toward affordances it cannot exercise this turn. The inactive
+    # set remains computable from manifest.metadata for developer-side tooling.
 
     available_names = sorted(e.capability_id for e in manifest.entries)
     if available_names:
