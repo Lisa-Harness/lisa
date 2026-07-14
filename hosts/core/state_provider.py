@@ -105,6 +105,51 @@ def build_unified_state(
     return state
 
 
+def load_state_snapshot(
+    *,
+    explicit_path: str | None,
+    data_dir: Path,
+) -> dict[str, Any] | None:
+    """Load the runtime state snapshot dict from disk.
+
+    Resolution order:
+    1. ``explicit_path`` (``--state-snapshot``) — must exist, else raise.
+    2. ``<data_dir>/state.json`` — the default intake output. When the
+       file does not exist, return ``None`` (intake has not run yet) so
+       the host boots cleanly on a fresh data dir instead of crashing.
+
+    Returns ``None`` when no snapshot is available. Raises ``ValueError``
+    when an explicit path was given but the file is missing or not a JSON
+    object.
+    """
+    configured = (explicit_path or "").strip()
+    if configured:
+        file_path = Path(configured).expanduser()
+        source = "explicit"
+    else:
+        file_path = data_dir / "state.json"
+        source = "default"
+
+    if not file_path.exists():
+        if source == "explicit":
+            logger.error("state snapshot file not found: %s", file_path)
+            raise ValueError(f"State snapshot file not found: {file_path}")
+        return None
+
+    try:
+        decoded = json.loads(file_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.error("state snapshot file %s is unreadable: %s", file_path, exc)
+        raise ValueError(f"State snapshot file {file_path} is unreadable: {exc}") from exc
+
+    if not isinstance(decoded, dict):
+        logger.error("state snapshot file must contain a JSON object: %s", file_path)
+        raise ValueError("State snapshot file must contain a JSON object.")
+
+    logger.info("loaded state snapshot from %s (%d keys)", file_path, len(decoded))
+    return decoded
+
+
 def _coerce_alerts(raw_alerts: Any) -> list[AnomalyAlert]:
     """Coerce a raw list of alert dicts into a list of :class:`AnomalyAlert`."""
     if not isinstance(raw_alerts, list):

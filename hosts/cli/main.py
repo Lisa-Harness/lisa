@@ -59,6 +59,7 @@ from hosts.core.mcp_pool import (
     setup_framework,
 )
 from hosts.core.runtime import HostRuntime
+from hosts.core.state_provider import load_state_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +307,10 @@ def _initialize_runtime(
     _configure_root_logging(config)
 
     runtime = HostRuntime(config)
+    runtime.state_snapshot = load_state_snapshot(
+        explicit_path=state_snapshot_path,
+        data_dir=config.data_dir,
+    )
     discovery = discover_framework(runtime)
     setup_framework(runtime, discovery=discovery)
     configure_runtime(runtime)

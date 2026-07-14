@@ -6072,11 +6072,25 @@ def _init_timezone(*, timezone: str) -> None:
 
 
 def _init_state_snapshot(state_snapshot_path: str) -> None:
-    """Load and set the state snapshot from the given path."""
-    _RUNTIME_STATE["state_snapshot_path"] = (
-        Path(state_snapshot_path).expanduser() if state_snapshot_path.strip() else None
-    )
-    _RUNTIME_STATE["state_snapshot"] = _load_state_snapshot(state_snapshot_path)
+    """Load and set the state snapshot from the given path.
+
+    When ``state_snapshot_path`` is empty, fall back to the default
+    intake output at ``<data_dir>/state.json`` so the host picks up
+    freshly collected signals without requiring an explicit
+    ``--state-snapshot`` flag. A missing default file is not an error
+    (intake may not have run yet); an explicit path that is missing IS.
+    """
+    explicit = state_snapshot_path.strip()
+    if explicit:
+        _RUNTIME_STATE["state_snapshot_path"] = Path(explicit).expanduser()
+        _RUNTIME_STATE["state_snapshot"] = _load_state_snapshot(explicit)
+        return
+    default_path = _runtime_data_dir() / "state.json"
+    _RUNTIME_STATE["state_snapshot_path"] = default_path if default_path.exists() else None
+    if default_path.exists():
+        _RUNTIME_STATE["state_snapshot"] = _load_state_snapshot(str(default_path))
+    else:
+        _RUNTIME_STATE["state_snapshot"] = None
 
 
 def _init_streaming(streaming: str) -> None:
