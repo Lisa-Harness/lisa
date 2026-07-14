@@ -1,5 +1,6 @@
 ---
 mode_id: search
+mode_provider_id: lisa-pack-search
 start_stage_id: none
 mode_kind: action
 artifact_type: search_results

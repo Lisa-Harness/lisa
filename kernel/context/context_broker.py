@@ -651,6 +651,25 @@ def _should_include_for_connectors(evidence: ContextEvidence, connector_set: set
     return bool(evidence.collector_id and evidence.collector_id in connector_set)
 
 
+def _is_pack_allowed(evidence: ContextEvidence, allowed_packs: set[str]) -> bool:
+    """Return True if extension-owned evidence is from an allowed pack.
+
+    Extension evidence (records with a non-empty ``pack`` field) is only
+    included when its pack is in the mode's allowed set. Kernel-core
+    evidence (alerts, self-model, domain knowledge, intel, reflection)
+    has no ``pack`` and is never gated by this filter.
+
+    Args:
+        evidence: One candidate evidence record.
+        allowed_packs: The mode's allowed pack set — the union of its own
+            ``mode_provider_id`` and its ``context_evidence_packs`` list.
+            When empty (the default), no extension evidence is included.
+    """
+    if not evidence.pack:
+        return True
+    return evidence.pack in allowed_packs
+
+
 def select_ranked_context(
     *,
     state: UnifiedState,
@@ -659,6 +678,8 @@ def select_ranked_context(
     stage_id: str = "",
     connectors: list[str] | None = None,
     extension_evidence_builder: ExtensionEvidenceBuilder | None = None,
+    mode_provider_id: str = "",
+    context_evidence_packs: list[str] | None = None,
 ) -> ContextPacket:
     """Select one ranked ContextPacket for the current turn.
 
@@ -667,8 +688,24 @@ def select_ranked_context(
             evidence. When ``None`` (default), the module-level builder is
             used. Pass this explicitly in tests or kernel seams to avoid
             depending on module-global mutation.
+        mode_provider_id: The distribution package name that owns the active
+            mode (e.g. ``lisa-pack-cloudflare``). The mode's own pack evidence
+            is auto-included. When empty, no extension evidence is auto-included.
+        context_evidence_packs: Additional pack names whose extension evidence
+            the mode explicitly wants. Combined with ``mode_provider_id`` to
+            form the allowed pack set. Kernel-core evidence is always included
+            regardless of these values.
     """
     connector_set = set(connectors or [])
+    # Build the allowed pack set: the mode's own provider plus any explicitly
+    # allowed packs. Extension evidence (records with a ``pack`` field) is
+    # only included when its pack is in this set. Kernel-core evidence has no
+    # pack and is always admitted.
+    allowed_packs: set[str] = set()
+    if mode_provider_id:
+        allowed_packs.add(mode_provider_id)
+    if context_evidence_packs:
+        allowed_packs.update(context_evidence_packs)
     now = _parse_iso(state.compiled_at) or datetime.now(UTC)
     query_tokens = _tokenize(query)
     candidates = state.context_evidence_catalog or build_context_evidence_catalog(
@@ -679,6 +716,8 @@ def select_ranked_context(
 
     for candidate in candidates:
         if not _should_include_for_connectors(candidate, connector_set):
+            continue
+        if not _is_pack_allowed(candidate, allowed_packs):
             continue
         evidence = candidate.model_copy(deep=True)
         relevance_score, match_reasons = _compute_relevance_score(query_tokens, evidence)
@@ -738,6 +777,7 @@ def select_ranked_context(
         truncation_reason=truncation_reason,
         ranking_metadata={
             "connectors_filter": sorted(connector_set),
+            "allowed_evidence_packs": sorted(allowed_packs),
             "query_tokens": sorted(query_tokens),
             "selected_namespaces": list(dict.fromkeys(item.namespace for item in selected)),
             "deterministic_phase": True,

@@ -1,5 +1,6 @@
 ---
 mode_id: thinkabout
+mode_provider_id: lisa-pack-search
 start_stage_id: inquire
 mode_kind: workflow
 require_query: true

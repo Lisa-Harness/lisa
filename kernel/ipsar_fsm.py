@@ -318,6 +318,8 @@ _KERNEL_OWNED_FRONT_MATTER_KEYS: frozenset[str] = _MODE_OVERRIDES_PROTECTED_KEYS
         "default_model",
         "frontdoor_route_hints",
         "frontdoor_examples",
+        "mode_provider_id",
+        "context_evidence_packs",
     }
 )
 
@@ -773,6 +775,10 @@ def load_catalog_from_disk(
             workshop_synthesis_prompt_file=workshop_synthesis_prompt_file,
             workshop_rendering=workshop_rendering,
             default_intent_bridges=default_intent_bridges,
+            mode_provider_id=str(mode_front_matter.get("mode_provider_id", "") or ""),
+            context_evidence_packs=[
+                str(p) for p in (mode_front_matter.get("context_evidence_packs") or [])
+            ],
             extra_front_matter=extra_front_matter,
         )
 

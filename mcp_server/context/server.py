@@ -59,6 +59,11 @@ class BrokerContextRequest(BaseModel):
     connectors: list[str] = Field(default_factory=list)
     context_budget: dict[str, Any] = Field(default_factory=dict)
     state: dict[str, Any] = Field(default_factory=dict)
+    # Pack-scoped evidence boundary: the caller passes the active mode's
+    # provider pack and explicitly allowed packs so the broker can filter
+    # extension evidence to only what the mode should see.
+    mode_provider_id: str = ""
+    context_evidence_packs: list[str] = Field(default_factory=list)
 
 
 def _state_from_request(request: BrokerContextRequest) -> UnifiedState:
@@ -85,6 +90,8 @@ async def broker_context(
     connectors: list[str] | None = None,
     context_budget: dict[str, Any] | None = None,
     state: dict[str, Any] | None = None,
+    mode_provider_id: str = "",
+    context_evidence_packs: list[str] | None = None,
 ) -> str:
     """Return a brokered context packet and markdown for the current turn.
 
@@ -92,6 +99,10 @@ async def broker_context(
     ``state`` argument carries the caller-supplied ``UnifiedState`` snapshot
     used for evidence selection. Malformed ``state`` raises a validation
     error instead of silently degrading to an empty state.
+
+    ``mode_provider_id`` and ``context_evidence_packs`` carry the active
+    mode's pack-scoped evidence boundary so the broker can filter extension
+    evidence to only what the mode should see.
     """
     request = BrokerContextRequest(
         query=query,
@@ -103,6 +114,8 @@ async def broker_context(
         connectors=connectors or [],
         context_budget=context_budget or {},
         state=state or {},
+        mode_provider_id=mode_provider_id or "",
+        context_evidence_packs=context_evidence_packs or [],
     )
     unified_state = _state_from_request(request)
     packet = select_ranked_context(
@@ -111,6 +124,8 @@ async def broker_context(
         mode_id=request.mode_id,
         stage_id=request.stage_id,
         connectors=request.connectors or None,
+        mode_provider_id=request.mode_provider_id,
+        context_evidence_packs=request.context_evidence_packs or None,
     )
     response = ContextBrokerResponse(
         packet=packet,

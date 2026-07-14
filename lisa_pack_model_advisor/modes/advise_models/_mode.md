@@ -1,5 +1,6 @@
 ---
 mode_id: advise-models
+mode_provider_id: lisa-pack-model-advisor
 start_stage_id: none
 mode_kind: action
 frontdoor_routable: true

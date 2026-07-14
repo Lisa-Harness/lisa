@@ -247,10 +247,24 @@ def build_brokered_context_markdown(
     """
     if state is None or not state.compiled_at:
         return ""
+
+    # Resolve the active mode's pack-scoped evidence boundary. The mode's
+    # own provider pack and any explicitly allowed packs form the allowed
+    # set. Extension evidence from other packs is excluded so that, e.g.,
+    # Cloudflare's bottom-half data only appears in Cloudflare-owned modes.
+    mode_config = get_workflow_catalog().get(mode_id)
+    mode_provider_id = ""
+    context_evidence_packs: list[str] = []
+    if mode_config is not None:
+        mode_provider_id = mode_config.mode_provider_id
+        context_evidence_packs = mode_config.context_evidence_packs
+
     packet = select_ranked_context(
         state=state,
         query=query,
         mode_id=mode_id,
+        mode_provider_id=mode_provider_id,
+        context_evidence_packs=context_evidence_packs or None,
     )
     if not packet.selected_evidence:
         return ""

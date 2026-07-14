@@ -1,5 +1,6 @@
 ---
 mode_id: workshop
+mode_provider_id: lisa-pack-core
 start_stage_id: none
 mode_kind: action
 require_query: true

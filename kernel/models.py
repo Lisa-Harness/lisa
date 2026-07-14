@@ -781,6 +781,14 @@ class ContextEvidence(BaseModel):
     recency_score: float = 0.0
     combined_score: float = 0.0
     conflict_risk: ContextConflictRisk = "low"
+    # Normalized distribution package name that owns this evidence (e.g.
+    # ``lisa-pack-cloudflare``). Populated by the EntryPointExtensionEvidenceBuilder
+    # for extension-contributed evidence; empty for kernel-core evidence
+    # (alerts, self-model, domain knowledge, etc.). Used by the context broker
+    # to enforce pack-scoped evidence boundaries — a mode only sees extension
+    # evidence from its own pack plus any packs it explicitly allows via
+    # ``context_evidence_packs`` in its ``_mode.md`` front-matter.
+    pack: str = ""
     tags: list[str] = Field(default_factory=list)
     match_reasons: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -811,6 +819,10 @@ class ContextBrokerRequest(BaseModel):
     workspace_id: str = "default"
     connectors: list[str] = Field(default_factory=list)
     context_budget: dict[str, Any] = Field(default_factory=dict)
+    # Pack-scoped evidence boundary: the mode's own provider pack and any
+    # explicitly allowed packs whose extension evidence should be included.
+    mode_provider_id: str = ""
+    context_evidence_packs: list[str] = Field(default_factory=list)
 
 
 class ContextBrokerResponse(BaseModel):
@@ -1242,6 +1254,21 @@ class WorkflowModeConfig(BaseModel):
     workshop_rendering: WorkshopRenderConfig = Field(default_factory=WorkshopRenderConfig)
     # Natural-language intent bridges: declarative routing from default chat to modes (SDK-owned).
     default_intent_bridges: list[DefaultIntentBridge] = Field(default_factory=list)
+    # The distribution package name that owns this mode (e.g.
+    # ``lisa-pack-cloudflare``). Inferred from the content-root path during
+    # catalog build unless explicitly set via ``mode_provider_id`` in the
+    # mode's ``_mode.md`` front-matter. Used to enforce pack-scoped evidence
+    # boundaries: the context broker auto-includes extension evidence from
+    # the mode's own provider.
+    mode_provider_id: str = ""
+    # Extension packs whose context evidence this mode wants injected in
+    # addition to its own provider's evidence. Each entry is a normalized
+    # pack name (e.g. ``lisa-pack-cloudflare``). When empty (default), only
+    # the mode's own pack contributes extension evidence. When non-empty,
+    # the union of the mode's own pack and these packs is admitted. Kernel-
+    # core evidence (alerts, self-model, domain knowledge, intel) is never
+    # gated by this field — it is always available to every mode.
+    context_evidence_packs: list[str] = Field(default_factory=list)
     # Opaque extension front matter the kernel does not interpret. Carries
     # app/pack-owned keys (e.g. ``lenses``) from ``_mode.md`` and ``_overrides.yaml``
     # so the kernel never has to name or allowlist app-owned concepts. Hosts and

@@ -1,5 +1,6 @@
 ---
 mode_id: cloudflare
+mode_provider_id: lisa-pack-cloudflare
 start_stage_id: none
 mode_kind: action
 frontdoor_routable: true

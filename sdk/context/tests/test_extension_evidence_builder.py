@@ -43,7 +43,9 @@ def test_extension_evidence_builder_excludes_disabled_packs(monkeypatch) -> None
         excluded_packs={"lisa-pack-disabled"},
     )
     result = builder.build_extension_context_evidence(runtime_context=None, state=None)
-    assert result == [{"source": "active"}]
+    assert len(result) == 1
+    assert result[0]["source"] == "active"
+    assert result[0]["pack"] == "lisa-pack-active"
 
 
 def test_extension_evidence_builder_none_returns_all(monkeypatch) -> None:
@@ -61,8 +63,11 @@ def test_extension_evidence_builder_none_returns_all(monkeypatch) -> None:
 
     builder = EntryPointExtensionEvidenceBuilder(excluded_packs=None)
     result = builder.build_extension_context_evidence(runtime_context=None, state=None)
-    assert {"source": "active"} in result
-    assert {"source": "other"} in result
+    assert any(r["source"] == "active" for r in result)
+    assert any(r["source"] == "other" for r in result)
+    # Each record should be tagged with its source pack name.
+    assert any(r.get("pack") == "lisa-pack-active" for r in result)
+    assert any(r.get("pack") == "lisa-pack-other" for r in result)
 
 
 def test_extension_evidence_builder_empty_exclusion_returns_all(monkeypatch) -> None:
@@ -78,4 +83,67 @@ def test_extension_evidence_builder_empty_exclusion_returns_all(monkeypatch) -> 
 
     builder = EntryPointExtensionEvidenceBuilder(excluded_packs=set())
     result = builder.build_extension_context_evidence(runtime_context=None, state=None)
-    assert result == [{"source": "test"}]
+    assert len(result) == 1
+    assert result[0]["source"] == "test"
+    assert result[0]["pack"] == "lisa-pack-test"
+
+
+def test_extension_evidence_builder_tags_records_with_pack_name(monkeypatch) -> None:
+    """Each evidence record is tagged with its source distribution package name."""
+    from kernel.models import ContextEvidence
+
+    # Return a ContextEvidence with no pack field set — the builder should
+    # populate it from the entry point's distribution name.
+    def factory(_ctx, _state):
+        return [
+            ContextEvidence(
+                evidence_id="collector:test",
+                source="test",
+                evidence_type="connector_status",
+                title="Test",
+                body="OK",
+                collected_at="2026-01-01T00:00:00Z",
+            )
+        ]
+
+    monkeypatch.setattr(
+        "sdk.context.extension_evidence_builder.entry_points",
+        lambda group: [
+            _FakeEntryPoint(name="test", factory=factory, dist_name="lisa-pack-test"),
+        ],
+    )
+
+    builder = EntryPointExtensionEvidenceBuilder(excluded_packs=None)
+    result = builder.build_extension_context_evidence(runtime_context=None, state=None)
+    assert len(result) == 1
+    assert result[0].pack == "lisa-pack-test"
+
+
+def test_extension_evidence_builder_does_not_overwrite_explicit_pack(monkeypatch) -> None:
+    """When the evidence already has a pack, the builder does not overwrite it."""
+    from kernel.models import ContextEvidence
+
+    def factory(_ctx, _state):
+        return [
+            ContextEvidence(
+                evidence_id="collector:custom",
+                source="custom",
+                evidence_type="connector_status",
+                title="Custom",
+                body="OK",
+                collected_at="2026-01-01T00:00:00Z",
+                pack="lisa-pack-explicit",
+            )
+        ]
+
+    monkeypatch.setattr(
+        "sdk.context.extension_evidence_builder.entry_points",
+        lambda group: [
+            _FakeEntryPoint(name="custom", factory=factory, dist_name="lisa-pack-other"),
+        ],
+    )
+
+    builder = EntryPointExtensionEvidenceBuilder(excluded_packs=None)
+    result = builder.build_extension_context_evidence(runtime_context=None, state=None)
+    assert len(result) == 1
+    assert result[0].pack == "lisa-pack-explicit"

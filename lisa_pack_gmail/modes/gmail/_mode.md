@@ -1,5 +1,6 @@
 ---
 mode_id: gmail
+mode_provider_id: lisa-pack-gmail
 start_stage_id: gmail_draft
 mode_kind: action
 frontdoor_routable: true

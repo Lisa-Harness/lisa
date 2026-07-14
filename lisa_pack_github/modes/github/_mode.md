@@ -1,5 +1,6 @@
 ---
 mode_id: github
+mode_provider_id: lisa-pack-github
 start_stage_id: none
 mode_kind: action
 frontdoor_routable: true

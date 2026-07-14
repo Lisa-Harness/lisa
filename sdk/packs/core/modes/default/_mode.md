@@ -1,5 +1,6 @@
 ---
 mode_id: default
+mode_provider_id: lisa-pack-core
 start_stage_id: none
 mode_kind: chat
 frontdoor_routable: true

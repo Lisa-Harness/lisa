@@ -47,6 +47,12 @@ class EntryPointExtensionEvidenceBuilder:
     Failures in one extension are logged and swallowed so a broken
     extension does not block context assembly.
 
+    Each evidence record returned by an extension is tagged with the
+    normalized distribution package name (``pack``) so the context broker
+    can enforce pack-scoped evidence boundaries: a mode only sees extension
+    evidence from its own provider pack plus any packs it explicitly allows
+    via ``context_evidence_packs`` in its ``_mode.md`` front-matter.
+
     Args:
         excluded_packs: Normalized pack names to exclude from evidence
             collection. When ``None`` (default), all installed extensions
@@ -72,6 +78,7 @@ class EntryPointExtensionEvidenceBuilder:
         for ep in eps:
             if self._excluded_packs and _entry_point_pack_name(ep) in self._excluded_packs:
                 continue
+            pack_name = _entry_point_pack_name(ep)
             try:
                 builder_fn = ep.load()
             except Exception:  # pylint: disable=broad-except
@@ -89,6 +96,17 @@ class EntryPointExtensionEvidenceBuilder:
                 continue
 
             if contributed:
+                for item in contributed:
+                    # Tag each evidence record with its source distribution
+                    # package name so the broker can enforce pack-scoped
+                    # evidence boundaries. Use setattr to support both
+                    # Pydantic models and plain dict contributions.
+                    if hasattr(item, "pack"):
+                        if not item.pack:
+                            item.pack = pack_name
+                    elif isinstance(item, dict):
+                        if not item.get("pack"):
+                            item["pack"] = pack_name
                 evidence.extend(contributed)
 
         return evidence

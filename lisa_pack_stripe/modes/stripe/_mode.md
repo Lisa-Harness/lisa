@@ -1,5 +1,6 @@
 ---
 mode_id: stripe
+mode_provider_id: lisa-pack-stripe
 start_stage_id: none
 mode_kind: action
 frontdoor_routable: true

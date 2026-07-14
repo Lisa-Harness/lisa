@@ -226,6 +226,9 @@ def _load_one_mode(
         "workshop_synthesis_prompt_file": workshop_synthesis_prompt_file,
         "workshop_rendering": front_matter.get("workshop_rendering") or {},
         "default_intent_bridges": _parse_intent_bridges(front_matter.get("default_intent_bridges") or []),
+        "context_evidence_packs": [
+            str(p) for p in (front_matter.get("context_evidence_packs") or [])
+        ],
     }
 
 

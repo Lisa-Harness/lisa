@@ -153,6 +153,10 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         workshop_synthesis_prompt_file=data.get("workshop_synthesis_prompt_file", ""),
         workshop_rendering=workshop_rendering,
         default_intent_bridges=intent_bridges,
+        mode_provider_id=str(data.get("mode_provider_id", "") or ""),
+        context_evidence_packs=[
+            str(p) for p in (data.get("context_evidence_packs") or [])
+        ],
     )
 
 
