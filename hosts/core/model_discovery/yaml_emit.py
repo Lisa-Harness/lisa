@@ -2,17 +2,18 @@
 
 Two readability tweaks layered on top of ``yaml.safe_dump``:
 
-1. **Blank line between top-level sequence items.** The ``models`` list is the
-   only top-level block sequence in a manifest, and each item is a multi-line
-   mapping. A blank line between items makes the file scannable without
-   touching any other block sequence (``capabilities``, ``designations`` are
-   rolled up — see below).
+1. **Blank line after each top-level sequence item.** The ``models`` list is
+   the only top-level block sequence in a manifest, and each item is a
+   multi-line mapping. A blank line after each item makes the file scannable
+   without touching any other block sequence.
 
-2. **Short string lists rendered inline.** ``capabilities`` and
-   ``designations`` are short lists of bare strings. Rolling them onto a single
-   flow line (``[text, tools, structured_output]``) saves ~4 lines per model
-   with zero semantic change. Only lists whose serialized flow form fits within
+2. **Short ``capabilities`` lists rendered inline.** ``capabilities`` is a
+   short list of bare strings. Rolling it onto a single flow line
+   (``[text, tools, structured_output]``) saves ~4 lines per model with zero
+   semantic change. Only lists whose serialized flow form fits within
    ``_MAX_FLOW_LEN`` characters are rolled up; longer lists stay block style.
+   ``designations`` and ``mode_models`` are intentionally *not* rolled up so
+   they remain diff-stable and easy to edit by hand.
 
 Round-trip safety: ``yaml.safe_load`` parses flow and block sequences
 identically, so the manifest loader and every existing round-trip test are
@@ -35,11 +36,12 @@ _WIDTH = 120
 
 
 class _BlankLineEmitter(Emitter):
-    """Emitter that inserts a blank line before non-first top-level items.
+    """Emitter that inserts a blank line after each top-level sequence item.
 
-    ``self.indent == 0`` identifies the root-level block sequence (the
-    ``models`` list). Nested block sequences never reach indent 0, so their
-    items stay adjacent.
+    The ``models`` list is the manifest's only root-level block sequence, but
+    PyYAML renders it *indentless* (the ``-`` markers sit at column 0), so
+    ``self.indent == 0`` identifies those list items. Nested block sequences
+    never reach indent 0, so their items stay adjacent.
     """
 
     def expect_block_sequence_item(self, first: bool = False) -> None:
@@ -48,21 +50,28 @@ class _BlankLineEmitter(Emitter):
             and not isinstance(self.event, SequenceEndEvent)
             and self.indent == 0
         ):
+            # Write an extra line break, then clear ``indention`` so the base
+            # ``write_indent`` (called next by ``expect_block_sequence_item``)
+            # still emits its own line break. Without this reset, ``write_line_break``
+            # sets ``indention = True``, which makes ``write_indent`` skip its
+            # break — collapsing our extra newline back to a single one.
             self.write_line_break()
+            self.indention = False
         super().expect_block_sequence_item(first=first)
 
 
-class ManifestDumper(yaml.Dumper):
+class ManifestDumper(_BlankLineEmitter, yaml.Dumper):
     """Dumper combining the blank-line emitter with the compact-list representer."""
 
 
-ManifestDumper.emitter = _BlankLineEmitter  # type: ignore[attr-defined]
-
-
 def _represent_compact_list(
-    dumper: yaml.Dumper, data: list[object]
+    dumper: yaml.Dumper, data: _CompactList
 ) -> yaml.Node:
-    """Render short all-string lists as flow sequences; otherwise block style.
+    """Render a short ``capabilities`` list as a flow sequence; else block style.
+
+    Only ``_CompactList`` instances (used for ``capabilities``) are rolled up.
+    Plain ``list`` instances (``designations`` etc.) stay block style via
+    :func:`_represent_block_list` so they remain diff-stable and easy to edit.
 
     The width probe uses ``yaml.safe_dump`` on the raw list, which matches what
     the final emitter will produce for a flow-style scalar list (commas and
@@ -80,7 +89,32 @@ def _represent_compact_list(
     )
 
 
-ManifestDumper.add_representer(list, _represent_compact_list)
+def _represent_block_list(
+    dumper: yaml.Dumper, data: list[object]
+) -> yaml.Node:
+    """Render a plain list in block style (never rolled up inline)."""
+
+    return dumper.represent_sequence(
+        "tag:yaml.org,2002:seq", data, flow_style=False
+    )
+
+
+class _CompactList(list):
+    """List subclass rendered inline (flow style) by the emitter.
+
+    Used for ``capabilities`` only. ``designations`` and any other list stay
+    plain ``list`` so they render block style.
+    """
+
+
+ManifestDumper.add_representer(_CompactList, _represent_compact_list)
+ManifestDumper.add_representer(list, _represent_block_list)
+
+
+def compact_list(items: list[str]) -> _CompactList:
+    """Flag a list for inline (flow) rendering in the emitted manifest."""
+
+    return _CompactList(items)
 
 
 def dump_manifest(payload: object) -> str:
