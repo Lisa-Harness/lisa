@@ -31,5 +31,3 @@ coverage/
 htmlcov/
 
 artifacts/
-models*.yaml
-session_context*
