@@ -761,6 +761,11 @@ class MCPToolPool:
         if stack is not None:
             try:
                 await stack.aclose()
+            except asyncio.CancelledError:
+                logger.debug(
+                    "Stack close for %r cancelled during disconnect",
+                    server_id,
+                )
             except Exception:  # pylint: disable=broad-except
                 logger.debug(
                     "Stack close for %r failed during disconnect",
@@ -1282,6 +1287,11 @@ class MCPToolPool:
         for stack in stacks:
             try:
                 await stack.aclose()
+            except asyncio.CancelledError:
+                # CancelledError is BaseException in 3.9+, so the broad
+                # except below misses it. Suppress so shutdown never
+                # crashes when the event loop cancels subprocess waits.
+                logger.debug("Server stack close cancelled during aclose")
             except Exception:  # pylint: disable=broad-except
                 logger.debug("Server stack close failed during aclose", exc_info=True)
         self._restarting.clear()
