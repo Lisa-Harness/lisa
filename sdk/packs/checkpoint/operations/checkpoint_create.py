@@ -4,11 +4,13 @@ Builds an enriched ``CheckpointBundle`` from the current conversation and
 host state, then persists it via the ``lisa-storage`` MCP server's
 ``save_checkpoint`` tool.
 
-Enrichment: if ``ctx.complete_fn`` is available, the operation calls the
-model to produce a structured summary (overview, work_done, important_files,
-next_steps) from the conversation excerpt. When the model call fails or
-no completion function is wired, the bundle is saved without enrichment —
-the kernel's bare fields are always present.
+Enrichment: the operation calls the model to produce a structured summary
+(overview, work_done, important_files, next_steps) from the conversation
+excerpt. The enrichment system prompt is authored content loaded via
+``ctx.read_authored_text_fn`` (``operations/prompts/checkpoint_create_enrichment.md``);
+per the pack-content rule, a missing/empty loader raises rather than silently
+falling back to a bare bundle. A caller may override the prompt via
+``params["prompt"]``.
 
 The operation declares ``save_checkpoint`` in its ``tool_ids`` so it can
 call ``lisa-storage`` through ``ctx.execute_tool_fn``. The host's tool
@@ -118,28 +120,45 @@ async def _enrich_checkpoint(
 ) -> CheckpointEnrichment:
     """Call the model to produce structured enrichment for the checkpoint.
 
-    Falls back to empty enrichment when the model call fails or no
-    completion function is wired.
+    Requires a wired completion function, a resolvable model, and an authored
+    enrichment prompt (loaded via ``ctx.read_authored_text_fn`` or overridden
+    via ``prompt_override``). Raises ``RuntimeError`` when any required input is
+    missing — no silent fallback to an unenriched bundle.
     """
     transcript = _format_conversation_for_model(turn_history)
-    if not transcript or not ctx.complete_fn or not callable(ctx.resolve_model_fn):
-        return CheckpointEnrichment()
+    if not transcript:
+        raise RuntimeError("checkpoint enrichment requires non-empty turn history")
+    if ctx.complete_fn is None or not callable(ctx.resolve_model_fn):
+        raise RuntimeError("checkpoint enrichment requires complete_fn and resolve_model_fn")
 
     model_id = ctx.preferred_model_id or "deep"
     model_def = ctx.resolve_model_fn(model_id)
     if model_def is None:
         model_def = ctx.resolve_model_fn("default")
     if model_def is None:
-        return CheckpointEnrichment()
+        raise RuntimeError("checkpoint enrichment could not resolve a model")
 
     system_prompt = prompt_override.strip()
-    if not system_prompt and callable(ctx.read_authored_text_fn):
-        system_prompt = str(
-            ctx.read_authored_text_fn("operations/prompts/checkpoint_create_enrichment.md")
-            or ""
-        ).strip()
     if not system_prompt:
-        return CheckpointEnrichment()
+        if not callable(ctx.read_authored_text_fn):
+            raise RuntimeError(
+                "read_authored_text_fn is not wired; cannot load checkpoint enrichment prompt"
+            )
+        try:
+            loaded = str(
+                ctx.read_authored_text_fn("operations/prompts/checkpoint_create_enrichment.md")
+                or ""
+            ).strip()
+        except Exception as exc:  # pylint: disable=broad-except
+            raise RuntimeError(
+                f"read_authored_text_fn failed for checkpoint enrichment prompt: {exc}"
+            ) from exc
+        if not loaded:
+            raise RuntimeError(
+                "Authored checkpoint enrichment prompt is empty or missing "
+                "(operations/prompts/checkpoint_create_enrichment.md)"
+            )
+        system_prompt = loaded
 
     try:
         raw = await ctx.complete_fn(
@@ -154,9 +173,10 @@ async def _enrich_checkpoint(
         )
         content = getattr(raw, "content", "") or str(raw)
         return cast(CheckpointEnrichment, parse_structured_payload(CheckpointEnrichment, content))
-    except (ValidationError, Exception) as exc:  # pylint: disable=broad-except
-        logger.warning("checkpoint enrichment failed, saving bare bundle: %s", exc)
-        return CheckpointEnrichment()
+    except ValidationError as exc:
+        raise RuntimeError(f"checkpoint enrichment structured output parse failed: {exc}") from exc
+    except Exception as exc:  # pylint: disable=broad-except
+        raise RuntimeError(f"checkpoint enrichment model call failed: {exc}") from exc
 
 
 async def execute(ctx: OperationExecutionContext) -> OperationResult:

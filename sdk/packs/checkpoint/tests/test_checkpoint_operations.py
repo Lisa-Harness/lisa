@@ -2,7 +2,7 @@
 
 Covers:
 - ``checkpoint_create`` with model enrichment (mocked complete_fn)
-- ``checkpoint_create`` without model (bare bundle)
+- ``checkpoint_create`` raises when complete_fn is not wired (no silent bare bundle)
 - ``checkpoint_create`` with no tool executor
 - ``checkpoint_restore`` successful load
 - ``checkpoint_restore`` missing checkpoint
@@ -172,8 +172,8 @@ async def test_checkpoint_create_with_enrichment() -> None:
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_create_without_model() -> None:
-    """checkpoint_create saves a bare bundle when no complete_fn is wired."""
+async def test_checkpoint_create_without_model_raises() -> None:
+    """checkpoint_create raises when complete_fn is not wired (no silent bare bundle)."""
     from sdk.packs.checkpoint.operations.checkpoint_create import execute
 
     save_response = json.dumps({"checkpoint_id": "def456"})
@@ -188,11 +188,8 @@ async def test_checkpoint_create_without_model() -> None:
         execute_tool_fn=_mock_tool_executor(save_response),
     )
 
-    result = await execute(ctx)
-
-    assert "def456" in result.output_text
-    assert result.extra.get("enriched") is False
-    assert result.extra.get("turn_count") == 1
+    with pytest.raises(RuntimeError, match="complete_fn and resolve_model_fn"):
+        await execute(ctx)
 
 
 @pytest.mark.asyncio
@@ -237,10 +234,11 @@ async def test_checkpoint_create_no_tool_executor() -> None:
     """checkpoint_create returns an error when no tool executor is wired."""
     from sdk.packs.checkpoint.operations.checkpoint_create import execute
 
+    enrichment_json = json.dumps({"overview": "x", "work_done": "y", "important_files": [], "next_steps": []})
     ctx = _make_ctx(
-        params={"label": "no-tools"},
-        complete_fn=None,
-        resolve_model_fn=None,
+        params={"label": "no-tools", "turn_history": [{"query": "q", "response_text": "a"}]},
+        complete_fn=_mock_complete(enrichment_json),
+        resolve_model_fn=_mock_resolve_model(),
         execute_tool_fn=None,
     )
 
@@ -253,10 +251,11 @@ async def test_checkpoint_create_tool_error() -> None:
     """checkpoint_create surfaces tool errors from lisa-storage."""
     from sdk.packs.checkpoint.operations.checkpoint_create import execute
 
+    enrichment_json = json.dumps({"overview": "x", "work_done": "y", "important_files": [], "next_steps": []})
     ctx = _make_ctx(
-        params={"label": "error-test"},
-        complete_fn=None,
-        resolve_model_fn=None,
+        params={"label": "error-test", "turn_history": [{"query": "q", "response_text": "a"}]},
+        complete_fn=_mock_complete(enrichment_json),
+        resolve_model_fn=_mock_resolve_model(),
         execute_tool_fn=_mock_tool_executor("server is read-only", is_error=True),
     )
 
@@ -352,8 +351,8 @@ async def test_checkpoint_history_summarize_noop_when_under_retention() -> None:
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_history_summarize_fallback_on_invalid_model_payload() -> None:
-    """checkpoint_history_summarize falls back deterministically on parse failure."""
+async def test_checkpoint_history_summarize_raises_on_invalid_model_payload() -> None:
+    """checkpoint_history_summarize raises (no deterministic fallback) on parse failure."""
     from sdk.packs.checkpoint.operations.checkpoint_history_summarize import execute
 
     turn_history = [
@@ -368,13 +367,8 @@ async def test_checkpoint_history_summarize_fallback_on_invalid_model_payload() 
         resolve_model_fn=_mock_resolve_model(),
     )
 
-    result = await execute(ctx)
-
-    summary_turn = result.output_json.get("summary_turn")
-    assert isinstance(summary_turn, dict)
-    assert summary_turn.get("source") == "checkpoint_history_summarize"
-    assert summary_turn.get("summarized_turn_count") == 2
-    assert result.output_json.get("was_summarized") is True
+    with pytest.raises(RuntimeError, match="structured output parse failed"):
+        await execute(ctx)
 
 
 # ── checkpoint_restore ────────────────────────────────────────────────

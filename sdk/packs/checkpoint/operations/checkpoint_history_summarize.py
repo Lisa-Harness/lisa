@@ -67,54 +67,54 @@ def _format_turns(turn_history: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _fallback_summary(old_turns: list[dict[str, Any]]) -> HistorySummary:
-    """Create deterministic fallback summary when model summarization is unavailable."""
-    first_query = ""
-    last_query = ""
-    for turn in old_turns:
-        query = str(turn.get("query") or turn.get("user_message") or "").strip()
-        if query and not first_query:
-            first_query = query
-        if query:
-            last_query = query
-    points: list[str] = []
-    if first_query:
-        points.append(f"Started with: {first_query[:140]}")
-    if last_query and last_query != first_query:
-        points.append(f"Most recent earlier query: {last_query[:140]}")
-    if not points:
-        points.append("Older turns condensed without model enrichment.")
-    return HistorySummary(
-        condensed_narrative=f"Condensed {len(old_turns)} earlier turns.",
-        key_points=points,
-    )
-
-
 async def _summarize_old_turns(
     ctx: OperationExecutionContext,
     old_turns: list[dict[str, Any]],
     prompt_override: str = "",
 ) -> HistorySummary:
-    """Call the model to summarize older turns, with graceful fallback."""
+    """Call the model to summarize older turns.
+
+    Requires a wired completion function, a resolvable model, and an authored
+    summarization prompt (loaded via ``ctx.read_authored_text_fn`` or
+    overridden via ``prompt_override``). Raises ``RuntimeError`` when any
+    required input is missing — no deterministic fallback summary.
+    """
     transcript = _format_turns(old_turns)
-    if not transcript or not ctx.complete_fn or not callable(ctx.resolve_model_fn):
-        return _fallback_summary(old_turns)
+    if not transcript:
+        raise RuntimeError("checkpoint history summarize requires non-empty old turns")
+    if ctx.complete_fn is None or not callable(ctx.resolve_model_fn):
+        raise RuntimeError(
+            "checkpoint history summarize requires complete_fn and resolve_model_fn"
+        )
 
     model_id = ctx.preferred_model_id or "deep"
     model_def = ctx.resolve_model_fn(model_id)
     if model_def is None:
         model_def = ctx.resolve_model_fn("default")
     if model_def is None:
-        return _fallback_summary(old_turns)
+        raise RuntimeError("checkpoint history summarize could not resolve a model")
 
     system_prompt = prompt_override.strip()
-    if not system_prompt and callable(ctx.read_authored_text_fn):
-        system_prompt = str(
-            ctx.read_authored_text_fn("operations/prompts/checkpoint_history_summarize.md")
-            or ""
-        ).strip()
     if not system_prompt:
-        return _fallback_summary(old_turns)
+        if not callable(ctx.read_authored_text_fn):
+            raise RuntimeError(
+                "read_authored_text_fn is not wired; cannot load checkpoint history summarize prompt"
+            )
+        try:
+            loaded = str(
+                ctx.read_authored_text_fn("operations/prompts/checkpoint_history_summarize.md")
+                or ""
+            ).strip()
+        except Exception as exc:  # pylint: disable=broad-except
+            raise RuntimeError(
+                f"read_authored_text_fn failed for checkpoint history summarize prompt: {exc}"
+            ) from exc
+        if not loaded:
+            raise RuntimeError(
+                "Authored checkpoint history summarize prompt is empty or missing "
+                "(operations/prompts/checkpoint_history_summarize.md)"
+            )
+        system_prompt = loaded
 
     try:
         raw = await ctx.complete_fn(
@@ -129,9 +129,12 @@ async def _summarize_old_turns(
         )
         content = getattr(raw, "content", "") or str(raw)
         return cast(HistorySummary, parse_structured_payload(HistorySummary, content))
-    except (ValidationError, Exception) as exc:  # pylint: disable=broad-except
-        logger.warning("checkpoint history summarize failed, using fallback: %s", exc)
-        return _fallback_summary(old_turns)
+    except ValidationError as exc:
+        raise RuntimeError(
+            f"checkpoint history summarize structured output parse failed: {exc}"
+        ) from exc
+    except Exception as exc:  # pylint: disable=broad-except
+        raise RuntimeError(f"checkpoint history summarize model call failed: {exc}") from exc
 
 
 async def execute(ctx: OperationExecutionContext) -> OperationResult:
