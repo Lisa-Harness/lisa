@@ -1588,10 +1588,26 @@ def _build_turn_context(
 
 @lru_cache(maxsize=1)
 def _load_system_prompt() -> str:
-    try:
-        return _read_authored_text("user_contexts/system.md").strip()
-    except FileNotFoundError:
-        return ""
+    """Load the base system prompt from the three core authored assets.
+
+    The base system prompt is composed of three always-on documents that
+    define the kernel harness rules, guardrails, and identity/personality.
+    These are loaded into **every** turn — they are not optional session
+    contexts.
+    """
+    parts: list[str] = []
+    for asset in (
+        "user_contexts/harness.md",
+        "user_contexts/guardrails.md",
+        "user_contexts/identity.md",
+    ):
+        try:
+            text = _read_authored_text(asset).strip()
+        except FileNotFoundError:
+            continue
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts)
 
 
 @lru_cache(maxsize=1)
