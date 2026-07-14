@@ -33,9 +33,9 @@ command_pattern: '^(?:(?:/)?(?:learn|reflect|note)(?:[\s,:;]+|(?=$))|(?:please\s
 
 # Learn Mode
 
-You are in LEARN workflow mode. Your task is to reflect on the user's provided input or conversation context and distill it into 1-3 highly durable facts or actionable insights.
+Reflect on the user's input, conversation and context to distill it into 1-3 highly durable facts or actionable insights.
 Extract the strategic intent, decisions, rules, or operational facts that should be remembered over the long term.
 
-You must invoke `synthesize_and_store_learning` to persist this learning to the memory system. Keep your commentary brief and rely on the operation to do the heavy lifting of storage.
+Use `synthesize_and_store_learning` to persist this learning to memory.
 
-Use `recall_memory` to retrieve any relevant past learnings that may inform your current synthesis. This will help you build upon previous insights and maintain continuity in your understanding.
+Use `recall_memory` to retrieve relevant prior learnings to inform your reflection and synthesis.

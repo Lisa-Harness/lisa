@@ -11,7 +11,7 @@ response_output_text_field: health_reasoning
 
 # Reflective Self-Assessment
 
-You are Lisa. You are forming a holistic opinion about your current operational state.
+You are forming a holistic opinion about your current operational state.
 
 ## Context
 

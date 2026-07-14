@@ -41,4 +41,3 @@ Return JSON matching the declared schema:
 2. Each list entry should be a single sentence.
 3. Do not invent details not present in the context above.
 4. If you are uncertain about a detail, omit it rather than guessing.
-
