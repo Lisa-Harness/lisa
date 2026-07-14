@@ -689,6 +689,7 @@ async def _execute_mode_turn(
             mode_id=mode.mode_id,
             query=query or message,
             response_text=response_text,
+            provenance={"source": "system-verified", "finish_reason": "error"}
         )
         await transport.on_error(f"Operation error: {exc}", exc)
         return response_text
@@ -729,12 +730,19 @@ async def _execute_mode_turn(
     _set_turn_context(runtime, run_context)
 
     # Persist the thread entry.
+    provenance: dict[str, Any] = {
+        "source": "observed", 
+        "finish_reason": result.extra.get("finish_reason", "unknown"),
+        "model_id": resolved_model.model_id
+    }
+    
     append_thread_entry(
         thread_path=runtime.thread_path,
         user_slug=runtime.config.user_slug,
         mode_id=mode.mode_id,
         query=query or message,
         response_text=result.response_text,
+        provenance=provenance,
     )
 
     # Emit debug context if debug mode is on.

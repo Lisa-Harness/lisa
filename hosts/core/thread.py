@@ -88,6 +88,7 @@ def append_thread_entry(
     mode_id: str,
     query: str,
     response_text: str,
+    provenance: dict[str, Any] | None = None,
 ) -> None:
     """Append a new thread entry to the JSONL file.
 
@@ -103,6 +104,9 @@ def append_thread_entry(
         "query": query,
         "response_text": response_text,
     }
+    if provenance:
+        entry["provenance"] = provenance
+        
     thread_path.parent.mkdir(parents=True, exist_ok=True)
     with thread_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=True) + "\n")

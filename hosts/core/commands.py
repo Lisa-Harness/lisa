@@ -158,6 +158,7 @@ def _append_thread_entry(
     mode_id: str,
     query: str,
     response_text: str,
+    provenance: dict[str, Any] | None = None,
 ) -> None:
     """Delegate to ``hosts.core.thread.append_thread_entry`` with runtime paths."""
     append_thread_entry(
@@ -166,6 +167,7 @@ def _append_thread_entry(
         mode_id=mode_id,
         query=query,
         response_text=response_text,
+        provenance=provenance,
     )
 
 

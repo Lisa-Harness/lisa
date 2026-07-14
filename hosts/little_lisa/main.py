@@ -2247,7 +2247,9 @@ def _load_recent_thread_entries(limit: int = 30) -> list[dict[str, Any]]:
     return entries
 
 
-def _append_thread_entry(*, mode_id: str, query: str, response_text: str) -> None:
+def _append_thread_entry(
+    *, mode_id: str, query: str, response_text: str, provenance: dict[str, Any] | None = None
+) -> None:
     path = _runtime_thread_path()
     user_slug = _runtime_user_slug()
     if path is None or not user_slug:
@@ -2259,6 +2261,8 @@ def _append_thread_entry(*, mode_id: str, query: str, response_text: str) -> Non
         "query": query,
         "response_text": response_text,
     }
+    if provenance:
+        entry["provenance"] = provenance
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=True) + "\n")

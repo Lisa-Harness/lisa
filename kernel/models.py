@@ -1480,6 +1480,7 @@ class ThreadMessage(BaseModel):
 
     role: Literal["system", "user", "assistant"]
     content: str
+    provenance: dict[str, Any] = Field(default_factory=dict)
     extra: dict[str, object] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
