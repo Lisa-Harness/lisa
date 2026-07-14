@@ -337,6 +337,59 @@ class TestHandleMessage:
         assert "No active models manifest is available yet." in result.text
 
     @pytest.mark.asyncio
+    async def test_intake_command(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """/intake runs one intake tick in-process and reports the result."""
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+
+        captured: dict[str, Path] = {}
+
+        class _StubState:
+            signal_snapshots: dict[str, object] = {}
+            active_alerts: list[object] = []
+            intel_collections: dict[str, object] = {}
+
+        async def _fake_run_intake(*, data_dir: Path) -> _StubState:
+            captured["data_dir"] = data_dir
+            stub = _StubState()
+            stub.signal_snapshots = {"github": {}}
+            stub.active_alerts = [{"id": "a1"}]
+            stub.intel_collections = {"stripe": {}}
+            return stub
+
+        monkeypatch.setattr(
+            "hosts.core.intake.run_intake",
+            _fake_run_intake,
+        )
+
+        result = await handle_message(runtime, "/intake")
+        assert isinstance(result, HostCommandResult)
+        assert result.is_error is False
+        assert "Intake tick complete" in result.text
+        assert "1 signal(s)" in result.text
+        assert "1 alert(s)" in result.text
+        assert "1 intel collection(s)" in result.text
+        assert "state.json" in result.text
+        assert captured["data_dir"] == tmp_path
+        assert runtime.current_mode_id == "intake"
+
+    @pytest.mark.asyncio
+    async def test_intake_command_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """/intake surfaces failures without crashing the session."""
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+
+        async def _boom(*, data_dir: Path) -> None:
+            raise RuntimeError("collector exploded")
+
+        monkeypatch.setattr("hosts.core.intake.run_intake", _boom)
+
+        result = await handle_message(runtime, "/intake")
+        assert isinstance(result, HostCommandResult)
+        assert "Intake tick failed" in result.text
+        assert "collector exploded" in result.text
+
+    @pytest.mark.asyncio
     async def test_models_discover_then_apply(
         self,
         tmp_path: Path,

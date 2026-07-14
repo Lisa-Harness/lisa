@@ -84,6 +84,7 @@ _HOST_REPL_SHORTCUTS: tuple[str, ...] = (
     "/debug context",
     "/debug frontdoor",
     "/consolidate",
+    "/intake",
     "/checkpoint",
     "/restore",
     "/checkpoints",
