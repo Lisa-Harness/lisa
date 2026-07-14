@@ -37,6 +37,19 @@ LISA_MEMORY_MAX_RECORDS_ENV = "LISA_MEMORY_MAX_RECORDS"
 _DEFAULT_THREAD_MAX_ENTRIES = 50
 _DEFAULT_MEMORY_MAX_RECORDS = 200
 _DEFAULT_SLICE_EXPLICIT_BUDGET_MS = 2000
+_DEFAULT_DATA_DIR_NAME = ".lisa"
+
+
+def default_data_dir() -> Path:
+    """Return the platform-appropriate default Lisa data directory.
+
+    On Windows the home directory is derived from ``%USERPROFILE%`` (via
+    ``Path.home()``), and on Linux/macOS from ``$HOME``. ``Path.home()``
+    handles both correctly and expands ``~`` on POSIX. The resolved path is
+    ``~/.lisa`` (i.e. ``$HOME/.lisa`` on POSIX, ``%USERPROFILE%\\.lisa`` on
+    Windows).
+    """
+    return Path.home() / _DEFAULT_DATA_DIR_NAME
 
 
 def _resolve_env(name: str, default: str = "") -> str:
@@ -111,7 +124,7 @@ class HostConfig:
     """
 
     # ── Paths ────────────────────────────────────────────────────────────
-    data_dir: Path = field(default_factory=lambda: Path.cwd() / "artifacts")
+    data_dir: Path = field(default_factory=default_data_dir)
     memory_db_path: Path | None = None
     thread_dir: Path | None = None
     mcp_manifest_path: Path | None = None
@@ -126,6 +139,7 @@ class HostConfig:
     timezone_source: str = "default"
     user_slug: str = ""
     session_context: str = ""
+    session_context_refresh: bool = False
     no_thread: bool = False
     context_routing: Any | None = None
 
@@ -210,6 +224,7 @@ class HostConfig:
         no_thread: bool = False,
         timezone: str = "",
         session_context: str = "",
+        session_context_refresh: bool = False,
         user_slug: str = "",
         state_snapshot: str = "",
         mcp_manifest_path: str = "",
@@ -243,7 +258,7 @@ class HostConfig:
 
         # ── Data dir ──────────────────────────────────────────────────
         resolved_data_dir = Path(
-            data_dir.strip() or _resolve_env(LISA_DATA_DIR_ENV) or str(Path.cwd() / "artifacts")
+            data_dir.strip() or _resolve_env(LISA_DATA_DIR_ENV) or str(default_data_dir())
         ).expanduser().resolve()
 
         # ── Paths ──────────────────────────────────────────────────────
@@ -323,6 +338,7 @@ class HostConfig:
                 resolve_session_context_identity(
                     session_context=resolved_session_context,
                     data_dir=resolved_data_dir,
+                    force_refresh=session_context_refresh,
                 )
             )
             if _resolved_ref:
@@ -371,6 +387,7 @@ class HostConfig:
             timezone_source=tz_source,
             user_slug=resolved_user_slug,
             session_context=resolved_session_context,
+            session_context_refresh=session_context_refresh,
             no_thread=no_thread,
             streaming=StreamingConfig(mode=stream_mode, char_delay_ms=stream_delay),
             slice_config=SliceConfig(

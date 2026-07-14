@@ -1,4 +1,4 @@
-"""hosts.cli.main — Typer app and CLI entry points for the terminal host.
+"""hosts.cli.main â€” Typer app and CLI entry points for the terminal host.
 
 This is the terminal-transport entry point for the Lisa framework. It
 wraps the transport-neutral :mod:`hosts.core` runtime with Typer commands
@@ -46,11 +46,11 @@ try:
         if _env_candidate.exists():
             load_dotenv(dotenv_path=_env_candidate, override=False)
             break
-except ImportError:  # pragma: no cover — python-dotenv is optional
+except ImportError:  # pragma: no cover â€” python-dotenv is optional
     pass
 
 from hosts.cli.render import render_models, render_modes, render_pack_list_panel
-from hosts.core.config import HostConfig
+from hosts.core.config import HostConfig, default_data_dir
 from hosts.core.handle_message import handle_message
 from hosts.core.mcp_pool import (
     compile_mcp_configs,
@@ -92,12 +92,12 @@ def _restart_current_process() -> None:
       REPL. Instead, print a clear restart-required notice and exit with
       :data:`_RESTART_REQUIRED_EXIT` so the user manually re-runs ``lisa``.
 
-    Uses :data:`sys.argv` (not ``sys.orig_argv``) for args continuity —
+    Uses :data:`sys.argv` (not ``sys.orig_argv``) for args continuity â€”
     ``sys.orig_argv`` on Windows contains the Store launcher, not the
     venv interpreter, which corrupts re-execs.
     """
     if os.name == "nt":
-        # Do not attempt to spawn a child process on Windows — it detaches
+        # Do not attempt to spawn a child process on Windows â€” it detaches
         # from the parent terminal and breaks the interactive REPL. Just
         # exit with a clear, script-detectable restart-required code.
         console.print(
@@ -184,7 +184,7 @@ DataDirOption = Annotated[
         help=(
             "Data root for artifacts, memory, and logs. "
             "Overrides LISA_DATA_DIR. "
-            "Default: <cwd>/artifacts/"
+            "Default: ~/.lisa (see default_data_dir())"
         ),
     ),
 ]
@@ -221,10 +221,18 @@ SessionContextOption = Annotated[
     typer.Option(
         "--session-context",
         help=(
-            "User context source: a slug name (content/user_contexts/<name>.md), "
-            "a full .md file path, or a directory (all files concatenated). "
+            "User context source: a slug name (content/user_contexts/<name>.md or downloaded from remote registry), "
+            "a single remote URL, a full .md file path, or a directory (all files concatenated). "
             "Omit to skip session context."
         ),
+    ),
+]
+
+SessionContextRefreshOption = Annotated[
+    bool,
+    typer.Option(
+        "--session-context-refresh",
+        help="Force re-fetch of remote session context, ignoring local cache.",
     ),
 ]
 TimezoneOption = Annotated[
@@ -273,6 +281,7 @@ def _initialize_runtime(
     no_thread: bool = False,
     user_slug: str,
     timezone: str = "",
+    session_context_refresh: bool = False,
     state_snapshot_path: str,
     streaming: str = "",
     host_log_path: str = "",
@@ -284,7 +293,7 @@ def _initialize_runtime(
     wired (content/operation/catalog MCP servers), provider clients are
     reset, and compiled MCP configs are stashed on the runtime.
 
-    The MCP pool is NOT started here — ``runtime.start()`` must be called
+    The MCP pool is NOT started here â€” ``runtime.start()`` must be called
     inside the host's event loop (see :func:`hosts.cli.repl.run_repl`).
     """
     _ = no_log  # honored via HostConfig.log_path resolution below
@@ -299,6 +308,7 @@ def _initialize_runtime(
         no_thread=no_thread,
         timezone=timezone,
         session_context=user_slug,
+        session_context_refresh=session_context_refresh,
         user_slug=user_slug,
         state_snapshot=state_snapshot_path,
         streaming=streaming,
@@ -392,6 +402,7 @@ def _run_default_no_args_mode(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -400,7 +411,7 @@ def _run_default_no_args_mode(
     if runtime is None:
         return
     _consume_restart_resume_message(runtime)
-    from hosts.cli.repl import run_repl  # noqa: PLC0415 — deferred to keep
+    from hosts.cli.repl import run_repl  # noqa: PLC0415 â€” deferred to keep
     #                                   --version/modes/verify fast
     restart_requested = asyncio.run(run_repl(runtime, console=console))
     if restart_requested:
@@ -468,6 +479,7 @@ def _cli_callback(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -488,6 +500,7 @@ def _cli_callback(
         thread_dir=thread_dir,
         no_thread=no_thread,
         session_context=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot=state_snapshot,
         streaming=streaming,
@@ -511,6 +524,7 @@ def _cli_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -526,6 +540,7 @@ def _cli_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -534,7 +549,7 @@ def _cli_command(
     if runtime is None:
         return
     _consume_restart_resume_message(runtime)
-    from hosts.cli.repl import run_repl  # noqa: PLC0415 — deferred to keep
+    from hosts.cli.repl import run_repl  # noqa: PLC0415 â€” deferred to keep
     #                                   --version/modes/verify fast
     restart_requested = asyncio.run(run_repl(runtime, console=console))
     if restart_requested:
@@ -612,7 +627,7 @@ def _verify_check_pack_catalog() -> tuple[str, str]:
 def _verify_check_ollama() -> tuple[str, str]:
     import os
 
-    import httpx  # noqa: PLC0415 — deferred to keep --version/modes fast
+    import httpx  # noqa: PLC0415 â€” deferred to keep --version/modes fast
 
     configured_host = os.getenv("LISA_OLLAMA_HOST", "").strip() or os.getenv(
         "OLLAMA_HOST", ""
@@ -692,7 +707,11 @@ def _verify_check_paths(runtime: HostRuntime) -> tuple[str, str]:
 def _verify_check_session_context(runtime: HostRuntime) -> tuple[str, str]:
     if not runtime.config.user_slug:
         return "[yellow]NONE[/yellow]", "No session context active"
-    return _VERIFY_PASS, f"Context: {runtime.config.user_slug}"
+    parts = [f"Context: {runtime.config.user_slug}"]
+    ref = runtime.config.session_context.strip()
+    if ref and ref != runtime.config.user_slug:
+        parts.append(f"Path: {ref}")
+    return _VERIFY_PASS, "; ".join(parts)
 
 
 @app.command("verify", help="Run verification checks of the Lisa environment.")
@@ -706,6 +725,7 @@ def _verify_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -722,6 +742,7 @@ def _verify_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -743,7 +764,7 @@ def _verify_command(
     table = Table(title="lisa verify")
     table.add_column("Check", style="bold")
     table.add_column("Status")
-    table.add_column("Detail")
+    table.add_column("Detail", overflow="fold", no_wrap=False)
 
     failures = 0
     for name, status, detail in checks:
@@ -794,7 +815,7 @@ def _setup_write_env(env_path: Path, updates: dict[str, str]) -> None:
 
 
 async def _setup_validate_ollama() -> tuple[bool, str]:
-    import httpx  # noqa: PLC0415 — deferred to keep --version/modes fast
+    import httpx  # noqa: PLC0415 â€” deferred to keep --version/modes fast
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -807,7 +828,7 @@ async def _setup_validate_ollama() -> tuple[bool, str]:
 
 
 async def _setup_validate_openai(api_key: str) -> tuple[bool, str]:
-    from openai import AsyncOpenAI  # noqa: PLC0415 — deferred to keep --version/modes fast
+    from openai import AsyncOpenAI  # noqa: PLC0415 â€” deferred to keep --version/modes fast
 
     try:
         client = AsyncOpenAI(api_key=api_key)
@@ -818,7 +839,7 @@ async def _setup_validate_openai(api_key: str) -> tuple[bool, str]:
 
 
 async def _setup_validate_google(api_key: str) -> tuple[bool, str]:
-    from openai import AsyncOpenAI  # noqa: PLC0415 — deferred to keep --version/modes fast
+    from openai import AsyncOpenAI  # noqa: PLC0415 â€” deferred to keep --version/modes fast
 
     try:
         client = AsyncOpenAI(
@@ -832,7 +853,7 @@ async def _setup_validate_google(api_key: str) -> tuple[bool, str]:
 
 
 async def _setup_validate_azure(endpoint: str, api_key: str) -> tuple[bool, str]:
-    from openai import AsyncAzureOpenAI  # noqa: PLC0415 — deferred to keep --version/modes fast
+    from openai import AsyncAzureOpenAI  # noqa: PLC0415 â€” deferred to keep --version/modes fast
 
     try:
         client = AsyncAzureOpenAI(
@@ -847,7 +868,7 @@ async def _setup_validate_azure(endpoint: str, api_key: str) -> tuple[bool, str]
 
 
 async def _setup_validate_anthropic(api_key: str) -> tuple[bool, str]:
-    import httpx  # noqa: PLC0415 — deferred to keep --version/modes fast
+    import httpx  # noqa: PLC0415 â€” deferred to keep --version/modes fast
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1016,6 +1037,7 @@ def _modes_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -1031,6 +1053,7 @@ def _modes_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -1057,6 +1080,7 @@ def _models_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -1072,6 +1096,7 @@ def _models_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -1103,6 +1128,7 @@ def _packs_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -1118,6 +1144,7 @@ def _packs_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -1188,6 +1215,7 @@ def _once_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -1203,6 +1231,7 @@ def _once_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -1250,7 +1279,7 @@ def _intake_command(
     loops, and writes the merged UnifiedState to ``<data-dir>/state.json``.
     The next turn reads that state so the model has fresh ambient data.
     """
-    resolved_data_dir = Path(data_dir).expanduser() if data_dir else Path.cwd() / "artifacts"
+    resolved_data_dir = Path(data_dir).expanduser() if data_dir else default_data_dir()
     try:
         from hosts.core.intake import run_intake  # noqa: PLC0415
     except ImportError:

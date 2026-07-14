@@ -16,7 +16,9 @@ _SUPPORTED_DESIGNATIONS: set[str] = {"front-door", "default", "deep", "reasoning
 def default_manifest_path() -> Path:
     """Return the default manifest path rooted under the runtime data-dir."""
 
-    return (Path.cwd() / "artifacts" / "models.yaml").resolve()
+    from hosts.core.config import default_data_dir  # noqa: PLC0415
+
+    return (default_data_dir() / "models.yaml").resolve()
 
 
 def load_model_manifest(path: Path | None = None) -> ModelManifest:

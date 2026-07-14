@@ -19,7 +19,7 @@ prior conversation context.
 | How do servers discover their data directory? | **CLI args only.** The host passes `--data-dir` explicitly. Servers do not hardcode fallback paths. |
 | What are env vars for? | **Behavioral config only** — feature flags, API keys, backend selection, log level defaults. Not path resolution. |
 | Can servers read `LISA_DATA_DIR` from env? | **No.** Path-like arguments come exclusively from CLI args. Env is supplemental for behaviors. |
-| Does the host have a default data-dir? | **Yes, the host may default** (e.g. `hosts/core` defaults to `./artifacts/`). But the host must pass it as a CLI arg to every server. The server never assumes a default. |
+| Does the host have a default data-dir? | **Yes, the host may default** (e.g. `hosts/core` defaults to `~/.lisa`). But the host must pass it as a CLI arg to every server. The server never assumes a default. |
 | How are third-party MCP servers controlled? | **Approval registry.** Hosts register approved server specs with explicit env/cwd/runtime/tool policy. Unregistered specs are rejected. |
 | How do we handle multiple runtimes (uv, node, npx, binary)? | **Runtime adapter layer.** Abstract runtime specs compile to concrete `MCPClientConfig`. The host declares the runtime kind; the adapter builds the command/args. |
 | Do existing servers need migration? | **Yes.** All first-party servers adopt the shared argparse contract. Legacy env-var path resolution is removed (hard cutover, no compat). |

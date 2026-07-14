@@ -43,7 +43,7 @@ optional — defaults come from `.env` and `HostConfig.from_env()`.
 | `--log-level` | From `LISA_LOG_LEVEL` or `info` | Log threshold |
 | `--log` | None | JSONL turn log file |
 | `--host-log` | `<data-dir>/host.log` | Stdlib host log file |
-| `--data-dir` | `LISA_DATA_DIR` or `<cwd>/artifacts` | Data root for artifacts, memory, logs |
+| `--data-dir` | `LISA_DATA_DIR` or `~/.lisa` | Data root for artifacts, memory, logs |
 | `--memory-db` | `<data-dir>/memory.json` | Memory database path |
 | `--thread-dir` | `<data-dir>/threads` | Thread log directory |
 | `--no-thread` | `false` | Disable thread persistence |

@@ -24,7 +24,7 @@ Public surface::
 from __future__ import annotations
 
 from hosts.core.callbacks import DelegatingTransport, NullTransport, TransportCallbacks
-from hosts.core.config import HostConfig, SliceConfig, StreamingConfig
+from hosts.core.config import HostConfig, SliceConfig, StreamingConfig, default_data_dir
 from hosts.core.handle_message import handle_message
 from hosts.core.runtime import HostRuntime, TokenCounters, TurnContext
 from hosts.core.types import (
@@ -48,5 +48,6 @@ __all__ = [
     "ToolExecutor",
     "TransportCallbacks",
     "TurnContext",
+    "default_data_dir",
     "handle_message",
 ]
