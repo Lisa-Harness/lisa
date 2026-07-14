@@ -306,30 +306,10 @@ def _classify_evidence_namespace(evidence: ContextEvidence, routing: ContextRout
             if ns_config.is_fallback:
                 return ns_id
 
-    # Base fallback if no routing config is given
-    signal_sources = set(discover_installed_signal_collectors())
-    if evidence_type == "alert" or source in signal_sources or source.endswith("_ops_trends"):
-        return "operational_state"
-    if source == "dev_state" or evidence_type in {"recent_work", "domain_knowledge"}:
-        return "product_repo_knowledge"
-    if "style" in tags or "preference" in tags or evidence_type == "conversation_style":
-        return "conversational_style_context"
     return "general_context"
 
 
 def _classify_evidence_source_type(evidence: ContextEvidence, routing: ContextRoutingConfig | None = None) -> ContextEvidenceSourceType:
-    source = evidence.source.lower()
-    evidence_type = evidence.evidence_type.lower()
-    signal_sources = set(discover_installed_signal_collectors())
-
-    if evidence_type == "alert":
-        return "operational_alert"
-    if source in signal_sources or evidence.collector_id:
-        return "signal_collector"
-    if source == "dev_state":
-        return "developer_state"
-    if source == "domain_knowledge" or evidence_type == "domain_knowledge":
-        return "domain_knowledge"
     if evidence.metadata.get("extension_id") or evidence.metadata.get("extension_name"):
         return "extension"
     return "general"
@@ -395,145 +375,6 @@ def _build_extension_evidence(
     return active_builder.build_extension_context_evidence(runtime_context, state)
 
 
-def _build_alert_evidence(state: UnifiedState, routing: ContextRoutingConfig | None = None) -> list[ContextEvidence]:
-    evidence: list[ContextEvidence] = []
-    for index, alert in enumerate(state.active_alerts, start=1):
-        evidence.append(
-            _new_evidence(
-                evidence_id=f"alert:{index}:{alert.source}",
-                source=alert.source or "alerts",
-                collector_id=alert.source,
-                evidence_type="alert",
-                title=f"{alert.source.title()} {alert.severity} alert",
-                body=alert.message,
-                collected_at=alert.detected_at or _default_collected_at(state),
-                confidence=0.95,
-                salience_score=_SEVERITY_SALIENCE.get(alert.severity, 0.65),
-                tags=["alert", alert.source, alert.severity],
-                routing=routing,
-            )
-        )
-    return evidence
-
-
-def _build_dev_state_evidence(state: UnifiedState, routing: ContextRoutingConfig | None = None) -> list[ContextEvidence]:
-    if state.dev_state is None or not state.dev_state.recent_accomplishments:
-        return []
-    recent = state.dev_state.recent_accomplishments[-3:]
-    bullets = [f"[{entry.ts[:10]}] {entry.summary}" for entry in recent]
-    return [
-        _new_evidence(
-            evidence_id="dev_state:recent_accomplishments",
-            source="dev_state",
-            evidence_type="recent_work",
-            title="Recent developer work",
-            body="\n".join(bullets),
-            collected_at=state.dev_state.last_updated or _default_collected_at(state),
-            salience_score=0.4,
-            tags=["developer", "outbox", "recent-work"],
-            routing=routing,
-        )
-    ]
-
-
-def _build_collection_evidence(
-    *,
-    source: str,
-    collection: IntelCollection | None,
-    state: UnifiedState,
-    title: str,
-    evidence_type: str,
-    salience_score: float,
-    routing: ContextRoutingConfig | None = None,
-) -> list[ContextEvidence]:
-    if collection is None:
-        return []
-    bullets = collection.summary_bullets[:4]
-    if not bullets and not collection.collection_metadata:
-        return []
-    body = (
-        "\n".join(f"- {bullet}" for bullet in bullets)
-        if bullets
-        else str(collection.collection_metadata)
-    )
-    collected_at = getattr(collection, "generated_at", "") or _default_collected_at(state)
-    return [
-        _new_evidence(
-            evidence_id=f"collection:{source}",
-            source=source,
-            evidence_type=evidence_type,
-            title=title,
-            body=body,
-            collected_at=collected_at,
-            salience_score=salience_score,
-            tags=[source, evidence_type],
-            routing=routing,
-        )
-    ]
-
-
-def _collection_title(source: str) -> str:
-    """Render one human-readable title for an intel collection source ID."""
-
-    return f"{source.replace('_', ' ').strip().title()} insights"
-
-
-def _build_all_collection_evidence(
-    state: UnifiedState,
-    *,
-    skipped_sources: set[str],
-    routing: ContextRoutingConfig | None = None,
-) -> list[ContextEvidence]:
-    """Render ambient evidence for cached intel collections not owned by extensions."""
-
-    evidence: list[ContextEvidence] = []
-    for source, collection in state.intel_collections.items():
-        if source in skipped_sources:
-            continue
-        evidence.extend(
-            _build_collection_evidence(
-                source=source,
-                collection=collection,
-                state=state,
-                title=_collection_title(source),
-                evidence_type="intel_collection",
-                salience_score=0.5,
-                routing=routing,
-            )
-        )
-    return evidence
-
-
-def _build_domain_knowledge_evidence(state: UnifiedState, routing: ContextRoutingConfig | None = None) -> list[ContextEvidence]:
-    evidence: list[ContextEvidence] = []
-
-    for artifact_id, artifact in sorted(state.domain_knowledge.items()):
-        visible_bullets = [bullet.strip() for bullet in artifact.summary_bullets if bullet.strip()]
-        if not visible_bullets:
-            continue
-
-        salience_score = 0.65 if artifact.status in {"warning", "error"} else 0.45
-        evidence.append(
-            _new_evidence(
-                evidence_id=f"domain_knowledge:{artifact_id}",
-                source="domain_knowledge",
-                evidence_type="domain_knowledge",
-                title=artifact.display_name or artifact_id.replace("_", " "),
-                body=" | ".join(visible_bullets[:4]),
-                collected_at=artifact.generated_at or _default_collected_at(state),
-                salience_score=salience_score,
-                tags=["domain_knowledge", artifact_id, artifact.status],
-                metadata={
-                    "artifact_id": artifact_id,
-                    **artifact.metadata,
-                },
-                routing=routing,
-            )
-        )
-
-    return evidence
-
-
 def build_context_evidence_catalog(
     state: UnifiedState,
     *,
@@ -548,25 +389,10 @@ def build_context_evidence_catalog(
             extension evidence. When ``None`` (default), the module-level
             builder (set via ``set_extension_evidence_builder``) is used.
     """
-    extension_evidence = _build_extension_evidence(
+    catalog = _build_extension_evidence(
         state,
         builder=extension_evidence_builder,
     )
-    extension_owned_collection_sources = {
-        item.source for item in extension_evidence if item.evidence_type == "intel_collection"
-    }
-    catalog: list[ContextEvidence] = []
-    catalog.extend(extension_evidence)
-    catalog.extend(_build_alert_evidence(state, routing))
-    catalog.extend(_build_dev_state_evidence(state, routing))
-    catalog.extend(
-        _build_all_collection_evidence(
-            state,
-            skipped_sources=extension_owned_collection_sources,
-            routing=routing,
-        )
-    )
-    catalog.extend(_build_domain_knowledge_evidence(state, routing))
     for item in catalog:
         _apply_evidence_identity(item, routing)
     return catalog
