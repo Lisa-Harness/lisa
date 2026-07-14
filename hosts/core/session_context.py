@@ -51,6 +51,8 @@ Public surface
 from __future__ import annotations
 
 import logging
+import os
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,6 +61,7 @@ from typing import Any
 from kernel.ipsar_fsm import parse_front_matter
 
 from hosts.core.lisa_config import context_slug_to_thread_name
+from hosts.core.session_context_fetch import fetch_session_context_url
 
 logger = logging.getLogger(__name__)
 
@@ -126,11 +129,68 @@ class SessionContextControls:
     context_routing: ContextRoutingConfig | None = None
 
 
+LISA_SESSION_CONTEXT_REGISTRY_URL_ENV = "LISA_SESSION_CONTEXT_REGISTRY_URL"
+
+def session_context_registry_url() -> str:
+    """Return the registry URL for remote authored session contexts."""
+    configured = os.getenv(LISA_SESSION_CONTEXT_REGISTRY_URL_ENV, "").strip()
+    if configured:
+        return configured.rstrip("/")
+    return "https://raw.githubusercontent.com/lisa-framework/sessions/main"
+
+
+def resolve_session_context_remote_url(
+    s: str,
+    *,
+    data_dir: Path,
+    force_refresh: bool = False,
+) -> tuple[str, str, bool] | None:
+    """Resolve a remote URL session context.
+
+    Returns ``(thread_name, cached_path, True)`` or raises ValueError if fetch fails.
+    Returns ``None`` if ``s`` is not a URL.
+    """
+    parsed = urllib.parse.urlparse(s)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+
+    cached_path = fetch_session_context_url(s, data_dir=data_dir, force_refresh=force_refresh)
+    # Default name to stem of URL if no front-matter name
+    default_name = Path(parsed.path).stem
+    if not default_name or default_name == ".":
+        default_name = "session_context"
+    tn = extract_front_matter_thread_name(cached_path) or default_name
+    return tn, str(cached_path.absolute()), True
+
+
+def resolve_session_context_remote_registry(
+    s: str,
+    *,
+    data_dir: Path,
+    force_refresh: bool = False,
+) -> tuple[str, str, bool] | None:
+    """Resolve a slug from the remote session registry.
+
+    Returns ``(thread_name, cached_path, True)`` or None if missing/error.
+    """
+    context_name = s[:-3] if s.lower().endswith(".md") else s
+    url = f"{session_context_registry_url()}/{context_name}.md"
+    try:
+        cached_path = fetch_session_context_url(url, data_dir=data_dir, force_refresh=force_refresh)
+    except ValueError as e:
+        logger.debug("session-context: remote registry fetch failed for %s: %s", url, e)
+        return None
+
+    tn = extract_front_matter_thread_name(cached_path) or context_name
+    return tn, str(cached_path.absolute()), True
+
+
 def resolve_session_context(
     *,
     session_context: str,
     data_dir: Path,
     content_loader: Callable[[str], str],
+    force_refresh: bool = False,
 ) -> tuple[str, str, bool]:
     """Resolve the session context source.
 
@@ -151,6 +211,8 @@ def resolve_session_context(
 
     if not s:
         return resolve_session_context_auto(data_dir=data_dir)
+    if (result := resolve_session_context_remote_url(s, data_dir=data_dir, force_refresh=force_refresh)) is not None:
+        return result
     if (result := resolve_session_context_literal_path(s)) is not None:
         return result
     if (result := resolve_session_context_artifacts(s, data_dir=data_dir)) is not None:
@@ -158,6 +220,8 @@ def resolve_session_context(
     if (
         result := resolve_session_context_user_contexts(s, content_loader=content_loader)
     ) is not None:
+        return result
+    if (result := resolve_session_context_remote_registry(s, data_dir=data_dir, force_refresh=force_refresh)) is not None:
         return result
     raise ValueError(f"Session context '{s}' was not found.")
 
@@ -278,6 +342,7 @@ def resolve_session_context_identity(
     *,
     session_context: str,
     data_dir: Path,
+    force_refresh: bool = False,
 ) -> tuple[str, str]:
     """Resolve a session-context reference into ``(ref, name)`` for identity.
 
@@ -289,19 +354,33 @@ def resolve_session_context_identity(
     Resolution:
     1. Empty: auto-discover ``session_context.md`` or ``session_context/``
        in cwd and data dir. Returns ``("", "")`` if nothing found.
-    2. Literal ``.md`` file: ``name`` from front matter, or stem.
-    3. Literal directory: name is ``"session_context"``.
-    4. Data-dir slug (``{data_dir}/{slug}.md``): ``name`` from front matter,
+    2. Remote URL (http/https): ``name`` from front matter, or URL stem.
+    3. Literal ``.md`` file: ``name`` from front matter, or stem.
+    4. Literal directory: name is ``"session_context"``.
+    5. Data-dir slug (``{data_dir}/{slug}.md``): ``name`` from front matter,
        or stem.
-    5. Data-dir directory (``{data_dir}/{slug}/``): name is
+    6. Data-dir directory (``{data_dir}/{slug}/``): name is
        ``"session_context"``.
-    6. Otherwise (registry slug or unknown): name is the slug stem.
+    7. Remote registry slug: ``name`` from front matter, or slug stem.
+    8. Otherwise (registry slug or unknown): name is the slug stem.
     """
     s = session_context.strip()
 
     if not s:
         name, ref, _ = resolve_session_context_auto(data_dir=data_dir)
         return ref, name
+
+    parsed = urllib.parse.urlparse(s)
+    if parsed.scheme in {"http", "https"}:
+        try:
+            cached_path = fetch_session_context_url(s, data_dir=data_dir, force_refresh=force_refresh)
+            default_name = Path(parsed.path).stem
+            if not default_name or default_name == ".":
+                default_name = "session_context"
+            name = extract_front_matter_thread_name(cached_path) or default_name
+            return str(cached_path.absolute()), name
+        except ValueError:
+            return s, context_slug_to_thread_name(s)
 
     p = Path(s).expanduser()
     if p.is_file():
@@ -319,6 +398,15 @@ def resolve_session_context_identity(
     dir_path = data_dir / s
     if dir_path.is_dir():
         return str(dir_path.absolute()), "session_context"
+
+    try:
+        context_name = s[:-3] if s.lower().endswith(".md") else s
+        url = f"{session_context_registry_url()}/{context_name}.md"
+        cached_path = fetch_session_context_url(url, data_dir=data_dir, force_refresh=force_refresh)
+        name = extract_front_matter_thread_name(cached_path) or context_name
+        return str(cached_path.absolute()), name
+    except ValueError:
+        pass
 
     # Registry slug or unknown — use stem-based name.
     return s, context_slug_to_thread_name(s)

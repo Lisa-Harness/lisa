@@ -13,10 +13,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from .classify import is_low_latency_model, is_reasoning_model
 from .types import DiscoveredModel
+from .yaml_emit import dump_manifest
 
 _HEADER = "# generated-by: lisa /models discover\n"
 
@@ -141,7 +140,7 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
 
 
 def render_manifest_yaml(payload: dict[str, Any]) -> str:
-    return _HEADER + yaml.safe_dump(payload, sort_keys=False)
+    return _HEADER + dump_manifest(payload)
 
 
 def write_manifest_yaml(path: Path, payload: dict[str, Any]) -> None:

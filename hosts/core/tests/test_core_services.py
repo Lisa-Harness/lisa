@@ -1464,3 +1464,36 @@ def test_initialize_runtime_prefers_artifact_session_context(tmp_path: Path, mon
 
 def test_verify_command_respects_data_dir_override(tmp_path: Path) -> None:
     pytest.skip("migrated: _verify_command now in hosts/cli (CLI verify command)")
+def test_resolve_session_context_remote_url(tmp_path, monkeypatch):
+    import httpx
+    from hosts.core.session_context import resolve_session_context
+    def mock_get(self, url, **kwargs):
+        return httpx.Response(200, request=httpx.Request("GET", url), content=b"---\nname: remote_thread\n---\nhello")
+    monkeypatch.setattr(httpx.Client, "get", mock_get)
+    tn, path, is_active = resolve_session_context(
+        session_context="https://github.com/foo.md",
+        data_dir=tmp_path,
+        content_loader=lambda x: ""
+    )
+    assert tn == "remote_thread"
+    assert is_active is True
+    assert "session_context_cache" in path
+
+def test_resolve_session_context_remote_registry(tmp_path, monkeypatch):
+    import httpx
+    from configparser import ConfigParser # dummy import to avoid flake8 complaints if any
+    from hosts.core.session_context import resolve_session_context
+    def mock_get(self, url, **kwargs):
+        assert url.endswith("/lisa-framework/sessions/main/expert.md")
+        return httpx.Response(200, request=httpx.Request("GET", url), content=b"---\nname: expert_thread\n---\nhi")
+    monkeypatch.setattr(httpx.Client, "get", mock_get)
+    
+    def raise_fn(x):
+        raise FileNotFoundError()
+        
+    tn, path, is_active = resolve_session_context(
+        session_context="expert",
+        data_dir=tmp_path,
+        content_loader=raise_fn
+    )
+    assert tn == "expert_thread"

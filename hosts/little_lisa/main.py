@@ -1,4 +1,4 @@
-"""Little Lisa — a local terminal host for exercising Lisa framework packs.
+"""Little Lisa â€” a local terminal host for exercising Lisa framework packs.
 
 Little Lisa wires public content and operation catalogs, uses local tool callbacks
 and live model completion hooks, and stores generated Markdown artifacts on disk.
@@ -13,17 +13,17 @@ loop, the front-door planner, provider routing (``_complete_live``), and the
 
 Pure, stateless logic has been extracted into focused submodules:
 
-- ``config.py`` — timezone / timeout / log-level / streaming / slice resolution
+- ``config.py`` â€” timezone / timeout / log-level / streaming / slice resolution
   (all deterministic, no global state, no side effects).
-- ``token_accounting.py`` — token ledger accumulation and session-summary
+- ``token_accounting.py`` â€” token ledger accumulation and session-summary
   Markdown generation (accepts the runtime state dict as a parameter).
-- ``turn_logging.py`` — JSONL log-record assembly and turn-log payload
+- ``turn_logging.py`` â€” JSONL log-record assembly and turn-log payload
   construction (accepts a resolved context dict, pure and testable).
-- ``model_runtime.py`` — model manifest loading and model resolution by
+- ``model_runtime.py`` â€” model manifest loading and model resolution by
   designation / alias / concrete ID.
-- ``model_manifest.py`` — manifest file discovery and loading from ``models.yaml``.
-- ``desktop.py`` — localhost web-host callbacks for the desktop UI.
-- ``tray.py`` — system-tray launcher managing the desktop host subprocess.
+- ``model_manifest.py`` â€” manifest file discovery and loading from ``models.yaml``.
+- ``desktop.py`` â€” localhost web-host callbacks for the desktop UI.
+- ``tray.py`` â€” system-tray launcher managing the desktop host subprocess.
 
 Test Compatibility
 ------------------
@@ -38,7 +38,7 @@ individual functions and state.  To preserve these seams:
 - Submodule imports use ``try: from .module import ... / except ImportError``
   so this file also works as a standalone script (``python main.py --list-modes``).
 
-See ``docs/LITTLE_LISA_GUIDE.md`` → *Architecture* for the full module map and
+See ``docs/LITTLE_LISA_GUIDE.md`` â†’ *Architecture* for the full module map and
 data-flow diagram.
 """
 
@@ -537,13 +537,20 @@ SessionContextOption = Annotated[
     typer.Option(
         "--session-context",
         help=(
-            "User context source: a slug name (content/user_contexts/<name>.md), "
-            "a full .md file path, or a directory (all files concatenated). "
+            "User context source: a slug name (content/user_contexts/<name>.md or downloaded from remote registry), "
+            "a single remote URL, a full .md file path, or a directory (all files concatenated). "
             "Omit to skip session context."
         ),
     ),
 ]
-TimezoneOption = Annotated[
+
+SessionContextRefreshOption = Annotated[
+    bool,
+    typer.Option(
+        "--session-context-refresh",
+        help="Force re-fetch of remote session context, ignoring local cache.",
+    ),
+]TimezoneOption = Annotated[
     str,
     typer.Option(
         "--timezone",
@@ -800,7 +807,7 @@ FrontDoorRouteDecision = RouteDecision
 
 
 def _tool_catalog() -> dict[str, ToolDefinition]:
-    """Return the host-side tool catalog override (empty — packs provide tools).
+    """Return the host-side tool catalog override (empty â€” packs provide tools).
 
     Tools are now discovered from content packs via ``register_tool_mcp``.
     This stub is kept as a legacy callback seam for hosts that need to
@@ -867,7 +874,7 @@ def setup_framework() -> None:
 
     All content (modes, operations, authored text) is loaded through the
     ``lisa-content`` MCP server. The kernel never touches the filesystem
-    directly — it calls ``list_modes``, ``list_operations``, and
+    directly â€” it calls ``list_modes``, ``list_operations``, and
     ``read_authored_text`` on the server, which does all scanning and
     front-matter parsing.
     """
@@ -956,7 +963,7 @@ def _configure_root_logging() -> None:
     calls ``configure_logging``, which installs a ``RichHandler`` on the
     root logger at INFO with a stderr console. That makes every
     ``logger.info(...)`` in the host process render to stderr with Rich's
-    ``[time] INFO  message  file:line`` format — including ``registry.py``
+    ``[time] INFO  message  file:line`` format â€” including ``registry.py``
     and ``model_manifest.py`` startup messages.
 
     We strip every existing root handler (the RichHandler included) and
@@ -1875,7 +1882,7 @@ async def _plan_frontdoor_route(
     raw_message: str,
     conversation_excerpt_markdown: str,
 ) -> FrontDoorRouteDecision:
-    """Thin wrapper — delegates to frontdoor_routing.plan_frontdoor_route."""
+    """Thin wrapper â€” delegates to frontdoor_routing.plan_frontdoor_route."""
     return await frontdoor_routing.plan_frontdoor_route(
         raw_message=raw_message,
         conversation_excerpt_markdown=conversation_excerpt_markdown,
@@ -2013,7 +2020,7 @@ def _assemble_dynamic_user_context(mode_id: str, query: str, pre_turn_briefing: 
     if conversation_excerpt:
         raw_sections.append(("recent_conversation", "history", conversation_excerpt))
 
-    # Ranked context evidence from the broker (no MCP round-trip — the
+    # Ranked context evidence from the broker (no MCP round-trip â€” the
     # broker is a pure ranking function over the in-process UnifiedState).
     packet_markdown = _build_brokered_context_markdown(mode_id=mode_id, query=query)
     if packet_markdown:
@@ -2706,7 +2713,7 @@ async def _complete_anthropic(
 def _extract_usage_counts(
     usage_payload: Any,
 ) -> tuple[int, int, int, int, int]:
-    """Extract token usage — delegates to provider_completions with the shared coercer."""
+    """Extract token usage â€” delegates to provider_completions with the shared coercer."""
     return _extract_usage_counts_helper(usage_payload, _coerce_non_negative_int)
 
 
@@ -2787,7 +2794,7 @@ def _build_completion_kwargs(
     """Build the kwargs dict for an OpenAI-compatible chat completion call."""
     kwargs: dict[str, Any] = {
         "model": model_def.model_id,
-        "messages": [],  # placeholder — caller sets messages via kwargs.update
+        "messages": [],  # placeholder â€” caller sets messages via kwargs.update
     }
     if model_def.provider == "azure_openai" or model_def.reasoning_model:
         kwargs["max_completion_tokens"] = max_tokens
@@ -3096,7 +3103,7 @@ async def _execute_tool(tool_id: str, ctx: Any) -> ToolResult:
     """Fallback tool executor for host-owned tools.
 
     Pack-contributed tools are dispatched in-process via the tool registry
-    (``kernel.tools.registry.execute_tool``) — the turn loop and operation
+    (``kernel.tools.registry.execute_tool``) â€” the turn loop and operation
     ``execute_tool_fn`` both go catalog-first. This stub is only reached
     for host-owned tools that are not in any pack catalog.
     """
@@ -3236,8 +3243,8 @@ def format_models() -> Table:
     table.add_column("Reasoning")
 
     for model in manifest.models:
-        designations = ", ".join(sorted(model.designations)) or "—"
-        aliases = ", ".join(sorted(model.aliases)) or "—"
+        designations = ", ".join(sorted(model.designations)) or "â€”"
+        aliases = ", ".join(sorted(model.aliases)) or "â€”"
         reasoning = "yes" if model.reasoning_model else "no"
         table.add_row(model.model_id, model.provider, designations, aliases, reasoning)
 
@@ -3251,14 +3258,14 @@ def _format_help() -> str:
     mode with a ``command_pattern`` gets a ``/<mode>`` line built from its
     authored ``description``. Only host-only shortcuts (``/help``, ``/settings``,
     ``/tokens``, ``/debug``, ``/consolidate``, ``/deep``, ``/quit``) and the
-    runtime entry-point summary are hardcoded — everything else reflects the
+    runtime entry-point summary are hardcoded â€” everything else reflects the
     packs actually installed at startup.
     """
 
     catalog = get_workflow_catalog()
     lines: list[str] = ["Little Lisa", "", "Supported commands:"]
 
-    # Mode commands — derived from the catalog, not hardcoded.
+    # Mode commands â€” derived from the catalog, not hardcoded.
     mode_lines: list[str] = []
     default_mode = catalog.get("default")
     for mode_id, mode in sorted(catalog.items()):
@@ -3269,11 +3276,11 @@ def _format_help() -> str:
         summary = (mode.description or "").strip()
         if not summary:
             summary = f"{mode_id} mode"
-        mode_lines.append(f"- /{mode_id} <request> — {summary}")
+        mode_lines.append(f"- /{mode_id} <request> â€” {summary}")
     if mode_lines:
         lines.extend(mode_lines)
 
-    # Host-only shortcuts — the minimal hardcoded surface.
+    # Host-only shortcuts â€” the minimal hardcoded surface.
     lines.extend(
         [
             "- /deep <request> routes through default mode on the deep-designated model.",
@@ -3349,7 +3356,7 @@ class LittleLisaStateProvider:
     enforces TTL via its ``expires_at`` column (daily/weekly/long_term),
     so there is nothing for the slice to do. The former ``_consolidate_memory``
     reached into the in-process MCPMemoryClient's private ``_records`` /
-    ``_save`` — impossible across the MCP boundary, and redundant with TTL.
+    ``_save`` â€” impossible across the MCP boundary, and redundant with TTL.
     """
 
     def __init__(
@@ -3503,7 +3510,7 @@ def _build_mcp_tool_servers() -> list[Any]:
     ``mcp_servers.yaml`` with the launch policy registry, then compiles
     them into ``MCPClientConfig`` entries for ``MCPToolPool``. The
     ``warm`` / ``required`` / ``disabled`` launch policy is declared in
-    YAML — no hardcoded server list or warm_ids set remains.
+    YAML â€” no hardcoded server list or warm_ids set remains.
 
     Memory is an MCP feature: ``lisa-memory`` serves the three core
     memory calls, Mem0 (or any other HTTP/stdio memory server) serves the
@@ -3511,14 +3518,14 @@ def _build_mcp_tool_servers() -> list[Any]:
     aliases route to the default backend via the pool. No in-process memory
     seam remains.
 
-    All first-party servers use ``VENV_BIN`` runtime — they run as native
+    All first-party servers use ``VENV_BIN`` runtime â€” they run as native
     console_scripts entry points (``.venv/Scripts/lisa-*.exe``) with zero
     subprocess overhead. No ``uv`` resolution needed.
 
     Warm vs cold: servers marked ``warm: true`` in the manifest are
     spawned eagerly at pool ``start()`` and kept alive across turns (with
     bounded retry and event-driven restart). Servers with ``warm: false``
-    (default) are cold — they are **not** connected at start; they are
+    (default) are cold â€” they are **not** connected at start; they are
     lazily connected on first ``list_tools`` or ``call_tool`` that needs
     them.
     """
@@ -3534,7 +3541,7 @@ def _compile_mcp_configs() -> tuple[list[Any], list[Any]]:
     launch policy. The manifest loader produces ``MCPServerSpec`` entries
     that carry these fields; the compiler passes them through to
     ``MCPClientConfig``. No hardcoded server list or ``warm_ids`` set
-    remains — adding, removing, disabling, or changing a server's launch
+    remains â€” adding, removing, disabling, or changing a server's launch
     policy is a YAML edit.
 
     The manifest's memory-backend designation (which server_id backs the
@@ -3994,7 +4001,7 @@ def _build_turn_hooks(context: dict[str, Any] | None = None) -> TurnHooks:
         runner injects that executor; this host hook adds the remaining
         runtime defaults such as recall limits and live introspection.
 
-        The kernel is stateless by design — the ``messages`` array is rebuilt
+        The kernel is stateless by design â€” the ``messages`` array is rebuilt
         fresh each turn (``[system, user]`` with no prior assistant message).
         Operations that need conversation context (e.g. ``synthesize_and_store_learning``
         reading the prior turn's briefing) get it through
@@ -4085,7 +4092,7 @@ def _runtime_cold_mcp_configs() -> list[Any]:
     When a warm pool is active, only cold servers are returned (warm
     servers live in the pool). When no warm pool is active, the full
     server list is returned so ``run_turn``'s per-turn fallback can
-    spawn everything — preserving the pre-warm-pool behavior for tests
+    spawn everything â€” preserving the pre-warm-pool behavior for tests
     and minimal hosts.
     """
     pool = _RUNTIME_STATE.get("mcp_tool_pool")
@@ -5323,6 +5330,7 @@ def _run_default_no_args_mode(
             thread_dir=thread_dir,
             no_thread=no_thread,
             session_context=session_context,
+        session_context_refresh=session_context_refresh,
             timezone=timezone,
             state_snapshot=state_snapshot,
             streaming=streaming,
@@ -5357,6 +5365,7 @@ def _run_default_no_args_mode(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -5514,7 +5523,7 @@ def _print_startup_banner() -> None:
 
 def _status_segments(compact_level: int = _STATUS_COMPACT_FULL) -> list[tuple[str, str]]:
     user = _runtime_user_slug().strip()
-    user_segment = (f"👤 {user}", STYLE_STATUS_INFO) if user else None
+    user_segment = (f"ðŸ‘¤ {user}", STYLE_STATUS_INFO) if user else None
     mode_id = _runtime_current_mode_id()
     stage_id = _runtime_current_stage_id()
     mode_badge = f"mode {mode_id}{'' if stage_id == '-' else '/' + stage_id}"
@@ -5625,7 +5634,7 @@ def _status_time_badge() -> tuple[str, str]:
             if pair is not None:
                 timezone_label = pair[1] if is_daylight else pair[0]
     now_local = status_dt.strftime("%H:%M:%S")
-    return f"🕒 {now_local} {timezone_label}", STYLE_STATUS_INFO
+    return f"ðŸ•’ {now_local} {timezone_label}", STYLE_STATUS_INFO
 
 
 def _estimated_status_line_width(segments: list[tuple[str, str]]) -> int:
@@ -5665,7 +5674,7 @@ def _render_status_line() -> None:
     for index, (label, style) in enumerate(segments):
         left.append(f" {label} ", style=style)
         if index < len(segments) - 1:
-            left.append("", style=STYLE_STATUS_SEPARATOR)
+            left.append("î‚±", style=STYLE_STATUS_SEPARATOR)
 
     time_label, time_style = _status_time_badge()
     right = Text(f" {time_label} ", style=time_style)
@@ -5855,7 +5864,7 @@ def _build_warm_mcp_pool() -> None:
     # Build the long-lived pool with ALL configs (warm + cold). The ``warm``
     # flag on each config controls eager-vs-lazy start inside pool.start():
     # warm servers connect eagerly with retry; cold servers are NOT connected
-    # at start — they are lazily connected on first list_tools or call_tool.
+    # at start â€” they are lazily connected on first list_tools or call_tool.
     # Keeping cold configs in the pool is required so server-scoped dispatch
     # (_call_tool_scoped) and lazy connect (_ensure_connected) can resolve
     # ``server_id="mem0"`` against _configs.
@@ -5874,7 +5883,7 @@ def _is_empty_auth_header(value: str) -> bool:
     into a cross-task anyio cancel-scope RuntimeError. Detect it here so the
     host can refuse to wire the backend instead of crashing opaquely.
 
-    Uses ``lstrip`` (not ``strip``) so the trailing space survives —
+    Uses ``lstrip`` (not ``strip``) so the trailing space survives â€”
     ``"Bearer ".strip()`` becomes ``"Bearer"`` and would hide the empty token.
     """
     if not isinstance(value, str):
@@ -6211,6 +6220,7 @@ def _cli_callback(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     desktop_host: str = typer.Option(
@@ -6248,6 +6258,7 @@ def _cli_callback(
         thread_dir=thread_dir,
         no_thread=no_thread,
         session_context=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot=state_snapshot,
         streaming=streaming,
@@ -6269,6 +6280,7 @@ def _cli_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -6284,6 +6296,7 @@ def _cli_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -6325,6 +6338,7 @@ def _desktop_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -6340,6 +6354,7 @@ def _desktop_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -6390,7 +6405,7 @@ def _verify_check_env() -> tuple[str, str]:
     env_path = _LITTLE_LISA_ENV_FILE
     if env_path.exists():
         return _VERIFY_PASS, f".env found ({env_path})"
-    return _VERIFY_WARN, f".env not found at {env_path} — copy .env.example to .env"
+    return _VERIFY_WARN, f".env not found at {env_path} â€” copy .env.example to .env"
 
 
 def _verify_check_manifest() -> tuple[str, str]:
@@ -6484,7 +6499,7 @@ def _verify_check_memory_backend() -> tuple[str, str]:
             if _is_empty_auth_header(value):
                 return _VERIFY_FAIL, (
                     f"Memory backend {default_backend_id!r}: Authorization header "
-                    "has an empty ${VAR} — set the env var (e.g. MEM0_API_KEY) in .env"
+                    "has an empty ${VAR} â€” set the env var (e.g. MEM0_API_KEY) in .env"
                 )
         return _VERIFY_PASS, f"Memory backend: {default_backend_id!r} (http)"
     if default_spec.kind == "stdio":
@@ -6591,6 +6606,7 @@ def _verify_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -6611,6 +6627,7 @@ def _verify_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -6793,7 +6810,7 @@ def _setup_command() -> None:
 
 
 def _setup_step_ollama() -> dict[str, str]:
-    """Ollama setup step — no API key needed, just validate the local server."""
+    """Ollama setup step â€” no API key needed, just validate the local server."""
     console.print("\n[bold]Ollama[/bold] no API key required.")
     console.print("Make sure Ollama is installed and running.")
     console.print("Install: https://ollama.com")
@@ -6811,7 +6828,7 @@ def _setup_step_ollama() -> dict[str, str]:
 
 
 def _setup_step_openai() -> dict[str, str]:
-    """OpenAI setup step — collect and validate API key."""
+    """OpenAI setup step â€” collect and validate API key."""
     console.print("\n[bold]OpenAI[/bold]")
     api_key = console.input("Enter your OpenAI API key: ").strip()
     if not api_key:
@@ -6828,7 +6845,7 @@ def _setup_step_openai() -> dict[str, str]:
 
 
 def _setup_step_azure() -> dict[str, str]:
-    """Azure OpenAI setup step — collect endpoint and API key, validate."""
+    """Azure OpenAI setup step â€” collect endpoint and API key, validate."""
     console.print("\n[bold]Azure OpenAI[/bold]")
     endpoint = console.input("Enter your Azure OpenAI endpoint URL: ").strip()
     if not endpoint:
@@ -6852,7 +6869,7 @@ def _setup_step_azure() -> dict[str, str]:
 
 
 def _setup_step_anthropic() -> dict[str, str]:
-    """Anthropic setup step — collect and validate API key."""
+    """Anthropic setup step â€” collect and validate API key."""
     console.print("\n[bold]Anthropic[/bold]")
     api_key = console.input("Enter your Anthropic API key: ").strip()
     if not api_key:
@@ -6869,7 +6886,7 @@ def _setup_step_anthropic() -> dict[str, str]:
 
 
 def _setup_step_google() -> dict[str, str]:
-    """Google Gemini setup step — collect and validate API key."""
+    """Google Gemini setup step â€” collect and validate API key."""
     console.print("\n[bold]Google Gemini[/bold]")
     api_key = console.input("Enter your Google API key: ").strip()
     if not api_key:
@@ -6907,6 +6924,7 @@ def _modes_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -6922,6 +6940,7 @@ def _modes_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -6941,6 +6960,7 @@ def _models_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -6956,6 +6976,7 @@ def _models_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -6980,6 +7001,7 @@ def _packs_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -6995,6 +7017,7 @@ def _packs_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
@@ -7036,6 +7059,7 @@ def _once_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -7051,6 +7075,7 @@ def _once_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,

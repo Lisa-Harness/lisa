@@ -147,6 +147,13 @@ Prompt-authored operations can use `.operation.md` files when the operation is m
 
 Authored text should live under `content/` and be loaded by host-provided readers. Avoid hard-coded absolute paths. Keep pack content generic unless the pack is explicitly private.
 
+### Curated Session Contexts
+
+Packs can provide customized reference contexts via `content/user_contexts/<pack_name>_optimal.md` (or any other descriptive name). Since these files are loaded through the registry during `--session-context` resolution, users can quickly invoke your curated context.
+
+By including a curated context, pack authors can natively inject "Instructions", "You (Lisa)", and role configuration that best utilize their tools! Pack-supplied session contexts always take precedence over the fallback Remote Registry defaults.
+
+
 ## Hello World Pack
 
 The fastest end-to-end path is a local external pack folder. The CLI host discovers these packs from `SDK_CONTENT_ROOTS`, so you do not need a private app or a published wheel just to prove the pack shape.

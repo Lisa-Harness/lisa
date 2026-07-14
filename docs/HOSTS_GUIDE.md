@@ -227,6 +227,22 @@ All hosts share the same runtime flags via `HostConfig.from_env()`:
 | `--state-snapshot` | — | — | JSON snapshot file for context injection |
 | `--streaming` | — | `none` | Streaming mode: none, stage, text, hybrid |
 
+### Remote Session Context
+
+The `--session-context` flag supports loading authored contexts from multiple shapes:
+
+1. **Local Files & Slugs**: Literal path to an `.md` file or directory, or a slug (searches `user_contexts/` local packs or cwd discovery).
+2. **Remote Registry**: A slug name not found locally will automatically attempt to fetch from the remote registry at `https://raw.githubusercontent.com/lisa-framework/sessions/main`.
+3. **Exact URL**: `--session-context https://raw.githubusercontent.com/.../foo.md` will download and activate the specific context file.
+
+**Remote specific config:**
+- **Refresh**: Re-fetching a remote context uses a conditional-GET at startup. To force a refresh, use `--session-context-refresh`. There are no background update cron tasks.
+- **Trust Policy**: Remote fetching uses an allowlist. You can configure allowable hosts via `LISA_SESSION_CONTEXT_ALLOWED_HOSTS` (default `github.com, raw.githubusercontent.com`). HTTP is explicitly blocked unless `LISA_SESSION_CONTEXT_ALLOW_HTTP=1`.
+- **Private repos**: Pass an auth token via `LISA_SESSION_CONTEXT_TOKEN` or provide raw headers via `LISA_SESSION_CONTEXT_AUTH_HEADER`.
+- **Caching**: Files are cached under `<data-dir>/session_context_cache/` for future conditional-GET headers.
+
+---
+
 ## Commands
 
 All commands are handled by `hosts/core/commands.py` and produce plain text (not rendered panels). Transport hosts render the output:

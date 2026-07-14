@@ -733,9 +733,9 @@ async def _execute_mode_turn(
 
     # Persist the thread entry.
     provenance: dict[str, Any] = {
-        "source": "observed", 
-        "finish_reason": result.extra.get("finish_reason", "unknown"),
-        "model_id": resolved_model.model_id
+        "source": "observed",
+        "finish_reason": "unknown",
+        "model_id": resolved_model.model_id,
     }
     
     append_thread_entry(

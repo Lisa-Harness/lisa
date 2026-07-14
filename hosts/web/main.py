@@ -1,4 +1,4 @@
-"""hosts.web.main — Typer app and entry points for the localhost web host.
+"""hosts.web.main â€” Typer app and entry points for the localhost web host.
 
 This is the web-transport entry point for the Lisa framework. It wraps the
 transport-neutral :mod:`hosts.core` runtime with an aiohttp web server and
@@ -64,7 +64,7 @@ _VERSION_OPTION = typer.Option(
 
 # ---------------------------------------------------------------------------
 
-# Shared Typer option aliases — mirror hosts.cli.main so the web host
+# Shared Typer option aliases â€” mirror hosts.cli.main so the web host
 # accepts the same runtime flags as the terminal host.
 
 DebugOption = Annotated[
@@ -86,7 +86,10 @@ HostLogOption = Annotated[
 ]
 DataDirOption = Annotated[
     str,
-    typer.Option("--data-dir", help="Data root for artifacts, memory, and logs."),
+    typer.Option(
+        "--data-dir",
+        help="Data root for artifacts, memory, and logs. Default: ~/.lisa",
+    ),
 ]
 MemoryDbOption = Annotated[
     str,
@@ -99,9 +102,23 @@ ThreadDirOption = Annotated[
 NoThreadOption = Annotated[bool, typer.Option("--no-thread", help="Disable thread logging.")]
 SessionContextOption = Annotated[
     str,
-    typer.Option("--session-context", help="User context source slug or file path."),
+    typer.Option(
+        "--session-context",
+        help=(
+            "User context source: a slug name (content/user_contexts/<name>.md or downloaded from remote registry), "
+            "a single remote URL, a full .md file path, or a directory (all files concatenated). "
+            "Omit to skip session context."
+        ),
+    ),
 ]
-TimezoneOption = Annotated[
+
+SessionContextRefreshOption = Annotated[
+    bool,
+    typer.Option(
+        "--session-context-refresh",
+        help="Force re-fetch of remote session context, ignoring local cache.",
+    ),
+]TimezoneOption = Annotated[
     str,
     typer.Option("--timezone", help="IANA timezone (e.g. UTC, America/New_York)."),
 ]
@@ -114,7 +131,7 @@ StreamingOption = Annotated[
     typer.Option("--streaming", help="Streaming mode: none, stage, text, hybrid."),
 ]
 
-# ── Web-specific options ───────────────────────────────────────────────
+# â”€â”€ Web-specific options â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 WebHostOption = Annotated[
     str,
@@ -165,7 +182,7 @@ def _initialize_runtime(
     (content/operation/catalog MCP servers), provider clients are reset,
     and compiled MCP configs are stashed on the runtime.
 
-    The MCP pool is NOT started here — ``runtime.start()`` runs inside
+    The MCP pool is NOT started here â€” ``runtime.start()`` runs inside
     the aiohttp server's ``on_startup`` hook (see
     :func:`hosts.web.server.run_web_server`).
     """
@@ -269,6 +286,7 @@ def _desktop_command(
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
@@ -286,6 +304,7 @@ def _desktop_command(
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
+        session_context_refresh=session_context_refresh,
         timezone=timezone,
         state_snapshot_path=state_snapshot,
         streaming=streaming,
