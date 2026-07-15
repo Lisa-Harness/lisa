@@ -323,3 +323,83 @@ def test_gateway_for_openai_returns_openai_compatible_gateway() -> None:
 def test_gateway_for_unknown_returns_none() -> None:
     provider = KernelProviderGatewayProvider()
     assert provider.gateway_for("not-a-provider") is None
+
+
+# ── Gemini thought_signature on the OpenAI-compatible path ────────────
+
+
+def _tool_call_obj(thought_sig: str | None = None, fn_sig: str | None = None) -> Any:
+    """Build a stub OpenAI tool-call object with optional thought_signature."""
+    fn = SimpleNamespace(name="recall_memory", arguments='{"q":"x"}')
+    if fn_sig:
+        fn.thought_signature = fn_sig
+    call = SimpleNamespace(id="call_1", type="function", function=fn)
+    if thought_sig:
+        call.thought_signature = thought_sig
+    return call
+
+
+def test_extract_openai_tool_calls_captures_top_level_thought_signature() -> None:
+    from kernel.provider_core import extract_openai_tool_calls
+
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(tool_calls=[_tool_call_obj(thought_sig="SIG")]),
+            )
+        ]
+    )
+    calls = extract_openai_tool_calls(response)
+    assert len(calls) == 1
+    assert calls[0]["thought_signature"] == "SIG"
+
+
+def test_extract_openai_tool_calls_falls_back_to_function_thought_signature() -> None:
+    from kernel.provider_core import extract_openai_tool_calls
+
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(tool_calls=[_tool_call_obj(fn_sig="SIGFN")]),
+            )
+        ]
+    )
+    calls = extract_openai_tool_calls(response)
+    assert len(calls) == 1
+    assert calls[0]["thought_signature"] == "SIGFN"
+
+
+def test_normalize_openai_tool_call_emits_thought_signature_at_top_level() -> None:
+    from kernel.provider_core import _normalize_openai_tool_call
+
+    # Signature at top level of the incoming tool_call.
+    normalized = _normalize_openai_tool_call(
+        {
+            "id": "call_1",
+            "type": "function",
+            "thought_signature": "SIGTOP",
+            "function": {"name": "search", "arguments": '{"q":"x"}'},
+        }
+    )
+    assert normalized["thought_signature"] == "SIGTOP"
+    # Must NOT be nested under function — Google rejects that.
+    assert "thought_signature" not in normalized["function"]
+
+
+def test_normalize_openai_tool_call_promotes_nested_thought_signature() -> None:
+    from kernel.provider_core import _normalize_openai_tool_call
+
+    # Signature nested under function (legacy/host shape) must be promoted.
+    normalized = _normalize_openai_tool_call(
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "search",
+                "arguments": '{"q":"x"}',
+                "thought_signature": "SIGNESTED",
+            },
+        }
+    )
+    assert normalized["thought_signature"] == "SIGNESTED"
+    assert "thought_signature" not in normalized["function"]

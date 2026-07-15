@@ -73,13 +73,17 @@ def _extract_completion_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
                 "arguments": function_arguments,
             },
         }
-        # Gemini thinking models attach thought_signature to each function call;
-        # it must be echoed verbatim in the corresponding tool-result message.
+        # Gemini thinking models attach thought_signature to each function call.
+        # On the OpenAI-compatible endpoint it must be echoed verbatim as a
+        # top-level sibling of `function` on the next turn's assistant
+        # tool_call object (mirroring the native API where thoughtSignature is
+        # a sibling of functionCall).  Omitting it yields 400 INVALID_ARGUMENT:
+        # "Function call is missing a thought_signature in functionCall parts".
         thought_sig = getattr(call, "thought_signature", None) or getattr(
             function, "thought_signature", None
         )
         if thought_sig:
-            entry["function"]["thought_signature"] = thought_sig
+            entry["thought_signature"] = thought_sig
         normalized.append(entry)
     return normalized
 

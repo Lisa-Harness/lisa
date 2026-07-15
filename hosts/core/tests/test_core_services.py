@@ -1016,6 +1016,41 @@ def test_normalize_ollama_host_to_base_url_accepts_host_without_scheme() -> None
     assert normalized == "http://127.0.0.1:1143/v1/"
 
 
+# ── Gemini thought_signature on the host OpenAI-compatible path ───────
+
+
+def _stub_tool_call(thought_sig: str | None = None, fn_sig: str | None = None) -> Any:
+    """Build a stub OpenAI tool-call object with optional thought_signature."""
+    from types import SimpleNamespace
+
+    fn = SimpleNamespace(name="recall_memory", arguments='{"q":"x"}')
+    if fn_sig:
+        fn.thought_signature = fn_sig
+    call = SimpleNamespace(id="call_1", type="function", function=fn)
+    if thought_sig:
+        call.thought_signature = thought_sig
+    return call
+
+
+def test_extract_completion_tool_calls_emits_thought_signature_at_top_level() -> None:
+    from hosts.core.provider_completions import _extract_completion_tool_calls
+
+    calls = _extract_completion_tool_calls([_stub_tool_call(thought_sig="SIG")])
+    assert len(calls) == 1
+    assert calls[0]["thought_signature"] == "SIG"
+    # Must NOT be nested under function — Google's OpenAI-compat endpoint
+    # rejects it with 400 INVALID_ARGUMENT.
+    assert "thought_signature" not in calls[0]["function"]
+
+
+def test_extract_completion_tool_calls_falls_back_to_function_thought_signature() -> None:
+    from hosts.core.provider_completions import _extract_completion_tool_calls
+
+    calls = _extract_completion_tool_calls([_stub_tool_call(fn_sig="SIGFN")])
+    assert len(calls) == 1
+    assert calls[0]["thought_signature"] == "SIGFN"
+
+
 # ── Provider key verification ─────────────────────────────────────────
 
 

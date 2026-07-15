@@ -359,7 +359,9 @@ def extract_openai_tool_calls(response: Any) -> list[dict[str, Any]]:
             "name": getattr(function_obj, "name", "") if function_obj else "",
             "arguments": getattr(function_obj, "arguments", "") if function_obj else "",
         }
-        thought_sig = getattr(call, "thought_signature", None)
+        thought_sig = getattr(call, "thought_signature", None) or getattr(
+            function_obj, "thought_signature", None
+        )
         if thought_sig:
             entry["thought_signature"] = thought_sig
         extracted.append(entry)
@@ -1727,8 +1729,12 @@ def _normalize_openai_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
         },
     }
     thought_sig = tool_call.get("thought_signature")
+    if not thought_sig:
+        fn = tool_call.get("function")
+        if isinstance(fn, dict):
+            thought_sig = fn.get("thought_signature")
     if thought_sig:
-        normalized["function"]["thought_signature"] = thought_sig
+        normalized["thought_signature"] = thought_sig
     return normalized
 
 
