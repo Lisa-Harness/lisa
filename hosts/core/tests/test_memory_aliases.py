@@ -36,6 +36,7 @@ class FakeSpec:
             "list": "list_memories",
         }
     )
+    result_maps: dict[str, str] = field(default_factory=dict)
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
     command: str = ""
@@ -79,6 +80,7 @@ class FakePool:
                 "target_tool": closure_vars.get("target_tool"),
                 "target_server_id": closure_vars.get("target_server_id"),
                 "arg_map": closure_vars.get("arg_map"),
+                "result_map": closure_vars.get("result_map"),
                 "description": getattr(tool, "description", ""),
             })
 
@@ -108,6 +110,7 @@ class TestImplicitLisaMemoryOnly:
         assert add["target_tool"] == "add_memory"
         assert add["target_server_id"] == "lisa-memory"
         assert add["arg_map"] is None
+        assert add["result_map"] is None
 
     def test_ambient_resolvers_set(self) -> None:
         pool = FakePool()
@@ -231,3 +234,60 @@ class TestMem0ArgMap:
         assert mapped["user_slug"] == "bob"
         # content should not leak through
         assert "content" not in mapped
+
+
+class TestBackendResultMaps:
+    """Verify _backend_result_maps resolves dotted import paths into callables."""
+
+    def test_lisa_memory_has_no_result_maps(self) -> None:
+        """First-party lisa_memory (no result_maps declared) returns all None."""
+        from hosts.core.memory_aliases import _backend_result_maps
+
+        spec = FakeSpec(id="lisa_memory", kind="stdio")
+        add_map, search_map, list_map = _backend_result_maps(spec)
+        assert add_map is None
+        assert search_map is None
+        assert list_map is None
+
+    def test_mem0_result_maps_resolve_to_callables(self) -> None:
+        """Mem0 result_maps import paths resolve to the actual adapter functions."""
+        from hosts.core.memory_aliases import _backend_result_maps
+
+        mem0_spec = FakeSpec(
+            id="mem0",
+            kind="http",
+            tool_names={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
+            result_maps={
+                "add": "lisa_pack_mem0.result_maps.mem0_add_result_map",
+                "search": "lisa_pack_mem0.result_maps.mem0_search_result_map",
+                "list": "lisa_pack_mem0.result_maps.mem0_list_result_map",
+            },
+        )
+        add_map, search_map, list_map = _backend_result_maps(mem0_spec)
+        assert callable(add_map)
+        assert callable(search_map)
+        assert callable(list_map)
+        # Verify they are the actual functions from the module
+        from lisa_pack_mem0.result_maps import (
+            mem0_add_result_map,
+            mem0_list_result_map,
+            mem0_search_result_map,
+        )
+
+        assert add_map is mem0_add_result_map
+        assert search_map is mem0_search_result_map
+        assert list_map is mem0_list_result_map
+
+    def test_bad_import_path_falls_back_to_none(self) -> None:
+        """A bad import path is logged and falls back to None (raw pass-through)."""
+        from hosts.core.memory_aliases import _backend_result_maps
+
+        spec = FakeSpec(
+            id="bad",
+            kind="http",
+            result_maps={"add": "nonexistent.module.bad_function"},
+        )
+        add_map, search_map, list_map = _backend_result_maps(spec)
+        assert add_map is None
+        assert search_map is None
+        assert list_map is None

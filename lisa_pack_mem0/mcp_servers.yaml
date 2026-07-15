@@ -17,6 +17,10 @@ memory:
         add: add_memory
         search: search_memories
         list: get_memories
+      result_maps:
+        add: lisa_pack_mem0.result_maps.mem0_add_result_map
+        search: lisa_pack_mem0.result_maps.mem0_search_result_map
+        list: lisa_pack_mem0.result_maps.mem0_list_result_map
 
 servers:
   - server_id: mem0

@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, runtime_checkable
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 if TYPE_CHECKING:
     pass  # forward-ref imports only
@@ -917,7 +917,12 @@ MemoryTier = Literal["daily", "weekly", "long_term", "permanent"]
 
 
 class MemoryRecord(BaseModel):
-    id: int
+    model_config = ConfigDict(populate_by_name=True)
+
+    # External backends (Mem0, Hindsight, …) use UUID strings; first-party
+    # lisa_memory uses integer ids. Accept both so model_validate doesn't
+    # reject external-backend records at the alias boundary.
+    id: int | str
     workspace_id: str = "default"
     user_id: str = ""
     user_slug: str = "default"
@@ -929,7 +934,13 @@ class MemoryRecord(BaseModel):
     operation_id: str = ""
     instruction_id: str = ""
     memory_tier: MemoryTier = "daily"
-    content: str = ""
+    # Accept both "content" (first-party lisa_memory) and "memory" (Mem0)
+    # as source keys. This is a secondary safety net — the primary
+    # normalization happens at the alias boundary via result_maps.
+    content: str = Field(
+        default="",
+        validation_alias=AliasChoices("content", "memory"),
+    )
     content_json: dict[str, Any] = Field(default_factory=dict)
     salience: float = 0.0
     created_at: str
@@ -987,7 +998,7 @@ class MemoryEmbeddingRecord(BaseModel):
 class MemoryRecallEvidence(BaseModel):
     """One ranked memory candidate returned by the recall engine."""
 
-    memory_id: int
+    memory_id: int | str
     created_at: str
     content: str
     memory_scope: MemoryScope = "personal"

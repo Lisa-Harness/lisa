@@ -55,7 +55,7 @@ async def test_recall_operation_uses_memory_list_and_returns_ranked_evidence() -
 
     async def execute_tool(tool_id: str, _ctx: object) -> ToolResult:
         calls.append(tool_id)
-        assert tool_id == "memory.list"
+        assert tool_id == "memory.search"
         return ToolResult(
             tool_id=tool_id,
             output_text=json.dumps(
@@ -85,7 +85,7 @@ async def test_recall_operation_uses_memory_list_and_returns_ranked_evidence() -
 
     result = await execute(ctx)
 
-    assert calls == ["memory.list"]
+    assert calls == ["memory.search"]
     assert "Relevant memories:" in result.output_text
     assert "PostgreSQL for the control plane" in result.output_text
     assert result.output_json["found"] is True
@@ -101,3 +101,52 @@ async def test_recall_operation_handles_missing_tool_executor() -> None:
     result = await execute(ctx)
 
     assert result.output_text == "Memory recall unavailable: tool execution not injected."
+
+
+@pytest.mark.asyncio
+async def test_recall_operation_searches_and_unwraps_mem0_envelope() -> None:
+    """recall_memory calls memory.search (not memory.list) and unwraps a
+    Mem0-style paginated envelope dict into records for ranking."""
+    calls: list[str] = []
+
+    async def execute_tool(tool_id: str, _ctx: object) -> ToolResult:
+        calls.append(tool_id)
+        assert tool_id == "memory.search"
+        # Return a Mem0-style paginated envelope (dict, not list).
+        # The defensive unwrap in recall.py should extract .results.
+        return ToolResult(
+            tool_id=tool_id,
+            output_text=json.dumps({
+                "results": [
+                    {
+                        "id": "uuid-1",
+                        "memory": "We decided to use PostgreSQL for analytics.",
+                        "score": 0.9,
+                        "created_at": "2026-07-10T12:00:00Z",
+                    },
+                    {
+                        "id": "uuid-2",
+                        "memory": "We postponed the Redis work.",
+                        "score": 0.5,
+                        "created_at": "2026-07-11T12:00:00Z",
+                    },
+                ],
+            }),
+        )
+
+    ctx = OperationExecutionContext(
+        operation_id="recall_memory",
+        user_slug="adam",
+        user_id="adam",
+        workspace_id="default",
+        params={"query": "postgres analytics", "limit": 3},
+        execute_tool_fn=execute_tool,
+    )
+
+    result = await execute(ctx)
+
+    # Verify it called memory.search, not memory.list
+    assert calls == ["memory.search"]
+    # Verify the Mem0 envelope was unwrapped and ranked
+    assert result.output_json["found"] is True
+    assert "PostgreSQL for analytics" in result.output_text

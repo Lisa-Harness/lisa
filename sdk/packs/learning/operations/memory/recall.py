@@ -48,10 +48,15 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     default_limit = max(1, ctx.memory_recall_default_limit or settings.memory_recall_final_limit)
     limit = int(ctx.params.get("limit", default_limit) or 1)
 
+    # Use memory.search (semantic/lexical search with the query), not
+    # memory.list (recent listing without query). The query must reach the
+    # backend's search engine — setting it only on ToolExecutionContext.query
+    # is not enough; it must also be in parameters (which is what
+    # _mcp_tool_executor forwards to the pool).
     tool_result = await ctx.execute_tool_fn(
-        "memory.list",
+        "memory.search",
         ToolExecutionContext(
-            tool_id="memory.list",
+            tool_id="memory.search",
             workspace_id=ctx.workspace_id,
             user_id=ctx.user_id,
             user_slug=ctx.user_slug,
@@ -60,6 +65,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             mode_id=ctx.mode_id,
             query=raw_query,
             parameters={
+                "query": raw_query,
                 "user_slug": ctx.user_slug,
                 "limit": max(1, min(limit, 20)),
             },
@@ -73,6 +79,14 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         data = json.loads(tool_result.output_text or "[]")
     except (json.JSONDecodeError, TypeError):
         data = []
+    # Defensive envelope unwrap: some backends (e.g. Mem0) return a
+    # paginated dict envelope {"results": [...]} instead of a bare list.
+    # The alias result_map should already normalize this, but this
+    # belt-and-suspenders fallback catches any backend that slips through.
+    if isinstance(data, dict) and "results" in data:
+        results = data.get("results")
+        if isinstance(results, list):
+            data = results
     if isinstance(data, list):
         for item in data:
             if not isinstance(item, dict):

@@ -173,6 +173,13 @@ class SyntheticToolSpec:
     input_schema: dict[str, Any]
     handler: Callable[[dict[str, Any]], Awaitable[str]]
     target_server_id: str | None = None
+    result_map: Callable[[str], str] | None = None
+    """Optional output-normalization transform applied to the MCP tool's
+    ``output_text`` after dispatch. When ``None``, the raw output passes
+    through unchanged. Used by memory aliases to normalize backend-specific
+    response shapes (e.g. Mem0's paginated envelope) into the canonical shape
+    operations expect. The handler closure applies it; this field is the
+    declarative record for catalog/diagnostics tools that surface it."""
 
 
 @dataclass(slots=True)

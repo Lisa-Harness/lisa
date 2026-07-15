@@ -367,3 +367,74 @@ def test_compile_mcp_config_passes_warm_required(tmp_path: Path) -> None:
     config = compile_mcp_config(spec)
     assert config.warm is True
     assert config.required is True
+
+
+def test_load_manifest_parses_result_maps(tmp_path: Path) -> None:
+    """MemoryBackendSpec parses result_maps from YAML (http backend)."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+memory:
+  default_backend: mem0
+  backends:
+    - id: mem0
+      kind: http
+      url: https://mcp.mem0.ai/mcp
+      headers:
+        Authorization: "Bearer test-key"
+      tool_names:
+        add: add_memory
+        search: search_memories
+        list: get_memories
+      result_maps:
+        add: lisa_pack_mem0.result_maps.mem0_add_result_map
+        search: lisa_pack_mem0.result_maps.mem0_search_result_map
+        list: lisa_pack_mem0.result_maps.mem0_list_result_map
+servers:
+  - server_id: mem0
+    runtime_kind: http
+    url: https://mcp.mem0.ai/mcp
+    headers:
+      Authorization: "Bearer test-key"
+""",
+        encoding="utf-8",
+    )
+    specs, mem = load_mcp_server_manifest(manifest)
+    assert mem.default_backend == "mem0"
+    assert len(mem.backends) == 1
+    backend = mem.backends[0]
+    assert backend.result_maps == {
+        "add": "lisa_pack_mem0.result_maps.mem0_add_result_map",
+        "search": "lisa_pack_mem0.result_maps.mem0_search_result_map",
+        "list": "lisa_pack_mem0.result_maps.mem0_list_result_map",
+    }
+
+
+def test_load_manifest_result_maps_default_empty(tmp_path: Path) -> None:
+    """Backends without result_maps get an empty dict (pass-through)."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+memory:
+  default_backend: lisa_memory
+  backends:
+    - id: lisa_memory
+      kind: stdio
+      command: lisa-memory
+      tool_names:
+        add: add_memory
+        search: search_memory
+        list: list_memories
+servers:
+  - server_id: lisa-memory
+    runtime_kind: venv_bin
+    entry_point: lisa-memory
+""",
+        encoding="utf-8",
+    )
+    specs, mem = load_mcp_server_manifest(manifest)
+    assert mem.default_backend == "lisa_memory"
+    backend = mem.backends[0]
+    assert backend.result_maps == {}

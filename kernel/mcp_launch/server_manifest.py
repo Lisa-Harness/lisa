@@ -79,6 +79,19 @@ class MemoryBackendSpec:
     id: str
     kind: str  # "http" | "stdio"
     tool_names: dict[str, str] = field(default_factory=dict)
+    result_maps: dict[str, str] = field(default_factory=dict)
+    """Dotted import paths to output-normalization adapters, keyed by
+    generic operation name (``add``, ``search``, ``list``). Each value is a
+    ``module.path:function_name`` string resolved lazily by the host when
+    building the alias. When empty (the default for first-party backends like
+    lisa_memory that already return the canonical shape), the alias passes
+    the raw ``output_text`` through unchanged.
+
+    This is the symmetric counterpart of ``tool_names``: ``tool_names`` maps
+    generic input names to native tool names (input dispatch), and
+    ``result_maps`` maps generic operation names to output adapters (output
+    normalization). Together they make the alias boundary the single
+    chokepoint for both directions of backend-specific translation."""
     # http connection details (kind="http")
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
@@ -232,6 +245,12 @@ def _parse_memory_backends(raw: Any) -> tuple[MemoryBackendSpec, ...]:
             )
         tool_names = {str(alias): str(tool) for alias, tool in tool_names_raw.items()}
         agent_id = str(entry.get("agent_id") or "lisa")
+        result_maps_raw = entry.get("result_maps") or {}
+        if not isinstance(result_maps_raw, dict):
+            raise MCPServerManifestError(
+                f"memory.backends[{index}] {backend_id!r}: 'result_maps' must be a mapping"
+            )
+        result_maps = {str(op): str(path) for op, path in result_maps_raw.items()}
         if kind == "http":
             url = str(entry.get("url") or "").strip()
             if not url:
@@ -249,6 +268,7 @@ def _parse_memory_backends(raw: Any) -> tuple[MemoryBackendSpec, ...]:
                     id=backend_id,
                     kind=kind,
                     tool_names=tool_names,
+                    result_maps=result_maps,
                     url=url,
                     headers=headers,
                     agent_id=agent_id,
@@ -280,6 +300,7 @@ def _parse_memory_backends(raw: Any) -> tuple[MemoryBackendSpec, ...]:
                     id=backend_id,
                     kind=kind,
                     tool_names=tool_names,
+                    result_maps=result_maps,
                     command=command,
                     args=args,
                     env=env,

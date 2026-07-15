@@ -183,6 +183,7 @@ def _register_generic_router(
     server_id = f"{prefix}{raw_server_id}"
     tool_names = dict(default_spec.tool_names)
     add_arg_map, search_arg_map, list_arg_map = _backend_arg_maps(backend_id)
+    add_result_map, search_result_map, list_result_map = _backend_result_maps(default_spec)
 
     add_schema, search_schema, list_schema = _memory_schemas()
 
@@ -195,6 +196,7 @@ def _register_generic_router(
             input_schema=add_schema,
             target_server_id=server_id,
             arg_map=add_arg_map,
+            result_map=add_result_map,
         ),
         mcp_alias_tool(
             name="memory.search",
@@ -204,6 +206,7 @@ def _register_generic_router(
             input_schema=search_schema,
             target_server_id=server_id,
             arg_map=search_arg_map,
+            result_map=search_result_map,
         ),
         mcp_alias_tool(
             name="memory.list",
@@ -213,6 +216,7 @@ def _register_generic_router(
             input_schema=list_schema,
             target_server_id=server_id,
             arg_map=list_arg_map,
+            result_map=list_result_map,
         ),
     ])
 
@@ -234,6 +238,54 @@ def _backend_arg_maps(backend_id: str) -> tuple[Any, Any, Any]:
 
         return _mem0_add_arg_map, _mem0_search_or_list_arg_map, _mem0_search_or_list_arg_map
     return None, None, None
+
+
+def _backend_result_maps(
+    default_spec: Any,
+) -> tuple[Any, Any, Any]:
+    """Resolve the backend's ``result_maps`` dotted import paths into callables.
+
+    Returns ``(add_result_map, search_result_map, list_result_map)`` — each
+    is a ``Callable[[str], str]`` or ``None``. When the backend declares no
+    ``result_maps`` (e.g. first-party lisa_memory which already returns the
+    canonical ``list[MemoryRecord]`` JSON array), all three are ``None`` and
+    the alias passes ``output_text`` through unchanged.
+
+    Import paths are resolved lazily at registration time (not at manifest
+    parse time) so a manifest can declare a pack that isn't installed yet
+    without crashing the parse step. A bad import path is logged as a warning
+    and the corresponding result_map falls back to ``None`` (raw pass-through)
+    so the alias still works — it just doesn't normalize.
+    """
+    result_maps = getattr(default_spec, "result_maps", None) or {}
+    if not result_maps:
+        return None, None, None
+
+    def _resolve(path: str | None) -> Any:
+        if not path:
+            return None
+        try:
+            module_path, _, func_name = path.rpartition(".")
+            if not module_path or not func_name:
+                logger.warning("result_maps entry %r is not a valid dotted path", path)
+                return None
+            import importlib
+
+            mod = importlib.import_module(module_path)
+            fn = getattr(mod, func_name, None)
+            if not callable(fn):
+                logger.warning("result_maps entry %r: %s is not callable", path, func_name)
+                return None
+            return fn
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("result_maps entry %r failed to import: %s", path, exc)
+            return None
+
+    return (
+        _resolve(result_maps.get("add")),
+        _resolve(result_maps.get("search")),
+        _resolve(result_maps.get("list")),
+    )
 
 
 def _memory_schemas() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
