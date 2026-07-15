@@ -252,6 +252,76 @@ async def test_assistant_tool_calls_translated_to_gemini() -> None:
     assert fr["response"]["result"] == "sunny"
 
 
+# ── thoughtSignature captured from response and echoed on round-trip ─
+
+
+@pytest.mark.asyncio
+async def test_thought_signature_captured_from_response() -> None:
+    """Gemini thinking models emit thoughtSignature as a sibling of functionCall.
+
+    The gateway must capture it so the turn runner can echo it back on the
+    next request; otherwise Gemini rejects the call with INVALID_ARGUMENT.
+    """
+    data = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "functionCall": {"name": "search", "args": {"q": "cats"}},
+                            "thoughtSignature": "sig-abc-123",
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    gateway, _ = _gateway(data)
+    result = await gateway.complete(_request([{"role": "user", "content": "go"}]))
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0]["thought_signature"] == "sig-abc-123"
+
+
+@pytest.mark.asyncio
+async def test_thought_signature_echoed_in_function_call_part() -> None:
+    """When rebuilding assistant→model contents, thoughtSignature must be
+    emitted as a sibling of functionCall, not nested inside it.
+    """
+    data = {"candidates": [{"content": {"parts": [{"text": "done"}]}}]}
+    gateway, client = _gateway(data)
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {
+            "role": "assistant",
+            "content": "Checking.",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "thought_signature": "sig-xyz",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Seattle"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "get_weather",
+            "content": "sunny",
+        },
+    ]
+    await gateway.complete(_request(list(messages)))
+    contents = client.captured_json["contents"]
+    fc_part = contents[1]["parts"][1]
+    assert "functionCall" in fc_part
+    assert fc_part["thoughtSignature"] == "sig-xyz"
+    # signature must NOT be nested inside functionCall
+    assert "thoughtSignature" not in fc_part["functionCall"]
+
+
 # ── System message extracted to systemInstruction ─────────────────────
 
 

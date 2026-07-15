@@ -1399,10 +1399,15 @@ async def _run_turn_inner(
                 "content": str(tool_output),
             }
             # Preserve thought_signature for Gemini thinking mode round-trips.
-            # Google requires it inside the function object ("functionCall parts").
+            # The signature lives at the top level (REST gateway flat shape) or
+            # nested under function (OpenAI-compatible shape).
             thought_sig = tool_call.get("thought_signature")
+            if not thought_sig:
+                fn_payload = tool_call.get("function")
+                if isinstance(fn_payload, dict):
+                    thought_sig = fn_payload.get("thought_signature")
             if thought_sig:
-                tool_result_msg["function"] = {"thought_signature": thought_sig}
+                tool_result_msg["thought_signature"] = thought_sig
             messages.append(tool_result_msg)
 
         if not tools_dispatched:

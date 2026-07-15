@@ -600,22 +600,22 @@ def extract_anthropic_usage(response: Any) -> CompletionUsage | None:
         raw_usage = response.get("usage")
     if raw_usage is None:
         return None
-    prompt_tokens = _coerce_usage_int(
+    prompt_tokens = coerce_non_negative_int(
         getattr(raw_usage, "input_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("input_tokens")
     )
-    completion_tokens = _coerce_usage_int(
+    completion_tokens = coerce_non_negative_int(
         getattr(raw_usage, "output_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("output_tokens")
     )
-    cache_creation = _coerce_usage_int(
+    cache_creation = coerce_non_negative_int(
         getattr(raw_usage, "cache_creation_input_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("cache_creation_input_tokens")
     )
-    cache_read = _coerce_usage_int(
+    cache_read = coerce_non_negative_int(
         getattr(raw_usage, "cache_read_input_tokens", None)
         if not isinstance(raw_usage, dict)
         else raw_usage.get("cache_read_input_tokens")
@@ -1286,14 +1286,23 @@ def _build_gemini_contents(messages: list[dict[str, Any]]) -> list[dict[str, Any
                     parsed_args = raw_args
                 else:
                     parsed_args = {}
-                parts.append(
-                    {
-                        "functionCall": {
-                            "name": str(function_payload.get("name", "")),
-                            "args": parsed_args,
-                        }
-                    }
+                # Gemini thinking models require thoughtSignature to be echoed
+                # back as a sibling of functionCall in the same part.  The
+                # signature may be stored at the top level (REST gateway flat
+                # shape) or nested under function (OpenAI-compatible shape).
+                thought_sig = (
+                    tc.get("thought_signature")
+                    or function_payload.get("thought_signature")
                 )
+                fc_part: dict[str, Any] = {
+                    "functionCall": {
+                        "name": str(function_payload.get("name", "")),
+                        "args": parsed_args,
+                    }
+                }
+                if thought_sig:
+                    fc_part["thoughtSignature"] = thought_sig
+                parts.append(fc_part)
             contents.append({"role": "model", "parts": parts})
         else:
             gemini_role = "model" if role == "assistant" else "user"
@@ -1339,14 +1348,19 @@ def _extract_gemini_response(data: dict[str, Any]) -> tuple[list[str], list[dict
             elif "functionCall" in part:
                 fc = part["functionCall"]
                 call_counter += 1
-                tool_calls.append(
-                    {
-                        "id": f"gemini_call_{call_counter}",
-                        "type": "function",
-                        "name": str(fc.get("name", "")),
-                        "arguments": _normalize_openai_tool_arguments(fc.get("args", {})),
-                    }
-                )
+                tool_call: dict[str, Any] = {
+                    "id": f"gemini_call_{call_counter}",
+                    "type": "function",
+                    "name": str(fc.get("name", "")),
+                    "arguments": _normalize_openai_tool_arguments(fc.get("args", {})),
+                }
+                # Gemini thinking models attach thoughtSignature as a sibling
+                # of functionCall in the same part.  It MUST be echoed verbatim
+                # in the corresponding functionCall part on the next turn.
+                thought_sig = part.get("thoughtSignature") or fc.get("thoughtSignature")
+                if thought_sig:
+                    tool_call["thought_signature"] = thought_sig
+                tool_calls.append(tool_call)
     return text_parts, tool_calls
 
 
@@ -1363,7 +1377,7 @@ def _extract_gemini_usage(data: dict[str, Any]) -> CompletionUsage | None:
         total_tokens = prompt_tokens + completion_tokens
     if prompt_tokens == 0 and completion_tokens == 0:
         return None
-    cached_tokens = _coerce_usage_int(usage_meta.get("cachedContentTokenCount"))
+    cached_tokens = coerce_non_negative_int(usage_meta.get("cachedContentTokenCount"))
     return CompletionUsage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
@@ -1657,17 +1671,17 @@ def _extract_bedrock_usage(response: Any) -> CompletionUsage | None:
     )
     if raw_usage is None:
         return None
-    prompt_tokens = _coerce_usage_int(
+    prompt_tokens = coerce_non_negative_int(
         raw_usage.get("inputTokens")
         if isinstance(raw_usage, dict)
         else getattr(raw_usage, "inputTokens", None)
     )
-    completion_tokens = _coerce_usage_int(
+    completion_tokens = coerce_non_negative_int(
         raw_usage.get("outputTokens")
         if isinstance(raw_usage, dict)
         else getattr(raw_usage, "outputTokens", None)
     )
-    total_tokens = _coerce_usage_int(
+    total_tokens = coerce_non_negative_int(
         raw_usage.get("totalTokens")
         if isinstance(raw_usage, dict)
         else getattr(raw_usage, "totalTokens", None)
