@@ -1,6 +1,6 @@
 ---
 schema_version: 2
-name: cloudflare_routing
+name: cloudflare
 surface:
   type: personal_dm
   id: host-console
@@ -57,7 +57,7 @@ context:
     diversity_lambda: 0.80
     relevance_provider: lexical
 ---
-# Cloudflare Routing — Reference Context
+# Cloudflare Assessment & Investigation Session
 
 ## You (Lisa)
 
