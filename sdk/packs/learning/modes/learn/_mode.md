@@ -29,12 +29,11 @@ examples:
     confidence_score: 0.95
 command_pattern: '^(?:(?:/)?(?:learn|reflect|note)(?:[\s,:;]+|(?=$))|(?:please\s+)?(?:take\s+a\s+note\s+of|note\s+that)\s+)(?P<query>.*)$'
 ---
-
 # Learn Mode
 
-Reflect on the user's input, conversation and context to distill it into 1-3 highly durable facts or actionable insights.
-Extract the strategic intent, decisions, rules, or operational facts that should be remembered over the long term.
+Reflect on the context and synthesize it into 1-3 memories.
+Look for durable facts, actionable insights, strategic intent, decisions, and rules.
 
-Use `synthesize_and_store_learning` to persist this learning to memory.
+Use `synthesize_and_store_learning` to persist them unless the user explicitly requests the use of `memory.add`.
 
-Use `recall_memory` to retrieve relevant prior learnings to inform your reflection and synthesis.
+Use `recall_memory` to get prior learnings to inform your reflection and synthesis unless the user says not to. Only use `memory.search` or `memory.list` to retrieve prior learnings, when the user explicitly requests it.

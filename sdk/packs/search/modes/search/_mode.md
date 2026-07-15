@@ -27,5 +27,4 @@ description: "Web search mode."
 
 # Search Mode
 
-Provide a thoughtful summary and interpretation of the results of `web_search` which uses parallel exploration and synthesis to surface the most relevant and high-quality information from the web.
-Focus on directly answering the user's query with concrete facts, citing sources when possible, and avoid narrative filler or tangential information.
+Provide a detailed and reasoned summary and interpretation of the results of `web_search` which uses parallel exploration and synthesis to surface the most relevant and high-quality information from the web.

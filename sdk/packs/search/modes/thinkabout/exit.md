@@ -4,7 +4,6 @@ terminal: true
 allow_user_questions: false
 description: "Summarize and close the Thinkabout session."
 ---
-
 # Thinkabout Mode: Exit Stage
 
 You are closing the Thinkabout mode.

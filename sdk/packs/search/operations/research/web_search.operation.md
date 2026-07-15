@@ -2,7 +2,6 @@
 operation_id: web_search
 description: Execute a structured deep-research loop and render synthesized telemetry and insights.
 tool_ids: [web_search]
-mode_allowlist: [search, thinkabout]
 timeout_seconds: 120
 completion_max_tokens: 4000
 response_format_model_path: sdk.packs.search.operations.research.web_search.WebSearchStructuredOutput

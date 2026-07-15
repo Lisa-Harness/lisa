@@ -3,7 +3,6 @@ stage_id: inquire
 allowed_next_stages: [reason, exit]
 description: "Actively research the user's premise using web_search, clarify the constraints, and pull in context."
 ---
-
 # Thinkabout Mode: Inquire Stage
 
 You are in the Inquire stage of the Thinkabout mode.

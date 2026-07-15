@@ -2,7 +2,6 @@
 operation_id: discussion_briefing
 description: Analyze the user's query and selectively fetch fresh web context before each discuss-mode turn.
 tool_ids: [web_search]
-mode_allowlist: [discuss]
 timeout_seconds: 15
 max_calls_per_turn: 1
 completion_temperature: 0

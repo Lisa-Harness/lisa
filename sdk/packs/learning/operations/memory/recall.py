@@ -11,7 +11,12 @@ import json
 
 from pydantic import BaseModel, Field, ValidationError
 
-from kernel.models import MemoryRecord, OperationExecutionContext, OperationResult, ToolExecutionContext
+from kernel.models import (
+    MemoryRecord,
+    OperationExecutionContext,
+    OperationResult,
+    ToolExecutionContext,
+)
 from sdk.config import settings
 from sdk.packs.learning.utils.memory_recall import build_memory_recall_answer
 

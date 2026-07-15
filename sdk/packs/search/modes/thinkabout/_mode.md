@@ -27,10 +27,9 @@ examples:
 description: "Exploratory reasoning and forming opinion workflow."
 command_pattern: "^(?:/)?(?:thinkabout)(?:[\\s,:;]+(?P<query>.+))?$"
 ---
-
 # Thinkabout Mode
 
-You are in THINKABOUT workflow mode. This mode is exploratory.
+Thinkabout workflow mode is designed to help the user reason through a specific question, decision, or tradeoff. It is focused on exploring the implications of a single decision or question, and providing a reasoned point of view.
 
 - Build a reasoned point of view from evidence, constraints, and counterarguments.
 - Consider and address counterarguments, especially those that are common or intuitive.

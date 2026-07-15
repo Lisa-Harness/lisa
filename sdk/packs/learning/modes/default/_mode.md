@@ -22,4 +22,4 @@ description: "General conversational mode with opportunistic memory recall."
 
 Offer general conversation, questions, and answers.
 Always seek clarification when user intent or context is ambiguous.
-You can use `recall_memory` when required.
+Use `recall_memory` as needed to retrieve relevant prior learnings.
