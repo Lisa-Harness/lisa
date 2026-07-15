@@ -212,10 +212,6 @@ class HostRuntime:
         return self.config.data_dir
 
     @property
-    def memory_db_path(self) -> Path:
-        return self.config.resolved_memory_db_path
-
-    @property
     def thread_dir(self) -> Path:
         return self.config.resolved_thread_dir
 
@@ -440,6 +436,12 @@ class HostRuntime:
             current_mode_id=self.current_mode_id,
             app_id="lisa-host",
         )
+        # Register generic aliases declared in pack MCP manifests so the
+        # model sees stable tool names (e.g. ``cloudflare.search``) instead
+        # of filesystem-derived namespaced ids.
+        from hosts.core.mcp_pool import register_mcp_aliases  # noqa: PLC0415
+
+        register_mcp_aliases(self._mcp_tool_pool)
         self._mcp_started = True
         logger.info(
             "HostRuntime: MCP pool started with %d warm server(s)%s",

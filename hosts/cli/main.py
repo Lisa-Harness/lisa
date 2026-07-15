@@ -197,17 +197,6 @@ DataDirOption = Annotated[
         ),
     ),
 ]
-MemoryDbOption = Annotated[
-    str,
-    typer.Option(
-        "--memory-db",
-        help=(
-            "Memory database JSON file path. "
-            "Overrides LISA_MEMORY_DB. "
-            "Default: <data-dir>/memory.json"
-        ),
-    ),
-]
 ThreadDirOption = Annotated[
     str,
     typer.Option(
@@ -305,7 +294,6 @@ def _initialize_runtime(
     log_path: str = "",
     no_log: bool = False,
     data_dir: str = "",
-    memory_db: str = "",
     thread_dir: str = "",
     no_thread: bool = False,
     user_slug: str,
@@ -332,7 +320,6 @@ def _initialize_runtime(
         log_path=log_path,
         host_log_path=host_log_path,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         timezone=timezone,
@@ -407,7 +394,6 @@ def _run_default_no_args_mode(
     log: str,
     no_log: bool,
     data_dir: str,
-    memory_db: str,
     thread_dir: str,
     no_thread: bool,
     session_context: str,
@@ -428,7 +414,6 @@ def _run_default_no_args_mode(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
@@ -505,7 +490,6 @@ def _cli_callback(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
-    memory_db: MemoryDbOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -526,7 +510,6 @@ def _cli_callback(
         log=log,
         no_log=no_log,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         session_context=session_context,
@@ -550,7 +533,6 @@ def _cli_command(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
-    memory_db: MemoryDbOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -566,7 +548,6 @@ def _cli_command(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
@@ -726,7 +707,6 @@ def _verify_check_provider_keys() -> tuple[str, str]:
 def _verify_check_paths(runtime: HostRuntime) -> tuple[str, str]:
     parts: list[str] = []
     parts.append(f"Data dir: {runtime.data_dir}")
-    parts.append(f"Memory DB: {runtime.config.resolved_memory_db_path}")
     parts.append(f"Thread logs: {runtime.thread_dir}")
     tp = runtime.thread_path
     if tp:
@@ -751,7 +731,6 @@ def _verify_command(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
-    memory_db: MemoryDbOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -768,7 +747,6 @@ def _verify_command(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
@@ -822,7 +800,6 @@ def _modes_command(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
-    memory_db: MemoryDbOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -838,7 +815,6 @@ def _modes_command(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
@@ -865,7 +841,6 @@ def _models_command(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
-    memory_db: MemoryDbOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -881,7 +856,6 @@ def _models_command(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
@@ -908,7 +882,6 @@ def _operations_command(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
-    memory_db: MemoryDbOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -924,7 +897,6 @@ def _operations_command(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
@@ -960,7 +932,6 @@ def _tools_command(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
-    memory_db: MemoryDbOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -976,7 +947,6 @@ def _tools_command(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
@@ -1067,7 +1037,6 @@ def _mcp_command(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
-    memory_db: MemoryDbOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -1083,7 +1052,6 @@ def _mcp_command(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
@@ -1119,7 +1087,6 @@ def _packs_command(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
-    memory_db: MemoryDbOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -1135,7 +1102,6 @@ def _packs_command(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
@@ -1206,7 +1172,6 @@ def _once_command(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
-    memory_db: MemoryDbOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -1222,7 +1187,6 @@ def _once_command(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,

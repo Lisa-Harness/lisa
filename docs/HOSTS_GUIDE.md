@@ -218,7 +218,6 @@ All hosts share the same runtime flags via `HostConfig.from_env()`:
 | `--log` | — | — | Append JSONL turn logs to this file |
 | `--no-log` | — | `false` | Suppress turn logging |
 | `--data-dir` | `LISA_DATA_DIR` | `~/.lisa` | Data root for artifacts, memory, logs |
-| `--memory-db` | `LISA_MEMORY_DB` | `<data-dir>/memory.json` | Memory database file |
 | `--thread-dir` | `LISA_THREAD_DIR` | `<data-dir>/threads` | Thread log directory |
 | `--no-thread` | — | `false` | Disable thread persistence |
 | `--timezone` | `LISA_TIMEZONE` | system-local | IANA timezone |

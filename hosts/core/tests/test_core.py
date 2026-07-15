@@ -41,7 +41,6 @@ class TestHostConfig:
 
     def test_resolved_paths(self, tmp_path: Path) -> None:
         config = HostConfig.from_env(data_dir=str(tmp_path))
-        assert config.resolved_memory_db_path == tmp_path / "memory.json"
         assert config.resolved_thread_dir == tmp_path / "threads"
         assert config.resolved_host_log_path == tmp_path / "host.log"
 
@@ -129,7 +128,6 @@ class TestHostRuntime:
         config = HostConfig.from_env(data_dir=str(tmp_path), user_slug="test-user")
         runtime = HostRuntime(config)
         assert runtime.data_dir == tmp_path
-        assert runtime.memory_db_path == tmp_path / "memory.json"
         assert runtime.thread_dir == tmp_path / "threads"
         assert runtime.thread_path == tmp_path / "threads" / "test-user.jsonl"
         assert runtime.token_usage_path == tmp_path / "token-usage.jsonl"

@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 LISA_TIMEZONE_ENV = "LISA_TIMEZONE"
 LISA_LOG_LEVEL_ENV = "LISA_LOG_LEVEL"
 LISA_DATA_DIR_ENV = "LISA_DATA_DIR"
-LISA_MEMORY_DB_ENV = "LISA_MEMORY_DB"
 LISA_THREAD_DIR_ENV = "LISA_THREAD_DIR"
 LISA_SLICE_PRE_TURN_ENV = "LISA_SLICE_PRE_TURN"
 LISA_SLICE_POST_TURN_ENV = "LISA_SLICE_POST_TURN"
@@ -124,7 +123,6 @@ class HostConfig:
 
     # ── Paths ────────────────────────────────────────────────────────────
     data_dir: Path = field(default_factory=default_data_dir)
-    memory_db_path: Path | None = None
     thread_dir: Path | None = None
     mcp_manifest_path: Path | None = None
     state_snapshot_path: Path | None = None
@@ -160,10 +158,6 @@ class HostConfig:
     always_on_packs: tuple[str, ...] = (
         "lisa-pack-core",
     )
-
-    @property
-    def resolved_memory_db_path(self) -> Path:
-        return self.memory_db_path or (self.data_dir / "memory.json")
 
     @property
     def resolved_thread_dir(self) -> Path:
@@ -209,7 +203,6 @@ class HostConfig:
         log_path: str = "",
         host_log_path: str = "",
         data_dir: str = "",
-        memory_db: str = "",
         thread_dir: str = "",
         no_thread: bool = False,
         timezone: str = "",
@@ -252,11 +245,6 @@ class HostConfig:
         ).expanduser().resolve()
 
         # ── Paths ──────────────────────────────────────────────────────
-        resolved_memory_db: Path | None = None
-        raw_memory_db = memory_db.strip() or _resolve_env(LISA_MEMORY_DB_ENV)
-        if raw_memory_db:
-            resolved_memory_db = Path(raw_memory_db).expanduser().resolve()
-
         resolved_thread_dir: Path | None = None
         raw_thread_dir = thread_dir.strip() or _resolve_env(LISA_THREAD_DIR_ENV)
         if raw_thread_dir:
@@ -322,7 +310,6 @@ class HostConfig:
 
         return cls(
             data_dir=resolved_data_dir,
-            memory_db_path=resolved_memory_db,
             thread_dir=resolved_thread_dir,
             mcp_manifest_path=resolved_mcp_manifest,
             state_snapshot_path=resolved_snapshot,

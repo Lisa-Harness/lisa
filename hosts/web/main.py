@@ -91,10 +91,6 @@ DataDirOption = Annotated[
         help="Data root for artifacts, memory, and logs. Default: ~/.lisa",
     ),
 ]
-MemoryDbOption = Annotated[
-    str,
-    typer.Option("--memory-db", help="Memory database JSON file path."),
-]
 ThreadDirOption = Annotated[
     str,
     typer.Option("--thread-dir", help="Thread log directory."),
@@ -118,7 +114,9 @@ SessionContextRefreshOption = Annotated[
         "--session-context-refresh",
         help="Force re-fetch of remote session context, ignoring local cache.",
     ),
-]TimezoneOption = Annotated[
+]
+
+TimezoneOption = Annotated[
     str,
     typer.Option("--timezone", help="IANA timezone (e.g. UTC, America/New_York)."),
 ]
@@ -166,7 +164,6 @@ def _initialize_runtime(
     log_path: str = "",
     no_log: bool = False,
     data_dir: str = "",
-    memory_db: str = "",
     thread_dir: str = "",
     no_thread: bool = False,
     user_slug: str,
@@ -194,7 +191,6 @@ def _initialize_runtime(
         log_path=log_path,
         host_log_path=host_log_path,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         timezone=timezone,
@@ -282,7 +278,6 @@ def _desktop_command(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
-    memory_db: MemoryDbOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -300,7 +295,6 @@ def _desktop_command(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
-        memory_db=memory_db,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,

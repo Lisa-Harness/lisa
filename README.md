@@ -53,7 +53,6 @@ Key CLI options:
 - `--log <file>` appends structured JSONL turn records.
 - `--no-log` suppresses JSONL logging entirely.
 - `--data-dir <path>` overrides the artifacts root.
-- `--memory-db <path>` overrides the memory store file.
 - `--thread-dir <path>` overrides the thread persistence directory.
 - `--no-thread` disables thread persistence.
 - `--session-context <slug>` sets the session context slug.
