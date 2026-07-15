@@ -10,7 +10,6 @@ resources:
     include:
       - lisa-pack-core
       - lisa-pack-learning
-      - lisa-pack-mem0
       - lisa-pack-search
     required:
       - lisa-pack-core
@@ -20,20 +19,14 @@ providers:
   tools:
     web_search: lisa-pack-brave-search
   capabilities:
-    memory: lisa-pack-mem0
+    memory: lisa-pack-learning
 routing:
   start_mode: default
 context:
   lanes:
-    - lane_id: operational
-      max_tokens: 1200
-      render_order: 0
-    - lane_id: general
-      max_tokens: 1800
-      render_order: 10
-    - lane_id: history
-      max_tokens: 1200
-      render_order: 20
+    - {lane_id: operational, max_tokens: 1200, render_order: 0}
+    - {lane_id: general, max_tokens: 1800, render_order: 10}
+    - {lane_id: history, max_tokens: 1200, render_order: 20}
   sources:
     - rule_id: alerts
       lane_id: operational
