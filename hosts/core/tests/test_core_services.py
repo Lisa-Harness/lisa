@@ -301,7 +301,7 @@ def test_assemble_system_prompt_includes_turn_input_contract() -> None:
     def _loader(path: str) -> str:
         if path == "prompts/system-prompt.md":
             return "# System Prompt\nYou are Lisa."
-        if path == "prompts/agent/turn_input_contract.md":
+        if path == "prompts/turn_input_contract.md":
             return "## User Query"
         return ""
 

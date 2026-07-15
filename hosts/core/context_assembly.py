@@ -75,10 +75,10 @@ def load_system_prompt(content_loader: Callable[[str], str]) -> str:
 
 
 def load_turn_input_contract(content_loader: Callable[[str], str]) -> str:
-    """Load and format the turn-input contract from ``prompts/agent/turn_input_contract.md``."""
+    """Load and format the turn-input contract from ``prompts/turn_input_contract.md``."""
     try:
         return (
-            "#" + content_loader("prompts/agent/turn_input_contract.md")
+            "#" + content_loader("prompts/turn_input_contract.md")
             .strip()
             .format(user_query_sentinel="## User Query")
         )
