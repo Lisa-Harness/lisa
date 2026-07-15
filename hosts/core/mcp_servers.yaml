@@ -102,8 +102,11 @@ servers:
     runtime_kind: venv_bin
     venv_dir: "${FRAMEWORK_ROOT}/.venv"
 
+  # No data_dir_subdir: manifests (models.yaml, models.proposed.yaml) live at
+  # the top level of the host data_dir, and the server creates its own
+  # ``files/`` and ``checkpoints/`` subdirs internally via init_storage().
   - server_id: lisa-storage
     runtime_kind: venv_bin
     venv_dir: "${FRAMEWORK_ROOT}/.venv"
     warm: false
-    data_dir_subdir: storage
+    data_dir_subdir: "."

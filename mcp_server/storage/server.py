@@ -31,6 +31,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from mcp_server.config.cli import build_parser, configure_logging, resolve_data_dir
 from sdk.content._reader import is_safe_relative_path
 
 __all__ = ["init_storage", "main", "mcp"]
@@ -423,8 +424,6 @@ def main() -> None:
     ``--data-dir`` is required; the files and checkpoints subdirectories
     are derived from it. ``--readonly`` disables all write operations.
     """
-    from mcp_server.config.cli import build_parser, configure_logging, resolve_data_dir
-
     parser = build_parser("lisa-storage", supports_readonly=True)
     args = parser.parse_args()
 
