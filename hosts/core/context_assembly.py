@@ -19,7 +19,6 @@ Public API (leading underscores removed)::
     build_brokered_context_markdown(mode_id, query, state)
     publish_context_usage_event(...)        # stub — no event bus yet
     assemble_dynamic_user_context(...)
-    load_selected_session_context_text(...)
 """
 
 from __future__ import annotations
@@ -362,73 +361,6 @@ def publish_context_usage_event(
     _ = allocator
     _ = mode_id
     _ = query
-
-
-# ---------------------------------------------------------------------------
-# Session-context loading (applies_to front-matter filtering)
-# ---------------------------------------------------------------------------
-
-
-def _applies_to_mode(front_matter: dict[str, Any], current_mode: str) -> bool:
-    """Return True if the front matter applies_to includes the current mode."""
-    applies_to = front_matter.get("applies_to")
-    if applies_to is None:
-        return True
-    if not isinstance(applies_to, list):
-        applies_to = [applies_to]
-    return current_mode in applies_to
-
-
-def _load_session_context_directory(path: Path, current_mode: str) -> str:
-    """Load and concatenate session context files from a directory."""
-    parts: list[str] = []
-    for child in sorted(path.iterdir()):
-        if not child.is_file():
-            continue
-        try:
-            text = child.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        front_matter, body = parse_front_matter(text)
-        if not _applies_to_mode(front_matter, current_mode):
-            continue
-        parts.append(body)
-    return "\n\n".join(parts)
-
-
-def load_active_session_context_text(
-    context_ref: str,
-    current_mode_id: str,
-) -> str:
-    """Load session context from a file path or directory, filtering by applies_to."""
-    path = Path(context_ref)
-    if path.is_dir():
-        return _load_session_context_directory(path, current_mode_id)
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-    front_matter, body = parse_front_matter(text)
-    if not _applies_to_mode(front_matter, current_mode_id):
-        return ""
-    return body
-
-
-def load_selected_session_context_text(
-    *,
-    session_context_ref: str,
-    session_context_active: bool,
-    current_mode_id: str,
-    content_loader: Callable[[str], str],
-) -> str:
-    """Load the active session context text, filtering by applies_to front matter."""
-    if not session_context_ref:
-        return ""
-    if session_context_active:
-        return load_active_session_context_text(
-            session_context_ref, current_mode_id
-        )
-    return content_loader(session_context_ref)
 
 
 # ---------------------------------------------------------------------------

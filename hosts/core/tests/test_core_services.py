@@ -566,158 +566,6 @@ async def test_handle_message_updates_runtime_token_counters(
     pass
 
 
-# ── Session context resolution ────────────────────────────────────────
-
-
-def test_resolve_session_context_reads_display_name_from_front_matter(tmp_path: Path) -> None:
-    with TemporaryDirectory() as td:
-        path = Path(td) / "ctx.md"
-        path.write_text('---\nname: "Adam Migus"\n---\n# hello\n', encoding="utf-8")
-        name, ref, is_file = session_context.resolve_session_context(
-            session_context=str(path),
-            data_dir=Path(td),
-            content_loader=lambda _p: "",
-        )
-
-    assert name == "Adam Migus"
-    assert ref == str(path)
-    assert is_file is True
-
-
-# ── Session context controls (front-matter runtime overrides) ───────
-
-
-def test_extract_session_context_controls_surface_block(tmp_path: Path) -> None:
-    """Surface block overrides surface_type, surface_id, memory_scope."""
-    path = tmp_path / "ctx.md"
-    path.write_text(
-        '---\n'
-        'name: "team-session"\n'
-        'surface:\n'
-        '  type: team_channel\n'
-        '  id: channel-42\n'
-        '  memory_scope: shared\n'
-        '---\n# body\n',
-        encoding="utf-8",
-    )
-    controls = session_context.extract_session_context_controls(path)
-    assert controls.name == "team-session"
-    assert controls.surface.surface_type == "team_channel"
-    assert controls.surface.surface_id == "channel-42"
-    assert controls.surface.memory_scope == "shared"
-
-
-def test_extract_session_context_controls_flat_surface_keys(tmp_path: Path) -> None:
-    """Flat top-level surface_type/surface_id/memory_scope also work."""
-    path = tmp_path / "ctx.md"
-    path.write_text(
-        '---\n'
-        'surface_type: vscode\n'
-        'surface_id: vscode-chat\n'
-        'memory_scope: project\n'
-        '---\n# body\n',
-        encoding="utf-8",
-    )
-    controls = session_context.extract_session_context_controls(path)
-    assert controls.surface.surface_type == "vscode"
-    assert controls.surface.surface_id == "vscode-chat"
-    assert controls.surface.memory_scope == "project"
-
-
-def test_extract_session_context_controls_start_mode(tmp_path: Path) -> None:
-    """start_mode is extracted from front matter."""
-    path = tmp_path / "ctx.md"
-    path.write_text('---\nstart_mode: research\n---\n# body\n', encoding="utf-8")
-    controls = session_context.extract_session_context_controls(path)
-    assert controls.start_mode == "research"
-
-
-def test_extract_session_context_controls_packs_map(tmp_path: Path) -> None:
-    """packs map with qualified pack names is parsed correctly."""
-    path = tmp_path / "ctx.md"
-    path.write_text(
-        '---\n'
-        'packs:\n'
-        '  lisa-pack-search:\n'
-        '    enabled: true\n'
-        '  lisa-pack-mem0:\n'
-        '    enabled: false\n'
-        '---\n# body\n',
-        encoding="utf-8",
-    )
-    controls = session_context.extract_session_context_controls(path)
-    assert "lisa-pack-search" in controls.packs.preferences
-    assert controls.packs.preferences["lisa-pack-search"]["enabled"] is True
-    assert controls.packs.preferences["lisa-pack-mem0"]["enabled"] is False
-
-
-def test_extract_session_context_controls_policy_block(tmp_path: Path) -> None:
-    """policy block with always_on_packs, exclude_servers, preferred_capability_providers."""
-    path = tmp_path / "ctx.md"
-    path.write_text(
-        '---\n'
-        'policy:\n'
-        '  always_on_packs:\n'
-        '    - lisa-pack-core\n'
-        '    - lisa-pack-learning\n'
-        '  exclude_servers:\n'
-        '    - lisa-pack-mem0.memory\n'
-        '  preferred_capability_providers:\n'
-        '    memory: lisa-pack-learning\n'
-        '    web_search: lisa-pack-brave-search\n'
-        '---\n# body\n',
-        encoding="utf-8",
-    )
-    controls = session_context.extract_session_context_controls(path)
-    assert controls.policy.always_on_packs == ("lisa-pack-core", "lisa-pack-learning")
-    assert controls.policy.exclude_servers == ("lisa-pack-mem0.memory",)
-    assert controls.policy.preferred_capability_providers["memory"] == "lisa-pack-learning"
-    assert controls.policy.preferred_capability_providers["web_search"] == "lisa-pack-brave-search"
-
-
-def test_extract_session_context_controls_empty_file(tmp_path: Path) -> None:
-    """No front matter → all controls are no-override defaults."""
-    path = tmp_path / "ctx.md"
-    path.write_text('# just a body\n', encoding="utf-8")
-    controls = session_context.extract_session_context_controls(path)
-    assert controls.name is None
-    assert controls.surface.surface_type is None
-    assert controls.start_mode is None
-    assert controls.packs.preferences == {}
-    assert controls.policy.always_on_packs == ()
-
-
-def test_extract_session_context_controls_replay_block(tmp_path: Path) -> None:
-    """Replay controls are parsed from front matter."""
-    path = tmp_path / "ctx.md"
-    path.write_text(
-        "---\n"
-        "replay:\n"
-        "  trigger_mode: conditional\n"
-        "  include_prior_conversation_digest: false\n"
-        "  include_recent_conversation: true\n"
-        "  include_diagnostic_reflection: true\n"
-        "  history_max_tokens: 800\n"
-        "  reflection_max_tokens: 600\n"
-        "  min_query_chars: 25\n"
-        "  digest_max_lines: 40\n"
-        "  digest_summary_max_chars: 120\n"
-        "---\n"
-        "# body\n",
-        encoding="utf-8",
-    )
-    controls = session_context.extract_session_context_controls(path)
-    assert controls.replay.trigger_mode == "conditional"
-    assert controls.replay.include_prior_conversation_digest is False
-    assert controls.replay.include_recent_conversation is True
-    assert controls.replay.include_diagnostic_reflection is True
-    assert controls.replay.history_max_tokens == 800
-    assert controls.replay.reflection_max_tokens == 600
-    assert controls.replay.min_query_chars == 25
-    assert controls.replay.digest_max_lines == 40
-    assert controls.replay.digest_summary_max_chars == 120
-
-
 def test_runtime_compiles_session_plan_surface_and_start_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """HostRuntime compiles the auto-discovered strict v2 session once."""
     monkeypatch.chdir(tmp_path)
@@ -1294,6 +1142,148 @@ async def test_complete_live_preserves_non_json_structured_output_for_fallback(
     pass
 
 
+# ── complete_live_stream (streaming dispatch) ────────────────────────
+
+
+class _StubStreamEvent:
+    """One SSE event from an OpenAI-compatible streaming response."""
+
+    def __init__(
+        self, delta_content: str = "", finish_reason: str | None = None
+    ) -> None:
+        self.choices = (
+            [
+                SimpleNamespace(
+                    delta=SimpleNamespace(content=delta_content or None),
+                    finish_reason=finish_reason,
+                )
+            ]
+            if (delta_content or finish_reason)
+            else []
+        )
+        self.usage = None
+
+
+class _StubAsyncStream:
+    def __init__(self, events: list[_StubStreamEvent]) -> None:
+        self._events = list(events)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._events:
+            raise StopAsyncIteration
+        return self._events.pop(0)
+
+
+class _StubStreamChatCompletions:
+    async def create(self, **kwargs: object) -> _StubAsyncStream:
+        return _StubAsyncStream([
+            _StubStreamEvent(delta_content="Hello"),
+            _StubStreamEvent(delta_content=" world"),
+            _StubStreamEvent(finish_reason="stop"),
+        ])
+
+
+class _CapturingTransport:
+    """Captures on_text_chunk + on_stage calls for streaming tests."""
+
+    def __init__(self) -> None:
+        self.chunks: list[str] = []
+        self.stages: list[str] = []
+
+    async def on_stage(self, label: str, data: dict[str, object] | None = None) -> None:
+        self.stages.append(label)
+
+    async def on_text_chunk(self, text: str) -> None:
+        self.chunks.append(text)
+
+    async def on_response(self, text: str, data: dict[str, object] | None = None) -> None:
+        pass
+
+    async def on_debug_context(self, context: dict[str, object]) -> None:
+        pass
+
+    async def on_error(self, message: str, exc: Exception | None = None) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_complete_live_stream_yields_chunks_and_calls_transport(tmp_path: Path) -> None:
+    """complete_live_stream yields StreamedChunks and fires on_text_chunk per delta."""
+    runtime = _make_runtime(tmp_path, streaming="text")
+    # Inject a stub OpenAI client by monkeypatching the client factory.
+    stub_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=_StubStreamChatCompletions())
+    )
+    runtime.openai_client = stub_client
+    transport = _CapturingTransport()
+    model_def = StubModelDefinition(model_id="test-model", provider="openai")
+    chunks = []
+    async for chunk in providers.complete_live_stream(
+        runtime=runtime,
+        transport=transport,
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=model_def,
+        max_tokens=100,
+        temperature=0.0,
+    ):
+        chunks.append(chunk)
+    # Two text deltas yielded chunks with content, plus a finish_reason chunk.
+    assert len(chunks) == 3
+    assert chunks[0].content == "Hello"
+    assert chunks[1].content == " world"
+    assert chunks[2].finish_reason == "stop"
+    # Transport received each text delta via on_text_chunk.
+    assert transport.chunks == ["Hello", " world"]
+
+
+@pytest.mark.asyncio
+async def test_complete_live_stream_emits_stage_callbacks_for_hybrid(tmp_path: Path) -> None:
+    """Hybrid mode fires on_stage(model_call) and on_stage(model_call_complete)."""
+    runtime = _make_runtime(tmp_path, streaming="hybrid")
+    stub_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=_StubStreamChatCompletions())
+    )
+    runtime.openai_client = stub_client
+    transport = _CapturingTransport()
+    model_def = StubModelDefinition(model_id="test-model", provider="openai")
+    async for _ in providers.complete_live_stream(
+        runtime=runtime,
+        transport=transport,
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=model_def,
+        max_tokens=100,
+        temperature=0.0,
+    ):
+        pass
+    assert "model_call" in transport.stages
+    assert "model_call_complete" in transport.stages
+
+
+@pytest.mark.asyncio
+async def test_complete_live_stream_no_stage_callbacks_for_text_mode(tmp_path: Path) -> None:
+    """Text-only streaming does NOT fire stage callbacks (that's stage/hybrid's job)."""
+    runtime = _make_runtime(tmp_path, streaming="text")
+    stub_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=_StubStreamChatCompletions())
+    )
+    runtime.openai_client = stub_client
+    transport = _CapturingTransport()
+    model_def = StubModelDefinition(model_id="test-model", provider="openai")
+    async for _ in providers.complete_live_stream(
+        runtime=runtime,
+        transport=transport,
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=model_def,
+        max_tokens=100,
+        temperature=0.0,
+    ):
+        pass
+    assert transport.stages == []
+
+
 # ── handle_message model turns ───────────────────────────────────────
 
 
@@ -1487,19 +1477,6 @@ def test_initialize_runtime_accepts_session_context_file_path(tmp_path: Path) ->
     assert config.user_slug == str(context_file)
 
 
-def test_initialize_runtime_rejects_session_context_path_without_md(tmp_path: Path) -> None:
-    context_file = tmp_path / "founder.txt"
-    context_file.write_text("not markdown", encoding="utf-8")
-
-    # resolve_session_context_literal_path raises ValueError for non-.md files
-    with pytest.raises(ValueError, match=r"must end with '\.md'"):
-        session_context.resolve_session_context(
-            session_context=str(context_file),
-            data_dir=tmp_path,
-            content_loader=lambda _p: "",
-        )
-
-
 # ── Status time badge (CLI-only) ─────────────────────────────────────
 
 
@@ -1653,6 +1630,34 @@ async def test_build_turn_hooks_wires_recall_hook(tmp_path: Path) -> None:
     turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
 
 
+def test_build_turn_hooks_wires_complete_stream_for_text_mode(tmp_path: Path) -> None:
+    """When streaming mode is text/hybrid, complete_stream is wired on the hooks."""
+    runtime = _make_runtime(tmp_path, streaming="text:30")
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    assert hooks.complete_stream is not None
+
+
+def test_build_turn_hooks_wires_complete_stream_for_hybrid_mode(tmp_path: Path) -> None:
+    """Hybrid streaming also wires complete_stream."""
+    runtime = _make_runtime(tmp_path, streaming="hybrid")
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    assert hooks.complete_stream is not None
+
+
+def test_build_turn_hooks_omits_complete_stream_for_stage_mode(tmp_path: Path) -> None:
+    """Stage-only streaming does NOT wire complete_stream (stage uses on_stage, not chunks)."""
+    runtime = _make_runtime(tmp_path, streaming="stage")
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    assert hooks.complete_stream is None
+
+
+def test_build_turn_hooks_omits_complete_stream_when_disabled(tmp_path: Path) -> None:
+    """With streaming disabled, complete_stream stays None (non-streaming path)."""
+    runtime = _make_runtime(tmp_path, streaming="none")
+    hooks = turn_hooks_builder.build_turn_hooks(runtime, {"mode_id": "default"})
+    assert hooks.complete_stream is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.xfail(reason="turn hooks execute_operation wiring needs runtime + operation context migration")
 async def test_build_turn_hooks_routes_memory_through_operations(
@@ -1690,57 +1695,8 @@ def test_little_lisa_discovers_and_runs_hello_world_pack_from_sdk_content_roots(
     pass
 
 
-# ── Artifact session context ─────────────────────────────────────────
-
-
-def test_initialize_runtime_prefers_artifact_session_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    session_file = tmp_path / "session_context.md"
-    session_file.write_text('---\nname: "Artifact User"\n---\n# hello\n', encoding="utf-8")
-
-    # Auto-discovery from the data directory.
-    monkeypatch.chdir(tmp_path)
-    name, ref, is_active = session_context.resolve_session_context_auto(data_dir=tmp_path)
-
-    assert name == "Artifact User"
-    assert ref == str(session_file.resolve())
-    assert is_active is True
-
-
 # ── Verify command (CLI-only) ─────────────────────────────────────────
 
 
 def test_verify_command_respects_data_dir_override(tmp_path: Path) -> None:
     pytest.skip("migrated: _verify_command now in hosts/cli (CLI verify command)")
-def test_resolve_session_context_remote_url(tmp_path, monkeypatch):
-    import httpx
-    from hosts.core.session_context import resolve_session_context
-    def mock_get(self, url, **kwargs):
-        return httpx.Response(200, request=httpx.Request("GET", url), content=b"---\nname: remote_thread\n---\nhello")
-    monkeypatch.setattr(httpx.Client, "get", mock_get)
-    tn, path, is_active = resolve_session_context(
-        session_context="https://github.com/foo.md",
-        data_dir=tmp_path,
-        content_loader=lambda x: ""
-    )
-    assert tn == "remote_thread"
-    assert is_active is True
-    assert "session_context_cache" in path
-
-def test_resolve_session_context_remote_registry(tmp_path, monkeypatch):
-    import httpx
-    from configparser import ConfigParser # dummy import to avoid flake8 complaints if any
-    from hosts.core.session_context import resolve_session_context
-    def mock_get(self, url, **kwargs):
-        assert url.endswith("/lisa-framework/sessions/main/expert.md")
-        return httpx.Response(200, request=httpx.Request("GET", url), content=b"---\nname: expert_thread\n---\nhi")
-    monkeypatch.setattr(httpx.Client, "get", mock_get)
-    
-    def raise_fn(x):
-        raise FileNotFoundError()
-        
-    tn, path, is_active = resolve_session_context(
-        session_context="expert",
-        data_dir=tmp_path,
-        content_loader=raise_fn
-    )
-    assert tn == "expert_thread"
