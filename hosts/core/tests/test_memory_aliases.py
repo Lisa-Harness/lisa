@@ -258,9 +258,9 @@ class TestBackendResultMaps:
             kind="http",
             tool_names={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
             result_maps={
-                "add": "lisa_pack_mem0.result_maps.mem0_add_result_map",
-                "search": "lisa_pack_mem0.result_maps.mem0_search_result_map",
-                "list": "lisa_pack_mem0.result_maps.mem0_list_result_map",
+                "add": "lisa_packs.mem0.result_maps.mem0_add_result_map",
+                "search": "lisa_packs.mem0.result_maps.mem0_search_result_map",
+                "list": "lisa_packs.mem0.result_maps.mem0_list_result_map",
             },
         )
         add_map, search_map, list_map = _backend_result_maps(mem0_spec)
@@ -268,7 +268,7 @@ class TestBackendResultMaps:
         assert callable(search_map)
         assert callable(list_map)
         # Verify they are the actual functions from the module
-        from lisa_pack_mem0.result_maps import (
+        from lisa_packs.mem0.result_maps import (
             mem0_add_result_map,
             mem0_list_result_map,
             mem0_search_result_map,

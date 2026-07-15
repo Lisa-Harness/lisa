@@ -1275,7 +1275,7 @@ class MCPToolPool:
         # but the MCP session expects the bare tool name.  Strip the
         # namespace prefix before calling the server.  Use the resolved
         # server_id (not a naive first-dot split) so pack-contributed
-        # servers with dotted ids (e.g. ``lisa_pack_cloudflare.cloudflare-api``)
+        # servers with dotted ids (e.g. ``lisa_packs.cloudflare.cloudflare-api``)
         # dispatch to the correct native tool name (e.g. ``search``, not
         # ``cloudflare-api.search``).
         bare_name = tool_id

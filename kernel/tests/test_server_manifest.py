@@ -388,9 +388,9 @@ memory:
         search: search_memories
         list: get_memories
       result_maps:
-        add: lisa_pack_mem0.result_maps.mem0_add_result_map
-        search: lisa_pack_mem0.result_maps.mem0_search_result_map
-        list: lisa_pack_mem0.result_maps.mem0_list_result_map
+        add: lisa_packs.mem0.result_maps.mem0_add_result_map
+        search: lisa_packs.mem0.result_maps.mem0_search_result_map
+        list: lisa_packs.mem0.result_maps.mem0_list_result_map
 servers:
   - server_id: mem0
     runtime_kind: http
@@ -405,9 +405,9 @@ servers:
     assert len(mem.backends) == 1
     backend = mem.backends[0]
     assert backend.result_maps == {
-        "add": "lisa_pack_mem0.result_maps.mem0_add_result_map",
-        "search": "lisa_pack_mem0.result_maps.mem0_search_result_map",
-        "list": "lisa_pack_mem0.result_maps.mem0_list_result_map",
+        "add": "lisa_packs.mem0.result_maps.mem0_add_result_map",
+        "search": "lisa_packs.mem0.result_maps.mem0_search_result_map",
+        "list": "lisa_packs.mem0.result_maps.mem0_list_result_map",
     }
 
 

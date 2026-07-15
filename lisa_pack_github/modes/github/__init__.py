@@ -1,1 +1,0 @@
-"""GitHub status mode."""

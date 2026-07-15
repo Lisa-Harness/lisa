@@ -1,5 +1,0 @@
-tool_id: repo_search_code
-pack_id: lisa-pack-github
-description: "Search candidate files on the configured GitHub repository default branch."
-mode_allowlist: [repo]
-effect: read

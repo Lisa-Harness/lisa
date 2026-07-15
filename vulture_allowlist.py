@@ -41,13 +41,13 @@ sdk.get_content_root  # noqa: Vulture
 sdk.packs.core.get_content_root  # noqa: Vulture
 
 # reason: lisa.extensions.signal_connectors entry-point target (cloudflare)
-lisa_pack_cloudflare.connector.CloudflareSignalCollector  # noqa: Vulture
+lisa_packs.cloudflare.connector.CloudflareSignalCollector  # noqa: Vulture
 
 # reason: lisa.extensions.signal_connectors entry-point target (github)
-lisa_pack_github.connector.GitHubSignalCollector  # noqa: Vulture
+lisa_packs.github.connector.GitHubSignalCollector  # noqa: Vulture
 
 # reason: lisa.extensions.signal_connectors entry-point target (stripe)
-lisa_pack_stripe.connector.StripeSignalCollector  # noqa: Vulture
+lisa_packs.stripe.connector.StripeSignalCollector  # noqa: Vulture
 
 # ──────────────────────────────────────────────────────────────────────────
 # Operation execute() functions — dispatched via getattr(module, "execute")

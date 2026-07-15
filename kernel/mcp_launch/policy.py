@@ -161,7 +161,7 @@ class AliasSpec:
     registers each alias as a synthetic tool after ``pool.start()`` so the
     model sees a stable name (e.g. ``cloudflare.search``) instead of the
     filesystem-derived namespaced id (e.g.
-    ``lisa_pack_cloudflare.cloudflare-api.search``).
+    ``lisa_packs.cloudflare.cloudflare-api.search``).
     """
 
     alias_name: str

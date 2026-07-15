@@ -1,5 +1,0 @@
-tool_id: repo_list_tree
-pack_id: lisa-pack-github
-description: "List bounded direct child files and directories from the configured GitHub repository."
-mode_allowlist: [repo]
-effect: read

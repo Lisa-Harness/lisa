@@ -18,17 +18,12 @@ members = [
     "lisa-host-web",
     "lisa-kernel",
     "lisa-mcp-servers",
-    "lisa-pack-brave-search",
     "lisa-pack-checkpoint",
-    "lisa-pack-cloudflare",
     "lisa-pack-coding",
     "lisa-pack-core",
-    "lisa-pack-github",
-    "lisa-pack-gmail",
     "lisa-pack-learning",
-    "lisa-pack-mem0",
+    "lisa-pack-model-picker",
     "lisa-pack-search",
-    "lisa-pack-stripe",
     "lisa-sdk",
 ]
 
@@ -893,6 +888,7 @@ dependencies = [
     { name = "lisa-pack-gmail" },
     { name = "lisa-pack-learning" },
     { name = "lisa-pack-mem0" },
+    { name = "lisa-pack-model-picker" },
     { name = "lisa-pack-search" },
     { name = "lisa-pack-stripe" },
     { name = "lisa-sdk" },
@@ -920,17 +916,18 @@ requires-dist = [
     { name = "lisa-host-web", editable = "hosts/web" },
     { name = "lisa-kernel", editable = "kernel" },
     { name = "lisa-mcp-servers", editable = "mcp_server" },
-    { name = "lisa-pack-brave-search", editable = "lisa_pack_brave_search" },
+    { name = "lisa-pack-brave-search", directory = "../lisa_packs/brave_search" },
     { name = "lisa-pack-checkpoint", editable = "sdk/packs/checkpoint" },
-    { name = "lisa-pack-cloudflare", editable = "lisa_pack_cloudflare" },
+    { name = "lisa-pack-cloudflare", directory = "../lisa_packs/cloudflare" },
     { name = "lisa-pack-coding", editable = "sdk/packs/coding" },
     { name = "lisa-pack-core", editable = "sdk/packs/core" },
-    { name = "lisa-pack-github", editable = "lisa_pack_github" },
-    { name = "lisa-pack-gmail", editable = "lisa_pack_gmail" },
+    { name = "lisa-pack-github", directory = "../lisa_packs/github" },
+    { name = "lisa-pack-gmail", directory = "../lisa_packs/gmail" },
     { name = "lisa-pack-learning", editable = "sdk/packs/learning" },
-    { name = "lisa-pack-mem0", editable = "lisa_pack_mem0" },
+    { name = "lisa-pack-mem0", directory = "../lisa_packs/mem0" },
+    { name = "lisa-pack-model-picker", editable = "sdk/packs/model_picker" },
     { name = "lisa-pack-search", editable = "sdk/packs/search" },
-    { name = "lisa-pack-stripe", editable = "lisa_pack_stripe" },
+    { name = "lisa-pack-stripe", directory = "../lisa_packs/stripe" },
     { name = "lisa-sdk", editable = "sdk" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
@@ -1233,16 +1230,9 @@ provides-extras = ["dev"]
 [[package]]
 name = "lisa-pack-brave-search"
 version = "0.1.0"
-source = { editable = "lisa_pack_brave_search" }
+source = { directory = "../lisa_packs/brave_search" }
 dependencies = [
     { name = "httpx" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-mock" },
 ]
 
 [package.metadata]
@@ -1281,26 +1271,14 @@ provides-extras = ["dev"]
 [[package]]
 name = "lisa-pack-cloudflare"
 version = "0.1.0"
-source = { editable = "lisa_pack_cloudflare" }
+source = { directory = "../lisa_packs/cloudflare" }
 dependencies = [
     { name = "httpx" },
-    { name = "lisa-kernel" },
-    { name = "lisa-sdk" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "lisa-kernel", editable = "kernel" },
-    { name = "lisa-sdk", editable = "sdk" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
@@ -1348,26 +1326,14 @@ provides-extras = ["dev"]
 [[package]]
 name = "lisa-pack-github"
 version = "0.1.0"
-source = { editable = "lisa_pack_github" }
+source = { directory = "../lisa_packs/github" }
 dependencies = [
     { name = "httpx" },
-    { name = "lisa-kernel" },
-    { name = "lisa-sdk" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "lisa-kernel", editable = "kernel" },
-    { name = "lisa-sdk", editable = "sdk" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
@@ -1378,26 +1344,14 @@ provides-extras = ["dev"]
 [[package]]
 name = "lisa-pack-gmail"
 version = "0.1.0"
-source = { editable = "lisa_pack_gmail" }
+source = { directory = "../lisa_packs/gmail" }
 dependencies = [
     { name = "httpx" },
-    { name = "lisa-kernel" },
-    { name = "lisa-sdk" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "lisa-kernel", editable = "kernel" },
-    { name = "lisa-sdk", editable = "sdk" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
@@ -1428,7 +1382,27 @@ provides-extras = ["dev"]
 [[package]]
 name = "lisa-pack-mem0"
 version = "0.1.0"
-source = { editable = "lisa_pack_mem0" }
+source = { directory = "../lisa_packs/mem0" }
+
+[[package]]
+name = "lisa-pack-model-picker"
+version = "0.1.0"
+source = { editable = "sdk/packs/model_picker" }
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "lisa-pack-search"
@@ -1453,26 +1427,14 @@ provides-extras = ["dev"]
 [[package]]
 name = "lisa-pack-stripe"
 version = "0.1.0"
-source = { editable = "lisa_pack_stripe" }
+source = { directory = "../lisa_packs/stripe" }
 dependencies = [
     { name = "httpx" },
-    { name = "lisa-kernel" },
-    { name = "lisa-sdk" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "lisa-kernel", editable = "kernel" },
-    { name = "lisa-sdk", editable = "sdk" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
@@ -1517,7 +1479,7 @@ name = "macholib"
 version = "1.16.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "altgraph", marker = "python_full_version >= '3.15' or sys_platform != 'win32'" },
+    { name = "altgraph" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/10/2f/97589876ea967487978071c9042518d28b958d87b17dceb7cdc1d881f963/macholib-1.16.4.tar.gz", hash = "sha256:f408c93ab2e995cd2c46e34fe328b130404be143469e41bc366c807448979362", size = 59427, upload-time = "2025-11-22T08:28:38.373Z" }
 wheels = [
@@ -2276,7 +2238,7 @@ name = "pyobjc-framework-cocoa"
 version = "12.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyobjc-core", marker = "python_full_version >= '3.15' or sys_platform != 'win32'" },
+    { name = "pyobjc-core" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6d/cc/927169225e72bab9c9b44285656768fb75052a0bc85fdbca62740e1ca43c/pyobjc_framework_cocoa-12.2.tar.gz", hash = "sha256:20b392e2b7241caad0538dfde12143343e5dfe48f72e7df660a7548e635903dc", size = 3125555, upload-time = "2026-05-30T12:35:09.273Z" }
 wheels = [
@@ -2295,8 +2257,8 @@ name = "pyobjc-framework-quartz"
 version = "12.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyobjc-core", marker = "python_full_version >= '3.15' or sys_platform != 'win32'" },
-    { name = "pyobjc-framework-cocoa", marker = "python_full_version >= '3.15' or sys_platform != 'win32'" },
+    { name = "pyobjc-core" },
+    { name = "pyobjc-framework-cocoa" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/91/a3/5ae4c90c13999b46315f549694f25c374c48a9f7ab18f98ace6e74f4a5c1/pyobjc_framework_quartz-12.2.tar.gz", hash = "sha256:b343395d4790323b0376fe20c83ac468510ba19f65429323ca211708c939d107", size = 3215525, upload-time = "2026-05-30T12:44:27.759Z" }
 wheels = [
@@ -2402,7 +2364,7 @@ name = "python-xlib"
 version = "0.33"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "six", marker = "python_full_version >= '3.15' or sys_platform != 'win32'" },
+    { name = "six" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/86/f5/8c0653e5bb54e0cbdfe27bf32d41f27bc4e12faa8742778c17f2a71be2c0/python-xlib-0.33.tar.gz", hash = "sha256:55af7906a2c75ce6cb280a584776080602444f75815a7aff4d287bb2d7018b32", size = 269068, upload-time = "2022-12-25T18:53:00.824Z" }
 wheels = [

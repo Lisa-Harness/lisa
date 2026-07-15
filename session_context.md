@@ -4,13 +4,15 @@ name: testing
 surface:
   type: personal_dm
   id: host-console
-  memory_scope: testing
+  memory_scope: personal
 resources:
   packs:
     include:
       - lisa-pack-core
       - lisa-pack-learning
       - lisa-pack-search
+      - lisa-pack-mem0
+      - lisa-pack-cloudflare
       - lisa-pack-github
       - lisa-pack-coding
     required:
@@ -20,7 +22,7 @@ resources:
         workspace_root: "."
         checks:
           - id: focused-tests
-            argv: [uv, run, pytest, kernel/tests, hosts/core/tests, sdk/packs/coding/tests, lisa_pack_github/tests, -q]
+            argv: [uv, run, pytest, kernel/tests, hosts/core/tests, sdk/packs/coding/tests, ../lisa_packs/github/tests, -q]
             timeout_seconds: 600
         required_check_ids: [focused-tests]
         branch_prefix: "lisa/"
@@ -31,13 +33,15 @@ resources:
         allowed_base_branches: [main]
         branch_prefix: "lisa/"
         protected_branches: [main, master, develop, prod, production]
+  servers:
+    exclude: [learning.lisa-memory]
 providers:
   modes:
     default: lisa-pack-core
   tools:
     web_search: lisa-pack-brave-search
   capabilities:
-    memory: lisa-pack-learning
+    memory: lisa-pack-mem0
 routing:
   start_mode: default
 context:

@@ -652,7 +652,7 @@ def register_mcp_aliases(pool: Any) -> None:
     After ``pool.start()``, walk every config's ``aliases`` tuple and register
     each as a synthetic tool via ``mcp_alias_tool``. The alias gives the model
     a stable name (e.g. ``cloudflare.search``) instead of the namespaced
-    server id (e.g. ``lisa_pack_cloudflare.cloudflare-api.search``).
+    server id (e.g. ``lisa_packs.cloudflare.cloudflare-api.search``).
 
     Must be called after ``pool.start()`` so the alias handlers can route to
     live server sessions.

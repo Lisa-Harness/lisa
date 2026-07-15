@@ -1,5 +1,0 @@
-operation_id: github_status
-description: Produce a GitHub repository and CI health summary from the cached signal snapshot.
-mode_allowlist: [github]
-timeout_seconds: 10
-max_calls_per_turn: 1

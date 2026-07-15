@@ -39,9 +39,9 @@ operations/stripe_status/
 └── stripe_status.py    ← async def execute(ctx: OperationExecutionContext) -> OperationResult
 ```
 
-Real examples: `lisa_pack_stripe/operations/stripe_status/`,
-`lisa_pack_github/operations/github_status/`,
-`lisa_pack_model_advisor/operations/advise_models/`.
+Real examples: `lisa_packs/stripe/operations/stripe_status/`,
+`lisa_packs/github/operations/github_status/`,
+`sdk/packs/model_picker/operations/advise_models/`.
 
 ### Declarative (prompt) operations (`execution_kind: "prompt"`)
 

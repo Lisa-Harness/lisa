@@ -46,16 +46,19 @@ Hosts decide which groups they discover and how often extension outputs are coll
 
 ## Public Integration Packs
 
-- `lisa_pack_cloudflare`: Cloudflare zone, worker, and edge infrastructure status pack (published as `lisa-pack-cloudflare`). Includes modes, operations, content, signal connectors, anomaly detectors, and all SDK extension kinds.
-- `lisa_pack_github`: GitHub repository, CI/CD, and PR health status pack (published as `lisa-pack-github`). Includes modes, operations, content, signal connectors, anomaly detectors, and all SDK extension kinds.
-- `lisa_pack_stripe`: Stripe subscription, trial, and billing health status pack (published as `lisa-pack-stripe`). Includes modes, operations, content, signal connectors, anomaly detectors, and all SDK extension kinds.
+The six external packs live in the [lisa-framework/packs](https://github.com/lisa-framework/packs) repository under the shared `lisa_packs` namespace package:
+
+- `lisa_packs.cloudflare`: Cloudflare zone, worker, and edge infrastructure status pack (published as `lisa-pack-cloudflare`). Includes modes, operations, content, signal connectors, anomaly detectors, and all SDK extension kinds.
+- `lisa_packs.github`: GitHub repository, CI/CD, and PR health status pack (published as `lisa-pack-github`). Includes modes, operations, content, signal connectors, anomaly detectors, and all SDK extension kinds.
+- `lisa_packs.stripe`: Stripe subscription, trial, and billing health status pack (published as `lisa-pack-stripe`). Includes modes, operations, content, signal connectors, anomaly detectors, and all SDK extension kinds.
 
 Provider packs:
 
-- `lisa_pack_mem0` (published as `lisa-pack-mem0`): external memory provider pack that contributes Mem0 MCP memory ownership metadata.
-- `lisa_pack_brave_search` (published as `lisa-pack-brave-search`): external `web_search` provider implementation pack that can replace the bundled search stub.
+- `lisa_packs.mem0` (published as `lisa-pack-mem0`): external memory provider pack that contributes Mem0 MCP memory ownership metadata.
+- `lisa_packs.brave_search` (published as `lisa-pack-brave-search`): external `web_search` provider implementation pack that can replace the bundled search stub.
+- `lisa_packs.gmail` (published as `lisa-pack-gmail`): Gmail draft creation pack that provides the `gmail_create_draft` tool.
 
-These packs live as top-level directories in the workspace and are installable via `/pack install` from PyPI or Git (`github.com/the-migus-group`). They can also be installed from a local folder for development.
+These packs are installable via `/pack install` from PyPI or Git (`github.com/lisa-framework/packs`). They can also be installed from a local folder for development.
 
 CloudServers operations and market-intel extensions are intentionally not included in this public staged tree.
 
