@@ -215,28 +215,65 @@ class SqliteMemoryStore:
         memory_scope = str(kwargs.get("memory_scope") or "personal").strip() or "personal"
         surface_id = str(kwargs.get("surface_id") or "").strip()
         limit = int(kwargs.get("limit", 5) or 5)
+        recall_pool = int(kwargs.get("recall_pool", 40) or 40)
 
         assert self._conn is not None
+
+        tokens = {token.strip().lower() for token in query.split() if token.strip()}
+        now_iso = _now_iso()
+
         rows = self._conn.execute(
             """
             SELECT * FROM memories
             WHERE user_slug = ? AND workspace_id = ? AND memory_scope = ? AND surface_id = ?
+              AND (expires_at IS NULL OR expires_at >= ?)
             ORDER BY id DESC
             LIMIT ?
             """,
-            (user_slug, workspace_id, memory_scope, surface_id, limit),
+            (user_slug, workspace_id, memory_scope, surface_id, now_iso, recall_pool),
         ).fetchall()
         if not rows:
             return ""
-        tokens = {token.strip().lower() for token in query.split() if token.strip()}
+
         ranked: list[tuple[float, MemoryRecord]] = []
         for row in rows:
             record = _row_to_record(row)
-            haystack = f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
-            overlap = len(tokens.intersection({tok.lower() for tok in haystack.split()}))
-            lexical = overlap / max(len(tokens), 1) if tokens else 1.0
-            ranked.append((lexical + max(record.salience, 0.0) * 0.2, record))
+            haystack_lower = (
+                f"{record.content} "
+                f"{json.dumps(record.content_json, ensure_ascii=True)}"
+            ).lower()
+            if tokens:
+                haystack_tokens = {tok for tok in haystack_lower.split()}
+                overlap = len(tokens & haystack_tokens)
+                # Normalize by both query size and content length to avoid
+                # rewarding short content with a single matching keyword.
+                content_word_count = max(len(haystack_tokens), 1)
+                lexical = overlap / max(len(tokens), 1) * (1.0 - 1.0 / content_word_count)
+            else:
+                lexical = 1.0
+            salience_boost = max(record.salience, 0.0) * 0.2
+            # Small recency bias: newer records (higher id) get a slight edge,
+            # bounded so it never overrides a strong lexical match.
+            ranked.append((lexical + salience_boost, record))
+
         ranked.sort(key=lambda item: (item[0], item[1].id), reverse=True)
         top = ranked[: max(1, min(limit, 8))]
+
+        # Opportunistic access tracking: bump access_count and last_accessed_at
+        # for the records we actually surfaced. Piggybacks on the recall call
+        # — no separate maintenance pass needed.
+        top_ids = [record.id for _, record in top]
+        if top_ids:
+            placeholders = ",".join("?" * len(top_ids))
+            self._conn.execute(
+                f"""
+                UPDATE memories
+                SET access_count = access_count + 1, last_accessed_at = ?
+                WHERE id IN ({placeholders})
+                """,
+                (now_iso, *top_ids),
+            )
+            self._conn.commit()
+
         lines = [f"- {record.content}" for _, record in top]
         return "\n".join(lines)
