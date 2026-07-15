@@ -90,3 +90,31 @@ def test_session_pack_selection_overrides_lock_default_without_overriding_host_m
     )
     assert cloudflare_root not in excluded_roots
     assert core_root in excluded_roots
+
+
+def test_infer_pack_package_name_maps_lisa_packs_site_packages_to_canonical_name(
+    tmp_path: Path,
+) -> None:
+    """Regression: external packs installed under ``site-packages/lisa_packs/<name>``
+    must infer the canonical ``lisa-pack-<name>`` distribution name (matching the
+    pyproject name) so session-plan provider selections like
+    ``memory: lisa-pack-mem0`` resolve. Without this, ``infer_pack_package_name``
+    fell back to the bare directory name (``mem0``) and the memory capability
+    owner selection silently returned None — routing ``memory.search`` to the
+    excluded first-party ``lisa-memory`` server instead of mem0."""
+    site_packages = tmp_path / "site-packages" / "lisa_packs"
+    mem0_root = site_packages / "mem0"
+    mem0_root.mkdir(parents=True)
+    brave_root = site_packages / "brave_search"
+    brave_root.mkdir()
+
+    assert content_roots.infer_pack_package_name(mem0_root) == "lisa-pack-mem0"
+    assert content_roots.infer_pack_package_name(brave_root) == "lisa-pack-brave-search"
+
+
+def test_infer_pack_package_name_sdk_packs_keep_canonical_name(tmp_path: Path) -> None:
+    """SDK workspace packs under ``sdk/packs/<name>`` keep resolving to
+    ``lisa-pack-<name>`` — the new lisa_packs branch must not regress them."""
+    sdk_root = tmp_path / "sdk" / "packs" / "learning"
+    sdk_root.mkdir(parents=True)
+    assert content_roots.infer_pack_package_name(sdk_root) == "lisa-pack-learning"

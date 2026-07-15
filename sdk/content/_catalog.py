@@ -502,7 +502,8 @@ def _load_operations_from_root(
     for md_path in _iter_operation_markdown_files(root):
         op_dict = _load_markdown_operation(md_path)
         if op_dict is not None:
-            op_dict.setdefault("operation_provider_id", inferred_provider_id)
+            if not op_dict.get("operation_provider_id"):
+                op_dict["operation_provider_id"] = inferred_provider_id
             catalog[op_dict["operation_id"]] = op_dict
 
     # 2. Python runtime operations with .yml metadata
@@ -513,7 +514,8 @@ def _load_operations_from_root(
             continue
         op_dict = _load_runtime_operation(py_path, yml_path, root)
         if op_dict is not None:
-            op_dict.setdefault("operation_provider_id", inferred_provider_id)
+            if not op_dict.get("operation_provider_id"):
+                op_dict["operation_provider_id"] = inferred_provider_id
             op_id = op_dict["operation_id"]
             if op_id in catalog and catalog[op_id].get("execution_kind") == "prompt":
                 logger.info(
@@ -570,6 +572,7 @@ def _load_markdown_operation(md_path: Path) -> dict[str, Any] | None:
         "operation_id": operation_id,
         "description": str(metadata.get("description", "") or ""),
         "pack_id": str(metadata.get("pack_id", "") or "").strip(),
+        "operation_provider_id": str(metadata.get("operation_provider_id", "") or "").strip(),
         "effect": str(metadata.get("effect", "read") or "read"),
         "approval_required": bool(metadata.get("approval_required", False)),
         "approval_preview": str(metadata.get("approval_preview", "") or "").strip(),
@@ -618,6 +621,7 @@ def _load_runtime_operation(
         "operation_id": operation_id,
         "description": str(metadata.get("description", "") or ""),
         "pack_id": str(metadata.get("pack_id", "") or "").strip(),
+        "operation_provider_id": str(metadata.get("operation_provider_id", "") or "").strip(),
         "effect": str(metadata.get("effect", "read") or "read"),
         "approval_required": bool(metadata.get("approval_required", False)),
         "approval_preview": str(metadata.get("approval_preview", "") or "").strip(),
@@ -727,7 +731,8 @@ def _load_tools_from_root(
             continue
         tool_dict = _load_runtime_tool(py_path, yml_path, root)
         if tool_dict is not None:
-            tool_dict.setdefault("tool_provider_id", inferred_provider_id)
+            if not tool_dict.get("tool_provider_id"):
+                tool_dict["tool_provider_id"] = inferred_provider_id
             catalog[tool_dict["tool_id"]] = tool_dict
     return catalog
 
@@ -792,6 +797,7 @@ def _load_runtime_tool(
         "tool_id": tool_id,
         "description": str(metadata.get("description", "") or ""),
         "pack_id": str(metadata.get("pack_id", "") or "").strip(),
+        "tool_provider_id": str(metadata.get("tool_provider_id", "") or "").strip(),
         "effect": str(metadata.get("effect", "read") or "read"),
         "approval_required": bool(metadata.get("approval_required", False)),
         "approval_preview": str(metadata.get("approval_preview", "") or "").strip(),

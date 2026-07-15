@@ -8,6 +8,7 @@ filters.
 from __future__ import annotations
 
 import json
+import logging
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -18,6 +19,8 @@ from kernel.models import (
     ToolExecutionContext,
 )
 from sdk.config import settings
+
+logger = logging.getLogger(__name__)
 from sdk.packs.learning.utils.memory_recall import build_memory_recall_answer
 
 
@@ -98,13 +101,21 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                 continue
             try:
                 records.append(MemoryRecord.model_validate(item))
-            except (ValidationError, TypeError):
+            except (ValidationError, TypeError) as exc:
+                logger.debug(
+                    "recall_memory: dropped record on validation: %s",
+                    exc,
+                    exc_info=False,
+                )
                 continue
+
+    deep = bool(ctx.params.get("deep", False))
 
     recall = build_memory_recall_answer(
         query=raw_query,
         records=records,
         limit=limit,
+        deep=deep,
     )
 
     if not recall.found:

@@ -24,8 +24,21 @@ def build_memory_recall_answer(
     query: str,
     records: list[MemoryRecord],
     limit: int,
+    deep: bool = False,
 ) -> MemoryRecallAnswer:
-    """Rank records by lexical overlap plus salience and build the recall answer."""
+    """Rank records by lexical overlap plus salience and build the recall answer.
+
+    The backend (``memory.search``) already filtered for semantic relevance
+    before we get here — the records it returned are candidates, not raw
+    noise. Lexical overlap is a *ranking signal*, not a hard filter: records
+    with zero token overlap are kept and ranked by salience alone so that
+    semantically-relevant but lexically-disjoint memories (the common case
+    when the model paraphrases a stored fact) still surface. ``deep`` is
+    accepted for API parity with the operation contract but, because the
+    backend already filtered, it does not change which records survive —
+    only the relative ranking weights shift (deep mode weights salience
+    over lexical overlap).
+    """
     if not records:
         return MemoryRecallAnswer(
             query=query,
@@ -38,10 +51,14 @@ def build_memory_recall_answer(
     for record in records:
         haystack = f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
         overlap = len(query_tokens.intersection(_tokenize(haystack)))
-        if overlap <= 0 and query_tokens:
-            continue
-        lexical_score = overlap / max(len(query_tokens), 1) if query_tokens else 1.0
-        combined = min(1.0, lexical_score + max(0.0, record.salience) * 0.2)
+        lexical_score = overlap / max(len(query_tokens), 1) if query_tokens else 0.0
+        # In deep mode, salience dominates (the backend vouched for relevance,
+        # so trust its score); in normal mode, lexical overlap is the primary
+        # signal with salience as a tiebreaker. Either way the record survives.
+        if deep:
+            combined = min(1.0, max(0.0, record.salience) + lexical_score * 0.2)
+        else:
+            combined = min(1.0, lexical_score + max(0.0, record.salience) * 0.2)
         ranked.append((combined, record))
 
     ranked.sort(key=lambda item: (item[0], item[1].id), reverse=True)

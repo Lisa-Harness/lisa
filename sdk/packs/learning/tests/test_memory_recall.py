@@ -150,3 +150,92 @@ async def test_recall_operation_searches_and_unwraps_mem0_envelope() -> None:
     # Verify the Mem0 envelope was unwrapped and ranked
     assert result.output_json["found"] is True
     assert "PostgreSQL for analytics" in result.output_text
+
+
+def test_build_memory_recall_answer_surfaces_lexically_disjoint_records_by_salience() -> None:
+    """Regression: the backend already filtered for semantic relevance, so
+    records with zero lexical overlap must NOT be dropped — they rank by
+    salience alone. Otherwise a full mem0 payload returns "No memory matches
+    found" (the false negative the user hit)."""
+    recall = build_memory_recall_answer(
+        query="provenance metadata",
+        records=[
+            _record(
+                record_id=1,
+                content="Every assistant reply carries an attribution envelope.",
+                salience=0.9,
+            ),
+            _record(
+                record_id=2,
+                content="We stamp AI outputs with an origin trace.",
+                salience=0.7,
+            ),
+        ],
+        limit=5,
+    )
+
+    assert recall.found is True
+    assert len(recall.evidence) == 2
+    # Highest salience wins when there is no lexical overlap to break ties.
+    assert recall.evidence[0].memory_id == 1
+
+
+def test_build_memory_recall_answer_deep_keeps_zero_overlap_records() -> None:
+    """``deep`` must keep every record the backend returned regardless of
+    lexical overlap — the operation contract says a forced deep recall cannot
+    silently drop backend results."""
+    recall = build_memory_recall_answer(
+        query="provenance metadata",
+        records=[
+            _record(
+                record_id=1,
+                content="An unrelated but salient stored fact.",
+                salience=0.4,
+            ),
+        ],
+        limit=5,
+        deep=True,
+    )
+
+    assert recall.found is True
+    assert len(recall.evidence) == 1
+
+
+@pytest.mark.asyncio
+async def test_recall_operation_deep_returns_results_with_no_lexical_overlap() -> None:
+    """End-to-end regression for the false-negative bug: the model called
+    ``recall_memory`` with ``deep=true`` and a keyword-salad query, the mem0
+    payload was full of semantically-relevant memories, but the operation
+    returned "No memory matches found" because the lexical gate dropped them
+    all. With ``deep`` honored, the results surface."""
+    async def execute_tool(_tool_id: str, _ctx: object) -> ToolResult:
+        return ToolResult(
+            tool_id="memory.search",
+            output_text=json.dumps(
+                [
+                    _record(
+                        record_id=1,
+                        content="Every assistant reply carries an attribution envelope.",
+                        salience=0.9,
+                    ).model_dump(mode="json"),
+                ]
+            ),
+        )
+
+    ctx = OperationExecutionContext(
+        operation_id="recall_memory",
+        user_slug="adam",
+        user_id="adam",
+        workspace_id="default",
+        params={
+            "query": "provenance metadata system_provenance model_id",
+            "deep": True,
+            "limit": 5,
+        },
+        execute_tool_fn=execute_tool,
+    )
+
+    result = await execute(ctx)
+
+    assert result.output_json["found"] is True
+    assert "attribution envelope" in result.output_text

@@ -22,3 +22,7 @@ description: "General conversational mode."
 
 Offer general conversation, questions, and answers.
 Always seek clarification when user intent or context is ambiguous.
+
+When the user asks you to remember, recall, or retrieve something from memory,
+call the `recall_memory` operation with their question as the `query` and
+report what it returns. Do not claim a result without calling the tool first.

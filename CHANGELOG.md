@@ -139,14 +139,13 @@ All notable changes to the Lisa Framework will be documented in this file.
 - Shared routing engine (`router.py`) with fast-path regex matching, verifier-model confirmation, model-bounded routing fallback, and structured-output retry.
 - Turn runner (`turn_runner.py`) — the single model+tool loop shared by lightweight hosts and the full app, with `TurnHooks` extension points and three-phase execution (pre-turn → tool loop → post-turn).
 - Opportunistic slice system (`slice.py`) with pressure-model budget math: budget grows as a function of idle time, not a wall-clock tick.
-- Pydantic contracts (`models.py`) for surface context, route decisions, operation execution, tool execution, workflow FSM, workshop fan-out, memory, surf sessions, web search, intelligence pipeline, unified state, context evidence, anomaly alerts, domain knowledge, self-model, and more.
+- Pydantic contracts (`models.py`) for surface context, route decisions, operation execution, tool execution, workflow FSM, workshop fan-out, memory, web search, intelligence pipeline, unified state, context evidence, anomaly alerts, domain knowledge, self-model, and more.
 - Provider gateway abstractions (`provider_core.py`) with `AzureOpenAIGateway`, `OpenAICompatibleGateway`, completion/embedding request/result dataclasses, and Anthropic usage extraction.
 - Model manifest loader (`model_manifest.py`) with YAML/JSON parsing, designation-based model resolution, and per-mode model overrides.
 - Content roots discovery (`content_roots.py`) via `lisa.extensions.content_roots` entry points and `SDK_CONTENT_ROOTS` env var.
 - Extension runtime contracts (`extension_runtime.py`) for scheduled jobs, state hydration, heartbeat context, digest sections, debug context, anomaly detectors, and context evidence builders.
 - Signal connector base class (`intake/connectors.py`) and data source base class (`intake/sources.py`).
 - Brave Web Search integration (`web_search.py`) with configurable endpoint, market, and result count.
-- Durable surf session helpers (`surf_workflow.py`) for iterative browser workflows with TTL, trimming, and page/commentary tracking.
 - MCP memory client (`mcp_client.py`) for delegating memory operations to the `lisa-context` MCP server over stdio.
 - OpenAI function-tool schema builder (`openai_function_tools.py`) with strict-mode support.
 - Blank state provider (`state_providers.py`) for hosts that don't need memory.

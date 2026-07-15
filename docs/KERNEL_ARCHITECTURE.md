@@ -1,6 +1,6 @@
 # Kernel Architecture
 
-This document describes the architecture of `lisa-kernel`, the runtime-neutral engine at the center of the Lisa Framework. It is written for contributors who need to understand how the pieces fit together and for host authors who need to wire the kernel into their own applications.
+`lisa-kernel` is the runtime-neutral engine at the center of the Lisa Framework.
 
 ## Design Philosophy
 
@@ -28,7 +28,7 @@ Key principles:
 
 | Module | Responsibility |
 | --- | --- |
-| `models.py` | All runtime-neutral Pydantic contracts: surface context, route decisions, operation/tool execution, workflow FSM, workshop fan-out, memory, surf sessions, web search, intelligence pipeline, unified state, context evidence, anomaly alerts, domain knowledge, self-model. |
+| `models.py` | All runtime-neutral Pydantic contracts: surface context, route decisions, operation/tool execution, workflow FSM, workshop fan-out, memory, web search, intelligence pipeline, unified state, context evidence, anomaly alerts, domain knowledge, self-model. |
 | `provider_core.py` | Provider gateway abstractions: `AzureOpenAIGateway`, `OpenAICompatibleGateway`, completion/embedding request/result dataclasses, message normalization, and usage extraction. |
 | `extension_runtime.py` | Extension job and rendering contracts: `ScheduledExtensionJob`, `ExtensionRuntimeContext`, state hydration, heartbeat context, digest sections, debug context, anomaly detectors, context evidence builders. |
 
@@ -282,10 +282,8 @@ A real host must inject concrete implementations for these seams:
 | Memory | MCP memory server (`lisa-context`) | SQLite-backed MCP store |
 | Input guard | `ContextSeams.input_guard` | `PassThroughInputGuard` (default), Azure AI Content Safety, Bedrock Guardrails, regex |
 | Output guard | `ContextSeams.output_guard` | `PassThroughOutputGuard` (default), Azure AI Content Safety, Bedrock Guardrails, Presidio |
-| Blob/object storage | Host-owned | Azure Blob, S3, local filesystem |
 | Transport adapter | Host-owned | Teams, Slack, WebSocket, console |
 | Scheduler | Host-owned | For signal connector polling and heartbeat jobs |
-| Browser automation | Host-owned | For surf workflow execution |
 
 The shared host runtime (`hosts/core`) is the reference host. It wires a minimal subset of these seams for local development and pack authoring, shared by the CLI, web, and VS Code transport hosts.
 

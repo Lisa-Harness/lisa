@@ -135,7 +135,15 @@ def test_compile_session_plan_requires_nonempty_body() -> None:
         )
 
 
-def test_bundled_default_session_selects_duplicate_catalog_providers() -> None:
+def test_bundled_default_session_compiles_with_core_mode_provider() -> None:
+    """The bundled default must compile and assign the core pack to the default mode.
+
+    The bundled default intentionally does not declare ``providers.tools`` for
+    ``web_search`` — that catalog collision belongs to the host's
+    ``session_context.md``, not the core pack's bundled fallback.  The search
+    pack ships its own graceful ``web_search`` stub, so the bundled default
+    stays pack-encapsulated (no reference to external search provider packs).
+    """
     default_session_path = (
         Path(__file__).resolve().parents[2]
         / "sdk"
@@ -149,4 +157,4 @@ def test_bundled_default_session_selects_duplicate_catalog_providers() -> None:
     plan = compile_session_plan(text=text, source_uri=str(default_session_path))
 
     assert plan.manifest.providers.modes == {"default": "lisa-pack-core"}
-    assert plan.manifest.providers.tools == {"web_search": "lisa-pack-brave-search"}
+    assert plan.manifest.providers.tools == {}

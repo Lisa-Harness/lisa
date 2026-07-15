@@ -1,2 +1,3 @@
 tool_id: web_search
+tool_provider_id: lisa-pack-search
 description: "Generic web search contract. Install a provider pack (for example lisa-pack-brave-search) to enable live results."
