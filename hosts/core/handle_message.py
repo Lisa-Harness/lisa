@@ -5,11 +5,11 @@ This is the core ``handle_message`` entry point that all transport hosts
 
 1. **Host command dispatch** — delegates to ``hosts.core.commands`` for
    ``/help``, ``/settings``, ``/tokens``, ``/debug``, ``/consolidate``,
-    ``/intake``, ``/pack``, ``/models``. Pack-registered commands
-    (``/checkpoint``, ``/restore``, ``/checkpoints``, ``/summarize-history``)
-    are discovered via ``lisa.extensions.host_commands`` and dispatched
-    after built-in host commands.
-    ``/models``.
+    ``/intake``, ``/pack``, ``/models``, ``/modes``, ``/operations``,
+    ``/tools``. Pack-registered commands (``/checkpoint``, ``/restore``,
+    ``/checkpoints``, ``/summarize-history``) are discovered via
+    ``lisa.extensions.host_commands`` and dispatched after built-in host
+    commands.
 2. **Model turn routing** — for non-command messages: checks for ``/deep``
    prefix, parses slash-command routes, plans routes for natural
    language, tries the router direct-response shortcut, tries the
@@ -55,7 +55,10 @@ from hosts.core.commands import (
     mode_support_gap,
     model_alias_for_mode,
     preferred_model_id_for_route,
+    render_modes_list,
+    render_operations_list,
     render_runtime_settings,
+    render_tools_list,
     run_explicit_slice_command,
     set_runtime_route_preview,
 )
@@ -124,6 +127,7 @@ def _token_state_dict(runtime: HostRuntime) -> dict[str, Any]:
         "session_turn_count": t.session_turn_count,
         "session_success_count": t.session_success_count,
         "session_error_count": t.session_error_count,
+        "session_cancelled_count": t.session_cancelled_count,
         "session_total_latency_ms": t.session_total_latency_ms,
         "session_mode_counts": t.session_mode_counts,
     }
@@ -153,6 +157,7 @@ def _sync_token_state(runtime: HostRuntime, state: dict[str, Any]) -> None:
     t.session_turn_count = coerce_non_negative_int(state.get("session_turn_count", 0))
     t.session_success_count = coerce_non_negative_int(state.get("session_success_count", 0))
     t.session_error_count = coerce_non_negative_int(state.get("session_error_count", 0))
+    t.session_cancelled_count = coerce_non_negative_int(state.get("session_cancelled_count", 0))
     t.session_total_latency_ms = float(state.get("session_total_latency_ms", 0.0) or 0.0)
     t.session_mode_counts = state.get("session_mode_counts", t.session_mode_counts)
 
@@ -258,6 +263,9 @@ register_host_command_prefixes(
         "/intake",
         "/pack",
         "/models",
+        "/modes",
+        "/operations",
+        "/tools",
         "/debug",
     )
 )
@@ -268,6 +276,9 @@ register_host_command_exacts(
         "settings",
         "consolidate",
         "slice",
+        "modes",
+        "operations",
+        "tools",
     )
 )
 
@@ -313,6 +324,18 @@ async def _dispatch_host_command(
         response_text = await handle_pack_command(runtime, stripped, message)
     elif lowered.startswith("/models"):
         response_text = await handle_models_command(runtime, stripped, message)
+    elif lowered in {"/modes", "modes"}:
+        response_text = handle_simple_command(
+            runtime, message, "modes", render_modes_list(runtime)
+        )
+    elif lowered in {"/operations", "operations"}:
+        response_text = handle_simple_command(
+            runtime, message, "operations", render_operations_list(runtime)
+        )
+    elif lowered in {"/tools", "tools"}:
+        response_text = handle_simple_command(
+            runtime, message, "tools", render_tools_list(runtime)
+        )
     elif lowered.startswith("/debug"):
         response_text = handle_debug_command(runtime, stripped, message)
 
@@ -574,6 +597,7 @@ async def _plan_route(
         build_user_prompt=_build_user_prompt,
         get_workflow_catalog=_get_catalog,
         set_last_router_debug=_set_last_router_debug,
+        current_mode_id=runtime.current_mode_id,
     )
     # The module-level last_debug_dict is also updated by plan_route.
     _ = last_debug_dict()

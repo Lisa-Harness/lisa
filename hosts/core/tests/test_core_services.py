@@ -46,13 +46,19 @@ from kernel.turn_runner import TurnResult
 from pydantic import BaseModel
 
 from hosts.core import commands, config_resolver, context_assembly, routing
-from hosts.core import handle_message as handle_message_mod
 from hosts.core import mcp_pool, model_runtime, providers, session_context, token_accounting
 from hosts.core import turn_hooks_builder
 from hosts.core.callbacks import NullTransport
 from hosts.core.config import HostConfig
 from hosts.core.config_resolver import resolve_log_level, resolve_stream_enabled, resolve_timezone
 from hosts.core.handle_message import handle_message
+
+# ``hosts.core.__init__`` re-exports ``handle_message`` as the *function*,
+# shadowing the submodule attribute, so grab the real module from sys.modules
+# for monkeypatching module-private functions (e.g. _route_model_turn).
+import sys  # noqa: E402
+
+handle_message_mod = sys.modules["hosts.core.handle_message"]
 from hosts.core.model_runtime import StubCompletion, StubModelDefinition, resolve_little_lisa_model
 from hosts.core.runtime import HostRuntime, TurnContext
 from hosts.core.state_provider import FileBackedStateProvider
@@ -218,6 +224,106 @@ async def test_help_capabilities_returns_capability_snapshot(tmp_path: Path) -> 
     assert "Operations:" in output.text
     assert "Tools:" in output.text
     assert "Models:" in output.text
+
+
+@pytest.mark.asyncio
+async def test_modes_command_lists_modes_without_invoking_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _make_runtime(tmp_path)
+    transport = NullTransport()
+
+    called = False
+
+    async def _fail_route(*_args: object, **_kwargs: object) -> str:
+        nonlocal called
+        called = True
+        return "should-not-be-reached"
+
+    monkeypatch.setattr(handle_message_mod, "_route_model_turn", _fail_route)
+    output = await handle_message(runtime, "/modes", transport)
+
+    assert not called, "/modes must not route to the model"
+    assert "## Lisa Modes" in output.text
+    # The core/learning/search packs ship at least the default mode.
+    assert "default" in output.text
+
+
+@pytest.mark.asyncio
+async def test_operations_command_lists_operations_without_invoking_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _make_runtime(tmp_path)
+    transport = NullTransport()
+
+    called = False
+
+    async def _fail_route(*_args: object, **_kwargs: object) -> str:
+        nonlocal called
+        called = True
+        return "should-not-be-reached"
+
+    monkeypatch.setattr(handle_message_mod, "_route_model_turn", _fail_route)
+    output = await handle_message(runtime, "/operations", transport)
+
+    assert not called, "/operations must not route to the model"
+    assert "## Lisa Operations" in output.text
+    assert "Operation ID" in output.text
+
+
+@pytest.mark.asyncio
+async def test_tools_command_lists_tools_without_invoking_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _make_runtime(tmp_path)
+    transport = NullTransport()
+
+    called = False
+
+    async def _fail_route(*_args: object, **_kwargs: object) -> str:
+        nonlocal called
+        called = True
+        return "should-not-be-reached"
+
+    monkeypatch.setattr(handle_message_mod, "_route_model_turn", _fail_route)
+    output = await handle_message(runtime, "/tools", transport)
+
+    assert not called, "/tools must not route to the model"
+    # The tool catalog may be empty in this fixture, but the command must
+    # still surface the tools-section header (or the empty-state notice)
+    # without touching the model.
+    assert "## Lisa Internal Tools" in output.text or "No internal tools discovered" in output.text
+
+
+@pytest.mark.asyncio
+async def test_bare_word_catalog_aliases_dispatch_without_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _make_runtime(tmp_path)
+    transport = NullTransport()
+
+    called = False
+
+    async def _fail_route(*_args: object, **_kwargs: object) -> str:
+        nonlocal called
+        called = True
+        return "should-not-be-reached"
+
+    monkeypatch.setattr(handle_message_mod, "_route_model_turn", _fail_route)
+    for alias, header, empty_marker in (
+        ("modes", "## Lisa Modes", "No modes discovered"),
+        ("operations", "## Lisa Operations", "No operations discovered"),
+        ("tools", "## Lisa Internal Tools", "No internal tools discovered"),
+    ):
+        output = await handle_message(runtime, alias, transport)
+        assert header in output.text or empty_marker in output.text, (
+            f"bare '{alias}' should list {header} (or empty state)"
+        )
+    assert not called, "bare catalog aliases must not route to the model"
 
 
 # ── Capability snapshot ────────────────────────────────────────────────

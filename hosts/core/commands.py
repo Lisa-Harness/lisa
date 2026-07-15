@@ -2,7 +2,7 @@
 
 This module consolidates the slash-command handlers that do not require the
 model: ``/help``, ``/settings``, ``/tokens``, ``/debug``, ``/consolidate``
-(``/slice``), ``/intake``, ``/pack``.
+(``/slice``), ``/intake``, ``/pack``, ``/models``, ``/modes``, ``/operations``, ``/tools``.
 All functions produce plain text output (Markdown strings) — no Rich
 panels, no console printing, no transport-specific rendering.
 
@@ -46,6 +46,9 @@ Public surface
 - :func:`model_alias_for_mode`
 - :func:`router_model_alias`
 - :func:`render_pack_list`
+- :func:`render_modes_list`
+- :func:`render_operations_list`
+- :func:`render_tools_list`
 - :func:`mode_support_gap`
 - :func:`format_unsupported_mode`
 - :func:`format_operation_error`
@@ -1567,6 +1570,87 @@ def resolve_pack_source_kind(
     if name in runtime_installed:
         return "package"
     return "bundled"
+
+
+def render_modes_list(runtime: HostRuntime) -> str:
+    """Render supported modes as Markdown for ``/modes``.
+
+    Mirrors :func:`hosts.cli.render.render_modes` but emits a plain
+    Markdown pipe table (transport-neutral) instead of a Rich ``Table``.
+    Each row carries the mode id, kind, command pattern, and description
+    (or the support-gap notice for modes this host cannot run).
+    """
+    _ = runtime  # catalog is global; runtime kept for future per-host scoping
+    catalog = get_workflow_catalog()
+    if not catalog:
+        return "No modes discovered yet."
+    lines = ["## Lisa Modes", "", "| Mode | Kind | Command | Description |", "| --- | --- | --- | --- |"]
+    for mode_id, mode in sorted(catalog.items()):
+        gap = mode_support_gap(mode)
+        command = escape_markdown_cell(mode.command_pattern or "default route")
+        description = escape_markdown_cell(mode.description or mode.command_pattern or "")
+        if gap is not None:
+            description = f"requires {escape_markdown_cell(gap)}"
+        lines.append(
+            f"| {escape_markdown_cell(mode_id)} | {escape_markdown_cell(mode.mode_kind)} "
+            f"| {command} | {description} |"
+        )
+    return "\n".join(lines)
+
+
+def render_operations_list(runtime: HostRuntime) -> str:
+    """Render internal operations as Markdown for ``/operations``.
+
+    Mirrors :func:`hosts.cli.render.render_operations` but emits a plain
+    Markdown pipe table. The Operation ID column is the string to copy
+    into a mode's ``allowed_operation_ids`` front matter.
+    """
+    _ = runtime  # catalog is global; runtime kept for future per-host scoping
+    catalog = get_operation_catalog()
+    if not catalog:
+        return "No operations discovered yet."
+    lines = [
+        "## Lisa Operations",
+        "",
+        "| Operation ID | Kind | Description | Tools |",
+        "| --- | --- | --- | --- |",
+    ]
+    for operation_id, definition in sorted(catalog.items()):
+        description = escape_markdown_cell(definition.description or "—")
+        tools = ", ".join(definition.tool_ids) if definition.tool_ids else "—"
+        lines.append(
+            f"| {escape_markdown_cell(operation_id)} | {escape_markdown_cell(definition.execution_kind)} "
+            f"| {description} | {escape_markdown_cell(tools)} |"
+        )
+    return "\n".join(lines)
+
+
+def render_tools_list(runtime: HostRuntime) -> str:
+    """Render internal tools as Markdown for ``/tools``.
+
+    Mirrors :func:`hosts.cli.render.render_tools` but emits a plain
+    Markdown pipe table covering the internal (pack-discovered) tool
+    catalog. MCP server tools are intentionally omitted — they require a
+    live pool warm-up and are surfaced by the ``lisa tools --with-mcp``
+    CLI subcommand, not by the transport-neutral slash command.
+    """
+    _ = runtime  # catalog is global; runtime kept for future per-host scoping
+    catalog = get_tool_catalog()
+    if not catalog:
+        return "No internal tools discovered yet."
+    lines = [
+        "## Lisa Internal Tools",
+        "",
+        "| Tool ID | Description | Max/Turn | Timeout |",
+        "| --- | --- | --- | --- |",
+    ]
+    for tool_id, definition in sorted(catalog.items()):
+        description = escape_markdown_cell(definition.description or "—")
+        lines.append(
+            f"| {escape_markdown_cell(tool_id)} | {description} "
+            f"| {definition.max_calls_per_turn} | {definition.timeout_seconds}s |"
+        )
+    return "\n".join(lines)
 
 
 def render_pack_list(runtime: HostRuntime) -> str:
