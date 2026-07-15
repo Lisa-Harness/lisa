@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from kernel.operations.registry import execute_operation
+from kernel.pack_configuration import SessionPackConfigurationResolver
 from kernel.seams.protocols import ContentRegistry
 from kernel.slice import SliceTuning
 from kernel.turn_runner import CheckpointTuning, ContextSeams, TurnHooks
@@ -97,9 +98,13 @@ def build_turn_hooks(
     Returns:
         A ``TurnHooks`` ready to pass to ``kernel.turn_runner.run_turn``.
     """
-    from hosts.core.providers import complete_live
+    from hosts.core.providers import complete_live, complete_live_stream
 
     ctx_dict = context if context is not None else {}
+    pack_configuration_resolver = SessionPackConfigurationResolver(
+        runtime.session_plan.manifest.resources.packs.configuration
+    )
+    approval_service = runtime.approval_service
 
     # ── Slice tuning ──────────────────────────────────────────────
     slice_config = runtime.config.slice_config
@@ -134,6 +139,23 @@ def build_turn_hooks(
             transport=transport,
             **kwargs,
         )
+
+    # ── Streaming completion ──────────────────────────────────────
+    # Wired only when the host config has text/hybrid streaming enabled.
+    # The turn runner checks ``hooks.complete_stream is not None`` to decide
+    # whether to take the streaming path; leaving it None when streaming is
+    # off preserves the non-streaming behavior.
+    streaming_cfg = runtime.config.streaming
+    _complete_stream: Callable[..., Any] | None = None
+    if streaming_cfg.enabled and streaming_cfg.mode in {"text", "hybrid"}:
+        async def _complete_stream_fn(**kwargs: Any) -> Any:
+            async for chunk in complete_live_stream(
+                runtime=runtime,
+                transport=transport,
+                **kwargs,
+            ):
+                yield chunk
+        _complete_stream = _complete_stream_fn
 
     # ── Content loader (injected into context assembly) ───────────
     loader = content_loader(runtime)
@@ -286,6 +308,7 @@ def build_turn_hooks(
     return TurnHooks(
         resolve_model=_resolve_model,
         complete=_complete,
+        complete_stream=_complete_stream,
         mcp_tool_pool=runtime.mcp_tool_pool,
         mcp_tool_servers=runtime.mcp_cold_configs,
         execute_operation=_execute_operation,
@@ -298,6 +321,19 @@ def build_turn_hooks(
         explicit_slice=_explicit_slice,
         last_slice_finished_at=persisted_last_slice_finished_at,
         state_provider=_state_provider,
+        pack_configuration_resolver=pack_configuration_resolver,
+        approval_service=approval_service,
+        code_change_artifact_store=runtime.code_change_artifact_store,
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id=runtime.config.user_slug,
+        user_slug=runtime.config.user_slug,
+        user_name=runtime.config.user_slug,
+        principal_key=runtime.config.user_slug,
+        conversation_id=runtime.config.surface_id,
+        surface_type=runtime.config.surface_type,
+        surface_id=runtime.config.surface_id,
+        memory_scope=runtime.config.memory_scope,
+        session_plan_digest=runtime.session_plan.plan_digest,
         workflow_session_factory=_workflow_session_factory,
         checkpoint_tuning=CheckpointTuning(
             enabled=True,

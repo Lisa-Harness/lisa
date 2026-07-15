@@ -49,12 +49,19 @@ class RichTransport:
         self.debug = debug
         self._status: Status | None = None
         self._thinking_stage: str = ""
+        # True once on_text_chunk fires during the current turn. Reset in
+        # start_thinking so each turn starts clean. When True, on_response
+        # skips the Rich Panel because the text is already on screen —
+        # printing it again would double-render (raw inline + formatted panel)
+        # with a misaligned header.
+        self._streamed_during_turn: bool = False
 
     def start_thinking(self, stage: str = "routing") -> None:
         """Start a status spinner so the user sees the turn is active.
         """
         self.stop_thinking()
         self._thinking_stage = stage
+        self._streamed_during_turn = False
         self._status = self.console.status(f"thinking… ({stage})", spinner="dots", spinner_style=STYLE_STAGE)
         self._status.start()
 
@@ -91,12 +98,23 @@ class RichTransport:
     async def on_text_chunk(self, text: str) -> None:
         """Print a streamed text chunk inline (no panel, no newline)."""
         self.stop_thinking()
+        self._streamed_during_turn = True
         self.console.file.write(text)
         self.console.file.flush()
 
     async def on_response(self, text: str, data: dict[str, Any] | None = None) -> None:
-        """Render the final response in a Rich Panel."""
+        """Render the final response in a Rich Panel.
+
+        When text was already streamed inline via ``on_text_chunk`` during
+        this turn, skip the panel (the response is already visible) and just
+        emit a trailing newline to separate the streamed text from the next
+        prompt. The per-turn flag is reset in ``start_thinking``.
+        """
         self.stop_thinking()
+        if self._streamed_during_turn:
+            self.console.file.write("\n")
+            self.console.file.flush()
+            return
         self.console.print(
             Panel(
                 Markdown(text),
@@ -122,6 +140,9 @@ class RichTransport:
     async def on_error(self, message: str, exc: Exception | None = None) -> None:
         """Render an error in a red Rich Panel."""
         self.stop_thinking()
+        if self._streamed_during_turn:
+            self.console.file.write("\n")
+            self.console.file.flush()
         body = message
         if exc is not None:
             body = f"{type(exc).__name__}: {exc}\n\n{message}"

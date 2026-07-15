@@ -1177,13 +1177,13 @@ class _StubAsyncStream:
         return self._events.pop(0)
 
 
-class _StubStreamChatCompletions:
-    async def create(self, **kwargs: object) -> _StubAsyncStream:
-        return _StubAsyncStream([
-            _StubStreamEvent(delta_content="Hello"),
-            _StubStreamEvent(delta_content=" world"),
-            _StubStreamEvent(finish_reason="stop"),
-        ])
+async def _stub_dispatch_openai(**kwargs: object) -> _StubAsyncStream:
+    """Stub provider dispatch that returns a fixed async stream."""
+    return _StubAsyncStream([
+        _StubStreamEvent(delta_content="Hello"),
+        _StubStreamEvent(delta_content=" world"),
+        _StubStreamEvent(finish_reason="stop"),
+    ])
 
 
 class _CapturingTransport:
@@ -1210,14 +1210,13 @@ class _CapturingTransport:
 
 
 @pytest.mark.asyncio
-async def test_complete_live_stream_yields_chunks_and_calls_transport(tmp_path: Path) -> None:
+async def test_complete_live_stream_yields_chunks_and_calls_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """complete_live_stream yields StreamedChunks and fires on_text_chunk per delta."""
     runtime = _make_runtime(tmp_path, streaming="text")
-    # Inject a stub OpenAI client by monkeypatching the client factory.
-    stub_client = SimpleNamespace(
-        chat=SimpleNamespace(completions=_StubStreamChatCompletions())
-    )
-    runtime.openai_client = stub_client
+    monkeypatch.setattr(providers, "dispatch_openai_compatible_provider", _stub_dispatch_openai)
     transport = _CapturingTransport()
     model_def = StubModelDefinition(model_id="test-model", provider="openai")
     chunks = []
@@ -1240,13 +1239,13 @@ async def test_complete_live_stream_yields_chunks_and_calls_transport(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_complete_live_stream_emits_stage_callbacks_for_hybrid(tmp_path: Path) -> None:
+async def test_complete_live_stream_emits_stage_callbacks_for_hybrid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Hybrid mode fires on_stage(model_call) and on_stage(model_call_complete)."""
     runtime = _make_runtime(tmp_path, streaming="hybrid")
-    stub_client = SimpleNamespace(
-        chat=SimpleNamespace(completions=_StubStreamChatCompletions())
-    )
-    runtime.openai_client = stub_client
+    monkeypatch.setattr(providers, "dispatch_openai_compatible_provider", _stub_dispatch_openai)
     transport = _CapturingTransport()
     model_def = StubModelDefinition(model_id="test-model", provider="openai")
     async for _ in providers.complete_live_stream(
@@ -1263,13 +1262,13 @@ async def test_complete_live_stream_emits_stage_callbacks_for_hybrid(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_complete_live_stream_no_stage_callbacks_for_text_mode(tmp_path: Path) -> None:
+async def test_complete_live_stream_no_stage_callbacks_for_text_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Text-only streaming does NOT fire stage callbacks (that's stage/hybrid's job)."""
     runtime = _make_runtime(tmp_path, streaming="text")
-    stub_client = SimpleNamespace(
-        chat=SimpleNamespace(completions=_StubStreamChatCompletions())
-    )
-    runtime.openai_client = stub_client
+    monkeypatch.setattr(providers, "dispatch_openai_compatible_provider", _stub_dispatch_openai)
     transport = _CapturingTransport()
     model_def = StubModelDefinition(model_id="test-model", provider="openai")
     async for _ in providers.complete_live_stream(

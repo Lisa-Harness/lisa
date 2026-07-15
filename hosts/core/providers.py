@@ -23,6 +23,7 @@ Public surface::
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -747,3 +748,263 @@ async def complete_live_openai_compatible(
         call_site="complete_live.openai_compatible",
     )
     return result
+
+
+# ── Streaming completion dispatch ────────────────────────────────────
+
+
+async def complete_live_stream(
+    *,
+    runtime: HostRuntime,
+    transport: TransportCallbacks | None = None,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None = None,
+    response_format: type[Any] | None = None,
+) -> Any:
+    """Execute a streaming provider completion, emitting text chunks to the transport.
+
+    This is the streaming counterpart of :func:`complete_live`. It is wired
+    as ``TurnHooks.complete_stream`` when ``config.streaming.mode`` is
+    ``"text"`` or ``"hybrid"``. The turn runner iterates the async generator
+    this function returns, yielding :class:`kernel.provider_core.StreamedChunk`
+    objects; this function calls ``transport.on_text_chunk`` for each text
+    delta so the host surface renders tokens as they arrive.
+
+    Stage callbacks (``on_stage``) fire only when ``mode`` is ``"hybrid"``
+    (or ``"stage"``, though ``stage`` alone does not wire streaming). When
+    the stream's ``finish_reason`` is ``"tool_calls"``, the caller (turn
+    runner) falls back to the non-streaming ``complete()`` for that
+    iteration — this function does not parse tool-call deltas (v1).
+
+    ``char_delay_ms`` (from ``config.streaming.char_delay_ms``) introduces
+    an optional per-chunk asyncio sleep so terminal streaming can be paced
+    for readability. ``0`` means no delay.
+    """
+    from kernel.provider_core import StreamedChunk
+
+    tport = transport or NullTransport()
+    streaming_cfg = runtime.config.streaming
+    stream_stage = streaming_cfg.enabled and streaming_cfg.mode in {"stage", "hybrid"}
+    char_delay_ms = streaming_cfg.char_delay_ms
+    stage_label = f"{model_def.provider}:{model_def.model_id}"
+    started_at = time.perf_counter()
+    response_format_name = completion_response_format_name(response_format)
+
+    log_completion_request(
+        messages=messages,
+        model_def=model_def,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        response_format_name=response_format_name,
+        tools=tools,
+    )
+
+    if stream_stage:
+        await tport.on_stage("model_call", {"label": stage_label})
+
+    try:
+        if model_def.provider == "anthropic":
+            async for chunk in _stream_anthropic_chunks(
+                runtime=runtime,
+                messages=messages,
+                model_def=model_def,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+            ):
+                if chunk.content:
+                    await tport.on_text_chunk(chunk.content)
+                    if char_delay_ms > 0:
+                        await asyncio.sleep(char_delay_ms / 1000.0)
+                yield chunk
+        else:
+            async for chunk in _stream_openai_compatible_chunks(
+                runtime=runtime,
+                messages=messages,
+                model_def=model_def,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+                response_format=response_format,
+            ):
+                if chunk.content:
+                    await tport.on_text_chunk(chunk.content)
+                    if char_delay_ms > 0:
+                        await asyncio.sleep(char_delay_ms / 1000.0)
+                yield chunk
+    except Exception as exc:  # pylint: disable=broad-except
+        if stream_stage:
+            await tport.on_stage("model_call_failed", {"label": stage_label})
+        elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+        log_completion_error(
+            exc=exc,
+            model_def=model_def,
+            response_format_name=response_format_name,
+            elapsed_ms=elapsed_ms,
+            messages=messages,
+            tools=tools,
+        )
+        raise
+
+    if stream_stage:
+        await tport.on_stage("model_call_complete", {"label": stage_label})
+
+
+async def _stream_openai_compatible_chunks(
+    *,
+    runtime: HostRuntime,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None,
+    response_format: type[Any] | None,
+) -> Any:
+    """Yield ``StreamedChunk`` objects from an OpenAI-compatible streaming endpoint."""
+    from kernel.provider_core import StreamedChunk, extract_openai_completion_usage
+
+    kwargs = build_completion_kwargs(
+        model_def=model_def,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        tools=tools,
+        response_format=response_format,
+    )
+    kwargs["messages"] = messages
+    kwargs["stream"] = True
+    kwargs["stream_options"] = {"include_usage": True}
+
+    stream = await dispatch_openai_compatible_provider(
+        runtime=runtime,
+        model_def=model_def,
+        kwargs=kwargs,
+    )
+    async for event in stream:
+        delta_content = ""
+        finish_reason = None
+        choices = getattr(event, "choices", None) or []
+        if choices:
+            choice = choices[0]
+            delta = getattr(choice, "delta", None)
+            if delta is not None:
+                delta_content = getattr(delta, "content", None) or ""
+            finish_reason = getattr(choice, "finish_reason", None)
+        usage = extract_openai_completion_usage(event)
+        yield StreamedChunk(
+            content=delta_content,
+            finish_reason=finish_reason,
+            usage=usage,
+        )
+
+
+async def _stream_anthropic_chunks(
+    *,
+    runtime: HostRuntime,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None,
+) -> Any:
+    """Yield ``StreamedChunk`` objects from the Anthropic Messages SSE stream."""
+    from kernel.provider_core import StreamedChunk
+
+    api_key = (
+        os.getenv(LISA_ANTHROPIC_API_KEY_ENV, "").strip()
+        or os.getenv("ANTHROPIC_API_KEY", "").strip()
+    )
+    if not api_key:
+        raise ValueError(
+            f"Anthropic is not configured. Set {LISA_ANTHROPIC_API_KEY_ENV} "
+            "(or ANTHROPIC_API_KEY)."
+        )
+
+    system_prompt, anthropic_messages = _to_anthropic_payload_messages(messages)
+    payload: dict[str, Any] = {
+        "model": model_def.model_id,
+        "max_tokens": max_tokens,
+        "messages": anthropic_messages,
+        "stream": True,
+    }
+    if temperature >= 0:
+        payload["temperature"] = temperature
+    if system_prompt:
+        payload["system"] = system_prompt
+    anthropic_tools = _to_anthropic_tools(tools)
+    if anthropic_tools:
+        payload["tools"] = anthropic_tools
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": os.getenv(LISA_ANTHROPIC_VERSION_ENV, "").strip()
+        or "2023-06-01",
+        "accept": "text/event-stream",
+    }
+
+    client = anthropic_http_client_instance(runtime)
+    async with client.stream("POST", "/v1/messages", headers=headers, json=payload) as response:
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = _extract_anthropic_error_detail(exc.response)
+            raise httpx.HTTPStatusError(
+                f"Anthropic stream failed ({exc.response.status_code}) for model "
+                f"'{model_def.model_id}': {detail}",
+                request=exc.request,
+                response=exc.response,
+            ) from exc
+
+        current_event: str = ""
+        async for line in response.aiter_lines():
+            if not line:
+                continue
+            if line.startswith("event:"):
+                current_event = line[len("event:"):].strip()
+                continue
+            if not line.startswith("data:"):
+                continue
+            data_str = line[len("data:"):].strip()
+            if not data_str:
+                continue
+            try:
+                import json as _json
+
+                data = _json.loads(data_str)
+            except ValueError:
+                continue
+            event_type = data.get("type") or current_event
+            if event_type == "content_block_delta":
+                delta = data.get("delta") or {}
+                if delta.get("type") == "text_delta":
+                    text = delta.get("text") or ""
+                    if text:
+                        yield StreamedChunk(content=text)
+            elif event_type == "message_delta":
+                delta = data.get("delta") or {}
+                stop_reason = delta.get("stop_reason")
+                if stop_reason:
+                    finish = "tool_calls" if stop_reason == "tool_use" else "stop"
+                    usage_data = data.get("usage")
+                    usage = None
+                    if usage_data:
+                        usage = _make_completion_usage(usage_data)
+                    yield StreamedChunk(finish_reason=finish, usage=usage)
+            elif event_type == "message_stop":
+                yield StreamedChunk(finish_reason="stop")
+
+
+def _make_completion_usage(usage_data: dict[str, Any]) -> Any:
+    """Build a ``CompletionUsage`` from an Anthropic usage dict (streaming)."""
+    from kernel.provider_core import CompletionUsage
+
+    prompt_tokens = int(usage_data.get("input_tokens", 0) or 0)
+    completion_tokens = int(usage_data.get("output_tokens", 0) or 0)
+    total = prompt_tokens + completion_tokens
+    return CompletionUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total,
+    )
