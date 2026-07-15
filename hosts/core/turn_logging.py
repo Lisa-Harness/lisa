@@ -88,7 +88,7 @@ def build_log_record(
     payload: dict[str, Any],
     ctx: dict[str, Any],
     debug_payload: dict[str, Any] | None = None,
-    last_frontdoor_debug: dict[str, Any] | None = None,
+    last_router_debug: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Assemble one JSONL log record, or return ``None`` if filtered out.
 
@@ -96,7 +96,7 @@ def build_log_record(
     checking.  This function only assembles the record dict.
 
     When *ctx*["log_level"] is ``"debug"`` and *debug_payload* (or
-    *last_frontdoor_debug*) is available, the debug block is attached.
+    *last_router_debug*) is available, the debug block is attached.
     """
     record: dict[str, Any] = {
         "logged_at_utc": datetime.now(UTC).isoformat(),
@@ -108,8 +108,8 @@ def build_log_record(
 
     if ctx.get("log_level") == "debug":
         debug_data = dict(debug_payload or {})
-        if "last_frontdoor_debug" not in debug_data and isinstance(last_frontdoor_debug, dict):
-            debug_data["last_frontdoor_debug"] = last_frontdoor_debug
+        if "last_router_debug" not in debug_data and isinstance(last_router_debug, dict):
+            debug_data["last_router_debug"] = last_router_debug
         if debug_data:
             record["debug"] = debug_data
 
@@ -126,12 +126,12 @@ def build_turn_log_record(
     """Assemble the ``turn.completed`` log payload from a turn context."""
     response_chars = len(response_text)
     model_info = _extract_model_info(context)
-    frontdoor_info = _extract_frontdoor_info(context)
+    router_info = _extract_router_info(context)
     completion_info = _extract_completion_info(context, coerce_int)
 
     mode_model = _format_model_label(model_info["model_id"], model_info["model_provider"])
-    frontdoor_model = _format_model_label(
-        frontdoor_info["model_id"], frontdoor_info["model_provider"]
+    router_model = _format_model_label(
+        router_info["model_id"], router_info["model_provider"]
     )
 
     return {
@@ -141,17 +141,17 @@ def build_turn_log_record(
         "mode_model_id": model_info["model_id"],
         "mode_model_provider": model_info["model_provider"],
         "mode_reasoning_model": model_info["reasoning_model"],
-        "frontdoor_model": frontdoor_model,
-        "frontdoor_model_id": frontdoor_info["model_id"],
-        "frontdoor_model_provider": frontdoor_info["model_provider"],
-        "frontdoor_reasoning_model": frontdoor_info["reasoning_model"],
+        "router_model": router_model,
+        "router_model_id": router_info["model_id"],
+        "router_model_provider": router_info["model_provider"],
+        "router_reasoning_model": router_info["reasoning_model"],
         "mode_prompt_tokens": completion_info["prompt_tokens"],
         "mode_completion_tokens": completion_info["completion_tokens"],
         "mode_total_tokens": completion_info["total_tokens"],
-        "frontdoor_prompt_tokens": frontdoor_info["prompt_tokens"],
-        "frontdoor_completion_tokens": frontdoor_info["completion_tokens"],
-        "frontdoor_total_tokens": frontdoor_info["total_tokens"],
-        "frontdoor_completion_attempt_count": frontdoor_info["attempt_count"],
+        "router_prompt_tokens": router_info["prompt_tokens"],
+        "router_completion_tokens": router_info["completion_tokens"],
+        "router_total_tokens": router_info["total_tokens"],
+        "router_completion_attempt_count": router_info["attempt_count"],
         "response": {
             "text": response_text,
             "chars": response_chars,
@@ -193,9 +193,9 @@ def _extract_model_info(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _extract_frontdoor_info(context: dict[str, Any]) -> dict[str, Any]:
-    """Extract frontdoor model and token info from context."""
-    frontdoor_debug = context.get("frontdoor_debug") if isinstance(context, dict) else None
+def _extract_router_info(context: dict[str, Any]) -> dict[str, Any]:
+    """Extract router model and token info from context."""
+    router_debug = context.get("router_debug") if isinstance(context, dict) else None
     model_id = ""
     model_provider = ""
     reasoning_model = False
@@ -204,16 +204,16 @@ def _extract_frontdoor_info(context: dict[str, Any]) -> dict[str, Any]:
     total_tokens = 0
     attempt_count = 0
 
-    if isinstance(frontdoor_debug, dict):
-        candidate_payload = frontdoor_debug.get("resolved_model")
+    if isinstance(router_debug, dict):
+        candidate_payload = router_debug.get("resolved_model")
         if isinstance(candidate_payload, dict):
             model_id = str(candidate_payload.get("model_id") or "")
             model_provider = str(candidate_payload.get("provider") or "")
             reasoning_model = bool(candidate_payload.get("reasoning_model", False))
-        prompt_tokens = coerce_int_or_zero(frontdoor_debug, "planner_prompt_tokens")
-        completion_tokens = coerce_int_or_zero(frontdoor_debug, "planner_completion_tokens")
-        total_tokens = coerce_int_or_zero(frontdoor_debug, "planner_total_tokens")
-        planner_attempts = frontdoor_debug.get("planner_completion_attempts")
+        prompt_tokens = coerce_int_or_zero(router_debug, "planner_prompt_tokens")
+        completion_tokens = coerce_int_or_zero(router_debug, "planner_completion_tokens")
+        total_tokens = coerce_int_or_zero(router_debug, "planner_total_tokens")
+        planner_attempts = router_debug.get("planner_completion_attempts")
         if isinstance(planner_attempts, list):
             attempt_count = len(planner_attempts)
 

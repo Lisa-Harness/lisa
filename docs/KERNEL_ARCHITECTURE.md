@@ -20,7 +20,7 @@ Key principles:
 | Module | Responsibility |
 | --- | --- |
 | `turn_runner.py` | The single model+tool loop shared by all hosts. Executes pre-turn → tool loop → post-turn phases. Hosts wire behavior through `TurnHooks`. |
-| `frontdoor.py` | Shared front-door routing engine. Chooses which mode owns a natural-language turn using fast-path regex → verifier model → model-bounded routing fallback. |
+| `router.py` | Shared routing engine. Chooses which mode owns a natural-language turn using fast-path regex → verifier model → model-bounded routing fallback. |
 | `ipsar.py` | IPSAR route resolution. Detects which user-facing mode a slash-command or pattern-matched message targets. |
 | `ipsar_fsm.py` | Workflow FSM loader and runtime. Discovers mode definitions from disk, validates stage transitions, and provides operation lifecycle hooks. |
 | `slice.py` | Opportunistic house-keeping system. Budget is `base + max_deferred * (1 - 0.5^(gap/half_life))`, clamped to `hard_cap_ms`. |
@@ -38,7 +38,7 @@ Key principles:
 | Module | Responsibility |
 | --- | --- |
 | `content_roots.py` | Discovers pack and extension roots from `lisa.extensions.content_roots` entry points and `SDK_CONTENT_ROOTS` env var. |
-| `model_manifest.py` | Loads and validates model manifests (YAML/JSON). Resolves models by designation (`front-door`, `default`, `deep`, `reasoning`) and per-mode overrides. |
+| `model_manifest.py` | Loads and validates model manifests (YAML/JSON). Resolves models by designation (`router`, `default`, `deep`, `reasoning`) and per-mode overrides. |
 | `config.py` | Kernel-owned settings: surf, web search, and workshop budgets. Loads from environment. |
 
 ### Built-in Capabilities
@@ -73,7 +73,7 @@ A turn through the kernel follows this path:
 sequenceDiagram
     participant Host
     participant TurnRunner
-    participant FrontDoor
+    participant Router
     participant IPSAR
     participant FSM
     participant Operations
@@ -118,7 +118,7 @@ orchestrates a turn; the MCP servers own execution, storage, and brokerage.
 flowchart TD
   subgraph Kernel
     TR[Turn Runner]
-    FD[Frontdoor + IPSAR + FSM]
+    FD[Router + IPSAR + FSM]
     SLICE[Slice]
     TOOLS[MCP Tool Pool]
   end
@@ -167,7 +167,7 @@ evidence locally.
 
 ### Route Resolution
 
-For natural-language turns (non-slash-commands), the host first resolves the mode through the front-door router:
+For natural-language turns (non-slash-commands), the host first resolves the mode through the router:
 
 ```mermaid
 flowchart TD

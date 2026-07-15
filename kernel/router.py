@@ -1,4 +1,4 @@
-"""Shared front-door routing engine for Lisa framework hosts.
+"""Shared routing engine for Lisa framework hosts.
 
 This module owns the common routing contract and bounded routing behavior for
 ordinary natural-language turns. Hosts provide small hooks for authored prompt
@@ -15,22 +15,22 @@ from typing import Any, Literal, NamedTuple
 from pydantic import BaseModel, Field, ValidationError
 
 from kernel.models import (
-    FrontDoorPromptProfile,
     OptionalContextLane,
     RouteDecision,
     RouteDecisionAlternative,
     RoutePlannerSource,
+    RouterPromptProfile,
     SurfaceContext,
 )
 from kernel.operations.structured_output import parse_structured_payload
 
 __all__ = [
     "build_deterministic_route_decision",
-    "build_frontdoor_user_prompt",
     "build_route_catalog_markdown",
-    "frontdoor_mode_ids",
+    "build_user_prompt",
     "looks_like_model_configuration_question",
-    "plan_frontdoor_route",
+    "plan_route",
+    "router_mode_ids",
     "sanitize_optional_context_policy",
     "select_prompt_profile",
     "shorten_description",
@@ -65,9 +65,9 @@ _OPTIONAL_CONTEXT_LANE_ORDER: tuple[OptionalContextLane, ...] = (
     "architecture_context",
     "capability_snapshot",
 )
-_FRONTDOOR_ROUTE_CATALOG_PLACEHOLDER = "{{FRONTDOOR_ROUTE_CATALOG}}"
-_FRONTDOOR_ROUTE_HINTS_PLACEHOLDER = "{{FRONTDOOR_ROUTE_HINTS}}"
-_FRONTDOOR_ROUTE_EXAMPLES_PLACEHOLDER = "{{FRONTDOOR_ROUTE_EXAMPLES}}"
+_ROUTE_CATALOG_PLACEHOLDER = "{{ROUTER_ROUTE_CATALOG}}"
+_ROUTE_HINTS_PLACEHOLDER = "{{ROUTER_ROUTE_HINTS}}"
+_ROUTE_EXAMPLES_PLACEHOLDER = "{{ROUTER_ROUTE_EXAMPLES}}"
 
 _WorkflowCatalog = Mapping[str, Any]
 _ModeSupported = Callable[[str, Any], bool]
@@ -79,7 +79,7 @@ _UserPromptBuilder = Callable[..., str]
 
 
 class _FastPathVerification(BaseModel):
-    """Bounded verifier output for one high-precision front-door candidate."""
+    """Bounded verifier output for one high-precision router candidate."""
 
     outcome: Literal["confirm", "abstain"] = "abstain"
     normalized_query: str = ""
@@ -118,7 +118,7 @@ def shorten_description(description: str) -> str:
     return first if first.endswith(".") else f"{first}."
 
 
-def select_prompt_profile(model_id: str) -> FrontDoorPromptProfile:
+def select_prompt_profile(model_id: str) -> RouterPromptProfile:
     """Return the prompt verbosity that best fits one planner model."""
 
     lowered = model_id.strip().lower()
@@ -148,28 +148,28 @@ def sanitize_optional_context_policy(
     return sanitized_include, sanitized_exclude
 
 
-def frontdoor_mode_ids(
+def router_mode_ids(
     *,
     catalog: _WorkflowCatalog,
     mode_supported: _ModeSupported | None = None,
 ) -> list[str]:
-    """Return front-door-routable modes in priority order."""
+    """Return routable modes in priority order."""
 
     ordered_modes = sorted(
         (
             (mode_id, mode_cfg)
             for mode_id, mode_cfg in catalog.items()
             if getattr(mode_cfg, "mode_kind", "") in {"workflow", "chat", "action"}
-            and bool(getattr(mode_cfg, "frontdoor_routable", False))
+            and bool(getattr(mode_cfg, "routable", False))
             and (mode_supported is None or mode_supported(mode_id, mode_cfg))
         ),
-        key=lambda item: (-int(getattr(item[1], "frontdoor_priority", 0) or 0), item[0]),
+        key=lambda item: (-int(getattr(item[1], "priority", 0) or 0), item[0]),
     )
     return [mode_id for mode_id, _mode_cfg in ordered_modes]
 
 
 def build_route_catalog_markdown(
-    profile: FrontDoorPromptProfile,
+    profile: RouterPromptProfile,
     *,
     catalog: _WorkflowCatalog,
     mode_supported: _ModeSupported | None = None,
@@ -177,7 +177,7 @@ def build_route_catalog_markdown(
     """Render one compact markdown summary of routable modes."""
 
     lines = ["## Routable Modes"]
-    for mode_id in frontdoor_mode_ids(catalog=catalog, mode_supported=mode_supported):
+    for mode_id in router_mode_ids(catalog=catalog, mode_supported=mode_supported):
         if mode_id == "default":
             lines.append(
                 "- default: ordinary conversation when no specialized one-shot "
@@ -205,8 +205,8 @@ def build_route_catalog_markdown(
     return "\n".join(lines)
 
 
-def _mode_frontdoor_route_hints(mode_cfg: Any) -> list[str]:
-    raw_hints = getattr(mode_cfg, "frontdoor_route_hints", [])
+def _mode_route_hints(mode_cfg: Any) -> list[str]:
+    raw_hints = getattr(mode_cfg, "route_hints", [])
     if not isinstance(raw_hints, list):
         return []
 
@@ -220,8 +220,8 @@ def _mode_frontdoor_route_hints(mode_cfg: Any) -> list[str]:
     return hints
 
 
-def _mode_frontdoor_examples(mode_cfg: Any) -> list[str]:
-    raw_examples = getattr(mode_cfg, "frontdoor_examples", [])
+def _mode_examples(mode_cfg: Any) -> list[str]:
+    raw_examples = getattr(mode_cfg, "examples", [])
     if not isinstance(raw_examples, list):
         return []
 
@@ -243,11 +243,11 @@ def build_route_hints_markdown(
     """Render route-hint bullets from mode-authored front-matter hints."""
 
     lines: list[str] = ["## Routing Hints"]
-    for mode_id in frontdoor_mode_ids(catalog=catalog, mode_supported=mode_supported):
+    for mode_id in router_mode_ids(catalog=catalog, mode_supported=mode_supported):
         mode_cfg = catalog.get(mode_id)
         if mode_cfg is None:
             continue
-        for hint in _mode_frontdoor_route_hints(mode_cfg):
+        for hint in _mode_route_hints(mode_cfg):
             lines.append(f"- {hint}")
 
     if len(lines) == 1:
@@ -263,11 +263,11 @@ def build_route_examples_markdown(
     """Render route examples sourced from mode front-matter."""
 
     examples: list[str] = []
-    for mode_id in frontdoor_mode_ids(catalog=catalog, mode_supported=mode_supported):
+    for mode_id in router_mode_ids(catalog=catalog, mode_supported=mode_supported):
         mode_cfg = catalog.get(mode_id)
         if mode_cfg is None:
             continue
-        examples.extend(_mode_frontdoor_examples(mode_cfg))
+        examples.extend(_mode_examples(mode_cfg))
 
     if not examples:
         return ""
@@ -284,10 +284,10 @@ def build_route_examples_markdown(
     return "\n".join(lines)
 
 
-def build_frontdoor_system_prompt(
+def build_router_system_prompt(
     *,
     base_prompt: str,
-    prompt_profile: FrontDoorPromptProfile,
+    prompt_profile: RouterPromptProfile,
     catalog: _WorkflowCatalog,
     mode_supported: _ModeSupported | None = None,
 ) -> str:
@@ -308,25 +308,25 @@ def build_frontdoor_system_prompt(
         mode_supported=mode_supported,
     )
 
-    if _FRONTDOOR_ROUTE_CATALOG_PLACEHOLDER in prompt:
-        prompt = prompt.replace(_FRONTDOOR_ROUTE_CATALOG_PLACEHOLDER, catalog_markdown)
+    if _ROUTE_CATALOG_PLACEHOLDER in prompt:
+        prompt = prompt.replace(_ROUTE_CATALOG_PLACEHOLDER, catalog_markdown)
     elif catalog_markdown:
         prompt = "\n\n".join(part for part in (prompt, catalog_markdown) if part)
 
-    if _FRONTDOOR_ROUTE_HINTS_PLACEHOLDER in prompt:
-        prompt = prompt.replace(_FRONTDOOR_ROUTE_HINTS_PLACEHOLDER, hints_markdown)
+    if _ROUTE_HINTS_PLACEHOLDER in prompt:
+        prompt = prompt.replace(_ROUTE_HINTS_PLACEHOLDER, hints_markdown)
     elif hints_markdown:
         prompt = "\n\n".join(part for part in (prompt, hints_markdown) if part)
 
-    if _FRONTDOOR_ROUTE_EXAMPLES_PLACEHOLDER in prompt:
-        prompt = prompt.replace(_FRONTDOOR_ROUTE_EXAMPLES_PLACEHOLDER, examples_markdown)
+    if _ROUTE_EXAMPLES_PLACEHOLDER in prompt:
+        prompt = prompt.replace(_ROUTE_EXAMPLES_PLACEHOLDER, examples_markdown)
     elif examples_markdown:
         prompt = "\n\n".join(part for part in (prompt, examples_markdown) if part)
 
     return prompt.strip()
 
 
-def build_frontdoor_user_prompt(
+def build_user_prompt(
     *,
     normalized_message: str,
     surface_context: SurfaceContext,
@@ -335,7 +335,7 @@ def build_frontdoor_user_prompt(
     fast_path_candidate_mode_id: str = "",
     is_default_executor: bool = False,
 ) -> str:
-    """Build the default host-neutral front-door user prompt."""
+    """Build the default host-neutral router user prompt."""
 
     user_prompt_parts = [
         f"Surface type: {surface_context.surface_type}",
@@ -366,7 +366,7 @@ def _has_fast_path_disqualifier(message: str) -> bool:
 
 
 def _compile_fast_path_patterns(mode_cfg: Any) -> list[re.Pattern[str]]:
-    raw_patterns = getattr(mode_cfg, "frontdoor_fast_path_patterns", [])
+    raw_patterns = getattr(mode_cfg, "fast_path_patterns", [])
     if not isinstance(raw_patterns, list):
         return []
 
@@ -442,7 +442,7 @@ async def _try_fast_path_route(
     normalized_message: str,
     ordered_mode_ids: list[str],
     model_def: Any,
-    prompt_profile: FrontDoorPromptProfile,
+    prompt_profile: RouterPromptProfile,
     surface_context: SurfaceContext,
     preferred_mode_id: str,
     conversation_excerpt_markdown: str,
@@ -516,7 +516,7 @@ async def _run_model_bounded_route(
     preferred_mode_id: str,
     conversation_excerpt_markdown: str,
     model_def: Any,
-    prompt_profile: FrontDoorPromptProfile,
+    prompt_profile: RouterPromptProfile,
     allowed_mode_ids: set[str],
     load_route_prompt: _LoadRoutePrompt,
     build_user_prompt: _UserPromptBuilder,
@@ -531,7 +531,7 @@ async def _run_model_bounded_route(
         normalized_query=normalized_message,
         reasoning="Fell back to the baseline route.",
     )
-    system_prompt = build_frontdoor_system_prompt(
+    system_prompt = build_router_system_prompt(
         base_prompt=load_route_prompt(),
         prompt_profile=prompt_profile,
         catalog=catalog,
@@ -623,7 +623,7 @@ def build_deterministic_route_decision(
     )
 
 
-async def plan_frontdoor_route(
+async def plan_route(
     *,
     user_message: str,
     current_route_mode: str,
@@ -635,7 +635,7 @@ async def plan_frontdoor_route(
     preferred_mode_id: str = "",
     conversation_excerpt_markdown: str = "",
     mode_supported: _ModeSupported | None = None,
-    build_user_prompt: _UserPromptBuilder = build_frontdoor_user_prompt,
+    build_user_prompt: _UserPromptBuilder = build_user_prompt,
     load_fast_path_verifier_prompt: _LoadFastPathVerifierPrompt | None = None,
     model_bounded_max_tokens: int = 500,
     is_default_executor: bool = False,
@@ -658,7 +658,7 @@ async def plan_frontdoor_route(
             reasoning="Kept model selection/configuration request on default chat route.",
         )
 
-    ordered_mode_ids = frontdoor_mode_ids(
+    ordered_mode_ids = router_mode_ids(
         catalog=catalog,
         mode_supported=mode_supported,
     )

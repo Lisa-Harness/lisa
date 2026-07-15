@@ -295,9 +295,9 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "pre_turn_operation_ids",
         "post_turn_operation_ids",
         "allowed_operation_ids",
-        "frontdoor_routable",
-        "frontdoor_priority",
-        "frontdoor_fast_path_patterns",
+        "routable",
+        "priority",
+        "fast_path_patterns",
         "workshop_panels",
         "workshop_budget",
         "workshop_planner_prompt_file",
@@ -316,8 +316,8 @@ _KERNEL_OWNED_FRONT_MATTER_KEYS: frozenset[str] = _MODE_OVERRIDES_PROTECTED_KEYS
     {
         "description",
         "default_model",
-        "frontdoor_route_hints",
-        "frontdoor_examples",
+        "route_hints",
+        "examples",
         "mode_provider_id",
         "context_evidence_packs",
     }
@@ -558,84 +558,84 @@ def load_catalog_from_disk(
             str(operation_id)
             for operation_id in (mode_front_matter.get("allowed_operation_ids") or [])
         ]
-        frontdoor_routable = mode_front_matter.get("frontdoor_routable", False)
-        if not isinstance(frontdoor_routable, bool):
+        routable = mode_front_matter.get("routable", False)
+        if not isinstance(routable, bool):
             raise WorkflowValidationError(
-                f"frontdoor_routable must be a boolean in {mode_config_path}"
+                f"routable must be a boolean in {mode_config_path}"
             )
-        frontdoor_priority = mode_front_matter.get("frontdoor_priority", 0)
-        if isinstance(frontdoor_priority, bool) or not isinstance(frontdoor_priority, int):
+        priority = mode_front_matter.get("priority", 0)
+        if isinstance(priority, bool) or not isinstance(priority, int):
             raise WorkflowValidationError(
-                f"frontdoor_priority must be an integer in {mode_config_path}"
+                f"priority must be an integer in {mode_config_path}"
             )
-        frontdoor_fast_path_patterns_raw = mode_front_matter.get("frontdoor_fast_path_patterns")
-        if frontdoor_fast_path_patterns_raw is None:
-            frontdoor_fast_path_patterns_raw = []
-        if not isinstance(frontdoor_fast_path_patterns_raw, list):
+        fast_path_patterns_raw = mode_front_matter.get("fast_path_patterns")
+        if fast_path_patterns_raw is None:
+            fast_path_patterns_raw = []
+        if not isinstance(fast_path_patterns_raw, list):
             raise WorkflowValidationError(
-                f"frontdoor_fast_path_patterns must be a list in {mode_config_path}"
+                f"fast_path_patterns must be a list in {mode_config_path}"
             )
-        frontdoor_fast_path_patterns: list[str] = []
-        for idx, raw_pattern in enumerate(frontdoor_fast_path_patterns_raw):
+        fast_path_patterns: list[str] = []
+        for idx, raw_pattern in enumerate(fast_path_patterns_raw):
             if not isinstance(raw_pattern, str):
                 raise WorkflowValidationError(
-                    "frontdoor_fast_path_patterns"
+                    "fast_path_patterns"
                     f"[{idx}] must be a string in {mode_config_path}"
                 )
             pattern = raw_pattern.strip()
             if not pattern:
                 raise WorkflowValidationError(
-                    "frontdoor_fast_path_patterns"
+                    "fast_path_patterns"
                     f"[{idx}] cannot be empty in {mode_config_path}"
                 )
             try:
                 re.compile(pattern, re.IGNORECASE)
             except re.error as exc:
                 raise WorkflowValidationError(
-                    "frontdoor_fast_path_patterns"
+                    "fast_path_patterns"
                     f"[{idx}] is not a valid regex in {mode_config_path}: {exc}"
                 ) from exc
-            frontdoor_fast_path_patterns.append(pattern)
+            fast_path_patterns.append(pattern)
 
-        frontdoor_route_hints_raw = mode_front_matter.get("frontdoor_route_hints")
-        if frontdoor_route_hints_raw is None:
-            frontdoor_route_hints_raw = []
-        if not isinstance(frontdoor_route_hints_raw, list):
+        route_hints_raw = mode_front_matter.get("route_hints")
+        if route_hints_raw is None:
+            route_hints_raw = []
+        if not isinstance(route_hints_raw, list):
             raise WorkflowValidationError(
-                f"frontdoor_route_hints must be a list in {mode_config_path}"
+                f"route_hints must be a list in {mode_config_path}"
             )
-        frontdoor_route_hints: list[str] = []
-        for idx, raw_hint in enumerate(frontdoor_route_hints_raw):
+        route_hints: list[str] = []
+        for idx, raw_hint in enumerate(route_hints_raw):
             if not isinstance(raw_hint, str):
                 raise WorkflowValidationError(
-                    f"frontdoor_route_hints[{idx}] must be a string in {mode_config_path}"
+                    f"route_hints[{idx}] must be a string in {mode_config_path}"
                 )
             hint = raw_hint.strip()
             if not hint:
                 raise WorkflowValidationError(
-                    f"frontdoor_route_hints[{idx}] cannot be empty in {mode_config_path}"
+                    f"route_hints[{idx}] cannot be empty in {mode_config_path}"
                 )
-            frontdoor_route_hints.append(hint)
+            route_hints.append(hint)
 
-        frontdoor_examples_raw = mode_front_matter.get("frontdoor_examples")
-        if frontdoor_examples_raw is None:
-            frontdoor_examples_raw = []
-        if not isinstance(frontdoor_examples_raw, list):
+        examples_raw = mode_front_matter.get("examples")
+        if examples_raw is None:
+            examples_raw = []
+        if not isinstance(examples_raw, list):
             raise WorkflowValidationError(
-                f"frontdoor_examples must be a list in {mode_config_path}"
+                f"examples must be a list in {mode_config_path}"
             )
-        frontdoor_examples: list[str] = []
-        for idx, raw_example in enumerate(frontdoor_examples_raw):
+        examples: list[str] = []
+        for idx, raw_example in enumerate(examples_raw):
             if not isinstance(raw_example, str):
                 raise WorkflowValidationError(
-                    f"frontdoor_examples[{idx}] must be a string in {mode_config_path}"
+                    f"examples[{idx}] must be a string in {mode_config_path}"
                 )
             example = raw_example.strip()
             if not example:
                 raise WorkflowValidationError(
-                    f"frontdoor_examples[{idx}] cannot be empty in {mode_config_path}"
+                    f"examples[{idx}] cannot be empty in {mode_config_path}"
                 )
-            frontdoor_examples.append(example)
+            examples.append(example)
 
         workshop_budget = _parse_workshop_budget(mode_front_matter, mode_config_path)
         workshop_panels: list[WorkshopPanelModeConfig] = []
@@ -758,11 +758,11 @@ def load_catalog_from_disk(
             instruction_body=mode_body.strip(),
             mode_markdown_path=str(mode_config_path),
             default_model=mode_default_model,
-            frontdoor_routable=frontdoor_routable,
-            frontdoor_priority=frontdoor_priority,
-            frontdoor_fast_path_patterns=frontdoor_fast_path_patterns,
-            frontdoor_route_hints=frontdoor_route_hints,
-            frontdoor_examples=frontdoor_examples,
+            routable=routable,
+            priority=priority,
+            fast_path_patterns=fast_path_patterns,
+            route_hints=route_hints,
+            examples=examples,
             command_pattern=command_pattern,
             require_query=require_query,
             entry_operation_ids=entry_operation_ids,

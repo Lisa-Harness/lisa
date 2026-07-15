@@ -147,7 +147,7 @@ async def run_structured_completion_with_retry(
 
     Use this for Python-authored operations that call ``ctx.complete_fn`` with
     ``response_format=<PydanticModel>``. It mirrors the retry behavior the
-    declarative operation runtime and the frontdoor planner already use:
+    declarative operation runtime and the router planner already use:
 
     1. Issue the completion with ``response_format`` set.
     2. If the provider rejects structured output, or the response does not

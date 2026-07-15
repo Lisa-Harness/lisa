@@ -27,7 +27,7 @@ class TestBuildManifestPayload:
         payload = build_manifest_payload(models)
         assert payload["mode_models"]["default"] == "gpt-4o-mini"
         default_row = next(r for r in payload["models"] if r["model_id"] == "gpt-4o-mini")
-        assert "front-door" in default_row["designations"]
+        assert "router" in default_row["designations"]
         assert "default" in default_row["designations"]
 
     def test_deep_from_reasoning(self) -> None:

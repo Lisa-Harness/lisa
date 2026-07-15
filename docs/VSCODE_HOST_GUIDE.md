@@ -92,7 +92,7 @@ code --install-extension lisa-framework-0.1.0.vsix
 
 1. Open the Chat view in VS Code (`Ctrl+Shift+P` → "Chat: Open Chat").
 2. Type `@lisa` to select the Lisa Chat participant.
-3. Send a message — it routes through the full Lisa pipeline (front-door
+3. Send a message — it routes through the full Lisa pipeline (router
    routing, model completion, MCP tools, memory recall).
 
 ```plaintext
@@ -168,7 +168,7 @@ per line.
 ### Stage notification (bridge → stdout, during a turn, no `id`)
 
 ```json
-{"method": "notify", "params": {"stage": "frontdoor", "data": {"shortcut": "direct_response"}}}
+{"method": "notify", "params": {"stage": "router", "data": {"shortcut": "direct_response"}}}
 ```
 
 ### Error notification (bridge → stdout, non-fatal, no `id`)
@@ -244,10 +244,10 @@ This gives Copilot Chat direct access to the framework's MCP tools — memory
 recall, content catalog, guard rails — without going through the `@lisa`
 participant. The two paths are complementary:
 
-- **`@lisa` Chat participant** — full Lisa pipeline (front-door routing,
+- **`@lisa` Chat participant** — full Lisa pipeline (router routing,
   model completion, context assembly, operations, memory recall, checkpoints)
 - **MCP servers in Copilot Chat** — raw tool access (Copilot calls
-  `lisa-context.memory_search` directly, no front-door routing)
+  `lisa-context.memory_search` directly, no router routing)
 
 ## Troubleshooting
 

@@ -4,20 +4,20 @@ mode_provider_id: lisa-pack-search
 start_stage_id: inquire
 mode_kind: workflow
 require_query: true
-frontdoor_routable: true
-frontdoor_priority: 8
+routable: true
+priority: 8
 allowed_operation_ids: [web_search]
 tools_authoritative: true
-frontdoor_fast_path_patterns:
+fast_path_patterns:
   - "\\bthink\\s+about\\b"
   - "\\bgo\\s+in\\s+depth\\b"
   - "\\banalyze\\s+(?:this|tradeoffs?)\\b"
   - "\\bevaluate\\s+(?:this|tradeoffs?)\\b"
-frontdoor_route_hints:
+route_hints:
   - Route to `thinkabout` when the user explicitly asks to think about, go in depth, analyze, evaluate tradeoffs, or reason through one decision.
   - Prefer `thinkabout` when the user is asking for focused analysis, tradeoff evaluation, or a reasoned stance on one decision.
   - Prefer `thinkabout` when the user is asking for a focused analysis, pros and cons breakdown, or structured thinking about a specific question or decision.
-frontdoor_examples:
+examples:
   - reasoning: "User explicitly asks for focused analysis or a reasoned stance."
     selected_mode_id: thinkabout
     normalized_query: Can we think about this idea to get a better understanding?

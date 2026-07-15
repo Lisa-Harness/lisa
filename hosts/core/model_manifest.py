@@ -9,8 +9,8 @@ from kernel.model_manifest import load_model_manifest as load_shared_model_manif
 
 logger = logging.getLogger(__name__)
 
-SimpleModelDesignation = Literal["front-door", "default", "deep", "reasoning"]
-_SUPPORTED_DESIGNATIONS: set[str] = {"front-door", "default", "deep", "reasoning"}
+SimpleModelDesignation = Literal["router", "default", "deep", "reasoning"]
+_SUPPORTED_DESIGNATIONS: set[str] = {"router", "default", "deep", "reasoning"}
 
 
 def default_manifest_path() -> Path:

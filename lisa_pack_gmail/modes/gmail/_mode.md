@@ -3,15 +3,15 @@ mode_id: gmail
 mode_provider_id: lisa-pack-gmail
 start_stage_id: gmail_draft
 mode_kind: action
-frontdoor_routable: true
-frontdoor_priority: 10
-frontdoor_fast_path_patterns:
+routable: true
+priority: 10
+fast_path_patterns:
   - "\\bgmail\\s+draft\\b"
   - "\\bdraft\\s+email\\b"
   - "\\bcompose\\s+email\\b"
-frontdoor_route_hints:
+route_hints:
   - Prefer `gmail` when the user wants to draft or compose an email.
-frontdoor_examples:
+examples:
   - reasoning: "User explicitly asks to draft an email."
     selected_mode_id: gmail
     normalized_query: draft an email to Sam about the Q3 update

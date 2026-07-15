@@ -35,7 +35,7 @@ Public surface
 - :func:`render_capability_debug`
 - :func:`render_debug_context`
 - :func:`render_debug_self`
-- :func:`render_debug_frontdoor`
+- :func:`render_debug_router`
 - :func:`render_runtime_settings`
 - :func:`format_token_stats`
 - :func:`build_capability_snapshot`
@@ -44,7 +44,7 @@ Public surface
 - :func:`explicit_deep_query`
 - :func:`preferred_model_id_for_route`
 - :func:`model_alias_for_mode`
-- :func:`frontdoor_model_alias`
+- :func:`router_model_alias`
 - :func:`render_pack_list`
 - :func:`mode_support_gap`
 - :func:`format_unsupported_mode`
@@ -215,17 +215,17 @@ def _last_turn_context_dict(runtime: HostRuntime) -> dict[str, Any] | None:
     return dataclasses.asdict(ctx)
 
 
-def _last_frontdoor_debug(runtime: HostRuntime) -> dict[str, Any] | None:
-    """Return the last front-door debug payload from the runtime."""
-    return runtime.last_frontdoor_debug
+def _last_router_debug(runtime: HostRuntime) -> dict[str, Any] | None:
+    """Return the last router debug payload from the runtime."""
+    return runtime.last_router_debug
 
 
 # ── Mode / model alias helpers ───────────────────────────────────────
 
 
-def frontdoor_model_alias() -> str:
-    """Return the model alias used for front-door routing."""
-    return "front-door"
+def router_model_alias() -> str:
+    """Return the model alias used for routing."""
+    return "router"
 
 
 def model_alias_for_mode(mode_id: str) -> str:
@@ -500,12 +500,12 @@ def render_debug_self(runtime: HostRuntime) -> str:
     return "\n".join(lines)
 
 
-def render_debug_frontdoor(runtime: HostRuntime) -> str:
-    """Render front-door routing diagnostics for ``/debug frontdoor``."""
-    payload = _last_frontdoor_debug(runtime)
+def render_debug_router(runtime: HostRuntime) -> str:
+    """Render routing diagnostics for ``/debug router``."""
+    payload = _last_router_debug(runtime)
     if payload is None:
-        return "No front-door routing diagnostics are available yet."
-    return "## Front-Door Debug\n\n```json\n" + json.dumps(payload, indent=2) + "\n```"
+        return "No routing diagnostics are available yet."
+    return "## Router Debug\n\n```json\n" + json.dumps(payload, indent=2) + "\n```"
 
 
 def render_runtime_settings(runtime: HostRuntime) -> str:
@@ -570,11 +570,11 @@ def format_help() -> str:
             "- /deep <request> routes through default mode on the deep-designated model.",
             "- /pack list|enable|disable|install|uninstall manages pack activation "
             "and runtime installs (restart required after changes).",
-            "- Natural-language turns pass through the front-door route planner first.",
+            "- Natural-language turns pass through the router planner first.",
             "- /help capabilities shows the runtime capability snapshot.",
             "- /settings shows effective profile/timezone/debug/log-level runtime settings.",
             "- /tokens shows detailed session token breakdown by model, mode, and stage.",
-            "- /debug context|capabilities|self|frontdoor shows local diagnostics.",
+            "- /debug context|capabilities|self|router shows local diagnostics.",
             "- /consolidate (or /slice) runs the explicit thread/memory compaction slice.",
             "- /intake runs one intake tick (collect signals, process, write state) in-process.",
             "- /pack list|enable|disable|install|uninstall manages packs.",
@@ -675,7 +675,7 @@ def handle_debug_command(
     if subcommand in {"", "help"}:
         response_text = (
             "Supported debug commands: "
-            "/debug context, /debug capabilities, /debug self, /debug frontdoor"
+            "/debug context, /debug capabilities, /debug self, /debug router"
         )
     elif subcommand == "context":
         response_text = render_debug_context(runtime)
@@ -683,12 +683,12 @@ def handle_debug_command(
         response_text = render_capability_debug(runtime)
     elif subcommand == "self":
         response_text = render_debug_self(runtime)
-    elif subcommand == "frontdoor":
-        response_text = render_debug_frontdoor(runtime)
+    elif subcommand == "router":
+        response_text = render_debug_router(runtime)
     else:
         response_text = (
             f"Unknown debug command '{subcommand}'. "
-            "Supported: context, capabilities, self, frontdoor."
+            "Supported: context, capabilities, self, router."
         )
     return handle_simple_command(runtime, message, "debug", response_text)
 

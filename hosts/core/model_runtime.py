@@ -11,7 +11,7 @@ from hosts.core.model_manifest import load_model_manifest
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DESIGNATIONS = frozenset({"front-door", "default", "deep", "reasoning"})
+_DEFAULT_DESIGNATIONS = frozenset({"router", "default", "deep", "reasoning"})
 _MANIFEST_CACHE_KEY = "manifest"
 
 

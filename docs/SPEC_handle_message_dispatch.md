@@ -18,7 +18,7 @@ function in the codebase:
 
 The function is a giant if-elif chain that handles host shortcuts (`/help`,
 `/tokens`, `/settings`, `/debug`, `/consolidate`), deep routing, catalog-mode
-routing, front-door planning, direct-response optimization, clarification
+routing, router planning, direct-response optimization, clarification
 flows, unsupported-mode reporting, and the final `run_turn` dispatch — all
 in one function body.
 
@@ -76,7 +76,7 @@ async def handle_message(message: str) -> str:
                 _finalize_command_result(message, result)
                 return result.response_text
 
-    # 2. Model-backed routing (front-door + run_turn)
+    # 2. Model-backed routing (router + run_turn)
     return await _route_model_turn(message)
 ```
 
@@ -87,10 +87,10 @@ async def handle_message(message: str) -> str:
 | `_handle_help_command` | `/help` and `/help capabilities` |
 | `_handle_tokens_command` | `/tokens` |
 | `_handle_settings_command` | `/settings` |
-| `_handle_debug_command` | `/debug context\|capabilities\|self\|frontdoor` |
+| `_handle_debug_command` | `/debug context\|capabilities\|self\|router` |
 | `_handle_consolidate_command` | `/consolidate` and `/slice` |
 | `_handle_deep_command` | `/deep <query>` |
-| `_route_model_turn` | Front-door planning + run_turn dispatch |
+| `_route_model_turn` | Router planning + run_turn dispatch |
 | `_finalize_command_result` | Set context, log, append thread, update state |
 | `_log_turn_received` | Log the turn.received debug event |
 
@@ -120,4 +120,4 @@ continue to work.
 
 - Moving handlers to a separate module (deferred to a later pass).
 - Changing the command set or output format.
-- Front-door routing refactoring (separate SPEC).
+- Router routing refactoring (separate SPEC).

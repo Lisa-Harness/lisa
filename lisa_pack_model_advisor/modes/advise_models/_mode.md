@@ -3,15 +3,15 @@ mode_id: advise-models
 mode_provider_id: lisa-pack-model-advisor
 start_stage_id: none
 mode_kind: action
-frontdoor_routable: true
-frontdoor_priority: 5
-frontdoor_fast_path_patterns:
+routable: true
+priority: 5
+fast_path_patterns:
   - "^/advise-models\\b"
   - "^/models?\\s+advise\\b"
-frontdoor_route_hints:
+route_hints:
   - Prefer `advise-models` when the user wants to edit the model manifest using natural language instructions.
   - Prefer `advise-models` when the user asks to change which models are used for specific roles or modes.
-frontdoor_examples:
+examples:
   - reasoning: "User wants to edit the model manifest with natural language."
     selected_mode_id: advise-models
     normalized_query: make claude-sonnet-5 the default for code reasoning

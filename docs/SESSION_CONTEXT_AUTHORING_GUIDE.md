@@ -110,7 +110,7 @@ Primary goals this week:
 | `surface.type` | `string` | Per-turn | Override surface type (`personal_dm`, `team_channel`, etc.). |
 | `surface.id` | `string` | Per-turn | Override surface ID. |
 | `surface.memory_scope` | `string` | Per-turn | Override memory scope identity used by tools/guards. |
-| `start_mode` | `string` | Startup | Seed initial mode and bypass front-door for startup routing. |
+| `start_mode` | `string` | Startup | Seed initial mode and bypass router for startup routing. |
 | `packs.<pack>.enabled` | `bool` | Startup | Pack intent in session controls for host policy wiring. |
 | `policy.always_on_packs` | `string[]` | Startup | Packs that cannot be disabled. |
 | `policy.exclude_servers` | `string[]` | Startup | MCP server IDs suppressed at startup. |

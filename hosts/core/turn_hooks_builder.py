@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from kernel.context import context_frames as _context_frames
 from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from kernel.operations.registry import execute_operation
+from kernel.seams.protocols import ContentRegistry
 from kernel.slice import SliceTuning
 from kernel.turn_runner import CheckpointTuning, ContextSeams, TurnHooks
 
@@ -30,8 +30,7 @@ from hosts.core.context_assembly import (
     assemble_dynamic_user_context,
     assemble_system_prompt,
 )
-from hosts.core.model_runtime import StubModelDefinition, load_manifest
-from hosts.core.model_runtime import resolve_little_lisa_model
+from hosts.core.model_runtime import StubModelDefinition, load_manifest, resolve_little_lisa_model
 from hosts.core.state_provider import FileBackedStateProvider, build_unified_state
 from hosts.core.thread import build_recent_thread_excerpt, load_thread_digest
 
@@ -53,13 +52,29 @@ def content_loader(runtime: HostRuntime) -> Callable[[str], str]:
     framework was not initialized.
     """
     _ = runtime  # runtime is part of the API for future use; registry is module-level
-    from kernel.context.context_frames import _content_registry
-
-    if _content_registry is None:
+    registry = content_registry()
+    if registry is None:
         raise RuntimeError(
             "Content registry not set. Call setup_framework(runtime) first."
         )
-    return _content_registry.read_authored_text
+    loader: Callable[[str], str] = registry.read_authored_text
+    return loader
+
+
+def content_registry() -> ContentRegistry | None:
+    """Return the module-level content registry, or ``None`` when unset.
+
+    The registry is set by ``setup_framework(runtime)`` at host startup.
+    Operations that need authored text (e.g. ``synthesize_and_store_learning``,
+    ``advise_models``) reach it via ``TurnHooks.context_seams.content_registry``
+    so the turn runner's ``_build_minimal_context`` can resolve
+    ``read_authored_text_fn``. When ``None``, those operations fail at call time
+    with their authored-text error (graceful failure); non-authored operations
+    still run normally.
+    """
+    from kernel.context.context_frames import _content_registry
+
+    return _content_registry
 
 
 # ── Turn-hooks builder ────────────────────────────────────────────────
@@ -316,6 +331,6 @@ def build_turn_hooks(
         # startup. When unset, content_registry stays None and operations fail at
         # call time with their authored-text error (preserving graceful failure).
         context_seams=ContextSeams(
-            content_registry=_context_frames._content_registry,
+            content_registry=cast("Any", content_registry()),
         ),
     )

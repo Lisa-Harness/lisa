@@ -3,17 +3,17 @@ mode_id: cloudflare
 mode_provider_id: lisa-pack-cloudflare
 start_stage_id: none
 mode_kind: action
-frontdoor_routable: true
-frontdoor_priority: 3
-frontdoor_fast_path_patterns:
+routable: true
+priority: 3
+fast_path_patterns:
   - "\\bcloudflare\\b"
   - "\\bzone\\s+status\\b"
   - "\\bworker\\s+(status|health)\\b"
   - "\\bedge\\s+(status|health)\\b"
-frontdoor_route_hints:
+route_hints:
   - Prefer `cloudflare` when the user asks about Cloudflare zone, worker, edge, WAF, Pages, or D1 status.
   - Prefer `cloudflare` when the user wants a Cloudflare infrastructure health summary.
-frontdoor_examples:
+examples:
   - reasoning: "User explicitly asks about Cloudflare infrastructure health."
     selected_mode_id: cloudflare
     normalized_query: status of our Cloudflare zone

@@ -981,7 +981,7 @@ All existing first-party servers must adopt the shared CLI contract.
 - The `MCPMemoryClient` in `kernel/mcp_client.py` stays for backward
   compatibility with the memory seam. A future change can migrate it to the
   new compiler.
-- The slice system, front-door router, IPSAR FSM, and operation registry are
+- The slice system, router, IPSAR FSM, and operation registry are
   unchanged.
 
 ## Part 11 — File Inventory

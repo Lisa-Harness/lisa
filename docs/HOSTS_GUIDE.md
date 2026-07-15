@@ -18,7 +18,7 @@ flowchart TD
 
   subgraph Kernel
     TR[turn_runner.py<br/>run_turn + TurnHooks]
-    FD[frontdoor.py<br/>IPSAR + FSM]
+    FD[router.py<br/>IPSAR + FSM]
     TOOLS[MCP Tool Pool]
   end
 
@@ -131,7 +131,7 @@ The `TransportCallbacks` protocol is the Option B seam — the runtime delivers 
 
 | Method | When called | Purpose |
 | --- | --- | --- |
-| `on_stage(label, data)` | At pipeline stage transitions | Notify transport of frontdoor, model_call, tool_loop, post_turn, slice |
+| `on_stage(label, data)` | At pipeline stage transitions | Notify transport of router, model_call, tool_loop, post_turn, slice |
 | `on_text_chunk(text)` | Per streamed token (when streaming enabled) | Deliver token-by-token text |
 | `on_response(text, data)` | Once per successful turn | Deliver the final response text |
 | `on_debug_context(context)` | When debug mode is active | Deliver structured turn context for diagnostics |
@@ -144,7 +144,7 @@ The `TransportCallbacks` protocol is the Option B seam — the runtime delivers 
 `handle_message(runtime, message, transport)` is the transport-neutral entry point all hosts call. It:
 
 1. Dispatches host shortcut commands (`/help`, `/settings`, `/tokens`, `/debug`, `/consolidate`, `/checkpoint`, `/restore`, `/pack`, `/models`).
-2. Routes natural-language turns through the front-door router.
+2. Routes natural-language turns through the router.
 3. Executes the mode turn via `kernel.turn_runner.run_turn`.
 4. Persists thread entries and updates token counters.
 5. Emits transport callbacks at each pipeline stage.
@@ -156,7 +156,7 @@ Model selection is intentionally small and explicit.
 - Active manifest path: `<data-dir>/models.yaml`.
 - Proposal manifest path: `<data-dir>/models.proposed.yaml`.
 - Supported providers: `azure_openai`, `openai`, `anthropic`, `ollama`, `google`.
-- Supported designations: `front-door`, `default`, `deep`, `reasoning`.
+- Supported designations: `router`, `default`, `deep`, `reasoning`.
 
 Model manifests are now generated and managed through host commands:
 
@@ -177,7 +177,7 @@ mode_models:
 models:
   - model_id: gpt-chat-latest
     provider: azure_openai
-    designations: [front-door, default]
+    designations: [router, default]
 
   - model_id: gemma4:latest
     provider: ollama
@@ -253,7 +253,7 @@ All commands are handled by `hosts/core/commands.py` and produce plain text (not
 | `/settings` | Show effective runtime settings |
 | `/tokens` | Show token usage breakdown by model, mode, and stage |
 | `/debug context` | Show last assembled prompt sections |
-| `/debug frontdoor` | Show front-door routing diagnostics |
+| `/debug router` | Show router diagnostics |
 | `/debug capabilities` | Show full capability snapshot JSON |
 | `/debug self` | Show compact self-model summary |
 | `/consolidate` | Run explicit slice (thread/memory compaction) |
@@ -317,7 +317,7 @@ policy:
 | `surface.type` | `str` | Overrides `surface_type` for tool/guard/token identity | Per-turn |
 | `surface.id` | `str` | Overrides `surface_id` | Per-turn |
 | `surface.memory_scope` | `str` | Overrides `memory_scope` for tool/guard identity | Per-turn |
-| `start_mode` | `str` | Initial mode; **bypasses front-door routing** entirely | Startup |
+| `start_mode` | `str` | Initial mode; **bypasses router** entirely | Startup |
 | `packs.<name>.enabled` | `bool` | `false` disables the pack for this runtime | Startup |
 | `policy.always_on_packs` | `list[str]` | Packs that cannot be disabled | Startup |
 | `policy.exclude_servers` | `list[str]` | Pack MCP server IDs to suppress | Startup |
@@ -334,7 +334,7 @@ policy:
 
 Precedence: session-context front matter > CLI/env > defaults. Flat top-level `surface_type`/`surface_id`/`memory_scope` keys are accepted as a convenience when no `surface` block is present.
 
-When `start_mode` is set, the runtime seeds `current_mode_id` to that mode and `_route_model_turn` skips the front-door planner entirely. An explicit `/mode` command overrides `start_mode` for the remainder of the session.
+When `start_mode` is set, the runtime seeds `current_mode_id` to that mode and `_route_model_turn` skips the router planner entirely. An explicit `/mode` command overrides `start_mode` for the remainder of the session.
 
 ## Building a New Host
 

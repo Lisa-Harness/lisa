@@ -9,12 +9,12 @@ Public API (leading underscores removed)::
 
     load_system_prompt(content_loader)
     load_turn_input_contract(content_loader)
-    load_frontdoor_route_prompt(content_loader)
-    load_frontdoor_fast_path_verifier_prompt(content_loader)
+    load_route_prompt(content_loader)
+    load_fast_path_verifier_prompt(content_loader)
     assemble_system_prompt(mode_instruction, stage_instruction, content_loader)
-    frontdoor_mode_supported(mode_id, mode, mode_support_gap)
-    build_frontdoor_route_catalog_markdown(mode_support_gap)
-    build_frontdoor_user_prompt(...)
+    router_mode_supported(mode_id, mode, mode_support_gap)
+    build_route_catalog_markdown(mode_support_gap)
+    build_user_prompt(...)
     handoff_note(...)
     build_turn_context(...)
     build_brokered_context_markdown(mode_id, query, state)
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from kernel.config import settings
-from kernel import frontdoor as shared_frontdoor
+from kernel import router as shared_router
 from kernel.capability_manifest import render_capability_manifest_context
 from kernel.context.context_broker import (
     build_ambient_facts,
@@ -86,20 +86,20 @@ def load_turn_input_contract(content_loader: Callable[[str], str]) -> str:
         return ""
 
 
-def load_frontdoor_route_prompt(content_loader: Callable[[str], str]) -> str:
-    """Load the front-door route planner prompt from ``frontdoor/route.md``."""
+def load_route_prompt(content_loader: Callable[[str], str]) -> str:
+    """Load the route planner prompt from ``router/route.md``."""
     try:
-        return content_loader("frontdoor/route.md").strip()
+        return content_loader("router/route.md").strip()
     except FileNotFoundError:
         return ""
 
 
-def load_frontdoor_fast_path_verifier_prompt(
+def load_fast_path_verifier_prompt(
     content_loader: Callable[[str], str],
 ) -> str:
-    """Load the fast-path verifier prompt from ``frontdoor/fast_path_verifier.md``."""
+    """Load the fast-path verifier prompt from ``router/fast_path_verifier.md``."""
     try:
-        return content_loader("frontdoor/fast_path_verifier.md").strip()
+        return content_loader("router/fast_path_verifier.md").strip()
     except FileNotFoundError:
         return ""
 
@@ -126,11 +126,11 @@ def assemble_system_prompt(
 
 
 # ---------------------------------------------------------------------------
-# Front-door helpers
+# Router helpers
 # ---------------------------------------------------------------------------
 
 
-def frontdoor_mode_supported(
+def router_mode_supported(
     _mode_id: str,
     mode: WorkflowModeConfig,
     mode_support_gap: Callable[[WorkflowModeConfig], str | None],
@@ -139,20 +139,20 @@ def frontdoor_mode_supported(
     return mode_support_gap(mode) is None
 
 
-def build_frontdoor_route_catalog_markdown(
+def build_route_catalog_markdown(
     mode_support_gap: Callable[[WorkflowModeConfig], str | None],
 ) -> str:
-    """Render the route catalog the front-door planner sees."""
-    return shared_frontdoor.build_route_catalog_markdown(
+    """Render the route catalog the router planner sees."""
+    return shared_router.build_route_catalog_markdown(
         "rich",
         catalog=get_workflow_catalog(),
-        mode_supported=lambda mid, mode: frontdoor_mode_supported(
+        mode_supported=lambda mid, mode: router_mode_supported(
             mid, mode, mode_support_gap
         ),
     )
 
 
-def build_frontdoor_user_prompt(
+def build_user_prompt(
     *,
     normalized_message: str,
     surface_context: SurfaceContext,
@@ -162,11 +162,11 @@ def build_frontdoor_user_prompt(
     fast_path_candidate_mode_id: str = "",
     is_default_executor: bool = False,
 ) -> str:
-    """Build the user prompt submitted to the front-door route planner."""
+    """Build the user prompt submitted to the route planner."""
     _ = surface_context
     _ = preferred_mode_id
     parts = [
-        "## Front Door Input",
+        "## Router Input",
         f"- user_slug: {user_slug or 'none'}",
         f"- raw_message: {normalized_message}",
         f"- is_default_executor: {str(is_default_executor).lower()}",
@@ -201,7 +201,7 @@ def handoff_note(
     if deep_route:
         return "explicit /deep route handoff to deep-designated model"
     if mode_id == "default" and not raw_message.lstrip().startswith("/"):
-        return "natural-language intent parsed by front-door, executing on default model"
+        return "natural-language intent parsed by router, executing on default model"
     if raw_message.lstrip().startswith("/"):
         return f"explicit command route handoff to {preferred_model_id} model selection"
     return "default routing handoff"

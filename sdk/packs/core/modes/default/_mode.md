@@ -3,9 +3,9 @@ mode_id: default
 mode_provider_id: lisa-pack-core
 start_stage_id: none
 mode_kind: chat
-frontdoor_routable: true
-frontdoor_priority: 10
-frontdoor_route_hints:
+routable: true
+priority: 10
+route_hints:
   - Prefer the smallest sufficient mode.
   - Prefer `default` for ordinary questions, model-selection questions, and requests outside specialized modes.
   - Prefer `default` for model-selection and routing questions, such as choosing default chat models or switch timing between model families.

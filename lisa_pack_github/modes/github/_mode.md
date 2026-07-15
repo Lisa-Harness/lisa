@@ -3,18 +3,18 @@ mode_id: github
 mode_provider_id: lisa-pack-github
 start_stage_id: none
 mode_kind: action
-frontdoor_routable: true
-frontdoor_priority: 4
-frontdoor_fast_path_patterns:
+routable: true
+priority: 4
+fast_path_patterns:
   - "\\bgithub\\s+(status|health)\\b"
   - "\\bci\\s+(status|health|failing|passing)\\b"
   - "\\brepo\\s+status\\b"
   - "\\bworkflow\\s+(status|run)\\b"
   - "\\bpr\\s+(count|status|backlog)\\b"
-frontdoor_route_hints:
+route_hints:
   - Prefer `github` when the user asks about GitHub repository health, CI workflow status, or open PRs.
   - Prefer `github` when the user wants a repository and CI/CD health summary.
-frontdoor_examples:
+examples:
   - reasoning: "User explicitly asks about repository and CI health."
     selected_mode_id: github
     normalized_query: how is the GitHub repo doing

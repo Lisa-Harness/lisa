@@ -36,7 +36,7 @@ from kernel.model_manifest import ModelManifest
 from kernel.models import (
     OperationExecutionContext,
     OperationResult,
-    RouteDecision as FrontDoorRouteDecision,
+    RouteDecision as RouterRouteDecision,
     ToolResult,
     WorkflowModeConfig,
 )
@@ -44,7 +44,7 @@ from kernel.operations.registry import OperationExecutionError
 from kernel.turn_runner import TurnResult
 from pydantic import BaseModel
 
-from hosts.core import commands, config_resolver, context_assembly, frontdoor_routing
+from hosts.core import commands, config_resolver, context_assembly, routing
 from hosts.core import handle_message as handle_message_mod
 from hosts.core import mcp_pool, model_runtime, providers, session_context, token_accounting
 from hosts.core import turn_hooks_builder
@@ -71,7 +71,7 @@ def _make_runtime(tmp_path: Path, **config_kwargs) -> HostRuntime:
                 "models:",
                 "  - model_id: gemma3:latest",
                 "    provider: ollama",
-                "    designations: [front-door, default]",
+                "    designations: [router, default]",
                 "  - model_id: deepseek-r1:latest",
                 "    provider: ollama",
                 "    reasoning_model: true",
@@ -276,9 +276,9 @@ async def test_debug_context_reports_last_turn_sections(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_debug_frontdoor_reports_last_planner_payload(tmp_path: Path) -> None:
+async def test_debug_router_reports_last_planner_payload(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path)
-    runtime.set_last_frontdoor_debug(
+    runtime.set_last_router_debug(
         {
             "selected_mode_id": "thinkabout",
             "planner_reasoning": "explicit think-about wording",
@@ -286,9 +286,9 @@ async def test_debug_frontdoor_reports_last_planner_payload(tmp_path: Path) -> N
         }
     )
     transport = NullTransport()
-    output = await handle_message(runtime, "/debug frontdoor", transport)
+    output = await handle_message(runtime, "/debug router", transport)
 
-    assert "Front-Door Debug" in output.text
+    assert "Router Debug" in output.text
     assert "thinkabout" in output.text
     assert "planner_reasoning" in output.text
 
@@ -314,28 +314,28 @@ def test_assemble_system_prompt_includes_turn_input_contract() -> None:
     assert "## User Query" in system_prompt
 
 
-# ── Frontdoor fast-path verifier prompt ───────────────────────────────
+# ── Router fast-path verifier prompt ───────────────────────────────
 
 
-def test_load_frontdoor_fast_path_verifier_prompt_reads_authored_asset(
+def test_load_fast_path_verifier_prompt_reads_authored_asset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _fake_read_authored_text(relative_path: str) -> str:
-        if relative_path == "frontdoor/fast_path_verifier.md":
+        if relative_path == "router/fast_path_verifier.md":
             return "loaded fast-path verifier prompt"
         raise AssertionError(f"Unexpected authored content path: {relative_path}")
 
-    result = context_assembly.load_frontdoor_fast_path_verifier_prompt(_fake_read_authored_text)
+    result = context_assembly.load_fast_path_verifier_prompt(_fake_read_authored_text)
     assert result == "loaded fast-path verifier prompt"
 
 
-def test_load_frontdoor_fast_path_verifier_prompt_returns_empty_when_missing(
+def test_load_fast_path_verifier_prompt_returns_empty_when_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _missing_authored_text(relative_path: str) -> str:
         raise FileNotFoundError(relative_path)
 
-    result = context_assembly.load_frontdoor_fast_path_verifier_prompt(_missing_authored_text)
+    result = context_assembly.load_fast_path_verifier_prompt(_missing_authored_text)
     assert result == ""
 
 
@@ -373,65 +373,65 @@ def test_assemble_dynamic_user_context_skips_user_context_when_absent(
     assert "user_slug: none" in context
 
 
-# ── Frontdoor route planning ──────────────────────────────────────────
-# The plan_frontdoor_route signature changed dramatically — it now takes
+# ── Router route planning ──────────────────────────────────────────
+# The plan_route signature changed dramatically — it now takes
 # all dependencies as callables. These tests need deep rewriting.
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="plan_frontdoor_route signature changed; needs callable injection migration")
-async def test_plan_frontdoor_route_uses_markdown_prompt_and_frontdoor_alias(
+@pytest.mark.xfail(reason="plan_route signature changed; needs callable injection migration")
+async def test_plan_route_uses_markdown_prompt_and_router_alias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pass
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="plan_frontdoor_route signature changed; needs callable injection migration")
-async def test_plan_frontdoor_route_falls_back_when_completion_raises(
+@pytest.mark.xfail(reason="plan_route signature changed; needs callable injection migration")
+async def test_plan_route_falls_back_when_completion_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pass
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="plan_frontdoor_route signature changed; needs callable injection migration")
-async def test_plan_frontdoor_route_falls_back_when_completion_returns_invalid_json(
+@pytest.mark.xfail(reason="plan_route signature changed; needs callable injection migration")
+async def test_plan_route_falls_back_when_completion_returns_invalid_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pass
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="plan_frontdoor_route signature changed; needs callable injection migration")
-async def test_plan_frontdoor_route_retries_without_response_format(
+@pytest.mark.xfail(reason="plan_route signature changed; needs callable injection migration")
+async def test_plan_route_retries_without_response_format(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pass
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="plan_frontdoor_route signature changed; needs callable injection migration")
-async def test_plan_frontdoor_route_retries_when_structured_output_empty(
+@pytest.mark.xfail(reason="plan_route signature changed; needs callable injection migration")
+async def test_plan_route_retries_when_structured_output_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pass
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="plan_frontdoor_route signature changed; needs callable injection migration")
-async def test_plan_frontdoor_route_falls_back_when_both_attempts_empty(
+@pytest.mark.xfail(reason="plan_route signature changed; needs callable injection migration")
+async def test_plan_route_falls_back_when_both_attempts_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pass
 
 
-# ── handle_message frontdoor routing ─────────────────────────────────
+# ── handle_message router routing ─────────────────────────────────────
 
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(reason="handle_message now takes (runtime, msg, transport); needs deep migration")
-async def test_handle_message_uses_frontdoor_route_planner_for_natural_language(
+async def test_handle_message_uses_route_planner_for_natural_language(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pass
@@ -867,8 +867,8 @@ async def test_tokens_command_returns_detailed_stats() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="frontdoor+mode token context now on runtime.last_turn_context; needs deep migration")
-async def test_handle_message_surfaces_frontdoor_and_mode_token_context(
+@pytest.mark.xfail(reason="router+mode token context now on runtime.last_turn_context; needs deep migration")
+async def test_handle_message_surfaces_router_and_mode_token_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pass
@@ -906,7 +906,7 @@ def test_normalize_response_format_returns_none_for_none() -> None:
 
 
 def test_normalize_response_format_emits_json_schema_for_route_decision() -> None:
-    normalized = providers._normalize_response_format(FrontDoorRouteDecision)
+    normalized = providers._normalize_response_format(RouterRouteDecision)
     assert normalized is not None
     assert normalized["type"] == "json_schema"
     inner = normalized["json_schema"]
@@ -928,7 +928,7 @@ def test_resolve_model_supports_designations_and_concrete_ids(tmp_path: Path) ->
                 "models:",
                 "  - model_id: gemma3:latest",
                 "    provider: ollama",
-                "    designations: [front-door, default]",
+                "    designations: [router, default]",
                 "  - model_id: deepseek-r1:latest",
                 "    provider: ollama",
                 "    reasoning_model: true",
@@ -938,8 +938,8 @@ def test_resolve_model_supports_designations_and_concrete_ids(tmp_path: Path) ->
         encoding="utf-8",
     )
 
-    front_door_model_id = resolve_little_lisa_model(
-        "front-door", runtime_state={}, data_dir=tmp_path
+    router_model_id = resolve_little_lisa_model(
+        "router", runtime_state={}, data_dir=tmp_path
     ).model_id
     default_model_id = resolve_little_lisa_model(
         "default", runtime_state={}, data_dir=tmp_path
@@ -948,13 +948,13 @@ def test_resolve_model_supports_designations_and_concrete_ids(tmp_path: Path) ->
         "deep", runtime_state={}, data_dir=tmp_path
     ).model_id
 
-    assert front_door_model_id
+    assert router_model_id
     assert default_model_id
     assert deep_model_id
-    resolved_front_door = resolve_little_lisa_model(
-        front_door_model_id, runtime_state={}, data_dir=tmp_path
+    resolved_router = resolve_little_lisa_model(
+        router_model_id, runtime_state={}, data_dir=tmp_path
     ).model_id
-    assert resolved_front_door == front_door_model_id
+    assert resolved_router == router_model_id
 
 
 def test_resolve_model_rejects_unknown_manifest_id(tmp_path: Path) -> None:
@@ -965,7 +965,7 @@ def test_resolve_model_rejects_unknown_manifest_id(tmp_path: Path) -> None:
                 "models:",
                 "  - model_id: gemma3:latest",
                 "    provider: ollama",
-                "    designations: [front-door, default]",
+                "    designations: [router, default]",
             ]
         ),
         encoding="utf-8",
@@ -1005,7 +1005,7 @@ def test_simple_help_mentions_quit_command() -> None:
 # ── Turn context ──────────────────────────────────────────────────────
 
 
-def test_build_turn_context_marks_frontdoor_handoff() -> None:
+def test_build_turn_context_marks_router_handoff() -> None:
     mode = WorkflowModeConfig(
         mode_id="default",
         start_stage_id="default",
@@ -1016,7 +1016,7 @@ def test_build_turn_context_marks_frontdoor_handoff() -> None:
         mode_id="default",
         query="hello there",
         deep_route=False,
-        preferred_model_id="front-door",
+        preferred_model_id="router",
         resolved_model=StubModelDefinition(
             model_id="gpt-4o",
             provider="openai",
@@ -1024,8 +1024,8 @@ def test_build_turn_context_marks_frontdoor_handoff() -> None:
         mode=mode,
     )
 
-    assert context["preferred_model_id"] == "front-door"
-    assert "front-door" in str(context["handoff"])
+    assert context["preferred_model_id"] == "router"
+    assert "router" in str(context["handoff"])
 
 
 # ── Turn log / log event (no-op stubs in core host) ──────────────────
@@ -1127,7 +1127,7 @@ async def test_complete_live_preserves_non_json_structured_output_for_fallback(
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(reason="handle_message now takes (runtime, msg, transport); needs deep migration")
-async def test_handle_message_uses_explicit_frontdoor_model_override(
+async def test_handle_message_uses_explicit_router_model_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pass
@@ -1135,7 +1135,7 @@ async def test_handle_message_uses_explicit_frontdoor_model_override(
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(reason="handle_message now takes (runtime, msg, transport); needs deep migration")
-async def test_handle_message_does_not_force_frontdoor_model_for_explicit_mode(
+async def test_handle_message_does_not_force_router_model_for_explicit_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pass

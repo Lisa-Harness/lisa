@@ -27,7 +27,7 @@ Response (stdout, matches request ``id``)::
 
 Stage notification (stdout, during a turn, no ``id``)::
 
-    {"method": "notify", "params": {"stage": "frontdoor", "data": {...}}}
+    {"method": "notify", "params": {"stage": "router", "data": {...}}}
 
 Error notification (stdout, non-fatal, no ``id``)::
 

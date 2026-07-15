@@ -33,7 +33,7 @@ flowchart TD
         TURN[TurnSimulator — full turn loop with stubs]
         OPS[Operation registry — discovery + execution]
         MCP[MCP tool pool — in-memory server]
-        FRONT[Front-door routing — regex + verifier + fallback]
+        FRONT[Router routing — regex + verifier + fallback]
         IPSAR[IPSAR route resolution]
         FSM[Workflow FSM — stage transitions]
     end
@@ -59,7 +59,7 @@ flowchart TD
 
 A `TurnSimulator` class that lets tests drive full turns through `run_turn()` with
 complete control over every external dependency. This is the highest-leverage
-addition — it unblocks testing for the front-door router, IPSAR, FSM, and the full
+addition — it unblocks testing for the router, IPSAR, FSM, and the full
 turn loop without requiring real models, real MCP servers, or real memory stores.
 
 ### Location
@@ -206,7 +206,7 @@ these with a single, composable fixture. Existing tests should be migrated to us
 
 | Test target | What it validates |
 | --- | --- |
-| `frontdoor.py` | Fast-path regex match → correct mode; verifier confirmation; model-bounded fallback; structured-output retry; fallback to default |
+| `router.py` | Fast-path regex match → correct mode; verifier confirmation; model-bounded fallback; structured-output retry; fallback to default |
 | `ipsar.py` | Slash-command parsing; pattern-matched mode detection; default fallback |
 | `ipsar_fsm.py` | Stage transitions; operation lifecycle (entry → pre-turn → post-turn); mode kind dispatch (chat vs action vs workflow) |
 | `turn_runner.py` | Full pre-turn → tool loop → post-turn with memory; slice hooks firing; context assembly |
@@ -414,7 +414,7 @@ kernel/tests/snapshots/
     default_mode_system_prompt.snapshot.txt
     search_mode_system_prompt.snapshot.txt
     discuss_mode_system_prompt.snapshot.txt
-    frontdoor_system_prompt.snapshot.txt
+    router_system_prompt.snapshot.txt
 ```
 
 ### Mechanism
@@ -475,7 +475,7 @@ async def test_default_mode_system_prompt() -> None:
 | Snapshot | Captures |
 | --- | --- |
 | `{mode_id}_system_prompt` | Full assembled system prompt for each mode |
-| `frontdoor_system_prompt` | The front-door routing prompt (boilerplate + mode catalog + hints) |
+| `router_system_prompt` | The router routing prompt (boilerplate + mode catalog + hints) |
 | `memory_recall_prompt` | The memory recall assembly (context + recalled memories) |
 | `workshop_synthesis_prompt` | The workshop result synthesis prompt |
 
@@ -598,7 +598,7 @@ of spawning a subprocess.
 | Marker | Scope | Purpose |
 | --- | --- | --- |
 | `unit` | Layer 1 | Pure function tests, model validation, config defaults |
-| `component` | Layer 2 | TurnSimulator tests, operation registry, MCP pool, front-door, IPSAR, FSM |
+| `component` | Layer 2 | TurnSimulator tests, operation registry, MCP pool, router, IPSAR, FSM |
 | `integration` | Layer 3 | Extension harness live tests, MCP subprocess tests, workshop fan-out |
 | `eval` | Layer 4 | Dataset-driven mode regression, snapshot tests |
 | `snapshot` | Layer 4 subset | Golden-file prompt assembly tests |
@@ -644,7 +644,7 @@ uv run pytest -m "not slow"
 | `TurnSimulator` class | `kernel/testing/turn_simulator.py` |
 | `SimulatedModel`, `SimulatedToolCall`, `SimulatedToolResult` | `kernel/testing/turn_simulator.py` |
 | Migrate existing `test_turn_runner.py` to use `TurnSimulator` | `kernel/tests/test_turn_runner.py` |
-| New tests: `test_frontdoor.py` | `kernel/tests/test_frontdoor.py` |
+| New tests: `test_router.py` | `kernel/tests/test_router.py` |
 | New tests: `test_ipsar.py` | `kernel/tests/test_ipsar.py` |
 | New tests: `test_ipsar_fsm.py` | `kernel/tests/test_ipsar_fsm.py` |
 | New tests: `test_operations_registry.py` | `kernel/tests/test_operations_registry.py` |
@@ -668,7 +668,7 @@ uv run pytest -m "not slow"
 | Eval dataset: `search` mode | `kernel/tests/eval/datasets/search.csv` |
 | Eval dataset: `discuss` mode | `kernel/tests/eval/datasets/discuss.csv` |
 | Snapshot tests for all mode system prompts | `kernel/tests/snapshots/test_prompt_snapshots.py` |
-| Snapshot test for front-door prompt | `kernel/tests/snapshots/test_prompt_snapshots.py` |
+| Snapshot test for router prompt | `kernel/tests/snapshots/test_prompt_snapshots.py` |
 
 ### Phase 4 — Pack and Extension Test Infrastructure
 

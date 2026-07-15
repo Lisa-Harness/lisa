@@ -766,7 +766,7 @@ async def run_turn(
         hooks: Extension-point callbacks provided by the host.
         max_tool_iterations: Maximum number of tool-calling loop iterations.
         preferred_model_id: Optional per-turn model alias override supplied by
-            the host when routing needs an explicit front-door model.
+            the host when routing needs an explicit router model.
         turn_budget: Optional whole-turn resource budget. When set, the loop
             tracks tool calls, tokens, and wall time against the budget and
             forces a final no-tools completion when any limit is reached.

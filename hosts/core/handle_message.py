@@ -11,9 +11,9 @@ This is the core ``handle_message`` entry point that all transport hosts
     after built-in host commands.
     ``/models``.
 2. **Model turn routing** — for non-command messages: checks for ``/deep``
-   prefix, parses slash-command routes, plans front-door routes for natural
-   language, tries the front-door direct-response shortcut, tries the
-   front-door clarification, then executes the mode turn via
+   prefix, parses slash-command routes, plans routes for natural
+   language, tries the router direct-response shortcut, tries the
+   router clarification, then executes the mode turn via
    ``kernel.turn_runner.run_turn``.
 3. **Turn execution** — builds ``TurnHooks`` via
    ``hosts.core.turn_hooks_builder.build_turn_hooks``, calls ``run_turn``,
@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
-from kernel.models import RouteDecision as FrontDoorRouteDecision
+from kernel.models import RouteDecision as RouterRouteDecision
 from kernel.operations.registry import OperationExecutionError
 from kernel.turn_runner import TurnResult, run_turn
 
@@ -45,7 +45,7 @@ from hosts.core.commands import (
     format_operation_error,
     format_token_stats,
     format_unsupported_mode,
-    frontdoor_model_alias,
+    router_model_alias,
     handle_debug_command,
     handle_help_command,
     handle_intake_command,
@@ -60,7 +60,7 @@ from hosts.core.commands import (
     set_runtime_route_preview,
 )
 from hosts.core.context_assembly import build_turn_context
-from hosts.core.frontdoor_routing import plan_frontdoor_route
+from hosts.core.routing import plan_route
 from hosts.core.host_commands import (
     register_host_command_exacts,
     register_host_command_prefix,
@@ -164,7 +164,7 @@ def _apply_turn_usage(
     model_id: str = "",
     mode_id: str = "",
     stage_id: str = "",
-    frontdoor_routing: dict[str, Any] | None = None,
+    router_routing: dict[str, Any] | None = None,
 ) -> None:
     """Apply turn usage via the dict-based token_accounting module."""
     state = _token_state_dict(runtime)
@@ -174,7 +174,7 @@ def _apply_turn_usage(
         model_id=model_id,
         mode_id=mode_id,
         stage_id=stage_id,
-        frontdoor_routing=frontdoor_routing,
+        router_routing=router_routing,
     )
     _sync_token_state(runtime, state)
 
@@ -217,7 +217,7 @@ async def handle_message(
     if cmd_result is not None:
         return cmd_result
 
-    # ── Model turn (front-door + run_turn) ────────────────────────────
+    # ── Model turn (router + run_turn) ────────────────────────
     try:
         response_text = await _route_model_turn(runtime, message, tport)
     except OperationExecutionError as exc:
@@ -347,15 +347,15 @@ async def _route_model_turn(
     message: str,
     transport: TransportCallbacks,
 ) -> str:
-    """Handle model-backed routing: front-door planning and run_turn dispatch.
+    """Handle model-backed routing: router planning and run_turn dispatch.
 
     Routing order:
     1. ``/deep`` prefix → default mode with deep-designated model.
     2. Other slash commands → ``kernel.ipsar.parse_route``.
     3. Natural language → check ``start_mode`` override from session
-       context front matter. When set, bypass front-door routing entirely
+       context front matter. When set, bypass router entirely
        and route directly to the declared mode.
-    4. Otherwise → front-door routing with direct-response shortcut and
+    4. Otherwise → router with direct-response shortcut and
        clarification attempts.
     5. Execute the resolved mode turn via ``kernel.turn_runner.run_turn``.
     """
@@ -371,7 +371,7 @@ async def _route_model_turn(
         mode_id, query = parse_route(message)
     else:
         # Check for start_mode override from session-context front matter.
-        # When set, bypass front-door routing and go directly to the
+        # When set, bypass router and go directly to the
         # declared mode (unless the user has already switched modes via
         # an explicit /mode command during this session).
         start_mode = runtime.config.start_mode
@@ -380,17 +380,17 @@ async def _route_model_turn(
             query = message
             logger.debug(
                 "start_mode bypass: routing directly to mode %r "
-                "(front-door skipped)", start_mode,
+                "(router skipped)", start_mode,
             )
         else:
-            # Try front-door direct-response shortcut.
-            direct = await _try_frontdoor_shortcut(runtime, message, transport)
+            # Try router direct-response shortcut.
+            direct = await _try_router_shortcut(runtime, message, transport)
             if direct is not None:
                 return direct
 
-            # Plan the full front-door route.
-            route_decision = await _plan_frontdoor_route(runtime, message)
-            clarification = _try_frontdoor_clarification(
+            # Plan the full route.
+            route_decision = await _plan_route(runtime, message)
+            clarification = _try_router_clarification(
                 runtime, message, route_decision, transport,
             )
             if clarification is not None:
@@ -402,18 +402,18 @@ async def _route_model_turn(
     return await _execute_mode_turn(runtime, message, mode_id, query, deep_route, transport)
 
 
-async def _try_frontdoor_shortcut(
+async def _try_router_shortcut(
     runtime: HostRuntime,
     message: str,
     transport: TransportCallbacks,
 ) -> str | None:
-    """Try the front-door direct-response optimization; return response or ``None``.
+    """Try the router direct-response optimization; return response or ``None``.
 
-    When the front-door planner provides a ``direct_response`` and the
+    When the router planner provides a ``direct_response`` and the
     selected mode is ``default``, skip the full model turn and return the
     planner's response directly.
     """
-    route_decision = await _plan_frontdoor_route(runtime, message)
+    route_decision = await _plan_route(runtime, message)
     if (
         route_decision.clarification_needed
         or not route_decision.direct_response
@@ -422,7 +422,7 @@ async def _try_frontdoor_shortcut(
         return None
 
     response_text = route_decision.direct_response
-    planner_debug = runtime.last_frontdoor_debug or {}
+    planner_debug = runtime.last_router_debug or {}
 
     # Build turn context for the shortcut.
     from hosts.core.commands import _resolve_model as _resolve_model_cmd
@@ -432,9 +432,9 @@ async def _try_frontdoor_shortcut(
         "timestamp_utc": datetime.now(UTC).isoformat(),
         "raw_message": message,
         "mode_id": "default",
-        "handoff": "front-door optimization (direct response)",
-        "frontdoor_route": route_decision.model_dump(mode="json"),
-        "frontdoor_debug": planner_debug or None,
+        "handoff": "router optimization (direct response)",
+        "router_route": route_decision.model_dump(mode="json"),
+        "router_debug": planner_debug or None,
     }
     _set_turn_context(runtime, direct_context)
 
@@ -445,7 +445,7 @@ async def _try_frontdoor_shortcut(
         mode_id="default",
         query=route_decision.normalized_query or message,
         response_text=response_text,
-        provenance={"source": "system-verified", "finish_reason": "frontdoor", "model_id": "none"},
+        provenance={"source": "system-verified", "finish_reason": "router", "model_id": "none"},
     )
     _apply_turn_usage(
         runtime,
@@ -457,63 +457,63 @@ async def _try_frontdoor_shortcut(
         model_id=resolved_default.model_id,
         mode_id="default",
         stage_id="-",
-        frontdoor_routing=planner_debug or None,
+        router_routing=planner_debug or None,
     )
 
-    await transport.on_stage("frontdoor", {"shortcut": "direct_response"})
+    await transport.on_stage("router", {"shortcut": "direct_response"})
     return response_text
 
 
-def _try_frontdoor_clarification(
+def _try_router_clarification(
     runtime: HostRuntime,
     message: str,
-    route_decision: FrontDoorRouteDecision,
+    route_decision: RouterRouteDecision,
     _transport: TransportCallbacks,
 ) -> str | None:
-    """Return a clarification question if the front-door requests one."""
+    """Return a clarification question if the router requests one."""
     _ = _transport  # reserved for future stage callbacks
     if not (route_decision.clarification_needed and route_decision.clarification_question):
         return None
 
     response_text = route_decision.clarification_question
-    planner_debug = runtime.last_frontdoor_debug or {}
+    planner_debug = runtime.last_router_debug or {}
     clarification_context: dict[str, Any] = {
         "timestamp_utc": datetime.now(UTC).isoformat(),
         "raw_message": message,
-        "mode_id": "front-door",
-        "handoff": "front-door clarification",
-        "frontdoor_route": route_decision.model_dump(mode="json"),
-        "frontdoor_debug": planner_debug or None,
+        "mode_id": "router",
+        "handoff": "router clarification",
+        "router_route": route_decision.model_dump(mode="json"),
+        "router_debug": planner_debug or None,
     }
     _set_turn_context(runtime, clarification_context)
 
     append_thread_entry(
         thread_path=runtime.thread_path,
         user_slug=runtime.config.user_slug,
-        mode_id="front-door",
+        mode_id="router",
         query=message,
         response_text=response_text,
-        provenance={"source": "system-verified", "finish_reason": "frontdoor-clarification", "model_id": "none"},
+        provenance={"source": "system-verified", "finish_reason": "router-clarification", "model_id": "none"},
     )
     return response_text
 
 
-async def _plan_frontdoor_route(
+async def _plan_route(
     runtime: HostRuntime,
     message: str,
-) -> FrontDoorRouteDecision:
-    """Plan the front-door route for a natural-language message.
+) -> RouterRouteDecision:
+    """Plan the route for a natural-language message.
 
-    Delegates to ``hosts.core.frontdoor_routing.plan_frontdoor_route`` with
+    Delegates to ``hosts.core.routing.plan_route`` with
     all callables resolved from the runtime.
     """
     from hosts.core.commands import _resolve_model as _resolve_model_cmd
     from hosts.core.context_assembly import (
-        build_frontdoor_user_prompt,
-        load_frontdoor_fast_path_verifier_prompt,
-        load_frontdoor_route_prompt,
+        build_user_prompt,
+        load_fast_path_verifier_prompt,
+        load_route_prompt,
     )
-    from hosts.core.frontdoor_routing import last_debug_dict
+    from hosts.core.routing import last_debug_dict
     from hosts.core.providers import complete_live
     from hosts.core.turn_hooks_builder import content_loader
 
@@ -540,29 +540,29 @@ async def _plan_frontdoor_route(
         return text[:limit]
 
     def _load_route_prompt() -> str:
-        return load_frontdoor_route_prompt(loader)
+        return load_route_prompt(loader)
 
     def _load_fast_path_verifier_prompt() -> str:
-        return load_frontdoor_fast_path_verifier_prompt(loader)
+        return load_fast_path_verifier_prompt(loader)
 
     def _mode_supported(_mode_id: str, mode: Any) -> bool:
         return mode_support_gap(mode) is None
 
     def _build_user_prompt(**kwargs: Any) -> str:
-        # plan_frontdoor_route doesn't pass user_slug — inject it from runtime.
+        # plan_route doesn't pass user_slug — inject it from runtime.
         kwargs.setdefault("user_slug", runtime.config.user_slug)
-        return build_frontdoor_user_prompt(**kwargs)
+        return build_user_prompt(**kwargs)
 
     def _get_catalog() -> dict[str, Any]:
         return get_workflow_catalog()
 
-    def _set_last_fd_debug(payload: dict[str, Any]) -> None:
-        runtime.set_last_frontdoor_debug(payload)
+    def _set_last_router_debug(payload: dict[str, Any]) -> None:
+        runtime.set_last_router_debug(payload)
 
-    decision = await plan_frontdoor_route(
+    decision = await plan_route(
         raw_message=message,
         conversation_excerpt_markdown=conversation_excerpt,
-        frontdoor_alias=frontdoor_model_alias(),
+        router_alias=router_model_alias(),
         resolve_model=_resolve_model,
         complete_live=_complete_live,
         model_alias_for_mode=model_alias_for_mode,
@@ -573,9 +573,9 @@ async def _plan_frontdoor_route(
         mode_supported=_mode_supported,
         build_user_prompt=_build_user_prompt,
         get_workflow_catalog=_get_catalog,
-        set_last_frontdoor_debug=_set_last_fd_debug,
+        set_last_router_debug=_set_last_router_debug,
     )
-    # The module-level last_debug_dict is also updated by plan_frontdoor_route.
+    # The module-level last_debug_dict is also updated by plan_route.
     _ = last_debug_dict()
     return decision
 
@@ -632,9 +632,9 @@ async def _execute_mode_turn(
         mode=mode,
     )
 
-    # Inject front-door routing debug info for natural-language turns.
+    # Inject router routing debug info for natural-language turns.
     if not message.lstrip().startswith("/"):
-        planner_debug = runtime.last_frontdoor_debug or {}
+        planner_debug = runtime.last_router_debug or {}
         planner_model_payload = planner_debug.get("resolved_model")
         planner_model_id = ""
         planner_model_provider = ""
@@ -642,10 +642,10 @@ async def _execute_mode_turn(
             planner_model_id = str(planner_model_payload.get("model_id") or "")
             planner_model_provider = str(planner_model_payload.get("provider") or "")
 
-        run_context["frontdoor_route"] = {
+        run_context["router_route"] = {
             "selected_mode_id": mode.mode_id,
             "normalized_query": query or message,
-            "model_alias": frontdoor_model_alias(),
+            "model_alias": router_model_alias(),
             "resolved_model_id": planner_model_id,
             "resolved_model_provider": planner_model_provider,
             "reasoning": planner_debug.get("planner_reasoning", ""),
@@ -659,7 +659,7 @@ async def _execute_mode_turn(
             "total_tokens": coerce_non_negative_int(planner_debug.get("planner_total_tokens")),
         }
         if planner_debug:
-            run_context["frontdoor_debug"] = planner_debug
+            run_context["router_debug"] = planner_debug
 
     _set_turn_context(runtime, run_context)
 
@@ -703,7 +703,7 @@ async def _execute_mode_turn(
         model_id=resolved_model.model_id,
         mode_id=mode.mode_id,
         stage_id=runtime.current_stage_id or "-",
-        frontdoor_routing=runtime.last_frontdoor_debug,
+        router_routing=runtime.last_router_debug,
     )
 
     # Update completion context.
@@ -818,7 +818,7 @@ def _set_turn_context(runtime: HostRuntime, context: dict[str, Any]) -> None:
         completion=context.get("completion")
         if isinstance(context.get("completion"), dict)
         else None,
-        frontdoor_debug=context.get("frontdoor_debug")
-        if isinstance(context.get("frontdoor_debug"), dict)
+        router_debug=context.get("router_debug")
+        if isinstance(context.get("router_debug"), dict)
         else None,
     )

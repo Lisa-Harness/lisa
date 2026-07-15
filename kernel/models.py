@@ -85,7 +85,7 @@ class SurfaceContext(BaseModel):
     thread_owner_id: str = ""
 
 
-FrontDoorPromptProfile = Literal["compact", "standard", "rich"]
+RouterPromptProfile = Literal["compact", "standard", "rich"]
 RoutePlannerSource = Literal[
     "deterministic",
     "fast_path_verified",
@@ -97,7 +97,7 @@ RoutePlannerSource = Literal[
 
 
 class RouteDecisionAlternative(BaseModel):
-    """One alternative mode considered by the front-door planner."""
+    """One alternative mode considered by the router planner."""
 
     mode_id: str
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -113,7 +113,7 @@ OptionalContextLane = Literal[
 
 
 class RouteDecision(BaseModel):
-    """Bounded front-door routing decision for one inbound user turn."""
+    """Bounded routing decision for one inbound user turn."""
 
     reasoning: str = ""
     selected_mode_id: str = "default"
@@ -124,7 +124,7 @@ class RouteDecision(BaseModel):
     clarification_question: str = ""
     direct_response: str = ""
     planner_source: RoutePlannerSource = "deterministic"
-    prompt_profile: FrontDoorPromptProfile = "standard"
+    prompt_profile: RouterPromptProfile = "standard"
     optional_context_include: list[OptionalContextLane] = Field(default_factory=list)
     optional_context_exclude: list[OptionalContextLane] = Field(default_factory=list)
 
@@ -1210,18 +1210,18 @@ class WorkflowModeConfig(BaseModel):
     # Absolute path to the mode's _mode.md source file populated during catalog load.
     mode_markdown_path: str = ""
     default_model: str | None = None
-    # Front-door routing metadata for natural-language mode selection.
-    frontdoor_routable: bool = False
-    frontdoor_priority: int = 0
+    # Routing metadata for natural-language mode selection.
+    routable: bool = False
+    priority: int = 0
     # Optional regex patterns for high-precision fast-path candidate detection.
     # Patterns are authored in mode front matter and evaluated case-insensitively.
-    frontdoor_fast_path_patterns: list[str] = Field(default_factory=list)
-    # Optional natural-language route hints for the front-door planner prompt.
+    fast_path_patterns: list[str] = Field(default_factory=list)
+    # Optional natural-language route hints for the router planner prompt.
     # These are mode-authored prompt fragments, not executable matchers.
-    frontdoor_route_hints: list[str] = Field(default_factory=list)
-    # Optional route examples for the front-door planner prompt.
+    route_hints: list[str] = Field(default_factory=list)
+    # Optional route examples for the router planner prompt.
     # Each entry is markdown/plaintext content authored per mode.
-    frontdoor_examples: list[str] = Field(default_factory=list)
+    examples: list[str] = Field(default_factory=list)
     # Python regex string used by parse_route() to detect activation.
     # Must include a named group (?P<query>...) for the trailing user text.
     command_pattern: str = ""

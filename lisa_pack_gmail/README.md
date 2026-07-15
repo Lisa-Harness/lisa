@@ -68,7 +68,7 @@ uv run lisa once "/gmail draft a Q3 update to Sam"
 
 Flow:
 
-1. The front-door router matches `gmail draft` and routes to the `gmail` action mode.
+1. The router matches `gmail draft` and routes to the `gmail` action mode.
 2. The mode's entry operation `gmail_draft` runs.
 3. The operation calls the model to produce structured draft fields (`to`, `subject`, `body`) from the user's request.
 4. The operation calls the `gmail_create_draft` tool, which POSTs a base64url-encoded RFC 2822 message to `POST /users/me/drafts`.

@@ -186,17 +186,17 @@ def test_apply_mode_overrides_deep_merges_route_hints(tmp_path: Path) -> None:
     base = {
         "mode_id": "demo",
         "custom": {"a": 1, "nested": {"x": 1}},
-        "frontdoor_route_hints": ["old"],
+        "route_hints": ["old"],
     }
     _write_overrides(
         mode_dir,
-        {"custom": {"b": 2, "nested": {"y": 2}}, "frontdoor_route_hints": ["new"]},
+        {"custom": {"b": 2, "nested": {"y": 2}}, "route_hints": ["new"]},
     )
 
     merged = _apply_mode_overrides(mode_dir, base)
     assert merged["custom"] == {"a": 1, "b": 2, "nested": {"x": 1, "y": 2}}
     # Lists replace (no concatenation).
-    assert merged["frontdoor_route_hints"] == ["new"]
+    assert merged["route_hints"] == ["new"]
 
 
 def test_apply_mode_overrides_replaces_lenses(tmp_path: Path) -> None:
@@ -233,11 +233,11 @@ def test_apply_mode_overrides_rejects_protected_mode_id(tmp_path: Path) -> None:
 
 
 def test_apply_mode_overrides_rejects_disallowed_key(tmp_path: Path) -> None:
-    """Any protected kernel key (here ``frontdoor_routable``) is disallowed."""
+    """Any protected kernel key (here ``routable``) is disallowed."""
     mode_dir = tmp_path / "demo"
     mode_dir.mkdir()
     base = {"mode_id": "demo"}
-    _write_overrides(mode_dir, {"frontdoor_routable": True})
+    _write_overrides(mode_dir, {"routable": True})
 
     with pytest.raises(WorkflowValidationError, match="kernel-owned keys"):
         _apply_mode_overrides(mode_dir, base)
@@ -313,10 +313,10 @@ def test_load_catalog_from_disk_does_not_leak_kernel_keys_into_extra_front_matte
     _write_mode(
         tmp_path,
         extra_front_matter={
-            "frontdoor_routable": True,
-            "frontdoor_priority": 5,
-            "frontdoor_route_hints": ["hint"],
-            "frontdoor_examples": ["example"],
+            "routable": True,
+            "priority": 5,
+            "route_hints": ["hint"],
+            "examples": ["example"],
             "default_model": "gpt-demo",
             "description": "should not leak",
         },
@@ -324,17 +324,17 @@ def test_load_catalog_from_disk_does_not_leak_kernel_keys_into_extra_front_matte
     catalog = _load(tmp_path)
 
     extra = catalog["demo"].extra_front_matter
-    assert "frontdoor_routable" not in extra
-    assert "frontdoor_priority" not in extra
-    assert "frontdoor_route_hints" not in extra
-    assert "frontdoor_examples" not in extra
+    assert "routable" not in extra
+    assert "priority" not in extra
+    assert "route_hints" not in extra
+    assert "examples" not in extra
     assert "default_model" not in extra
     assert "description" not in extra
     # And the typed fields picked them up.
-    assert catalog["demo"].frontdoor_routable is True
-    assert catalog["demo"].frontdoor_priority == 5
-    assert catalog["demo"].frontdoor_route_hints == ["hint"]
-    assert catalog["demo"].frontdoor_examples == ["example"]
+    assert catalog["demo"].routable is True
+    assert catalog["demo"].priority == 5
+    assert catalog["demo"].route_hints == ["hint"]
+    assert catalog["demo"].examples == ["example"]
     assert catalog["demo"].default_model == "gpt-demo"
     assert catalog["demo"].description == "should not leak"
 

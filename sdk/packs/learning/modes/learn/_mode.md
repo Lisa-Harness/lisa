@@ -4,16 +4,16 @@ mode_provider_id: lisa-pack-learning
 start_stage_id: none
 mode_kind: chat
 require_query: true
-frontdoor_routable: true
-frontdoor_priority: 9
+routable: true
+priority: 9
 allowed_operation_ids: [synthesize_and_store_learning, recall_memory]
 tools_authoritative: true
 allowed_tool_ids: [memory.add, memory.search, memory.list]
 description: "LEARN workflow mode to reflect on the conversation and distill durable insights."
-frontdoor_route_hints:
+route_hints:
   - Route to `learn` when the user asks to take a note, reflect on the conversation, capture a learning, or distill an insight.
   - Prefer `learn` when the user wants to remember something from the current discussion for the long term.
-frontdoor_examples:
+examples:
   - reasoning: "User explicitly asks to take a note of a decision."
     selected_mode_id: learn
     normalized_query: Take a note that we decided to use PostgreSQL.

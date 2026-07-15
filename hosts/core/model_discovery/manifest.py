@@ -1,6 +1,6 @@
 """Manifest construction and atomic serialization.
 
-Heuristic role assignment (``front-door``/``default``/``deep``) plus
+Heuristic role assignment (``router``/``default``/``deep``) plus
 atomic YAML writes. The heuristics are deliberately stable and
 order-independent: the default model is the first low-latency match
 *in discovery order*, falling back to the first non-reasoning model,
@@ -95,7 +95,7 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
     for model in deduped:
         designations: list[str] = []
         if key(model) == default_key:
-            designations.extend(["front-door", "default"])
+            designations.extend(["router", "default"])
         if key(model) == deep_key:
             designations.extend(["deep", "reasoning"])
 

@@ -82,7 +82,7 @@ _HOST_REPL_SHORTCUTS: tuple[str, ...] = (
     "/settings",
     "/tokens",
     "/debug context",
-    "/debug frontdoor",
+    "/debug router",
     "/consolidate",
     "/intake",
     "/checkpoint",
@@ -176,13 +176,13 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
     # resolved model before the first turn is executed. When start_mode
     # is set in the session context, use it instead of "default".
     from hosts.core.commands import set_runtime_route_preview
-    from hosts.core.commands import frontdoor_model_alias, model_alias_for_mode
+    from hosts.core.commands import router_model_alias, model_alias_for_mode
 
     initial_mode = runtime.config.start_mode or "default"
     initial_model_alias = (
         model_alias_for_mode(initial_mode)
         if runtime.config.start_mode
-        else frontdoor_model_alias()
+        else router_model_alias()
     )
     set_runtime_route_preview(
         runtime,
@@ -205,7 +205,7 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
     console.print(
         Panel(
             "Type /help, /help capabilities, /debug context, "
-            "/debug frontdoor, /pack list, /models discover, /search <query>, /deep <query>, or /quit.",
+            "/debug router, /pack list, /models discover, /search <query>, /deep <query>, or /quit.",
             title="Session",
             border_style=STYLE_BORDER_SESSION,
         )

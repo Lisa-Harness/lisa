@@ -9,7 +9,7 @@ All notable changes to the Lisa Framework will be documented in this file.
 #### Kernel (`lisa-kernel`)
 
 - Extension front matter support: `WorkflowModeConfig.extra_front_matter` now carries every app/pack-owned front-matter key the kernel does not interpret (e.g. `lenses` — mode perspective tags like `lens.conversation`, `lens.reflection`). The kernel owns a fixed set of front-matter keys (routing, FSM, operation bindings, workshop config) and passes everything else through opaquely as extension data. Hosts and packs read `extra_front_matter` directly; the kernel never names, validates, or curates app-owned keys, so adding a new app-owned front-matter key requires no kernel change.
-- Front-matter overrides via an optional sibling `_overrides.yaml` file beside each `_mode.md`. Apps can manage extension front matter (and a small set of kernel-owned but overridable fields: `description`, `default_model`, `frontdoor_route_hints`, `frontdoor_examples`) without editing pack-owned `_mode.md` files. The boundary is a **denylist**: the kernel names only the keys it owns and protects (routing, FSM, operation bindings, workshop config); attempting to override any kernel-owned key is rejected with a startup validation error. Every other key is app/pack-owned and passes through untouched. Overrides are deep-merged on top of the authored front matter; list values replace (not concatenate).
+- Front-matter overrides via an optional sibling `_overrides.yaml` file beside each `_mode.md`. Apps can manage extension front matter (and a small set of kernel-owned but overridable fields: `description`, `default_model`, `route_hints`, `examples`) without editing pack-owned `_mode.md` files. The boundary is a **denylist**: the kernel names only the keys it owns and protects (routing, FSM, operation bindings, workshop config); attempting to override any kernel-owned key is rejected with a startup validation error. Every other key is app/pack-owned and passes through untouched. Overrides are deep-merged on top of the authored front matter; list values replace (not concatenate).
 
 ### Changed
 
@@ -125,7 +125,7 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 - Runtime-neutral FSM engine (`ipsar_fsm.py`) with mode catalog loading, stage validation, transition tool schema, and operation lifecycle hooks (entry, pre-turn, post-turn).
 - IPSAR route resolution (`ipsar.py`) for detecting user-facing mode targets from natural-language messages.
-- Shared front-door routing engine (`frontdoor.py`) with fast-path regex matching, verifier-model confirmation, model-bounded routing fallback, and structured-output retry.
+- Shared routing engine (`router.py`) with fast-path regex matching, verifier-model confirmation, model-bounded routing fallback, and structured-output retry.
 - Turn runner (`turn_runner.py`) — the single model+tool loop shared by lightweight hosts and the full app, with `TurnHooks` extension points and three-phase execution (pre-turn → tool loop → post-turn).
 - Opportunistic slice system (`slice.py`) with pressure-model budget math: budget grows as a function of idle time, not a wall-clock tick.
 - Pydantic contracts (`models.py`) for surface context, route decisions, operation execution, tool execution, workflow FSM, workshop fan-out, memory, surf sessions, web search, intelligence pipeline, unified state, context evidence, anomaly alerts, domain knowledge, self-model, and more.
@@ -160,7 +160,7 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 #### Packs (`lisa-pack-*`)
 
-- `lisa-pack-core`: baseline public modes (default, workshop), authored front-door routing prompts, user context templates, and research workshop operation with planner+synthesis pipeline.
+- `lisa-pack-core`: baseline public modes (default, workshop), authored routing prompts, user context templates, and research workshop operation with planner+synthesis pipeline.
 - `lisa-pack-search`: research & reasoning pack owning discuss, search, and thinkabout modes plus the web_search tool, the web_search research-loop operation, and the discussion_briefing pre-turn operation. Discuss was absorbed from core so each mode is co-located with its enrichment operations.
 
 #### Little Lisa (`little-lisa`)
@@ -168,10 +168,10 @@ All notable changes to the Lisa Framework will be documented in this file.
 - Local terminal host CLI with seven subcommands: `cli` (interactive REPL), `desktop` (localhost web UI), `verify` (environment checks), `setup` (interactive provider configuration wizard), `modes` (list supported/installed modes), `models` (list configured models with designations), and `once` (single-turn execution).
 - Tray-first desktop mode: `little-lisa` with no arguments launches a system tray icon (Windows/macOS/Linux via `pystray`) that manages a desktop web host subprocess.
 - Local aiohttp desktop web server with token-authenticated chat API, health check, and last-turn context endpoint.
-- Manifest-driven model routing with `front-door`, `default`, and `deep` designations supporting `azure_openai`, `openai`, `anthropic`, and `ollama` providers.
+- Manifest-driven model routing with `router`, `default`, and `deep` designations supporting `azure_openai`, `openai`, `anthropic`, and `ollama` providers.
 - Terminal streaming support (`--streaming none|stage|text|hybrid[:delay]`) with configurable character delay.
 - Structured JSONL turn logging with `--log`, `--no-log`, and `--log-level` options.
-- Front-door diagnostics via `/debug frontdoor` with planner reasoning, confidence scores, fallback tracking, and structured-output retry recording.
+- Router diagnostics via `/debug router` with planner reasoning, confidence scores, fallback tracking, and structured-output retry recording.
 - Runtime introspection commands: `/help capabilities`, `/settings`, `/debug context`, `/debug capabilities`, `/debug self`.
 - File-backed thread persistence with `--thread-dir` and `--no-thread` options.
 - Configurable artifacts root via `--data-dir` and memory store path via `--memory-db`.
@@ -197,7 +197,7 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Changed
 
-- `little-lisa` turn logs now emit top-level resolved model fields and per-invocation token totals for both front-door planning and mode execution, making `turn.completed` JSONL entries readable without deep payload expansion.
-- Front-door routing retries once without `response_format` when the first structured-output call fails, using explicit JSON-only instructions before deciding fallback.
+- `little-lisa` turn logs now emit top-level resolved model fields and per-invocation token totals for both router planning and mode execution, making `turn.completed` JSONL entries readable without deep payload expansion.
+- Router routing retries once without `response_format` when the first structured-output call fails, using explicit JSON-only instructions before deciding fallback.
 - Slice budget is pressure-driven: budget grows as a function of idle time since the last slice finished, not a wall-clock tick. This is the canonical pattern for opportunistic house-keeping (reindex, eviction, sync) — everything not wall-clock bound is a candidate.
 

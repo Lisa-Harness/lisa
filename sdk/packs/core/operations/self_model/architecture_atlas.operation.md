@@ -4,7 +4,7 @@ description: Generate a structured architecture atlas from the kernel layer mode
 max_calls_per_turn: 1
 completion_temperature: 0
 completion_max_tokens: 2000
-preferred_model_id: front-door
+preferred_model_id: router
 response_format_model_path: sdk.packs.core.operations.self_model.architecture_atlas.ArchitectureAtlasOutput
 response_output_text_field: atlas_markdown
 ---
@@ -30,7 +30,7 @@ Return JSON matching the declared schema:
 - `atlas_markdown`: A markdown-formatted architecture overview. Use a Mermaid `graph TD` diagram for the layer topology, then nested lists for details.
 - `layer_model`: Named architectural layers with one-line descriptions.
 - `module_ownership`: Key module-to-layer ownership mappings (e.g. "kernel/turn_runner.py → kernel layer").
-- `runtime_flows`: Critical runtime flows (turn loop, slice execution, front-door routing, context assembly).
+- `runtime_flows`: Critical runtime flows (turn loop, slice execution, router routing, context assembly).
 - `extension_points`: Documented extension points (TurnHooks, ContextSeams, operation registry, MCP servers, slice slots).
 - `constraints`: Architectural constraints (no cron, pressure-driven slices, hard cutover, all work items on by default).
 - `known_gaps`: Known gaps or deferred capabilities (self-model, architecture atlas, live system state, proactive reflection).

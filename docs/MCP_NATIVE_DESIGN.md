@@ -29,7 +29,7 @@ flowchart TD
 
     subgraph Kernel[lisa-kernel]
         TR[turn_runner]
-        FD[frontdoor + ipsar_fsm]
+        FD[router + ipsar_fsm]
         OPS[operations registry]
         TOOLS[tool layer — MCP native]
         SEAMS[seams/protocols]
@@ -469,7 +469,7 @@ implemented when needed. OpenAI translation ships in Phase 2.
 ## What this does not change
 
 - The slice system (`kernel/slice.py`) — pressure model, unchanged.
-- The front-door router (`kernel/frontdoor.py`) — unchanged.
+- The router (`kernel/router.py`) — unchanged.
 - The IPSAR FSM (`kernel/ipsar_fsm.py`) — unchanged.
 - The operation registry (`kernel/operations/registry.py`) — unchanged, just no longer
   doubles as a tool catalog.

@@ -4,15 +4,15 @@ mode_provider_id: lisa-pack-core
 start_stage_id: none
 mode_kind: action
 require_query: true
-frontdoor_routable: true
-frontdoor_priority: 7
-frontdoor_fast_path_patterns:
+routable: true
+priority: 7
+fast_path_patterns:
   - '\bworkshop\b'
   - '\bfan\s*out\b'
   - '\bmultiple\s+perspectives\b'
   - '\bsynthesize\b'
 entry_operation_ids: [workshop_run]
-frontdoor_route_hints:
+route_hints:
   - Prefer `workshop` when the user wants multiple perspectives, a deep dive on a complex topic, or a comprehensive synthesis of information.
 workshop_panels:
   - panel_id: analysis

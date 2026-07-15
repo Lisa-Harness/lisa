@@ -16,7 +16,7 @@
  * Protocol: one JSON object per line over stdio.
  *   Request:  {"id": 1, "method": "turn", "params": {"message": "hello"}}
  *   Response: {"id": 1, "result": {"text": "...", "data": null, "is_error": false}}
- *   Notification: {"method": "notify", "params": {"stage": "frontdoor", ...}}
+ *   Notification: {"method": "notify", "params": {"stage": "router", ...}}
  *   Error notif: {"method": "error", "params": {"message": "..."}}
  */
 

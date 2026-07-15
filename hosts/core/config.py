@@ -167,7 +167,7 @@ class HostConfig:
 
     # ── Session-context controls (front-matter overrides) ────────────
     # Populated at config-build time from the session context's front
-    # matter. ``start_mode`` bypasses front-door routing when set.
+    # matter. ``start_mode`` bypasses router when set.
     start_mode: str = ""
     session_controls: Any = None  # SessionContextControls | None
 

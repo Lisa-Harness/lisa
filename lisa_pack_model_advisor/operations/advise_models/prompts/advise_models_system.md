@@ -6,7 +6,7 @@ Rules:
 
 - Preserve every model entry unless the instruction explicitly removes it.
 - Only edit fields the instruction mentions. Do not invent capabilities, cost tiers, or context windows you are not confident about.
-- Designations are: `front-door`, `default`, `deep`, `reasoning`.
+- Designations are: `router`, `default`, `deep`, `reasoning`.
 - `mode_models` maps mode ids (`default`, `discuss`, `learn`, `search`, `deep`, `workshop`, `fast`, `code`, `critic`, `distiller`) to `model_id` values.
 - `cost_tier` values: `budget`, `standard`, `premium`, `frontier`.
 - `latency_tier` values: `low`, `medium`, `high`, `batch`.

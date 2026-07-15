@@ -3,18 +3,18 @@ mode_id: stripe
 mode_provider_id: lisa-pack-stripe
 start_stage_id: none
 mode_kind: action
-frontdoor_routable: true
-frontdoor_priority: 5
-frontdoor_fast_path_patterns:
+routable: true
+priority: 5
+fast_path_patterns:
   - "\\bstripe\\s+(status|health)\\b"
   - "\\bsubscription\\s+(status|count)\\b"
   - "\\btrial\\s+(status|count|activity)\\b"
   - "\\bmrr\\b"
   - "\\bbilling\\s+(status|health)\\b"
-frontdoor_route_hints:
+route_hints:
   - Prefer `stripe` when the user asks about Stripe billing, subscriptions, trials, or MRR.
   - Prefer `stripe` when the user wants a billing and subscription health summary.
-frontdoor_examples:
+examples:
   - reasoning: "User explicitly asks about billing and subscription health."
     selected_mode_id: stripe
     normalized_query: Stripe billing status

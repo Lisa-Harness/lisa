@@ -1,7 +1,7 @@
-"""Front-door routing logic for the host.
+"""Routing logic for the host.
 
 Module-level, testable functions that replace the nested closures in
-``main.py``'s ``_plan_frontdoor_route``. The main module passes
+``main.py``'s ``_plan_route``. The main module passes
 ``resolve_model`` and ``complete_live`` as callables so this module has
 no dependency on ``_RUNTIME_STATE``.
 """
@@ -13,8 +13,8 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from kernel import frontdoor as shared_frontdoor
-from kernel.models import RouteDecision as FrontDoorRouteDecision
+from kernel import router as shared_router
+from kernel.models import RouteDecision as RouterRouteDecision
 from kernel.models import SurfaceContext
 from kernel.operations.structured_output import json_only_retry_messages
 from kernel.operations.structured_output import parse_structured_payload
@@ -28,19 +28,19 @@ _last_debug: dict[str, Any] = {}
 
 
 def last_debug_dict() -> dict[str, Any]:
-    """Return the debug dict from the most recent plan_frontdoor_route call."""
+    """Return the debug dict from the most recent plan_route call."""
     return dict(_last_debug)
 
 
-def _build_frontdoor_debug_dict(
+def _build_router_debug_dict(
     raw_message: str,
     conversation_excerpt_markdown: str,
-    frontdoor_alias: str,
+    router_alias: str,
 ) -> dict[str, Any]:
-    """Initialize the front-door planner debug payload."""
+    """Initialize the router planner debug payload."""
     return {
         "timestamp_utc": datetime.now(UTC).isoformat(),
-        "model_alias": frontdoor_alias,
+        "model_alias": router_alias,
         "resolved_model": {},
         "raw_message": raw_message,
         "system_prompt_chars": 0,
@@ -57,21 +57,21 @@ def _build_frontdoor_debug_dict(
 
 
 def _resolve_planner_model(
-    frontdoor_alias: str,
+    router_alias: str,
     resolve_model: Callable[[str], StubModelDefinition],
-    frontdoor_debug: dict[str, Any],
-    fallback: FrontDoorRouteDecision,
-) -> StubModelDefinition | FrontDoorRouteDecision:
-    """Resolve the front-door planner model or return a fallback decision."""
+    router_debug: dict[str, Any],
+    fallback: RouterRouteDecision,
+) -> StubModelDefinition | RouterRouteDecision:
+    """Resolve the router planner model or return a fallback decision."""
     try:
-        model_def = resolve_model(frontdoor_alias)
+        model_def = resolve_model(router_alias)
     except Exception as exc:  # pylint: disable=broad-except — process boundary
-        logger.warning("frontdoor planner model resolution failed: %s: %s", type(exc).__name__, exc)
-        frontdoor_debug["planner_model_resolution_error"] = f"{type(exc).__name__}: {exc}"
-        _apply_fallback(frontdoor_debug, fallback, "planner_model_resolution_error")
+        logger.warning("router planner model resolution failed: %s: %s", type(exc).__name__, exc)
+        router_debug["planner_model_resolution_error"] = f"{type(exc).__name__}: {exc}"
+        _apply_fallback(router_debug, fallback, "planner_model_resolution_error")
         return fallback
 
-    frontdoor_debug["resolved_model"] = {
+    router_debug["resolved_model"] = {
         "model_id": model_def.model_id,
         "provider": model_def.provider,
         "reasoning_model": model_def.reasoning_model,
@@ -94,12 +94,12 @@ def _check_is_default_executor(
 
 
 def _apply_fallback(
-    frontdoor_debug: dict[str, Any],
-    fallback: FrontDoorRouteDecision,
+    router_debug: dict[str, Any],
+    fallback: RouterRouteDecision,
     reason: str,
 ) -> None:
     """Update the debug dict with fallback reason and decision fields."""
-    frontdoor_debug.update(
+    router_debug.update(
         {
             "fallback_used": True,
             "fallback_reason": reason,
@@ -111,31 +111,31 @@ def _apply_fallback(
     )
 
 
-def _record_frontdoor_completion(
+def _record_router_completion(
     completion_result: StubCompletion,
     *,
     attempt: str,
-    frontdoor_debug: dict[str, Any],
+    router_debug: dict[str, Any],
     coerce_int: Callable[[Any], int],
 ) -> None:
-    """Record one front-door planner completion attempt into the debug dict."""
+    """Record one router planner completion attempt into the debug dict."""
     prompt_tokens = coerce_int(completion_result.prompt_tokens)
     completion_tokens = coerce_int(completion_result.completion_tokens)
     total_tokens = coerce_int(completion_result.total_tokens)
     if total_tokens <= 0:
         total_tokens = prompt_tokens + completion_tokens
 
-    frontdoor_debug["planner_prompt_tokens"] = (
-        coerce_int(frontdoor_debug.get("planner_prompt_tokens")) + prompt_tokens
+    router_debug["planner_prompt_tokens"] = (
+        coerce_int(router_debug.get("planner_prompt_tokens")) + prompt_tokens
     )
-    frontdoor_debug["planner_completion_tokens"] = (
-        coerce_int(frontdoor_debug.get("planner_completion_tokens")) + completion_tokens
+    router_debug["planner_completion_tokens"] = (
+        coerce_int(router_debug.get("planner_completion_tokens")) + completion_tokens
     )
-    frontdoor_debug["planner_total_tokens"] = (
-        coerce_int(frontdoor_debug.get("planner_total_tokens")) + total_tokens
+    router_debug["planner_total_tokens"] = (
+        coerce_int(router_debug.get("planner_total_tokens")) + total_tokens
     )
 
-    attempts = frontdoor_debug.get("planner_completion_attempts")
+    attempts = router_debug.get("planner_completion_attempts")
     if not isinstance(attempts, list):
         attempts = []
     attempts.append(
@@ -148,23 +148,23 @@ def _record_frontdoor_completion(
             "tool_call_count": len(completion_result.tool_calls),
         }
     )
-    frontdoor_debug["planner_completion_attempts"] = attempts
+    router_debug["planner_completion_attempts"] = attempts
 
 
 def _capture_prompt_shape(
     messages: list[dict[str, Any]],
     *,
-    frontdoor_debug: dict[str, Any],
+    router_debug: dict[str, Any],
     preview_fn: Callable[[str, int], str],
 ) -> None:
-    """Capture system/user prompt shape into the front-door debug dict."""
+    """Capture system/user prompt shape into the router debug dict."""
     if not messages:
         return
     system_text = str(messages[0].get("content") or "")
     user_text = str(messages[1].get("content") or "") if len(messages) > 1 else ""
-    frontdoor_debug["system_prompt_chars"] = len(system_text)
-    frontdoor_debug["user_prompt_chars"] = len(user_text)
-    frontdoor_debug["user_prompt_preview"] = preview_fn(user_text, limit=240)
+    router_debug["system_prompt_chars"] = len(system_text)
+    router_debug["user_prompt_chars"] = len(user_text)
+    router_debug["user_prompt_preview"] = preview_fn(user_text, limit=240)
 
 
 def _extract_json_object(text: str) -> str:
@@ -194,13 +194,13 @@ async def _retry_without_response_format(
     model_def: StubModelDefinition,
     kwargs: dict[str, Any],
     response_format: type[Any],
-    frontdoor_debug: dict[str, Any],
+    router_debug: dict[str, Any],
     complete_live: Callable[..., Awaitable[StubCompletion]],
     coerce_int: Callable[[Any], int],
     preview_fn: Callable[[str, int], str],
     attempt: str,
 ) -> StubCompletion:
-    """Retry a front-door completion without structured output format.
+    """Retry a router completion without structured output format.
 
     Uses the shared ``json_only_retry_messages`` helper to append a fresh
     user turn with a JSON-only instruction, which is more reliable with
@@ -222,17 +222,17 @@ async def _retry_without_response_format(
         temperature=float(kwargs.get("temperature") or 0.0),
         response_format=None,
     )
-    _record_frontdoor_completion(
+    _record_router_completion(
         retry_completion,
         attempt=attempt,
-        frontdoor_debug=frontdoor_debug,
+        router_debug=router_debug,
         coerce_int=coerce_int,
     )
-    frontdoor_debug["structured_output_retry_used"] = True
-    frontdoor_debug["structured_output_retry_succeeded"] = True
+    router_debug["structured_output_retry_used"] = True
+    router_debug["structured_output_retry_succeeded"] = True
     retry_text = _extract_json_object(retry_completion.content)
     parsed = parse_structured_payload(response_format, retry_text)
-    frontdoor_debug["raw_completion_preview"] = preview_fn(retry_completion.content, 320)
+    router_debug["raw_completion_preview"] = preview_fn(retry_completion.content, 320)
     return StubCompletion(
         content=parsed.model_dump_json(),
         tool_calls=retry_completion.tool_calls,
@@ -242,22 +242,22 @@ async def _retry_without_response_format(
     )
 
 
-async def _complete_frontdoor_planner(
+async def _complete_router_planner(
     *,
     kwargs: dict[str, Any],
     model_def: StubModelDefinition,
-    frontdoor_debug: dict[str, Any],
+    router_debug: dict[str, Any],
     complete_live: Callable[..., Awaitable[StubCompletion]],
     coerce_int: Callable[[Any], int],
     preview_fn: Callable[[str, int], str],
 ) -> StubCompletion:
-    """Execute one front-door planner completion with retry logic."""
+    """Execute one router planner completion with retry logic."""
     response_format = kwargs.get("response_format")
     messages = kwargs.get("messages")
     if isinstance(messages, list):
         _capture_prompt_shape(
             messages,
-            frontdoor_debug=frontdoor_debug,
+            router_debug=router_debug,
             preview_fn=preview_fn,
         )
 
@@ -265,41 +265,41 @@ async def _complete_frontdoor_planner(
         completion = await complete_live(**kwargs)
         attempt = (
             "fast_path_structured"
-            if response_format is not FrontDoorRouteDecision
+            if response_format is not RouterRouteDecision
             else "primary_structured"
         )
-        _record_frontdoor_completion(
+        _record_router_completion(
             completion,
             attempt=attempt,
-            frontdoor_debug=frontdoor_debug,
+            router_debug=router_debug,
             coerce_int=coerce_int,
         )
     except Exception as exc:  # pylint: disable=broad-except — process boundary
         if response_format is None:
             raise
-        logger.warning("frontdoor planner completion error: %s: %s", type(exc).__name__, exc)
-        frontdoor_debug["planner_completion_error"] = f"{type(exc).__name__}: {exc}"
+        logger.warning("router planner completion error: %s: %s", type(exc).__name__, exc)
+        router_debug["planner_completion_error"] = f"{type(exc).__name__}: {exc}"
         try:
             return await _retry_without_response_format(
                 messages=messages if isinstance(messages, list) else None,
                 model_def=model_def,
                 kwargs=kwargs,
                 response_format=response_format,
-                frontdoor_debug=frontdoor_debug,
+                router_debug=router_debug,
                 complete_live=complete_live,
                 coerce_int=coerce_int,
                 preview_fn=preview_fn,
                 attempt="retry_after_completion_error",
             )
         except ValidationError as retry_exc:
-            frontdoor_debug["planner_retry_validation_error"] = (
+            router_debug["planner_retry_validation_error"] = (
                 f"{type(retry_exc).__name__}: {retry_exc}"
             )
         except Exception as retry_exc:  # pylint: disable=broad-except — process boundary
-            frontdoor_debug["planner_retry_error"] = f"{type(retry_exc).__name__}: {retry_exc}"
-        frontdoor_debug["structured_output_retry_succeeded"] = False
-        frontdoor_debug["fallback_reason"] = "planner_completion_error"
-        raise RuntimeError("frontdoor planner completion failed") from exc
+            router_debug["planner_retry_error"] = f"{type(retry_exc).__name__}: {retry_exc}"
+        router_debug["structured_output_retry_succeeded"] = False
+        router_debug["fallback_reason"] = "planner_completion_error"
+        raise RuntimeError("router planner completion failed") from exc
 
     if response_format is None:
         return completion
@@ -310,35 +310,35 @@ async def _complete_frontdoor_planner(
         )
     except ValidationError as exc:
         logger.warning(
-            "frontdoor planner output validation failed: %s: %s",
+            "router planner output validation failed: %s: %s",
             type(exc).__name__,
             exc,
         )
-        frontdoor_debug["planner_output_validation_error"] = f"{type(exc).__name__}: {exc}"
-        frontdoor_debug["raw_completion_preview"] = preview_fn(completion.content, 320)
+        router_debug["planner_output_validation_error"] = f"{type(exc).__name__}: {exc}"
+        router_debug["raw_completion_preview"] = preview_fn(completion.content, 320)
         try:
             return await _retry_without_response_format(
                 messages=messages if isinstance(messages, list) else None,
                 model_def=model_def,
                 kwargs=kwargs,
                 response_format=response_format,
-                frontdoor_debug=frontdoor_debug,
+                router_debug=router_debug,
                 complete_live=complete_live,
                 coerce_int=coerce_int,
                 preview_fn=preview_fn,
                 attempt="retry_after_validation_error",
             )
         except ValidationError as retry_exc:
-            frontdoor_debug["planner_retry_validation_error"] = (
+            router_debug["planner_retry_validation_error"] = (
                 f"{type(retry_exc).__name__}: {retry_exc}"
             )
         except Exception as retry_exc:  # pylint: disable=broad-except — process boundary
-            frontdoor_debug["planner_retry_error"] = f"{type(retry_exc).__name__}: {retry_exc}"
-        frontdoor_debug["structured_output_retry_succeeded"] = False
-        frontdoor_debug["fallback_reason"] = "planner_output_validation_error"
-        raise RuntimeError("frontdoor planner validation failed") from exc
+            router_debug["planner_retry_error"] = f"{type(retry_exc).__name__}: {retry_exc}"
+        router_debug["structured_output_retry_succeeded"] = False
+        router_debug["fallback_reason"] = "planner_output_validation_error"
+        raise RuntimeError("router planner validation failed") from exc
 
-    frontdoor_debug["raw_completion_preview"] = preview_fn(completion.content, 320)
+    router_debug["raw_completion_preview"] = preview_fn(completion.content, 320)
     return StubCompletion(
         content=parsed.model_dump_json(),
         tool_calls=completion.tool_calls,
@@ -348,11 +348,11 @@ async def _complete_frontdoor_planner(
     )
 
 
-async def plan_frontdoor_route(
+async def plan_route(
     *,
     raw_message: str,
     conversation_excerpt_markdown: str,
-    frontdoor_alias: str,
+    router_alias: str,
     resolve_model: Callable[[str], StubModelDefinition],
     complete_live: Callable[..., Awaitable[StubCompletion]],
     model_alias_for_mode: Callable[[str], str],
@@ -363,47 +363,47 @@ async def plan_frontdoor_route(
     mode_supported: Callable[[str, Any], bool],
     build_user_prompt: Callable[..., str],
     get_workflow_catalog: Callable[[], dict[str, Any]],
-    set_last_frontdoor_debug: Callable[[dict[str, Any]], None],
-) -> FrontDoorRouteDecision:
-    """Plan the front-door route for a natural-language turn.
+    set_last_router_debug: Callable[[dict[str, Any]], None],
+) -> RouterRouteDecision:
+    """Plan the route for a natural-language turn.
 
     All dependencies are passed as callables so this function has no
     dependency on ``_RUNTIME_STATE`` or main.py globals.
     """
     global _last_debug  # noqa: PLW0603 — module-level cache for last_debug_dict()
 
-    fallback = FrontDoorRouteDecision(
+    fallback = RouterRouteDecision(
         selected_mode_id="default",
         normalized_query=raw_message.strip(),
-        reasoning="Front-door planner fallback to default route.",
+        reasoning="Router planner fallback to default route.",
         confidence_score=0.0,
     )
-    frontdoor_debug = _build_frontdoor_debug_dict(
-        raw_message, conversation_excerpt_markdown, frontdoor_alias
+    router_debug = _build_router_debug_dict(
+        raw_message, conversation_excerpt_markdown, router_alias
     )
 
     model_or_fallback = _resolve_planner_model(
-        frontdoor_alias, resolve_model, frontdoor_debug, fallback
+        router_alias, resolve_model, router_debug, fallback
     )
-    if isinstance(model_or_fallback, FrontDoorRouteDecision):
-        _last_debug = frontdoor_debug
-        set_last_frontdoor_debug(frontdoor_debug)
+    if isinstance(model_or_fallback, RouterRouteDecision):
+        _last_debug = router_debug
+        set_last_router_debug(router_debug)
         return model_or_fallback
     model_def = model_or_fallback
 
     is_default_executor = _check_is_default_executor(model_def, resolve_model, model_alias_for_mode)
 
     async def _complete_adapter(**kwargs: Any) -> StubCompletion:
-        return await _complete_frontdoor_planner(
+        return await _complete_router_planner(
             kwargs=kwargs,
             model_def=model_def,
-            frontdoor_debug=frontdoor_debug,
+            router_debug=router_debug,
             complete_live=complete_live,
             coerce_int=coerce_int,
             preview_fn=preview_fn,
         )
 
-    decision = await shared_frontdoor.plan_frontdoor_route(
+    decision = await shared_router.plan_route(
         user_message=raw_message,
         current_route_mode="default",
         surface_context=SurfaceContext(
@@ -424,7 +424,7 @@ async def plan_frontdoor_route(
         is_default_executor=is_default_executor,
     )
 
-    fallback_reason = str(frontdoor_debug.get("fallback_reason") or "")
+    fallback_reason = str(router_debug.get("fallback_reason") or "")
     if (
         not fallback_reason
         and decision.planner_source == "deterministic"
@@ -433,15 +433,15 @@ async def plan_frontdoor_route(
         fallback_reason = "planner_fallback"
 
     if fallback_reason:
-        logger.info("frontdoor planner fell back to default (reason=%s)", fallback_reason)
+        logger.info("router planner fell back to default (reason=%s)", fallback_reason)
     else:
         logger.debug(
-            "frontdoor routed to mode=%s confidence=%.2f",
+            "router routed to mode=%s confidence=%.2f",
             decision.selected_mode_id,
             decision.confidence_score,
         )
 
-    frontdoor_debug.update(
+    router_debug.update(
         {
             "fallback_used": bool(fallback_reason),
             "fallback_reason": fallback_reason,
@@ -453,6 +453,6 @@ async def plan_frontdoor_route(
             "coerced_to_default_reason": "",
         }
     )
-    _last_debug = frontdoor_debug
-    set_last_frontdoor_debug(frontdoor_debug)
+    _last_debug = router_debug
+    set_last_router_debug(router_debug)
     return decision
