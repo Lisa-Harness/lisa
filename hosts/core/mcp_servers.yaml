@@ -19,31 +19,13 @@ version: 1
 #   - <pack_slug>/<server_id>
 #   - <pack_slug>.*            (exclude all servers from that pack)
 #
-# preferred_providers resolves duplicate mode/operation/tool IDs explicitly.
-# The listed providers are tried in order for each ID.
-#
-# preferred_capability_providers selects which pack owns each capability
-# (e.g. memory) when multiple active packs contribute the same capability.
+# Session plans select optional packs and resolve duplicate resource owners.
+# This manifest only defines host-owned launch policy and non-overridable
+# activation boundaries.
 pack_policy:
   exclude_servers: []
   always_on_packs:
     - lisa-pack-core
-    - lisa-pack-learning
-    - lisa-pack-search
-    - lisa-pack-checkpoint
-  preferred_providers:
-    modes:
-      default:
-        - lisa-pack-learning
-        - lisa-pack-core
-    tools:
-      web_search:
-        - lisa-pack-brave-search
-        - lisa-pack-search
-  preferred_capability_providers:
-    memory:
-      - lisa-pack-mem0
-      - lisa-pack-learning
 
 # ──────────────────────────────────────────────────────────────────────────
 # Memory backends + memory MCP tool servers

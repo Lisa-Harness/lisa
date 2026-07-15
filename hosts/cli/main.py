@@ -49,7 +49,13 @@ try:
 except ImportError:  # pragma: no cover â€” python-dotenv is optional
     pass
 
-from hosts.cli.render import render_models, render_modes, render_pack_list_panel
+from hosts.cli.render import (
+    render_models,
+    render_modes,
+    render_operations,
+    render_pack_list_panel,
+    render_tools,
+)
 from hosts.core.config import HostConfig, default_data_dir
 from hosts.core.handle_message import handle_message
 from hosts.core.mcp_pool import (
@@ -867,6 +873,92 @@ def _models_command(
     if runtime is None:
         return
     render_models(runtime, console=console)
+
+
+# ---------------------------------------------------------------------------
+# operations command
+# ---------------------------------------------------------------------------
+
+
+@app.command("operations", help="List internal operations with IDs for allowlist authoring.")
+def _operations_command(
+    debug: DebugOption = False,
+    log_level: LogLevelOption = "",
+    log: LogOption = "",
+    no_log: NoLogOption = False,
+    data_dir: DataDirOption = "",
+    memory_db: MemoryDbOption = "",
+    thread_dir: ThreadDirOption = "",
+    no_thread: NoThreadOption = False,
+    session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
+    timezone: TimezoneOption = "",
+    state_snapshot: StateSnapshotOption = "",
+    streaming: StreamingOption = "none",
+    host_log: HostLogOption = "",
+) -> None:
+    runtime = _initialize_runtime_or_exit(
+        debug=debug,
+        log_level=log_level,
+        log_path=log,
+        no_log=no_log,
+        data_dir=data_dir,
+        memory_db=memory_db,
+        thread_dir=thread_dir,
+        no_thread=no_thread,
+        user_slug=session_context,
+        session_context_refresh=session_context_refresh,
+        timezone=timezone,
+        state_snapshot_path=state_snapshot,
+        streaming=streaming,
+        host_log_path=host_log,
+    )
+    if runtime is None:
+        return
+    render_operations(runtime, console=console)
+
+
+# ---------------------------------------------------------------------------
+# tools command
+# ---------------------------------------------------------------------------
+
+
+@app.command("tools", help="List internal tools with IDs for allowlist authoring.")
+def _tools_command(
+    debug: DebugOption = False,
+    log_level: LogLevelOption = "",
+    log: LogOption = "",
+    no_log: NoLogOption = False,
+    data_dir: DataDirOption = "",
+    memory_db: MemoryDbOption = "",
+    thread_dir: ThreadDirOption = "",
+    no_thread: NoThreadOption = False,
+    session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
+    timezone: TimezoneOption = "",
+    state_snapshot: StateSnapshotOption = "",
+    streaming: StreamingOption = "none",
+    host_log: HostLogOption = "",
+) -> None:
+    runtime = _initialize_runtime_or_exit(
+        debug=debug,
+        log_level=log_level,
+        log_path=log,
+        no_log=no_log,
+        data_dir=data_dir,
+        memory_db=memory_db,
+        thread_dir=thread_dir,
+        no_thread=no_thread,
+        user_slug=session_context,
+        session_context_refresh=session_context_refresh,
+        timezone=timezone,
+        state_snapshot_path=state_snapshot,
+        streaming=streaming,
+        host_log_path=host_log,
+    )
+    if runtime is None:
+        return
+    render_tools(runtime, console=console)
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ from sdk.content._front_matter import FrontMatterError, parse_front_matter
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CatalogCollisionError",
     "build_mode_catalog_json",
     "build_operation_catalog_json",
     "build_tool_catalog_json",
@@ -34,6 +35,10 @@ __all__ = [
 # ── Catalog cache ───────────────────────────────────────────────────────────
 
 _catalog_cache: dict[str, str] = {}
+
+
+class CatalogCollisionError(ValueError):
+    """Raised when duplicate catalog IDs lack one explicit session owner."""
 
 
 def _roots_fingerprint(roots: list[Path]) -> str:
@@ -86,8 +91,7 @@ def _resolve_subdir_roots(roots: list[Path], subdir: str) -> list[Path]:
 # ── Mode catalog ────────────────────────────────────────────────────────────
 
 _MODE_CONFIG_FILENAME = "_mode.md"
-_MODE_PROVIDER_PREFERENCES_ENV = "LISA_MODE_PROVIDER_PREFERENCES"
-_CONTENT_PROVIDER_PREFERENCES_ENV = "LISA_CONTENT_PROVIDER_PREFERENCES"
+_SESSION_PROVIDER_SELECTIONS_ENV = "LISA_SESSION_PROVIDER_SELECTIONS"
 
 
 def build_mode_catalog_json(mode_roots: list[Path]) -> str:
@@ -97,13 +101,12 @@ def build_mode_catalog_json(mode_roots: list[Path]) -> str:
     mode config dict with nested ``stages``. The kernel deserializes this into
     ``WorkflowModeConfig`` objects.
     """
-    cache_key = "modes:" + _roots_fingerprint(mode_roots)
+    cache_key = "modes:" + _roots_fingerprint(mode_roots) + _provider_selection_cache_key()
     cached = _catalog_cache.get(cache_key)
     if cached is not None:
         return cached
-    merged: dict[str, dict[str, Any]] = {}
-    preferences = _load_content_provider_preferences()
-    mode_preferences = preferences.get("modes", {})
+    candidates_by_id: dict[str, list[dict[str, Any]]] = {}
+    selections = _load_session_provider_selections()
     for root in mode_roots:
         if not root.is_dir():
             continue
@@ -114,16 +117,17 @@ def build_mode_catalog_json(mode_roots: list[Path]) -> str:
             mode_dict = _load_one_mode(mode_dir, inferred_provider_id=inferred_provider_id)
             if mode_dict is not None:
                 mode_id = str(mode_dict.get("mode_id") or "")
-                current = merged.get(mode_id)
-                if current is None:
-                    merged[mode_id] = mode_dict
-                else:
-                    merged[mode_id] = _select_catalog_candidate(
-                        current=current,
-                        candidate=mode_dict,
-                        provider_field="mode_provider_id",
-                        preferred_providers=mode_preferences.get(mode_id, []),
-                    )
+                candidates_by_id.setdefault(mode_id, []).append(mode_dict)
+    merged = {
+        mode_id: _resolve_catalog_candidates(
+            resource_kind="mode",
+            resource_id=mode_id,
+            candidates=candidates,
+            provider_field="mode_provider_id",
+            selected_provider=selections["modes"].get(mode_id, ""),
+        )
+        for mode_id, candidates in candidates_by_id.items()
+    }
     result = json.dumps(merged)
     _catalog_cache[cache_key] = result
     return result
@@ -232,84 +236,56 @@ def _load_one_mode(
     }
 
 
-def _load_content_provider_preferences() -> dict[str, dict[str, list[str]]]:
-    """Parse host-supplied provider preferences from env.
+def _provider_selection_cache_key() -> str:
+    """Return the raw selection payload so cached catalogs stay session-scoped."""
 
-    Preferred shape:
-    {
-      "modes": {"default": ["lisa-pack-learning", "lisa-pack-core"]},
-      "operations": {"web_search": ["lisa-pack-search"]},
-      "tools": {"web_search": ["lisa-pack-brave-search", "lisa-pack-search"]}
+    return os.getenv(_SESSION_PROVIDER_SELECTIONS_ENV, "")
+
+
+def _load_session_provider_selections() -> dict[str, dict[str, str]]:
+    """Read the strict provider map serialized from the immutable SessionPlan."""
+
+    raw = _provider_selection_cache_key().strip()
+    selections: dict[str, dict[str, str]] = {
+        "modes": {},
+        "operations": {},
+        "tools": {},
     }
-
-    Legacy compatibility:
-    - ``LISA_MODE_PROVIDER_PREFERENCES`` may still provide mode-only mappings.
-    """
-
-    mode_preferences = _load_provider_preference_mapping(
-        _MODE_PROVIDER_PREFERENCES_ENV,
-        context="mode-provider preferences",
-    )
-    content_preferences = _load_provider_preference_mapping(
-        _CONTENT_PROVIDER_PREFERENCES_ENV,
-        context="content-provider preferences",
-    )
-
-    modes = _parse_preference_mapping(content_preferences.get("modes") or {})
-    operations = _parse_preference_mapping(content_preferences.get("operations") or {})
-    tools = _parse_preference_mapping(content_preferences.get("tools") or {})
-
-    # Backward compatibility for hosts still setting the legacy env var.
-    if not modes and mode_preferences:
-        modes = mode_preferences
-
-    return {
-        "modes": modes,
-        "operations": operations,
-        "tools": tools,
-    }
-
-
-def _load_provider_preference_mapping(env_var: str, *, context: str) -> dict[str, Any]:
-    raw = os.getenv(env_var, "").strip()
     if not raw:
-        return {}
+        return selections
     try:
         decoded = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Invalid JSON in %s for %s", env_var, context)
-        return {}
-    return decoded if isinstance(decoded, dict) else {}
+    except json.JSONDecodeError as exc:
+        raise CatalogCollisionError(
+            f"Invalid JSON in {_SESSION_PROVIDER_SELECTIONS_ENV}"
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise CatalogCollisionError(
+            f"{_SESSION_PROVIDER_SELECTIONS_ENV} must contain an object"
+        )
 
+    unexpected_kinds = set(decoded) - set(selections)
+    if unexpected_kinds:
+        values = ", ".join(sorted(str(kind) for kind in unexpected_kinds))
+        raise CatalogCollisionError(f"Unexpected provider selection kinds: {values}")
 
-def _parse_preference_mapping(raw: Any) -> dict[str, list[str]]:
-    if not isinstance(raw, dict):
-        return {}
-
-    preferences: dict[str, list[str]] = {}
-    for key_raw, providers_raw in raw.items():
-        if not isinstance(key_raw, str):
-            continue
-        key = key_raw.strip().lower()
-        if not key:
-            continue
-
-        providers: list[str]
-        if isinstance(providers_raw, str):
-            normalized = _normalize_provider_id(providers_raw)
-            providers = [normalized] if normalized else []
-        elif isinstance(providers_raw, list):
-            providers = [
-                _normalize_provider_id(item)
-                for item in providers_raw
-                if isinstance(item, str) and _normalize_provider_id(item)
-            ]
-        else:
-            providers = []
-
-        if providers:
-            preferences[key] = providers
-    return preferences
+    for kind, parsed_assignments in selections.items():
+        assignments = decoded.get(kind, {})
+        if not isinstance(assignments, dict):
+            raise CatalogCollisionError(f"Provider selections for {kind} must be an object")
+        for resource_id, provider_id in assignments.items():
+            if not isinstance(resource_id, str) or not isinstance(provider_id, str):
+                raise CatalogCollisionError(
+                    f"Provider selections for {kind} require string IDs"
+                )
+            normalized_resource = resource_id.strip()
+            normalized_provider = _normalize_provider_id(provider_id)
+            if not normalized_resource or not normalized_provider:
+                raise CatalogCollisionError(
+                    f"Provider selections for {kind} require non-empty IDs"
+                )
+            parsed_assignments[normalized_resource] = normalized_provider
+    return selections
 
 
 def _infer_content_provider_id(root: Path) -> str:
@@ -334,35 +310,46 @@ def _normalize_provider_id(raw: str) -> str:
     return value
 
 
-def _provider_rank(provider_id: str, preferred_providers: list[str]) -> int:
-    if not provider_id:
-        return len(preferred_providers) + 1
-    try:
-        return preferred_providers.index(provider_id)
-    except ValueError:
-        return len(preferred_providers) + 1
-
-
-def _select_catalog_candidate(
+def _resolve_catalog_candidates(
     *,
-    current: dict[str, Any],
-    candidate: dict[str, Any],
+    resource_kind: str,
+    resource_id: str,
+    candidates: list[dict[str, Any]],
     provider_field: str,
-    preferred_providers: list[str],
+    selected_provider: str,
 ) -> dict[str, Any]:
-    """Select the winning entry for duplicate id collisions."""
+    """Resolve duplicate IDs only through an explicit session provider choice."""
 
-    current_provider = _normalize_provider_id(str(current.get(provider_field) or ""))
-    candidate_provider = _normalize_provider_id(str(candidate.get(provider_field) or ""))
-    current_rank = _provider_rank(current_provider, preferred_providers)
-    candidate_rank = _provider_rank(candidate_provider, preferred_providers)
+    if len(candidates) == 1:
+        return candidates[0]
+    if not selected_provider:
+        raise CatalogCollisionError(
+            f"Duplicate {resource_kind} ID '{resource_id}' requires an explicit "
+            f"providers.{resource_kind}s selection."
+        )
 
-    if candidate_rank < current_rank:
-        return candidate
-    if current_rank < candidate_rank:
-        return current
-    # Tie-breaker preserves prior behavior: later-discovered mode wins.
-    return candidate
+    matching = [
+        candidate
+        for candidate in candidates
+        if _normalize_provider_id(str(candidate.get(provider_field) or ""))
+        == selected_provider
+    ]
+    if len(matching) == 1:
+        return matching[0]
+
+    available = sorted(
+        {
+            _normalize_provider_id(str(candidate.get(provider_field) or ""))
+            for candidate in candidates
+        }
+        - {""}
+    )
+    available_text = ", ".join(available) or "(none)"
+    raise CatalogCollisionError(
+        f"Session selected provider '{selected_provider}' for {resource_kind} "
+        f"ID '{resource_id}', but matching candidates are ambiguous or absent "
+        f"(available: {available_text})."
+    )
 
 
 def _load_one_stage(stage_path: Path, *, mode_kind: str) -> dict[str, Any] | None:
@@ -472,13 +459,12 @@ def build_operation_catalog_json(operation_roots: list[Path]) -> str:
     ``OperationDefinition`` objects, importing the implementation module
     locally (using the ``module_path`` field).
     """
-    cache_key = "operations:" + _roots_fingerprint(operation_roots)
+    cache_key = "operations:" + _roots_fingerprint(operation_roots) + _provider_selection_cache_key()
     cached = _catalog_cache.get(cache_key)
     if cached is not None:
         return cached
-    merged: dict[str, dict[str, Any]] = {}
-    preferences = _load_content_provider_preferences()
-    operation_preferences = preferences.get("operations", {})
+    candidates_by_id: dict[str, list[dict[str, Any]]] = {}
+    selections = _load_session_provider_selections()
     for root in operation_roots:
         if not root.is_dir():
             continue
@@ -487,16 +473,17 @@ def build_operation_catalog_json(operation_roots: list[Path]) -> str:
             root,
             inferred_provider_id=inferred_provider_id,
         ).items():
-            current = merged.get(op_id)
-            if current is None:
-                merged[op_id] = op_dict
-            else:
-                merged[op_id] = _select_catalog_candidate(
-                    current=current,
-                    candidate=op_dict,
-                    provider_field="operation_provider_id",
-                    preferred_providers=operation_preferences.get(op_id, []),
-                )
+            candidates_by_id.setdefault(op_id, []).append(op_dict)
+    merged = {
+        operation_id: _resolve_catalog_candidates(
+            resource_kind="operation",
+            resource_id=operation_id,
+            candidates=candidates,
+            provider_field="operation_provider_id",
+            selected_provider=selections["operations"].get(operation_id, ""),
+        )
+        for operation_id, candidates in candidates_by_id.items()
+    }
     result = json.dumps(merged)
     _catalog_cache[cache_key] = result
     return result
@@ -687,13 +674,12 @@ def build_tool_catalog_json(tool_roots: list[Path]) -> str:
     Tools are runtime-only (``.py`` + ``.tool.yml`` pairs). Declarative tools
     are not supported in this iteration.
     """
-    cache_key = "tools:" + _roots_fingerprint(tool_roots)
+    cache_key = "tools:" + _roots_fingerprint(tool_roots) + _provider_selection_cache_key()
     cached = _catalog_cache.get(cache_key)
     if cached is not None:
         return cached
-    merged: dict[str, dict[str, Any]] = {}
-    preferences = _load_content_provider_preferences()
-    tool_preferences = preferences.get("tools", {})
+    candidates_by_id: dict[str, list[dict[str, Any]]] = {}
+    selections = _load_session_provider_selections()
     for root in tool_roots:
         if not root.is_dir():
             continue
@@ -702,16 +688,17 @@ def build_tool_catalog_json(tool_roots: list[Path]) -> str:
             root,
             inferred_provider_id=inferred_provider_id,
         ).items():
-            current = merged.get(tool_id)
-            if current is None:
-                merged[tool_id] = tool_dict
-            else:
-                merged[tool_id] = _select_catalog_candidate(
-                    current=current,
-                    candidate=tool_dict,
-                    provider_field="tool_provider_id",
-                    preferred_providers=tool_preferences.get(tool_id, []),
-                )
+            candidates_by_id.setdefault(tool_id, []).append(tool_dict)
+    merged = {
+        tool_id: _resolve_catalog_candidates(
+            resource_kind="tool",
+            resource_id=tool_id,
+            candidates=candidates,
+            provider_field="tool_provider_id",
+            selected_provider=selections["tools"].get(tool_id, ""),
+        )
+        for tool_id, candidates in candidates_by_id.items()
+    }
     result = json.dumps(merged)
     _catalog_cache[cache_key] = result
     return result

@@ -59,11 +59,149 @@ from pathlib import Path
 from typing import Any
 
 from kernel.ipsar_fsm import parse_front_matter
+from kernel.session_plan import SessionPlan, compile_session_plan
 
 from hosts.core.lisa_config import context_slug_to_thread_name
 from hosts.core.session_context_fetch import fetch_session_context_url
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionContextSource:
+    """Resolved strict session source, retaining its authored identity."""
+
+    source_uri: str
+    cached_path: Path
+    text: str
+
+
+def bundled_default_session_path() -> Path:
+    """Return the mandatory bundled v2 session used when none is selected."""
+
+    return (
+        Path(__file__).resolve().parents[2]
+        / "sdk"
+        / "packs"
+        / "core"
+        / "sessions"
+        / "default.md"
+    )
+
+
+def resolve_session_context_source(
+    *,
+    session_context: str,
+    data_dir: Path,
+    force_refresh: bool = False,
+) -> SessionContextSource:
+    """Resolve one strict session source without legacy registry or directory rules.
+
+    Explicit local files, remote URLs, and registry slugs take precedence.
+    With no explicit reference, an authored ``session_context.md`` in the
+    working directory or data directory wins over the bundled core default.
+    """
+
+    requested = session_context.strip()
+    if requested:
+        return _resolve_explicit_session_context_source(
+            requested,
+            data_dir=data_dir,
+            force_refresh=force_refresh,
+        )
+
+    checked_paths: set[Path] = set()
+    for root in (Path.cwd(), data_dir):
+        candidate = (root / "session_context.md").resolve()
+        if candidate in checked_paths:
+            continue
+        checked_paths.add(candidate)
+        if candidate.is_file():
+            return _read_session_source(source_uri=str(candidate), path=candidate)
+
+    default_path = bundled_default_session_path()
+    if not default_path.is_file():
+        raise FileNotFoundError(f"Bundled default session is missing: {default_path}")
+    return _read_session_source(source_uri=str(default_path.resolve()), path=default_path)
+
+
+def _resolve_explicit_session_context_source(
+    requested: str,
+    *,
+    data_dir: Path,
+    force_refresh: bool,
+) -> SessionContextSource:
+    """Resolve an explicitly requested local file, URL, artifact, or registry slug."""
+
+    remote = urllib.parse.urlparse(requested)
+    if remote.scheme in {"http", "https"}:
+        cached_path = fetch_session_context_url(
+            requested,
+            data_dir=data_dir,
+            force_refresh=force_refresh,
+        )
+        return _read_session_source(source_uri=requested, path=cached_path)
+
+    explicit_path = Path(requested).expanduser()
+    if explicit_path.exists():
+        if explicit_path.is_dir() or explicit_path.suffix.lower() != ".md":
+            raise ValueError("Session context file path must be a Markdown file.")
+        return _read_session_source(
+            source_uri=str(explicit_path.resolve()),
+            path=explicit_path,
+        )
+
+    artifact_name = (
+        requested if requested.lower().endswith(".md") else f"{requested}.md"
+    )
+    artifact_path = data_dir / artifact_name
+    if artifact_path.is_file():
+        return _read_session_source(
+            source_uri=str(artifact_path.resolve()),
+            path=artifact_path,
+        )
+
+    registry_slug = requested[:-3] if requested.lower().endswith(".md") else requested
+    registry_uri = f"{session_context_registry_url()}/{registry_slug}.md"
+    try:
+        cached_path = fetch_session_context_url(
+            registry_uri,
+            data_dir=data_dir,
+            force_refresh=force_refresh,
+        )
+    except ValueError as exc:
+        raise ValueError(f"Session context '{requested}' was not found.") from exc
+    return _read_session_source(source_uri=registry_uri, path=cached_path)
+
+
+def compile_selected_session_plan(
+    *,
+    session_context: str,
+    data_dir: Path,
+    force_refresh: bool = False,
+) -> SessionPlan:
+    """Resolve and strictly compile the one session plan for a host runtime."""
+
+    source = resolve_session_context_source(
+        session_context=session_context,
+        data_dir=data_dir,
+        force_refresh=force_refresh,
+    )
+    return compile_session_plan(text=source.text, source_uri=source.source_uri)
+
+
+def _read_session_source(*, source_uri: str, path: Path) -> SessionContextSource:
+    """Read a resolved Markdown session source with a useful startup error."""
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"Could not read session context {source_uri}: {exc}") from exc
+    return SessionContextSource(
+        source_uri=source_uri,
+        cached_path=path.resolve(),
+        text=text,
+    )
 
 
 # ── Session-context front-matter controls ───────────────────────────

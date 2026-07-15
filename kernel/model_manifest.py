@@ -26,6 +26,7 @@ class ManifestModelEntry:
     capabilities: tuple[str, ...] = ()
     cost_tier: str = "standard"
     latency_tier: str = "medium"
+    context_window: int = 0
     operator_only: bool = False
     default_for_roles: tuple[str, ...] = ()
     deployment_only: bool = False
@@ -215,6 +216,11 @@ def _parse_model_entry(
         ),
         cost_tier=str(raw_model.get("cost_tier") or "standard").strip() or "standard",
         latency_tier=str(raw_model.get("latency_tier") or "medium").strip() or "medium",
+        context_window=_parse_nonnegative_int(
+            raw_model.get("context_window"),
+            field_name="context_window",
+            model_id=key,
+        ),
         operator_only=bool(raw_model.get("operator_only", False)),
         default_for_roles=tuple(
             _parse_str_list(
@@ -278,6 +284,30 @@ def _parse_str_list(raw_value: Any, *, field_name: str, model_id: str) -> list[s
         f"Manifest model entry for '{model_id}' {field_name} must be a list "
         "or comma-separated string."
     )
+
+
+def _parse_nonnegative_int(raw_value: Any, *, field_name: str, model_id: str) -> int:
+    """Parse an optional non-negative integer manifest field."""
+
+    if raw_value is None:
+        return 0
+    if isinstance(raw_value, bool):
+        raise ValueError(
+            f"Manifest model entry for '{model_id}' {field_name} must be a non-negative integer."
+        )
+    if isinstance(raw_value, int):
+        value = raw_value
+    elif isinstance(raw_value, str) and raw_value.strip().isdigit():
+        value = int(raw_value.strip())
+    else:
+        raise ValueError(
+            f"Manifest model entry for '{model_id}' {field_name} must be a non-negative integer."
+        )
+    if value < 0:
+        raise ValueError(
+            f"Manifest model entry for '{model_id}' {field_name} must be a non-negative integer."
+        )
+    return value
 
 
 def _load_payload(path: Path) -> dict[str, Any]:

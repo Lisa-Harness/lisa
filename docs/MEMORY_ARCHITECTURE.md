@@ -256,8 +256,8 @@ and external packs (for example `lisa-pack-mem0`) can provide alternates.
 The host merges active pack manifests into the MCP pool under namespaced ids
 and selects memory ownership deterministically from:
 
-1. Explicit lock selection (`selected_capability_providers.memory`)
-2. Host policy (`pack_policy.preferred_capability_providers.memory`)
+1. Explicit session plan selection (`providers.capabilities.memory`)
+2. Explicit lock selection (`selected_capability_providers.memory`)
 3. Runtime-installed preference over bundled fallback
 
 This removes discovery-order dependence.

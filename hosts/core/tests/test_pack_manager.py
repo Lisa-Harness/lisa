@@ -23,13 +23,14 @@ import sites.
 from __future__ import annotations
 
 # pylint: disable=protected-access
-
 import asyncio
+import json
 import os
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
+from kernel.session_plan import compile_session_plan
 
 from hosts.core import commands, content_roots, mcp_pool
 from hosts.core.config import HostConfig
@@ -42,14 +43,34 @@ def _make_runtime(tmp_path: Path) -> HostRuntime:
     return HostRuntime(config)
 
 
+def _make_runtime_with_memory_provider(
+    tmp_path: Path,
+    provider_id: str,
+) -> HostRuntime:
+    config = HostConfig.from_env(data_dir=str(tmp_path))
+    plan = compile_session_plan(
+        text=(
+            "---\n"
+            "schema_version: 2\n"
+            "name: pack-manager-test\n"
+            "surface: { type: personal_dm, id: host-console, memory_scope: testing }\n"
+            "providers:\n"
+            "  capabilities:\n"
+            f"    memory: {provider_id}\n"
+            "---\n"
+            "# Session\n"
+        ),
+        source_uri="workspace:pack-manager-test.md",
+    )
+    return HostRuntime(config, session_plan=plan)
+
+
 def _load_lock(runtime: HostRuntime) -> dict[str, Any]:
     return content_roots.load_installed_packs_lock(runtime.config.data_dir)
 
 
 def _write_lock(runtime: HostRuntime, payload: dict[str, Any]) -> None:
     path = content_roots.runtime_pack_lock_path(runtime.config.data_dir)
-    import json
-
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
 
@@ -667,11 +688,11 @@ async def test_run_pack_install_autoselects_memory_provider_when_unset(
     assert lock.get("selected_capability_providers", {}).get("memory") == "lisa-pack-mem0"
 
 
-def test_compile_mcp_configs_prefers_runtime_installed_memory_provider(
+def test_compile_mcp_configs_uses_session_plan_memory_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    runtime = _make_runtime(tmp_path)
+    runtime = _make_runtime_with_memory_provider(tmp_path, "lisa-pack-mem0")
     learning_root = tmp_path / "learning-pack"
     mem0_root = tmp_path / "mem0-pack"
     learning_root.mkdir(parents=True, exist_ok=True)
@@ -765,7 +786,6 @@ def test_compile_mcp_configs_prefers_runtime_installed_memory_provider(
     )
     monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [learning_root, mem0_root])
     monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
-    monkeypatch.setattr(mcp_pool, "load_capability_provider_preferences", lambda _path: {})
 
     _warm, _cold = mcp_pool.compile_mcp_configs(runtime)
 
@@ -776,7 +796,7 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    runtime = _make_runtime(tmp_path)
+    runtime = _make_runtime_with_memory_provider(tmp_path, "lisa-pack-learning")
     learning_root = tmp_path / "learning-pack"
     mem0_root = tmp_path / "mem0-pack"
     learning_root.mkdir(parents=True, exist_ok=True)
@@ -867,13 +887,12 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
                 }
             ],
             "selected_capability_providers": {
-                "memory": "lisa-pack-learning",
+                "memory": "lisa-pack-mem0",
             },
         },
     )
     monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [learning_root, mem0_root])
     monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
-    monkeypatch.setattr(mcp_pool, "load_capability_provider_preferences", lambda _path: {})
 
     _warm, _cold = mcp_pool.compile_mcp_configs(runtime)
 

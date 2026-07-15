@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from hosts.core.config import HostConfig
+from hosts.core.session_context import compile_selected_session_plan
+from kernel.session_plan import SessionPlan
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +115,30 @@ class HostRuntime:
         await runtime.aclose()    # closes MCP pool in same loop
     """
 
-    def __init__(self, config: HostConfig) -> None:
-        self.config = config
+    def __init__(self, config: HostConfig, *, session_plan: SessionPlan | None = None) -> None:
+        self.session_plan = session_plan or compile_selected_session_plan(
+            session_context=config.session_context,
+            data_dir=config.data_dir,
+            force_refresh=config.session_context_refresh,
+        )
+        source_matches_user_slug = (
+            bool(config.session_context)
+            and config.user_slug == config.session_context
+        )
+        effective_user_slug = (
+            config.user_slug
+            if config.user_slug and not source_matches_user_slug
+            else self.session_plan.manifest.name
+        )
+        surface = self.session_plan.manifest.surface
+        self.config = replace(
+            config,
+            user_slug=effective_user_slug,
+            session_context=self.session_plan.source_uri,
+            surface_type=config.surface_type or surface.type,
+            surface_id=config.surface_id or surface.id,
+            memory_scope=config.memory_scope or surface.memory_scope,
+        )
 
         # ── Cached provider clients ───────────────────────────────────
         self._azure_client: Any = None
@@ -150,7 +173,7 @@ class HostRuntime:
             self.tokens.session_started_utc = datetime.now(UTC)
 
         # ── Runtime route state ───────────────────────────────────────
-        self.current_mode_id: str = config.start_mode or "default"
+        self.current_mode_id: str = self.session_plan.manifest.routing.start_mode
         self.current_stage_id: str = "-"
         self.next_model_id: str = "-"
         self.next_model_provider: str = "-"
@@ -175,6 +198,12 @@ class HostRuntime:
 
         # ── Token usage handler ───────────────────────────────────────
         self._token_usage_handler: Any = None
+
+    @property
+    def start_mode_id(self) -> str:
+        """Return the plan-selected initial route mode."""
+
+        return self.session_plan.manifest.routing.start_mode
 
     # ── Path accessors ────────────────────────────────────────────────
 

@@ -105,9 +105,9 @@ def build_turn_hooks(
     slice_config = runtime.config.slice_config
     slice_tuning = SliceTuning.from_mapping(slice_config.to_tuning_dict())
 
-    replay_controls = getattr(getattr(runtime.config, "session_controls", None), "replay", None)
-    digest_max_lines = getattr(replay_controls, "digest_max_lines", None)
-    digest_summary_max_chars = getattr(replay_controls, "digest_summary_max_chars", None)
+    history_plan = runtime.session_plan.manifest.context.history
+    digest_max_lines = history_plan.digest_max_lines
+    digest_summary_max_chars = history_plan.digest_summary_max_chars
 
     # ── State provider (FileBackedStateProvider) ──────────────────
     file_state_provider = FileBackedStateProvider(
@@ -140,7 +140,12 @@ def build_turn_hooks(
 
     # ── System prompt assembly ────────────────────────────────────
     def _assemble_system_prompt(mode_instruction: str, stage_instruction: str | None) -> str:
-        return assemble_system_prompt(mode_instruction, stage_instruction, loader)
+        return assemble_system_prompt(
+            mode_instruction,
+            stage_instruction,
+            loader,
+            session_instruction=runtime.session_plan.instructions.primary_body,
+        )
 
     # ── Dynamic user context assembly ─────────────────────────────
     def _assemble_user_context(
@@ -152,43 +157,12 @@ def build_turn_hooks(
         # Build the UnifiedState from the runtime snapshot for the broker.
         state = build_unified_state(
             state_snapshot=runtime.state_snapshot,
-            context_routing=runtime.config.context_routing,
         )
 
         def _session_context_loader() -> str:
-            from hosts.core.session_context import (
-                load_selected_session_context_text,
-                resolve_session_context_auto,
-            )
-
-            ref = runtime.config.session_context
-            active = bool(runtime.config.session_context)
-
-            # Auto-discover session_context.md or session_context/ in CWD
-            # or the data directory when no explicit --session-context was
-            # passed. This matches the Little Lisa behavior.
-            if not ref:
-                _, ref, active = resolve_session_context_auto(
-                    data_dir=runtime.config.data_dir,
-                )
-
-            if not ref:
-                return ""
-            return load_selected_session_context_text(
-                session_context_ref=ref,
-                session_context_active=active,
-                current_mode_id=mode_id,
-                content_loader=loader,
-            )
-
-        def _replay_controls_loader() -> Any:
-            controls = getattr(runtime.config, "session_controls", None)
-            replay = getattr(controls, "replay", None)
-            if replay is not None:
-                return replay
-            from hosts.core.session_context import ReplayControls
-
-            return ReplayControls()
+            # Primary session instructions are system-level and never become
+            # a budgeted dynamic-user-context section.
+            return ""
 
         def _thread_digest_loader() -> str:
             return load_thread_digest(thread_path=runtime.thread_path)
@@ -210,7 +184,6 @@ def build_turn_hooks(
             session_context_loader=_session_context_loader,
             thread_digest_loader=_thread_digest_loader,
             recent_thread_excerpt_builder=_recent_thread_excerpt_builder,
-            replay_controls_loader=_replay_controls_loader,
             capability_manifest=capability_manifest,
         )
 
@@ -268,7 +241,6 @@ def build_turn_hooks(
     def _state_provider() -> Any:
         return build_unified_state(
             state_snapshot=runtime.state_snapshot,
-            context_routing=runtime.config.context_routing,
         )
 
     # ── Workflow session factory ───────────────────────────────────

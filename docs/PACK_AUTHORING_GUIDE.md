@@ -151,8 +151,7 @@ Authored text should live under `content/` and be loaded by host-provided reader
 
 Packs can provide customized reference contexts via `content/user_contexts/<pack_name>_optimal.md` (or any other descriptive name). Since these files are loaded through the registry during `--session-context` resolution, users can quickly invoke your curated context.
 
-By including a curated context, pack authors can natively inject "Instructions", "You (Lisa)", and role configuration that best utilize their tools! Pack-supplied session contexts always take precedence over the fallback Remote Registry defaults.
-
+By including a curated context, pack authors can natively inject "Instructions", "You (Lisa)", and role configuration that best utilize their tools! Pack-supplied session contexts are resolved as explicit local files via `--session-context <path>`. The session context front matter must conform to the v2 strict schema (see the [Session Context Authoring Guide](SESSION_CONTEXT_AUTHORING_GUIDE.md)).
 
 ## Hello World Pack
 

@@ -14,6 +14,7 @@ import asyncio
 import importlib
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from mcp.client.session import ClientSession
@@ -35,14 +36,47 @@ from kernel.tools.mcp_client import MCPClientConfig
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["MCPModeCatalog", "MCPOperationCatalog", "MCPToolCatalog"]
+__all__ = [
+    "CatalogResponseError",
+    "MCPModeCatalog",
+    "MCPOperationCatalog",
+    "MCPToolCatalog",
+]
+
+_MAX_CATALOG_RESPONSE_PREVIEW_CHARS = 500
+
+
+class CatalogResponseError(RuntimeError):
+    """Raised when a lisa-catalog tool response is not a catalog object."""
 
 
 def _extract_text(result: Any) -> str:
     """Extract text from an MCP call_tool result."""
     if result.content and len(result.content) > 0:
-        return result.content[0].text  # type: ignore[union-attr]
+        text = result.content[0].text
+        return text if isinstance(text, str) else str(text)
     return ""
+
+
+def _parse_catalog_response(raw_response: str, *, tool: str) -> dict[str, Any]:
+    """Decode one catalog object or raise an actionable MCP response error."""
+
+    normalized = raw_response.strip()
+    if not normalized:
+        return {}
+    try:
+        decoded = json.loads(normalized)
+    except json.JSONDecodeError as exc:
+        preview = normalized[:_MAX_CATALOG_RESPONSE_PREVIEW_CHARS]
+        raise CatalogResponseError(
+            f"lisa-catalog tool '{tool}' returned invalid JSON: {preview}"
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise CatalogResponseError(
+            f"lisa-catalog tool '{tool}' returned a JSON {type(decoded).__name__}; "
+            "expected an object."
+        )
+    return decoded
 
 
 # ── Mode catalog ────────────────────────────────────────────────────────────
@@ -66,11 +100,13 @@ class MCPModeCatalog:
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
         async def _run() -> str:
-            async with stdio_client(self._params) as (read, write_stream):
-                async with ClientSession(read, write_stream) as session:
-                    await session.initialize()
-                    result = await session.call_tool(tool, arguments=arguments)
-                    return _extract_text(result)
+            async with (
+                stdio_client(self._params) as (read, write_stream),
+                ClientSession(read, write_stream) as session,
+            ):
+                await session.initialize()
+                result = await session.call_tool(tool, arguments=arguments)
+                return _extract_text(result)
 
         # Check for a running event loop BEFORE constructing the coroutine
         # to avoid the "coroutine was never awaited" RuntimeWarning.
@@ -81,9 +117,7 @@ class MCPModeCatalog:
             in_loop = False
 
         if in_loop:
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(asyncio.run, _run())
                 return future.result()
         return asyncio.run(_run())
@@ -93,7 +127,7 @@ class MCPModeCatalog:
         if self._catalog is not None:
             return self._catalog
         raw_json = self._call("list_modes", {})
-        raw_catalog = json.loads(raw_json) if raw_json else {}
+        raw_catalog = _parse_catalog_response(raw_json, tool="list_modes")
         self._catalog = {
             mode_id: _deserialize_mode(mode_dict)
             for mode_id, mode_dict in raw_catalog.items()
@@ -199,11 +233,13 @@ class MCPOperationCatalog:
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
         async def _run() -> str:
-            async with stdio_client(self._params) as (read, write_stream):
-                async with ClientSession(read, write_stream) as session:
-                    await session.initialize()
-                    result = await session.call_tool(tool, arguments=arguments)
-                    return _extract_text(result)
+            async with (
+                stdio_client(self._params) as (read, write_stream),
+                ClientSession(read, write_stream) as session,
+            ):
+                await session.initialize()
+                result = await session.call_tool(tool, arguments=arguments)
+                return _extract_text(result)
 
         # Check for a running event loop BEFORE constructing the coroutine
         # to avoid the "coroutine was never awaited" RuntimeWarning.
@@ -214,9 +250,7 @@ class MCPOperationCatalog:
             in_loop = False
 
         if in_loop:
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(asyncio.run, _run())
                 return future.result()
         return asyncio.run(_run())
@@ -226,7 +260,7 @@ class MCPOperationCatalog:
         if self._catalog is not None:
             return self._catalog
         raw_json = self._call("list_operations", {})
-        raw_catalog = json.loads(raw_json) if raw_json else {}
+        raw_catalog = _parse_catalog_response(raw_json, tool="list_operations")
         self._catalog = {
             op_id: _deserialize_operation(op_dict)
             for op_id, op_dict in raw_catalog.items()
@@ -353,11 +387,13 @@ class MCPToolCatalog:
 
     def _call(self, tool: str, arguments: dict[str, Any]) -> str:
         async def _run() -> str:
-            async with stdio_client(self._params) as (read, write_stream):
-                async with ClientSession(read, write_stream) as session:
-                    await session.initialize()
-                    result = await session.call_tool(tool, arguments=arguments)
-                    return _extract_text(result)
+            async with (
+                stdio_client(self._params) as (read, write_stream),
+                ClientSession(read, write_stream) as session,
+            ):
+                await session.initialize()
+                result = await session.call_tool(tool, arguments=arguments)
+                return _extract_text(result)
 
         # Check for a running event loop BEFORE constructing the coroutine
         # to avoid the "coroutine was never awaited" RuntimeWarning.
@@ -368,9 +404,7 @@ class MCPToolCatalog:
             in_loop = False
 
         if in_loop:
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(asyncio.run, _run())
                 return future.result()
         return asyncio.run(_run())
@@ -380,7 +414,7 @@ class MCPToolCatalog:
         if self._catalog is not None:
             return self._catalog
         raw_json = self._call("list_tools", {})
-        raw_catalog = json.loads(raw_json) if raw_json else {}
+        raw_catalog = _parse_catalog_response(raw_json, tool="list_tools")
         self._catalog = {
             tool_id: _deserialize_tool(tool_dict)
             for tool_id, tool_dict in raw_catalog.items()
@@ -410,11 +444,11 @@ def _deserialize_tool(data: dict[str, Any]) -> ToolDefinition:
         parameters_schema = getattr(implementation_module, "Parameters", None)
 
     mode_allowlist_raw = data.get("mode_allowlist")
-    mode_allowlist: list[str] | None
-    if mode_allowlist_raw is None:
-        mode_allowlist = None
-    else:
-        mode_allowlist = [str(m) for m in mode_allowlist_raw]
+    mode_allowlist = (
+        None
+        if mode_allowlist_raw is None
+        else [str(mode_id) for mode_id in mode_allowlist_raw]
+    )
 
     return ToolDefinition(
         tool_id=data["tool_id"],

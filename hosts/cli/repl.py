@@ -130,12 +130,23 @@ class _SurrogateSafeFileHistory(History):
         return self._inner.load_history_strings()
 
     def store_string(self, string: str) -> None:
-        safe = string.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+        # Strip lone surrogates (U+D800–U+DFFF) that Windows consoles can emit
+        # for emoji. ``surrogateescape`` only handles byte-level surrogates,
+        # not Unicode surrogates, so it raises UnicodeEncodeError here. Use
+        # ``replace`` to substitute the U+FFFD replacement character instead.
+        safe = string.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
         self._inner.store_string(safe)
 
-    def append_string(self, string: str) -> None:
-        safe = string.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
-        self._inner.append_string(safe)
+    # NOTE: do NOT override ``append_string``. The base ``History.append_string``
+    # inserts into ``self._loaded_strings`` (the in-memory list that prompt_toolkit
+    # reads via ``load()`` for up-arrow navigation) and then calls
+    # ``self.store_string`` (which sanitises via the override above). Delegating to
+    # ``self._inner.append_string`` instead — as a prior version did — updates the
+    # *inner* FileHistory's in-memory list and writes the file, but leaves this
+    # wrapper's ``_loaded_strings`` stale. The result: within a session, up-arrow
+    # history omits the commands you just typed (they only reappear after a
+    # restart that reloads from disk). The base implementation does the right
+    # thing here.
 
 
 def _repl_command_hints() -> tuple[str, ...]:
@@ -178,10 +189,10 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
     from hosts.core.commands import set_runtime_route_preview
     from hosts.core.commands import router_model_alias, model_alias_for_mode
 
-    initial_mode = runtime.config.start_mode or "default"
+    initial_mode = runtime.start_mode_id
     initial_model_alias = (
         model_alias_for_mode(initial_mode)
-        if runtime.config.start_mode
+        if runtime.start_mode_id
         else router_model_alias()
     )
     set_runtime_route_preview(

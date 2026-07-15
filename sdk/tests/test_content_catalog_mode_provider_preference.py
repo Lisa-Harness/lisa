@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from sdk.content._catalog import (
+    CatalogCollisionError,
     build_mode_catalog_json,
     build_operation_catalog_json,
     build_tool_catalog_json,
@@ -95,7 +96,7 @@ def _write_tool(root: Path, *, tool_id: str, description: str) -> None:
     )
 
 
-def test_mode_collision_uses_preference_env(
+def test_mode_collision_uses_session_provider_selection(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -105,11 +106,11 @@ def test_mode_collision_uses_preference_env(
     _write_default_mode(learning, provider_id="lisa-pack-learning", description="learning default")
 
     monkeypatch.setenv(
-        "LISA_CONTENT_PROVIDER_PREFERENCES",
+        "LISA_SESSION_PROVIDER_SELECTIONS",
         json.dumps(
             {
                 "modes": {
-                    "default": ["lisa-pack-learning", "lisa-pack-core"],
+                    "default": "lisa-pack-learning",
                 }
             }
         ),
@@ -122,7 +123,7 @@ def test_mode_collision_uses_preference_env(
     assert catalog["default"]["description"] == "learning default"
 
 
-def test_mode_collision_falls_back_to_last_discovered_when_no_preference(
+def test_mode_collision_requires_explicit_session_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -131,14 +132,11 @@ def test_mode_collision_falls_back_to_last_discovered_when_no_preference(
     _write_default_mode(core, provider_id="lisa-pack-core", description="core default")
     _write_default_mode(learning, provider_id="lisa-pack-learning", description="learning default")
 
-    monkeypatch.delenv("LISA_MODE_PROVIDER_PREFERENCES", raising=False)
-    monkeypatch.delenv("LISA_CONTENT_PROVIDER_PREFERENCES", raising=False)
+    monkeypatch.delenv("LISA_SESSION_PROVIDER_SELECTIONS", raising=False)
 
     mode_roots = resolve_mode_roots([core, learning])
-    catalog = json.loads(build_mode_catalog_json(mode_roots))
-
-    assert catalog["default"]["mode_provider_id"] == "lisa-pack-learning"
-    assert catalog["default"]["description"] == "learning default"
+    with pytest.raises(CatalogCollisionError, match=r"providers\.modes"):
+        build_mode_catalog_json(mode_roots)
 
 
 def test_operation_collision_uses_provider_preferences(
@@ -151,11 +149,11 @@ def test_operation_collision_uses_provider_preferences(
     _write_operation(brave, operation_id="web_search", description="brave operation")
 
     monkeypatch.setenv(
-        "LISA_CONTENT_PROVIDER_PREFERENCES",
+        "LISA_SESSION_PROVIDER_SELECTIONS",
         json.dumps(
             {
                 "operations": {
-                    "web_search": ["brave-pack", "search-pack"],
+                    "web_search": "brave-pack",
                 }
             }
         ),
@@ -178,11 +176,11 @@ def test_tool_collision_uses_provider_preferences(
     _write_tool(brave, tool_id="web_search", description="brave tool")
 
     monkeypatch.setenv(
-        "LISA_CONTENT_PROVIDER_PREFERENCES",
+        "LISA_SESSION_PROVIDER_SELECTIONS",
         json.dumps(
             {
                 "tools": {
-                    "web_search": ["brave-pack", "search-pack"],
+                    "web_search": "brave-pack",
                 }
             }
         ),

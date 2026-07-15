@@ -1,24 +1,49 @@
 ---
+schema_version: 2
 name: testing
-start_mode: default
-packs:
-  lisa-pack-core: { enabled: true }
-  lisa-pack-learning: { enabled: true }
-  lisa-pack-mem0: { enabled: true }
-  lisa-pack-search: { enabled: true }
-policy:
-  preferred_capability_providers:
-    memory: lisa-pack-mem0
-context_routing:
-  namespaces:
-    operational_state:
-      match_types: ["alert"]
-    general_context:
-      is_fallback: true
 surface:
   type: personal_dm
   id: host-console
   memory_scope: testing
+resources:
+  packs:
+    include:
+      - lisa-pack-core
+      - lisa-pack-learning
+      - lisa-pack-mem0
+      - lisa-pack-search
+    required:
+      - lisa-pack-core
+providers:
+  modes:
+    default: lisa-pack-core
+  tools:
+    web_search: lisa-pack-brave-search
+  capabilities:
+    memory: lisa-pack-mem0
+routing:
+  start_mode: default
+context:
+  lanes:
+    - lane_id: operational
+      max_tokens: 1200
+      render_order: 0
+    - lane_id: general
+      max_tokens: 1800
+      render_order: 10
+    - lane_id: history
+      max_tokens: 1200
+      render_order: 20
+  sources:
+    - rule_id: alerts
+      lane_id: operational
+      evidence_types: [alert]
+      priority: 100
+    - rule_id: general
+      lane_id: general
+      fallback: true
+  ranking:
+    relevance_provider: lexical
 ---
 # Testing Session Context
 

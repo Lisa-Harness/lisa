@@ -374,7 +374,7 @@ async def _route_model_turn(
         # When set, bypass router and go directly to the
         # declared mode (unless the user has already switched modes via
         # an explicit /mode command during this session).
-        start_mode = runtime.config.start_mode
+        start_mode = runtime.start_mode_id
         if start_mode and runtime.current_mode_id == start_mode:
             mode_id = start_mode
             query = message

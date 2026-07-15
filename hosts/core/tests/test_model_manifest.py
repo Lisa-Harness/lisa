@@ -10,6 +10,7 @@ import pytest
 from hosts.core import model_manifest
 
 _MIN_EXPECTED_MODELS = 2
+_CONTEXT_WINDOW_TOKENS = 131072
 
 
 def test_load_manifest_reads_designations_and_models(tmp_path: Path) -> None:
@@ -141,6 +142,7 @@ def test_load_manifest_preserves_shared_provider_fields(tmp_path: Path) -> None:
                 base_url: https://api.groq.com/openai/v1
                 base_url_env: GROQ_BASE_URL
                 reasoning_model: true
+                context_window: 131072
                 designations: [default]
             """
         ),
@@ -157,3 +159,21 @@ def test_load_manifest_preserves_shared_provider_fields(tmp_path: Path) -> None:
     assert model.base_url == "https://api.groq.com/openai/v1"
     assert model.base_url_env == "GROQ_BASE_URL"
     assert model.reasoning_model is True
+    assert model.context_window == _CONTEXT_WINDOW_TOKENS
+def test_load_manifest_rejects_negative_context_window(tmp_path: Path) -> None:
+    manifest_file = tmp_path / "models.yaml"
+    manifest_file.write_text(
+        textwrap.dedent(
+            """\
+            version: 1
+            models:
+              - model_id: test-model
+                provider: ollama
+                context_window: -1
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="context_window must be a non-negative integer"):
+        model_manifest.load_model_manifest(manifest_file)

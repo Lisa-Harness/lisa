@@ -8,7 +8,6 @@ imports. Transport hosts inject ``content_loader``, ``user_slug``,
 Public API (leading underscores removed)::
 
     load_system_prompt(content_loader)
-    load_turn_input_contract(content_loader)
     load_route_prompt(content_loader)
     load_fast_path_verifier_prompt(content_loader)
     assemble_system_prompt(mode_instruction, stage_instruction, content_loader)
@@ -74,18 +73,6 @@ def load_system_prompt(content_loader: Callable[[str], str]) -> str:
         return ""
 
 
-def load_turn_input_contract(content_loader: Callable[[str], str]) -> str:
-    """Load and format the turn-input contract from ``prompts/turn_input_contract.md``."""
-    try:
-        return (
-            "#" + content_loader("prompts/turn_input_contract.md")
-            .strip()
-            .format(user_query_sentinel="## User Query")
-        )
-    except FileNotFoundError:
-        return ""
-
-
 def load_route_prompt(content_loader: Callable[[str], str]) -> str:
     """Load the route planner prompt from ``router/route.md``."""
     try:
@@ -113,12 +100,14 @@ def assemble_system_prompt(
     mode_instruction: str,
     stage_instruction: str | None,
     content_loader: Callable[[str], str],
+    *,
+    session_instruction: str,
 ) -> str:
-    """Assemble the full system prompt from base, mode, contract, and stage."""
+    """Assemble the stable harness, session, mode, and stage instructions."""
     parts = [
         load_system_prompt(content_loader),
+        session_instruction,
         mode_instruction,
-        load_turn_input_contract(content_loader),
     ]
     if stage_instruction:
         parts.append(stage_instruction)

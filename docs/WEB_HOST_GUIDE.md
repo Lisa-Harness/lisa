@@ -94,12 +94,16 @@ designation or mode-model mappings.
 
 ### Session context
 
-The web host auto-discovers `session_context.md` or a `session_context/`
-directory in the CWD or the data directory. You can also pass an explicit path:
+The web host auto-discovers `session_context.md` in the CWD or the data
+directory. You can also pass an explicit path:
 
 ```powershell
 uv run lisa-web desktop --session-context my-context
 ```
+
+The session context front matter compiles into an immutable session plan
+(`SessionManifestV2`). See the [Session Context Authoring Guide](SESSION_CONTEXT_AUTHORING_GUIDE.md)
+for the full schema and authoring reference.
 
 ## API Endpoints
 

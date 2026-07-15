@@ -6,12 +6,16 @@ in tests that exercise command dispatch (``/help``, ``/debug``, etc.).
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 import pytest
-
-from kernel.ipsar_fsm import register_content_mcp, register_operation_callbacks
+from kernel.ipsar_fsm import (
+    get_workflow_catalog,
+    register_content_mcp,
+    register_operation_callbacks,
+)
 from kernel.operations.registry import (
     execute_operation,
     get_operation_catalog,
@@ -43,6 +47,9 @@ def _make_catalog_mcp_config() -> MCPClientConfig:
         ],
         env={
             "SDK_CONTENT_ROOTS": f"{_CORE_ROOT};{_LEARNING_ROOT};{_SEARCH_ROOT}",
+            "LISA_SESSION_PROVIDER_SELECTIONS": json.dumps(
+                {"modes": {"default": "lisa-pack-core"}}
+            ),
         },
     )
 
@@ -68,7 +75,5 @@ def _mcp_catalog_setup() -> None:
 
     set_content_registry(MCPContentRegistry(config))
 
-    # Eagerly load the workflow catalog now (sync context, before any async test runs)
-    from kernel.ipsar_fsm import get_workflow_catalog
-
+    # Eagerly load the workflow catalog now (sync context, before any async test runs).
     get_workflow_catalog()

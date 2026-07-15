@@ -38,15 +38,16 @@ from kernel.mcp_launch.server_manifest import (
     load_mcp_server_manifest,
 )
 from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
+from kernel.session_plan import ProviderSelections
 from kernel.tools.mcp_client import MCPClientConfig
 
 from hosts.core.config import HostConfig
 from hosts.core.content_roots import (
+    always_on_pack_names,
     host_mcp_manifest_path,
     infer_pack_package_name,
     load_installed_packs_lock,
     load_pack_policy_dict,
-    runtime_installed_pack_names,
     sdk_content_roots,
     seed_bundled_packs_lock,
     unique_paths,
@@ -59,8 +60,7 @@ logger = logging.getLogger(__name__)
 # Shared with the child ``lisa-content`` / ``lisa-catalog`` MCP servers
 # so they receive the same provider-preference and disabled-pack signals.
 
-_LISA_MODE_PROVIDER_PREFERENCES_ENV = "LISA_MODE_PROVIDER_PREFERENCES"
-_LISA_CONTENT_PROVIDER_PREFERENCES_ENV = "LISA_CONTENT_PROVIDER_PREFERENCES"
+_LISA_SESSION_PROVIDER_SELECTIONS_ENV = "LISA_SESSION_PROVIDER_SELECTIONS"
 _LISA_DISABLED_PACKS_ENV = "LISA_DISABLED_PACKS"
 
 # Repository root (three parents up from this module: hosts/core/mcp_pool.py).
@@ -114,18 +114,30 @@ def discover_framework(
     # preserve its original standalone behavior (no side effects).
     if seed_lock:
         seed_bundled_packs_lock(runtime.data_dir)
+    plan_packs = runtime.session_plan.manifest.resources.packs
+    session_pack_include = (*plan_packs.include, *plan_packs.required)
+    session_pack_exclude = plan_packs.exclude
     roots = sdk_content_roots(
         runtime.data_dir,
         host_manifest_path=manifest_path,
         always_on_packs=config.always_on_packs,
+        session_pack_include=session_pack_include,
+        session_pack_exclude=session_pack_exclude,
+    )
+    host_mandatory_packs = always_on_pack_names(
+        manifest_path,
+        always_on_packs=config.always_on_packs,
     )
     disabled_packs = load_disabled_pack_names(runtime.data_dir)
-    # Merge session-context front-matter packs.<name>.enabled: false.
-    session_controls = config.session_controls
-    if session_controls is not None:
-        for pack_name, prefs in session_controls.packs.preferences.items():
-            if isinstance(prefs, dict) and prefs.get("enabled") is False:
-                disabled_packs.add(normalize_pack_name(pack_name))
+    disabled_packs.difference_update(
+        normalize_pack_name(pack_name) for pack_name in session_pack_include
+    )
+    disabled_packs.difference_update(host_mandatory_packs)
+    disabled_packs.update(
+        normalize_pack_name(pack_name)
+        for pack_name in session_pack_exclude
+        if normalize_pack_name(pack_name) not in host_mandatory_packs
+    )
     lock = load_installed_packs_lock(runtime.data_dir)
     return _FrameworkDiscovery(
         roots=roots,
@@ -143,7 +155,7 @@ def build_content_mcp_config(
     data_dir: Path,
     content_roots: list[Path],
     disabled_packs: set[str],
-    host_manifest_path: Path,
+    provider_selections: ProviderSelections,
 ) -> MCPClientConfig:
     """Build an MCPClientConfig that spawns lisa-content for discovered pack roots.
 
@@ -161,10 +173,8 @@ def build_content_mcp_config(
         data_dir: Host data directory (passed to the child as ``--data-dir``).
         content_roots: Active SDK content roots (pack roots + configured roots).
         disabled_packs: Normalized pack names to exclude in the child process.
-        host_manifest_path: Host MCP manifest path (for provider preferences).
+        provider_selections: Explicit SessionPlan ownership decisions.
     """
-    content_provider_preferences = load_content_provider_preferences(host_manifest_path)
-    mode_preferences = content_provider_preferences.get("modes", {})
     roots_for_child = content_roots
     subdir_roots = [root / "content" for root in roots_for_child if (root / "content").is_dir()]
     configured_roots = unique_paths([*roots_for_child, *subdir_roots])
@@ -177,13 +187,13 @@ def build_content_mcp_config(
     if disabled_packs:
         env[_LISA_DISABLED_PACKS_ENV] = os.pathsep.join(sorted(disabled_packs))
 
-    if any(content_provider_preferences.get(kind) for kind in ("modes", "operations", "tools")):
-        env[_LISA_CONTENT_PROVIDER_PREFERENCES_ENV] = json.dumps(
-            content_provider_preferences,
+    selection_payload = session_provider_selection_payload(provider_selections)
+    if any(selection_payload.values()):
+        env[_LISA_SESSION_PROVIDER_SELECTIONS_ENV] = json.dumps(
+            selection_payload,
             ensure_ascii=True,
+            sort_keys=True,
         )
-    if mode_preferences:
-        env[_LISA_MODE_PROVIDER_PREFERENCES_ENV] = json.dumps(mode_preferences, ensure_ascii=True)
     return MCPClientConfig(
         server_id="lisa-content",
         command=sys.executable,
@@ -195,6 +205,18 @@ def build_content_mcp_config(
         ],
         env=env,
     )
+
+
+def session_provider_selection_payload(
+    selections: ProviderSelections,
+) -> dict[str, dict[str, str]]:
+    """Convert immutable plan ownership choices into child-process payload data."""
+
+    return {
+        "modes": dict(selections.modes),
+        "operations": dict(selections.operations),
+        "tools": dict(selections.tools),
+    }
 
 
 def build_catalog_mcp_config(*, content_config: MCPClientConfig, data_dir: Path) -> MCPClientConfig:
@@ -248,20 +270,18 @@ def setup_framework(
     :func:`discover_framework` internally (back-compat for standalone
     callers like tests).
     """
-    config = runtime.config
     data_dir = runtime.data_dir
 
     if discovery is None:
         discovery = discover_framework(runtime, seed_lock=True)
     roots = discovery.roots
     disabled_packs = discovery.disabled_packs
-    manifest_path = discovery.host_manifest_path
 
     content_config = build_content_mcp_config(
         data_dir=data_dir,
         content_roots=roots,
         disabled_packs=disabled_packs,
-        host_manifest_path=manifest_path,
+        provider_selections=runtime.session_plan.manifest.providers,
     )
     catalog_config = build_catalog_mcp_config(content_config=content_config, data_dir=data_dir)
 
@@ -370,49 +390,31 @@ def compile_mcp_configs(
         discovery = discover_framework(runtime, seed_lock=False)
     host_manifest_path = discovery.host_manifest_path
     roots = discovery.roots
-    lock = discovery.lock
-    capability_preferences = load_capability_provider_preferences(host_manifest_path)
-    runtime_installed_packages = runtime_installed_pack_names(lock)
-    selected_capability_providers_raw = lock.get("selected_capability_providers")
-    selected_capability_providers = (
-        selected_capability_providers_raw
-        if isinstance(selected_capability_providers_raw, dict)
-        else {}
+    selected_capability_providers = dict(
+        runtime.session_plan.manifest.providers.capabilities
     )
 
-    # ── Session-context front-matter policy overrides ──
-    # Merge session-context controls on top of manifest/lock values so the
-    # session context wins for the current runtime only (no persistence).
-    session_controls = config.session_controls
-    session_disabled_packs: set[str] = set()
+    # ── Session-plan resource preferences ──────────────────────────
+    # The immutable plan can narrow installed resources and select an
+    # explicit owner, but cannot alter manifest launch/security policy.
+    plan_resources = runtime.session_plan.manifest.resources
+    plan_providers = runtime.session_plan.manifest.providers
     session_exclude_servers: set[str] = set()
     session_cap_preferences: dict[str, list[str]] = {}
-    if session_controls is not None:
-        # packs.<name>.enabled: false → disabled set
-        for pack_name, prefs in session_controls.packs.preferences.items():
-            if isinstance(prefs, dict) and prefs.get("enabled") is False:
-                session_disabled_packs.add(normalize_pack_name(pack_name))
-        # policy.exclude_servers
-        for entry in session_controls.policy.exclude_servers:
-            normalized = entry.strip().lower()
-            if normalized:
-                session_exclude_servers.add(normalized)
-        # policy.preferred_capability_providers
-        for cap, pack in session_controls.policy.preferred_capability_providers.items():
-            session_cap_preferences.setdefault(cap, []).append(pack)
+    for entry in plan_resources.servers.exclude:
+        normalized = entry.strip().lower()
+        if normalized:
+            session_exclude_servers.add(normalized)
+    for cap, pack in plan_providers.capabilities.items():
+        session_cap_preferences.setdefault(cap, []).append(pack)
 
-    # Merge capability preferences (session > manifest).
+    # Capability ownership is explicit session policy, not host preference.
     if session_cap_preferences:
-        for cap, providers in session_cap_preferences.items():
-            existing = capability_preferences.get(cap, [])
-            merged = [*providers, *[p for p in existing if p not in providers]]
-            capability_preferences[cap] = merged
-
-    # Merge selected capability providers from session front matter.
-    if session_controls is not None and session_controls.policy.preferred_capability_providers:
-        for cap, pack in session_controls.policy.preferred_capability_providers.items():
-            if cap not in selected_capability_providers:
-                selected_capability_providers[cap] = pack
+        selected_capability_providers = {
+            capability: providers[0]
+            for capability, providers in session_cap_preferences.items()
+            if providers
+        }
 
     # Make FRAMEWORK_ROOT available for ${FRAMEWORK_ROOT} expansion in
     # the manifest's path-like fields (venv_dir, command_path, etc.).
@@ -491,14 +493,7 @@ def compile_mcp_configs(
     selected_memory_owner = select_capability_provider_owner(
         candidates=memory_candidates,
         selected_provider=selected_memory_provider,
-        preferred_providers=capability_preferences.get("memory", []),
-        runtime_installed_packages=runtime_installed_packages,
     )
-    if selected_memory_provider and selected_memory_owner is None:
-        logger.warning(
-            "Selected memory provider %r is not active; falling back to preference order.",
-            selected_memory_provider,
-        )
 
     if selected_memory_owner is not None:
         memory_config = selected_memory_owner["memory_config"]
@@ -575,92 +570,6 @@ def load_pack_server_exclusions(host_manifest_path: Path) -> set[str]:
     return exclusions
 
 
-def parse_provider_priority_mapping(raw: Any) -> dict[str, list[str]]:
-    """Parse a mapping of id -> ordered provider preference list."""
-    if not isinstance(raw, dict):
-        return {}
-
-    preferences: dict[str, list[str]] = {}
-    for key_raw, provider_values in raw.items():
-        if not isinstance(key_raw, str):
-            continue
-        key = key_raw.strip().lower()
-        if not key:
-            continue
-
-        providers: list[str]
-        if isinstance(provider_values, str):
-            normalized = normalize_pack_name(provider_values)
-            providers = [normalized] if normalized else []
-        elif isinstance(provider_values, list):
-            providers = [
-                normalize_pack_name(item)
-                for item in provider_values
-                if isinstance(item, str) and normalize_pack_name(item)
-            ]
-        else:
-            providers = []
-
-        if providers:
-            preferences[key] = providers
-
-    return preferences
-
-
-def load_content_provider_preferences(
-    host_manifest_path: Path,
-) -> dict[str, dict[str, list[str]]]:
-    """Load host provider preferences for content collisions.
-
-    Preferred shape:
-
-    ``pack_policy.preferred_providers.{modes|operations|tools}``
-
-    Legacy compatibility:
-
-    ``pack_policy.preferred_mode_providers`` (modes only)
-    """
-    policy = load_pack_policy_dict(
-        host_manifest_path, warning_subject="content provider preferences"
-    )
-
-    structured = policy.get("preferred_providers") or {}
-    if not isinstance(structured, dict):
-        structured = {}
-
-    mode_preferences = parse_provider_priority_mapping(structured.get("modes") or {})
-    operation_preferences = parse_provider_priority_mapping(structured.get("operations") or {})
-    tool_preferences = parse_provider_priority_mapping(structured.get("tools") or {})
-
-    if not mode_preferences:
-        mode_preferences = parse_provider_priority_mapping(
-            policy.get("preferred_mode_providers") or {}
-        )
-
-    return {
-        "modes": mode_preferences,
-        "operations": operation_preferences,
-        "tools": tool_preferences,
-    }
-
-
-def load_mode_provider_preferences(host_manifest_path: Path) -> dict[str, list[str]]:
-    """Backward-compatible mode-only provider preferences view."""
-    return load_content_provider_preferences(host_manifest_path).get("modes", {})
-
-
-def load_capability_provider_preferences(host_manifest_path: Path) -> dict[str, list[str]]:
-    """Load host capability-provider ownership preferences.
-
-    Shape: ``pack_policy.preferred_capability_providers.<capability_id>``
-    where each value is an ordered provider list.
-    """
-    policy = load_pack_policy_dict(
-        host_manifest_path, warning_subject="capability provider preferences"
-    )
-    return parse_provider_priority_mapping(policy.get("preferred_capability_providers") or {})
-
-
 def provider_identifiers_for_pack(*, package_name: str, pack_slug: str) -> set[str]:
     """Return the set of normalized identifiers that refer to one pack."""
     identifiers = {
@@ -673,54 +582,40 @@ def provider_identifiers_for_pack(*, package_name: str, pack_slug: str) -> set[s
     return {identifier for identifier in identifiers if identifier}
 
 
-def provider_preference_rank(
-    provider_identifiers: set[str],
-    preferred_providers: list[str],
-) -> int:
-    """Return the 0-based rank of the first matching preferred provider."""
-    for index, provider in enumerate(preferred_providers):
-        if provider in provider_identifiers:
-            return index
-    return len(preferred_providers) + 1
-
-
 def select_capability_provider_owner(
     *,
     candidates: list[dict[str, Any]],
     selected_provider: str,
-    preferred_providers: list[str],
-    runtime_installed_packages: set[str],
 ) -> dict[str, Any] | None:
-    """Select the owning pack for a capability from candidate packs.
-
-    Selection order:
-    1. An explicit ``selected_provider`` that matches a candidate's identifiers.
-    2. Preference rank, then runtime-installed status, then package/slug names.
-    """
+    """Select a capability owner without any host or lock preference fallback."""
     if not candidates:
         return None
 
     selected = normalize_pack_name(selected_provider)
     if selected:
-        for candidate in candidates:
-            identifiers = provider_identifiers_for_pack(
+        matching = [
+            candidate
+            for candidate in candidates
+            if selected
+            in provider_identifiers_for_pack(
                 package_name=str(candidate.get("package_name") or ""),
                 pack_slug=str(candidate.get("pack_slug") or ""),
             )
-            if selected in identifiers:
-                return candidate
-
-    def _sort_key(candidate: dict[str, Any]) -> tuple[int, int, str, str]:
-        package_name = normalize_pack_name(str(candidate.get("package_name") or ""))
-        pack_slug = normalize_pack_name(str(candidate.get("pack_slug") or ""))
-        identifiers = provider_identifiers_for_pack(
-            package_name=package_name, pack_slug=pack_slug
+        ]
+        if len(matching) == 1:
+            return matching[0]
+        if not matching:
+            return None
+        raise ValueError(
+            f"Multiple active capability providers match explicit selection '{selected}'."
         )
-        preference_rank = provider_preference_rank(identifiers, preferred_providers)
-        runtime_rank = 0 if package_name in runtime_installed_packages else 1
-        return (preference_rank, runtime_rank, package_name, pack_slug)
 
-    return min(candidates, key=_sort_key)
+    if len(candidates) == 1:
+        return candidates[0]
+    raise ValueError(
+        "Multiple active capability providers require an explicit "
+        "providers.capabilities selection."
+    )
 
 
 def pack_server_excluded(
@@ -757,14 +652,9 @@ __all__ = [
     "build_mcp_tool_servers",
     "compile_mcp_configs",
     "configure_runtime",
-    "load_capability_provider_preferences",
-    "load_content_provider_preferences",
-    "load_mode_provider_preferences",
     "load_pack_server_exclusions",
     "pack_server_excluded",
-    "parse_provider_priority_mapping",
     "provider_identifiers_for_pack",
-    "provider_preference_rank",
     "select_capability_provider_owner",
     "setup_framework",
     "unique_pack_slug_for_root",

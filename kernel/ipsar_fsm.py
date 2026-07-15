@@ -1399,8 +1399,9 @@ def get_mode_system_intro(mode_id: str) -> str:
     """Return the mode-level system prompt intro string for a given mode.
 
     Reads the instruction_body from the WorkflowModeConfig loaded at startup
-    from the mode's _mode.md body. Falls back to description if body is empty.
-    The string is injected ahead of the stage-level instructions.
+    from the mode's _mode.md body. Descriptions are catalog metadata, not
+    implicit model instructions. The string is injected ahead of the
+    stage-level instructions.
 
     Returns an empty string for unknown modes so callers can safely include it
     without a mode membership check.
@@ -1409,13 +1410,13 @@ def get_mode_system_intro(mode_id: str) -> str:
         mode_id: The route mode string (e.g. 'coach', 'chase').
 
     Returns:
-        The instruction body from the mode's _mode.md, falling back to description,
-        or '' if the mode is not in the catalog.
+        The authored instruction body from the mode's _mode.md, or '' if the
+        mode is unknown or has no instruction body.
     """
     mode = get_workflow_catalog().get(mode_id)
     if not mode:
         return ""
-    return mode.instruction_body or mode.description
+    return mode.instruction_body
 
 
 async def _execute_mode_target_ids(

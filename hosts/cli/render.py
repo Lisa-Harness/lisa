@@ -26,10 +26,13 @@ from hosts.core.commands import (
 from hosts.core.model_manifest import load_model_manifest
 from hosts.core.runtime import HostRuntime
 from kernel.ipsar_fsm import get_workflow_catalog
+from kernel.operations.registry import get_operation_catalog
+from kernel.tools.registry import get_tool_catalog
 
 # ── Style constants ───────────────────────────────────────────────────
 STYLE_BORDER_SESSION = "steel_blue3"
 STYLE_BORDER_RESPONSE = "dark_sea_green4"
+STYLE_BORDER_CATALOG = "slate_blue1"
 
 
 def render_modes(runtime: HostRuntime, *, console: Console | None = None) -> Table:
@@ -103,6 +106,110 @@ def render_pack_list_panel(runtime: HostRuntime, *, console: Console | None = No
     return panel
 
 
+def render_operations(runtime: HostRuntime, *, console: Console | None = None) -> Table:
+    """Build a Rich Table of internal operations with IDs for allowlist authoring.
+
+    Lists every operation discovered from content packs via the
+    ``lisa-catalog`` MCP server. The ID column is exactly the string to copy
+    into a mode's ``allowed_operation_ids`` front-matter list.
+    """
+    _ = runtime  # catalog is global; runtime kept for future per-host scoping
+    catalog = get_operation_catalog()
+    table = Table(title="Lisa Operations")
+    table.add_column("Operation ID", style="bold")
+    table.add_column("Kind")
+    table.add_column("Description")
+    table.add_column("Tools", overflow="fold")
+
+    for operation_id, definition in sorted(catalog.items()):
+        description = definition.description or "—"
+        tools = ", ".join(definition.tool_ids) if definition.tool_ids else "—"
+        table.add_row(operation_id, definition.execution_kind, description, tools)
+
+    if console is not None:
+        console.print(table)
+    return table
+
+
+def render_tools(runtime: HostRuntime, *, console: Console | None = None) -> Table:
+    """Build a Rich Table of internal tools with IDs for allowlist authoring.
+
+    Lists every internal tool discovered from content packs via the
+    ``lisa-catalog`` MCP server. The ID column is exactly the string to copy
+    into a mode's ``allowed_tool_ids`` front-matter list.
+
+    Internal (pack-discovered) tools and MCP-server tools are listed in
+    separate tables so authors can tell which allowlist each ID belongs to:
+    pack tool IDs go in ``allowed_tool_ids``; MCP tool IDs are governed by
+    per-server ``tool_policy`` in ``mcp_servers.yaml``.
+    """
+    _ = runtime  # catalog is global; runtime kept for future per-host scoping
+    table = Table(title="Lisa Internal Tools")
+    table.add_column("Tool ID", style="bold")
+    table.add_column("Description")
+    table.add_column("Max/Turn")
+    table.add_column("Timeout")
+
+    catalog = get_tool_catalog()
+    for tool_id, definition in sorted(catalog.items()):
+        description = definition.description or "—"
+        table.add_row(
+            tool_id,
+            description,
+            str(definition.max_calls_per_turn),
+            f"{definition.timeout_seconds}s",
+        )
+
+    if console is not None:
+        console.print(table)
+
+    # MCP-server tools (if a pool is available on the runtime) — surfaced
+    # separately because they are filtered by per-server tool_policy, not by
+    # mode-level allowed_tool_ids. Showing them here helps authors discover
+    # the bare tool names to reference in mcp_servers.yaml tool_policy entries.
+    pool = getattr(runtime, "mcp_tool_pool", None)
+    mcp_tools = _collect_mcp_tool_names(pool)
+    if mcp_tools:
+        mcp_table = Table(title="MCP Server Tools (per-server tool_policy)")
+        mcp_table.add_column("Server", style="bold")
+        mcp_table.add_column("Tool", overflow="fold")
+        for server_id, tool_name in mcp_tools:
+            mcp_table.add_row(server_id, tool_name)
+        if console is not None:
+            console.print(mcp_table)
+
+    return table
+
+
+def _collect_mcp_tool_names(pool: Any) -> list[tuple[str, str]]:
+    """Return ``(server_id, tool_name)`` pairs from an MCP tool pool, if any.
+
+    Best-effort: when the runtime exposes a warmed MCP pool we read its
+    discovered tool specs. Any failure (no pool, not yet connected, etc.)
+    yields an empty list so the tools command stays usable on cold hosts.
+
+    The pool is :class:`kernel.tools.mcp_client.MCPToolPool`, which stores
+    discovered tools as a flat ``_tools`` list of ``MCPToolSpec`` (each
+    carrying ``server_id`` and ``name``). We mirror that internal shape
+    rather than calling the async ``list_tools`` so this works on a cold
+    runtime before the pool has been started.
+    """
+    if pool is None:
+        return []
+    try:
+        tools: Any = getattr(pool, "_tools", None) or []
+    except Exception:  # pragma: no cover — defensive, pool is host-supplied
+        return []
+    pairs: list[tuple[str, str]] = []
+    for spec in tools:
+        server_id = getattr(spec, "server_id", None)
+        name = getattr(spec, "name", None)
+        if server_id and name:
+            pairs.append((server_id, name))
+    pairs.sort()
+    return pairs
+
+
 def render_markdown_panel(
     text: str,
     *,
@@ -125,5 +232,7 @@ __all__ = [
     "render_markdown_panel",
     "render_models",
     "render_modes",
+    "render_operations",
     "render_pack_list_panel",
+    "render_tools",
 ]

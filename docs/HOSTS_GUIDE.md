@@ -230,11 +230,12 @@ All hosts share the same runtime flags via `HostConfig.from_env()`:
 
 The `--session-context` flag supports loading authored contexts from multiple shapes:
 
-1. **Local Files & Slugs**: Literal path to an `.md` file or directory, or a slug (searches `user_contexts/` local packs or cwd discovery).
+1. **Local Files & Slugs**: Literal path to an `.md` file, or a slug (searches the data directory and bundled default).
 2. **Remote Registry**: A slug name not found locally will automatically attempt to fetch from the remote registry at `https://raw.githubusercontent.com/lisa-framework/sessions/main`.
 3. **Exact URL**: `--session-context https://raw.githubusercontent.com/.../foo.md` will download and activate the specific context file.
 
 **Remote specific config:**
+
 - **Refresh**: Re-fetching a remote context uses a conditional-GET at startup. To force a refresh, use `--session-context-refresh`. There are no background update cron tasks.
 - **Trust Policy**: Remote fetching uses an allowlist. You can configure allowable hosts via `LISA_SESSION_CONTEXT_ALLOWED_HOSTS` (default `github.com, raw.githubusercontent.com`). HTTP is explicitly blocked unless `LISA_SESSION_CONTEXT_ALLOW_HTTP=1`.
 - **Private repos**: Pass an auth token via `LISA_SESSION_CONTEXT_TOKEN` or provide raw headers via `LISA_SESSION_CONTEXT_AUTH_HEADER`.
@@ -279,62 +280,46 @@ Memory is capability-owned by policy. The bundled learning pack provides the `li
 
 ## Session Context Front Matter
 
-For full authoring guidance, examples, and the replay control schema, see `docs/SESSION_CONTEXT_AUTHORING_GUIDE.md`.
+For full authoring guidance, examples, and the complete schema, see `docs/SESSION_CONTEXT_AUTHORING_GUIDE.md`.
 
-A `session_context.md` file (or `session_context/` directory) in the project root or data directory is auto-discovered at startup. The file's YAML front matter can declare runtime controls that override the host's defaults:
+A `session_context.md` file in the project root or data directory is auto-discovered at startup. The file's YAML front matter compiles into an immutable **session plan** (`SessionManifestV2`) that controls resource selection, provider ownership, routing, and context policy. The Markdown body becomes the primary system prompt.
 
 ```yaml
 ---
+schema_version: 2
 name: my-session
 surface:
   type: personal_dm
   id: host-console
   memory_scope: personal
-start_mode: default
-applies_to:
-  - default
-  - discuss
-packs:
-  lisa-pack-search:
-    enabled: true
-  lisa-pack-mem0:
-    enabled: false
-policy:
-  always_on_packs:
-    - lisa-pack-core
-    - lisa-pack-learning
-  exclude_servers:
-    - lisa-pack-mem0.memory
-  preferred_capability_providers:
-    memory: lisa-pack-learning
+resources:
+  packs:
+    include: [lisa-pack-core, lisa-pack-search]
+    required: [lisa-pack-core]
+providers:
+  modes:
+    default: lisa-pack-core
+  tools:
+    web_search: lisa-pack-brave-search
+  capabilities:
+    memory: lisa-pack-mem0
+routing:
+  start_mode: default
+context:
+  lanes:
+    - lane_id: operational
+      max_tokens: 1200
+      render_order: 0
+  sources:
+    - rule_id: fallback
+      lane_id: operational
+      fallback: true
 ---
 ```
 
-| Key | Type | Effect | Scope |
-| --- | --- | --- | --- |
-| `name` | `str` | Thread file name + status display | Per-turn |
-| `applies_to` | `list[str]` | Mode filter — file only loads when current mode is in the list | Per-turn |
-| `surface.type` | `str` | Overrides `surface_type` for tool/guard/token identity | Per-turn |
-| `surface.id` | `str` | Overrides `surface_id` | Per-turn |
-| `surface.memory_scope` | `str` | Overrides `memory_scope` for tool/guard identity | Per-turn |
-| `start_mode` | `str` | Initial mode; **bypasses router** entirely | Startup |
-| `packs.<name>.enabled` | `bool` | `false` disables the pack for this runtime | Startup |
-| `policy.always_on_packs` | `list[str]` | Packs that cannot be disabled | Startup |
-| `policy.exclude_servers` | `list[str]` | Pack MCP server IDs to suppress | Startup |
-| `policy.preferred_capability_providers` | `map[str,str]` | Capability → pack ownership preference | Startup |
-| `replay.trigger_mode` | `always\|conditional\|manual\|hybrid` | Replay trigger policy for history sections | Per-turn |
-| `replay.include_prior_conversation_digest` | `bool` | Include/exclude digest replay section | Per-turn |
-| `replay.include_recent_conversation` | `bool` | Include/exclude recent conversation replay section | Per-turn |
-| `replay.include_diagnostic_reflection` | `bool` | Include/exclude diagnostic reflection section | Per-turn |
-| `replay.min_query_chars` | `int` | Threshold gate for conditional/hybrid replay | Per-turn |
-| `replay.history_max_tokens` | `int` | Tighten-only cap for history lane budget | Per-turn |
-| `replay.reflection_max_tokens` | `int` | Tighten-only cap for reflection lane budget | Per-turn |
-| `replay.digest_max_lines` | `int` | Max digest lines during replay and compaction | Per-turn + slice |
-| `replay.digest_summary_max_chars` | `int` | Lossy-summary max chars when digest is capped | Slice |
+The schema is strict (`extra="forbid"`): unknown keys fail compilation. See the [Session Context Authoring Guide](SESSION_CONTEXT_AUTHORING_GUIDE.md) for the full front-matter reference, validation rules, and common patterns.
 
-Precedence: session-context front matter > CLI/env > defaults. Flat top-level `surface_type`/`surface_id`/`memory_scope` keys are accepted as a convenience when no `surface` block is present.
-
-When `start_mode` is set, the runtime seeds `current_mode_id` to that mode and `_route_model_turn` skips the router planner entirely. An explicit `/mode` command overrides `start_mode` for the remainder of the session.
+When `routing.start_mode` is set, the runtime seeds `current_mode_id` to that mode. An explicit `/mode` command overrides it for the remainder of the session.
 
 ## Building a New Host
 

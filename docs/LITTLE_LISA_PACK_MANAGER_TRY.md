@@ -131,35 +131,33 @@ Requirements for local folder install:
 - `pyproject.toml` must include `project.name`.
 - `project.name` must match allowed prefixes policy (default `lisa-pack-`).
 
-## 4c) Mode/Tool Provider Preferences (No Core Edits)
+## 4c) Mode/Tool Provider Selection (Session Plan)
 
-The host policy can prefer specific providers for duplicate mode/operation/tool IDs. This is configured in [hosts/core/mcp_servers.yaml](hosts/core/mcp_servers.yaml)
-under `pack_policy.preferred_providers`:
+When multiple active packs contribute the same mode, operation, or tool ID,
+the session plan must declare which pack owns it. This is configured in the
+`providers` block of your `session_context.md` front matter:
 
 ```yaml
-pack_policy:
-  preferred_providers:
-    modes:
-      default:
-        - lisa-pack-learning
-        - lisa-pack-core
-    tools:
-      web_search:
-        - lisa-pack-brave-search
-        - lisa-pack-search
+providers:
+  modes:
+    default: lisa-pack-core
+  tools:
+    web_search: lisa-pack-brave-search
 ```
 
 Result:
 
-- If `lisa-pack-learning` is installed/enabled, its `default` mode is selected.
-- If it is not active, core `default` remains active.
-- If `lisa-pack-brave-search` is active, it replaces the bundled `web_search` stub.
+- `lisa-pack-core` owns the `default` mode.
+- `lisa-pack-brave-search` owns the `web_search` tool, replacing the bundled stub.
+- Without an explicit `providers` entry, a catalog collision error is raised at startup.
 - End users do not need to edit core pack files to transition.
+
+See the [Session Context Authoring Guide](SESSION_CONTEXT_AUTHORING_GUIDE.md) for the full schema.
 
 ## 4d) Capability Provider Selection (Memory)
 
 Capability ownership is selected per capability (for example, `memory`) via
-`pack_policy.preferred_capability_providers` and lock-state overrides.
+the `providers.capabilities` block in the session plan and lock-state overrides.
 
 Installing an external memory provider pack (for example `lisa-pack-mem0`)
 auto-selects it when no explicit capability provider has been chosen yet.
@@ -241,4 +239,3 @@ uv run lisa once "/pack list" --no-log
 ```
 
 Then test a real Git pack install with your own repo ref.
-

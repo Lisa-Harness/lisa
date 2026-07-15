@@ -22,6 +22,7 @@ class StubModelDefinition:
     model_id: str
     provider: str = "azure_openai"
     reasoning_model: bool = False
+    context_window: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,4 +156,5 @@ def _to_stub_model_definition(model: ManifestModelEntry) -> StubModelDefinition:
         model_id=model.model_id,
         provider=model.provider,
         reasoning_model=model.reasoning_model,
+        context_window=model.context_window,
     )

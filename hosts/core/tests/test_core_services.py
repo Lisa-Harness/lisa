@@ -41,6 +41,7 @@ from kernel.models import (
     WorkflowModeConfig,
 )
 from kernel.operations.registry import OperationExecutionError
+from kernel.session_plan import ProviderSelections
 from kernel.turn_runner import TurnResult
 from pydantic import BaseModel
 
@@ -111,17 +112,11 @@ def test_build_content_mcp_config_uses_discovered_roots_and_host_data_dir(
     (pack_root / "content").mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(content_roots, "sdk_content_roots", lambda *a, **kw: [pack_root])
-    monkeypatch.setattr(
-        mcp_pool,
-        "load_content_provider_preferences",
-        lambda _path: {"modes": {}, "operations": {}, "tools": {}},
-    )
-
     config = mcp_pool.build_content_mcp_config(
         data_dir=runtime.data_dir,
         content_roots=[pack_root],
         disabled_packs=set(),
-        host_manifest_path=runtime.config.mcp_manifest_path or Path("mcp_servers.yaml"),
+        provider_selections=ProviderSelections(),
     )
 
     assert config.args is not None
@@ -145,17 +140,11 @@ def test_build_content_mcp_config_without_discovered_roots_keeps_empty_sdk_conte
 
     runtime = _make_runtime(tmp_path)
     monkeypatch.setattr(content_roots, "sdk_content_roots", lambda *a, **kw: [])
-    monkeypatch.setattr(
-        mcp_pool,
-        "load_content_provider_preferences",
-        lambda _path: {"modes": {}, "operations": {}, "tools": {}},
-    )
-
     config = mcp_pool.build_content_mcp_config(
         data_dir=runtime.data_dir,
         content_roots=[],
         disabled_packs=set(),
-        host_manifest_path=runtime.config.mcp_manifest_path or Path("mcp_servers.yaml"),
+        provider_selections=ProviderSelections(),
     )
 
     assert config.args is not None
@@ -165,6 +154,31 @@ def test_build_content_mcp_config_without_discovered_roots_keeps_empty_sdk_conte
 
     assert config.env is not None
     assert str(config.env.get("SDK_CONTENT_ROOTS", "")) == ""
+
+
+def test_build_content_mcp_config_serializes_session_provider_selections(
+    tmp_path: Path,
+) -> None:
+    runtime = _make_runtime(tmp_path)
+
+    config = mcp_pool.build_content_mcp_config(
+        data_dir=runtime.data_dir,
+        content_roots=[],
+        disabled_packs=set(),
+        provider_selections=ProviderSelections(
+            modes={"default": "lisa-pack-core"},
+            operations={"web_search": "lisa-pack-search"},
+            tools={"web_search": "lisa-pack-brave-search"},
+        ),
+    )
+
+    assert config.env is not None
+    payload = json.loads(config.env["LISA_SESSION_PROVIDER_SELECTIONS"])
+    assert payload == {
+        "modes": {"default": "lisa-pack-core"},
+        "operations": {"web_search": "lisa-pack-search"},
+        "tools": {"web_search": "lisa-pack-brave-search"},
+    }
 
 
 # ── Desktop token / subprocess args (web-host-only) ──────────────────
@@ -296,22 +310,23 @@ async def test_debug_router_reports_last_planner_payload(tmp_path: Path) -> None
 # ── System prompt assembly ────────────────────────────────────────────
 
 
-def test_assemble_system_prompt_includes_turn_input_contract() -> None:
-    """assemble_system_prompt loads base system prompt + turn-input contract."""
+def test_assemble_system_prompt_orders_harness_session_mode_and_stage() -> None:
+    """Session instructions are stable system content ahead of route overlays."""
     def _loader(path: str) -> str:
         if path == "prompts/system-prompt.md":
-            return "# System Prompt\nYou are Lisa."
-        if path == "prompts/turn_input_contract.md":
-            return "## User Query"
+            return "# Harness\nGenerated context precedes ## User Query."
         return ""
 
     system_prompt = context_assembly.assemble_system_prompt(
-        "Mode instruction", None, content_loader=_loader
+        "Mode instruction",
+        "Stage instruction",
+        content_loader=_loader,
+        session_instruction="Session instruction",
     )
 
-    assert "System Prompt" in system_prompt
-    assert "Mode instruction" in system_prompt
-    assert "## User Query" in system_prompt
+    assert system_prompt.index("# Harness") < system_prompt.index("Session instruction")
+    assert system_prompt.index("Session instruction") < system_prompt.index("Mode instruction")
+    assert system_prompt.index("Mode instruction") < system_prompt.index("Stage instruction")
 
 
 # ── Router fast-path verifier prompt ───────────────────────────────
@@ -597,52 +612,65 @@ def test_extract_session_context_controls_replay_block(tmp_path: Path) -> None:
     assert controls.replay.digest_summary_max_chars == 120
 
 
-def test_hostconfig_applies_session_context_surface_and_start_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """HostConfig.from_env reads surface, start_mode from auto-discovered session_context.md."""
+def test_runtime_compiles_session_plan_surface_and_start_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """HostRuntime compiles the auto-discovered strict v2 session once."""
     monkeypatch.chdir(tmp_path)
     ctx = tmp_path / "session_context.md"
     ctx.write_text(
         '---\n'
+        'schema_version: 2\n'
         'name: "my-session"\n'
         'surface:\n'
         '  type: team_channel\n'
         '  id: chan-1\n'
         '  memory_scope: shared\n'
-        'start_mode: research\n'
+        'routing:\n'
+        '  start_mode: research\n'
         '---\n# body\n',
         encoding="utf-8",
     )
     config = HostConfig.from_env(data_dir=str(tmp_path), no_thread=True)
-    assert config.user_slug == "my-session"
-    assert config.surface_type == "team_channel"
-    assert config.surface_id == "chan-1"
-    assert config.memory_scope == "shared"
-    assert config.start_mode == "research"
-    assert config.session_controls is not None
-    assert config.session_controls.start_mode == "research"
+    runtime = HostRuntime(config)
+    assert runtime.config.user_slug == "my-session"
+    assert runtime.config.surface_type == "team_channel"
+    assert runtime.config.surface_id == "chan-1"
+    assert runtime.config.memory_scope == "shared"
+    assert runtime.start_mode_id == "research"
+    assert runtime.session_plan.manifest.name == "my-session"
 
 
-def test_hostconfig_applies_session_context_policy_always_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """HostConfig.from_env reads policy.always_on_packs from session_context.md."""
+def test_runtime_session_plan_exposes_pack_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Session pack selection lives in the compiled plan, not HostConfig."""
     monkeypatch.chdir(tmp_path)
     ctx = tmp_path / "session_context.md"
     ctx.write_text(
         '---\n'
-        'policy:\n'
-        '  always_on_packs:\n'
-        '    - lisa-pack-core\n'
+        'schema_version: 2\n'
+        'name: "pack-test"\n'
+        'surface: { type: personal_dm, id: host-console, memory_scope: testing }\n'
+        'resources:\n'
+        '  packs:\n'
+        '    include: [lisa-pack-core]\n'
         '---\n# body\n',
         encoding="utf-8",
     )
-    config = HostConfig.from_env(data_dir=str(tmp_path), no_thread=True)
-    assert config.always_on_packs == ("lisa-pack-core",)
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path), no_thread=True))
+    assert runtime.session_plan.manifest.resources.packs.include == ("lisa-pack-core",)
 
 
 def test_runtime_start_mode_initializes_current_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """HostRuntime.current_mode_id is seeded from start_mode when set."""
     monkeypatch.chdir(tmp_path)
     ctx = tmp_path / "session_context.md"
-    ctx.write_text('---\nstart_mode: research\n---\n# body\n', encoding="utf-8")
+    ctx.write_text(
+        "---\n"
+        "schema_version: 2\n"
+        "name: research-session\n"
+        "surface: { type: personal_dm, id: host-console, memory_scope: testing }\n"
+        "routing: { start_mode: research }\n"
+        "---\n# body\n",
+        encoding="utf-8",
+    )
     config = HostConfig.from_env(data_dir=str(tmp_path), no_thread=True)
     runtime = HostRuntime(config)
     assert runtime.current_mode_id == "research"
@@ -928,6 +956,7 @@ def test_resolve_model_supports_designations_and_concrete_ids(tmp_path: Path) ->
                 "models:",
                 "  - model_id: gemma3:latest",
                 "    provider: ollama",
+                "    context_window: 65536",
                 "    designations: [router, default]",
                 "  - model_id: deepseek-r1:latest",
                 "    provider: ollama",
@@ -938,9 +967,10 @@ def test_resolve_model_supports_designations_and_concrete_ids(tmp_path: Path) ->
         encoding="utf-8",
     )
 
-    router_model_id = resolve_little_lisa_model(
+    router_model = resolve_little_lisa_model(
         "router", runtime_state={}, data_dir=tmp_path
-    ).model_id
+    )
+    router_model_id = router_model.model_id
     default_model_id = resolve_little_lisa_model(
         "default", runtime_state={}, data_dir=tmp_path
     ).model_id
@@ -951,6 +981,7 @@ def test_resolve_model_supports_designations_and_concrete_ids(tmp_path: Path) ->
     assert router_model_id
     assert default_model_id
     assert deep_model_id
+    assert router_model.context_window == 65536
     resolved_router = resolve_little_lisa_model(
         router_model_id, runtime_state={}, data_dir=tmp_path
     ).model_id

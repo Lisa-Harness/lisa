@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import tomllib
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -44,8 +45,6 @@ logger = logging.getLogger(__name__)
 _PACK_LOCK_FILE_NAME = "installed-packs.json"
 _DEFAULT_ALWAYS_ON_PACKAGES: tuple[str, ...] = (
     "lisa-pack-core",
-    "lisa-pack-learning",
-    "lisa-pack-search",
 )
 _RUNTIME_INSTALL_SOURCE_KINDS = {"package", "git", "local"}
 
@@ -346,10 +345,18 @@ def pack_is_active(
     always_on_packs: set[str],
     runtime_installed: set[str],
     enabled_map: dict[str, bool],
+    session_included_packs: set[str] | None = None,
+    session_excluded_packs: set[str] | None = None,
 ) -> bool:
-    """Decide whether a pack is active given the resolved activation sets."""
+    """Decide whether a pack is active under host, session, then lock policy."""
     if package_name in always_on_packs:
         return True
+    if session_excluded_packs and package_name in session_excluded_packs:
+        return False
+    if session_included_packs and package_name in session_included_packs:
+        return True
+    if session_included_packs:
+        return False
     if package_name in runtime_installed:
         return enabled_map.get(package_name, True)
     return enabled_map.get(package_name, False)
@@ -360,12 +367,16 @@ def active_installed_pack_roots(
     *,
     host_manifest_path: Path | None = None,
     always_on_packs: tuple[str, ...] | None = None,
+    session_pack_include: Iterable[str] = (),
+    session_pack_exclude: Iterable[str] = (),
 ) -> list[Path]:
-    """Return installed content roots whose pack is active for this host."""
+    """Return installed content roots active under host, session, and lock policy."""
     lock = load_installed_packs_lock(data_dir)
     always_on = always_on_pack_names(host_manifest_path, always_on_packs=always_on_packs)
     runtime_installed = runtime_installed_pack_names(lock)
     enabled_map = runtime_enabled_pack_map(lock)
+    session_included = _normalize_pack_names(session_pack_include)
+    session_excluded = _normalize_pack_names(session_pack_exclude)
 
     active: list[Path] = []
     for root in discover_installed_content_roots():
@@ -377,6 +388,8 @@ def active_installed_pack_roots(
             always_on_packs=always_on,
             runtime_installed=runtime_installed,
             enabled_map=enabled_map,
+            session_included_packs=session_included,
+            session_excluded_packs=session_excluded,
         ):
             active.append(root)
     return active
@@ -387,15 +400,32 @@ def sdk_content_roots(
     *,
     host_manifest_path: Path | None = None,
     always_on_packs: tuple[str, ...] | None = None,
+    session_pack_include: Iterable[str] = (),
+    session_pack_exclude: Iterable[str] = (),
 ) -> list[Path]:
     """Return the full SDK content root list (active installed + configured)."""
+    always_on = always_on_pack_names(host_manifest_path, always_on_packs=always_on_packs)
+    session_included = _normalize_pack_names(session_pack_include)
+    session_excluded = _normalize_pack_names(session_pack_exclude)
+    configured_roots = [
+        root
+        for root in discover_configured_content_roots()
+        if _configured_root_is_active(
+            root,
+            always_on_packs=always_on,
+            session_included_packs=session_included,
+            session_excluded_packs=session_excluded,
+        )
+    ]
     roots = [
         *active_installed_pack_roots(
             data_dir,
             host_manifest_path=host_manifest_path,
             always_on_packs=always_on_packs,
+            session_pack_include=session_pack_include,
+            session_pack_exclude=session_pack_exclude,
         ),
-        *discover_configured_content_roots(),
+        *configured_roots,
     ]
     return unique_paths([root for root in roots if root.is_dir()])
 
@@ -405,12 +435,16 @@ def authored_content_roots(
     *,
     host_manifest_path: Path | None = None,
     always_on_packs: tuple[str, ...] | None = None,
+    session_pack_include: Iterable[str] = (),
+    session_pack_exclude: Iterable[str] = (),
 ) -> list[Path]:
     """Return the ``content/`` subdirectories that exist under SDK content roots."""
     roots = sdk_content_roots(
         data_dir,
         host_manifest_path=host_manifest_path,
         always_on_packs=always_on_packs,
+        session_pack_include=session_pack_include,
+        session_pack_exclude=session_pack_exclude,
     )
     return unique_paths([root / "content" for root in roots if (root / "content").is_dir()])
 
@@ -420,12 +454,16 @@ def sdk_mode_roots(
     *,
     host_manifest_path: Path | None = None,
     always_on_packs: tuple[str, ...] | None = None,
+    session_pack_include: Iterable[str] = (),
+    session_pack_exclude: Iterable[str] = (),
 ) -> list[Path]:
     """Return the ``modes`` subdirectories across SDK content roots."""
     roots = sdk_content_roots(
         data_dir,
         host_manifest_path=host_manifest_path,
         always_on_packs=always_on_packs,
+        session_pack_include=session_pack_include,
+        session_pack_exclude=session_pack_exclude,
     )
     return unique_paths(resolve_content_subdir_roots(roots, "modes"))
 
@@ -435,14 +473,45 @@ def sdk_operation_roots(
     *,
     host_manifest_path: Path | None = None,
     always_on_packs: tuple[str, ...] | None = None,
+    session_pack_include: Iterable[str] = (),
+    session_pack_exclude: Iterable[str] = (),
 ) -> list[Path]:
     """Return the ``operations`` subdirectories across SDK content roots."""
     roots = sdk_content_roots(
         data_dir,
         host_manifest_path=host_manifest_path,
         always_on_packs=always_on_packs,
+        session_pack_include=session_pack_include,
+        session_pack_exclude=session_pack_exclude,
     )
     return unique_paths(resolve_content_subdir_roots(roots, "operations"))
+
+
+def _normalize_pack_names(pack_names: Iterable[str]) -> set[str]:
+    """Normalize a session selector without accepting blank pack identifiers."""
+
+    return {
+        normalized
+        for pack_name in pack_names
+        if (normalized := normalize_pack_name(pack_name))
+    }
+
+
+def _configured_root_is_active(
+    root: Path,
+    *,
+    always_on_packs: set[str],
+    session_included_packs: set[str],
+    session_excluded_packs: set[str],
+) -> bool:
+    """Keep configured roots active unless the session explicitly excludes them."""
+
+    package_name = infer_pack_package_name(root)
+    if package_name in always_on_packs:
+        return True
+    if package_name in session_excluded_packs:
+        return False
+    return not session_included_packs or package_name in session_included_packs
 
 
 __all__ = [
