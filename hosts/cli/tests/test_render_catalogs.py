@@ -119,8 +119,8 @@ def test_render_tools_lists_internal_tool_ids(tmp_path: Path) -> None:
 
 
 def test_render_tools_emits_mcp_section_when_pairs_provided(tmp_path: Path) -> None:
-    """When mcp_tools pairs are passed, a second MCP table is rendered."""
-    mcp_pairs = [("brave", "brave_search"), ("github", "create_issue")]
+    """When mcp_tools triples are passed, a second MCP table is rendered."""
+    mcp_pairs = [("brave", "brave_search", False), ("github", "create_issue", False)]
     console = Console(record=True, width=120)
 
     with patch.object(render_mod, "get_tool_catalog", return_value={}):
@@ -134,6 +134,8 @@ def test_render_tools_emits_mcp_section_when_pairs_provided(tmp_path: Path) -> N
     assert "brave_search" in output
     assert "github" in output
     assert "create_issue" in output
+    # Native tools (is_alias=False) are NOT annotated with an arrow.
+    assert "->" not in output
 
 
 def test_render_tools_empty_mcp_pairs_omits_mcp_section(tmp_path: Path) -> None:
@@ -148,8 +150,8 @@ def test_render_tools_empty_mcp_pairs_omits_mcp_section(tmp_path: Path) -> None:
 
 
 def test_render_mcp_tools_lists_pairs_sorted_as_given() -> None:
-    """render_mcp_tools emits one row per (server_id, tool_name) pair."""
-    pairs = [("zsrv", "zeta"), ("asrv", "alpha")]
+    """render_mcp_tools emits one row per (server_id, tool_name) triple."""
+    pairs = [("zsrv", "zeta", False), ("asrv", "alpha", False)]
     console = Console(record=True, width=120)
     table = render_mod.render_mcp_tools(pairs, console=console)
     output = console.export_text()
@@ -167,21 +169,56 @@ def test_render_mcp_tools_empty_renders_header_only() -> None:
     assert table.title is not None
 
 
+def test_render_mcp_tools_annotates_alias_with_arrow() -> None:
+    """Synthetic alias entries are prefixed with → in the Tool column."""
+    pairs = [
+        ("lisa-memory", "memory.search", True),
+        ("brave", "brave_search", False),
+    ]
+    console = Console(record=True, width=120)
+    render_mod.render_mcp_tools(pairs, console=console)
+    output = console.export_text()
+    # The alias row shows the arrow annotation.
+    assert "-> memory.search" in output
+    # The native tool is shown without the arrow.
+    assert "-> brave_search" not in output
+    assert "brave_search" in output
+
+
 # ── _collect_mcp_tools (async, in hosts.cli.main) ─────────────────────
 
 
 class _FakeSpec:
-    def __init__(self, server_id: str, name: str) -> None:
+    def __init__(self, server_id: str, name: str, synthetic: bool = False) -> None:
         self.server_id = server_id
         self.name = name
+        self._synthetic = synthetic
 
 
 class _FakePool:
-    def __init__(self, tools: list[_FakeSpec]) -> None:
+    def __init__(
+        self,
+        tools: list[_FakeSpec],
+        *,
+        synthetic_names: set[str] | None = None,
+    ) -> None:
         self._tools = tools
+        self._synthetic_names = synthetic_names or set()
+        self.closed = False
 
     async def list_tools(self) -> list[_FakeSpec]:
         return list(self._tools)
+
+    def is_synthetic_tool(self, name: str) -> bool:
+        # Mirrors the real MCPToolPool.aclose() which clears
+        # _synthetic_handlers — once the pool is closed, no name is synthetic.
+        if self.closed:
+            return False
+        return name in self._synthetic_names
+
+    def _aclose(self) -> None:
+        self.closed = True
+        self._synthetic_names = set()
 
 
 class _StubRuntime:
@@ -205,6 +242,10 @@ class _StubRuntime:
 
     async def aclose(self) -> None:
         self.closed = True
+        # Mirrors the real HostRuntime.aclose() → pool.aclose() path that
+        # clears _synthetic_handlers before the caller inspects the pool.
+        if self._pool is not None:
+            self._pool._aclose()
 
     @property
     def mcp_tool_pool(self) -> _FakePool | None:
@@ -221,15 +262,40 @@ async def test_collect_mcp_tools_returns_sorted_unique_pairs() -> None:
             _FakeSpec("brave", "brave_search"),
             _FakeSpec("github", "create_issue"),
             _FakeSpec("brave", "brave_search"),  # duplicate → deduped
-        ]
+        ],
+        synthetic_names=set(),
     )
     runtime = _StubRuntime(warm=1, cold=0, pool=pool)
 
-    pairs = await _collect_mcp_tools(runtime)  # type: ignore[arg-type]
+    entries = await _collect_mcp_tools(runtime)  # type: ignore[arg-type]
 
-    assert pairs == [("brave", "brave_search"), ("github", "create_issue")]
+    assert entries == [
+        ("brave", "brave_search", False),
+        ("github", "create_issue", False),
+    ]
     assert runtime.started is True
     assert runtime.closed is True
+
+
+@pytest.mark.asyncio
+async def test_collect_mcp_tools_flags_synthetic_aliases() -> None:
+    """Synthetic tools are flagged with is_alias=True; native tools with False."""
+    from hosts.cli.main import _collect_mcp_tools
+
+    pool = _FakePool(
+        [
+            _FakeSpec("lisa-memory", "memory.search"),
+            _FakeSpec("brave", "brave_search"),
+        ],
+        synthetic_names={"memory.search"},
+    )
+    runtime = _StubRuntime(warm=1, cold=0, pool=pool)
+
+    entries = await _collect_mcp_tools(runtime)  # type: ignore[arg-type]
+
+    by_name = {name: is_alias for _srv, name, is_alias in entries}
+    assert by_name["memory.search"] is True
+    assert by_name["brave_search"] is False
 
 
 @pytest.mark.asyncio

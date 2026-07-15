@@ -132,7 +132,7 @@ def render_operations(runtime: HostRuntime, *, console: Console | None = None) -
 def render_tools(
     runtime: HostRuntime,
     *,
-    mcp_tools: list[tuple[str, str]] | None = None,
+    mcp_tools: list[tuple[str, str, bool]] | None = None,
     console: Console | None = None,
 ) -> Table:
     """Build a Rich Table of internal tools with IDs for allowlist authoring.
@@ -147,9 +147,12 @@ def render_tools(
     per-server ``tool_policy`` in ``mcp_servers.yaml``.
 
     ``mcp_tools`` is an optional pre-collected list of
-    ``(server_id, tool_name)`` pairs (collected by warming the MCP pool —
-    see :func:`hosts.cli.main._collect_mcp_tools`). When provided and
-    non-empty, a second table is rendered for MCP server tools.
+    ``(server_id, tool_name, is_alias)`` triples (collected by warming the
+    MCP pool — see :func:`hosts.cli.main._collect_mcp_tools`). When provided
+    and non-empty, a second table is rendered for MCP server tools. Alias
+    entries are annotated with an arrow (``->``) so authors can tell host-owned
+    synthetic aliases (e.g. ``memory.search``) apart from native server
+    tools.
     """
     _ = runtime  # catalog is global; runtime kept for future per-host scoping
     table = Table(title="Lisa Internal Tools")
@@ -178,23 +181,32 @@ def render_tools(
 
 
 def render_mcp_tools(
-    mcp_tools: list[tuple[str, str]],
+    mcp_tools: list[tuple[str, str, bool]],
     *,
     console: Console | None = None,
 ) -> Table:
     """Render a Rich Table of MCP server tools for allowlist authoring.
 
-    ``mcp_tools`` is a list of ``(server_id, tool_name)`` pairs collected by
-    warming the MCP pool (see :func:`hosts.cli.main._collect_mcp_tools`).
-    The tool names are the bare strings referenced by per-server
-    ``tool_policy.allowed_tools`` / ``denied_tools`` in ``mcp_servers.yaml``.
+    ``mcp_tools`` is a list of ``(server_id, tool_name, is_alias)`` triples
+    collected by warming the MCP pool (see
+    :func:`hosts.cli.main._collect_mcp_tools`). The tool names are the bare
+    strings referenced by per-server ``tool_policy.allowed_tools`` /
+    ``denied_tools`` in ``mcp_servers.yaml``.
+
+    Host-owned synthetic alias tools (``is_alias`` is True) are annotated
+    with an arrow (``->``) prefix on the Tool column so authors can tell
+    them apart from native MCP server tools. Aliases dispatch through the
+    host's in-process handler, not the server subprocess — the ``Server``
+    column shows the forwarding target when available, or
+    ``__synthetic__`` for purely in-process tools.
     """
     table = Table(title="MCP Server Tools (per-server tool_policy)")
     table.add_column("Server", style="bold")
     table.add_column("Tool", overflow="fold")
 
-    for server_id, tool_name in mcp_tools:
-        table.add_row(server_id, tool_name)
+    for server_id, tool_name, is_alias in mcp_tools:
+        display_name = f"-> {tool_name}" if is_alias else tool_name
+        table.add_row(server_id, display_name)
 
     if console is not None:
         console.print(table)

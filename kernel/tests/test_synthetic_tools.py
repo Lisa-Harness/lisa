@@ -124,6 +124,36 @@ async def test_synthetic_tool_listed_and_dispatched(monkeypatch: pytest.MonkeyPa
     result = await pool.call_tool("memory.search", {"x": "hello"})
     assert result.is_error is False
     assert result.output_text == "echo:hello"
+
+    # The pool exposes the synthetic flag for tool-listing UIs.
+    assert pool.is_synthetic_tool("memory.search") is True
+    assert pool.is_synthetic_tool("nonexistent") is False
+    # No target_server_id was set → returns None.
+    assert pool.synthetic_target_server_id("memory.search") is None
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_is_synthetic_tool_flags_alias_with_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """is_synthetic_tool returns True and synthetic_target_server_id returns
+    the forwarding target for an mcp_alias_tool with a target_server_id."""
+    _patch_connect(monkeypatch)
+    _patch_refresh_with(monkeypatch, {"s": [("real_search", "server search", {})]})
+
+    pool = MCPToolPool([_config()])
+    await pool.start()
+
+    alias = mcp_alias_tool(
+        name="memory.search",
+        description="generic alias",
+        pool=pool,
+        target_tool="real_search",
+        target_server_id="s",
+    )
+    pool.add_synthetic_tools([alias])
+
+    assert pool.is_synthetic_tool("memory.search") is True
+    assert pool.synthetic_target_server_id("memory.search") == "s"
     await pool.aclose()
 
 

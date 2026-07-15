@@ -1003,8 +1003,19 @@ def _tools_command(
         render_tools(runtime, mcp_tools=mcp_tools, console=console)
 
 
-async def _collect_mcp_tools(runtime: HostRuntime) -> list[tuple[str, str]]:
-    """Warm the MCP pool, return ``(server_id, tool_name)`` pairs, then close it.
+McpToolEntry = tuple[str, str, bool]
+"""One entry in the MCP tool listing: ``(server_id, tool_name, is_alias)``.
+
+``is_alias`` is True when the entry is a host-owned synthetic (alias) tool
+registered via :meth:`~kernel.tools.mcp_client.MCPToolPool.add_synthetic_tools`
+rather than a tool discovered from an MCP server subprocess. The CLI render
+layer annotates alias entries with an arrow so authors can tell host-owned
+aliases (e.g. ``memory.search``) apart from native server tools.
+"""
+
+
+async def _collect_mcp_tools(runtime: HostRuntime) -> list[McpToolEntry]:
+    """Warm the MCP pool, return ``(server_id, tool_name, is_alias)`` entries.
 
     MCP tool names are only discoverable by calling ``tools/list`` on each
     server, which requires a live session. This starts the pool (warm + cold
@@ -1014,25 +1025,34 @@ async def _collect_mcp_tools(runtime: HostRuntime) -> list[tuple[str, str]]:
     loop). Cold servers that fail to start are skipped by the pool; their
     tools are simply absent from the returned list.
 
+    The third element of each tuple is ``True`` when the entry is a
+    host-owned synthetic alias (see :data:`McpToolEntry`). Native MCP server
+    tools carry ``False``.
+
     Returns an empty list when the runtime has no MCP servers configured or
     when pool startup fails, so the ``tools``/``mcp`` commands degrade to
     showing only the internal tool catalog instead of crashing.
     """
     if not runtime.mcp_warm_configs and not runtime.mcp_cold_configs:
         return []
+    entries: set[McpToolEntry] = set()
     try:
         await runtime.start()
         pool = runtime.mcp_tool_pool
         if pool is None:
             return []
         tools = await pool.list_tools()
+        # Capture is_alias flags BEFORE aclose() clears _synthetic_handlers.
+        entries = {
+            (spec.server_id, spec.name, pool.is_synthetic_tool(spec.name))
+            for spec in tools
+        }
     except Exception as exc:  # pylint: disable=broad-except
         logger.debug("MCP tool collection failed: %s", exc)
         return []
     finally:
         await runtime.aclose()
-    pairs = sorted({(spec.server_id, spec.name) for spec in tools})
-    return pairs
+    return sorted(entries)
 
 
 # ---------------------------------------------------------------------------

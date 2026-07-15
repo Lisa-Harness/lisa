@@ -157,12 +157,22 @@ class SyntheticToolSpec:
     On the wire to the model, a synthetic tool is indistinguishable from an
     MCP-discovered tool: it flows through the same
     ``mcp_tool_to_openai_function`` translator and ``call_tool`` dispatch.
+
+    ``target_server_id`` is an optional hint naming the MCP server this
+    synthetic forwards to (e.g. ``mem0`` for ``memory.add`` → ``mem0``'s
+    ``add_memory``). The pool stamps it onto the emitted :class:`MCPToolSpec`
+    so listing/grouping tools by server reflects the real destination instead
+    of the opaque ``__synthetic__`` marker. Dispatch is unaffected —
+    synthetics route through the in-process handler by name, not by server
+    id — so a bare ``None`` is safe for synthetics that don't forward to an
+    MCP server.
     """
 
     name: str
     description: str
     input_schema: dict[str, Any]
     handler: Callable[[dict[str, Any]], Awaitable[str]]
+    target_server_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -275,6 +285,13 @@ class MCPToolPool:
         """Host-owned in-process handlers keyed by tool name. Populated by
         :meth:`add_synthetic_tools`. Synthetic tools dispatch through here
         instead of routing to an MCP server subprocess."""
+        self._synthetic_targets: dict[str, str | None] = {}
+        """Optional target MCP server id per synthetic tool name (from
+        :attr:`SyntheticToolSpec.target_server_id`). Recovered by
+        :meth:`_reindex_synthetic_tools` after a catalog refresh so the
+        emitted :class:`MCPToolSpec` keeps its real ``server_id`` across
+        rebuilds. ``None`` means the synthetic has no MCP forwarding target —
+        the pool falls back to :data:`SYNTHETIC_SERVER_ID` for display."""
         self._dispatch_arg_maps: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {}
         """Per-tool arg maps keyed by namespaced tool name (e.g.
         ``mem0.search_memories``). Applied by :meth:`call_tool` before
@@ -348,13 +365,14 @@ class MCPToolPool:
                 )
                 continue
             spec = MCPToolSpec(
-                server_id=SYNTHETIC_SERVER_ID,
+                server_id=tool.target_server_id or SYNTHETIC_SERVER_ID,
                 name=tool.name,
                 description=tool.description,
                 input_schema=tool.input_schema,
             )
             self._synthetic_handlers[tool.name] = tool.handler
-            self._tool_index[tool.name] = (SYNTHETIC_SERVER_ID, spec)
+            self._synthetic_targets[tool.name] = tool.target_server_id
+            self._tool_index[tool.name] = (spec.server_id, spec)
             self._tools.append(spec)
 
     def register_dispatch_arg_map(
@@ -377,6 +395,26 @@ class MCPToolPool:
         routing path, so this registry is never consulted for them.
         """
         self._dispatch_arg_maps[namespaced_tool_name] = arg_map
+
+    def is_synthetic_tool(self, name: str) -> bool:
+        """Return True when ``name`` is a host-owned synthetic (alias) tool.
+
+        Synthetic tools are registered via :meth:`add_synthetic_tools` and
+        dispatch to in-process handlers, not MCP server subprocesses. Many
+        are aliases that forward to a real MCP server tool (see
+        :func:`kernel.tools.synthetic.mcp_alias_tool`); others are purely
+        in-process. Tool-listing UIs use this to annotate synthetic entries
+        so authors can tell host-owned aliases apart from native MCP tools.
+        """
+        return name in self._synthetic_handlers
+
+    def synthetic_target_server_id(self, name: str) -> str | None:
+        """Return the MCP server id a synthetic alias forwards to, or None.
+
+        Mirrors :attr:`SyntheticToolSpec.target_server_id`. ``None`` means
+        the synthetic is purely in-process (no MCP forwarding target).
+        """
+        return self._synthetic_targets.get(name)
 
     def _apply_dispatch_arg_map(
         self,
@@ -551,15 +589,19 @@ class MCPToolPool:
                 continue
             # We stored no extra metadata beyond name/handler; rebuild a
             # minimal spec. The original description/schema are recovered from
-            # the prior _tools list if present, else a minimal default.
+            # the prior _tools list if present, else a minimal default. The
+            # target server id is recovered from _synthetic_targets so the
+            # spec keeps its real server_id across rebuilds.
             prior = next((t for t in self._tools if t.name == name), None)
+            target_server_id = self._synthetic_targets.get(name)
+            server_id = target_server_id or SYNTHETIC_SERVER_ID
             spec = MCPToolSpec(
-                server_id=SYNTHETIC_SERVER_ID,
+                server_id=server_id,
                 name=name,
                 description=prior.description if prior else f"Synthetic tool {name}",
                 input_schema=prior.input_schema if prior else {"type": "object", "properties": {}},
             )
-            self._tool_index[name] = (SYNTHETIC_SERVER_ID, spec)
+            self._tool_index[name] = (server_id, spec)
             self._tools.append(spec)
 
     async def __aenter__(self) -> MCPToolPool:
@@ -959,6 +1001,47 @@ class MCPToolPool:
                 self._cold_failed.add(config.server_id)
         await self._refresh_tool_index()
 
+    async def _resolve_server_for_bare_name(self, tool_id: str) -> str | None:
+        """Find which server exposes a bare tool name, connecting cold servers.
+
+        Searches the per-server indices (``_tool_index_by_server``) for a
+        bare tool name. Connected warm servers are checked first (no spawn).
+        Cold servers that haven't been connected yet are lazily started
+        (best-effort) and re-indexed so their per-server index is available.
+
+        Returns the first matching ``server_id``, or ``None`` when no server
+        exposes the tool. Used by ``call_tool`` as a bare-name fallback for
+        internal callers (operations) that pass the bare MCP tool name.
+        """
+        # Check already-connected servers first (warm servers are always up;
+        # cold servers that have been touched before are indexed too).
+        for server_id, server_index in self._tool_index_by_server.items():
+            if tool_id in server_index:
+                return server_id
+        # Lazily connect cold servers and re-index, then check again.
+        for config in self._cold_configs:
+            if config.server_id in self._sessions:
+                continue
+            if config.server_id in self._cold_failed:
+                continue
+            try:
+                await self._connect(config)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning(
+                    "Cold MCP server %r failed to start during bare-name "
+                    "resolution: %s: %s",
+                    config.server_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                self._cold_failed.add(config.server_id)
+                continue
+            await self._refresh_tool_index()
+            server_index = self._tool_index_by_server.get(config.server_id, {})
+            if tool_id in server_index:
+                return config.server_id
+        return None
+
     async def restart_warm(self, server_id: str) -> bool:
         """Re-spawn one warm server after a mid-session crash (supervised).
 
@@ -1123,6 +1206,17 @@ class MCPToolPool:
 
         entry = self._tool_index.get(tool_id)
         if entry is None:
+            # Bare-name fallback: internal callers (e.g. operations calling
+            # ``execute_tool_fn`` with a bare MCP tool name like
+            # ``read_model_manifest``) won't find the tool in the merged
+            # index because it is keyed by namespaced names
+            # (``lisa-storage.read_model_manifest``). Search every server's
+            # per-server index (which uses bare names) and lazily connect
+            # cold servers. Model-facing calls always use namespaced names,
+            # so this fallback never shadows the namespaced path.
+            resolved_server_id = await self._resolve_server_for_bare_name(tool_id)
+            if resolved_server_id is not None:
+                return await self._call_tool_scoped(tool_id, arguments, resolved_server_id)
             return MCPToolResult(
                 tool_id=tool_id,
                 output_text=f"Tool '{tool_id}' is not registered on any MCP server.",
@@ -1302,4 +1396,5 @@ class MCPToolPool:
         self._tool_index_by_server.clear()
         self._tools = []
         self._synthetic_handlers.clear()
+        self._synthetic_targets.clear()
         self._started = False
