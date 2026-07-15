@@ -1,0 +1,7 @@
+tool_id: github_open_pull_request
+pack_id: lisa-pack-github
+description: "Open a GitHub pull request only from a checked and pushed owned coding artifact."
+mode_allowlist: [coding]
+effect: external_write
+approval_required: true
+approval_preview: "Open a GitHub pull request from the approved pushed coding artifact."

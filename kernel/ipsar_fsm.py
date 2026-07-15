@@ -36,6 +36,7 @@ from typing import Any, Literal, cast
 
 import yaml
 
+from kernel.approval import ApprovalRequired
 from kernel.config import settings
 from kernel.intake.connector_discovery import discover_installed_signal_collectors
 from kernel.models import (
@@ -1502,6 +1503,12 @@ async def _execute_mode_target_ids(
                     memory_scope=ctx.memory_scope,
                     mode_id=ctx.mode_id,
                     query=ctx.query,
+                    pack_config=ctx.pack_config,
+                    pack_configuration_resolver=ctx.pack_configuration_resolver,
+                    approval_service=ctx.approval_service,
+                    approval_request_id=ctx.approval_request_id,
+                    session_plan_digest=ctx.session_plan_digest,
+                    code_change_artifact_store=ctx.code_change_artifact_store,
                     event_bus=ctx.event_bus,
                     state_provider=ctx.state_provider,
                 )
@@ -1517,6 +1524,8 @@ async def _execute_mode_target_ids(
                     target_id,
                 )
                 continue
+        except ApprovalRequired:
+            raise
         except Exception as exc:  # pylint: disable=broad-except
             if failure_policy == "abort":
                 raise
@@ -1595,6 +1604,8 @@ async def run_mode_pre_turn_operations(
                 failure_policy="skip",
                 ledger=ledger,
             )
+        except ApprovalRequired:
+            raise
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("pre_turn targets failed for mode '%s': %s", mode_id, exc)
     return OperationResult()
@@ -1623,6 +1634,8 @@ async def run_mode_post_turn_operations(
                 failure_policy="skip",
                 ledger=ledger,
             )
+        except ApprovalRequired:
+            raise
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("post_turn targets failed for mode '%s': %s", mode_id, exc)
     return OperationResult()

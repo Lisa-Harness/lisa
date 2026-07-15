@@ -1,0 +1,5 @@
+tool_id: coding_search_code
+pack_id: lisa-pack-coding
+description: "Search the local coding workspace through a bounded ripgrep JSON invocation."
+mode_allowlist: [coding]
+effect: read

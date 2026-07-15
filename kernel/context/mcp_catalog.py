@@ -314,6 +314,10 @@ def _deserialize_operation(data: dict[str, Any]) -> OperationDefinition:
     return OperationDefinition(
         operation_id=data["operation_id"],
         description=data.get("description", ""),
+        pack_id=str(data.get("pack_id", "") or ""),
+        effect=data.get("effect", "read"),
+        approval_required=bool(data.get("approval_required", False)),
+        approval_preview=data.get("approval_preview", ""),
         execution_kind=execution_kind,
         parameters_schema=parameters_schema,
         response_format_model=response_format_model,
@@ -453,6 +457,10 @@ def _deserialize_tool(data: dict[str, Any]) -> ToolDefinition:
     return ToolDefinition(
         tool_id=data["tool_id"],
         description=data.get("description", ""),
+        pack_id=str(data.get("pack_id", "") or ""),
+        effect=data.get("effect", "read"),
+        approval_required=bool(data.get("approval_required", False)),
+        approval_preview=data.get("approval_preview", ""),
         parameters_schema=parameters_schema,
         mode_allowlist=mode_allowlist,
         max_calls_per_turn=data.get("max_calls_per_turn", 3),

@@ -22,12 +22,18 @@ import logging
 import time
 from typing import Any, Literal
 
+from kernel.approval import (
+    ApprovalIdentity,
+    ApprovalRequired,
+    build_approval_invocation,
+)
 from kernel.models import (
     ToolDefinition,
     ToolExecutionContext,
-    ToolResult,
     ToolExecutionTelemetry,
+    ToolResult,
 )
+from kernel.pack_configuration import EMPTY_PACK_CONFIGURATION
 from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
 from kernel.tools.mcp_client import MCPClientConfig
 
@@ -123,6 +129,14 @@ async def execute_tool(
     definition = _TOOL_CATALOG.get(tool_id)
     if definition is None:
         raise ToolExecutionError(f"Unknown tool '{tool_id}'.")
+    if definition.mode_allowlist is not None and ctx.mode_id not in definition.mode_allowlist:
+        raise ToolExecutionError(
+            f"Tool '{tool_id}' is not allowed for mode '{ctx.mode_id}'."
+        )
+    ctx.tool_id = tool_id
+    _resolve_execution_configuration(definition, ctx)
+    _validate_parameters(definition, ctx)
+    await _require_approval(definition, ctx)
     module = definition.implementation_module
     if module is None:
         raise ToolExecutionError(f"Tool '{tool_id}' has no implementation module.")
@@ -193,3 +207,74 @@ async def execute_tool(
     raise ToolExecutionError(
         f"Tool '{tool_id}' returned unsupported result type {type(result).__name__}."
     )
+
+
+def _resolve_execution_configuration(
+    definition: ToolDefinition,
+    ctx: ToolExecutionContext,
+) -> None:
+    """Attach only the target pack's immutable session configuration."""
+
+    resolver = ctx.pack_configuration_resolver
+    if not definition.pack_id or resolver is None:
+        ctx.pack_config = EMPTY_PACK_CONFIGURATION
+        return
+    ctx.pack_config = resolver.for_pack(definition.pack_id)
+
+
+def _validate_parameters(definition: ToolDefinition, ctx: ToolExecutionContext) -> None:
+    """Canonicalize structured inputs before execution and policy checks."""
+
+    if definition.parameters_schema is None:
+        return
+    try:
+        parsed = definition.parameters_schema.model_validate(ctx.parameters)
+    except Exception as exc:  # pylint: disable=broad-except
+        raise ToolExecutionError(
+            f"Tool '{definition.tool_id}' received invalid parameters: {exc}"
+        ) from exc
+    ctx.parameters = parsed.model_dump(mode="json")
+
+
+async def _require_approval(
+    definition: ToolDefinition,
+    ctx: ToolExecutionContext,
+) -> None:
+    """Raise a resumable interruption when an effect requires approval."""
+
+    if not definition.approval_required:
+        return
+    service = ctx.approval_service
+    if service is None:
+        raise ToolExecutionError(
+            f"Tool '{definition.tool_id}' requires an approval service."
+        )
+    identity = ApprovalIdentity(
+        workspace_id=ctx.workspace_id,
+        user_id=ctx.user_id,
+        user_slug=ctx.user_slug,
+        surface_type=ctx.surface_type,
+        surface_id=ctx.surface_id,
+        memory_scope=ctx.memory_scope,
+        mode_id=ctx.mode_id,
+        session_plan_digest=ctx.session_plan_digest,
+    )
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id=definition.tool_id,
+        pack_id=definition.pack_id,
+        effect=definition.effect,
+        parameters=ctx.parameters,
+        identity=identity,
+        pack_config=ctx.pack_config,
+        safe_preview=definition.approval_preview,
+    )
+    if ctx.approval_request_id:
+        receipt = await service.consume(ctx.approval_request_id, invocation)
+        if receipt is None:
+            raise ToolExecutionError(
+                f"Tool '{definition.tool_id}' has no matching usable approval receipt."
+            )
+        return
+    pending = await service.request(invocation)
+    raise ApprovalRequired(pending)

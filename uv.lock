@@ -21,6 +21,7 @@ members = [
     "lisa-pack-brave-search",
     "lisa-pack-checkpoint",
     "lisa-pack-cloudflare",
+    "lisa-pack-coding",
     "lisa-pack-core",
     "lisa-pack-github",
     "lisa-pack-gmail",
@@ -886,6 +887,7 @@ dependencies = [
     { name = "lisa-pack-brave-search" },
     { name = "lisa-pack-checkpoint" },
     { name = "lisa-pack-cloudflare" },
+    { name = "lisa-pack-coding" },
     { name = "lisa-pack-core" },
     { name = "lisa-pack-github" },
     { name = "lisa-pack-gmail" },
@@ -921,6 +923,7 @@ requires-dist = [
     { name = "lisa-pack-brave-search", editable = "lisa_pack_brave_search" },
     { name = "lisa-pack-checkpoint", editable = "sdk/packs/checkpoint" },
     { name = "lisa-pack-cloudflare", editable = "lisa_pack_cloudflare" },
+    { name = "lisa-pack-coding", editable = "sdk/packs/coding" },
     { name = "lisa-pack-core", editable = "sdk/packs/core" },
     { name = "lisa-pack-github", editable = "lisa_pack_github" },
     { name = "lisa-pack-gmail", editable = "lisa_pack_gmail" },
@@ -1304,6 +1307,21 @@ requires-dist = [
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-coding"
+version = "0.1.0"
+source = { editable = "sdk/packs/coding" }
+dependencies = [
+    { name = "lisa-kernel" },
+    { name = "lisa-sdk" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lisa-kernel" },
+    { name = "lisa-sdk" },
+]
 
 [[package]]
 name = "lisa-pack-core"

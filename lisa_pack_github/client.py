@@ -115,6 +115,17 @@ def _query_terms(query: str) -> list[str]:
     return terms
 
 
+def _text_matches_query(text: str, query: str) -> bool:
+    """Return whether target-ref content still supports a search candidate."""
+
+    normalized_query = " ".join(query.lower().split())
+    normalized_text = text.lower()
+    if normalized_query and normalized_query in normalized_text:
+        return True
+    terms = _query_terms(query)
+    return bool(terms) and all(term in normalized_text for term in terms)
+
+
 def _snippet_from_text(
     text: str,
     *,
@@ -197,7 +208,7 @@ async def _resolve_ref(
     *,
     headers: dict[str, str],
     ref: str,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     github_settings = get_github_extension_settings()
     repo = github_settings.repo
     repo_payload = await _get_json(client, f"{_GITHUB_API_BASE}/repos/{repo}", headers=headers)
@@ -216,7 +227,7 @@ async def _resolve_ref(
     else:
         tree_data = {}
     tree_sha = str(tree_data.get("sha") or "") if isinstance(tree_data, dict) else ""
-    return resolved_ref, git_sha, tree_sha
+    return resolved_ref, git_sha, tree_sha, default_branch
 
 
 def _search_query(query: str, *, path_hint: str = "") -> str:
@@ -271,7 +282,16 @@ async def search_code(
         client = httpx.AsyncClient()
 
     try:
-        resolved_ref, git_sha, _tree_sha = await _resolve_ref(client, headers=headers, ref=ref)
+        resolved_ref, git_sha, _tree_sha, default_branch = await _resolve_ref(
+            client,
+            headers=headers,
+            ref=ref,
+        )
+        if resolved_ref != default_branch:
+            raise GitHubRepoLookupError(
+                "GitHub code search only supports the repository default branch. "
+                "Use repo_read_file or repo_list_tree for a non-default ref."
+            )
         seen_paths: set[str] = set()
         matches: list[GitHubCodeSearchMatch] = []
 
@@ -343,7 +363,11 @@ async def read_file_excerpt(
         client = httpx.AsyncClient()
 
     try:
-        resolved_ref, git_sha, _tree_sha = await _resolve_ref(client, headers=headers, ref=ref)
+        resolved_ref, git_sha, _tree_sha, _default_branch = await _resolve_ref(
+            client,
+            headers=headers,
+            ref=ref,
+        )
         payload = await _get_json(
             client,
             f"{_GITHUB_API_BASE}/repos/{get_github_extension_settings().repo}/contents/{normalized_path}",
@@ -411,7 +435,11 @@ async def list_tree(
         client = httpx.AsyncClient()
 
     try:
-        resolved_ref, git_sha, tree_sha = await _resolve_ref(client, headers=headers, ref=ref)
+        resolved_ref, git_sha, tree_sha, _default_branch = await _resolve_ref(
+            client,
+            headers=headers,
+            ref=ref,
+        )
         if not tree_sha:
             raise GitHubRepoLookupError("Could not resolve the tree for the requested Git ref.")
 
@@ -503,7 +531,11 @@ async def lookup_repo(
         client = httpx.AsyncClient()
 
     try:
-        resolved_ref, git_sha, _tree_sha = await _resolve_ref(client, headers=headers, ref=ref)
+        resolved_ref, git_sha, _tree_sha, _default_branch = await _resolve_ref(
+            client,
+            headers=headers,
+            ref=ref,
+        )
         seen_paths: set[str] = set()
         evidence: list[RepoLookupEvidence] = []
 
@@ -537,12 +569,14 @@ async def lookup_repo(
                         params={"ref": resolved_ref},
                     )
                     text = _decode_content(content_payload)
+                    if not _text_matches_query(text, normalized_query):
+                        continue
                     snippet, line_start, line_end, summary_line = _snippet_from_text(
                         text,
                         query=normalized_query,
                         fragment=fragment,
                     )
-                except GitHubRepoLookupError:
+                except (GitHubRepoLookupError, httpx.HTTPError):
                     continue
 
                 evidence.append(
@@ -587,12 +621,14 @@ async def lookup_repo(
                             params={"ref": resolved_ref},
                         )
                         text = _decode_content(content_payload)
+                        if not _text_matches_query(text, normalized_query):
+                            continue
                         snippet, line_start, line_end, summary_line = _snippet_from_text(
                             text,
                             query=normalized_query,
                             fragment=fragment,
                         )
-                    except GitHubRepoLookupError:
+                    except (GitHubRepoLookupError, httpx.HTTPError):
                         continue
 
                     evidence.append(

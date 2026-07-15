@@ -7,7 +7,7 @@ where = ["."]
 include = ["lisa_pack_github*"]
 
 [tool.setuptools.package-data]
-"lisa_pack_github" = ["content/**/*.md", "modes/**/*.md", "operations/**/*.md", "operations/**/*.yml", "operations/**/*.py"]
+"lisa_pack_github" = ["content/**/*.md", "modes/**/*.md", "operations/**/*.md", "operations/**/*.yml", "operations/**/*.py", "tools/**/*.yml"]
 
 [tool.uv.sources]
 lisa-kernel = { workspace = true }

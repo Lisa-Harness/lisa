@@ -569,6 +569,10 @@ def _load_markdown_operation(md_path: Path) -> dict[str, Any] | None:
     return {
         "operation_id": operation_id,
         "description": str(metadata.get("description", "") or ""),
+        "pack_id": str(metadata.get("pack_id", "") or "").strip(),
+        "effect": str(metadata.get("effect", "read") or "read"),
+        "approval_required": bool(metadata.get("approval_required", False)),
+        "approval_preview": str(metadata.get("approval_preview", "") or "").strip(),
         "execution_kind": "prompt",
         "tool_ids": [str(t) for t in (metadata.get("tool_ids") or [])],
         "mode_allowlist": [str(m) for m in (metadata.get("mode_allowlist") or [])],
@@ -613,6 +617,10 @@ def _load_runtime_operation(
     return {
         "operation_id": operation_id,
         "description": str(metadata.get("description", "") or ""),
+        "pack_id": str(metadata.get("pack_id", "") or "").strip(),
+        "effect": str(metadata.get("effect", "read") or "read"),
+        "approval_required": bool(metadata.get("approval_required", False)),
+        "approval_preview": str(metadata.get("approval_preview", "") or "").strip(),
         "execution_kind": "runtime",
         "tool_ids": [str(t) for t in (metadata.get("tool_ids") or [])],
         "mode_allowlist": [str(m) for m in (metadata.get("mode_allowlist") or [])],
@@ -783,6 +791,10 @@ def _load_runtime_tool(
     return {
         "tool_id": tool_id,
         "description": str(metadata.get("description", "") or ""),
+        "pack_id": str(metadata.get("pack_id", "") or "").strip(),
+        "effect": str(metadata.get("effect", "read") or "read"),
+        "approval_required": bool(metadata.get("approval_required", False)),
+        "approval_preview": str(metadata.get("approval_preview", "") or "").strip(),
         "mode_allowlist": mode_allowlist,
         "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 3) or 3),
         "timeout_seconds": int(metadata.get("timeout_seconds", 30) or 30),

@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, runtime_checkabl
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
+from kernel.approval import EffectKind
+
 if TYPE_CHECKING:
     pass  # forward-ref imports only
 
@@ -155,6 +157,12 @@ class ToolExecutionContext(BaseModel):
     mode_id: str = ""
     query: str = ""
     parameters: dict[str, Any] = Field(default_factory=dict)
+    pack_config: Any = Field(default_factory=dict, exclude=True)
+    pack_configuration_resolver: Any = Field(default=None, exclude=True)
+    approval_service: Any = Field(default=None, exclude=True)
+    approval_request_id: str = Field(default="", exclude=True)
+    session_plan_digest: str = Field(default="", exclude=True)
+    code_change_artifact_store: Any = Field(default=None, exclude=True)
     event_bus: Any = Field(default=None, exclude=True)
     state_provider: Any = Field(default=None, exclude=True)
 
@@ -180,6 +188,10 @@ class ToolDefinition(BaseModel):
 
     tool_id: str
     description: str = ""
+    pack_id: str = ""
+    effect: EffectKind = "read"
+    approval_required: bool = False
+    approval_preview: str = ""
     parameters_schema: type[BaseModel] | None = Field(default=None, exclude=True)
     mode_allowlist: list[str] | None = None
     max_calls_per_turn: int = Field(default=3)
@@ -210,6 +222,12 @@ class OperationExecutionContext(BaseModel):
     conversation_excerpt_markdown: str = ""
     stage_id: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
+    pack_config: Any = Field(default_factory=dict, exclude=True)
+    pack_configuration_resolver: Any = Field(default=None, exclude=True)
+    approval_service: Any = Field(default=None, exclude=True)
+    approval_request_id: str = Field(default="", exclude=True)
+    session_plan_digest: str = Field(default="", exclude=True)
+    code_change_artifact_store: Any = Field(default=None, exclude=True)
     extra: dict[str, Any] = Field(default_factory=dict)
     tool_schemas: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
     event_bus: Any = Field(default=None, exclude=True)
@@ -241,6 +259,10 @@ class OperationDefinition(BaseModel):
 
     operation_id: str
     description: str = ""
+    pack_id: str = ""
+    effect: EffectKind = "read"
+    approval_required: bool = False
+    approval_preview: str = ""
     execution_kind: OperationExecutionKind = "runtime"
     parameters_schema: type[BaseModel] | None = Field(default=None, exclude=True)
     response_format_model: type[BaseModel] | None = Field(default=None, exclude=True)

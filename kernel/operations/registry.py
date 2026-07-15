@@ -21,6 +21,11 @@ import time
 from collections.abc import Callable
 from typing import Any, Literal
 
+from kernel.approval import (
+    ApprovalIdentity,
+    ApprovalRequired,
+    build_approval_invocation,
+)
 from kernel.models import (
     OperationDefinition,
     OperationExecutionContext,
@@ -28,6 +33,7 @@ from kernel.models import (
     ToolExecutionTelemetry,
 )
 from kernel.openai_function_tools import build_strict_openai_function_tool
+from kernel.pack_configuration import EMPTY_PACK_CONFIGURATION
 from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
 from kernel.tools.mcp_client import MCPClientConfig
 
@@ -372,6 +378,11 @@ async def execute_operation(
             f"Operation '{operation_id}' is not allowed for mode '{ctx.mode_id}'."
         )
 
+    ctx.operation_id = operation_id
+    _resolve_execution_configuration(definition, ctx)
+    _validate_parameters(definition, ctx)
+    await _require_approval(definition, ctx)
+
     # Inject preferred model from definition
     ctx.preferred_model_id = definition.preferred_model_id
     ctx.tool_schemas = _build_tool_schemas(definition.tool_ids)
@@ -412,6 +423,8 @@ async def execute_operation(
             err_msg = f"Timed out after {definition.timeout_seconds}s"
             mark_span_failed(span, exc)
             raise OperationExecutionError(f"Operation '{operation_id}' timed out") from exc
+        except ApprovalRequired:
+            raise
         except Exception as exc:  # pylint: disable=broad-except
             logger.error("operation '%s' failed: %s", operation_id, exc)
             status = "error"
@@ -445,3 +458,77 @@ async def execute_operation(
     raise OperationExecutionError(
         f"Operation '{operation_id}' returned unsupported result type {type(result).__name__}."
     )
+
+
+def _resolve_execution_configuration(
+    definition: OperationDefinition,
+    ctx: OperationExecutionContext,
+) -> None:
+    """Attach only the target pack's immutable session configuration."""
+
+    resolver = ctx.pack_configuration_resolver
+    if not definition.pack_id or resolver is None:
+        ctx.pack_config = EMPTY_PACK_CONFIGURATION
+        return
+    ctx.pack_config = resolver.for_pack(definition.pack_id)
+
+
+def _validate_parameters(
+    definition: OperationDefinition,
+    ctx: OperationExecutionContext,
+) -> None:
+    """Canonicalize structured inputs before execution and policy checks."""
+
+    if definition.parameters_schema is None:
+        return
+    try:
+        parsed = definition.parameters_schema.model_validate(ctx.params)
+    except Exception as exc:  # pylint: disable=broad-except
+        raise OperationExecutionError(
+            f"Operation '{definition.operation_id}' received invalid parameters: {exc}"
+        ) from exc
+    ctx.params = parsed.model_dump(mode="json")
+
+
+async def _require_approval(
+    definition: OperationDefinition,
+    ctx: OperationExecutionContext,
+) -> None:
+    """Raise a resumable interruption when an effect requires approval."""
+
+    if not definition.approval_required:
+        return
+    service = ctx.approval_service
+    if service is None:
+        raise OperationExecutionError(
+            f"Operation '{definition.operation_id}' requires an approval service."
+        )
+    identity = ApprovalIdentity(
+        workspace_id=ctx.workspace_id,
+        user_id=ctx.user_id,
+        user_slug=ctx.user_slug,
+        surface_type=ctx.surface_type,
+        surface_id=ctx.surface_id,
+        memory_scope=ctx.memory_scope,
+        mode_id=ctx.mode_id,
+        session_plan_digest=ctx.session_plan_digest,
+    )
+    invocation = build_approval_invocation(
+        target_kind="operation",
+        target_id=definition.operation_id,
+        pack_id=definition.pack_id,
+        effect=definition.effect,
+        parameters=ctx.params,
+        identity=identity,
+        pack_config=ctx.pack_config,
+        safe_preview=definition.approval_preview,
+    )
+    if ctx.approval_request_id:
+        receipt = await service.consume(ctx.approval_request_id, invocation)
+        if receipt is None:
+            raise OperationExecutionError(
+                f"Operation '{definition.operation_id}' has no matching usable approval receipt."
+            )
+        return
+    pending = await service.request(invocation)
+    raise ApprovalRequired(pending)

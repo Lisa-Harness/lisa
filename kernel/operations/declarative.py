@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from kernel.approval import ApprovalRequired
 from kernel.models import (
     OperationExecutionContext,
     OperationResult,
@@ -318,6 +319,11 @@ async def execute_declarative_operation(
                             mode_id=ctx.mode_id,
                             query=_resolve_tool_query(ctx.query, tool_arguments),
                             parameters=tool_arguments,
+                            pack_configuration_resolver=ctx.pack_configuration_resolver,
+                            approval_service=ctx.approval_service,
+                            approval_request_id=ctx.approval_request_id,
+                            session_plan_digest=ctx.session_plan_digest,
+                            code_change_artifact_store=ctx.code_change_artifact_store,
                             event_bus=ctx.event_bus,
                             state_provider=ctx.state_provider,
                         ),
@@ -327,6 +333,8 @@ async def execute_declarative_operation(
                     if isinstance(tool_result, ToolResult) and tool_result.output_json:
                         last_tool_output_json = dict(tool_result.output_json)
                     tool_output = _stringify_tool_result(tool_result)
+                except ApprovalRequired:
+                    raise
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.warning("declarative operation tool '%s' failed: %s", tool_name, exc)
                     tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"

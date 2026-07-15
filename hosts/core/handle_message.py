@@ -30,15 +30,17 @@ Public surface
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from kernel.ipsar import parse_route
+from kernel.approval import ApprovalIdentity, ApprovalRequired, render_approval_request
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import RouteDecision as RouterRouteDecision
 from kernel.operations.registry import OperationExecutionError
-from kernel.turn_runner import TurnResult, run_turn
+from kernel.turn_runner import TurnResult, execute_approved_invocation, run_turn
 
 from hosts.core.commands import (
     explicit_deep_query,
@@ -266,6 +268,8 @@ register_host_command_prefixes(
         "/modes",
         "/operations",
         "/tools",
+        "/approve",
+        "/deny",
         "/debug",
     )
 )
@@ -336,6 +340,20 @@ async def _dispatch_host_command(
         response_text = handle_simple_command(
             runtime, message, "tools", render_tools_list(runtime)
         )
+    elif lowered == "/approve" or lowered.startswith("/approve "):
+        response_text = await _handle_approval_command(
+            runtime,
+            stripped,
+            approve=True,
+            transport=transport,
+        )
+    elif lowered == "/deny" or lowered.startswith("/deny "):
+        response_text = await _handle_approval_command(
+            runtime,
+            stripped,
+            approve=False,
+            transport=transport,
+        )
     elif lowered.startswith("/debug"):
         response_text = handle_debug_command(runtime, stripped, message)
 
@@ -360,6 +378,73 @@ async def _dispatch_host_command(
                     return HostCommandResult(text=response_text)
 
     return None
+
+
+def _approval_identity(runtime: HostRuntime) -> ApprovalIdentity:
+    """Build the current host identity used to validate approval ownership."""
+
+    return ApprovalIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id=runtime.config.user_slug,
+        user_slug=runtime.config.user_slug,
+        surface_type=runtime.config.surface_type,
+        surface_id=runtime.config.surface_id,
+        memory_scope=runtime.config.memory_scope,
+        mode_id=runtime.current_mode_id,
+        session_plan_digest=runtime.session_plan.plan_digest,
+    )
+
+
+def _approval_result_text(result: Any) -> str:
+    """Render a direct action result without running a model synthesis pass."""
+
+    output_text = str(getattr(result, "output_text", "") or "").strip()
+    if output_text:
+        return output_text
+    output_json = getattr(result, "output_json", {}) or {}
+    if output_json:
+        return json.dumps(output_json, ensure_ascii=True, sort_keys=True)
+    return "Approved action completed."
+
+
+async def _handle_approval_command(
+    runtime: HostRuntime,
+    command: str,
+    *,
+    approve: bool,
+    transport: TransportCallbacks,
+) -> str:
+    """Approve or deny one persisted invocation without asking the model."""
+
+    _, _, request_id = command.partition(" ")
+    request_id = request_id.strip()
+    verb = "approve" if approve else "deny"
+    if not request_id:
+        return f"Usage: /{verb} <request_id>"
+
+    record = await runtime.approval_service.get(request_id)
+    if record is None:
+        return f"No pending approval request named '{request_id}'."
+
+    identity = _approval_identity(runtime)
+    if not approve:
+        if await runtime.approval_service.deny(request_id, identity):
+            return f"Denied approval request {request_id}."
+        return f"Approval request {request_id} is not pending for this session."
+
+    receipt = await runtime.approval_service.approve(request_id, identity)
+    if receipt is None:
+        return f"Approval request {request_id} is not pending for this session."
+
+    hooks = build_turn_hooks(runtime, context={}, transport=transport)
+    try:
+        result = await execute_approved_invocation(invocation=record.invocation, hooks=hooks)
+    except ApprovalRequired as required:
+        return render_approval_request(required.invocation)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("approved action %s failed: %s", request_id, exc)
+        return f"Approved action failed: {type(exc).__name__}: {exc}"
+    return _approval_result_text(result)
 
 
 # ── Model turn routing ────────────────────────────────────────────────

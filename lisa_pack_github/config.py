@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pydantic import SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+from kernel.models import ToolExecutionContext
 from sdk.config import settings as runtime_settings
 from sdk.pack_settings import build_owned_settings_sources
 
@@ -60,6 +61,25 @@ class GitHubExtensionSettings:
     timeout_seconds: float
 
 
+class GitHubPackConfig(BaseModel):
+    """Portable session policy for publishing coding artifacts to GitHub."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    base_branch: str = Field(default="main", min_length=1, max_length=255)
+    allowed_base_branches: tuple[str, ...] = ("main",)
+    branch_prefix: str = Field(default="lisa/", min_length=1, max_length=80)
+    protected_branches: tuple[str, ...] = ("main", "master", "develop", "prod", "production")
+
+    @model_validator(mode="after")
+    def _validate_publication_policy(self) -> GitHubPackConfig:
+        if self.base_branch not in self.allowed_base_branches:
+            raise ValueError("base_branch must be included in allowed_base_branches")
+        if self.branch_prefix in self.protected_branches:
+            raise ValueError("branch_prefix must not be a protected branch")
+        return self
+
+
 def get_github_extension_settings() -> GitHubExtensionSettings:
     """Return the GitHub extension settings from the shared runtime config."""
 
@@ -71,5 +91,11 @@ def get_github_extension_settings() -> GitHubExtensionSettings:
         branch=settings.github_branch.strip(),
         timeout_seconds=settings.external_signal_timeout_seconds,
     )
+
+
+def get_github_pack_config(ctx: ToolExecutionContext) -> GitHubPackConfig:
+    """Parse the current target's immutable GitHub publication policy."""
+
+    return GitHubPackConfig.model_validate(ctx.pack_config)
 
 

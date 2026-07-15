@@ -31,8 +31,9 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
+from kernel.approval import ApprovalInvocation, ApprovalRequired, render_approval_request
 from kernel.capability_manifest import compile_capability_manifest
 from kernel.ipsar_fsm import (
     apply_transition,
@@ -47,6 +48,8 @@ from kernel.models import (
     CallLedger,
     CapabilityManifest,
     CheckpointBundle,
+    ConversationSurface,
+    MemoryScope,
     OperationExecutionContext,
     OperationResult,
     SurfaceContext,
@@ -132,6 +135,8 @@ class TurnResult:
     """True when the transition moved the session to a terminal stage. The
     loop forces one final no-tools completion using the terminal stage's
     instruction as the system prompt so the model produces a closing summary."""
+    pending_approval: ApprovalInvocation | None = None
+    """The exact action that paused this turn, when an approval is required."""
 
 
 def _lazy_model_policy() -> ModelPolicy:
@@ -419,6 +424,26 @@ class TurnHooks:
     """Callable returning a ``UnifiedState`` for the current host session.
     When set, injected into ``OperationExecutionContext`` so operations that
     need cached runtime state (e.g. workshop) can access it. Default: None."""
+
+    pack_configuration_resolver: Any | None = None
+    """Session-owned resolver for immutable, target-pack configuration."""
+
+    approval_service: Any | None = None
+    """Host-owned persistence and receipt service for exact-action approval."""
+
+    code_change_artifact_store: Any | None = None
+    """Host-owned store for pack-neutral local coding workflow artifacts."""
+
+    workspace_id: str = "lite-host"
+    user_id: str = "lite-user"
+    user_slug: str = "lite-user"
+    user_name: str = "Lite User"
+    principal_key: str = "lite-user"
+    conversation_id: str = "lite-host-console"
+    surface_type: str = "personal_dm"
+    surface_id: str = "lite-host-console"
+    memory_scope: str = "personal"
+    session_plan_digest: str = ""
 
     # ── Workshop context bundle builder ────────────────────────────────────
     build_workshop_context_bundle_fn: Any | None = None
@@ -805,7 +830,7 @@ async def run_turn(
     # present, or all servers when no warm pool is set).
     host_pool = hooks.mcp_tool_pool
     if host_pool is not None:
-        return await _run_turn_inner(
+        return await _run_turn_with_approval(
             mode_id=mode_id,
             query=query,
             hooks=hooks,
@@ -825,6 +850,48 @@ async def run_turn(
     pool = MCPToolPool(hooks.mcp_tool_servers)
     await pool.start()
     try:
+        return await _run_turn_with_approval(
+            mode_id=mode_id,
+            query=query,
+            hooks=hooks,
+            pool=pool,
+            resolve_model=resolve_model,
+            complete=complete,
+            assemble_system=assemble_system,
+            assemble_user=assemble_user,
+            exec_op=exec_op,
+            on_complete=on_complete,
+            mode_config=mode_config,
+            max_tool_iterations=max_tool_iterations,
+            preferred_model_id=preferred_model_id,
+            turn_budget=turn_budget,
+            logger_override=logger_override,
+        )
+    finally:
+        await pool.aclose()
+
+
+async def _run_turn_with_approval(
+    *,
+    mode_id: str,
+    query: str,
+    hooks: TurnHooks,
+    pool: MCPToolPool,
+    resolve_model: Callable[[str], Any],
+    complete: Callable[..., Awaitable[Any]],
+    assemble_system: Callable[[str, str | None], str],
+    assemble_user: Callable[[str, str, str, CapabilityManifest | None], str],
+    exec_op: Callable[..., Awaitable[OperationResult]],
+    on_complete: Callable[[str, str, str, list[dict[str, Any]]], Awaitable[None]],
+    mode_config: Any,
+    max_tool_iterations: int,
+    preferred_model_id: str | None,
+    turn_budget: TurnBudget | None,
+    logger_override: logging.Logger | None,
+) -> TurnResult:
+    """Convert an approval interruption into a host-renderable turn result."""
+
+    try:
         return await _run_turn_inner(
             mode_id=mode_id,
             query=query,
@@ -842,6 +909,106 @@ async def run_turn(
             turn_budget=turn_budget,
             logger_override=logger_override,
         )
+    except ApprovalRequired as required:
+        return TurnResult(
+            response_text=render_approval_request(required.invocation),
+            pending_approval=required.invocation,
+        )
+
+
+async def execute_approved_invocation(
+    *,
+    invocation: ApprovalInvocation,
+    hooks: TurnHooks,
+) -> ToolResult | OperationResult:
+    """Execute one host-approved invocation without replaying a model turn.
+
+    The registry consumes the receipt while rebuilding the same digest from
+    the saved invocation, live session policy, and owner-scoped pack config.
+    """
+
+    if invocation.session_plan_digest != hooks.session_plan_digest:
+        raise ValueError("Approval request belongs to a different session plan.")
+
+    async def _dispatch(pool: MCPToolPool) -> ToolResult | OperationResult:
+        async def _nested_tool_executor(tool_id: str, source_ctx: Any) -> ToolResult:
+            tool_catalog = get_tool_catalog()
+            definition = tool_catalog.get(tool_id)
+            if definition is not None and definition.implementation_module is not None:
+                tool_ctx = _to_tool_context(tool_id, source_ctx)
+                tool_ctx.parameters = (
+                    getattr(source_ctx, "parameters", None)
+                    or getattr(source_ctx, "params", {})
+                    or {}
+                )
+                return await execute_tool(tool_id, tool_ctx)
+            mcp_result = await pool.call_tool(
+                tool_id,
+                getattr(source_ctx, "parameters", {}) or {},
+            )
+            return ToolResult(
+                tool_id=tool_id,
+                output_text=mcp_result.output_text,
+                error=mcp_result.output_text if mcp_result.is_error else "",
+            )
+
+        identity = invocation.identity
+        common: dict[str, Any] = {
+            "workspace_id": identity.workspace_id,
+            "user_id": identity.user_id,
+            "user_slug": identity.user_slug,
+            "user_name": hooks.user_name,
+            "principal_key": hooks.principal_key,
+            "conversation_id": hooks.conversation_id,
+            "surface_type": cast(ConversationSurface, identity.surface_type),
+            "surface_id": identity.surface_id,
+            "memory_scope": cast(MemoryScope, identity.memory_scope),
+            "mode_id": identity.mode_id,
+            "query": "",
+            "pack_configuration_resolver": hooks.pack_configuration_resolver,
+            "approval_service": hooks.approval_service,
+            "approval_request_id": invocation.request_id,
+            "session_plan_digest": hooks.session_plan_digest,
+            "code_change_artifact_store": hooks.code_change_artifact_store,
+        }
+        if invocation.target_kind == "tool":
+            return await execute_tool(
+                invocation.target_id,
+                ToolExecutionContext(
+                    tool_id=invocation.target_id,
+                    parameters=invocation.parameters,
+                    **common,
+                ),
+            )
+
+        operation_context = OperationExecutionContext(
+            operation_id=invocation.target_id,
+            params=invocation.parameters,
+            complete_fn=hooks.complete or _noop_complete,
+            resolve_model_fn=hooks.resolve_model or _default_resolve_model,
+            read_authored_text_fn=getattr(
+                hooks.context_seams.content_registry,
+                "read_authored_text",
+                None,
+            ),
+            execute_tool_fn=_nested_tool_executor,
+            execute_operation_fn=hooks.execute_operation or _default_execute_operation,
+            workflow_turn_runner=hooks.workflow_turn_runner,
+            workflow_session_factory=hooks.workflow_session_factory,
+            state_provider=hooks.state_provider,
+            build_workshop_context_bundle_fn=hooks.build_workshop_context_bundle_fn,
+            **common,
+        )
+        execute_operation_fn = hooks.execute_operation or _default_execute_operation
+        return await execute_operation_fn(invocation.target_id, operation_context)
+
+    if hooks.mcp_tool_pool is not None:
+        return await _dispatch(hooks.mcp_tool_pool)
+
+    pool = MCPToolPool(hooks.mcp_tool_servers)
+    await pool.start()
+    try:
+        return await _dispatch(pool)
     finally:
         await pool.aclose()
 
@@ -926,6 +1093,19 @@ async def _run_turn_inner(
             workflow_session_factory=hooks.workflow_session_factory,
             state_provider=hooks.state_provider,
             build_workshop_context_bundle_fn=hooks.build_workshop_context_bundle_fn,
+            pack_configuration_resolver=hooks.pack_configuration_resolver,
+            approval_service=hooks.approval_service,
+            code_change_artifact_store=hooks.code_change_artifact_store,
+            workspace_id=hooks.workspace_id,
+            user_id=hooks.user_id,
+            user_slug=hooks.user_slug,
+            user_name=hooks.user_name,
+            principal_key=hooks.principal_key,
+            conversation_id=hooks.conversation_id,
+            surface_type=hooks.surface_type,
+            surface_id=hooks.surface_id,
+            memory_scope=hooks.memory_scope,
+            session_plan_digest=hooks.session_plan_digest,
         )
         result = await run_mode_entry_operations(mode_id, ctx, ledger=ledger)
         return TurnResult(
@@ -951,6 +1131,19 @@ async def _run_turn_inner(
         workflow_session_factory=hooks.workflow_session_factory,
         state_provider=hooks.state_provider,
         build_workshop_context_bundle_fn=hooks.build_workshop_context_bundle_fn,
+        pack_configuration_resolver=hooks.pack_configuration_resolver,
+        approval_service=hooks.approval_service,
+        code_change_artifact_store=hooks.code_change_artifact_store,
+        workspace_id=hooks.workspace_id,
+        user_id=hooks.user_id,
+        user_slug=hooks.user_slug,
+        user_name=hooks.user_name,
+        principal_key=hooks.principal_key,
+        conversation_id=hooks.conversation_id,
+        surface_type=hooks.surface_type,
+        surface_id=hooks.surface_id,
+        memory_scope=hooks.memory_scope,
+        session_plan_digest=hooks.session_plan_digest,
     )
     pre_result = await run_mode_pre_turn_operations(mode_id, ctx, ledger=ledger)
     pre_briefing = _extract_pre_turn_briefing(pre_result)
@@ -1402,6 +1595,8 @@ async def _run_turn_inner(
                     tool_output = mcp_result.output_text or "Done"
                 total_tool_calls += 1
                 ledger.record(tool_name)
+            except ApprovalRequired:
+                raise
             except Exception as exc:  # pylint: disable=broad-except
                 _log.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
                 tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
@@ -1573,17 +1768,31 @@ def _build_minimal_context(
     workflow_session_factory: Any = None,
     state_provider: Any = None,
     build_workshop_context_bundle_fn: Any = None,
+    pack_configuration_resolver: Any = None,
+    approval_service: Any = None,
+    code_change_artifact_store: Any = None,
+    workspace_id: str = "lite-host",
+    user_id: str = "lite-user",
+    user_slug: str = "lite-user",
+    user_name: str = "Lite User",
+    principal_key: str = "lite-user",
+    conversation_id: str = "lite-host-console",
+    surface_type: str = "personal_dm",
+    surface_id: str = "lite-host-console",
+    memory_scope: str = "personal",
+    session_plan_digest: str = "",
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for the turn runner."""
     return OperationExecutionContext(
-        workspace_id="lite-host",
-        user_id="lite-user",
-        user_slug="lite-user",
-        user_name="Lite User",
-        conversation_id="lite-host-console",
-        surface_type="personal_dm",
-        surface_id="lite-host-console",
-        memory_scope="personal",
+        workspace_id=workspace_id,
+        user_id=user_id,
+        user_slug=user_slug,
+        user_name=user_name,
+        principal_key=principal_key,
+        conversation_id=conversation_id,
+        surface_type=cast(ConversationSurface, surface_type),
+        surface_id=surface_id,
+        memory_scope=cast(MemoryScope, memory_scope),
         mode_id=mode_id,
         query=query,
         model_id="default",
@@ -1596,6 +1805,10 @@ def _build_minimal_context(
         workflow_session_factory=workflow_session_factory,
         state_provider=state_provider,
         build_workshop_context_bundle_fn=build_workshop_context_bundle_fn,
+        pack_configuration_resolver=pack_configuration_resolver,
+        approval_service=approval_service,
+        session_plan_digest=session_plan_digest,
+        code_change_artifact_store=code_change_artifact_store,
     )
 
 
@@ -1636,6 +1849,12 @@ def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:
         mode_id=getattr(ctx, "mode_id", ""),
         query=getattr(ctx, "query", ""),
         parameters=getattr(ctx, "parameters", {}) or {},
+        pack_config=getattr(ctx, "pack_config", {}),
+        pack_configuration_resolver=getattr(ctx, "pack_configuration_resolver", None),
+        approval_service=getattr(ctx, "approval_service", None),
+        approval_request_id=getattr(ctx, "approval_request_id", ""),
+        session_plan_digest=getattr(ctx, "session_plan_digest", ""),
+        code_change_artifact_store=getattr(ctx, "code_change_artifact_store", None),
         event_bus=getattr(ctx, "event_bus", None),
         state_provider=getattr(ctx, "state_provider", None),
     )

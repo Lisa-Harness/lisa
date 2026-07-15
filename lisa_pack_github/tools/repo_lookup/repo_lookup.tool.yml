@@ -1,0 +1,5 @@
+tool_id: repo_lookup
+pack_id: lisa-pack-github
+description: "Find repository evidence only after validating candidate content at the requested Git ref."
+mode_allowlist: [repo]
+effect: read

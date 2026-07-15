@@ -12,8 +12,10 @@ from lisa_pack_github import get_content_root
 from sdk.content._catalog import (
     build_mode_catalog_json,
     build_operation_catalog_json,
+    build_tool_catalog_json,
     resolve_mode_roots,
     resolve_operation_roots,
+    resolve_tool_roots,
 )
 
 
@@ -48,6 +50,33 @@ def test_github_operation_discovered() -> None:
     op = catalog["github_status"]
     assert op["operation_id"] == "github_status"
     assert op["mode_allowlist"] == ["github"]
+
+
+def test_repo_navigation_catalog_is_discovered() -> None:
+    """The GitHub pack owns the provider-neutral repository navigation flow."""
+
+    root = get_content_root()
+    mode_catalog = json.loads(build_mode_catalog_json(resolve_mode_roots([root])))
+    operation_catalog = json.loads(build_operation_catalog_json(resolve_operation_roots([root])))
+    tool_catalog = json.loads(build_tool_catalog_json(resolve_tool_roots([root])))
+
+    assert mode_catalog["repo"]["entry_operation_ids"] == ["navigate_repo"]
+    assert operation_catalog["navigate_repo"]["tool_ids"] == [
+        "repo_list_tree",
+        "repo_search_code",
+        "repo_read_file",
+        "repo_lookup",
+    ]
+    assert set(tool_catalog) >= {
+        "repo_list_tree",
+        "repo_search_code",
+        "repo_read_file",
+        "repo_lookup",
+    }
+    assert tool_catalog["repo_lookup"]["pack_id"] == "lisa-pack-github"
+    assert tool_catalog["repo_lookup"]["effect"] == "read"
+    assert tool_catalog["github_open_pull_request"]["approval_required"] is True
+    assert tool_catalog["github_open_pull_request"]["effect"] == "external_write"
 
 
 def test_github_operation_allowlist_matches_modes() -> None:

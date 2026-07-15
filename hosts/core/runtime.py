@@ -197,6 +197,15 @@ class HostRuntime:
         # it. ``None`` means no resume pending.
         self.pending_resume_message: str | None = None
 
+        # ── Approval persistence ──────────────────────────────────────
+        from hosts.core.approvals import FileApprovalService
+        from hosts.core.code_artifacts import FileCodeChangeArtifactStore
+
+        self.approval_service = FileApprovalService(self.data_dir / "approvals.json")
+        self.code_change_artifact_store = FileCodeChangeArtifactStore(
+            self.data_dir / "code-change-artifacts.json"
+        )
+
         # ── Token usage handler ───────────────────────────────────────
         self._token_usage_handler: Any = None
 

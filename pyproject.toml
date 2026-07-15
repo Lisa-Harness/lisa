@@ -8,6 +8,7 @@ dependencies = [
     "lisa-sdk",
     "lisa-mcp-servers",
     "lisa-pack-learning",
+    "lisa-pack-coding",
     "lisa-pack-cloudflare",
     "lisa-pack-github",
     "lisa-pack-stripe",
@@ -47,6 +48,7 @@ members = [
     "mcp_server",
     "sdk/packs/core",
     "sdk/packs/learning",
+    "sdk/packs/coding",
     "sdk/packs/search",
     "sdk/packs/checkpoint",
     "hosts/core",
@@ -66,6 +68,7 @@ lisa-kernel = { workspace = true }
 lisa-sdk = { workspace = true }
 lisa-mcp-servers = { workspace = true }
 lisa-pack-learning = { workspace = true }
+lisa-pack-coding = { workspace = true }
 lisa-pack-cloudflare = { workspace = true }
 lisa-pack-github = { workspace = true }
 lisa-pack-stripe = { workspace = true }

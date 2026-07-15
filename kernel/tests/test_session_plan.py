@@ -69,6 +69,31 @@ def test_compile_session_plan_preserves_primary_instruction_and_plan_digest() ->
     ).plan_digest
 
 
+def test_compile_session_plan_preserves_owner_pack_configuration() -> None:
+    text = _manifest(
+        extra=(
+            "resources:\n"
+            "  packs:\n"
+            "    include: [lisa-pack-core, lisa-pack-coding]\n"
+            "    configuration:\n"
+            "      lisa-pack-coding:\n"
+            "        workspace_root: .\n"
+            "        checks:\n"
+            "          - id: unit\n"
+            "            argv: [uv, run, pytest, -q]\n"
+        )
+    )
+
+    plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
+
+    assert plan.manifest.resources.packs.configuration == {
+        "lisa-pack-coding": {
+            "workspace_root": ".",
+            "checks": [{"id": "unit", "argv": ["uv", "run", "pytest", "-q"]}],
+        }
+    }
+
+
 def test_compile_session_plan_rejects_legacy_and_unknown_front_matter() -> None:
     text = _manifest(extra="replay:\n  trigger_mode: manual\n")
 

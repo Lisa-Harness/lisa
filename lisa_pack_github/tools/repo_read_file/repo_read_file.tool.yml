@@ -1,0 +1,5 @@
+tool_id: repo_read_file
+pack_id: lisa-pack-github
+description: "Read a bounded text excerpt from one configured GitHub repository file and ref."
+mode_allowlist: [repo]
+effect: read
