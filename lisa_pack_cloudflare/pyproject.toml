@@ -7,7 +7,7 @@ where = ["."]
 include = ["lisa_pack_cloudflare*"]
 
 [tool.setuptools.package-data]
-"lisa_pack_cloudflare" = ["content/**/*.md", "modes/**/*.md", "operations/**/*.md", "operations/**/*.yml", "operations/**/*.py"]
+"lisa_pack_cloudflare" = ["content/**/*.md", "modes/**/*.md", "operations/**/*.md", "operations/**/*.yml", "operations/**/*.py", "mcp_servers.yaml"]
 
 [tool.uv.sources]
 lisa-kernel = { workspace = true }

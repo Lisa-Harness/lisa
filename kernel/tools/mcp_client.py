@@ -126,6 +126,10 @@ class MCPClientConfig:
     # are ignored for HTTP configs.
     url: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
+    aliases: tuple[Any, ...] = field(default_factory=tuple)
+    """Generic alias specs (``AliasSpec``) mapping stable model-facing
+    names to native tools on this server. The host registers each alias
+    as a synthetic tool after pool start."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -982,7 +986,9 @@ class MCPToolPool:
         await self._refresh_tool_index()
         return config.server_id in self._sessions
 
-    async def _ensure_all_cold_connected(self) -> None:
+    async def _ensure_all_cold_connected(
+        self, allowed_server_ids: set[str] | None = None
+    ) -> None:
         """Best-effort connect every cold server that is not yet connected.
 
         Used by ``list_tools`` so the initial tool catalog reflects all
@@ -990,11 +996,16 @@ class MCPToolPool:
         ``_cold_failed`` and skipped on subsequent calls — this prevents
         an unbounded re-spawn loop where every ``list_tools()`` call
         retries failed cold servers.
+
+        When ``allowed_server_ids`` is provided, only servers in that set
+        are connected (mode-aware cold activation).
         """
         for config in self._cold_configs:
             if config.server_id in self._sessions:
                 continue
             if config.server_id in self._cold_failed:
+                continue
+            if allowed_server_ids is not None and config.server_id not in allowed_server_ids:
                 continue
             try:
                 await self._connect(config)
@@ -1152,12 +1163,18 @@ class MCPToolPool:
                 exc,
             )
 
-    async def list_tools(self) -> list[MCPToolSpec]:
+    async def list_tools(
+        self, *, allowed_server_ids: set[str] | None = None
+    ) -> list[MCPToolSpec]:
         """Return the merged tool catalog from all connected servers.
 
         Cold servers that have not yet been connected are lazily started
         here so the catalog reflects their tool surface. Cold servers that
         fail to start are skipped — their tools are absent from the catalog.
+
+        When ``allowed_server_ids`` is provided, only cold servers in that
+        set are connected. This lets the turn runner avoid spawning cold
+        servers whose tools are not allowed for the active mode.
         """
 
         if not self._started:
@@ -1165,8 +1182,18 @@ class MCPToolPool:
         # Lazily connect cold servers that have not been connected yet so
         # the catalog reflects every server's tools. Warm servers are already
         # up (or in _warm_failed); they are not touched here.
-        if any(c.server_id not in self._sessions for c in self._cold_configs):
-            await self._ensure_all_cold_connected()
+        cold_needs_connect = [
+            c
+            for c in self._cold_configs
+            if c.server_id not in self._sessions
+            and c.server_id not in self._cold_failed
+        ]
+        if allowed_server_ids is not None:
+            cold_needs_connect = [
+                c for c in cold_needs_connect if c.server_id in allowed_server_ids
+            ]
+        if cold_needs_connect:
+            await self._ensure_all_cold_connected(allowed_server_ids)
         return list(self._tools)
 
     async def call_tool(
@@ -1246,8 +1273,16 @@ class MCPToolPool:
                 )
         # The merged index is keyed by namespaced names (server_id.tool),
         # but the MCP session expects the bare tool name.  Strip the
-        # namespace prefix before calling the server.
-        bare_name = bare_tool_name(tool_id)
+        # namespace prefix before calling the server.  Use the resolved
+        # server_id (not a naive first-dot split) so pack-contributed
+        # servers with dotted ids (e.g. ``lisa_pack_cloudflare.cloudflare-api``)
+        # dispatch to the correct native tool name (e.g. ``search``, not
+        # ``cloudflare-api.search``).
+        bare_name = tool_id
+        if server_id and tool_id.startswith(server_id + "."):
+            bare_name = tool_id[len(server_id) + 1:]
+        elif "." in tool_id:
+            bare_name = bare_tool_name(tool_id)
         mapped = self._apply_dispatch_arg_map(tool_id, arguments)
         # Proxy policy: inject ambient scope (user_id, agent_id, app_id, …)
         # from the host runtime after the dispatch arg map. This closes the

@@ -37,6 +37,8 @@ class CloudflareSettings(BaseSettings):
     cloudflare_api_token: SecretStr = SecretStr("")
     cloudflare_zone_id: str = ""
     cloudflare_account_id: str = ""
+    cloudflare_mcp_api_token: SecretStr = SecretStr("")
+    """Read-only Cloudflare API token for the MCP server (cloudflare.execute)."""
 
     @property
     def external_signal_timeout_seconds(self) -> float:

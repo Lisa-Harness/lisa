@@ -1017,7 +1017,24 @@ async def _run_turn_inner(
     # model sees their real Parameters schema (not an arguments_json wrapper
     # from a subprocess). Both are dispatched in-process: MCP tools via
     # pool.call_tool, operations via hooks.execute_operation.
-    mcp_tools = await pool.list_tools()
+    # Compute which cold servers could contribute allowed tools so we only
+    # spawn servers the active mode can use. When the mode has no
+    # allowed_tool_ids and is not authoritative (all tools pass), connect
+    # every cold server as before. When authoritative with an allowlist,
+    # only connect servers whose namespaced prefix appears in the allowlist.
+    allowed_server_ids: set[str] | None = None
+    if mode_config and mode_config.allowed_tool_ids:
+        allowed_set = set(mode_config.allowed_tool_ids)
+        allowed_server_ids = {
+            c.server_id
+            for c in getattr(pool, "configs", [])
+            if any(t.startswith(c.server_id + ".") for t in allowed_set)
+        }
+    elif mode_config and mode_config.tools_authoritative and not mode_config.allowed_tool_ids:
+        # Authoritative with empty allowlist = no tools; no cold servers needed.
+        allowed_server_ids = set()
+
+    mcp_tools = await pool.list_tools(allowed_server_ids=allowed_server_ids)
     # Apply mode-level tool allowlist.
     # When tools_authoritative is True (default), empty allowed_tool_ids
     # means no tools are advertised. When False, empty means all pass.

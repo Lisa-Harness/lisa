@@ -646,6 +646,39 @@ def _resolve_host_manifest_path(config: HostConfig) -> Path:
     return host_mcp_manifest_path()
 
 
+def register_mcp_aliases(pool: Any) -> None:
+    """Register generic aliases from compiled MCP configs as synthetic tools.
+
+    After ``pool.start()``, walk every config's ``aliases`` tuple and register
+    each as a synthetic tool via ``mcp_alias_tool``. The alias gives the model
+    a stable name (e.g. ``cloudflare.search``) instead of the namespaced
+    server id (e.g. ``lisa_pack_cloudflare.cloudflare-api.search``).
+
+    Must be called after ``pool.start()`` so the alias handlers can route to
+    live server sessions.
+    """
+    from kernel.tools.synthetic import mcp_alias_tool  # noqa: PLC0415
+
+    configs = list(getattr(pool, "configs", []))
+    for config in configs:
+        aliases = getattr(config, "aliases", ()) or ()
+        if not aliases:
+            continue
+        server_id = config.server_id
+        for alias in aliases:
+            alias_name = alias.alias_name
+            native_tool = alias.native_tool
+            description = alias.description or f"Alias for {server_id}.{native_tool}"
+            spec = mcp_alias_tool(
+                name=alias_name,
+                description=description,
+                pool=pool,
+                target_tool=native_tool,
+                target_server_id=server_id,
+            )
+            pool.add_synthetic_tools([spec])
+
+
 __all__ = [
     "build_catalog_mcp_config",
     "build_content_mcp_config",
@@ -655,6 +688,7 @@ __all__ = [
     "load_pack_server_exclusions",
     "pack_server_excluded",
     "provider_identifiers_for_pack",
+    "register_mcp_aliases",
     "select_capability_provider_owner",
     "setup_framework",
     "unique_pack_slug_for_root",

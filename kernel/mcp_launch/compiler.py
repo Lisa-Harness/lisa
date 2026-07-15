@@ -173,6 +173,7 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
         headers=dict(spec.headers),
         warm=spec.warm,
         required=spec.required,
+        aliases=spec.aliases,
     )
 
 

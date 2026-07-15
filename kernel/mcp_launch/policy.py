@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 __all__ = [
+    "AliasSpec",
     "AmbientSource",
     "CwdPolicy",
     "EnvPolicy",
@@ -153,6 +154,27 @@ class LaunchTimeouts:
 
 
 @dataclass(frozen=True, slots=True)
+class AliasSpec:
+    """One generic alias mapping a stable model-facing name to a native tool.
+
+    Declared per-server in ``mcp_servers.yaml`` under ``aliases:``. The host
+    registers each alias as a synthetic tool after ``pool.start()`` so the
+    model sees a stable name (e.g. ``cloudflare.search``) instead of the
+    filesystem-derived namespaced id (e.g.
+    ``lisa_pack_cloudflare.cloudflare-api.search``).
+    """
+
+    alias_name: str
+    """The stable, model-facing tool name (e.g. ``cloudflare.search``)."""
+
+    native_tool: str
+    """The native MCP tool name on the server (e.g. ``search``)."""
+
+    description: str = ""
+    """Optional description override for the synthetic tool."""
+
+
+@dataclass(frozen=True, slots=True)
 class MCPServerSpec:
     """One approved MCP server launch specification.
 
@@ -274,6 +296,12 @@ class MCPServerSpec:
     code change. The manifest loader also honors a YAML-level ``disabled:
     true`` key on each entry, which short-circuits before spec
     construction; this field is for programmatic registration paths."""
+
+    aliases: tuple[AliasSpec, ...] = field(default_factory=tuple)
+    """Generic aliases mapping stable model-facing names to native tools.
+    The host registers each alias as a synthetic tool after pool start so
+    the model sees a stable name (e.g. ``cloudflare.search``) instead of
+    the namespaced server id."""
 
 
 @dataclass(frozen=True, slots=True)

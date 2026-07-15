@@ -377,7 +377,7 @@ async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.Mo
         async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> _FakeResult:  # type: ignore[no-untyped-def]
             return _FakeResult()
 
-        async def list_tools(self) -> Any:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> Any:
             from types import SimpleNamespace
             return SimpleNamespace(tools=[
                 type("T", (), {"name": "add_memory", "description": "cloud", "inputSchema": {}})()
@@ -531,7 +531,7 @@ async def test_denied_tool_hidden_from_catalog_but_dispatchable_scoped(
             self.inputSchema = schema
 
     class _FakeSession:
-        async def list_tools(self) -> _FakeResult:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> _FakeResult:
             return _FakeResult(tools=[
                 _FakeTool("add_memory", "add", {"type": "object"}),
                 _FakeTool("search_memory", "search", {"type": "object"}),

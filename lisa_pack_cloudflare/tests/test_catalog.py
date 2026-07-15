@@ -32,21 +32,27 @@ def test_cloudflare_mode_discovered() -> None:
     assert "cloudflare" in catalog, f"cloudflare mode not in catalog: {list(catalog)}"
 
     mode = catalog["cloudflare"]
-    assert mode["mode_kind"] == "action"
-    assert mode["entry_operation_ids"] == ["cloudflare_status"]
+    assert mode["mode_kind"] == "chat"
+    assert mode["pre_turn_operation_ids"] == ["cloudflare_assessment"]
     assert mode["command_pattern"].startswith("^(?:/)?cloudflare")
+    assert "cloudflare.docs" in mode["allowed_tool_ids"]
+    assert "cloudflare.search" in mode["allowed_tool_ids"]
+    assert "cloudflare.execute" in mode["allowed_tool_ids"]
+    assert mode["tools_authoritative"] is True
 
 
 def test_cloudflare_operation_discovered() -> None:
-    """The cloudflare_status operation is discovered from the pack's operations/ directory."""
+    """The cloudflare_assessment operation is discovered from the pack's operations/ directory."""
     roots = resolve_operation_roots([get_content_root()])
     assert roots, "No operations/ directory found in cloudflare pack"
 
     catalog = json.loads(build_operation_catalog_json(roots))
-    assert "cloudflare_status" in catalog, f"cloudflare_status not in catalog: {list(catalog)}"
+    assert "cloudflare_assessment" in catalog, (
+        f"cloudflare_assessment not in catalog: {list(catalog)}"
+    )
 
-    op = catalog["cloudflare_status"]
-    assert op["operation_id"] == "cloudflare_status"
+    op = catalog["cloudflare_assessment"]
+    assert op["operation_id"] == "cloudflare_assessment"
     assert op["mode_allowlist"] == ["cloudflare"]
 
 

@@ -39,6 +39,13 @@ from kernel.context.context_broker import (
     resolve_host_name,
     select_ranked_context,
 )
+from kernel.context.context_mapper import (
+    ContextMapper,
+    ContextMappingError,
+    context_candidates_from_unified_state,
+)
+from kernel.context.models import ContextMapperRequest
+from kernel.session_plan import ContextPlan
 from kernel.context.context_budget import ContextBudgetAllocator, ContextLane
 from kernel.context.provenance import (
     normalize_markdown_to_tagged,
@@ -234,19 +241,83 @@ def build_turn_context(
 # ---------------------------------------------------------------------------
 
 
+def build_session_mapped_context_markdown(
+    *,
+    mode_id: str,
+    query: str,
+    state: UnifiedState | None,
+    context_plan: ContextPlan | None,
+    model_context_window_tokens: int,
+    active_packs: frozenset[str] | None = None,
+    conversation_tokens: int = 0,
+    tool_schema_tokens: int = 0,
+) -> str:
+    """Select context via the session-owned ContextMapper and render as Markdown.
+
+    Falls back to an empty string when *state* is ``None`` / uncompiled or
+    when no ``context_plan`` is provided. This is the session-owned mapping
+    path: candidates from ``UnifiedState`` are gated, ranked, budgeted, and
+    rendered into lane-ordered markdown by :class:`ContextMapper`.
+    """
+    if state is None or not state.compiled_at or context_plan is None:
+        return ""
+
+    try:
+        candidates = context_candidates_from_unified_state(state)
+    except ContextMappingError:
+        return ""
+    if not candidates:
+        return ""
+
+    request = ContextMapperRequest(
+        context_plan=context_plan,
+        query=query,
+        mode_id=mode_id,
+        candidates=candidates,
+        active_packs=active_packs or frozenset(),
+        model_context_window_tokens=model_context_window_tokens,
+        stable_prefix_tokens=0,
+        conversation_tokens=conversation_tokens,
+        tool_schema_tokens=tool_schema_tokens,
+    )
+    try:
+        result = ContextMapper().map(request)
+    except ContextMappingError:
+        return ""
+    return result.rendered_context
+
+
 def build_brokered_context_markdown(
     *,
     mode_id: str,
     query: str,
     state: UnifiedState | None,
+    context_plan: ContextPlan | None = None,
+    model_context_window_tokens: int = 0,
+    active_packs: frozenset[str] | None = None,
 ) -> str:
     """Select ranked context evidence from *state* and render it as Markdown.
+
+    When a session-owned ``context_plan`` and ``model_context_window_tokens``
+    are provided, routes through the session-owned :class:`ContextMapper`
+    (lane-aware, budget-aware, MMR-diversified). Otherwise falls back to the
+    legacy ranked-context broker.
 
     Returns an empty string when no evidence is selected or when *state*
     is ``None`` / uncompiled.
     """
     if state is None or not state.compiled_at:
         return ""
+
+    if context_plan is not None and model_context_window_tokens > 0:
+        return build_session_mapped_context_markdown(
+            mode_id=mode_id,
+            query=query,
+            state=state,
+            context_plan=context_plan,
+            model_context_window_tokens=model_context_window_tokens,
+            active_packs=active_packs,
+        )
 
     # Resolve the active mode's pack-scoped evidence boundary. The mode's
     # own provider pack and any explicitly allowed packs form the allowed
@@ -383,6 +454,8 @@ def assemble_dynamic_user_context(
     capability_manifest: CapabilityManifest | None = None,
     capability_snapshot_builder: Callable[[], dict[str, Any]] | None = None,
     mode_support_gap: Callable[[WorkflowModeConfig], str | None] | None = None,
+    context_plan: ContextPlan | None = None,
+    model_context_window_tokens: int = 0,
 ) -> str:
     """Assemble the dynamic user-context block for the current turn.
 
@@ -499,7 +572,11 @@ def assemble_dynamic_user_context(
     # Ranked context evidence from the broker (no MCP round-trip — the
     # broker is a pure ranking function over the in-process UnifiedState).
     packet_markdown = build_brokered_context_markdown(
-        mode_id=mode_id, query=query, state=state
+        mode_id=mode_id,
+        query=query,
+        state=state,
+        context_plan=context_plan,
+        model_context_window_tokens=model_context_window_tokens,
     )
     if packet_markdown:
         raw_sections.append(("ranked_context", "retrieval", packet_markdown))

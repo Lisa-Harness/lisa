@@ -133,7 +133,7 @@ async def test_non_operation_tool_call_dispatches_via_pool() -> None:
     pool_calls: list[str] = []
 
     class _StubPool:
-        async def list_tools(self) -> list[Any]:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
             return []
 
         async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
@@ -277,7 +277,7 @@ async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
     # MCP-discovered tools are namespaced (server_id.tool_name); synthetic
     # aliases keep their bare names (memory.add, etc.).
     class _StubPool:
-        async def list_tools(self) -> list[MCPToolSpec]:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[MCPToolSpec]:
             return [
                 MCPToolSpec(
                     server_id="__synthetic__",
@@ -393,7 +393,7 @@ async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
         return _StubCompletion(content="Done.")
 
     class _StubPool:
-        async def list_tools(self) -> list[MCPToolSpec]:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[MCPToolSpec]:
             return [
                 MCPToolSpec(
                     server_id="__synthetic__",
@@ -484,7 +484,7 @@ async def test_run_turn_prunes_duplicate_tools_before_model_call() -> None:
         return _StubCompletion(content="Done.")
 
     class _StubPool:
-        async def list_tools(self) -> list[MCPToolSpec]:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[MCPToolSpec]:
             return [
                 MCPToolSpec(
                     server_id="__synthetic__",

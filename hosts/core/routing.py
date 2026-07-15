@@ -364,6 +364,7 @@ async def plan_route(
     build_user_prompt: Callable[..., str],
     get_workflow_catalog: Callable[[], dict[str, Any]],
     set_last_router_debug: Callable[[dict[str, Any]], None],
+    current_mode_id: str = "default",
 ) -> RouterRouteDecision:
     """Plan the route for a natural-language turn.
 
@@ -405,13 +406,13 @@ async def plan_route(
 
     decision = await shared_router.plan_route(
         user_message=raw_message,
-        current_route_mode="default",
+        current_route_mode=current_mode_id,
         surface_context=SurfaceContext(
             surface_type="personal_dm",
             surface_id="little-lisa-console",
             memory_scope="personal",
         ),
-        preferred_mode_id="default",
+        preferred_mode_id=current_mode_id,
         conversation_excerpt_markdown=conversation_excerpt_markdown,
         catalog=get_workflow_catalog(),
         load_route_prompt=load_route_prompt,

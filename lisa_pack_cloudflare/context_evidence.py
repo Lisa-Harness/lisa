@@ -1,4 +1,11 @@
-"""Extension-owned context evidence for Cloudflare."""
+"""Extension-owned context evidence for Cloudflare.
+
+Atomizes the cached Cloudflare snapshot into stable, accurately-labeled
+:class:`ContextEvidence` candidates via the pure :func:`assess` projector.
+Each finding becomes one evidence record with accurate ``evidence_type``,
+``tags``, ``salience_score`` (0.0 when healthy so the mapper drops it
+outside ``cloudflare`` mode), and ``provenance``.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 from kernel.extension_runtime import ExtensionRuntimeContext
 from kernel.models import ContextEvidence, UnifiedState
+from lisa_pack_cloudflare.assessment import assess
 from lisa_pack_cloudflare.models import CloudflareMetrics
 from sdk.config import settings
 
@@ -36,7 +44,14 @@ def build_context_evidence(
     runtime_context: ExtensionRuntimeContext,
     state: UnifiedState,
 ) -> list[ContextEvidence]:
-    """Expose Cloudflare context evidence without host-owned summary branches."""
+    """Expose Cloudflare context evidence without host-owned summary branches.
+
+    Each finding from :func:`assess` becomes one :class:`ContextEvidence`
+    record. Healthy findings have ``salience_score=0.0`` so the session-owned
+    context mapper drops them outside ``cloudflare`` mode (lexical overlap
+    alone cannot elevate them). Alerts (severity=critical) have high
+    salience so they reach the ``incidents`` lane globally.
+    """
 
     del runtime_context
     raw_snapshot = state.signal_snapshots.get("cloudflare")
@@ -44,53 +59,33 @@ def build_context_evidence(
         return []
 
     cloudflare = CloudflareMetrics.model_validate(raw_snapshot)
-    summary_parts = [
-        f"Status {cloudflare.status.upper()}",
-        f"requests_1h={cloudflare.worker_requests_1h}",
-        f"errors_1h={cloudflare.worker_errors_1h} ({cloudflare.worker_error_rate:.1f}%)",
-        f"edge_5xx_1h={cloudflare.edge_5xx_1h} ({cloudflare.edge_5xx_rate:.2f}%)",
-    ]
-    if cloudflare.worker_cpu_ms_p99 > 0:
-        summary_parts.append(f"cpu_p99={cloudflare.worker_cpu_ms_p99:.0f}ms")
-    if cloudflare.pages_projects:
-        summary_parts.append(f"pages_failed={cloudflare.pages_any_failed}")
-    if cloudflare.waf_total_events_1h > 0:
-        summary_parts.append(f"waf_events_1h={cloudflare.waf_total_events_1h}")
-    if cloudflare.d1_max_utilization_pct > 0:
-        summary_parts.append(f"d1_max_util_pct={cloudflare.d1_max_utilization_pct:.1f}%")
-    if cloudflare.do_requests_1h > 0:
-        summary_parts.append(f"do_req_1h={cloudflare.do_requests_1h}")
-    if cloudflare.zone_status:
-        summary_parts.append(f"zone={cloudflare.zone_status}")
-
-    salience_score = min(
-        1.0,
-        max(
-            cloudflare.worker_error_rate / 10.0,
-            cloudflare.edge_5xx_rate / 5.0,
-            cloudflare.d1_max_utilization_pct / 100.0,
-            0.75 if cloudflare.pages_any_failed else 0.0,
-            0.5 if cloudflare.status != "ok" else 0.0,
-        ),
-    )
+    assessment = assess(cloudflare)
     collected_at = _default_collected_at(state)
-
     evidence_collected_at = cloudflare.collected_at or collected_at
-    return [
-        ContextEvidence(
-            evidence_id="collector:cloudflare",
-            source="cloudflare",
-            collector_id="cloudflare",
-            evidence_type="connector_status",
-            title="Cloudflare health",
-            body=" | ".join(summary_parts),
-            collected_at=evidence_collected_at,
-            freshness_expires_at=_freshness_expires_at(evidence_collected_at),
-            confidence=0.8,
-            salience_score=salience_score,
-            tags=["cloudflare", "infra", cloudflare.status],
+
+    evidence: list[ContextEvidence] = []
+    for finding in assessment.findings:
+        severity_to_salience = {"critical": 1.0, "warn": 0.85, "info": finding.salience}
+        salience = severity_to_salience.get(finding.severity, finding.salience)
+
+        evidence.append(
+            ContextEvidence(
+                evidence_id=f"cloudflare:{finding.id}",
+                source="cloudflare",
+                collector_id="cloudflare",
+                evidence_type=finding.evidence_type or "connector_status",
+                title=finding.title,
+                body=finding.body,
+                collected_at=evidence_collected_at,
+                freshness_expires_at=_freshness_expires_at(evidence_collected_at),
+                confidence=0.8,
+                salience_score=salience,
+                tags=list(finding.tags),
+                metadata={"provenance": "system_observed", "severity": finding.severity},
+            )
         )
-    ]
+
+    return evidence
 
 
 __all__ = ["build_context_evidence"]

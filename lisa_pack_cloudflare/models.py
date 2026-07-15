@@ -49,3 +49,37 @@ class CloudflareMetrics(BaseModel):
     zone_paused: bool = False
     status: str = "ok"  # "ok" | "degraded" | "down"
     raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class Finding(BaseModel):
+    """One interpreted finding from a Cloudflare snapshot."""
+
+    id: str
+    """Stable identifier used as the context-evidence candidate id suffix."""
+
+    severity: str = "info"
+    """``info`` | ``warn`` | ``critical`` — drives salience and alert emission."""
+
+    title: str = ""
+    body: str = ""
+    evidence_type: str = ""
+    tags: list[str] = Field(default_factory=list)
+    salience: float = 0.0
+    """0.0 when healthy so the mapper drops it outside ``cloudflare`` mode."""
+
+
+class CloudflareAssessment(BaseModel):
+    """Pure interpretation of a ``CloudflareMetrics`` snapshot.
+
+    Produced by :func:`lisa_pack_cloudflare.assessment.assess`. Contains no
+    API collection logic — only deterministic projection from the cached
+    snapshot into typed findings, hypotheses, and investigation anchors.
+    """
+
+    status: str = "ok"
+    findings: list[Finding] = Field(default_factory=list)
+    hypotheses: list[str] = Field(default_factory=list)
+    investigation_anchors: dict[str, Any] = Field(default_factory=dict)
+    """Stable coordinates (zone_id, account_id, top paths, failing scripts)
+    the top-half model can pass to ``cloudflare.search`` / ``cloudflare.execute``
+    when investigating a finding."""

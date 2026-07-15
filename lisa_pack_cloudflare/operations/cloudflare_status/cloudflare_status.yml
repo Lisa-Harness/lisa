@@ -1,5 +1,0 @@
-operation_id: cloudflare_status
-description: Produce a Cloudflare infrastructure health summary from the cached signal snapshot.
-mode_allowlist: [cloudflare]
-timeout_seconds: 10
-max_calls_per_turn: 1

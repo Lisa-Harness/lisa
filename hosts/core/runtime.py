@@ -62,6 +62,7 @@ class TokenCounters:
     session_turn_count: int = 0
     session_success_count: int = 0
     session_error_count: int = 0
+    session_cancelled_count: int = 0
     session_total_latency_ms: float = 0.0
     session_mode_counts: dict[str, int] = field(default_factory=dict)
 

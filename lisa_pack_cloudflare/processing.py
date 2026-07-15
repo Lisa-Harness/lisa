@@ -1,7 +1,10 @@
-"""Cloudflare processing loop — anomaly detection from cached snapshots.
+"""Cloudflare processing loop — alert detection from assessment findings.
 
-Folds the former ``anomalies.py`` anomaly detector into a ``ProcessingLoop``
-that runs after signal collection during the bottom-half tick.
+Folds the former threshold-based anomaly detector into a ``ProcessingLoop``
+that consumes :class:`CloudflareAssessment` findings emitted by
+:func:`lisa_pack_cloudflare.assessment.assess`. Only ``critical`` severity
+findings produce alerts; ``warn`` findings are noted in triage but do not
+trigger the alert pipeline.
 """
 
 from __future__ import annotations
@@ -10,16 +13,17 @@ from datetime import UTC, datetime
 
 from kernel.intake.contracts import ProcessContext, ProcessedState
 from kernel.models import AnomalyAlert
+from lisa_pack_cloudflare.assessment import assess
 from lisa_pack_cloudflare.models import CloudflareMetrics
 
 
 class CloudflareProcessingLoop:
-    """Anomaly detection for cached Cloudflare telemetry."""
+    """Alert detection for cached Cloudflare telemetry."""
 
     loop_id = "cloudflare"
 
     async def process(self, ctx: ProcessContext) -> ProcessedState:
-        """Examine the Cloudflare snapshot and emit alerts when thresholds are breached."""
+        """Examine the Cloudflare assessment and emit alerts for critical findings."""
         if ctx.state is None:
             return ProcessedState(loop_id=self.loop_id)
 
@@ -28,23 +32,27 @@ class CloudflareProcessingLoop:
             return ProcessedState(loop_id=self.loop_id)
 
         cloudflare = CloudflareMetrics.model_validate(snapshot)
-        if cloudflare.edge_5xx_rate <= 5.0:
+        assessment = assess(cloudflare)
+
+        alerts = []
+        for finding in assessment.findings:
+            if finding.severity != "critical":
+                continue
+            alerts.append(
+                AnomalyAlert(
+                    severity="critical",
+                    source="cloudflare",
+                    message=f"{finding.title}: {finding.body}",
+                    detected_at=datetime.now(UTC).isoformat(),
+                )
+            )
+
+        if not alerts:
             return ProcessedState(loop_id=self.loop_id)
 
         return ProcessedState(
             loop_id=self.loop_id,
-            active_alerts=[
-                AnomalyAlert(
-                    severity="critical",
-                    source="cloudflare",
-                    message=(
-                        f"Edge 5xx error rate is {cloudflare.edge_5xx_rate:.2f}% "
-                        f"(threshold: 5%) — {cloudflare.edge_5xx_1h} "
-                        "server errors in the last hour"
-                    ),
-                    detected_at=datetime.now(UTC).isoformat(),
-                )
-            ],
+            active_alerts=alerts,
         )
 
 

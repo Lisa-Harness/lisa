@@ -173,6 +173,13 @@ def build_turn_hooks(
                 limit=limit,
             )
 
+        # Resolve the model context window for the session-owned context
+        # mapper. The mapper needs the model's context window to compute
+        # model-aware context budgets.
+        context_plan = runtime.session_plan.manifest.context
+        resolved_model = _resolve_model("default")
+        model_context_window = getattr(resolved_model, "context_window", 0) or 0
+
         return assemble_dynamic_user_context(
             mode_id,
             query,
@@ -185,6 +192,8 @@ def build_turn_hooks(
             thread_digest_loader=_thread_digest_loader,
             recent_thread_excerpt_builder=_recent_thread_excerpt_builder,
             capability_manifest=capability_manifest,
+            context_plan=context_plan,
+            model_context_window_tokens=model_context_window,
         )
 
     # ── Operation execution ───────────────────────────────────────

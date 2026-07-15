@@ -206,7 +206,7 @@ class _FakePool:
         self._synthetic_names = synthetic_names or set()
         self.closed = False
 
-    async def list_tools(self) -> list[_FakeSpec]:
+    async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[_FakeSpec]:
         return list(self._tools)
 
     def is_synthetic_tool(self, name: str) -> bool:

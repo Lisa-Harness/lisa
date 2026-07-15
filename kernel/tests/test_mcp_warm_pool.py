@@ -243,7 +243,7 @@ async def test_run_turn_uses_host_warm_pool(monkeypatch: MonkeyPatch) -> None:
             closed.append(True)
             self._started = False
 
-        async def list_tools(self) -> list[Any]:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
             return []
 
     spy = _SpyPool([])

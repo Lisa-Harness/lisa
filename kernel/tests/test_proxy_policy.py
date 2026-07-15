@@ -165,7 +165,7 @@ class _FakeSession:
         self.calls.append((tool_id, dict(arguments)))
         return _FakeResult()
 
-    async def list_tools(self) -> Any:
+    async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> Any:
         from types import SimpleNamespace
         return SimpleNamespace(tools=[
             type("T", (), {

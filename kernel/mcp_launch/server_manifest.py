@@ -37,6 +37,7 @@ from typing import Any
 import yaml
 
 from kernel.mcp_launch.policy import (
+    AliasSpec,
     AmbientSource,
     CwdPolicy,
     EnvPolicy,
@@ -380,6 +381,8 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
             )
         headers = {str(k): _expand_env_value(v) for k, v in headers_raw.items()}
 
+    aliases = _parse_aliases(entry.get("aliases"), server_id, index, path)
+
     return MCPServerSpec(
         server_id=server_id,
         runtime_kind=runtime_kind,
@@ -405,6 +408,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         warm=bool(entry.get("warm", False)),
         required=bool(entry.get("required", False)),
         disabled=False,
+        aliases=aliases,
     )
 
 
@@ -431,6 +435,62 @@ def _parse_tool_policy(
         allowed_tools=[str(t) for t in allowed] if allowed is not None else None,
         denied_tools=[str(t) for t in denied],
     )
+
+
+def _parse_aliases(
+    raw: Any, server_id: str, index: int, path: Path
+) -> tuple[AliasSpec, ...]:
+    """Parse the optional ``aliases`` block on a server entry.
+
+    Each entry maps a stable model-facing name to a native tool on the
+    server. Format::
+
+        aliases:
+          - alias_name: cloudflare.search
+            native_tool: search
+            description: Search the Cloudflare API spec
+          - alias_name: cloudflare.execute
+            native_tool: execute
+
+    Returns an empty tuple when absent.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}' in {path}: 'aliases' must be a list"
+        )
+    specs: list[AliasSpec] = []
+    seen_names: set[str] = set()
+    for alias_index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': aliases[{alias_index}] must be a mapping"
+            )
+        alias_name = str(entry.get("alias_name") or "").strip()
+        if not alias_name:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': aliases[{alias_index}] requires 'alias_name'"
+            )
+        if alias_name in seen_names:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': duplicate alias_name {alias_name!r}"
+            )
+        seen_names.add(alias_name)
+        native_tool = str(entry.get("native_tool") or "").strip()
+        if not native_tool:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': aliases[{alias_index}] requires 'native_tool'"
+            )
+        description = str(entry.get("description") or "").strip()
+        specs.append(
+            AliasSpec(
+                alias_name=alias_name,
+                native_tool=native_tool,
+                description=description,
+            )
+        )
+    return tuple(specs)
 
 
 def _parse_proxy_policy(
