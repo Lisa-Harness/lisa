@@ -1,6 +1,6 @@
 ---
 name: Pack Content Authoring
-description: "Use when writing or reviewing pack operation/mode Python handlers. Enforces that prompts and user-facing text live in authored Markdown loaded via the SDK content registry — never embedded in .py and never silently fall back to missing content. Applies to all pack Python handlers (sdk/packs/** and lisa_pack_*/**)."
+description: "Use when writing or reviewing pack operation/mode Python handlers. Enforces that prompts and user-facing text live in authored Markdown loaded via the SDK content registry — never embedded in .py and never silently fall back to missing content. Applies to all pack Python handlers (sdk/packs/** and ../lisa_packs/**/lisa_packs/**)."
 applyTo: "**/operations/**/*.py,**/modes/**/*.py,**/tools/**/*.py"
 ---
 
@@ -8,7 +8,7 @@ applyTo: "**/operations/**/*.py,**/modes/**/*.py,**/tools/**/*.py"
 
 Inherits all rules in `.github/instructions/python-development.md` and
 `.github/instructions/code-quality.md`. The rules below are additive and
-apply to every pack — both `sdk/packs/*` and the root-level `lisa_pack_*`
+apply to every pack — both bundled `sdk/packs/*` and external `lisa_packs.*`
 directories.
 
 ## Two absolute rules

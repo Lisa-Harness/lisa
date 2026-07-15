@@ -2,6 +2,17 @@
 
 Packs add modes, operations, and authored content without changing host code. The framework discovers packs through `lisa.extensions.content_roots` entry points or through host-injected content roots.
 
+## Pack Locations
+
+Packs live in one of two places depending on whether they are bundled with the framework or maintained as an external dependency:
+
+| Location | Packages | Import namespace | When to use |
+| --- | --- | --- | --- |
+| `sdk/packs/<name>` | `lisa-pack-core`, `lisa-pack-coding`, `lisa-pack-learning`, `lisa-pack-search`, `lisa-pack-checkpoint`, `lisa-pack-model-picker` | `sdk.packs.<name>` | Bundled reference packs shipped with the framework |
+| `../lisa_packs/<name>` (repo: `github.com/lisa-framework/packs`) | `lisa-pack-brave-search`, `lisa-pack-cloudflare`, `lisa-pack-github`, `lisa-pack-gmail`, `lisa-pack-mem0`, `lisa-pack-stripe` | `lisa_packs.<name>` | External integration packs maintained in a separate repo |
+
+The framework `pyproject.toml` consumes external packs via path dependencies (`{ path = "../lisa_packs/<name>" }`). Bundled packs are uv workspace members. Both are installed editable in the venv and discovered through entry points at runtime.
+
 ## Pack Shape
 
 A pack normally contains:
@@ -93,7 +104,7 @@ The kernel never validates or allowlists extension keys — it only knows what i
 Apps that need to manage extension front matter (or a small set of kernel-owned but overridable fields) without editing pack-owned `_mode.md` files can place an `_overrides.yaml` file beside the `_mode.md`:
 
 ```plaintext
-sdk_packs/example/modes/example/
+sdk/packs/example/modes/example/
   _mode.md
   _overrides.yaml
 ```
