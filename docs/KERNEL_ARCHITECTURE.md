@@ -9,9 +9,8 @@ The kernel is **runtime-neutral** by design. It owns all contracts, abstractions
 Key principles:
 
 - **Contracts over implementations**: The kernel defines Pydantic models, protocols, and dataclasses. Hosts provide the concrete wiring (model completion, tool execution, MCP backend policy). Packs provide behavior such as memory recall and synthesis workflows.
-- **Pressure, not a clock**: Background work uses an opportunistic slice model where budget grows as a function of idle time since the last slice finished. Wall-clock timers are reserved for heartbeat-driven jobs only.
 - **No compat or migration layers**: When a pattern changes, old code goes away. No shim layers, no dual-path code.
-- **Sensible defaults, externalize later**: Keep defaults working; defer config-driven knobs until the pattern is proven.
+- **Externalize aggressively**: Defaults minimally; configurability is essential. If a feature requires host-specific logic, it should be a callback or protocol seam, not an `if` statement in the kernel code.
 
 ## Module Map
 
@@ -46,7 +45,6 @@ Key principles:
 | Module | Responsibility |
 | --- | --- |
 | `web_search.py` | Brave Web Search integration. Configurable endpoint, market, and result count. |
-| `surf_workflow.py` | Durable surf session helpers for iterative browser workflows: TTL, trimming, page/commentary tracking, session persistence. |
 | `tools/mcp_client.py` | MCP tool-pool/client transport for stdio and HTTP servers, including memory backends routed by host policy. |
 | `openai_function_tools.py` | OpenAI function-tool schema builder with strict-mode support. |
 | `state_providers.py` | `BlankStateProvider` for hosts that don't need memory. |
@@ -56,7 +54,7 @@ Key principles:
 
 | Subpackage | Responsibility |
 | --- | --- |
-| `operations/` | Operation registry for discovering and executing operations from packs. |
+| `operations/` | Operation registry for discovering and executing operations from packs. See [OPERATIONS.md](OPERATIONS.md) and [OPERATION_AUTHORING_GUIDE.md](OPERATION_AUTHORING_GUIDE.md). |
 | `intake/` | External data collection: `SignalConnector` (stateless monitors), `DataSource` (stateful fetchers), and `DomainKnowledgeProvider` (pack-owned orientation material). |
 | `seams/` | Host-injection protocols: `StateProvider`, `InputGuard`, `OutputGuard`, `ContentRegistry`, `ModelPolicy`, `ProviderGatewayProvider`, `EventBus`, `DataSanitizer`, `ExtensionEvidenceBuilder`, and completion/tool/operation callbacks. Storage is an MCP feature (`lisa-storage`), not a kernel seam. |
 | `synthesis/` | Post-collection intelligence pipeline: extension-owned stages (local analysis → synthesis → memory) and stage execution contracts. |
@@ -317,4 +315,3 @@ Import-boundary tests across all packages (`sdk/tests/test_import_boundaries.py`
 - [PACK_AUTHORING_GUIDE.md](PACK_AUTHORING_GUIDE.md) — how to create modes, operations, and content packs
 - [SDK_EXTENSIONS_GUIDE.md](SDK_EXTENSIONS_GUIDE.md) — how to create signal connectors and data sources
 - [HOSTS_GUIDE.md](HOSTS_GUIDE.md) — reference host usage and configuration
-

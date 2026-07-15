@@ -197,9 +197,11 @@ guard for the breach that exists today.
 | File I/O, checkpoints | `lisa-storage` MCP server | MCP (not a kernel seam) |
 
 Operations are **not** tools. Operations are internal reusable behaviors called by
-modes (pre-turn, post-turn, entry). Tools are LLM-callable capabilities surfaced in the
-provider's tool catalog. The kernel keeps the operation registry in-process and
-exposes a curated subset of operations as MCP tools when the LLM should call them.
+modes (pre-turn, post-turn, entry) and advertised to the model as in-process function
+schemas via `build_operation_tool_schemas`. The turn runner dispatches operation
+tool-calls to `kernel.operations.registry.execute_operation` (in-process), not to the
+MCP pool. See [OPERATIONS.md](OPERATIONS.md) for the full lifecycle and
+operation-vs-tool distinction.
 
 ### New module: `kernel/tools/mcp_client.py`
 

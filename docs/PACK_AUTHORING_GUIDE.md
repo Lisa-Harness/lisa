@@ -114,34 +114,17 @@ Kernel-owned keys that overrides **may** replace (read into typed fields but not
 
 List values from overrides replace (not concatenate) list values from the base front matter, so extension sets stay deterministic.
 
-## Operation Files
+## Operations
 
-Runtime operations use colocated YAML metadata and Python implementation:
+Operations are the behavior layer between modes and tools. A pack contributes
+operations as colocated YAML + Python pairs (runtime) or as `.operation.md` Markdown
+files (declarative). The Hello World example below shows the minimal shape; the mode
+front matter decides when operations are invoked.
 
-```yaml
-operation_id: example_operation
-description: Run one example operation.
-mode_allowlist: [example]
-timeout_seconds: 30
-```
-
-```python
-from kernel.models import OperationExecutionContext, OperationResult
-
-
-async def execute(ctx: OperationExecutionContext) -> OperationResult:
-    return OperationResult(output_text=f"Example received: {ctx.query}")
-```
-
-Prompt-authored operations can use `.operation.md` files when the operation is mostly instructions plus model/tool callbacks. Declare `tool_ids` only for tools the host actually registers.
-
-## Operation Rules
-
-- Operations are internal reusable behavior, not user-facing routes.
-- A mode decides which operations are allowed, pre-turn, post-turn, or entry operations.
-- Operations must depend on `kernel` contracts and host-injected callbacks, not private app modules.
-- Use typed Pydantic parameter and response models when the payload crosses a module boundary.
-- Return `OperationResult` with text plus optional structured JSON.
+- For the conceptual model, lifecycle hooks, and the operation-vs-tool distinction
+  see [OPERATIONS.md](OPERATIONS.md).
+- For the full metadata reference, examples with tool calls, response models, and the
+  testing checklist see [OPERATION_AUTHORING_GUIDE.md](OPERATION_AUTHORING_GUIDE.md).
 
 ## Content Rules
 

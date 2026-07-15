@@ -15,20 +15,6 @@ This staged tree is the intended public framework boundary. It contains reusable
 | `hosts/web` | Localhost web host (aiohttp + browser UI + optional tray). Wraps `hosts/core` with HTTP transport. Entry point: `lisa-web`. | Production deployment, multi-tenant auth |
 | `hosts/vscode` | VS Code extension host (stdio JSON-RPC bridge + TS extension shell). Wraps `hosts/core` with Chat participant transport. Entry point: `lisa-vscode`. | Production extension marketplace distribution |
 
-## Private Layers
-
-The repository root still owns the private app:
-
-- Teams transport and rendering adapter.
-- Production provider and model routing policy.
-- Azure Container Apps deployment and Key Vault wiring.
-- Production blob layout and app-owned event handlers.
-- CloudServers operations extensions and packs.
-- Market-intel collectors, synthesis, and proprietary prompt assets.
-- Advanced private proactive and reflective loops.
-
-Those private layers may consume the public framework, but the public framework must not import them.
-
 ## Host Responsibilities
 
 A real host must inject concrete implementations for runtime seams:
@@ -55,8 +41,3 @@ The public contracts still model privacy explicitly:
 - Proactive delivery targets are host-owned and must be explicit.
 
 Prompt wording is not a privacy control. Hosts must enforce scope in storage keys, retrieval filters, and delivery routing.
-
-## Exclusion Rule
-
-Do not add private app logic to this tree to make an example work. Prefer a small protocol, callback, stub, or host-owned adapter. If a feature requires CloudServers data, market-intel assets, or production Lisa state, keep it outside the public framework and document the missing host capability.
-

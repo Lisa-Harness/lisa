@@ -99,5 +99,4 @@ uv run pytest --import-mode=importlib hosts/little_lisa/test_little_lisa.py kern
 uv run --extra dev ruff check --select F,I kernel sdk mcp_server hosts
 ```
 
-See `docs/BOUNDARIES.md`, `docs/PACK_AUTHORING_GUIDE.md`, `docs/SDK_EXTENSIONS_GUIDE.md`, `docs/SESSION_CONTEXT_AUTHORING_GUIDE.md`, `docs/LITTLE_LISA_GUIDE.md`, and `docs/KERNEL_ARCHITECTURE.md` for authoring, host-boundary, and architecture details.
-
+See `docs/BOUNDARIES.md`, `docs/PACK_AUTHORING_GUIDE.md`, `docs/OPERATIONS.md`, `docs/OPERATION_AUTHORING_GUIDE.md`, `docs/SDK_EXTENSIONS_GUIDE.md`, `docs/SESSION_CONTEXT_AUTHORING_GUIDE.md`, `docs/LITTLE_LISA_GUIDE.md`, and `docs/KERNEL_ARCHITECTURE.md` for authoring, host-boundary, and architecture details.
