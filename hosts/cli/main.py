@@ -271,6 +271,26 @@ StreamingOption = Annotated[
         ),
     ),
 ]
+WithMcpOption = Annotated[
+    bool,
+    typer.Option(
+        "--with-mcp",
+        help=(
+            "Also list MCP server tools alongside internal tools. "
+            "Warms the MCP pool to discover tool names."
+        ),
+    ),
+]
+McpOnlyOption = Annotated[
+    bool,
+    typer.Option(
+        "--mcp-only",
+        help=(
+            "List only MCP server tools; skip the internal-tools table. "
+            "Warms the MCP pool to discover tool names."
+        ),
+    ),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -924,8 +944,17 @@ def _operations_command(
 # ---------------------------------------------------------------------------
 
 
-@app.command("tools", help="List internal tools with IDs for allowlist authoring.")
+@app.command(
+    "tools",
+    help=(
+        "List internal tools with IDs for allowlist authoring. "
+        "By default only internal tools are shown; pass --with-mcp to "
+        "also list MCP server tools, or --mcp-only to list only MCP tools."
+    ),
+)
 def _tools_command(
+    with_mcp: WithMcpOption = False,
+    mcp_only: McpOnlyOption = False,
     debug: DebugOption = False,
     log_level: LogLevelOption = "",
     log: LogOption = "",
@@ -959,8 +988,19 @@ def _tools_command(
     )
     if runtime is None:
         return
-    mcp_tools = asyncio.run(_collect_mcp_tools(runtime))
-    render_tools(runtime, mcp_tools=mcp_tools, console=console)
+    # Only warm the MCP pool when asked — it spawns subprocesses and can be
+    # slow, so the default (internal tools only) stays cheap.
+    if with_mcp or mcp_only:
+        mcp_tools = asyncio.run(_collect_mcp_tools(runtime))
+    else:
+        mcp_tools = []
+    if mcp_only:
+        if not mcp_tools:
+            console.print("[yellow]No MCP server tools discovered.[/yellow]")
+            return
+        render_mcp_tools(mcp_tools, console=console)
+    else:
+        render_tools(runtime, mcp_tools=mcp_tools, console=console)
 
 
 async def _collect_mcp_tools(runtime: HostRuntime) -> list[tuple[str, str]]:
