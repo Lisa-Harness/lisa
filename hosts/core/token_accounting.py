@@ -446,6 +446,7 @@ def format_session_exit_summary_lines(
     turn_count = int(state.get("session_turn_count", 0))
     success_count = int(state.get("session_success_count", 0))
     error_count = int(state.get("session_error_count", 0))
+    cancelled_count = int(state.get("session_cancelled_count", 0))
     total_latency_ms = float(state.get("session_total_latency_ms", 0.0))
     avg_latency_ms = (total_latency_ms / turn_count) if turn_count else 0.0
 
@@ -466,10 +467,11 @@ def format_session_exit_summary_lines(
     avg_total_tokens = (session_total / turn_count) if turn_count else 0.0
     avg_duration_ms = (session_duration_ms / turn_count) if turn_count else 0.0
 
+    cancelled_line = f" (cancelled: {cancelled_count})" if cancelled_count else ""
     lines = [
         "## Session Summary",
         f"- Duration: {duration_seconds:.1f}s",
-        f"- Turns: {turn_count} (ok: {success_count}, errors: {error_count})",
+        f"- Turns: {turn_count} (ok: {success_count}, errors: {error_count}{cancelled_line})",
         f"- Avg turn latency: {avg_latency_ms:.0f} ms",
         f"- Provider time: {session_duration_ms:.0f} ms (avg {avg_duration_ms:.0f} ms/turn)",
         "",

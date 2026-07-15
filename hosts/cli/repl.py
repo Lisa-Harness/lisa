@@ -260,7 +260,11 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
                     return True
         restart_requested = await _run_repl_loop(runtime, transport, console, prompt_session)
     finally:
-        await runtime.aclose()
+        # Shield the pool close from cancellation so a Ctrl+C during
+        # shutdown doesn't orphan MCP subprocesses. The anyio cross-loop
+        # rule (debugging.md) requires aclose in this same loop; shielding
+        # ensures it completes even if the main task was cancelled.
+        await asyncio.shield(runtime.aclose())
 
     return restart_requested
 
@@ -326,7 +330,7 @@ async def _read_repl_input(console: Console, prompt_session: Any) -> str | None:
                 )
             ).strip()
         return console.input(f"[{STYLE_PROMPT}]❯ [/]").strip()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         console.print()
         return ""
     except EOFError:
@@ -355,6 +359,45 @@ async def _process_repl_turn(
         transport.start_thinking("routing")
     try:
         result = await handle_message(runtime, message, transport)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        # Ctrl+C mid-turn: cancel the in-flight turn and return the prompt
+        # fast without tearing down the session.
+        #
+        # Two interrupt paths converge here:
+        # 1. asyncio.run()'s SIGINT handler calls main_task.cancel(), which
+        #    raises CancelledError inside this coroutine (Python 3.11+ on
+        #    all platforms). CancelledError is BaseException, so without
+        #    this handler it propagates past _run_repl_loop, hits
+        #    run_repl's `finally: await runtime.aclose()`, and kills the
+        #    whole session — losing the warm MCP pool.
+        # 2. On some platforms/loops a KeyboardInterrupt may still surface
+        #    inside the await; catch it here too so the behavior is
+        #    consistent.
+        #
+        # We do NOT close the MCP pool here. The pool owns long-lived
+        # subprocesses bound to this event loop (anyio cancel-scope rule
+        # from debugging.md: a resource started in a loop must be closed
+        # in that same loop). Cancelling the turn's await cancels the
+        # in-flight tool/complete coroutines; the pool itself survives and
+        # is reused on the next turn. MCPToolPool.call_tool and aclose
+        # already handle CancelledError internally (kernel/tools/mcp_client.py).
+        if isinstance(transport, RichTransport):
+            transport.stop_thinking()
+        # Flush any half-streamed on_text_chunk output that was written
+        # without a trailing newline before the interrupt.
+        console.file.write("\n")
+        console.print(f"[{STYLE_TEXT_MUTED}]⌧ turn cancelled[/]")
+        logger.info("REPL turn cancelled by user (Ctrl+C)")
+        _reset_runtime_after_cancelled_turn(runtime)
+        runtime.tokens.session_turn_count += 1
+        runtime.tokens.session_cancelled_count += 1
+        elapsed_ms = (time.perf_counter() - turn_start) * 1000.0
+        runtime.tokens.session_total_latency_ms += elapsed_ms
+        console.print(Rule(style=STYLE_RULE))
+        # Swallow the cancellation so the REPL loop re-renders the prompt.
+        # Without this re-raise guard, asyncio's cancellation propagation
+        # would unwind the whole task despite the except block.
+        return
     except Exception as exc:  # pylint: disable=broad-except
         if isinstance(transport, RichTransport):
             transport.stop_thinking()
@@ -444,6 +487,39 @@ def _render_runtime_error(
             border_style="indian_red",
         )
     )
+
+
+def _reset_runtime_after_cancelled_turn(runtime: HostRuntime) -> None:
+    """Reset per-turn runtime state after a cancelled (Ctrl+C) turn.
+
+    A cancelled ``handle_message`` may have partially advanced the route
+    preview (mode/stage/model) and left per-turn token counters dirty.
+    The next prompt must show a clean status line and start from a known
+    state, so:
+
+    - Reset per-turn token counters (``tokens.reset_turn()``).
+    - Restore the route preview to the session's start mode with neutral
+      stage/model placeholders (the same defaults ``HostRuntime.__init__``
+      sets). The next turn's routing path will repopulate
+      ``next_model_id``/``next_model_provider`` via
+      ``set_runtime_route_preview``. We do NOT call that helper here
+      because it depends on ``get_workflow_catalog()``, which requires
+      content-MCP registration — a dependency that is not safe in a
+      mid-interrupt teardown path (and breaks unit tests that exercise
+      the cancel handler without a full host boot).
+    - Clear ``last_turn_context``/``last_router_debug`` so stale
+      half-built state isn't surfaced by ``/debug context``.
+
+    This does NOT touch the MCP pool, the thread, or session-level
+    accumulators (turn/error/cancelled counts are updated by the caller).
+    """
+    runtime.tokens.reset_turn()
+    runtime.last_turn_context = None
+    runtime.last_router_debug = None
+    runtime.current_mode_id = runtime.start_mode_id
+    runtime.current_stage_id = "-"
+    runtime.next_model_id = "-"
+    runtime.next_model_provider = "-"
 
 
 def _render_restart_required_notice_if_needed(
