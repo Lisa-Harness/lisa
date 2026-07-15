@@ -1,11 +1,10 @@
-"""Tests for memory alias registration with explicit backend surfaces.
+"""Tests for memory alias registration — generic ``memory.*`` router only.
 
 Verifies that:
-- Each declared backend (mem0, lisa_memory) gets its own explicit synthetic
-  surface (``<backend>.add`` / ``.search`` / ``.list``).
-- The generic ``memory.*`` router is also registered → default backend.
-- When no backends are declared, the implicit lisa_memory surface is still
-  registered and is the default for the generic router.
+- Only the three generic ``memory.*`` aliases are registered (no per-backend
+  explicit surfaces — native tools are available by their FQN).
+- When no backends are declared, the implicit lisa_memory backend is the
+  default for the generic router.
 - mem0 arg maps translate ``content`` → ``text`` while lisa_memory passes
   args through unchanged.
 """
@@ -89,9 +88,9 @@ def _registered_names(pool: FakePool) -> list[str]:
 
 
 class TestImplicitLisaMemoryOnly:
-    """When no backends are declared, only lisa_memory (implicit) is registered."""
+    """When no backends are declared, only the generic router is registered."""
 
-    def test_registers_lisa_memory_surface_and_generic_router(self) -> None:
+    def test_registers_only_generic_router(self) -> None:
         pool = FakePool()
         register_memory_aliases(
             pool,
@@ -102,14 +101,13 @@ class TestImplicitLisaMemoryOnly:
             app_id="test",
         )
         names = _registered_names(pool)
-        # Explicit lisa_memory surface
-        assert "lisa_memory.add" in names
-        assert "lisa_memory.search" in names
-        assert "lisa_memory.list" in names
-        # Generic router → default (lisa_memory)
-        assert "memory.add" in names
-        assert "memory.search" in names
-        assert "memory.list" in names
+        # Only the generic router — no per-backend synthetics.
+        assert names == ["memory.add", "memory.search", "memory.list"]
+        # The generic router targets the implicit lisa_memory backend.
+        add = next(r for r in pool.registered if r["name"] == "memory.add")
+        assert add["target_tool"] == "add_memory"
+        assert add["target_server_id"] == "lisa-memory"
+        assert add["arg_map"] is None
 
     def test_ambient_resolvers_set(self) -> None:
         pool = FakePool()
@@ -127,9 +125,10 @@ class TestImplicitLisaMemoryOnly:
 
 
 class TestMem0AndLisaMemoryDeclared:
-    """When both mem0 and lisa_memory are declared, both get explicit surfaces."""
+    """When both mem0 and lisa_memory are declared, only the generic router
+    is registered — pinned to the default backend."""
 
-    def test_registers_both_explicit_surfaces(self) -> None:
+    def test_registers_only_generic_router_pinned_to_default(self) -> None:
         mem0_spec = FakeSpec(
             id="mem0",
             kind="http",
@@ -149,18 +148,8 @@ class TestMem0AndLisaMemoryDeclared:
             app_id="test",
         )
         names = _registered_names(pool)
-        # Explicit mem0 surface
-        assert "mem0.add" in names
-        assert "mem0.search" in names
-        assert "mem0.list" in names
-        # Explicit lisa_memory surface
-        assert "lisa_memory.add" in names
-        assert "lisa_memory.search" in names
-        assert "lisa_memory.list" in names
-        # Generic router → default (mem0)
-        assert "memory.add" in names
-        assert "memory.search" in names
-        assert "memory.list" in names
+        # Only the generic router — no per-backend synthetics.
+        assert names == ["memory.add", "memory.search", "memory.list"]
 
     def test_generic_router_targets_default_backend(self) -> None:
         mem0_spec = FakeSpec(
@@ -181,17 +170,16 @@ class TestMem0AndLisaMemoryDeclared:
             current_mode_id="default",
             app_id="test",
         )
-        # The generic memory.add should target the mem0 server with the
-        # mem0 arg map (content→text). Find it among the registrations.
+        # The generic memory.add targets the mem0 server with the
+        # mem0 arg map (content→text).
         generic_add = next(
             r for r in pool.registered if r["name"] == "memory.add"
         )
         assert generic_add["target_tool"] == "add_memory"
         assert generic_add["target_server_id"] == "lisa-pack-mem0.mem0"
-        # mem0 arg map translates content→text
         assert generic_add["arg_map"] is not None
 
-    def test_lisa_memory_surface_has_no_arg_map(self) -> None:
+    def test_generic_router_targets_lisa_memory_when_default(self) -> None:
         lisa_spec = FakeSpec(id="lisa_memory")
         pool = FakePool()
         register_memory_aliases(
@@ -205,17 +193,17 @@ class TestMem0AndLisaMemoryDeclared:
             current_mode_id="default",
             app_id="test",
         )
-        lisa_add = next(
-            r for r in pool.registered if r["name"] == "lisa_memory.add"
+        generic_add = next(
+            r for r in pool.registered if r["name"] == "memory.add"
         )
-        assert lisa_add["arg_map"] is None
-        assert lisa_add["target_server_id"] == "lisa-memory"
+        assert generic_add["arg_map"] is None
+        assert generic_add["target_server_id"] == "lisa-memory"
 
 
 class TestMem0ArgMap:
-    """Verify the mem0 arg map translates generic→native fields."""
+    """Verify the mem0 arg map (on the generic router) translates generic→native fields."""
 
-    def test_mem0_add_arg_map_translates_content_to_text(self) -> None:
+    def test_generic_add_arg_map_translates_content_to_text_when_mem0_default(self) -> None:
         mem0_spec = FakeSpec(
             id="mem0",
             kind="http",
@@ -233,10 +221,10 @@ class TestMem0ArgMap:
             current_mode_id="default",
             app_id="test",
         )
-        mem0_add = next(
-            r for r in pool.registered if r["name"] == "mem0.add"
+        memory_add = next(
+            r for r in pool.registered if r["name"] == "memory.add"
         )
-        arg_map = mem0_add["arg_map"]
+        arg_map = memory_add["arg_map"]
         assert arg_map is not None
         mapped = arg_map({"content": "hello", "user_slug": "bob"})
         assert mapped["text"] == "hello"

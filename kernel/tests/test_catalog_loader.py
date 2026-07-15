@@ -350,6 +350,51 @@ def test_load_catalog_from_disk_extra_front_matter_empty_when_no_app_keys(
 
 
 # ---------------------------------------------------------------------------
+# load_catalog_from_disk: tools_authoritative / allowed_tool_ids
+# ---------------------------------------------------------------------------
+
+
+def test_load_catalog_from_disk_tools_authoritative_defaults_true(tmp_path: Path) -> None:
+    """tools_authoritative defaults to True when absent from front matter."""
+    _write_mode(tmp_path)
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].tools_authoritative is True
+
+
+def test_load_catalog_from_disk_reads_explicit_tools_authoritative_false(
+    tmp_path: Path,
+) -> None:
+    """An explicit tools_authoritative: false is honored."""
+    _write_mode(tmp_path, extra_front_matter={"tools_authoritative": False})
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].tools_authoritative is False
+
+
+def test_load_catalog_from_disk_reads_allowed_tool_ids(tmp_path: Path) -> None:
+    """allowed_tool_ids are parsed from front matter into the typed field."""
+    _write_mode(
+        tmp_path,
+        extra_front_matter={"allowed_tool_ids": ["memory.add", "memory.search"]},
+    )
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].allowed_tool_ids == ["memory.add", "memory.search"]
+
+
+def test_load_catalog_from_disk_tools_authoritative_not_in_extra_front_matter(
+    tmp_path: Path,
+) -> None:
+    """tools_authoritative is kernel-owned; it never leaks into extra_front_matter."""
+    _write_mode(tmp_path, extra_front_matter={"tools_authoritative": True})
+    catalog = _load(tmp_path)
+
+    assert "tools_authoritative" not in catalog["demo"].extra_front_matter
+    assert catalog["demo"].tools_authoritative is True
+
+
+# ---------------------------------------------------------------------------
 # load_catalog_from_disk: _overrides.yaml application
 # ---------------------------------------------------------------------------
 

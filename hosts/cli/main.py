@@ -52,6 +52,7 @@ except ImportError:  # pragma: no cover â€” python-dotenv is optional
 from hosts.cli.render import (
     render_models,
     render_modes,
+    render_mcp_tools,
     render_operations,
     render_pack_list_panel,
     render_tools,
@@ -958,7 +959,87 @@ def _tools_command(
     )
     if runtime is None:
         return
-    render_tools(runtime, console=console)
+    mcp_tools = asyncio.run(_collect_mcp_tools(runtime))
+    render_tools(runtime, mcp_tools=mcp_tools, console=console)
+
+
+async def _collect_mcp_tools(runtime: HostRuntime) -> list[tuple[str, str]]:
+    """Warm the MCP pool, return ``(server_id, tool_name)`` pairs, then close it.
+
+    MCP tool names are only discoverable by calling ``tools/list`` on each
+    server, which requires a live session. This starts the pool (warm + cold
+    configs), reads the discovered tool specs, and tears the pool down — all
+    inside one ``asyncio.run`` event loop to honor anyio's same-loop contract
+    (the pool's async context managers must be entered and exited in the same
+    loop). Cold servers that fail to start are skipped by the pool; their
+    tools are simply absent from the returned list.
+
+    Returns an empty list when the runtime has no MCP servers configured or
+    when pool startup fails, so the ``tools``/``mcp`` commands degrade to
+    showing only the internal tool catalog instead of crashing.
+    """
+    if not runtime.mcp_warm_configs and not runtime.mcp_cold_configs:
+        return []
+    try:
+        await runtime.start()
+        pool = runtime.mcp_tool_pool
+        if pool is None:
+            return []
+        tools = await pool.list_tools()
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.debug("MCP tool collection failed: %s", exc)
+        return []
+    finally:
+        await runtime.aclose()
+    pairs = sorted({(spec.server_id, spec.name) for spec in tools})
+    return pairs
+
+
+# ---------------------------------------------------------------------------
+# mcp command
+# ---------------------------------------------------------------------------
+
+
+@app.command("mcp", help="List MCP server tools with names for tool_policy authoring.")
+def _mcp_command(
+    debug: DebugOption = False,
+    log_level: LogLevelOption = "",
+    log: LogOption = "",
+    no_log: NoLogOption = False,
+    data_dir: DataDirOption = "",
+    memory_db: MemoryDbOption = "",
+    thread_dir: ThreadDirOption = "",
+    no_thread: NoThreadOption = False,
+    session_context: SessionContextOption = "",
+    session_context_refresh: SessionContextRefreshOption = False,
+    timezone: TimezoneOption = "",
+    state_snapshot: StateSnapshotOption = "",
+    streaming: StreamingOption = "none",
+    host_log: HostLogOption = "",
+) -> None:
+    runtime = _initialize_runtime_or_exit(
+        debug=debug,
+        log_level=log_level,
+        log_path=log,
+        no_log=no_log,
+        data_dir=data_dir,
+        memory_db=memory_db,
+        thread_dir=thread_dir,
+        no_thread=no_thread,
+        user_slug=session_context,
+        session_context_refresh=session_context_refresh,
+        timezone=timezone,
+        state_snapshot_path=state_snapshot,
+        streaming=streaming,
+        host_log_path=host_log,
+    )
+    if runtime is None:
+        return
+    mcp_tools = asyncio.run(_collect_mcp_tools(runtime))
+    if not mcp_tools:
+        console.print("[yellow]No MCP server tools discovered.[/yellow]")
+        return
+    render_mcp_tools(mcp_tools, console=console)
 
 
 # ---------------------------------------------------------------------------

@@ -1019,8 +1019,8 @@ async def _run_turn_inner(
     # pool.call_tool, operations via hooks.execute_operation.
     mcp_tools = await pool.list_tools()
     # Apply mode-level tool allowlist.
-    # When tools_authoritative is True, empty allowed_tool_ids means no
-    # tools are advertised. When False (default), empty means all pass.
+    # When tools_authoritative is True (default), empty allowed_tool_ids
+    # means no tools are advertised. When False, empty means all pass.
     if mode_config and (mode_config.allowed_tool_ids or mode_config.tools_authoritative):
         allowed = set(mode_config.allowed_tool_ids)
         mcp_tools = [t for t in mcp_tools if t.name in allowed]
@@ -1720,7 +1720,7 @@ def _prune_model_tool_schemas(
 
     operation_catalog = get_operation_catalog()
     tool_catalog = get_tool_catalog()
-    tools_authoritative = bool(mode_config and getattr(mode_config, "tools_authoritative", False))
+    tools_authoritative = bool(mode_config and getattr(mode_config, "tools_authoritative", True))
     allowed_tool_ids: set[str] | None = None
     if mode_config and (getattr(mode_config, "allowed_tool_ids", []) or tools_authoritative):
         allowed_tool_ids = set(getattr(mode_config, "allowed_tool_ids", []) or [])

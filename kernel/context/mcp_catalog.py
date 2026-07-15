@@ -179,7 +179,7 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         post_turn_operation_ids=data.get("post_turn_operation_ids", []),
         allowed_operation_ids=data.get("allowed_operation_ids", []),
         allowed_tool_ids=data.get("allowed_tool_ids", []),
-        tools_authoritative=data.get("tools_authoritative", False),
+        tools_authoritative=data.get("tools_authoritative", True),
         entry_failure_policy=data.get("entry_failure_policy", "abort"),
         workshop_panels=workshop_panels,
         workshop_budget=workshop_budget,

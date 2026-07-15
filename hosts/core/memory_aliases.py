@@ -97,17 +97,19 @@ def _register_memory_synthetic_tools(
     memory_config: Any,
     memory_config_pack_slug: str | None,
 ) -> None:
-    """Register explicit memory synthetics on a started pool.
+    """Register the generic ``memory.*`` synthetic aliases on a started pool.
 
-    Each declared memory backend gets its own explicit synthetic surface
-    (``mem0.add`` / ``mem0.search`` / ``mem0.list``, or
-    ``lisa_memory.add`` / ``lisa_memory.search`` / ``lisa_memory.list``)
-    so the model can address a specific backend by name rather than through
-    an opaque generic alias.
+    Only the three generic aliases (``memory.add`` / ``memory.search`` /
+    ``memory.list``) are registered. They route through the pool to the
+    default memory backend selected by capability-provider policy.
 
-    The generic ``memory.*`` aliases are also registered as a convenience
-    router to the default backend, preserving backwards compatibility with
-    existing authored prompts and packs that call ``memory.add``.
+    Per-backend explicit surfaces (``mem0.add``, ``lisa_memory.add``, …)
+    are NOT registered — the native tools are already available to the model
+    under their fully-qualified names (``mem0.add_memory``,
+    ``lisa-memory.search_memory``, …) with ambient fields stripped by the
+    proxy layer and injected at dispatch time. The generic aliases exist to
+    give packs/prompts a stable, backend-agnostic name that follows the
+    configured default backend.
 
     Ambient scope (user_id) is injected by the proxy layer, not by these
     aliases — they only do generic→native field renaming (e.g.
@@ -127,18 +129,6 @@ def _register_memory_synthetic_tools(
             *_LISA_MEMORY_IMPLICIT_SPEC,
             *declared,
         ]
-
-    # Register an explicit synthetic surface per declared backend.
-    for spec in declared:
-        _register_backend_surface(
-            pool,
-            spec=spec,
-            prefix=prefix,
-            mcp_alias_tool=mcp_alias_tool,
-            is_default=(spec.id == default_backend_id) or (
-                default_backend_id is None and spec.id == "lisa_memory"
-            ),
-        )
 
     # Register the generic memory.* router → default backend.
     default_spec = next(
@@ -178,55 +168,6 @@ _LISA_MEMORY_IMPLICIT_SPEC = [
 # ``lisa-memory`` server id; all other backends use their own id as the
 # server id (prefixed by the owning pack slug at call sites).
 _BACKEND_ID_TO_SERVER_ID: dict[str, str] = {"lisa_memory": "lisa-memory"}
-
-
-def _register_backend_surface(
-    pool: Any,
-    *,
-    spec: Any,
-    prefix: str,
-    mcp_alias_tool: Any,
-    is_default: bool,
-) -> None:
-    """Register one backend's explicit synthetic surface (``<backend>.add`` …)."""
-    backend_id = spec.id
-    raw_server_id = _BACKEND_ID_TO_SERVER_ID.get(backend_id, backend_id)
-    server_id = f"{prefix}{raw_server_id}"
-    tool_names = dict(spec.tool_names)
-    add_arg_map, search_arg_map, list_arg_map = _backend_arg_maps(backend_id)
-
-    add_schema, search_schema, list_schema = _memory_schemas()
-    default_note = " (default backend)" if is_default else ""
-
-    pool.add_synthetic_tools([
-        mcp_alias_tool(
-            name=f"{backend_id}.add",
-            description=f"Persist a memory record via the {backend_id} backend{default_note}.",
-            pool=pool,
-            target_tool=tool_names["add"],
-            input_schema=add_schema,
-            target_server_id=server_id,
-            arg_map=add_arg_map,
-        ),
-        mcp_alias_tool(
-            name=f"{backend_id}.search",
-            description=f"Recall memories matching a query via the {backend_id} backend{default_note}.",
-            pool=pool,
-            target_tool=tool_names["search"],
-            input_schema=search_schema,
-            target_server_id=server_id,
-            arg_map=search_arg_map,
-        ),
-        mcp_alias_tool(
-            name=f"{backend_id}.list",
-            description=f"List recent memory records via the {backend_id} backend{default_note}.",
-            pool=pool,
-            target_tool=tool_names["list"],
-            input_schema=list_schema,
-            target_server_id=server_id,
-            arg_map=list_arg_map,
-        ),
-    ])
 
 
 def _register_generic_router(

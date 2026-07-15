@@ -307,7 +307,7 @@ def _is_operation_bound_to_mode(
 def build_operation_tool_schemas(
     mode_id: str,
     *,
-    tools_authoritative: bool = False,
+    tools_authoritative: bool = True,
 ) -> list[dict[str, Any]]:
     """Build OpenAI tool schemas for every operation allowed in the given mode.
 

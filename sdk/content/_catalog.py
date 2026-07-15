@@ -222,7 +222,7 @@ def _load_one_mode(
         "post_turn_operation_ids": [str(o) for o in (front_matter.get("post_turn_operation_ids") or [])],
         "allowed_operation_ids": [str(o) for o in (front_matter.get("allowed_operation_ids") or [])],
         "allowed_tool_ids": [str(t) for t in (front_matter.get("allowed_tool_ids") or [])],
-        "tools_authoritative": bool(front_matter.get("tools_authoritative", False)),
+        "tools_authoritative": bool(front_matter.get("tools_authoritative", True)),
         "entry_failure_policy": str(front_matter.get("entry_failure_policy", "abort") or "abort"),
         "workshop_panels": workshop_panels,
         "workshop_budget": front_matter.get("workshop_budget") or {},
@@ -630,7 +630,7 @@ def _infer_module_path(py_path: Path, root: Path) -> str:
 
     The ``operations`` directory name is included in the path so that
     ``sdk/packs/core/operations/research/workshop_run.py`` resolves to
-    ``sdk.packs.core.operations.research.workshop_run``.
+    ``sdk.packs.core.operations.workshop_run``.
     """
 
     relative = py_path.relative_to(root).with_suffix("")

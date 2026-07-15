@@ -328,16 +328,16 @@ async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
 # ── tools_authoritative mode ─────────────────────────────────────────
 
 
-def test_default_mode_tools_authoritative_is_false() -> None:
-    """tools_authoritative defaults to False (off by default)."""
+def test_default_mode_tools_authoritative_is_true() -> None:
+    """tools_authoritative defaults to True (authoritative by default)."""
     from kernel.ipsar_fsm import get_workflow_catalog
 
     default = get_workflow_catalog().get("default")
     assert default is not None
-    assert default.tools_authoritative is False
+    assert default.tools_authoritative is True
 
 
-def test_learn_mode_tools_authoritative_is_false() -> None:
+def test_learn_mode_tools_authoritative_is_true() -> None:
     """Learn mode is tool-authoritative to constrain memory calls."""
     from kernel.ipsar_fsm import get_workflow_catalog
 

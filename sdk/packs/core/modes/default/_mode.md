@@ -14,6 +14,7 @@ route_hints:
   - If more than one specialized mode appears plausible, choose the one implied by the primary verb in the user's message.
   - If the user is ambiguous but still probably wants a specialized mode, route instead of over-clarifying.
   - Use clarification only as a last resource when routing would otherwise be meaningfully wrong.
+allowed_operation_ids: [recall_memory]
 description: "General conversational mode."
 ---
 

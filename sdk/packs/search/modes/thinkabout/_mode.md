@@ -7,7 +7,6 @@ require_query: true
 routable: true
 priority: 8
 allowed_operation_ids: [web_search]
-tools_authoritative: true
 fast_path_patterns:
   - "\\bthink\\s+about\\b"
   - "\\bgo\\s+in\\s+depth\\b"

@@ -12,8 +12,6 @@ Nothing in this module imports from ``hosts.cli.repl`` or
 
 from __future__ import annotations
 
-from typing import Any
-
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -131,7 +129,12 @@ def render_operations(runtime: HostRuntime, *, console: Console | None = None) -
     return table
 
 
-def render_tools(runtime: HostRuntime, *, console: Console | None = None) -> Table:
+def render_tools(
+    runtime: HostRuntime,
+    *,
+    mcp_tools: list[tuple[str, str]] | None = None,
+    console: Console | None = None,
+) -> Table:
     """Build a Rich Table of internal tools with IDs for allowlist authoring.
 
     Lists every internal tool discovered from content packs via the
@@ -142,6 +145,11 @@ def render_tools(runtime: HostRuntime, *, console: Console | None = None) -> Tab
     separate tables so authors can tell which allowlist each ID belongs to:
     pack tool IDs go in ``allowed_tool_ids``; MCP tool IDs are governed by
     per-server ``tool_policy`` in ``mcp_servers.yaml``.
+
+    ``mcp_tools`` is an optional pre-collected list of
+    ``(server_id, tool_name)`` pairs (collected by warming the MCP pool —
+    see :func:`hosts.cli.main._collect_mcp_tools`). When provided and
+    non-empty, a second table is rendered for MCP server tools.
     """
     _ = runtime  # catalog is global; runtime kept for future per-host scoping
     table = Table(title="Lisa Internal Tools")
@@ -163,51 +171,34 @@ def render_tools(runtime: HostRuntime, *, console: Console | None = None) -> Tab
     if console is not None:
         console.print(table)
 
-    # MCP-server tools (if a pool is available on the runtime) — surfaced
-    # separately because they are filtered by per-server tool_policy, not by
-    # mode-level allowed_tool_ids. Showing them here helps authors discover
-    # the bare tool names to reference in mcp_servers.yaml tool_policy entries.
-    pool = getattr(runtime, "mcp_tool_pool", None)
-    mcp_tools = _collect_mcp_tool_names(pool)
     if mcp_tools:
-        mcp_table = Table(title="MCP Server Tools (per-server tool_policy)")
-        mcp_table.add_column("Server", style="bold")
-        mcp_table.add_column("Tool", overflow="fold")
-        for server_id, tool_name in mcp_tools:
-            mcp_table.add_row(server_id, tool_name)
-        if console is not None:
-            console.print(mcp_table)
+        render_mcp_tools(mcp_tools, console=console)
 
     return table
 
 
-def _collect_mcp_tool_names(pool: Any) -> list[tuple[str, str]]:
-    """Return ``(server_id, tool_name)`` pairs from an MCP tool pool, if any.
+def render_mcp_tools(
+    mcp_tools: list[tuple[str, str]],
+    *,
+    console: Console | None = None,
+) -> Table:
+    """Render a Rich Table of MCP server tools for allowlist authoring.
 
-    Best-effort: when the runtime exposes a warmed MCP pool we read its
-    discovered tool specs. Any failure (no pool, not yet connected, etc.)
-    yields an empty list so the tools command stays usable on cold hosts.
-
-    The pool is :class:`kernel.tools.mcp_client.MCPToolPool`, which stores
-    discovered tools as a flat ``_tools`` list of ``MCPToolSpec`` (each
-    carrying ``server_id`` and ``name``). We mirror that internal shape
-    rather than calling the async ``list_tools`` so this works on a cold
-    runtime before the pool has been started.
+    ``mcp_tools`` is a list of ``(server_id, tool_name)`` pairs collected by
+    warming the MCP pool (see :func:`hosts.cli.main._collect_mcp_tools`).
+    The tool names are the bare strings referenced by per-server
+    ``tool_policy.allowed_tools`` / ``denied_tools`` in ``mcp_servers.yaml``.
     """
-    if pool is None:
-        return []
-    try:
-        tools: Any = getattr(pool, "_tools", None) or []
-    except Exception:  # pragma: no cover — defensive, pool is host-supplied
-        return []
-    pairs: list[tuple[str, str]] = []
-    for spec in tools:
-        server_id = getattr(spec, "server_id", None)
-        name = getattr(spec, "name", None)
-        if server_id and name:
-            pairs.append((server_id, name))
-    pairs.sort()
-    return pairs
+    table = Table(title="MCP Server Tools (per-server tool_policy)")
+    table.add_column("Server", style="bold")
+    table.add_column("Tool", overflow="fold")
+
+    for server_id, tool_name in mcp_tools:
+        table.add_row(server_id, tool_name)
+
+    if console is not None:
+        console.print(table)
+    return table
 
 
 def render_markdown_panel(
@@ -230,6 +221,7 @@ def render_markdown_panel(
 
 __all__ = [
     "render_markdown_panel",
+    "render_mcp_tools",
     "render_models",
     "render_modes",
     "render_operations",

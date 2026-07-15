@@ -12,7 +12,7 @@ providers:
   modes:
     default: lisa-pack-core
   tools:
-    web_search: lisa-pack-brave-search
+    web_search: lisa-pack-search
 routing:
   start_mode: default
 context:

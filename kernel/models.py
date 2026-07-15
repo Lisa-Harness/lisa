@@ -1241,10 +1241,10 @@ class WorkflowModeConfig(BaseModel):
     # ``skip`` logs the failure and continues to the next binding, mirroring the
     # failure isolation pre/post-turn hooks already enjoy.
     entry_failure_policy: Literal["abort", "skip"] = "abort"
-    # When True, the mode's allowed_tool_ids and allowed_operation_ids are
-    # authoritative: empty means no tools/operations are advertised to the
-    # LLM. When False (default), empty means all pass through.
-    tools_authoritative: bool = False
+    # When True (default), the mode's allowed_tool_ids and allowed_operation_ids
+    # are authoritative: empty means no tools/operations are advertised to the
+    # LLM. When False, empty means all pass through.
+    tools_authoritative: bool = True
     workshop_panels: list[WorkshopPanelModeConfig] = Field(default_factory=list)
     workshop_budget: WorkshopBudgetConfig = Field(default_factory=WorkshopBudgetConfig)
     workshop_planner_prompt_file: str = ""

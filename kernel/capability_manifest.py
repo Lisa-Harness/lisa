@@ -103,7 +103,7 @@ def compile_capability_manifest(
 
     mode_id = getattr(mode_config, "mode_id", "") if mode_config else ""
     tools_authoritative = bool(
-        mode_config and getattr(mode_config, "tools_authoritative", False)
+        mode_config and getattr(mode_config, "tools_authoritative", True)
     )
     allowed_tool_ids = list(getattr(mode_config, "allowed_tool_ids", [])) if mode_config else []
 
@@ -182,7 +182,7 @@ def render_capability_manifest_context(manifest: CapabilityManifest) -> str:
     meta = manifest.metadata
     mode_id = meta.get("mode_id", "")
     kind_counts: dict[str, int] = meta.get("kind_counts", {})
-    tools_authoritative = meta.get("tools_authoritative", False)
+    tools_authoritative = meta.get("tools_authoritative", True)
 
     operations = kind_counts.get("operation", 0)
     workflow = kind_counts.get("mode", 0)

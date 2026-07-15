@@ -295,6 +295,8 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "pre_turn_operation_ids",
         "post_turn_operation_ids",
         "allowed_operation_ids",
+        "allowed_tool_ids",
+        "tools_authoritative",
         "routable",
         "priority",
         "fast_path_patterns",
@@ -558,6 +560,15 @@ def load_catalog_from_disk(
             str(operation_id)
             for operation_id in (mode_front_matter.get("allowed_operation_ids") or [])
         ]
+        allowed_tool_ids = [
+            str(tool_id)
+            for tool_id in (mode_front_matter.get("allowed_tool_ids") or [])
+        ]
+        tools_authoritative = mode_front_matter.get("tools_authoritative", True)
+        if not isinstance(tools_authoritative, bool):
+            raise WorkflowValidationError(
+                f"tools_authoritative must be a boolean in {mode_config_path}"
+            )
         routable = mode_front_matter.get("routable", False)
         if not isinstance(routable, bool):
             raise WorkflowValidationError(
@@ -769,6 +780,8 @@ def load_catalog_from_disk(
             pre_turn_operation_ids=pre_turn_operation_ids,
             post_turn_operation_ids=post_turn_operation_ids,
             allowed_operation_ids=allowed_operation_ids,
+            allowed_tool_ids=allowed_tool_ids,
+            tools_authoritative=tools_authoritative,
             workshop_panels=workshop_panels,
             workshop_budget=workshop_budget,
             workshop_planner_prompt_file=workshop_planner_prompt_file,

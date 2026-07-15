@@ -7,7 +7,6 @@ require_query: true
 routable: true
 priority: 9
 allowed_operation_ids: [synthesize_and_store_learning, recall_memory]
-tools_authoritative: true
 allowed_tool_ids: [memory.add, memory.search, memory.list]
 description: "LEARN workflow mode to reflect on the conversation and distill durable insights."
 route_hints:
