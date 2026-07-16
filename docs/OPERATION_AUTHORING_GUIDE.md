@@ -254,7 +254,7 @@ grant.
 
 ## Discovery rules and precedence
 
-- `sdk.content._catalog.build_operation_catalog_json` scans `operations/` recursively.
+- `sdk.content.build_operation_catalog_json` scans `operations/` recursively.
 - Markdown operations (`.operation.md`) are loaded first and take precedence.
 - If a directory has both `my_op.operation.md` and `my_op.py`, the `.py` file is
   treated as the response-format model only — its `execute` function (if any) is
@@ -284,7 +284,7 @@ def test_pack_imports_cleanly() -> None:
 ```python
 # tests/test_catalog.py
 from pathlib import Path
-from sdk.content._catalog import build_operation_catalog_json
+from sdk.content import build_operation_catalog_json
 import json
 
 def test_my_operation_discovered() -> None:

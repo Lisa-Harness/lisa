@@ -29,17 +29,17 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from sdk.content._catalog import (
+from sdk.content import (
+    build_catalog_diagnostics_json,
     build_mode_catalog_json,
     build_operation_catalog_json,
     build_tool_catalog_json,
     invalidate_catalog_cache,
+    resolve_content_roots,
     resolve_mode_roots,
     resolve_operation_roots,
     resolve_tool_roots,
 )
-from sdk.content._diagnostics import build_catalog_diagnostics_json
-from sdk.content._roots import resolve_content_roots
 
 logger = logging.getLogger(__name__)
 

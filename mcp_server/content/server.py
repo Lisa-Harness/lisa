@@ -24,7 +24,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from sdk.content._reader import ContentReader
+from sdk.content import ContentReader
 
 logger = logging.getLogger(__name__)
 

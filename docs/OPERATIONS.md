@@ -132,7 +132,7 @@ mode_allowlist: [default, discuss, learn]
 ## Discovery and registration
 
 The `lisa-catalog` MCP server (`mcp_server/catalog/`) scans all discovered content
-roots via `sdk.content._catalog.build_operation_catalog_json`. The kernel calls
+roots via `sdk.content.build_operation_catalog_json`. The kernel calls
 `list_operations` on startup through `register_operation_mcp(config)`, which populates
 `_OPERATION_CATALOG` in `kernel/operations/registry.py` and validates every entry.
 

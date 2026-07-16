@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from sdk.content._catalog import (
+from sdk.content import (
     build_mode_catalog_json,
     build_tool_catalog_json,
     resolve_mode_roots,

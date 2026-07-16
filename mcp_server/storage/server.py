@@ -32,7 +32,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.config.cli import build_parser, configure_logging, resolve_data_dir
-from sdk.content._reader import is_safe_relative_path
+from sdk.content import is_safe_relative_path
 
 __all__ = ["init_storage", "main", "mcp"]
 
