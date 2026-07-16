@@ -14,14 +14,17 @@ The VS Code host has two parts:
    `hosts.core.handle_message`, and writes JSON responses to stdout. Logging
    goes to a file (never stderr — stderr is reserved for VS Code diagnostics).
 
-2. **TS extension shell** (`hosts/vscode/extension/`) — a minimal VS Code
-   extension that spawns the Python bridge, registers a Chat participant
-   (`@lisa`), and pipes messages back and forth. The extension does no business
-   logic — it's pure transport.
+2. **TS extension shell** (sibling repo `lisa_vscode`, see
+   [github.com/lisa-framework/vscode-extension](https://github.com/lisa-framework/vscode-extension))
+   — a minimal VS Code extension that spawns the Python bridge, registers a
+   Chat participant (`@lisa`), and pipes messages back and forth. The extension
+   does no business logic — it's pure transport. It is checked out at
+   `../lisa_vscode` (a sibling of this repo) and connected only by the JSON-RPC
+   stdio contract below.
 
 ```mermaid
 flowchart TD
-  A["VS Code Chat view<br/>@lisa participant"] --> B["extension.ts<br/>BridgeClient"]
+  A["VS Code Chat view<br/>@lisa participant"] --> B["extension.ts<br/>BridgeClient (../lisa_vscode)"]
   B -->|"stdin: JSON-RPC"| C["bridge.py<br/>HostRuntime + handle_message"]
   C -->|"stdout: JSON-RPC"| B
   C --> D["hosts.core<br/>(same runtime as CLI/web)"]
@@ -38,8 +41,13 @@ flowchart TD
 
 ### Step 1: Build the extension
 
+The TypeScript extension now lives in a sibling repo at `../lisa_vscode`
+(git origin: `github.com/lisa-framework/vscode-extension`). Clone it if you
+haven't already:
+
 ```powershell
-cd hosts\vscode\extension
+git clone https://github.com/lisa-framework/vscode-extension.git ../lisa_vscode
+cd ../lisa_vscode
 pnpm install
 pnpm run compile
 ```
@@ -60,9 +68,9 @@ This produces `out/extension.js` from `src/extension.ts`.
 **Option A — Launch a development host (recommended for testing):**
 
 ```powershell
-# Press F5 in VS Code with the extension folder open
+# Press F5 in VS Code with the ../lisa_vscode folder open
 # OR:
-code --extensionDevelopmentPath=c:\Code\lisa_framework\hosts\vscode\extension
+code --extensionDevelopmentPath=C:\Code\lisa_vscode
 ```
 
 This opens a new VS Code window with the extension loaded. The `@lisa` Chat
@@ -71,15 +79,12 @@ participant should appear in the Chat view.
 **Option B — Package and install:**
 
 ```powershell
-# Install vsce if you don't have it
-pnpm add -g @vscode/vsce
-
 # Package (pnpm runs the prepublish script automatically)
-cd hosts\vscode\extension
-vsce package --no-dependencies
+cd ../lisa_vscode
+pnpm run package
 
 # Install
-code --install-extension lisa-framework-0.1.0.vsix
+code --install-extension lisa-vscode-0.1.0.vsix
 ```
 
 > **`--no-dependencies`**: When packaging with `vsce`, pass this flag
@@ -111,11 +116,19 @@ All host commands work the same as in the CLI: `/help`, `/settings`, `/tokens`,
 ### Environment Variables
 
 The VS Code bridge reads the same `LISA_*` env vars as the CLI host. The
-extension spawns the bridge with the workspace's `.venv` Python, so the `.env`
-file at the project root is loaded automatically.
+extension spawns the bridge with `python -m hosts.vscode.bridge --data-dir
+<globalStoragePath>`, so set the `lisa.pythonPath` setting to this repo's
+`.venv` Python so the `hosts.vscode.bridge` module is importable:
 
-If your `.env` is elsewhere, set the env vars in VS Code's `settings.json` or
-in your terminal environment before launching VS Code.
+```json
+{
+  "lisa.pythonPath": "C:\\Code\\lisa_framework\\.venv\\Scripts\\python.exe"
+}
+```
+
+The `.env` file at the project root is loaded automatically. If your `.env`
+is elsewhere, set the env vars in VS Code's `settings.json` or in your terminal
+environment before launching VS Code.
 
 ### Model Manifest
 

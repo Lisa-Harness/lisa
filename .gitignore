@@ -19,6 +19,10 @@ venv/
 .vscode/
 .idea/
 
+# VS Code extension shell has moved to ../lisa_vscode (sibling repo).
+# Ignore the empty stub that may linger from a file-watcher handle.
+hosts/vscode/extension/
+
 # OS
 .DS_Store
 Thumbs.db
