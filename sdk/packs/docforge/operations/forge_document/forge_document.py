@@ -39,6 +39,7 @@ __all__ = ["Parameters", "execute"]
 # by ``lisa-storage`` and the memory backend respectively.
 _OUTLINE_TOOL_ID = "docforge_outline_markdown"
 _WRITE_TOOL_ID = "write_file"
+_READ_TOOL_ID = "read_file"
 _MEMORY_SEARCH_TOOL_ID = "memory.search"
 
 # Authored-text paths — loaded via ctx.read_authored_text_fn (SDK loader).
@@ -111,6 +112,12 @@ class Parameters(BaseModel):
         default="",
         description="Natural-language instruction for the document. Falls back to ctx.query when empty.",
     )
+    existing_document: str = Field(
+        default="",
+        description="Current document text to revise. When non-empty, the operation "
+        "reads it from storage via read_file and passes it to the LLM as the "
+        "starting point. Omit for a new document.",
+    )
     limit: int = Field(
         default=8,
         ge=1,
@@ -139,6 +146,48 @@ def _extract_query(ctx: OperationExecutionContext, params: dict[str, Any]) -> st
     if len(raw) > _MAX_QUERY_CHARS:
         raw = raw[:_MAX_QUERY_CHARS] + "…"
     return raw
+
+
+async def _read_existing_document(
+    ctx: OperationExecutionContext,
+    path: str,
+) -> str:
+    """Read the current document from lisa-storage via the ``read_file`` tool.
+
+    Returns the document text, or an empty string when the document does not
+    exist yet (a normal condition for a first forge). Raises ``RuntimeError``
+    on any other tool failure.
+    """
+    tool_result = await ctx.execute_tool_fn(
+        _READ_TOOL_ID,
+        ToolExecutionContext(
+            tool_id=_READ_TOOL_ID,
+            workspace_id=ctx.workspace_id,
+            user_id=ctx.user_id,
+            user_slug=ctx.user_slug,
+            surface_type=ctx.surface_type,
+            surface_id=ctx.surface_id,
+            memory_scope=ctx.memory_scope,
+            mode_id=ctx.mode_id,
+            parameters={"path": path},
+        ),
+    )
+    error_text = getattr(tool_result, "error", "") or ""
+    if error_text:
+        raise RuntimeError(f"{_READ_TOOL_ID} failed: {error_text}")
+    output_text = getattr(tool_result, "output_text", "") or ""
+    # The storage server returns the raw file text on success, or a JSON
+    # error object on failure. A JSON error with "not found" is a normal
+    # first-forge condition — return "".
+    try:
+        data = json.loads(output_text)
+    except (json.JSONDecodeError, TypeError):
+        return output_text.strip()
+    if isinstance(data, dict) and "error" in data:
+        if "not found" in str(data["error"]):
+            return ""
+        raise RuntimeError(f"{_READ_TOOL_ID} failed: {data['error']}")
+    return output_text.strip()
 
 
 async def _recall_memory(
@@ -213,6 +262,7 @@ async def _call_llm(
     ctx: OperationExecutionContext,
     user_input: str,
     memory_context: str,
+    existing_document: str = "",
 ) -> str:
     """Call the host's completion function with the forging prompt."""
     if ctx.complete_fn is None or ctx.resolve_model_fn is None:
@@ -231,6 +281,7 @@ async def _call_llm(
         user_template,
         user_input=user_input,
         memory_context=memory_context or "(no recalled context)",
+        existing_document=existing_document or "(no existing document — start fresh)",
     )
 
     messages = [
@@ -349,7 +400,22 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     recall_limit = int(params.get("limit") or _MAX_RECALL_RECORDS)
     memory_context = await _recall_memory(ctx, user_input, limit=recall_limit)
 
-    completion = await _call_llm(ctx, user_input, memory_context)
+    # Iteration: when the caller supplies an existing document, use it. When
+    # the caller omits it but the target path already exists in storage,
+    # read it so the LLM revises rather than replacing wholesale.
+    existing_document = str(params.get("existing_document") or "").strip()
+    if not existing_document:
+        try:
+            existing_document = await _read_existing_document(ctx, document_path)
+        except RuntimeError as exc:
+            return OperationResult(output_text=str(exc))
+
+    completion = await _call_llm(
+        ctx,
+        user_input,
+        memory_context,
+        existing_document=existing_document,
+    )
     if not completion or not completion.strip():
         return OperationResult(output_text=_load_text(ctx, _EMPTY_RESPONSE_PATH))
 

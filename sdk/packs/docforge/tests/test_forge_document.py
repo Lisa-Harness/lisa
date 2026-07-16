@@ -74,13 +74,22 @@ def _make_tool_executor(
     memory_records: list[str] | None = None,
     outline: dict[str, Any] | None = None,
     write_ok: bool = True,
+    stored_documents: dict[str, str] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Return a fake ``execute_tool_fn`` and a captures dict.
 
     ``captures`` records the arguments of each ``write_file`` call so tests
-    can assert what the operation persisted.
+    can assert what the operation persisted. ``stored_documents`` seeds the
+    fake storage with existing document text keyed by path; ``read_file``
+    reads from it and ``write_file`` updates it.
     """
-    captures: dict[str, Any] = {"writes": [], "memory_query": None, "outline_markdown": None}
+    store: dict[str, str] = dict(stored_documents or {})
+    captures: dict[str, Any] = {
+        "writes": [],
+        "memory_query": None,
+        "outline_markdown": None,
+        "read_paths": [],
+    }
 
     async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
         params = getattr(ctx, "parameters", {}) or {}
@@ -109,17 +118,29 @@ def _make_tool_executor(
                 output_text=f"Outline: {heading_count} headings.",
                 output_json={"heading_count": heading_count, "headings": []},
             )
+        if tool_id == "read_file":
+            path = str(params.get("path") or "")
+            captures["read_paths"].append(path)
+            if path in store:
+                return ToolResult(tool_id=tool_id, output_text=store[path])
+            return ToolResult(
+                tool_id=tool_id,
+                output_text=json.dumps({"error": f"file not found: {path}"}),
+            )
         if tool_id == "write_file":
-            captures["writes"].append({"path": params.get("path"), "content": params.get("content")})
+            path = str(params.get("path") or "")
+            content = str(params.get("content") or "")
+            captures["writes"].append({"path": path, "content": content})
             if not write_ok:
                 return ToolResult(
                     tool_id=tool_id,
                     output_text=json.dumps({"error": "server is read-only"}),
                 )
+            store[path] = content
             return ToolResult(
                 tool_id=tool_id,
                 output_text=json.dumps(
-                    {"ok": True, "path": params.get("path"), "bytes": len(params.get("content", "").encode("utf-8"))}
+                    {"ok": True, "path": path, "bytes": len(content.encode("utf-8"))}
                 ),
             )
         return ToolResult(tool_id=tool_id, error=f"unknown tool: {tool_id}")
@@ -298,3 +319,92 @@ async def test_memory_context_passed_to_llm() -> None:
     await execute(ctx)
     user_prompt = next(m for m in captured_messages if m["role"] == "user")
     assert "Prior incident: VM restart fixed it." in user_prompt["content"]
+
+
+@pytest.mark.asyncio
+async def test_reads_existing_document_from_storage_when_omitted() -> None:
+    """When existing_document is not supplied, the operation reads it from storage."""
+    existing = "# Existing Doc\n\nOld content.\n"
+    tool_fn, captures = _make_tool_executor(stored_documents={"docs/forge.md": existing})
+
+    async def _complete(**_kwargs: Any) -> _FakeCompletion:
+        return _FakeCompletion(content=f"```markdown\n{_VALID_DOCUMENT}\n```")
+
+    ctx = _make_ctx(
+        complete_fn=_complete,
+        resolve_model_fn=_fake_resolve_model(),
+        execute_tool_fn=tool_fn,
+    )
+    await execute(ctx)
+    # The operation must have read the existing document from storage.
+    assert "docs/forge.md" in captures["read_paths"]
+
+
+@pytest.mark.asyncio
+async def test_existing_document_passed_to_llm() -> None:
+    """When existing_document is supplied, it must reach the LLM user prompt."""
+    existing = "# Existing Doc\n\nOld content.\n"
+    tool_fn, _ = _make_tool_executor()
+    captured_messages: list[dict[str, Any]] = []
+
+    async def _capturing_complete(**kwargs: Any) -> _FakeCompletion:
+        captured_messages.extend(kwargs.get("messages", []))
+        return _FakeCompletion(content=f"```markdown\n{_VALID_DOCUMENT}\n```")
+
+    ctx = _make_ctx(
+        complete_fn=_capturing_complete,
+        resolve_model_fn=_fake_resolve_model(),
+        execute_tool_fn=tool_fn,
+        params={"existing_document": existing},
+    )
+    await execute(ctx)
+    user_prompt = next(m for m in captured_messages if m["role"] == "user")
+    assert "Existing Doc" in user_prompt["content"]
+    assert "Old content." in user_prompt["content"]
+
+
+@pytest.mark.asyncio
+async def test_iteration_revises_and_persists() -> None:
+    """A second call with existing_document revises the stored document."""
+    original = "# Runbook\n\n## Steps\n1. Old step.\n"
+    revised = "# Runbook\n\n## Steps\n1. New step.\n2. Added step.\n"
+    tool_fn, captures = _make_tool_executor(stored_documents={"docs/runbook.md": original})
+
+    async def _complete(**_kwargs: Any) -> _FakeCompletion:
+        return _FakeCompletion(content=f"```markdown\n{revised}\n```")
+
+    ctx = _make_ctx(
+        query="add a step to verify the VM is healthy after restart",
+        complete_fn=_complete,
+        resolve_model_fn=_fake_resolve_model(),
+        execute_tool_fn=tool_fn,
+        params={"document_path": "docs/runbook.md"},
+    )
+    result = await execute(ctx)
+    assert "Document forged and stored" in result.output_text
+    assert "docs/runbook.md" in result.output_text
+    # The operation must have read the existing document before revising.
+    assert "docs/runbook.md" in captures["read_paths"]
+    # The persisted content must be the revised document.
+    assert len(captures["writes"]) == 1
+    assert "New step." in captures["writes"][0]["content"]
+    assert "Added step." in captures["writes"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_no_existing_document_starts_fresh() -> None:
+    """When storage has no existing document, the operation starts fresh."""
+    tool_fn, captures = _make_tool_executor()  # no stored_documents
+
+    async def _complete(**_kwargs: Any) -> _FakeCompletion:
+        return _FakeCompletion(content=f"```markdown\n{_VALID_DOCUMENT}\n```")
+
+    ctx = _make_ctx(
+        complete_fn=_complete,
+        resolve_model_fn=_fake_resolve_model(),
+        execute_tool_fn=tool_fn,
+    )
+    result = await execute(ctx)
+    assert "Document forged and stored" in result.output_text
+    # The operation attempted a read but found nothing (not-found is normal).
+    assert "docs/forge.md" in captures["read_paths"]

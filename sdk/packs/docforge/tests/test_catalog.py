@@ -24,6 +24,7 @@ def test_forge_document_tool_ids_declared() -> None:
     assert {
         "docforge_outline_markdown",
         "write_file",
+        "read_file",
         "memory.search",
     } <= tool_ids
 
