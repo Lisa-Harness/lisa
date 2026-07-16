@@ -1,9 +1,9 @@
-"""Tests for the docforge_forge_document operation.
+"""Tests for the markdown_forge_document operation.
 
 Tests inject a real content-registry loader (`read_authored_text_fn`) that
 reads the actual authored prompt files from the pack's content root, a fake
 `complete_fn` that returns a canned markdown document, and a fake
-`execute_tool_fn` that simulates the `memory.search`, `docforge_outline_markdown`,
+`execute_tool_fn` that simulates the `memory.search`, `markdown_generate`,
 and `write_file` tools. Per the pack-content rule, the operation has no
 fallbacks — tests must wire both callbacks exactly as production hosts do.
 """
@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from kernel.models import OperationExecutionContext, ToolResult
-from sdk.packs.docforge.operations.forge_document.forge_document import execute
+from sdk.packs.markdown.operations.forge_document.forge_document import execute
 
 _CONTENT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -99,7 +99,7 @@ def _make_tool_executor(
                 return ToolResult(tool_id=tool_id, output_text="No relevant memories found.")
             lines = [f"- {r}" for r in memory_records]
             return ToolResult(tool_id=tool_id, output_text="\n".join(lines))
-        if tool_id == "docforge_outline_markdown":
+        if tool_id == "markdown_generate":
             captures["outline_markdown"] = params.get("markdown")
             if outline is not None:
                 return ToolResult(
@@ -163,7 +163,7 @@ def _make_ctx(
         surface_type="personal_dm",
         surface_id="test",
         memory_scope="personal",
-        mode_id="docforge",
+        mode_id="markdown",
         query=query,
         complete_fn=complete_fn,
         resolve_model_fn=resolve_model_fn,

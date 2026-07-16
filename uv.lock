@@ -21,8 +21,8 @@ members = [
     "lisa-pack-checkpoint",
     "lisa-pack-coding",
     "lisa-pack-core",
-    "lisa-pack-docforge",
     "lisa-pack-learning",
+    "lisa-pack-markdown",
     "lisa-pack-search",
     "lisa-sdk",
 ]
@@ -884,10 +884,10 @@ dependencies = [
     { name = "lisa-pack-cloudflare" },
     { name = "lisa-pack-coding" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-docforge" },
     { name = "lisa-pack-github" },
     { name = "lisa-pack-gmail" },
     { name = "lisa-pack-learning" },
+    { name = "lisa-pack-markdown" },
     { name = "lisa-pack-mem0" },
     { name = "lisa-pack-model-picker" },
     { name = "lisa-pack-search" },
@@ -922,10 +922,10 @@ requires-dist = [
     { name = "lisa-pack-cloudflare", directory = "../lisa_packs/cloudflare" },
     { name = "lisa-pack-coding", editable = "sdk/packs/coding" },
     { name = "lisa-pack-core", editable = "sdk/packs/core" },
-    { name = "lisa-pack-docforge", editable = "sdk/packs/docforge" },
     { name = "lisa-pack-github", directory = "../lisa_packs/github" },
     { name = "lisa-pack-gmail", directory = "../lisa_packs/gmail" },
     { name = "lisa-pack-learning", editable = "sdk/packs/learning" },
+    { name = "lisa-pack-markdown", editable = "sdk/packs/markdown" },
     { name = "lisa-pack-mem0", directory = "../lisa_packs/mem0" },
     { name = "lisa-pack-model-picker", directory = "../lisa_packs/model_picker" },
     { name = "lisa-pack-search", editable = "sdk/packs/search" },
@@ -1326,34 +1326,6 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "lisa-pack-docforge"
-version = "0.1.0"
-source = { editable = "sdk/packs/docforge" }
-dependencies = [
-    { name = "lisa-kernel" },
-    { name = "lisa-sdk" },
-    { name = "markdown-it-py" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-mock" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "lisa-kernel" },
-    { name = "lisa-sdk" },
-    { name = "markdown-it-py", specifier = ">=3.0.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "lisa-pack-github"
 version = "0.1.0"
 source = { directory = "../lisa_packs/github" }
@@ -1403,6 +1375,34 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-markdown"
+version = "0.1.0"
+source = { editable = "sdk/packs/markdown" }
+dependencies = [
+    { name = "lisa-kernel" },
+    { name = "lisa-sdk" },
+    { name = "markdown-it-py" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lisa-kernel" },
+    { name = "lisa-sdk" },
+    { name = "markdown-it-py", specifier = ">=3.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },

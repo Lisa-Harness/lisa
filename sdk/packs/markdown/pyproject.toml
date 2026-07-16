@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["../.."]
-include = ["sdk.packs.docforge*"]
+include = ["sdk.packs.markdown*"]
 
 [tool.setuptools.package-data]
-"sdk.packs.docforge" = [
+"sdk.packs.markdown" = [
     "modes/**/*.md",
     "operations/**/*.md",
     "operations/**/*.yml",
@@ -16,9 +16,9 @@ include = ["sdk.packs.docforge*"]
 ]
 
 [project]
-name = "lisa-pack-docforge"
+name = "lisa-pack-markdown"
 version = "0.1.0"
-description = "Lisa docforge pack - memory-grounded markdown document forging with markdown-it-py"
+description = "Lisa markdown pack - memory-grounded markdown document forging with markdown-it-py"
 requires-python = ">=3.11"
 dependencies = [
     "lisa-kernel",
@@ -43,4 +43,4 @@ markers = [
 ]
 
 [project.entry-points."lisa.extensions.content_roots"]
-docforge = "sdk.packs.docforge:get_content_root"
+markdown = "sdk.packs.markdown:get_content_root"

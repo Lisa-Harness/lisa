@@ -1,10 +1,10 @@
-"""Catalog discovery test for the docforge pack."""
+"""Catalog discovery test for the markdown pack."""
 
 from __future__ import annotations
 
 import json
 
-import sdk.packs.docforge as docforge
+import sdk.packs.markdown as markdown
 from sdk.content import (
     build_mode_catalog_json,
     build_operation_catalog_json,
@@ -13,20 +13,20 @@ from sdk.content import (
 
 
 def test_forge_document_discovered() -> None:
-    root = docforge.get_content_root() / "operations"
+    root = markdown.get_content_root() / "operations"
     catalog = json.loads(build_operation_catalog_json([root]))
-    assert "docforge_forge_document" in catalog
-    op = catalog["docforge_forge_document"]
+    assert "markdown_forge_document" in catalog
+    op = catalog["markdown_forge_document"]
     assert op["description"]
-    assert "docforge" in op["mode_allowlist"]
+    assert "markdown" in op["mode_allowlist"]
 
 
 def test_forge_document_tool_ids_declared() -> None:
-    root = docforge.get_content_root() / "operations"
+    root = markdown.get_content_root() / "operations"
     catalog = json.loads(build_operation_catalog_json([root]))
-    tool_ids = set(catalog["docforge_forge_document"]["tool_ids"])
+    tool_ids = set(catalog["markdown_forge_document"]["tool_ids"])
     assert {
-        "docforge_outline_markdown",
+        "markdown_generate",
         "write_file",
         "read_file",
         "memory.search",
@@ -34,23 +34,23 @@ def test_forge_document_tool_ids_declared() -> None:
 
 
 def test_outline_markdown_tool_discovered() -> None:
-    root = docforge.get_content_root() / "tools"
+    root = markdown.get_content_root() / "tools"
     catalog = json.loads(build_tool_catalog_json([root]))
-    assert "docforge_outline_markdown" in catalog
-    tool = catalog["docforge_outline_markdown"]
+    assert "markdown_generate" in catalog
+    tool = catalog["markdown_generate"]
     assert tool["description"]
-    assert tool["pack_id"] == "lisa-pack-docforge"
+    assert tool["pack_id"] == "lisa-pack-markdown"
 
 
-def test_docforge_mode_exposes_tools_directly() -> None:
+def test_markdown_mode_exposes_tools_directly() -> None:
     """The mode exposes storage/memory/outline tools, not the operation."""
-    root = docforge.get_content_root() / "modes"
+    root = markdown.get_content_root() / "modes"
     catalog = json.loads(build_mode_catalog_json([root]))
-    mode = catalog["docforge"]
+    mode = catalog["markdown"]
     assert mode["mode_kind"] == "chat"
     assert mode["allowed_operation_ids"] == []
     assert set(mode["allowed_tool_ids"]) >= {
-        "docforge_outline_markdown",
+        "markdown_generate",
         "write_file",
         "read_file",
         "memory.search",

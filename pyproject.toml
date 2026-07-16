@@ -16,7 +16,7 @@ dependencies = [
     "lisa-pack-core",
     "lisa-pack-search",
     "lisa-pack-checkpoint",
-    "lisa-pack-docforge",
+    "lisa-pack-markdown",
     "lisa-pack-mem0",
     "lisa-pack-brave-search",
     "lisa-pack-gmail",
@@ -53,7 +53,7 @@ members = [
     "sdk/packs/coding",
     "sdk/packs/search",
     "sdk/packs/checkpoint",
-    "sdk/packs/docforge",
+    "sdk/packs/markdown",
     "hosts/core",
     "hosts/cli",
     "hosts/web",
@@ -73,7 +73,7 @@ lisa-pack-stripe = { path = "../lisa_packs/stripe" }
 lisa-pack-core = { workspace = true }
 lisa-pack-search = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
-lisa-pack-docforge = { workspace = true }
+lisa-pack-markdown = { workspace = true }
 lisa-pack-mem0 = { path = "../lisa_packs/mem0" }
 lisa-pack-brave-search = { path = "../lisa_packs/brave_search" }
 lisa-pack-gmail = { path = "../lisa_packs/gmail" }

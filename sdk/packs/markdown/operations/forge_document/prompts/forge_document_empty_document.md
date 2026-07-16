@@ -1,4 +1,4 @@
-# Docforge Error: Empty Document
+# Markdown Error: Empty Document
 
 The model response did not contain a usable markdown document.
 

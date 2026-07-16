@@ -7,7 +7,7 @@ Pipeline:
 2. Call an LLM with an authored system prompt + the user input + recalled
    context to synthesize a markdown document.
 3. Validate the synthesized document's structure by calling the
-   ``docforge_outline_markdown`` tool (backed by ``markdown-it-py``). The
+   ``markdown_generate`` tool (backed by ``markdown-it-py``). The
    outline must contain at least one heading.
 4. Persist the document to the ``lisa-storage`` MCP server's ``write_file``
    tool under a caller-supplied relative path (default ``docs/``).
@@ -34,10 +34,10 @@ logger = logging.getLogger(__name__)
 __all__ = ["Parameters", "execute"]
 
 # Tool ids — declared in the operation YAML ``tool_ids`` and routed through
-# ``ctx.execute_tool_fn``. ``docforge_outline_markdown`` is a pack-contributed
+# ``ctx.execute_tool_fn``. ``markdown_generate`` is a pack-contributed
 # in-process tool; ``write_file`` and ``memory.search`` are MCP tools served
 # by ``lisa-storage`` and the memory backend respectively.
-_OUTLINE_TOOL_ID = "docforge_outline_markdown"
+_OUTLINE_TOOL_ID = "markdown_generate"
 _WRITE_TOOL_ID = "write_file"
 _READ_TOOL_ID = "read_file"
 _MEMORY_SEARCH_TOOL_ID = "memory.search"
@@ -201,7 +201,7 @@ async def _recall_memory(
     ``RuntimeError`` only when the tool executor itself is missing.
     """
     if not callable(ctx.execute_tool_fn):
-        raise RuntimeError("docforge requires execute_tool_fn to call memory/storage tools")
+        raise RuntimeError("markdown requires execute_tool_fn to call memory/storage tools")
 
     recall_limit = max(1, min(int(limit), 20))
     tool_result = await ctx.execute_tool_fn(
@@ -228,7 +228,7 @@ async def _recall_memory(
     )
     error_text = getattr(tool_result, "error", "") or ""
     if error_text:
-        logger.warning("docforge: memory.search returned error: %s", error_text)
+        logger.warning("markdown: memory.search returned error: %s", error_text)
         return ""
     output_text = getattr(tool_result, "output_text", "") or ""
     # The memory backend returns newline-formatted text (or a JSON list).
@@ -266,13 +266,13 @@ async def _call_llm(
 ) -> str:
     """Call the host's completion function with the forging prompt."""
     if ctx.complete_fn is None or ctx.resolve_model_fn is None:
-        raise RuntimeError("docforge requires complete_fn and resolve_model_fn")
+        raise RuntimeError("markdown requires complete_fn and resolve_model_fn")
 
     preferred_model_id = ctx.preferred_model_id or ctx.model_id or "default"
     model_def = ctx.resolve_model_fn(preferred_model_id)
     if model_def is None:
         raise RuntimeError(
-            f"docforge could not resolve model '{preferred_model_id}'"
+            f"markdown could not resolve model '{preferred_model_id}'"
         )
 
     system_prompt = _load_text(ctx, _SYSTEM_PROMPT_PATH)
@@ -313,7 +313,7 @@ def _extract_markdown_block(text: str) -> str:
 
 
 async def _validate_outline(ctx: OperationExecutionContext, document: str) -> dict[str, Any]:
-    """Run the ``docforge_outline_markdown`` tool and return its outline dict.
+    """Run the ``markdown_generate`` tool and return its outline dict.
 
     Raises ``RuntimeError`` if the tool returns an error.
     """

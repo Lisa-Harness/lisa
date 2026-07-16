@@ -1,11 +1,11 @@
-"""Tests for the docforge_outline_markdown tool (markdown-it-py backed)."""
+"""Tests for the markdown_generate tool (markdown-it-py backed)."""
 
 from __future__ import annotations
 
 import pytest
 
 from kernel.models import ToolExecutionContext, ToolResult
-from sdk.packs.docforge.tools.outline_markdown.outline_markdown import (
+from sdk.packs.markdown.tools.markdown_generate.markdown_generate import (
     TOOL_ID,
     execute,
 )
@@ -14,7 +14,7 @@ from sdk.packs.docforge.tools.outline_markdown.outline_markdown import (
 def _ctx(markdown: str) -> ToolExecutionContext:
     return ToolExecutionContext(
         tool_id=TOOL_ID,
-        mode_id="docforge",
+        mode_id="markdown",
         parameters={"markdown": markdown},
     )
 
@@ -63,7 +63,7 @@ async def test_no_headings_yields_zero() -> None:
 
 @pytest.mark.asyncio
 async def test_falls_back_to_query_when_markdown_param_absent() -> None:
-    ctx = ToolExecutionContext(tool_id=TOOL_ID, mode_id="docforge", query="# Q\nBody")
+    ctx = ToolExecutionContext(tool_id=TOOL_ID, mode_id="markdown", query="# Q\nBody")
     result = await execute(ctx)
     assert result.error == ""
     assert result.output_json["heading_count"] == 1

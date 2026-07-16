@@ -1,4 +1,4 @@
-# Docforge User Prompt Template
+# Markdown User Prompt Template
 
 User instruction:
 

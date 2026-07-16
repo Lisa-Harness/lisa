@@ -1,6 +1,6 @@
 ---
-mode_id: docforge
-mode_provider_id: lisa-pack-docforge
+mode_id: markdown
+mode_provider_id: lisa-pack-markdown
 start_stage_id: none
 mode_kind: chat
 routable: true
@@ -8,20 +8,20 @@ priority: 6
 fast_path_patterns:
   - '\b(forge|draft|write|compose|output|create|generate|make|produce)\b.*\b(document|doc|markdown|runbook|post|note)\b'
   - '\b(document|doc|markdown|runbook|post|note)\b.*\b(forge|draft|write|compose|output|create|generate|make|produce)\b'
-  - '\bdocforge\b'
+  - '\bmarkdown\b'
 route_hints:
-  - Prefer `docforge` when the user wants to output, create, generate, write, or produce a markdown document (e.g. "output a markdown that captures...", "create a markdown runbook", "generate a doc").
-  - Prefer `docforge` when the user asks to turn the conversation or research into a markdown document.
+  - Prefer `markdown` when the user wants to output, create, generate, write, or produce a markdown document (e.g. "output a markdown that captures...", "create a markdown runbook", "generate a doc").
+  - Prefer `markdown` when the user asks to turn the conversation or research into a markdown document.
 examples:
   - reasoning: "User wants to output a markdown document capturing research and conversation."
-    selected_mode_id: docforge
+    selected_mode_id: markdown
     normalized_query: output a markdown that captures all the detail of that research and the subsequent conversation
     clarification_needed: false
     clarification_question: ""
     direct_response: ""
     confidence_score: 0.9
   - reasoning: "User wants to draft a markdown document from memory."
-    selected_mode_id: docforge
+    selected_mode_id: markdown
     normalized_query: write a markdown document that summarizes our conversation
     clarification_needed: false
     clarification_question: ""
@@ -29,18 +29,18 @@ examples:
     confidence_score: 0.9
 allowed_operation_ids: []
 allowed_tool_ids:
-  - docforge_outline_markdown
+  - markdown_generate
   - write_file
   - read_file
   - memory.search
 tools_authoritative: true
-command_pattern: '^(?:/)?docforge(?:[\s,:;]+(?P<query>.+))?$'
+command_pattern: '^(?:/)?markdown(?:[\s,:;]+(?P<query>.+))?$'
 description: "Forge and iterate on a markdown document from user input + recalled memory, validate it with markdown-it-py, and store it via lisa-storage."
 ---
 
-# Docforge
+# Markdown
 
-You are in DOCFORGE mode. The user is drafting or iterating on a markdown
+You are in MARKDOWN mode. The user is drafting or iterating on a markdown
 document. You have direct access to the tools needed to forge, validate, and
 store the document. Use them in this order:
 
@@ -53,7 +53,7 @@ store the document. Use them in this order:
    the user instruction, the recalled memory, and (when iterating) the
    existing document. Produce a well-structured markdown document with at
    least one `#`-level heading.
-4. **Validate structure** — call `docforge_outline_markdown` with the
+4. **Validate structure** — call `markdown_generate` with the
    `markdown` parameter set to your document text. Confirm the outline has
    at least one heading. If it doesn't, revise and re-validate.
 5. **Persist** — call `write_file` with the `path` (relative, no `..`

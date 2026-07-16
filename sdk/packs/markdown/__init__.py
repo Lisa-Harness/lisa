@@ -1,8 +1,8 @@
-"""Docforge pack — memory-grounded markdown document forging.
+"""Markdown pack — memory-grounded markdown document forging.
 
-Provides the ``docforge`` action mode which combines user input with recalled
+Provides the ``markdown`` action mode which combines user input with recalled
 memory context, calls an LLM to synthesize a markdown document, validates the
-document's structure through the ``docforge_outline_markdown`` tool (backed by
+document's structure through the ``markdown_generate`` tool (backed by
 ``markdown-it-py``), and persists the result via the ``lisa-storage`` MCP
 server's ``write_file`` tool.
 """

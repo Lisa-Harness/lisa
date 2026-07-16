@@ -24,11 +24,11 @@ try:
     from markdown_it import MarkdownIt
 except ImportError as exc:  # pragma: no cover - dependency declared in pyproject
     raise RuntimeError(
-        "docforge_outline_markdown requires the 'markdown-it-py' package; "
-        "install lisa-pack-docforge or add markdown-it-py to the environment."
+        "markdown_generate requires the 'markdown-it-py' package; "
+        "install lisa-pack-markdown or add markdown-it-py to the environment."
     ) from exc
 
-TOOL_ID = "docforge_outline_markdown"
+TOOL_ID = "markdown_generate"
 
 # Markdown-it tokens that mark inline code or fenced code blocks.
 _CODE_TOKENS = frozenset(
@@ -156,7 +156,7 @@ async def execute(ctx: ToolExecutionContext) -> ToolResult:
     if not markdown.strip():
         return ToolResult(
             tool_id=TOOL_ID,
-            error="docforge_outline_markdown received empty markdown.",
+            error="markdown_generate received empty markdown.",
         )
     try:
         outline = _outline_of(markdown, params.max_headings)

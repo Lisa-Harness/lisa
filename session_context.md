@@ -10,11 +10,16 @@ resources:
     include:
       - lisa-pack-core
       - lisa-pack-learning
+      - lisa-pack-markdown
+      - lisa-pack-search
+      - lisa-pack-brave-search
     required:
       - lisa-pack-core
 providers:
   modes:
     default: lisa-pack-learning
+  tools:
+    web_search: lisa-pack-brave-search
 routing:
   start_mode: default
 context:
