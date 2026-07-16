@@ -8,17 +8,19 @@ so it uses the same `.env`, model manifests, pack policy, and MCP server pool.
 
 ```powershell
 # Start the web server (opens a browser tab automatically)
-uv run lisa-web desktop
+uv run lisa desktop
 
 # Without auto-opening a browser
-uv run lisa-web desktop --no-open-browser
+uv run lisa desktop --no-open-browser
 
 # Custom host/port
-uv run lisa-web desktop --host 0.0.0.0 --port 9000
+uv run lisa desktop --host 0.0.0.0 --port 9000
 
 # With a specific auth token (otherwise generated at startup)
-uv run lisa-web desktop --token my-secret-token
+uv run lisa desktop --token my-secret-token
 ```
+
+The standalone `lisa-web desktop` entry point still works and runs the same code.
 
 The server prints the URL with the token query parameter. If you didn't disable
 auto-open, a browser tab launches automatically. If you closed it, the URL looks
@@ -27,6 +29,15 @@ like:
 ```plaintext
 http://127.0.0.1:8765/?token=<generated-token>
 ```
+
+### Quitting on tab close
+
+The chat page pings `/api/heartbeat` every five seconds and sends a
+`/api/quit` beacon when the tab is closed (`pagehide` / `beforeunload`). A
+server-side watchdog shuts the process down cleanly within ~15s of the last
+activity, so closing the browser tab exits `lisa desktop` without a stray
+background process. If the beacon is lost (e.g. browser killed), the watchdog
+timeout still triggers the shutdown.
 
 ## Configuration
 

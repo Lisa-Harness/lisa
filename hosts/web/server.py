@@ -8,11 +8,19 @@ This is the web-transport adaptation of the former
 - ``POST /api/turn`` — execute one turn via ``hosts.core.handle_message``
 - ``GET /api/context`` — last turn diagnostic context (JSON)
 - ``GET /health`` — liveness probe
+- ``POST /api/heartbeat`` — client keepalive ping (drives the watchdog)
+- ``POST /api/quit`` — client signals tab/window close (beacon)
 
 The runtime lifecycle is bound to the server's event loop:
 ``runtime.start()`` runs in ``on_startup`` and ``runtime.aclose()`` runs
 in ``on_cleanup`` — both inside the aiohttp event loop, satisfying the
 anyio cross-loop rule.
+
+Single-tab lifecycle: the chat page pings ``/api/heartbeat`` every few
+seconds and sends a ``/api/quit`` beacon on ``pagehide``/``beforeunload``.
+A server-side watchdog stops the server (and closes the runtime) when no
+heartbeat or turn activity arrives within ``_HEARTBEAT_TIMEOUT_SECONDS``.
+This makes ``lisa web`` exit cleanly when the user closes the browser tab.
 """
 
 from __future__ import annotations
@@ -36,6 +44,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_WEB_HOST = "127.0.0.1"
 DEFAULT_WEB_PORT = 8765
 _DEFAULT_TOKEN_BYTES = 16
+
+# Heartbeat watchdog. The chat page pings /api/heartbeat every
+# _HEARTBEAT_INTERVAL_SECONDS; if the server sees no activity (heartbeat,
+# turn, or context fetch) for this many seconds, it shuts down cleanly.
+# Generous enough to survive a brief network stall, tight enough that
+# closing the tab exits the process within ~15s.
+_HEARTBEAT_INTERVAL_SECONDS = 5.0
+_HEARTBEAT_TIMEOUT_SECONDS = 15.0
 
 
 def generate_web_token() -> str:
@@ -307,6 +323,34 @@ def build_web_index_html(*, token: str) -> str:
         }}
       }});
 
+      // ── Heartbeat + quit-on-close ───────────────────────────────
+      // Ping the server every few seconds so it knows the tab is alive.
+      // On pagehide, send a quit beacon so the server can shut down
+      // immediately instead of waiting for the watchdog timeout.
+      async function pingHeartbeat() {{
+        try {{
+          await fetch("/api/heartbeat?token=" + encodeURIComponent(state.token), {{
+            method: "POST",
+            keepalive: true,
+          }});
+        }} catch (error) {{
+          // Network errors are expected during shutdown; swallow them.
+        }}
+      }}
+
+      function sendQuitBeacon() {{
+        try {{
+          navigator.sendBeacon("/api/quit?token=" + encodeURIComponent(state.token));
+        }} catch (error) {{
+          // sendBeacon may not be available or may fail during unload.
+        }}
+      }}
+
+      window.addEventListener("pagehide", sendQuitBeacon);
+      window.addEventListener("beforeunload", sendQuitBeacon);
+      setInterval(pingHeartbeat, 5000);
+      pingHeartbeat();
+
       refreshContext();
       promptEl.focus();
     </script>
@@ -394,14 +438,30 @@ def _build_web_app(*, runtime: HostRuntime, token: str) -> web.Application:
     app["runtime"] = runtime
     app["web_token"] = token
     app["turn_lock"] = asyncio.Lock()
+    app["last_activity"] = 0.0
+    app["watchdog_trigger"] = asyncio.Event()
+    app["watchdog_task"] = None
 
     # ── Lifecycle hooks ─────────────────────────────────────────────
     async def _on_startup(_app: web.Application) -> None:
         rt: HostRuntime = _app["runtime"]
         logger.info("web on_startup: starting runtime")
         await rt.start()
+        # Start the heartbeat watchdog now that the loop is live. It stops
+        # the server when the browser tab closes (no heartbeat within the
+        # timeout window).
+        _app["last_activity"] = _app.loop.time() if _app.loop else 0.0
+        _app["watchdog_task"] = asyncio.create_task(_heartbeat_watchdog(_app))
 
     async def _on_cleanup(_app: web.Application) -> None:
+        # Cancel the watchdog first so it does not race the runtime teardown.
+        task = _app["watchdog_task"]
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         rt: HostRuntime = _app["runtime"]
         logger.info("web on_cleanup: closing runtime")
         await rt.aclose()
@@ -427,9 +487,31 @@ def _build_web_app(*, runtime: HostRuntime, token: str) -> web.Application:
             return _unauthorized_response(
                 request, "context", web.json_response({"error": "unauthorized"}, status=401)
             )
+        _mark_activity(request.app)
         rt: HostRuntime = request.app["runtime"]
         context = _turn_context_to_dict(rt.last_turn_context)
         return web.json_response(context)
+
+    async def _heartbeat(request: web.Request) -> web.Response:
+        if not _is_token_valid(request, str(request.app["web_token"])):
+            return _unauthorized_response(
+                request, "heartbeat", web.json_response({"error": "unauthorized"}, status=401)
+            )
+        _mark_activity(request.app)
+        return web.json_response({"ok": True})
+
+    async def _quit(request: web.Request) -> web.Response:
+        if not _is_token_valid(request, str(request.app["web_token"])):
+            return _unauthorized_response(
+                request, "quit", web.json_response({"error": "unauthorized"}, status=401)
+            )
+        logger.info("web quit beacon received, shutting down")
+        # Set the trigger; _run_server_until_quit is awaiting it and will
+        # run runner.cleanup() (which fires on_cleanup → runtime.aclose).
+        # We do NOT call app.shutdown() here — that would race the runner
+        # teardown. Respond 200 so the beacon completes first.
+        request.app["watchdog_trigger"].set()
+        return web.json_response({"ok": True})
 
     async def _turn(request: web.Request) -> web.Response:
         if not _is_token_valid(request, str(request.app["web_token"])):
@@ -442,11 +524,45 @@ def _build_web_app(*, runtime: HostRuntime, token: str) -> web.Application:
     app.router.add_get("/health", _health)
     app.router.add_get("/api/context", _context)
     app.router.add_post("/api/turn", _turn)
+    app.router.add_post("/api/heartbeat", _heartbeat)
+    app.router.add_post("/api/quit", _quit)
     return app
+
+
+def _mark_activity(app: web.Application) -> None:
+    """Record the current event-loop time as the last client activity."""
+
+    app["last_activity"] = app.loop.time() if app.loop else 0.0
+
+
+async def _heartbeat_watchdog(app: web.Application) -> None:
+    """Stop the server when the browser tab goes away.
+
+    Polls ``last_activity`` every ``_HEARTBEAT_INTERVAL_SECONDS``. If no
+    heartbeat, turn, or context fetch has arrived within
+    ``_HEARTBEAT_TIMEOUT_SECONDS``, sets ``watchdog_trigger`` so
+    ``_run_server_until_quit`` unblocks and tears the runner down (which
+    fires ``on_cleanup`` → ``runtime.aclose()``). We do NOT call
+    ``app.shutdown()`` here — the runner owns the teardown.
+    """
+
+    loop = app.loop
+    if loop is None:  # pragma: no cover — defensive
+        return
+    app["last_activity"] = loop.time()
+    while True:
+        await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
+        last = app["last_activity"]
+        if loop.time() - last >= _HEARTBEAT_TIMEOUT_SECONDS:
+            logger.info("web watchdog: no heartbeat for %.0fs, shutting down", _HEARTBEAT_TIMEOUT_SECONDS)
+            app["watchdog_trigger"].set()
+            return
 
 
 async def _handle_turn_request(request: web.Request) -> web.Response:
     """Process a turn request after token validation passes."""
+
+    _mark_activity(request.app)
 
     try:
         payload = await request.json()
@@ -486,6 +602,63 @@ async def _handle_turn_request(request: web.Request) -> web.Response:
 # ── Server entry point ──────────────────────────────────────────────────
 
 
+async def _cleanup_runner_on_interrupt(app: web.Application) -> None:
+    """Best-effort runner cleanup after a KeyboardInterrupt.
+
+    On Ctrl-C, ``asyncio.run`` cancels the coroutine mid-``await``; the
+    normal ``runner.cleanup()`` path in the ``finally`` may not run
+    because the ``CancelledError`` unwinds first. This helper is run in
+    a fresh loop to fire ``on_cleanup`` (watchdog cancel +
+    ``runtime.aclose()``) so the MCP pool does not leak.
+    """
+
+    for handler in list(app.on_cleanup):
+        try:
+            await handler(app)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("web on_cleanup handler failed during interrupt", exc_info=True)
+
+
+async def _run_server_until_quit(
+    *,
+    app: web.Application,
+    host: str,
+    port: int,
+    open_browser: bool,
+    launch_url: str,
+) -> None:
+    """Run the aiohttp server until the quit signal fires, then tear down.
+
+    Uses ``AppRunner`` + ``TCPSite`` (not ``web.run_app``) so the watchdog
+    task and the ``/api/quit`` beacon can stop the server cleanly: they set
+    ``app["watchdog_trigger"]``, which this coroutine awaits, then it
+    calls ``runner.cleanup()`` (which runs ``on_cleanup`` →
+    ``runtime.aclose()``) and returns. The process then exits.
+
+    Lifecycle order:
+      1. ``runner.setup()`` → fires ``on_startup`` (runtime.start, watchdog start)
+      2. ``site.start()`` → begins serving on host:port
+      3. open browser if requested
+      4. ``await watchdog_trigger`` → blocks until quit beacon or watchdog timeout
+      5. ``runner.cleanup()`` → fires ``on_cleanup`` (watchdog cancel, runtime.aclose)
+    """
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host=host, port=port)
+    await site.start()
+    logger.info("web server serving on %s:%d", host, port)
+
+    if open_browser:
+        webbrowser.open(launch_url)
+
+    try:
+        await app["watchdog_trigger"].wait()
+    finally:
+        logger.info("web server shutting down")
+        await runner.cleanup()
+
+
 def run_web_server(
     *,
     runtime: HostRuntime,
@@ -494,25 +667,36 @@ def run_web_server(
     token: str,
     open_browser: bool,
 ) -> None:
-    """Run the local web host until interrupted.
+    """Run the local web host until the browser tab closes (or interrupted).
 
     The runtime's ``start()`` and ``aclose()`` are bound to the server's
     ``on_startup`` / ``on_cleanup`` hooks, so they execute inside the
     aiohttp event loop (satisfying the anyio cross-loop rule).
+
+    The server runs under an explicit ``AppRunner`` so the heartbeat
+    watchdog (or the ``/api/quit`` beacon) can stop it cleanly: both set
+    ``watchdog_trigger``, which ``_run_server_until_quit`` awaits, after
+    which ``runner.cleanup()`` runs ``on_cleanup`` and the process exits.
     """
 
     app = _build_web_app(runtime=runtime, token=token)
     launch_url = web_url(host=host, port=port, token=token)
     logger.info("starting web server on %s:%d", host, port)
 
-    if open_browser:
-
-        async def _open_browser_on_startup(_app: web.Application) -> None:
-            webbrowser.open(launch_url)
-
-        app.on_startup.append(_open_browser_on_startup)
-
-    web.run_app(app, host=host, port=port, print=None)
+    try:
+        asyncio.run(
+            _run_server_until_quit(
+                app=app,
+                host=host,
+                port=port,
+                open_browser=open_browser,
+                launch_url=launch_url,
+            )
+        )
+    except KeyboardInterrupt:
+        # Ctrl-C in the terminal: let the loop tear down via runner.cleanup.
+        logger.info("web server interrupted (KeyboardInterrupt)")
+        asyncio.run(_cleanup_runner_on_interrupt(app))
 
 
 __all__ = [

@@ -173,18 +173,41 @@ def test_run_web_server_wires_browser_startup_hook(monkeypatch: pytest.MonkeyPat
     config = HostConfig.from_env(data_dir=str(tmp_path))
     runtime = HostRuntime(config)
 
-    captured: dict[str, Any] = {}
     opened: list[str] = []
-
-    def _fake_run_app(app: object, **kwargs: object) -> None:
-        captured["app"] = app
-        captured["kwargs"] = kwargs
+    startup_fired: list[bool] = []
 
     def _fake_open(url: str) -> bool:
         opened.append(url)
         return True
 
-    monkeypatch.setattr(web_server.web, "run_app", _fake_run_app)
+    class _FakeRunner:
+        def __init__(self, app: object) -> None:
+            self.app = app
+
+        async def setup(self) -> None:
+            # Fire on_startup so the watchdog task is created and the
+            # browser-open hook (if registered) would run. Pre-set the
+            # quit trigger so _run_server_until_quit does not block.
+            self.app["watchdog_trigger"].set()
+            for handler in list(self.app.on_startup):
+                await handler(self.app)
+            startup_fired.append(True)
+
+        async def cleanup(self) -> None:
+            for handler in list(self.app.on_cleanup):
+                await handler(self.app)
+
+    class _FakeSite:
+        def __init__(self, runner: object, host: object = None, port: object = None) -> None:
+            self.runner = runner
+            self.host = host
+            self.port = port
+
+        async def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(web_server.web, "AppRunner", _FakeRunner)
+    monkeypatch.setattr(web_server.web, "TCPSite", _FakeSite)
     monkeypatch.setattr(web_server.webbrowser, "open", _fake_open)
 
     web_server.run_web_server(
@@ -195,13 +218,75 @@ def test_run_web_server_wires_browser_startup_hook(monkeypatch: pytest.MonkeyPat
         open_browser=True,
     )
 
-    assert captured["kwargs"] == {"host": "127.0.0.1", "port": 9000, "print": None}
-
-    app = captured["app"]
-    on_startup = app.on_startup
-    assert len(on_startup) >= 1
-
-    import asyncio
-
-    asyncio.run(on_startup[-1](app))
+    # The browser should have been opened with the launch URL.
     assert opened == ["http://127.0.0.1:9000/?token=secret"]
+    # runner.setup() ran, which fires on_startup.
+    assert startup_fired == [True]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_endpoint_requires_token_and_marks_activity(tmp_path) -> None:
+    client = await _make_client(tmp_path=tmp_path, token="secret")
+    try:
+        unauthorized = await client.post("/api/heartbeat")
+        assert unauthorized.status == 401
+
+        ok = await client.post("/api/heartbeat", params={"token": "secret"})
+        assert ok.status == 200
+        assert await ok.json() == {"ok": True}
+
+        # last_activity should now be a positive loop time, not the 0.0 init.
+        app = client.server.app
+        assert app["last_activity"] > 0.0
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_quit_endpoint_triggers_shutdown_signal(tmp_path) -> None:
+    client = await _make_client(tmp_path=tmp_path, token="secret")
+    try:
+        unauthorized = await client.post("/api/quit")
+        assert unauthorized.status == 401
+
+        ok = await client.post("/api/quit", params={"token": "secret"})
+        assert ok.status == 200
+        assert await ok.json() == {"ok": True}
+
+        app = client.server.app
+        assert app["watchdog_trigger"].is_set()
+    finally:
+        await client.close()
+
+
+def test_build_web_index_html_includes_heartbeat_and_quit_script() -> None:
+    html = web_server.build_web_index_html(token="secret")
+
+    assert "/api/heartbeat" in html
+    assert "/api/quit" in html
+    assert "sendQuitBeacon" in html
+    assert "pingHeartbeat" in html
+    assert "pagehide" in html
+
+
+def test_cli_desktop_command_is_registered() -> None:
+    """The main `lisa` CLI exposes a `desktop` subcommand for the web host."""
+    from hosts.cli.main import app as cli_app
+
+    names = {cmd.name for cmd in cli_app.registered_commands}
+    assert "desktop" in names
+
+
+def test_cli_desktop_command_help_lists_web_flags() -> None:
+    import typer.testing
+
+    from hosts.cli.main import app as cli_app
+
+    runner = typer.testing.CliRunner()
+    result = runner.invoke(cli_app, ["desktop", "--help"])
+    assert result.exit_code == 0
+    out = result.output
+    assert "--port" in out
+    assert "--host" in out
+    assert "--token" in out
+    assert "--no-open-browser" in out
