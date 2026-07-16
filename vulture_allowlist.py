@@ -7,14 +7,17 @@ or are public API surface declared in ``__all__`` but never imported internally.
 Every entry carries a ``# reason:`` comment explaining why vulture should
 ignore it.  Run::
 
-    uv run vulture kernel sdk mcp_server hosts/little_lisa vulture_allowlist.py
+    uv run vulture kernel sdk mcp_server hosts/core hosts/cli hosts/web vulture_allowlist.py
 """
 
 # ──────────────────────────────────────────────────────────────────────────
 # Console-script entry points — called by pip-installed [project.scripts].
 # ──────────────────────────────────────────────────────────────────────────
-# reason: console_script target — little-lisa CLI
-hosts.little_lisa.main.main  # noqa: Vulture
+# reason: console_script target — lisa CLI (hosts/cli/pyproject.toml: lisa)
+hosts.cli.main.main  # noqa: Vulture
+
+# reason: console_script target — lisa-web (hosts/web/pyproject.toml: lisa-web)
+hosts.web.main.main  # noqa: Vulture
 
 # reason: console_script target — lisa-context MCP server
 mcp_server.context.server.main  # noqa: Vulture
@@ -31,23 +34,20 @@ mcp_server.content.server.main  # noqa: Vulture
 # reason: console_script target — lisa-catalog MCP server
 mcp_server.catalog.server.main  # noqa: Vulture
 
+# reason: console_script target — lisa-storage MCP server
+mcp_server.storage.server.main  # noqa: Vulture
+
 # ──────────────────────────────────────────────────────────────────────────
 # importlib.metadata entry-point targets — loaded via ep.load().
 # ──────────────────────────────────────────────────────────────────────────
-# reason: lisa.extensions.content_roots entry-point target
+# reason: lisa.extensions.content_roots entry-point target (sdk:get_content_root)
 sdk.get_content_root  # noqa: Vulture
 
-# reason: lisa.extensions.content_roots entry-point target
+# reason: lisa.extensions.content_roots entry-point target (sdk.packs.core:get_content_root)
 sdk.packs.core.get_content_root  # noqa: Vulture
 
-# reason: lisa.extensions.signal_connectors entry-point target (cloudflare)
-lisa_packs.cloudflare.connector.CloudflareSignalCollector  # noqa: Vulture
-
-# reason: lisa.extensions.signal_connectors entry-point target (github)
-lisa_packs.github.connector.GitHubSignalCollector  # noqa: Vulture
-
-# reason: lisa.extensions.signal_connectors entry-point target (stripe)
-lisa_packs.stripe.connector.StripeSignalCollector  # noqa: Vulture
+# reason: lisa.extensions.host_commands entry-point target (sdk.packs.checkpoint.commands:get_host_commands)
+sdk.packs.checkpoint.commands.get_host_commands  # noqa: Vulture
 
 # ──────────────────────────────────────────────────────────────────────────
 # Operation execute() functions — dispatched via getattr(module, "execute")
@@ -92,13 +92,6 @@ sdk.packs.learning.operations.memory.synthesize_learning.Parameters  # noqa: Vul
 
 # reason: operation result model loaded via _resolve_model_class string dispatch
 sdk.packs.learning.operations.memory.synthesize_learning.DistilledLearning  # noqa: Vulture
-
-# ──────────────────────────────────────────────────────────────────────────
-# Test-seam re-exports — imported into main.py so monkeypatch.setattr
-# can target them on the module surface.  Not called from main.py itself.
-# ──────────────────────────────────────────────────────────────────────────
-# reason: test-seam re-export for monkeypatch.setattr(little_lisa, ...)
-hosts.little_lisa.main._DEFAULT_MEMORY_MAX_RECORDS  # noqa: Vulture
 
 # ──────────────────────────────────────────────────────────────────────────
 # Protocol / ABC method parameters — vulture cannot see that these are
