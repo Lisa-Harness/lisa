@@ -1,9 +1,0 @@
-operation_id: advise_models
-description: Edit the model manifest using a natural-language instruction via an LLM.
-mode_allowlist: [advise-models]
-tool_ids: [read_model_manifest, write_model_manifest]
-timeout_seconds: 30
-max_calls_per_turn: 1
-completion_max_tokens: 4000
-completion_temperature: 0.1
-preferred_model_id: default

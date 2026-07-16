@@ -8,8 +8,8 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 #### Pack repository split
 
-- **External packs moved to `github.com/lisa-framework/packs`**: `lisa_pack_brave_search`, `lisa_pack_cloudflare`, `lisa_pack_github`, `lisa_pack_gmail`, `lisa_pack_mem0`, and `lisa_pack_stripe` are now in the standalone `lisa_packs` repo. Import paths renamed from `lisa_pack_*` to the shared `lisa_packs.*` namespace (e.g. `lisa_packs.cloudflare`). The framework consumes them via path dependencies (`../lisa_packs/<pack>`).
-- **`lisa_pack_model_advisor` moved to `sdk/packs/model_picker`**: Renamed to `sdk.packs.model_picker` (published as `lisa-pack-model-picker`). Now a bundled workspace member alongside `sdk/packs/core` and `sdk/packs/search`.
+- **External packs moved to `github.com/lisa-framework/packs`**: `lisa_pack_brave_search`, `lisa_pack_cloudflare`, `lisa_pack_github`, `lisa_pack_gmail`, `lisa_pack_mem0`, `lisa_pack_model_picker`, and `lisa_pack_stripe` are now in the standalone `lisa_packs` repo. Import paths renamed from `lisa_pack_*` to the shared `lisa_packs.*` namespace (e.g. `lisa_packs.cloudflare`). The framework consumes them via path dependencies (`../lisa_packs/<pack>`).
+- **`lisa-pack-model-picker` moved to `../lisa_packs/model_picker`**: Moved out of the bundled `sdk/packs/model_picker` workspace member to the external `lisa_packs` repo. Import path renamed from `sdk.packs.model_picker` to `lisa_packs.model_picker`. Now consumed via a path dependency (`../lisa_packs/model_picker`) alongside the other external integration packs.
 
 ### Added
 

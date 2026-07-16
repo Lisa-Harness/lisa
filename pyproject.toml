@@ -54,7 +54,6 @@ members = [
     "sdk/packs/search",
     "sdk/packs/checkpoint",
     "sdk/packs/docforge",
-    "sdk/packs/model_picker",
     "hosts/core",
     "hosts/cli",
     "hosts/web",
@@ -67,7 +66,7 @@ lisa-sdk = { workspace = true }
 lisa-mcp-servers = { workspace = true }
 lisa-pack-learning = { workspace = true }
 lisa-pack-coding = { workspace = true }
-lisa-pack-model-picker = { workspace = true }
+lisa-pack-model-picker = { path = "../lisa_packs/model_picker" }
 lisa-pack-cloudflare = { path = "../lisa_packs/cloudflare" }
 lisa-pack-github = { path = "../lisa_packs/github" }
 lisa-pack-stripe = { path = "../lisa_packs/stripe" }
