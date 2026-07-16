@@ -6,15 +6,23 @@ mode_kind: chat
 routable: true
 priority: 6
 fast_path_patterns:
-  - "\b(forge|draft|write|compose)\b.*\b(document|doc|markdown|runbook|post|note)\b"
-  - "\bdocforge\b"
+  - '\b(forge|draft|write|compose|output|create|generate|make|produce)\b.*\b(document|doc|markdown|runbook|post|note)\b'
+  - '\b(document|doc|markdown|runbook|post|note)\b.*\b(forge|draft|write|compose|output|create|generate|make|produce)\b'
+  - '\bdocforge\b'
 route_hints:
-  - Prefer `docforge` when the user wants to draft or forge a markdown document grounded in recalled memory.
-  - Prefer `docforge` when the user asks to write a runbook, note, or post from prior context.
+  - Prefer `docforge` when the user wants to output, create, generate, write, or produce a markdown document (e.g. "output a markdown that captures...", "create a markdown runbook", "generate a doc").
+  - Prefer `docforge` when the user asks to turn the conversation or research into a markdown document.
 examples:
+  - reasoning: "User wants to output a markdown document capturing research and conversation."
+    selected_mode_id: docforge
+    normalized_query: output a markdown that captures all the detail of that research and the subsequent conversation
+    clarification_needed: false
+    clarification_question: ""
+    direct_response: ""
+    confidence_score: 0.9
   - reasoning: "User wants to draft a markdown document from memory."
     selected_mode_id: docforge
-    normalized_query: forge a runbook for restarting a stuck VM from past incidents
+    normalized_query: write a markdown document that summarizes our conversation
     clarification_needed: false
     clarification_question: ""
     direct_response: ""
@@ -24,7 +32,7 @@ allowed_tool_ids:
   - docforge_outline_markdown
   - docforge_forge_document
 tools_authoritative: true
-command_pattern: "^(?:/)?docforge(?:[\s,:;]+(?P<query>.+))?$"
+command_pattern: '^(?:/)?docforge(?:[\s,:;]+(?P<query>.+))?$'
 description: "Forge and iterate on a markdown document from user input + recalled memory, validate it with markdown-it-py, and store it via lisa-storage."
 ---
 
