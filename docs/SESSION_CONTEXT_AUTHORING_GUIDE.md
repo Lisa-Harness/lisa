@@ -9,9 +9,9 @@ A session context is a single Markdown file whose YAML front matter compiles int
 The session plan is the **author-owned source of truth**. It replaces every legacy host-side knob:
 
 - No `applies_to` mode filtering — the body is the primary prompt for every turn.
-- No loose `packs` map or `policy` block — resource selection is explicit and validated.
+- No loose `packs` map or `policy` block — pack and server selection is explicit and validated.
 - No `context_routing` namespaces — context admission is deterministic, rule-based, and session-owned.
-- No `replay.*` controls — conversation history is part of the context plan, not a separate replay subsystem.
+- No `replay.*` controls — conversation history compaction is part of the context plan, not a separate replay subsystem.
 
 The compiler (`kernel.session_plan.compile_session_plan`) is strict: `extra="forbid"` on every model. Unknown keys fail compilation. There is no silent degradation.
 
@@ -72,8 +72,6 @@ resources:
     exclude: [lisa-pack-mem0]
   servers:
     exclude: [learning.lisa-memory]
-  modes:
-    exclude: [workshop]
 
 providers:
   modes:
@@ -87,10 +85,6 @@ providers:
 
 routing:
   start_mode: discuss
-  aliases:
-    go: discuss
-  priority_adjustments:
-    discuss: 50
 
 instructions:
   fragments:
@@ -139,13 +133,8 @@ context:
     safety_margin_tokens: 512
     max_materialized_candidates: 32
   history:
-    include_digest: true
-    include_recent_conversation: true
-    include_reflection: false
-    recent_message_limit: 6
     digest_max_lines: 200
     digest_summary_max_chars: 240
-  conflict_policy: prefer_authority
 ---
 Primary goals this week:
 - Ship migration with rollback checkpoints.
@@ -163,9 +152,9 @@ Every key below is defined in [kernel/session_plan.py](../kernel/session_plan.py
 | `schema_version` | `2` | Yes | Must be exactly `2`. |
 | `name` | `string` | Yes | Session identity; influences thread naming and display. Min length 1. |
 | `surface` | object | Yes | Privacy and interaction surface. |
-| `resources` | object | No | Deterministic include/exclude/required selectors for every resource kind. |
+| `resources` | object | No | Deterministic include/exclude/required selectors for packs and MCP servers. |
 | `providers` | object | No | Explicit ownership decisions for duplicate catalog resources. |
-| `routing` | object | No | Static route defaults and authored routing overlays. |
+| `routing` | object | No | Static route seed (start mode). |
 | `instructions` | object | No | Explicit instruction fragment declarations. |
 | `context` | object | No | The session-owned context mapper policy (lanes, sources, ranking, budget, history). |
 
@@ -184,13 +173,7 @@ Each sub-key is a `ResourceSelection` with `include`, `exclude`, and `required` 
 | Key | Type | Description |
 | --- | --- | --- |
 | `packs` | `PackSelection` | Pack selection plus pack-owned configuration. Also accepts a `configuration` map. |
-| `modes` | `ResourceSelection` | Workflow mode include/exclude. |
-| `operations` | `ResourceSelection` | Operation include/exclude. |
-| `tools` | `ResourceSelection` | Tool include/exclude. |
 | `servers` | `ResourceSelection` | MCP server include/exclude (session-level). |
-| `signals` | `ResourceSelection` | Signal include/exclude. |
-| `intake` | `ResourceSelection` | Intake include/exclude. |
-| `models` | `ResourceSelection` | Model include/exclude. |
 
 ### `providers`
 
@@ -207,12 +190,11 @@ All IDs must be non-empty strings.
 
 ### `routing`
 
+Session-level routing is currently a single seed: the initial mode the runtime pins at startup. Per-mode routing hints and priority are authored in each mode's `_mode.md` front matter (`route_hints`, `priority`), not in the session plan.
+
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `start_mode` | `string` | `default` | Initial mode seed. Does not bypass the router — it sets the router's starting point. |
-| `aliases` | `map<str, str>` | `{}` | Mode aliases for routing hints. |
-| `priority_adjustments` | `map<str, int>` | `{}` | Per-mode priority overrides. |
-| `hints` | `map<str, tuple<str,...>>` | `{}` | Routing hints keyed by mode. |
 
 ### `instructions`
 
@@ -308,24 +290,12 @@ Model-aware budget limits applied after fixed per-turn reservations.
 
 #### `context.history`
 
-Conversation history and compaction constraints. This replaces the legacy `replay.*` controls.
+Conversation history compaction constraints. This replaces the legacy `replay.*` controls.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `include_digest` | `bool` | `true` | Include the prior conversation digest. |
-| `include_recent_conversation` | `bool` | `true` | Include recent conversation messages. |
-| `include_reflection` | `bool` | `false` | Include diagnostic reflection. |
-| `recent_message_limit` | `int >= 0` | `6` | Number of recent messages to include. |
 | `digest_max_lines` | `int >= 1` | `200` | Max lines retained in the digest during compaction. |
 | `digest_summary_max_chars` | `int >= 60` | `240` | Max chars for the lossy summary line during digest rollover. |
-
-#### `context.conflict_policy`
-
-| Value | Behavior |
-| --- | --- |
-| `prefer_authority` (default) | Higher-authority candidate wins; lower is dropped. |
-| `surface_conflict` | Both candidates are rendered with a conflict marker. |
-| `drop_lower_authority` | Lower-authority candidate is silently dropped. |
 
 ---
 
@@ -470,13 +440,13 @@ Host-mandatory packs (declared in `mcp_servers.yaml` `pack_policy.always_on_pack
 uv run python -c "from kernel.session_plan import compile_session_plan; from pathlib import Path; compile_session_plan(text=Path('session_context.md').read_text(encoding='utf-8'), source_uri='session_context.md'); print('OK')"
 ```
 
-1. Start the host with the session and verify startup:
+2. Start the host with the session and verify startup. `lisa verify` compiles the plan during runtime initialization, so a malformed session context will fail the command — but note the displayed "Session context" check row only echoes the resolved slug/path and does not itself re-validate the plan.
 
 ```powershell
 uv run lisa verify --session-context .\session_context.md --no-log
 ```
 
-1. Run the session-plan regression tests:
+3. Run the session-plan regression tests:
 
 ```powershell
 uv run pytest kernel/tests/test_session_plan.py -q
