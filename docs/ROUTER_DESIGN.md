@@ -44,7 +44,8 @@ flowchart TD
     B -->|yes| C[default mode + deep model]
     B -->|no| D{Starts with /?}
     D -->|yes| E[ipsar.parse_route<br/>string parser, no model call]
-    D -->|no| F{current_mode_id == start_mode?}
+    D -->|no| F{start_mode != default
+AND current == start_mode?}
     F -->|yes| G[start_mode bypass<br/>router skipped]
     F -->|no| H[Router planner]
     H --> I{clarification needed?}
@@ -61,13 +62,14 @@ flowchart TD
 | --- | --- | --- | --- |
 | 1 | `/deep <query>` | `explicit_deep_query()` → default mode + deep model | No |
 | 2 | `/<command> <query>` | `kernel.ipsar.parse_route()` — string parser | No |
-| 3a | NL, `current_mode_id == start_mode` | Start-mode bypass — direct to mode | No |
-| 3b | NL, `current_mode_id != start_mode` | Router planner (`plan_route`) | Yes |
+| 3a | NL, `start_mode != default` and `current_mode_id == start_mode` | Start-mode bypass — direct to mode | No |
+| 3b | NL, otherwise (incl. `start_mode == default`) | Router planner (`plan_route`) | Yes |
 
-The key guard is branch 3a. When `current_mode_id == start_mode`, the router is
-**skipped entirely** and the turn goes straight to the declared mode. This means
-the router only spends a model call when the user has deliberately switched away
-from the pinned start mode.
+The key guard is branch 3a. When `start_mode` is a real owning mode (not
+`default`) and `current_mode_id == start_mode`, the router is **skipped
+entirely** and the turn goes straight to the declared mode. `default` is
+exempt (see §3) so the router runs on natural-language turns when the
+session starts in `default` — the common case.
 
 ---
 
@@ -107,10 +109,30 @@ The runtime initializes `current_mode_id` to the same value:
 self.current_mode_id: str = self.session_plan.manifest.routing.start_mode
 ```
 
-This is why not defining `routing.start_mode` does not engage the router — it
-defaults to `"default"`, the bypass fires on every turn you remain in default,
-and the router is never called. The `start_mode` key is a **bypass pin**, not a
-router trigger.
+The `start_mode` key is a **bypass pin**: when `current_mode_id == start_mode`,
+the router is skipped and the turn goes directly to the pinned mode. This keeps
+the user pinned in a declared owning mode (e.g. `learn`, `coding`, `research`)
+unless they explicitly `/switch` away.
+
+### `default` is exempt from the bypass
+
+`default` is the router's own fallback, not a real owning mode. Pinning it
+would silently disable routing on every turn (`current_mode_id == "default"
+== start_mode` → bypass fires forever, router never runs). The bypass guard
+in `handle_message.py` therefore exempts `default`:
+
+```python
+if (
+    start_mode
+    and start_mode != "default"
+    and runtime.current_mode_id == start_mode
+):
+    # bypass: go directly to start_mode, skip router
+```
+
+This means `start_mode: default` (the implicit default) means "let the router
+decide," not "pin to default." Natural-language turns in default mode are
+routed by the planner. Only real owning modes trigger the bypass.
 
 ### Other routing keys
 

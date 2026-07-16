@@ -638,6 +638,105 @@ def test_runtime_no_start_mode_defaults_to_default(tmp_path: Path, monkeypatch: 
     assert runtime.current_mode_id == "default"
 
 
+@pytest.mark.asyncio
+async def test_start_mode_default_does_not_bypass_router(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """start_mode: default must NOT bypass the router.
+
+    Regression: ``default`` is the router's own fallback, not a real owning
+    mode. Pinning it (the implicit default) used to trigger the start_mode
+    bypass on every turn (``current_mode_id == "default" == start_mode``),
+    silently disabling routing. The fix exempts ``default`` so the router
+    runs and can route NL turns to the right mode.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from hosts.core.callbacks import NullTransport
+
+    runtime = _make_runtime(tmp_path, no_thread=True)
+    # start_mode defaults to "default"; current_mode_id is seeded from it.
+    assert runtime.start_mode_id == "default"
+    assert runtime.current_mode_id == "default"
+
+    plan_route_mock = AsyncMock(
+        return_value=SimpleNamespace(
+            selected_mode_id="default",
+            normalized_query="hello",
+            clarification_needed=False,
+            clarification_question="",
+            direct_response="",
+            confidence_score=0.9,
+            reasoning="test",
+            alternatives=[],
+            planner_source="model_bounded",
+        ),
+    )
+    transport = NullTransport()
+    # Patch _plan_route (the module-level wrapper that delegates to the
+    # shared router). Also patch _execute_mode_turn so we don't need a real
+    # model/pool — we only care that _plan_route was called.
+    with patch.object(handle_message_mod, "_plan_route", plan_route_mock), \
+         patch.object(handle_message_mod, "_execute_mode_turn", AsyncMock(return_value="ok")):
+        await handle_message(runtime, "write a markdown document", transport)
+
+    assert plan_route_mock.called, (
+        "Router (_plan_route) must be called for NL turns when "
+        "start_mode == 'default' — the bypass must NOT fire for default."
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_mode_non_default_still_bypasses_router(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real owning start_mode (e.g. research) still bypasses the router.
+
+    The bypass is valuable for pinned modes like learn, coding, research.
+    Only ``default`` is exempted. This test confirms the bypass still fires
+    for non-default start_mode.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from hosts.core.callbacks import NullTransport
+
+    monkeypatch.chdir(tmp_path)
+    ctx = tmp_path / "session_context.md"
+    ctx.write_text(
+        "---\n"
+        "schema_version: 2\n"
+        "name: research-session\n"
+        "surface: { type: personal_dm, id: host-console, memory_scope: testing }\n"
+        "routing: { start_mode: research }\n"
+        "---\n# body\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "models.yaml").write_text(
+        "\n".join([
+            "version: 1",
+            "models:",
+            "  - model_id: gemma3:latest",
+            "    provider: ollama",
+            "    designations: [router, default]",
+        ]),
+        encoding="utf-8",
+    )
+    runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path), no_thread=True))
+    assert runtime.start_mode_id == "research"
+    assert runtime.current_mode_id == "research"
+
+    plan_route_mock = AsyncMock()
+    transport = NullTransport()
+    with patch.object(handle_message_mod, "_plan_route", plan_route_mock), \
+         patch.object(handle_message_mod, "_execute_mode_turn", AsyncMock(return_value="ok")):
+        await handle_message(runtime, "some natural language", transport)
+
+    assert not plan_route_mock.called, (
+        "Router (_plan_route) must NOT be called when a non-default "
+        "start_mode is pinned and current_mode_id == start_mode."
+    )
+
+
 def test_file_backed_state_provider_caps_digest_with_lossy_summary(tmp_path: Path) -> None:
     """Thread compaction bounds digest growth and prepends a lossy summary."""
 

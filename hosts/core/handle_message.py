@@ -479,11 +479,21 @@ async def _route_model_turn(
         mode_id, query = parse_route(message)
     else:
         # Check for start_mode override from session-context front matter.
-        # When set, bypass router and go directly to the
-        # declared mode (unless the user has already switched modes via
-        # an explicit /mode command during this session).
+        # When set to a real owning mode (learn, coding, etc.), bypass the
+        # router and go directly to the declared mode — this keeps the user
+        # pinned in that mode unless they explicitly /switch. `default` is
+        # the router's own fallback, NOT a real owning mode: pinning it
+        # would silently disable routing on every turn
+        # (current_mode_id == "default" == start_mode → bypass fires
+        # forever, router never runs). Exempt `default` so that
+        # start_mode: default means "let the router decide" — the
+        # intuitive intent. See docs/ROUTER_DESIGN.md §3.
         start_mode = runtime.start_mode_id
-        if start_mode and runtime.current_mode_id == start_mode:
+        if (
+            start_mode
+            and start_mode != "default"
+            and runtime.current_mode_id == start_mode
+        ):
             mode_id = start_mode
             query = message
             logger.debug(
