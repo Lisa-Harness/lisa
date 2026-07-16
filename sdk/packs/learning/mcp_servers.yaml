@@ -21,7 +21,7 @@ servers:
   - server_id: lisa-memory
     runtime_kind: venv_bin
     entry_point: lisa-memory
-    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    venv_dir: "${FRAMEWORK_ROOT}"
     warm: true
     required: true
     # tool_policy hides raw native tools from the model-facing catalog.

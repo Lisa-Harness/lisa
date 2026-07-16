@@ -30,16 +30,32 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-# Load .env from the project root before importing hosts.core so that
-# HostConfig.from_env sees the provider credentials and config values.
-# The .env file is searched at: (1) CWD, (2) project root, (3) hosts/little_lisa/
-# for backward compatibility with existing .env files.
+# Inject the packs venv site-packages into sys.path BEFORE importing
+# hosts.core so that importlib.metadata.entry_points discovers packs
+# installed via /pack install into ~/.lisa/packs-venv. This must run
+# before any hosts.core / kernel import that triggers entry-point scanning.
+from hosts.core.paths import (
+    framework_root as _framework_root,
+    inject_packs_venv_site_packages as _inject_packs_venv_site_packages,
+)
+
+_inject_packs_venv_site_packages()
+
+# Load .env before importing hosts.core so that HostConfig.from_env sees
+# the provider credentials and config values. Search order:
+#   (1) CWD — for repo-mode dev sessions
+#   (2) ~/.lisa/.env — for tool-install mode (uv tool install lisa)
+#   (3) project root — repo-mode back-compat
+#   (4) hosts/little_lisa/.env — legacy repo-mode back-compat
 try:
     from dotenv import load_dotenv
 
-    _FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
+    _FRAMEWORK_ROOT = _framework_root()
+    from hosts.core.config import default_data_dir as _default_data_dir
+
     for _env_candidate in (
         Path.cwd() / ".env",
+        _default_data_dir() / ".env",
         _FRAMEWORK_ROOT / ".env",
         _FRAMEWORK_ROOT / "hosts" / "little_lisa" / ".env",
     ):
@@ -598,12 +614,20 @@ def _verify_check_python() -> tuple[str, str]:
 
 
 def _verify_check_env(runtime: HostRuntime) -> tuple[str, str]:
-    # Check for .env in the project root (where the CLI loads it from).
-    _root = Path(__file__).resolve().parents[2]
-    for candidate in (Path.cwd() / ".env", _root / ".env", _root / "hosts" / "little_lisa" / ".env"):
+    # Check for .env in the same search order as the startup loader:
+    # CWD → ~/.lisa/.env (tool mode) → framework root → hosts/little_lisa/.
+    from hosts.core.config import default_data_dir as _default_data_dir
+
+    _root = _framework_root()
+    for candidate in (
+        Path.cwd() / ".env",
+        _default_data_dir() / ".env",
+        _root / ".env",
+        _root / "hosts" / "little_lisa" / ".env",
+    ):
         if candidate.exists():
             return _VERIFY_PASS, f".env found ({candidate})"
-    return _VERIFY_WARN, ".env not found. Create one in the project root with your model provider keys."
+    return _VERIFY_WARN, ".env not found. Create one at ~/.lisa/.env with your model provider keys."
 
 
 def _verify_check_manifest(runtime: HostRuntime) -> tuple[str, str]:

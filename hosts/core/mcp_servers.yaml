@@ -69,7 +69,7 @@ servers:
   # ── First-party servers (warm — always on, load-bearing) ──
   - server_id: lisa-catalog
     runtime_kind: venv_bin
-    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    venv_dir: "${FRAMEWORK_ROOT}"
     warm: true
     required: true
     tool_policy:
@@ -80,7 +80,7 @@ servers:
 
   - server_id: lisa-content
     runtime_kind: venv_bin
-    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    venv_dir: "${FRAMEWORK_ROOT}"
     warm: true
     required: true
     tool_policy:
@@ -90,7 +90,7 @@ servers:
 
   - server_id: lisa-context
     runtime_kind: venv_bin
-    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    venv_dir: "${FRAMEWORK_ROOT}"
     cli_args: ["--timezone", "${LISA_TIMEZONE}"]
     warm: true
     required: true
@@ -100,13 +100,13 @@ servers:
   # ── First-party servers (cold — lazily connected on first use) ──
   - server_id: lisa-guard
     runtime_kind: venv_bin
-    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    venv_dir: "${FRAMEWORK_ROOT}"
 
   # No data_dir_subdir: manifests (models.yaml, models.proposed.yaml) live at
   # the top level of the host data_dir, and the server creates its own
   # ``files/`` and ``checkpoints/`` subdirs internally via init_storage().
   - server_id: lisa-storage
     runtime_kind: venv_bin
-    venv_dir: "${FRAMEWORK_ROOT}/.venv"
+    venv_dir: "${FRAMEWORK_ROOT}"
     warm: false
     data_dir_subdir: "."

@@ -96,11 +96,12 @@ from hosts.core.content_roots import (
 )
 from hosts.core.lisa_config import _resolve_slice_tuning
 from hosts.core.model_discovery import (
+    DiscoveryReport,
+    ProbeStatus,
     build_manifest_payload,
     discover_models,
     write_manifest_yaml,
 )
-from hosts.core.model_discovery import DiscoveryReport, ProbeStatus
 from hosts.core.model_manifest import load_model_manifest
 from hosts.core.model_runtime import (
     StubModelDefinition,
@@ -111,7 +112,7 @@ from hosts.core.model_runtime import (
     resolve_little_lisa_model,
 )
 from hosts.core.runtime import HostRuntime, TurnContext
-from hosts.core.state_provider import FileBackedStateProvider, build_unified_state
+from hosts.core.state_provider import FileBackedStateProvider
 from hosts.core.thread import append_thread_entry, load_recent_thread_entries
 from hosts.core.token_accounting import format_session_exit_summary_lines
 
@@ -123,7 +124,19 @@ LISA_PACK_ALLOWED_PREFIXES_ENV = "LISA_PACK_ALLOWED_PREFIXES"
 LISA_PACK_GIT_ALLOW_HOSTS_ENV = "LISA_PACK_GIT_ALLOW_HOSTS"
 LISA_PACK_REQUIRE_GIT_REF_ENV = "LISA_PACK_REQUIRE_GIT_REF"
 
-_FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
+# Framework root (repo checkout or tool-venv root). Used for resolving
+# local pack specs that live under the repo. In tool-install mode this is
+# sys.prefix — local pack specs are rare there but the resolver stays correct.
+# Also import the packs venv resolver — used by run_pack_install/uninstall
+# to target the dedicated ~/.lisa/packs-venv rather than the tool/repo venv.
+from hosts.core.paths import (  # noqa: E402
+    default_packs_venv as _default_packs_venv,
+)
+from hosts.core.paths import (
+    framework_root as _framework_root,
+)
+
+_FRAMEWORK_ROOT = _framework_root()
 
 _MODE_MODEL_ALIAS_MAP = {
     "default": "default",
@@ -1445,10 +1458,17 @@ async def run_pack_install(
         return False, reason
 
     install_target = spec.strip().strip('"') if _is_local_pack_spec(spec) else spec
+    # Install into the dedicated packs venv (~/.lisa/packs-venv) so that
+    # the tool venv stays immutable and the packs venv site-packages is
+    # already on sys.path at the next launch for entry-point discovery.
+    packs_venv = _default_packs_venv()
+    packs_venv.mkdir(parents=True, exist_ok=True)
     process = await asyncio.create_subprocess_exec(
         "uv",
         "pip",
         "install",
+        "--python",
+        str(packs_venv),
         install_target,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
@@ -1516,6 +1536,8 @@ async def run_pack_uninstall(
         "pip",
         "uninstall",
         "-y",
+        "--python",
+        str(_default_packs_venv()),
         normalized,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,

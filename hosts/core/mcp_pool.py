@@ -63,8 +63,14 @@ logger = logging.getLogger(__name__)
 _LISA_SESSION_PROVIDER_SELECTIONS_ENV = "LISA_SESSION_PROVIDER_SELECTIONS"
 _LISA_DISABLED_PACKS_ENV = "LISA_DISABLED_PACKS"
 
-# Repository root (three parents up from this module: hosts/core/mcp_pool.py).
-FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
+# Venv root containing the console-script entry points (lisa-context,
+# lisa-catalog, etc.). In repo mode this is <repo>/.venv; in tool-install
+# mode this is sys.prefix. Exported as the FRAMEWORK_ROOT env var so that
+# mcp_servers.yaml's ``venv_dir: "${FRAMEWORK_ROOT}"`` resolves to the
+# directory whose Scripts/ (Windows) or bin/ (POSIX) holds the executables.
+from hosts.core.paths import venv_root as _venv_root  # noqa: E402
+
+FRAMEWORK_ROOT = _venv_root()
 
 
 # ── Shared discovery cache ─────────────────────────────────────────
