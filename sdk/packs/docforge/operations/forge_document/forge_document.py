@@ -53,7 +53,7 @@ _EMPTY_DOCUMENT_PATH = f"{_PROMPT_DIR}/forge_document_empty_document.md"
 _NO_OUTLINE_PATH = f"{_PROMPT_DIR}/forge_document_no_outline.md"
 _STORAGE_FAILED_PATH = f"{_PROMPT_DIR}/forge_document_storage_failed.md"
 
-_MAX_COMPLETION_TOKENS = 4000
+_MAX_COMPLETION_TOKENS = 2000
 _MAX_RECALL_RECORDS = 8
 _MAX_DOCUMENT_CHARS = 20_000
 _MAX_QUERY_CHARS = 2_000
