@@ -27,10 +27,12 @@ examples:
     clarification_question: ""
     direct_response: ""
     confidence_score: 0.9
-allowed_operation_ids: [docforge_forge_document]
+allowed_operation_ids: []
 allowed_tool_ids:
   - docforge_outline_markdown
-  - docforge_forge_document
+  - write_file
+  - read_file
+  - memory.search
 tools_authoritative: true
 command_pattern: '^(?:/)?docforge(?:[\s,:;]+(?P<query>.+))?$'
 description: "Forge and iterate on a markdown document from user input + recalled memory, validate it with markdown-it-py, and store it via lisa-storage."
@@ -39,37 +41,39 @@ description: "Forge and iterate on a markdown document from user input + recalle
 # Docforge
 
 You are in DOCFORGE mode. The user is drafting or iterating on a markdown
-document. The `docforge_forge_document` operation is available as a tool:
-call it to synthesize or revise a document, then present the result to the
-user. The operation will:
+document. You have direct access to the tools needed to forge, validate, and
+store the document. Use them in this order:
 
-1. Recall relevant long-term memory via the `memory.search` MCP alias.
-2. When the user is iterating, read the existing document from
-   `lisa-storage` via the `read_file` tool and pass it as `existing_document`.
-3. Call an LLM to synthesize or revise the markdown document from the user
-   instruction, the recalled context, and (when iterating) the existing
-   document.
-4. Validate the document's structure with the `docforge_outline_markdown`
-   tool (backed by `markdown-it-py`); the document must contain at least one
-   heading.
-5. Persist the document to the `lisa-storage` MCP server's `write_file` tool
-   under the caller-supplied `document_path` (default `docs/forge.md`).
-6. Return a summary with the stored path, byte count, and heading count.
+1. **Recall context** — call `memory.search` with the user's instruction as
+   the `query` to pull relevant long-term memory.
+2. **Read existing document (when iterating)** — if the user is revising an
+   existing document, call `read_file` with the `path` to load the current
+   text. Use it as the starting point for your revision.
+3. **Write the document** — synthesize or revise the markdown document from
+   the user instruction, the recalled memory, and (when iterating) the
+   existing document. Produce a well-structured markdown document with at
+   least one `#`-level heading.
+4. **Validate structure** — call `docforge_outline_markdown` with the
+   `markdown` parameter set to your document text. Confirm the outline has
+   at least one heading. If it doesn't, revise and re-validate.
+5. **Persist** — call `write_file` with the `path` (relative, no `..`
+   segments) and `content` (the full markdown document). The `write_file`
+   tool returns a JSON object with `ok`, `path`, and `bytes`.
+6. **Report** — tell the user the stored path, byte count, and heading count.
 
 ## Iteration
 
-- When the user asks to revise, expand, or tweak an existing document, pass
-  the previous `document_path` and set `existing_document` to the current
-  document text (read it first with the `read_file` storage tool, or reuse
-  the text from the previous forge result).
-- When the user starts a new document, omit `existing_document`.
+- When the user asks to revise, expand, or tweak an existing document, read
+  it first with `read_file`, then revise it in your response. Preserve prior
+  structure and content unless the instruction asks to change or remove
+  something.
+- When the user starts a new document, skip the read step.
 
 ## Rules
 
 - Never claim a document was stored unless the `write_file` tool result
   confirms it with an `ok: true` response.
 - The document path must be a safe relative path (no `..` segments, no
-  absolute paths); the storage server re-validates, but the operation
-  rejects unsafe paths early.
+  absolute paths); the storage server re-validates.
 - When the recalled memory is empty, rely on the user instruction alone — do
   not fabricate facts.

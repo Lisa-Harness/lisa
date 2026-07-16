@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 
 import sdk.packs.docforge as docforge
-from sdk.content import build_operation_catalog_json, build_tool_catalog_json
+from sdk.content import (
+    build_mode_catalog_json,
+    build_operation_catalog_json,
+    build_tool_catalog_json,
+)
 
 
 def test_forge_document_discovered() -> None:
@@ -36,3 +40,18 @@ def test_outline_markdown_tool_discovered() -> None:
     tool = catalog["docforge_outline_markdown"]
     assert tool["description"]
     assert tool["pack_id"] == "lisa-pack-docforge"
+
+
+def test_docforge_mode_exposes_tools_directly() -> None:
+    """The mode exposes storage/memory/outline tools, not the operation."""
+    root = docforge.get_content_root() / "modes"
+    catalog = json.loads(build_mode_catalog_json([root]))
+    mode = catalog["docforge"]
+    assert mode["mode_kind"] == "chat"
+    assert mode["allowed_operation_ids"] == []
+    assert set(mode["allowed_tool_ids"]) >= {
+        "docforge_outline_markdown",
+        "write_file",
+        "read_file",
+        "memory.search",
+    }
