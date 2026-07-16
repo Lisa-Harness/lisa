@@ -1,0 +1,5 @@
+tool_id: docforge_outline_markdown
+pack_id: lisa-pack-docforge
+description: "Parse markdown text with markdown-it-py and return a structural outline (headings, list depth, code spans)."
+mode_allowlist: [docforge]
+effect: read
