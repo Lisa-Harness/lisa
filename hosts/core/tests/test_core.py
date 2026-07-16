@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -169,6 +170,107 @@ class TestHostRuntime:
         runtime = HostRuntime(config)
         await runtime.aclose()  # should not raise
         assert runtime.mcp_started is False
+
+    @pytest.mark.asyncio
+    async def test_deferred_start_then_aclose_owns_cancel_scope(
+        self, tmp_path: Path
+    ) -> None:
+        """Deferred-start + aclose must not trip anyio's cross-task rule.
+
+        Regression for the /quit crash:
+        ``CancelledError: Cancelled via cancel scope ... by <Task pending
+        name='Task-136' coro=<HostRuntime.aclose() ...>>``.
+
+        The MCP ``stdio_client`` enters an ``anyio.create_task_group()``
+        whose cancel scope binds to the task that entered it. When the
+        pool is started via ``start_pool_deferred()``, that task is the
+        deferred-start task. ``aclose()`` must therefore tear the pool
+        down in that SAME task — not in the caller's task (and not in an
+        ``asyncio.shield`` task, which was the original bug). This test
+        installs a fake ``_connect`` that enters a real anyio task group
+        so the cross-task guard is exercised for real.
+        """
+        import anyio
+        from contextlib import AsyncExitStack
+        from unittest.mock import patch
+
+        from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
+
+        runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))
+        runtime.set_mcp_configs(
+            warm=[
+                MCPClientConfig(
+                    server_id="w",
+                    command="python",
+                    args=["-c", "pass"],
+                    warm=True,
+                    required=False,
+                )
+            ],
+            cold=[],
+        )
+
+        closed_by: dict[str, str] = {}
+
+        async def _fake_connect(self: MCPToolPool, config: MCPClientConfig) -> None:
+            """Mimic stdio_client: enter an anyio task group whose children
+            block on a memory stream and exit promptly when it closes (just
+            like the real stdout_reader/stdin_writer exit when the MCP
+            streams close on teardown). Records which task closes the stack
+            so the test can assert teardown ran in the owning task."""
+
+            send, recv = anyio.create_memory_object_stream(0)
+
+            async def _reader() -> None:
+                async with recv:
+                    async for _ in recv:
+                        pass
+
+            stack = AsyncExitStack()
+            await stack.__aenter__()
+            tg = await stack.enter_async_context(anyio.create_task_group())
+            tg.start_soon(_reader)
+
+            async def _record_close() -> None:
+                closed_by[config.server_id] = asyncio.current_task().get_name()
+
+            stack.push_async_callback(_record_close)
+            async with self._connect_lock:
+                self._child_stacks[config.server_id] = stack
+            self._sessions[config.server_id] = object()
+            # Keep the send stream open on the stack so closing the stack
+            # (aclose) closes it, which unblocks _reader and lets the task
+            # group exit cleanly — exactly how stdio_client's finally closes
+            # its streams.
+            stack.push_async_callback(send.aclose)
+
+        # Skip memory/mcp alias registration (no real content roots in this
+        # tmp_path). Patch them out so _build_pool only exercises the pool.
+        with patch.object(MCPToolPool, "_connect", new=_fake_connect), patch(
+            "hosts.core.memory_aliases.register_memory_aliases", new=lambda *a, **k: None
+        ), patch("hosts.core.mcp_pool.register_mcp_aliases", new=lambda *a, **k: None):
+            task = runtime.start_pool_deferred()
+            task.set_name("mcp-deferred-start")
+            await runtime.ensure_pool_ready()
+            assert runtime.mcp_started is True
+            assert runtime.mcp_tool_pool is not None
+            caller_task = asyncio.current_task()
+            assert caller_task is not task
+            # aclose runs from a DIFFERENT task than the deferred-start task.
+            # The fix delegates teardown to the deferred-start task so the
+            # anyio cancel scope is exited in the task that entered it. The
+            # stack's close callback must therefore record the deferred-start
+            # task, not the caller. Without the fix, MCPToolPool.aclose would
+            # close the stack from the caller's task and anyio would raise
+            # (swallowed by MCPToolPool.aclose's broad except, leaving the
+            # callback recorded under the wrong task / not recorded at all).
+            await runtime.aclose()
+            assert task.done()
+            assert runtime.mcp_tool_pool is None
+            assert runtime.mcp_started is False
+            # The teardown ran in the deferred-start task, not the caller.
+            assert "w" in closed_by
+            assert closed_by["w"] == "mcp-deferred-start"
 
     def test_set_mcp_configs(self, tmp_path: Path) -> None:
         config = HostConfig.from_env(data_dir=str(tmp_path))

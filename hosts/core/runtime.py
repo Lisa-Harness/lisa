@@ -163,6 +163,17 @@ class HostRuntime:
         self._mcp_start_exc: BaseException | None = None
         """Cached exception from a failed deferred start, consumed once by
         ensure_pool_ready() so it doesn't re-raise on every subsequent call."""
+        self._mcp_started_event: asyncio.Event | None = None
+        """Set by the deferred-start task once the pool is constructed, so
+        ensure_pool_ready() can return without waiting for the (long-lived)
+        start task to finish. The deferred task stays alive after this point
+        so it can tear down the pool in the same task that entered the MCP
+        anyio cancel scopes (anyio forbids exiting a cancel scope from a
+        different task than the one that entered it — see debugging.md)."""
+        self._mcp_close_signal: asyncio.Event | None = None
+        """Set by aclose() to tell the deferred-start task to tear down the
+        pool. The task then closes the pool's child AsyncExitStacks in its
+        own task, where the anyio cancel scopes were entered."""
 
         # ── Memory config (selected by capability provider policy) ───
         self.memory_config: Any = None
@@ -355,6 +366,13 @@ class HostRuntime:
             loop = asyncio.get_running_loop()
             self._mcp_start_task = loop.create_task(asyncio.sleep(0))
             return self._mcp_start_task
+        # The deferred task is long-lived: it builds the pool, signals
+        # _mcp_started_event, then blocks on _mcp_close_signal so it can
+        # tear the pool down in the SAME task that entered the MCP anyio
+        # cancel scopes. aclose() sets the close signal and awaits the task.
+        # See debugging.md (anyio cross-loop/task rule).
+        self._mcp_started_event = asyncio.Event()
+        self._mcp_close_signal = asyncio.Event()
         self._mcp_start_task = asyncio.create_task(
             self._start_pool_impl(deferred=True)
         )
@@ -375,13 +393,35 @@ class HostRuntime:
         """
         if self._mcp_start_exc is not None:
             raise self._mcp_start_exc
+        if self._mcp_started_event is not None:
+            # Deferred start: wait for the pool to be constructed (not for
+            # the task to finish — the task is long-lived and only ends at
+            # teardown). Cache the exception once if the build phase failed.
+            try:
+                await self._mcp_started_event.wait()
+            except BaseException as exc:  # pylint: disable=broad-except
+                self._mcp_start_exc = exc
+                raise
+            if self._mcp_start_exc is not None:
+                raise self._mcp_start_exc
+            # If the build phase failed, the task ended with an exception
+            # (the finally still set the event). Cache + re-raise once.
+            if (
+                self._mcp_start_task is not None
+                and self._mcp_start_task.done()
+                and not self._mcp_started
+            ):
+                exc = self._mcp_start_task.exception()
+                if exc is not None:
+                    self._mcp_start_exc = exc
+                    raise exc
+            return
         if self._mcp_start_task is not None:
+            # Sync-start fallback path: the task is a completed no-op or
+            # an already-finished start task. Awaiting it is safe.
             try:
                 await self._mcp_start_task
             except BaseException as exc:
-                # Cache the exception so subsequent callers don't re-await
-                # a completed task (which would re-raise). The task object
-                # is consumed; future calls hit the cached exc path above.
                 self._mcp_start_exc = exc
                 raise
             return
@@ -389,7 +429,52 @@ class HostRuntime:
             await self.start()
 
     async def _start_pool_impl(self, *, deferred: bool) -> None:
-        """Shared pool-start implementation for start() and deferred start."""
+        """Shared pool-start implementation for start() and deferred start.
+
+        For the sync path (``deferred=False``), this builds the pool and
+        returns; ``aclose()`` later closes it in the caller's task (the
+        same task, so the anyio cross-task rule is satisfied).
+
+        For the deferred path (``deferred=True``), this builds the pool,
+        signals ``_mcp_started_event`` so ``ensure_pool_ready`` can return,
+        then stays alive until ``aclose`` sets ``_mcp_close_signal``. The
+        teardown runs in THIS task because the MCP ``stdio_client`` contexts
+        entered during ``pool.start()`` bind anyio cancel scopes to this
+        task; anyio forbids exiting them from a different task (see
+        debugging.md). Signaling the started event is wrapped in try/finally
+        so a build-phase failure or early return never leaves
+        ``ensure_pool_ready`` blocked on the event.
+        """
+        try:
+            await self._build_pool()
+        finally:
+            # On the deferred path the started event MUST be set whether or
+            # not the build succeeded — otherwise ensure_pool_ready blocks
+            # forever. The cached exception is recorded by ensure_pool_ready
+            # when it re-raises via the event-wait path, and by the finally
+            # below for the failure case.
+            if deferred and self._mcp_started_event is not None:
+                self._mcp_started_event.set()
+        if not deferred:
+            return
+        # Deferred: only the successful-build path reaches here. If the
+        # build failed, _mcp_started is still False and there is no live
+        # pool to keep alive — exit so aclose's task-await returns.
+        if not self._mcp_started:
+            return
+        # Stay alive so THIS task owns the teardown. aclose() sets the
+        # close signal and awaits this task. The pool's anyio cancel scopes
+        # were entered above (in this task) and can only be exited here.
+        assert self._mcp_close_signal is not None
+        await self._mcp_close_signal.wait()
+        if self._mcp_tool_pool is not None:
+            await self._mcp_tool_pool.aclose()
+            self._mcp_tool_pool = None
+        self._mcp_started = False
+        logger.debug("HostRuntime: MCP pool closed (deferred teardown)")
+
+    async def _build_pool(self) -> None:
+        """Construct and start the MCP pool (shared by sync and deferred)."""
         if self._mcp_started:
             return
 
@@ -454,9 +539,8 @@ class HostRuntime:
         register_mcp_aliases(self._mcp_tool_pool)
         self._mcp_started = True
         logger.info(
-            "HostRuntime: MCP pool started with %d warm server(s)%s",
+            "HostRuntime: MCP pool started with %d warm server(s)",
             len(self._mcp_warm_configs),
-            " (deferred)" if deferred else "",
         )
 
     async def aclose(self) -> None:
@@ -468,23 +552,53 @@ class HostRuntime:
         before we close it. After this, the runtime is no longer usable
         — construct a new one for a fresh session.
         """
-        # If a deferred start is still in flight, await it first so the
-        # pool is fully constructed before we close it. On failure, the
-        # task stored the exception; swallow it — we're tearing down.
-        if self._mcp_start_task is not None and not self._mcp_start_task.done():
+        # Deferred-start path: the long-lived start task owns the anyio
+        # cancel scopes (it entered the MCP stdio_client contexts). It must
+        # close the pool in its own task. Signal it to tear down and await
+        # the task (shielded so a cancellation of the caller doesn't leave
+        # the teardown half-done and orphan MCP subprocesses).
+        if (
+            self._mcp_start_task is not None
+            and not self._mcp_start_task.done()
+            and self._mcp_close_signal is not None
+        ):
+            # If the build phase is still in flight, wait for it first so
+            # the pool is fully constructed before we ask for teardown.
+            if self._mcp_started_event is not None and not self._mcp_started_event.is_set():
+                try:
+                    await self._mcp_started_event.wait()
+                except Exception:  # pylint: disable=broad-except
+                    logger.debug(
+                        "HostRuntime: deferred build failed during aclose",
+                        exc_info=True,
+                    )
+            self._mcp_close_signal.set()
             try:
-                await self._mcp_start_task
+                await asyncio.shield(self._mcp_start_task)
             except Exception:  # pylint: disable=broad-except
+                # The task may raise the cached build-phase exception or a
+                # teardown error; we're tearing down either way.
                 logger.debug(
-                    "HostRuntime: deferred start failed during aclose",
+                    "HostRuntime: deferred start task ended during aclose",
                     exc_info=True,
                 )
+            self._mcp_start_task = None
+            self._mcp_start_exc = None
+            self._mcp_started_event = None
+            self._mcp_close_signal = None
+            logger.debug("HostRuntime: MCP pool closed (deferred)")
+            return
+        # Sync-start path (start() was called directly, or the deferred
+        # task already finished): close the pool inline in this task, which
+        # is the same task that entered the MCP anyio cancel scopes.
         if self._mcp_tool_pool is not None:
             await self._mcp_tool_pool.aclose()
             self._mcp_tool_pool = None
         self._mcp_started = False
         self._mcp_start_task = None
         self._mcp_start_exc = None
+        self._mcp_started_event = None
+        self._mcp_close_signal = None
         logger.debug("HostRuntime: MCP pool closed")
 
     # ── State snapshot ────────────────────────────────────────────────

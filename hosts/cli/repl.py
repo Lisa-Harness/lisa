@@ -260,11 +260,15 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
                     return True
         restart_requested = await _run_repl_loop(runtime, transport, console, prompt_session)
     finally:
-        # Shield the pool close from cancellation so a Ctrl+C during
-        # shutdown doesn't orphan MCP subprocesses. The anyio cross-loop
-        # rule (debugging.md) requires aclose in this same loop; shielding
-        # ensures it completes even if the main task was cancelled.
-        await asyncio.shield(runtime.aclose())
+        # Close the MCP pool. aclose() handles the anyio cross-task rule
+        # internally: when the pool was started via start_pool_deferred(),
+        # it delegates teardown to the long-lived start task (which owns the
+        # MCP stdio_client anyio cancel scopes) and shields that await so a
+        # Ctrl+C during shutdown doesn't orphan MCP subprocesses. Do NOT
+        # wrap this in asyncio.shield here — that would run aclose in a
+        # different task than the one that entered the pool's anyio cancel
+        # scopes, tripping anyio's cross-task guard (see debugging.md).
+        await runtime.aclose()
 
     return restart_requested
 
