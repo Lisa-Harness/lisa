@@ -466,9 +466,36 @@ class HostRuntime:
         # close signal and awaits this task. The pool's anyio cancel scopes
         # were entered above (in this task) and can only be exited here.
         assert self._mcp_close_signal is not None
-        await self._mcp_close_signal.wait()
+        # Cancellation may arrive at two points: while waiting on the
+        # close signal, or during pool.aclose(). Both must be handled so
+        # teardown completes (kill MCP subprocesses, exit anyio cancel
+        # scopes in THIS owning task) and the task ends cleanly instead
+        # of propagating a CancelledError that asyncio.shield in aclose()
+        # would re-raise past its `except Exception` (CancelledError is
+        # BaseException, not Exception, since 3.8+). This happens on
+        # asyncio.run shutdown (Ctrl+C): the main task is cancelled, then
+        # asyncio.run cancels all remaining tasks including this one.
+        # We cannot shield pool.aclose() (would run it in a different task
+        # and trip anyio's cross-task cancel-scope guard — the original
+        # bug, see deferred-start-owns-teardown.md). AsyncExitStack.aclose
+        # closes remaining contexts best-effort even when interrupted, so
+        # subprocesses are still killed. After catching, finish
+        # synchronously so the task completes normally.
+        try:
+            await self._mcp_close_signal.wait()
+        except asyncio.CancelledError:
+            logger.debug(
+                "HostRuntime: close-signal wait cancelled during deferred "
+                "teardown; proceeding to pool cleanup"
+            )
         if self._mcp_tool_pool is not None:
-            await self._mcp_tool_pool.aclose()
+            try:
+                await self._mcp_tool_pool.aclose()
+            except asyncio.CancelledError:
+                logger.debug(
+                    "HostRuntime: pool aclose cancelled during deferred "
+                    "teardown; subprocess cleanup best-effort"
+                )
             self._mcp_tool_pool = None
         self._mcp_started = False
         logger.debug("HostRuntime: MCP pool closed (deferred teardown)")
@@ -575,6 +602,18 @@ class HostRuntime:
             self._mcp_close_signal.set()
             try:
                 await asyncio.shield(self._mcp_start_task)
+            except asyncio.CancelledError:
+                # Cancellation of the aclose() caller (Ctrl+C /
+                # asyncio.run shutdown) propagates here. The start_task
+                # is left to finish teardown best-effort (its own
+                # try/except swallows CancelledError around pool.aclose).
+                # Re-raise so the caller's cancellation propagates
+                # cleanly without a misleading "cancel scope" traceback.
+                logger.debug(
+                    "HostRuntime: aclose cancelled while awaiting "
+                    "deferred start task teardown"
+                )
+                raise
             except Exception:  # pylint: disable=broad-except
                 # The task may raise the cached build-phase exception or a
                 # teardown error; we're tearing down either way.
