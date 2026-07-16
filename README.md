@@ -66,7 +66,7 @@ uv sync --extra dev
 uv run pyinstaller --name little_lisa --onefile hosts/little_lisa/main.py
 ```
 
-For a first custom pack, follow `docs/PACK_AUTHORING_GUIDE.md` and point `SDK_CONTENT_ROOTS` at your pack folder. For connector-style integrations, follow `docs/SDK_EXTENSIONS_GUIDE.md` and validate through `kernel.testing.extension_harness`.
+For a first custom pack, follow `docs/PACK_AUTHORING_GUIDE.md` and point `SDK_CONTENT_ROOTS` at your pack folder. The same guide covers signal connectors, processing loops, and host commands — validate connectors through `kernel.testing.extension_harness`.
 
 ## Package Layout
 
@@ -99,4 +99,4 @@ uv run pytest --import-mode=importlib hosts/little_lisa/test_little_lisa.py kern
 uv run --extra dev ruff check --select F,I kernel sdk mcp_server hosts
 ```
 
-See `docs/BOUNDARIES.md`, `docs/CODING_WORKFLOW.md`, `docs/PACK_AUTHORING_GUIDE.md`, `docs/OPERATIONS.md`, `docs/OPERATION_AUTHORING_GUIDE.md`, `docs/SDK_EXTENSIONS_GUIDE.md`, `docs/SESSION_CONTEXT_AUTHORING_GUIDE.md`, `docs/LITTLE_LISA_GUIDE.md`, and `docs/KERNEL_ARCHITECTURE.md` for authoring, host-boundary, and architecture details.
+See `docs/BOUNDARIES.md`, `docs/CODING_WORKFLOW.md`, `docs/PACK_AUTHORING_GUIDE.md`, `docs/OPERATIONS.md`, `docs/OPERATION_AUTHORING_GUIDE.md`, `docs/SESSION_CONTEXT_AUTHORING_GUIDE.md`, `docs/LITTLE_LISA_GUIDE.md`, and `docs/KERNEL_ARCHITECTURE.md` for authoring, host-boundary, and architecture details.

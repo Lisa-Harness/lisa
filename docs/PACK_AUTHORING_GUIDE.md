@@ -1,6 +1,16 @@
 # Pack Authoring Guide
 
-Packs add modes, operations, and authored content without changing host code. The framework discovers packs through `lisa.extensions.content_roots` entry points or through host-injected content roots.
+Packs add modes, operations, tools, authored content, signal connectors, and processing loops without changing host code. The framework discovers packs through `lisa.extensions.content_roots` entry points or through host-injected content roots.
+
+## Packs vs. Extensions
+
+Packs and extensions serve different architectural roles:
+
+- **Packs** own *workflow* and *personality*: `_mode.md` routing, allowed operations, prompt templates, curated session contexts, and host commands.
+- **Extensions** own *ambient telemetry*: background data collection (`SignalCollector`) and post-collection processing (`ProcessingLoop`). They run in the bottom half (a one-shot process triggered by a systemd timer or cron), pulling ambient state (e.g. GitHub PRs, Stripe billing) without waiting for a user query.
+- **MCP Servers** own *actions* and *storage*: client-invoked tools, file access, search, and memory.
+
+A single pack can provide all three: modes, operations, and signal connectors. The `lisa-pack-cloudflare`, `lisa-pack-github`, and `lisa-pack-stripe` packs do exactly that.
 
 ## Pack Locations
 
@@ -238,6 +248,186 @@ def get_content_root() -> Path:
 hello_world = "sdk.packs.hello_world:get_content_root"
 ```
 
+## Extension Entry Points
+
+Packs register extensions through entry-point groups in `pyproject.toml`. The active groups are:
+
+| Entry-point group | Purpose |
+| --- | --- |
+| `lisa.extensions.content_roots` | Declare the pack's content root for mode/operation/tool discovery |
+| `lisa.extensions.signal_connectors` | Register `SignalCollector` subclasses for background data collection |
+| `lisa.extensions.processing_loops` | Register `ProcessingLoop` implementations for post-collection analysis |
+| `lisa.extensions.host_commands` | Register slash-command handlers (`/checkpoint`, `/restore`, etc.) |
+| `lisa.extensions.context_evidence` | Register context-evidence builders for prompt injection |
+
+Hosts decide which groups they discover and how often extension outputs are collected.
+
+## Signal Connectors
+
+A signal connector is a stateless, repeatable monitor for an external system. Each connector:
+
+- Defines what configuration is required (env vars or settings)
+- Implements `collect()` to fetch fresh data from the external system
+- Returns a typed Pydantic snapshot
+- Provides fallback snapshots for misconfiguration or errors
+
+Signal connectors are invoked by the bottom-half process (`little-lisa bottom --tick`), not by the turn loop. The top half reads the resulting `UnifiedState` via the host's state provider.
+
+### Hello World Signal Connector
+
+A minimal signal connector package:
+
+```plaintext
+C:\Code\lisa-pack-hello-world\
+  __init__.py
+  connector.py
+  models.py
+  pyproject.toml
+```
+
+`models.py`
+
+```python
+from pydantic import BaseModel
+
+
+class HelloWorldSnapshot(BaseModel):
+    collected_at: str
+    status: str = "ok"
+    message: str = "hello world"
+```
+
+`connector.py`
+
+```python
+import httpx
+
+from kernel.intake.connectors import SignalCollector
+
+from .models import HelloWorldSnapshot
+
+
+class HelloWorldSignalCollector(SignalCollector[HelloWorldSnapshot]):
+    collector_id = "hello_world"
+    display_name = "Hello World"
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        collected_at: str,
+    ) -> HelloWorldSnapshot:
+        del client
+        return HelloWorldSnapshot(
+            collected_at=collected_at, status="ok", message="hello world"
+        )
+
+    def build_unconfigured_snapshot(self, collected_at: str) -> HelloWorldSnapshot:
+        return HelloWorldSnapshot(
+            collected_at=collected_at,
+            status="unconfigured",
+            message="missing configuration",
+        )
+
+    def build_error_snapshot(self, collected_at: str) -> HelloWorldSnapshot:
+        return HelloWorldSnapshot(
+            collected_at=collected_at,
+            status="error",
+            message="connector failed",
+        )
+```
+
+`pyproject.toml`
+
+```toml
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sdk.packs.hello_world*"]
+
+[project]
+name = "lisa-pack-hello-world"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["lisa-kernel", "httpx>=0.27.0"]
+
+[project.entry-points."lisa.extensions.signal_connectors"]
+hello_world = "sdk.packs.hello_world.connector:HelloWorldSignalCollector"
+```
+
+Validate through the public extension harness:
+
+```powershell
+uv pip install -e "C:\Code\lisa-pack-hello-world"
+uv run python -c "from kernel.testing.extension_harness import list_extension_entries; print([entry.model_dump() for entry in list_extension_entries() if entry.entry_id == 'hello_world'])"
+uv run python -c "from kernel.testing.extension_harness import build_collector_contract_preview, load_signal_collector; connector = load_signal_collector('hello_world'); print(build_collector_contract_preview(connector))"
+```
+
+Those commands prove entry-point discovery and contract shape without relying on a live external API.
+
+## Processing Loops
+
+A processing loop runs after signal collection and produces a `ProcessedState` that the bottom half merges into `UnifiedState`. Common uses:
+
+- Anomaly detection (examine snapshots, emit `active_alerts`)
+- Trend analysis (examine snapshots, emit `intel_collections`)
+- State derivation (examine snapshots, emit `signal_snapshots`)
+
+```python
+from kernel.intake.contracts import ProcessContext, ProcessedState, ProcessingLoop
+
+
+class HelloWorldLoop:
+    loop_id = "hello_world_loop"
+
+    async def process(self, ctx: ProcessContext) -> ProcessedState:
+        return ProcessedState(
+            loop_id=self.loop_id,
+            metadata={"greeting": "hello from processing loop"},
+        )
+```
+
+Register in `pyproject.toml`:
+
+```toml
+[project.entry-points."lisa.extensions.processing_loops"]
+hello_world_loop = "sdk.packs.hello_world.loop:HelloWorldLoop"
+```
+
+## Host Commands
+
+Packs can register slash commands that the host dispatch layer consults after its own built-in commands. Each command is a `HostCommandSpec` with a prefix, handler, and help text.
+
+```python
+from kernel.host_commands import HostCommandSpec
+
+
+async def handle_hello(runtime, stripped: str, message: str) -> str:
+    return f"Hello from pack: {stripped or 'world'}"
+
+
+hello_command = HostCommandSpec(
+    prefix="/hello-pack",
+    handler=handle_hello,
+    help_text="Say hello from a custom pack.",
+)
+```
+
+Register in `pyproject.toml`:
+
+```toml
+[project.entry-points."lisa.extensions.host_commands"]
+hello_world = "sdk.packs.hello_world.commands:hello_command"
+```
+
+## Host Boundary
+
+Packs and extensions should return typed snapshots, contribution fragments, or evidence records. They should not send chat messages, choose proactive recipients, own production storage, or import private host code. A host scheduler or runtime adapter owns those responsibilities.
+
+Keep imports limited to `kernel`, `sdk`, and package-local modules. Add import-boundary tests to verify no private app imports.
+
 ## Testing Checklist
 
 1. Import the package without private app modules.
@@ -246,6 +436,8 @@ hello_world = "sdk.packs.hello_world:get_content_root"
 4. Run deterministic unit tests without live APIs.
 5. Run the CLI host for one command path when practical.
 6. Add opt-in live tests only for integrations that need them.
+7. For signal connectors: validate through `kernel.testing.extension_harness` before wiring into a host.
+8. Add import-boundary tests.
 
 Focused local checks from `lisa_framework/`:
 
@@ -255,3 +447,13 @@ uv run lisa once "/markdown Draft a quick checklist"
 uv run lisa once "/hello framework"  # after setting SDK_CONTENT_ROOTS
 uv run ruff check sdk mcp_server hosts
 ```
+
+Run extension tests without live API calls by default:
+
+```powershell
+uv run pytest sdk/packs/github/tests -m "not live"
+uv run pytest sdk/packs/cloudflare/tests -m "not live"
+uv run pytest sdk/packs/stripe/tests -m "not live"
+```
+
+Live tests must be explicit, opt-in, and secret-safe. Do not make live tests part of default local or CI validation.
