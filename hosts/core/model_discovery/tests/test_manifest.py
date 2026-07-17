@@ -25,7 +25,8 @@ class TestBuildManifestPayload:
             DiscoveredModel(model_id="gpt-4o-mini", provider="openai"),
         )
         payload = build_manifest_payload(models)
-        assert payload["mode_models"]["default"] == "gpt-4o-mini"
+        # discover no longer emits mode_models; default role is via designations
+        assert "mode_models" not in payload
         default_row = next(r for r in payload["models"] if r["model_id"] == "gpt-4o-mini")
         assert "router" in default_row["designations"]
         assert "default" in default_row["designations"]
@@ -36,7 +37,7 @@ class TestBuildManifestPayload:
             DiscoveredModel(model_id="o3-mini", provider="openai", reasoning_model=True),
         )
         payload = build_manifest_payload(models)
-        assert payload["mode_models"]["deep"] == "o3-mini"
+        assert "mode_models" not in payload
         deep_row = next(r for r in payload["models"] if r["model_id"] == "o3-mini")
         assert "deep" in deep_row["designations"]
         assert "reasoning" in deep_row["designations"]
@@ -76,7 +77,8 @@ class TestBuildManifestPayload:
             DiscoveredModel(model_id="gpt-4o", provider="openai"),
         )
         payload = build_manifest_payload(models)
-        assert payload["mode_models"]["default"] == "gpt-4o"
+        default_row = next(r for r in payload["models"] if "default" in r.get("designations", ()))
+        assert default_row["model_id"] == "gpt-4o"
 
     def test_falls_back_to_first_model_if_all_reasoning(self) -> None:
         models = (
@@ -85,19 +87,23 @@ class TestBuildManifestPayload:
         )
         payload = build_manifest_payload(models)
         # default = first model (all reasoning), deep = first reasoning
-        assert payload["mode_models"]["default"] == "o3-mini"
-        assert payload["mode_models"]["deep"] == "o3-mini"
+        default_row = next(r for r in payload["models"] if "default" in r.get("designations", ()))
+        assert default_row["model_id"] == "o3-mini"
+        deep_row = next(r for r in payload["models"] if "deep" in r.get("designations", ()))
+        assert deep_row["model_id"] == "o3-mini"
 
-    def test_mode_models_populated(self) -> None:
+    def test_mode_models_not_emitted(self) -> None:
+        """discover must not emit mode_models; designations carry role info."""
         models = (
             DiscoveredModel(model_id="gpt-4o", provider="openai"),
             DiscoveredModel(model_id="o3-pro", provider="openai", reasoning_model=True),
         )
         payload = build_manifest_payload(models)
-        assert payload["mode_models"]["default"] == "gpt-4o"
-        assert payload["mode_models"]["discuss"] == "gpt-4o"
-        assert payload["mode_models"]["deep"] == "o3-pro"
-        assert payload["mode_models"]["workshop"] == "o3-pro"
+        assert "mode_models" not in payload
+        default_row = next(r for r in payload["models"] if "default" in r.get("designations", ()))
+        assert default_row["model_id"] == "gpt-4o"
+        deep_row = next(r for r in payload["models"] if "deep" in r.get("designations", ()))
+        assert deep_row["model_id"] == "o3-pro"
 
 
 class TestRenderManifestYaml:

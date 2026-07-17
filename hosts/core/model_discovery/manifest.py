@@ -76,6 +76,12 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
     ``latency_tier``, ``thinking_model``, ``context_window``,
     ``description``) are written when the probe populated them. Fields
     that remain empty/default are omitted to keep the YAML clean.
+
+    ``mode_models`` is intentionally NOT emitted. The manifest loader treats
+    it as optional (``require_mode_models=False``), so a proposal with only
+    ``designations`` loads cleanly. Per-mode overrides are a user-curated
+    concern and should not be presumed by discovery; the ``deep``/``default``
+    designations still convey the same role information.
     """
 
     if not models:
@@ -123,18 +129,13 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
             entry["designations"] = sorted(set(designations))
         rows.append(entry)
 
-    mode_models = {
-        "default": default_model.model_id,
-        "discuss": default_model.model_id,
-        "learn": default_model.model_id,
-        "search": default_model.model_id,
-        "deep": deep_model.model_id,
-        "workshop": deep_model.model_id,
-    }
-
+    # ``mode_models`` is intentionally NOT emitted by ``/models discover``.
+    # The manifest loader treats it as optional (``require_mode_models=False``),
+    # so a proposal with only ``designations`` loads cleanly. Users who want
+    # per-mode overrides can add the mapping by hand; the discovery command
+    # should not presume which modes map to which model.
     return {
         "version": 1,
-        "mode_models": mode_models,
         "models": rows,
     }
 
