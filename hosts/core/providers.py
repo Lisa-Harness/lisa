@@ -457,7 +457,7 @@ async def complete_anthropic(
     if system_prompt:
         payload["system"] = system_prompt
 
-    anthropic_tools = _to_anthropic_tools(tools)
+    anthropic_tools, name_map = _to_anthropic_tools(tools)
     if anthropic_tools:
         payload["tools"] = anthropic_tools
 
@@ -497,7 +497,7 @@ async def complete_anthropic(
     response_json = response.json()
     content_blocks = response_json.get("content")
     content = _extract_anthropic_text(content_blocks)
-    tool_calls = _extract_anthropic_tool_calls(content_blocks)
+    tool_calls = _extract_anthropic_tool_calls(content_blocks, name_map)
     (
         prompt_tokens,
         completion_tokens,
@@ -933,7 +933,7 @@ async def _stream_anthropic_chunks(
         payload["temperature"] = temperature
     if system_prompt:
         payload["system"] = system_prompt
-    anthropic_tools = _to_anthropic_tools(tools)
+    anthropic_tools, _name_map = _to_anthropic_tools(tools)
     if anthropic_tools:
         payload["tools"] = anthropic_tools
 

@@ -1104,6 +1104,78 @@ def test_extract_completion_tool_calls_falls_back_to_function_thought_signature(
     assert calls[0]["thought_signature"] == "SIGFN"
 
 
+# ── Anthropic tool name sanitization round-trip ───────────────────────
+
+
+def test_to_anthropic_tools_sanitizes_namespaced_tool_names() -> None:
+    from hosts.core.provider_completions import _to_anthropic_tools
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lisa-memory.add_memory",
+                "description": "Add a memory",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    anthropic_tools, name_map = _to_anthropic_tools(tools)
+    assert len(anthropic_tools) == 1
+    # The dot separator is replaced with underscore to satisfy
+    # ^[a-zA-Z0-9_-]{1,128}$.
+    assert anthropic_tools[0]["name"] == "lisa-memory_add_memory"
+    assert name_map == {"lisa-memory_add_memory": "lisa-memory.add_memory"}
+
+
+def test_to_anthropic_tools_passes_through_valid_names() -> None:
+    from hosts.core.provider_completions import _to_anthropic_tools
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get weather",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    anthropic_tools, name_map = _to_anthropic_tools(tools)
+    assert anthropic_tools[0]["name"] == "get_weather"
+    assert name_map == {"get_weather": "get_weather"}
+
+
+def test_to_anthropic_tools_returns_empty_for_no_tools() -> None:
+    from hosts.core.provider_completions import _to_anthropic_tools
+
+    assert _to_anthropic_tools(None) == ([], {})
+    assert _to_anthropic_tools([]) == ([], {})
+
+
+def test_extract_anthropic_tool_calls_restores_original_name_via_map() -> None:
+    from hosts.core.provider_completions import _extract_anthropic_tool_calls
+
+    blocks = [
+        {"type": "tool_use", "id": "call_1", "name": "lisa-memory_add_memory", "input": {"q": "x"}}
+    ]
+    name_map = {"lisa-memory_add_memory": "lisa-memory.add_memory"}
+    calls = _extract_anthropic_tool_calls(blocks, name_map)
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "lisa-memory.add_memory"
+    assert calls[0]["function"]["arguments"] == '{"q": "x"}'
+
+
+def test_extract_anthropic_tool_calls_falls_back_to_sanitized_name_without_map() -> None:
+    from hosts.core.provider_completions import _extract_anthropic_tool_calls
+
+    blocks = [
+        {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}}
+    ]
+    calls = _extract_anthropic_tool_calls(blocks)
+    assert calls[0]["function"]["name"] == "get_weather"
+
+
 # ── Provider key verification ─────────────────────────────────────────
 
 

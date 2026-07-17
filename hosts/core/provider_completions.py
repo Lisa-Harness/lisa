@@ -168,11 +168,25 @@ def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
     return {"value": decoded}
 
 
-def _to_anthropic_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """Translate OpenAI-style tool schemas to Anthropic tool format."""
+def _to_anthropic_tools(
+    tools: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Translate OpenAI-style tool schemas to Anthropic tool format.
+
+    Anthropic tool names must match ``^[a-zA-Z0-9_-]{1,128}$``. The host's
+    tool ids are namespaced with a ``.`` separator (``server_id.tool_name``)
+    which violates that pattern, so names are sanitized via the kernel's
+    :func:`kernel.provider_core._sanitize_anthropic_tool_name` before being
+    sent. Returns a tuple of ``(anthropic_tools, sanitized_to_original)``
+    so response parsing can restore the original (namespaced) tool name from
+    the sanitized name Anthropic echoes back in ``tool_use`` blocks.
+    """
     if not tools:
-        return []
+        return [], {}
+    from kernel.provider_core import _sanitize_anthropic_tool_name
+
     translated: list[dict[str, Any]] = []
+    sanitized_to_original: dict[str, str] = {}
     for tool in tools:
         if not isinstance(tool, dict):
             continue
@@ -182,18 +196,22 @@ def _to_anthropic_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, An
         name = str(function_payload.get("name") or "").strip()
         if not name:
             continue
+        sanitized_name = _sanitize_anthropic_tool_name(name)
+        # First-seen-wins so a duplicate sanitized name maps back to the
+        # first original; the kernel's catalog is first-registered-wins too.
+        sanitized_to_original.setdefault(sanitized_name, name)
         description = str(function_payload.get("description") or "").strip()
         parameters = function_payload.get("parameters")
         if not isinstance(parameters, dict):
             parameters = {"type": "object", "properties": {}}
         translated.append(
             {
-                "name": name,
+                "name": sanitized_name,
                 "description": description,
                 "input_schema": parameters,
             }
         )
-    return translated
+    return translated, sanitized_to_original
 
 
 def _translate_tool_result_message(message: dict[str, Any]) -> dict[str, Any]:
@@ -310,8 +328,16 @@ def _extract_anthropic_text(content_blocks: Any) -> str:
     return "\n".join(text_parts).strip()
 
 
-def _extract_anthropic_tool_calls(content_blocks: Any) -> list[dict[str, Any]]:
-    """Extract tool_use blocks from Anthropic content as OpenAI-style dicts."""
+def _extract_anthropic_tool_calls(
+    content_blocks: Any,
+    name_map: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Extract tool_use blocks from Anthropic content as OpenAI-style dicts.
+
+    ``name_map`` restores the original (namespaced) tool name from the
+    sanitized name Anthropic echoes back; without it the caller would
+    receive the sanitized name and fail to dispatch to the right MCP tool.
+    """
     if not isinstance(content_blocks, list):
         return []
     calls: list[dict[str, Any]] = []
@@ -320,12 +346,14 @@ def _extract_anthropic_tool_calls(content_blocks: Any) -> list[dict[str, Any]]:
             continue
         if str(block.get("type") or "") != "tool_use":
             continue
+        sanitized_name = str(block.get("name") or "")
+        restored_name = (name_map or {}).get(sanitized_name, sanitized_name)
         calls.append(
             {
                 "id": str(block.get("id") or ""),
                 "type": "function",
                 "function": {
-                    "name": str(block.get("name") or ""),
+                    "name": restored_name,
                     "arguments": json.dumps(block.get("input") or {}),
                 },
             }
