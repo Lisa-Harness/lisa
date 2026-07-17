@@ -879,13 +879,11 @@ dependencies = [
     { name = "lisa-host-web" },
     { name = "lisa-kernel" },
     { name = "lisa-mcp-servers" },
-    { name = "lisa-pack-brave-search" },
     { name = "lisa-pack-checkpoint" },
     { name = "lisa-pack-coding" },
     { name = "lisa-pack-core" },
     { name = "lisa-pack-learning" },
     { name = "lisa-pack-markdown" },
-    { name = "lisa-pack-mem0" },
     { name = "lisa-pack-search" },
     { name = "lisa-sdk" },
     { name = "rich" },
@@ -912,13 +910,11 @@ requires-dist = [
     { name = "lisa-host-web", editable = "hosts/web" },
     { name = "lisa-kernel", editable = "kernel" },
     { name = "lisa-mcp-servers", editable = "mcp_server" },
-    { name = "lisa-pack-brave-search", directory = "../lisa_packs/brave_search" },
     { name = "lisa-pack-checkpoint", editable = "sdk/packs/checkpoint" },
     { name = "lisa-pack-coding", editable = "sdk/packs/coding" },
     { name = "lisa-pack-core", editable = "sdk/packs/core" },
     { name = "lisa-pack-learning", editable = "sdk/packs/learning" },
     { name = "lisa-pack-markdown", editable = "sdk/packs/markdown" },
-    { name = "lisa-pack-mem0", directory = "../lisa_packs/mem0" },
     { name = "lisa-pack-search", editable = "sdk/packs/search" },
     { name = "lisa-sdk", editable = "sdk" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
@@ -1220,23 +1216,6 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "lisa-pack-brave-search"
-version = "0.1.0"
-source = { directory = "../lisa_packs/brave_search" }
-dependencies = [
-    { name = "httpx" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "lisa-pack-checkpoint"
 version = "0.1.0"
 source = { editable = "sdk/packs/checkpoint" }
@@ -1344,11 +1323,6 @@ requires-dist = [
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
 ]
 provides-extras = ["dev"]
-
-[[package]]
-name = "lisa-pack-mem0"
-version = "0.1.0"
-source = { directory = "../lisa_packs/mem0" }
 
 [[package]]
 name = "lisa-pack-search"
