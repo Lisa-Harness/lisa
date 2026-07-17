@@ -13,8 +13,26 @@ resources:
       - lisa-pack-markdown
       - lisa-pack-search
       - lisa-pack-brave-search
+      - lisa-pack-coding
+      - lisa-pack-github
     required:
       - lisa-pack-core
+    configuration:
+      lisa-pack-coding:
+        workspace_root: "."
+        checks:
+          - id: focused-tests
+            argv: [uv, run, pytest, kernel/tests, hosts/core/tests, sdk/packs/coding/tests, lisa_pack_github/tests, -q]
+            timeout_seconds: 600
+        required_check_ids: [focused-tests]
+        branch_prefix: "lisa/"
+        protected_branches: [main, master, develop, prod, production]
+        push_remote: origin
+      lisa-pack-github:
+        base_branch: main
+        allowed_base_branches: [main]
+        branch_prefix: "lisa/"
+        protected_branches: [main, master, develop, prod, production]
 providers:
   modes:
     default: lisa-pack-learning
