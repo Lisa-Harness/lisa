@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
@@ -952,9 +953,10 @@ class AnthropicGateway:
         if request.temperature:
             create_kwargs["temperature"] = request.temperature
         if request.tools:
-            create_kwargs["tools"] = [
-                _openai_tool_to_anthropic_tool(tool) for tool in request.tools
-            ]
+            anthropic_tools, name_map = _build_anthropic_tools_with_name_map(request.tools)
+            create_kwargs["tools"] = anthropic_tools
+        else:
+            name_map = {}
         if getattr(request.model_def, "thinking_model", False):
             create_kwargs["thinking"] = {
                 "type": "enabled",
@@ -991,11 +993,17 @@ class AnthropicGateway:
             if block_type == "text":
                 text_parts.append(getattr(block, "text", "") or "")
             elif block_type == "tool_use":
+                sanitized_name = getattr(block, "name", "")
+                # Restore the original (namespaced) tool name from the
+                # sanitized name Anthropic echoes back. Falls back to the
+                # sanitized name if no mapping exists (e.g. the model
+                # hallucinated a name we never advertised).
+                restored_name = name_map.get(sanitized_name, sanitized_name)
                 tool_calls.append(
                     {
                         "id": getattr(block, "id", ""),
                         "type": "function",
-                        "name": getattr(block, "name", ""),
+                        "name": restored_name,
                         "arguments": _normalize_openai_tool_arguments(getattr(block, "input", {})),
                     }
                 )
@@ -1749,16 +1757,73 @@ def _openai_tool_to_anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
     Anthropic expects::
 
         {"name": ..., "description": ..., "input_schema": <JSON-Schema>}
+
+    Anthropic tool names must match ``^[a-zA-Z0-9_-]{1,128}$``. The kernel's
+    namespaced tool ids use a ``.`` separator (``server_id.tool_name``) which
+    violates this pattern, so the name is sanitized via
+    :func:`_sanitize_anthropic_tool_name` before being sent. Callers that
+    need to recover the original name from a response ``tool_use`` block
+    must use the reverse map built by
+    :func:`_build_anthropic_tools_with_name_map`.
     """
 
     function_payload: dict[str, Any] = (
         tool.get("function") if isinstance(tool.get("function"), dict) else tool
     )
+    raw_name = str(function_payload.get("name", ""))
     return {
-        "name": str(function_payload.get("name", "")),
+        "name": _sanitize_anthropic_tool_name(raw_name),
         "description": str(function_payload.get("description", "")),
         "input_schema": function_payload.get("parameters") or {"type": "object", "properties": {}},
     }
+
+
+# Anthropic rejects tool names that don't match this pattern. The kernel's
+# namespaced tool ids use a ``.`` separator (and pack-contributed server ids
+# can contain dots too), so any character outside the allowed set is replaced
+# with ``_``. The transformation is made reversible by pairing it with a
+# per-request name map (see ``_build_anthropic_tools_with_name_map``).
+_ANTHROPIC_TOOL_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _sanitize_anthropic_tool_name(name: str) -> str:
+    """Return a tool name Anthropic will accept (``^[a-zA-Z0-9_-]{1,128}$``).
+
+    Replaces every character outside ``[a-zA-Z0-9_-]`` (notably the ``.``
+    used by the kernel's namespaced tool ids) with ``_``. Already-valid names
+    pass through unchanged, so bare synthetic tool names like ``memory.add``
+    become ``memory_add`` while plain names like ``get_weather`` are
+    unaffected. Truncates to 128 characters to satisfy the length bound.
+    """
+    sanitized = _ANTHROPIC_TOOL_NAME_RE.sub("_", name)
+    if len(sanitized) > 128:
+        sanitized = sanitized[:128]
+    return sanitized or "_"
+
+
+def _build_anthropic_tools_with_name_map(
+    tools: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Translate OpenAI tools to Anthropic format and capture a name map.
+
+    Returns a tuple of ``(anthropic_tools, sanitized_to_original)`` where the
+    map lets response parsing restore the original (namespaced) tool name
+    from the sanitized name Anthropic echoes back in ``tool_use`` blocks.
+    """
+    anthropic_tools: list[dict[str, Any]] = []
+    sanitized_to_original: dict[str, str] = {}
+    for tool in tools:
+        anthropic_tool = _openai_tool_to_anthropic_tool(tool)
+        sanitized_name = anthropic_tool["name"]
+        function_payload = (
+            tool.get("function") if isinstance(tool.get("function"), dict) else tool
+        )
+        original_name = str(function_payload.get("name", ""))
+        # First-seen-wins so a duplicate sanitized name maps back to the
+        # first original; the kernel's catalog is first-registered-wins too.
+        sanitized_to_original.setdefault(sanitized_name, original_name)
+        anthropic_tools.append(anthropic_tool)
+    return anthropic_tools, sanitized_to_original
 
 
 def _build_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
