@@ -17,6 +17,7 @@ dependencies = [
     "lisa-host-cli",
     "lisa-host-web",
     "lisa-host-vscode",
+    "lisa-host",
     "rich>=13.7.0",
     "typer>=0.12.3",
 ]
@@ -51,6 +52,7 @@ members = [
     "hosts/cli",
     "hosts/web",
     "hosts/vscode",
+    "packaging/lisa-host",
 ]
 
 [tool.uv.sources]
@@ -74,6 +76,7 @@ lisa-host-core = { workspace = true }
 lisa-host-cli = { workspace = true }
 lisa-host-web = { workspace = true }
 lisa-host-vscode = { workspace = true }
+lisa-host = { workspace = true }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

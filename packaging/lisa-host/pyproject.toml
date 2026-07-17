@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lisa-host"
+version = "0.1.0"
+description = "Lisa — agent framework host: terminal REPL, desktop web UI with system tray, pack manager, and MCP-first architecture"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["ai", "agent", "llm", "mcp", "cli", "desktop", "framework"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
+# The meta-package pulls in both hosts:
+#   - lisa-host-cli: provides the `lisa` console script (terminal REPL,
+#     `lisa desktop` web UI, `lisa verify`, `/pack install`). Bundles
+#     pystray + pillow so tray mode works out of the box.
+#   - lisa-host-web: the localhost web host server + tray launcher.
+#
+# External packs (cloudflare, github, stripe, mem0, brave_search, gmail)
+# are NOT included — install them on demand via `/pack install <name>`.
+dependencies = [
+    "lisa-host-cli>=0.1.0",
+    "lisa-host-web>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/lisa-framework/lisa"
+Repository = "https://github.com/lisa-framework/lisa"
+
+[tool.hatch.build.targets.wheel]
+# Pure meta-package — no code of its own. The `lisa` console script is
+# declared by lisa-host-cli and surfaces automatically. Ship the README
+# for PyPI rendering.
+packages = ["."]
