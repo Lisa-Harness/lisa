@@ -92,7 +92,12 @@ async def _run_ripgrep(
     return process.returncode or 0, stdout, stderr, stdout_overflowed or stderr_overflowed
 
 
-def _parse_matches(stdout: bytes, *, max_results: int) -> list[dict[str, object]]:
+def _parse_matches(
+    stdout: bytes,
+    *,
+    max_results: int,
+    excluded_parts: frozenset[str],
+) -> list[dict[str, object]]:
     """Parse bounded ripgrep JSON output into safe local match summaries."""
 
     matches: list[dict[str, object]] = []
@@ -105,7 +110,9 @@ def _parse_matches(stdout: bytes, *, max_results: int) -> list[dict[str, object]
             continue
         data = event.get("data") or {}
         raw_path = ((data.get("path") or {}).get("text") or "").replace("\\", "/")
-        if not raw_path or excluded_relative_path(Path(raw_path)):
+        if not raw_path:
+            continue
+        if any(part in excluded_parts for part in Path(raw_path).parts):
             continue
         line_text = str((data.get("lines") or {}).get("text") or "").rstrip("\r\n")
         matches.append(
@@ -154,7 +161,11 @@ async def execute(ctx: ToolExecutionContext) -> ToolResult:
             tool_id=TOOL_ID,
             error="ripgrep failed: " + stderr.decode("utf-8", errors="replace")[:500],
         )
-    matches = _parse_matches(stdout, max_results=max_results)
+    matches = _parse_matches(
+        stdout,
+        max_results=max_results,
+        excluded_parts=frozenset(config.excluded_parts),
+    )
     return ToolResult(
         tool_id=TOOL_ID,
         output_text=f"Found {len(matches)} code matches.",

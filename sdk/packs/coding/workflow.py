@@ -205,7 +205,7 @@ def artifact_has_current_required_checks(artifact: CodeChangeArtifact) -> bool:
 
 
 def patch_paths(patch: str, *, config: CodingPackConfig) -> list[str]:
-    """Extract and validate every non-dev-null path mentioned by a unified diff."""
+    """Extract and validate every non-dev/null path mentioned by a unified diff."""
 
     paths: list[str] = []
     for line in patch.splitlines():

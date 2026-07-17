@@ -27,6 +27,19 @@ class CodingPackConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     workspace_root: str = Field(min_length=1)
+    excluded_parts: tuple[str, ...] = Field(
+        default=(
+            ".git",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".venv",
+            "__pycache__",
+            "build",
+            "dist",
+            "node_modules",
+        )
+    )
     checks: tuple[CodingCheck, ...] = ()
     required_check_ids: tuple[str, ...] = ()
     branch_prefix: str = Field(default="lisa/", min_length=1, max_length=80)
