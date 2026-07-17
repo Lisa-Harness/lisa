@@ -318,7 +318,16 @@ async def _run_repl_loop(
 
 
 async def _read_repl_input(console: Console, prompt_session: Any) -> str | None:
-    """Read one line of REPL input, returning None on EOF."""
+    """Read one line of REPL input, returning None on EOF or Ctrl+C.
+
+    A Ctrl+C at the input prompt (not mid-turn) is treated as an exit
+    request, mirroring EOF (Ctrl+D). This prevents the infinite loop
+    where repeated Ctrl+C on an empty prompt returns ``""`` and
+    ``_run_repl_loop``'s ``if not message: continue`` loops forever.
+    Mid-turn Ctrl+C is handled separately by ``_process_repl_turn``'s
+    ``CancelledError``/``KeyboardInterrupt`` handler, which cancels the
+    turn and returns to the prompt — that path never reaches here.
+    """
     try:
         _render_status_line(console)
         if prompt_session is not None:
@@ -335,8 +344,11 @@ async def _read_repl_input(console: Console, prompt_session: Any) -> str | None:
             ).strip()
         return console.input(f"[{STYLE_PROMPT}]❯ [/]").strip()
     except (KeyboardInterrupt, asyncio.CancelledError):
-        console.print()
-        return ""
+        # Ctrl+C at the prompt → exit the session (same as EOF). Do NOT
+        # return "" — that makes _run_repl_loop loop forever on an empty
+        # prompt with no way out except /quit.
+        console.print(Rule(style=STYLE_RULE))
+        return None
     except EOFError:
         console.print(Rule(style=STYLE_RULE))
         return None
