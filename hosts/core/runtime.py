@@ -605,15 +605,20 @@ class HostRuntime:
             except asyncio.CancelledError:
                 # Cancellation of the aclose() caller (Ctrl+C /
                 # asyncio.run shutdown) propagates here. The start_task
-                # is left to finish teardown best-effort (its own
-                # try/except swallows CancelledError around pool.aclose).
-                # Re-raise so the caller's cancellation propagates
-                # cleanly without a misleading "cancel scope" traceback.
+                # owns the real teardown and swallows CancelledError around
+                # both close_signal.wait() and pool.aclose() so subprocesses
+                # are killed best-effort and the task ends normally. We MUST
+                # NOT re-raise here: propagating CancelledError out of
+                # aclose() during asyncio.run shutdown surfaces as the ugly
+                # "Cancelled via cancel scope ... by <Task _start_pool_impl>"
+                # traceback. Suppress so aclose returns cleanly; asyncio.run
+                # will then cancel + await the start task, whose own handlers
+                # finish teardown. See deferred-start-owns-teardown.md.
                 logger.debug(
                     "HostRuntime: aclose cancelled while awaiting "
-                    "deferred start task teardown"
+                    "deferred start task teardown; suppressing (start task "
+                    "finishes teardown best-effort)"
                 )
-                raise
             except Exception:  # pylint: disable=broad-except
                 # The task may raise the cached build-phase exception or a
                 # teardown error; we're tearing down either way.
