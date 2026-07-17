@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def _compact_json_schema(schema: dict[str, Any]) -> None:
@@ -47,3 +47,19 @@ class WebSearchStructuredOutput(BaseModel):
         default_factory=list,
         description="Unique exact source URLs copied from tool output only.",
     )
+
+    @field_validator("core_consensus", mode="before")
+    @classmethod
+    def _coerce_core_consensus(cls, value: Any) -> Any:
+        """Tolerate models that return ``core_consensus`` as a list of strings."""
+        if isinstance(value, list):
+            return "\n".join(str(item) for item in value)
+        return value
+
+    @field_validator("output_text", mode="before")
+    @classmethod
+    def _coerce_output_text(cls, value: Any) -> Any:
+        """Tolerate models that return ``output_text`` as a list of strings."""
+        if isinstance(value, list):
+            return "\n".join(str(item) for item in value)
+        return value
