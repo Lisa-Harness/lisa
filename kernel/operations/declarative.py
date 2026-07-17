@@ -95,6 +95,12 @@ def _resolve_tool_query(default_query: str, arguments: dict[str, Any]) -> str:
 def _stringify_tool_result(result: ToolResult | str) -> str:
     if isinstance(result, str):
         return result
+    if result.output_text.strip() and result.output_json:
+        # Pack tools split a terse human summary (output_text) from the
+        # structured payload (output_json). The model needs both: the
+        # summary line plus the full data, otherwise it sees e.g.
+        # "Listed 5 entries." with no entry content.
+        return f"{result.output_text.strip()}\n{json.dumps(result.output_json, indent=2, sort_keys=True)}"
     if result.output_text.strip():
         return result.output_text
     if result.output_json:

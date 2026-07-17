@@ -1584,9 +1584,7 @@ async def _run_turn_inner(
                         tool_ctx = _to_tool_context(tool_name, ctx)
                         tool_ctx.parameters = tool_arguments
                         tool_result = await execute_tool(tool_name, tool_ctx)
-                        tool_output = tool_result.output_text or (
-                            _serialize_tool_json(tool_result) if tool_result.output_json else "Done"
-                        )
+                        tool_output = _stringify_pack_tool_result(tool_result)
                     else:
                         mcp_result = await pool.call_tool(tool_name, tool_arguments)
                         tool_output = mcp_result.output_text or "Done"
@@ -1830,6 +1828,28 @@ def _serialize_tool_json(result: ToolResult) -> str:
     import json as _json
 
     return _json.dumps(result.output_json)
+
+
+def _stringify_pack_tool_result(result: ToolResult) -> str:
+    """Render a pack-contributed tool result for model consumption.
+
+    Pack tools (coding_list_directory, coding_find_files, coding_read_file, etc.)
+    return BOTH a terse human summary in ``output_text`` (e.g. "Listed 5 entries.")
+    AND the structured payload in ``output_json`` (the entry list itself). Emitting
+    only the summary starves the model of the data it called the tool to get. When
+    both are present, concatenate the summary and the JSON payload.
+    """
+    import json as _json
+
+    summary = result.output_text.strip()
+    payload = result.output_json
+    if summary and payload:
+        return f"{summary}\n{_json.dumps(payload, indent=2, sort_keys=True)}"
+    if summary:
+        return summary
+    if payload:
+        return _json.dumps(payload, indent=2, sort_keys=True)
+    return "Done"
 
 
 def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:
