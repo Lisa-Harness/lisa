@@ -1,4 +1,4 @@
-# RFC: Handoff-as-Tool-Call Routing
+# RFC: Unified FSM Routing (Handoff via `transition_stage`)
 
 Status: Draft
 Date: 2026-07-16
@@ -59,14 +59,23 @@ The separate-stateless-planner pattern (Lisa's) is the **least common** in
 current frameworks. It is the most latent and the most brittle because it
 decides ownership blind.
 
-## Recommended Pattern: Handoff-as-Tool-Call
+## Recommended Pattern: Unify Routing with the FSM
 
-Adapt the handoff pattern to Lisa's existing architecture. The key insight:
-**Lisa already has an intercepted-tool-call precedent** —
-`transition_stage` in `kernel/turn_runner.py:1532`. The workflow FSM advances
-when the model calls `transition_stage` as a tool; the turn loop intercepts it
-before the MCP/operation dispatch branches and calls `apply_transition` in-process.
-A `transfer_to_mode` tool follows the same pattern.
+The industry converged on handoff-as-tool-call. Lisa can go further: **make
+routing an emergent property of the FSM, not a separate mechanism.**
+
+The key insight: Lisa already has a battle-tested intercepted-tool-call that
+changes runtime state mid-turn — `transition_stage` at
+`kernel/turn_runner.py:1532`. The workflow FSM advances when the model calls
+`transition_stage`; the turn loop intercepts it before the MCP/operation
+dispatch branches, calls `apply_transition` in-process, swaps the stage
+instruction, and continues the loop. A mode switch *is* a stage transition —
+just in a different FSM.
+
+**One mechanism. One interception point. One tool.** The model already knows
+how to call `transition_stage`. The stuck-session guard (`_STAGE_NUDGE_CAP`)
+already prevents ping-pong. The `workflow_session_updater` already persists
+transitions. Mode-routing persistence comes for free.
 
 ### Design
 
@@ -76,67 +85,134 @@ flowchart TD
     B -->|yes| C[Jump straight to matched mode]
     B -->|no| D[Run turn in current mode]
     D --> E[Model loop with tools]
-    E --> F{Model calls transfer_to_mode?}
-    F -->|yes| G[Intercept: set current_mode_id]
-    G --> H[Swap system prompt + tool surface]
-    H --> I[Continue loop in new mode]
-    F -->|no| J[Normal tool dispatch / final response]
+    E --> F{Model calls transition_stage?}
+    F -->|yes| G{Target is a mode_id?}
+    G -->|yes| H[Swap system prompt + tool surface<br/>for new mode]
+    G -->|no| I[Apply workflow stage transition<br/>existing FSM path]
+    H --> J[Continue loop in new mode]
     I --> J
+    F -->|no| K[Normal tool dispatch / final response]
+    J --> K
 ```
 
-#### Phase A: Minimal handoff (re-run turn in new mode)
+#### Core mechanism: extend `transition_stage`, don't add `transfer_to_mode`
 
-The simplest implementation that eliminates the separate planner:
+The `transition_stage` tool already accepts `target_stage_id`. Extend it so
+`target_stage_id` can be a `mode_id` (e.g. `"markdown"`) in addition to a
+workflow stage (e.g. `"reason"`). The interception block at line 1532
+distinguishes the two cases:
 
-1. **Inject `transfer_to_mode` tool** into every routable mode's tool surface.
-   This tool is injected by the turn runner (like `transition_stage`), not
-   declared in each mode's `allowed_tool_ids`. It bypasses the allowlist.
+1. **Target is a workflow stage** (in the current mode's `stages` dict) →
+   existing `apply_transition` path. No change.
 
-2. **Intercept the tool call.** When the model calls `transfer_to_mode` with
-   `target_mode_id`, the turn loop:
-   - Sets `runtime.current_mode_id = target_mode_id` (via the same setter as
-     `hosts/core/commands.py:296`).
-   - Records `handoff_to = target_mode_id` on `TurnResult`.
-   - Returns a tool result: "Transferred to mode: {target_mode_id}. Continue
-     handling the user's request in this mode."
+2. **Target is a routable mode** (in the mode catalog, not the current
+   workflow) → **mid-turn mode switch**:
+   - Swap `messages[0]` (system prompt) to the new mode's `_mode.md` body.
+   - Rebuild the tool schema list for the new mode's `allowed_tool_ids`.
+   - Set `runtime.current_mode_id = target_mode_id`.
+   - Record `handoff_to = target_mode_id` on `TurnResult`.
+   - Continue the loop — the next `hooks.complete` call uses the new prompt +
+     tools. Chat history is unchanged.
 
-3. **Host re-runs the turn.** `_execute_mode_turn` in `handle_message.py` checks
-   `TurnResult.handoff_to`. If set, it re-runs the turn in the new mode with the
-   same user message. Chat history persists (it already does — modes swap the
-   system prompt, not the history).
+This is the OpenAI Swarm pattern (mid-turn prompt + tool swap) but implemented
+through the existing FSM machinery rather than a special `transfer_to_X`
+primitive. In Swarm, handoff is a *special mechanism* the framework treats
+differently from normal tool calls. In Lisa, routing is *the same mechanism*
+as workflow stage advancement — it's just another state machine.
 
-4. **Deprecate `plan_route`.** The separate planner is removed. Natural-language
-   turns start in `current_mode_id` (defaulting to `default`). The model decides
-   to hand off by calling `transfer_to_mode` if the current mode's tools can't
-   handle the request. No extra model call.
+#### Synthesized routing FSM
 
-#### Phase B: True mid-turn handoff (Swarm style)
+Every routable mode gets a synthesized set of `allowed_next_stages` — the
+modes it can hand off to. This is not authored per-mode; it's computed from
+the mode catalog at startup:
 
-Phase A re-runs the turn, costing one extra completion. Phase B eliminates
-that by swapping the system prompt + tool surface **mid-turn** without leaving
-the tool-call loop:
+- **`default` mode** → can transition to every routable mode.
+- **Every routable mode** → can transition back to `default`.
+- **Future: mode-to-mode transitions** → authored opt-in (e.g. `coding` can
+  hand off to `markdown` for documentation).
 
-1. On `transfer_to_mode` interception, swap `messages[0]` (system prompt) to
-   the new mode's `_mode.md` body.
-2. Rebuild the tool schema list for the new mode's `allowed_tool_ids`.
-3. Continue the loop — the next `hooks.complete` call uses the new prompt +
-   tools. The model picks up where it left off, now equipped with the right
-   tools.
+The routing FSM is a meta-FSM that wraps the per-mode workflow FSM. When the
+model is in `default` mode (no workflow), the only FSM is the routing FSM.
+When the model is in a workflow mode, the routing FSM sits above the workflow
+FSM — `transition_stage` first checks if the target is a mode (routing FSM),
+then falls through to the workflow FSM.
 
-This is the OpenAI Swarm pattern: the agent loop continues, only the system
-prompt and tool surface change. Chat history is unchanged.
+### Three forward-leaning enhancements
+
+These leverage unique Lisa primitives that no other framework has:
+
+#### 1. Capability-manifest-aware proactive hints (zero wasted iterations)
+
+Lisa already compiles a `CapabilityManifest` from live tool schemas every turn
+(`turn_runner.py` line ~1280). This manifest knows *exactly* what the current
+mode can and cannot do. Before the model call, compare the manifest against
+the user's query:
+
+- If the current mode lacks file-writing tools and the query mentions "write",
+  "save", "document" → inject a routing hint into the system prompt:
+  *"You don't have file-writing tools. If the user needs files written, call
+  `transition_stage` to switch to markdown or coding."*
+- If the current mode has the tools → no hint needed, the model just does the
+  work.
+
+This is **proactive** rather than reactive. The model doesn't waste an
+iteration discovering it can't do something — it knows before it tries. Swarm
+can't do this because it doesn't compile capability manifests.
+
+The hint injection is a simple keyword-to-capability-gap lookup. No model
+call. No extra tokens when the current mode can handle the request. The
+manifest is already computed — the hint is just a conditional string append
+to the system prompt.
+
+#### 2. Slice-driven pre-computed routing context (stateful, zero-cost)
+
+The opportunistic slice mechanism (`kernel/slice.py`) is Lisa's most unique
+architectural feature — pressure-driven work that piggybacks on the natural
+turn cadence. A post-turn slice could:
+
+- Analyze the last N turns of conversation.
+- Detect topic shifts ("we were coding, now we're discussing architecture").
+- Pre-compute a routing hint for the next turn.
+- Write it into a small state blob that `assemble_user_context` reads.
+
+This is **stateful routing context** that costs zero extra model calls. No
+other framework has this because no other framework has turn-anchored
+opportunistic slices. Swarm is stateless between turns. Lisa can carry routing
+context across turns for free.
+
+This is a future enhancement (not in the initial cutover). The initial
+implementation relies on the capability-manifest hints + the model's own
+conversation awareness from full chat history.
+
+#### 3. Stuck-detection and budget enforcement (free from the FSM)
+
+Because routing uses the same `transition_stage` interception as workflow
+stage advancement, all existing guardrails apply automatically:
+
+- **`_STAGE_NUDGE_CAP`** — if the model ping-pongs between modes without
+  making progress, the loop forces a final response after 6 turns in the
+  same "stage" (mode).
+- **`TurnBudget` enforcement** — tool calls, tokens, and wall time are
+  tracked across mode switches within the same turn. A budget-exhausted
+  turn forces a final no-tools completion regardless of which mode it's in.
+- **`max_tool_iterations`** — the global iteration cap still applies; mode
+  switches don't reset it.
 
 ### What changes
 
 | Component | Change |
 | --- | --- |
+| `kernel/turn_runner.py` `transition_stage` interception (line 1532) | Extend to handle `target_stage_id` that is a `mode_id` (not in current workflow). Swap system prompt + tool surface mid-loop. |
+| `kernel/turn_runner.py` schema injection | Synthesize routing FSM transitions: every routable mode can transition to every other routable mode (initially: default ↔ all). Inject `transition_stage` schema with the synthesized `allowed_next_stages` enum. |
 | `kernel/turn_runner.py:TurnResult` | Add `handoff_to: str \| None = None` |
-| `kernel/turn_runner.py` | Add `_TRANSFER_TOOL_NAME = "transfer_to_mode"` constant |
-| `kernel/turn_runner.py` tool-call loop | Add interception block (following `transition_stage` precedent at line 1532) |
-| `kernel/turn_runner.py` schema injection | Inject `transfer_to_mode` schema for all routable modes, bypassing `allowed_tool_ids` |
-| `hosts/core/handle_message.py` `_execute_mode_turn` | Check `TurnResult.handoff_to`, re-run in new mode (Phase A) |
-| `kernel/router.py` `plan_route` | Deprecate, then remove (hard cutover) |
-| `kernel/router.py` fast-path regex | Keep as zero-cost hint that short-circuits to a mode without a tool-call round-trip |
+| `kernel/turn_runner.py` system prompt assembly | Add capability-manifest-aware proactive hint injection (conditional, zero-cost when not needed) |
+| `hosts/core/handle_message.py` `_execute_mode_turn` | Check `TurnResult.handoff_to`, persist `current_mode_id` update |
+| `hosts/core/handle_message.py` `_route_model_turn` | Remove router planner call; NL turns go directly to `current_mode_id` |
+| `kernel/router.py` `plan_route` | Remove (hard cutover) |
+| `kernel/router.py` `_try_router_shortcut`, `_try_router_clarification` | Remove |
+| `kernel/router.py` fast-path regex | Keep as zero-cost pre-turn hint that short-circuits to a mode without a tool-call round-trip |
+| `kernel/models.py` `RouteDecision`, `RouteDecisionAlternative`, `RoutePlannerSource` | Remove |
+| Router planner prompt, verifier prompt | Remove |
 
 ### What stays
 
@@ -149,50 +225,65 @@ prompt and tool surface change. Chat history is unchanged.
 - **Explicit `/mode` switching** — unchanged, sets `current_mode_id` directly.
 - **`start_mode` bypass for real owning modes** — unchanged. Only `default` is
   exempt (see `ROUTER_DESIGN.md` §3).
+- **`transition_stage` for workflow FSMs** — unchanged. The interception
+  block gains a new branch for mode routing; the existing workflow path is
+  untouched.
 
 ### Migration: hard cutover
 
 Per the project's "no compat or migration" preference:
 
-1. Remove `plan_route` and its call site in `handle_message.py`.
-2. Remove the router planner prompt, verifier prompt, and `RouteDecision`
-   model.
-3. Remove `_try_router_shortcut` and `_try_router_clarification`.
-4. Natural-language turns go directly to `current_mode_id` (defaulting to
-   `default`). The model hands off via `transfer_to_mode` if needed.
-5. Keep `fast_path_patterns` as the deterministic short-circuit.
+1. Extend `transition_stage` interception to handle `mode_id` targets.
+2. Synthesize the routing FSM from the mode catalog.
+3. Add capability-manifest-aware proactive hints.
+4. Remove `plan_route` and its call site in `handle_message.py`.
+5. Remove the router planner prompt, verifier prompt, `RouteDecision` model,
+   `_try_router_shortcut`, and `_try_router_clarification`.
+6. Natural-language turns go directly to `current_mode_id` (defaulting to
+   `default`). The model hands off via `transition_stage` if needed.
+7. Keep `fast_path_patterns` as the deterministic short-circuit.
 
 ### Why this is better
 
-| Limitation | Current (planner) | Proposed (handoff) |
-| --- | --- | --- |
-| Conversation context | Blind (short excerpt only) | Full chat history in the loop |
-| Composition | Disqualified (one mode per turn) | Model calls multiple tools across modes |
-| Handoff-back | None | Model calls `transfer_to_mode: default` |
-| Extra model call | 1 planner call per NL turn | 0 (folding routing into the tool loop) |
-| Mode opacity | Sees description only | Sees actual tool surface, knows what's available |
+| Limitation | Current (planner) | Industry (Swarm handoff) | Lisa (unified FSM) |
+| --- | --- | --- | --- |
+| Conversation context | Blind (short excerpt only) | Full chat history in the loop | Full chat history in the loop |
+| Composition | Disqualified (one mode per turn) | Model calls multiple tools across modes | Model calls multiple tools across modes |
+| Handoff-back | None | Special `transfer_to_X` primitive | Same `transition_stage` mechanism as workflow advancement |
+| Extra model call | 1 planner call per NL turn | 0 | 0 |
+| Mode opacity | Sees description only | Sees actual tool surface | Sees actual tool surface **plus** proactive capability-gap hints |
+| Cross-turn routing state | None | None (stateless between turns) | Slice-driven routing context (future) |
+| Stuck detection | None | None | `_STAGE_NUDGE_CAP` + `TurnBudget` (free from FSM) |
+| Mechanism count | 2 (planner + FSM) | 2 (handoff + FSM) | **1** (FSM only) |
 
 ## Open Questions
 
-1. **Should `transfer_to_mode` be one generic tool or per-mode tools?**
-   OpenAI Swarm uses per-agent `transfer_to_X` functions. A single
-   `transfer_to_mode(target_mode_id)` is simpler and avoids schema bloat.
-   Recommendation: single generic tool with an enum of routable mode IDs.
+1. **Should the routing FSM allow arbitrary mode-to-mode transitions?**
+   Initially: `default ↔ all`. Every routable mode can hand off back to
+   `default`. Mode-to-mode (e.g. `coding → markdown`) is an authored opt-in
+   for future iterations. The synthesized FSM starts conservative.
 
 2. **Should the fast path still run before the turn?** Yes — it's zero-cost
    (regex, no model call) and short-circuits the obvious cases. But it's a
-   *hint*, not a *gate*: if it misses, the model can still hand off mid-turn.
+   *hint*, not a *gate*: if it misses, the model can still hand off mid-turn
+   via `transition_stage`.
 
 3. **What about the `start_mode` bypass?** Keep it for real owning modes
    (learn, coding, research). The `default` exemption (already implemented)
    means `start_mode: default` lets the model decide via handoff. A pinned
    `start_mode: learn` keeps the user in `learn` until they `/switch` or the
-   learn agent hands off.
+   learn agent hands off via `transition_stage`.
 
-4. **Supervisor pattern for composition?** Phase A/B handle simple handoff.
-   If composition ("search AND write markdown") becomes common, a future
-   Phase C could add a supervisor mode that calls sub-modes as tools — but
-   this is out of scope for the initial cutover.
+4. **Does the capability-manifest hint need its own model call?** No. The
+   manifest is already computed every turn for tool schema injection. The
+   hint is a conditional string append — a keyword-to-capability-gap lookup
+   that costs zero tokens when the current mode can handle the request.
+
+5. **Supervisor pattern for composition?** The unified FSM handles simple
+   handoff. If composition ("search AND write markdown") becomes common, a
+   future enhancement could add a supervisor mode that calls sub-modes as
+   tools — but this is out of scope for the initial cutover. The slice-driven
+   routing context (enhancement 2) is the more uniquely-Lisa investment.
 
 ## References
 
