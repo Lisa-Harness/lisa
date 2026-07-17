@@ -17,7 +17,7 @@ def test_markdown_imports_no_app_modules() -> None:
     violations = collect_import_violations(
         _PACK_ROOT,
         forbidden_prefixes={"app.", "hosts."},
-        allowed_prefixes={"kernel.", "sdk.", "sdk.packs.", "markdown_it."},
+        allowed_prefixes={"kernel.", "sdk.", "sdk.packs.", "markdown_it.", "mdformat."},
     )
     if violations:
         lines = [f"  {path}:{lineno}: {text}" for path, lineno, text in violations]

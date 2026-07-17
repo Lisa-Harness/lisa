@@ -408,3 +408,77 @@ async def test_no_existing_document_starts_fresh() -> None:
     assert "Document forged and stored" in result.output_text
     # The operation attempted a read but found nothing (not-found is normal).
     assert "docs/forge.md" in captures["read_paths"]
+
+
+@pytest.mark.asyncio
+async def test_document_annotated_with_model_by_default() -> None:
+    """The forged document includes a non-rendering model annotation by default."""
+    tool_fn, captures = _make_tool_executor()
+    ctx = _make_ctx(
+        complete_fn=_fake_complete_returning(_VALID_DOCUMENT),
+        resolve_model_fn=_fake_resolve_model(),
+        execute_tool_fn=tool_fn,
+    )
+    await execute(ctx)
+    persisted = captures["writes"][0]["content"]
+    assert "<!--" in persisted
+    assert "forged by lisa" in persisted
+    # The fake model id and provider must appear in the annotation.
+    assert "gpt-chat-latest" in persisted
+    assert "openai" in persisted
+
+
+@pytest.mark.asyncio
+async def test_annotation_suppressed_by_param() -> None:
+    """``annotate_model: False`` suppresses the model annotation."""
+    tool_fn, captures = _make_tool_executor()
+    ctx = _make_ctx(
+        complete_fn=_fake_complete_returning(_VALID_DOCUMENT),
+        resolve_model_fn=_fake_resolve_model(),
+        execute_tool_fn=tool_fn,
+        params={"annotate_model": False},
+    )
+    await execute(ctx)
+    persisted = captures["writes"][0]["content"]
+    assert "forged by lisa" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_annotation_suppressed_by_user_phrase() -> None:
+    """A natural-language opt-out phrase suppresses the annotation."""
+    tool_fn, captures = _make_tool_executor()
+    ctx = _make_ctx(
+        query="forge a runbook, but don't annotate the model",
+        complete_fn=_fake_complete_returning(_VALID_DOCUMENT),
+        resolve_model_fn=_fake_resolve_model(),
+        execute_tool_fn=tool_fn,
+    )
+    await execute(ctx)
+    persisted = captures["writes"][0]["content"]
+    assert "forged by lisa" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_document_formatted_by_mdformat() -> None:
+    """The persisted document is normalized (single trailing newline, clean spacing)."""
+    messy = (
+        "# Runbook\n"
+        "\n\n\n"
+        "## Steps\n"
+        "\n"
+        "-  step one\n"
+        "-   step two\n"
+        "\n\n\n"
+    )
+    tool_fn, captures = _make_tool_executor()
+    ctx = _make_ctx(
+        complete_fn=_fake_complete_returning(messy),
+        resolve_model_fn=_fake_resolve_model(),
+        execute_tool_fn=tool_fn,
+    )
+    await execute(ctx)
+    persisted = captures["writes"][0]["content"]
+    # mdformat collapses 3+ blank lines to one and ensures a single trailing newline.
+    body = persisted.split("<!--")[0]
+    assert "\n\n\n" not in body
+    assert persisted.endswith("\n")
