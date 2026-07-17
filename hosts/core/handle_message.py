@@ -720,10 +720,16 @@ async def _execute_mode_turn(
     catalog = get_workflow_catalog()
     mode = catalog.get(mode_id) or catalog["default"]
 
+    # Ensure the model manifest is loaded so mode_models overrides are honored.
+    if runtime.manifest is None:
+        from hosts.core.model_runtime import load_manifest as _load_manifest
+        runtime.manifest = _load_manifest({}, data_dir=runtime.data_dir)
+
     preferred_model_id = preferred_model_id_for_route(
         raw_message=message,
         mode_id=mode.mode_id,
         deep_route=deep_route,
+        manifest=runtime.manifest,
     )
     set_runtime_route_preview(
         runtime,

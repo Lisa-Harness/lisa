@@ -766,7 +766,7 @@ async def run_turn(
     mode_id: str,
     query: str,
     hooks: TurnHooks,
-    max_tool_iterations: int = 5,
+    max_tool_iterations: int = 15,
     preferred_model_id: str | None = None,
     turn_budget: TurnBudget | None = None,
     logger_override: logging.Logger | None = None,
@@ -1627,7 +1627,29 @@ async def _run_turn_inner(
             break
 
     if not content:
-        content = "The model did not produce a final response."
+        # The loop exited due to max_tool_iterations while the model was
+        # still calling tools. Force one final no-tools completion so the
+        # model synthesizes its findings into a coherent response instead
+        # of the generic "did not produce a final response" fallback.
+        try:
+            final_completion = await complete(
+                messages=messages,
+                model_def=effective_model_def,
+                max_tokens=4096,
+                temperature=0.4,
+                tools=None,
+            )
+            final_content = getattr(final_completion, "content", "") or ""
+            if final_content.strip():
+                content = final_content.strip()
+                final_usage = _extract_completion_usage(final_completion)
+                total_prompt_tokens += final_usage[0]
+                total_completion_tokens += final_usage[1]
+                total_tokens += final_usage[2]
+                total_duration_ms += final_usage[5]
+        except Exception as exc:  # pylint: disable=broad-except
+            _log.warning("iteration-cap final completion failed: %s", exc)
+        content = content or "The model did not produce a final response."
 
     # Terminal-stage handling: if the model transitioned to a terminal
     # stage during this turn, force one final no-tools completion using the

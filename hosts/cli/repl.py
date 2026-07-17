@@ -191,7 +191,7 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
 
     initial_mode = runtime.start_mode_id
     initial_model_alias = (
-        model_alias_for_mode(initial_mode)
+        model_alias_for_mode(initial_mode, manifest=runtime.manifest)
         if runtime.start_mode_id
         else router_model_alias()
     )

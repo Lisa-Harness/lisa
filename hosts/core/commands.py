@@ -111,6 +111,7 @@ from hosts.core.model_runtime import (
     reload_manifest,
     resolve_little_lisa_model,
 )
+from kernel.model_manifest import ModelManifest
 from hosts.core.runtime import HostRuntime, TurnContext
 from hosts.core.state_provider import FileBackedStateProvider
 from hosts.core.thread import append_thread_entry, load_recent_thread_entries
@@ -244,8 +245,23 @@ def router_model_alias() -> str:
     return "router"
 
 
-def model_alias_for_mode(mode_id: str) -> str:
-    """Return the model alias for a given mode id."""
+def model_alias_for_mode(
+    mode_id: str,
+    *,
+    manifest: ModelManifest | None = None,
+) -> str:
+    """Return the model alias for a given mode id.
+
+    When a manifest is provided and has a ``mode_models`` entry for the mode,
+    that explicit per-mode model reference is returned directly so the caller
+    resolves the concrete model rather than falling back to a designation.
+    Otherwise the hardcoded designation map is consulted (e.g. "default",
+    "deep", "router").
+    """
+    if manifest is not None:
+        mode_model_ref = manifest.mode_models.get(mode_id.strip().lower())
+        if mode_model_ref:
+            return mode_model_ref
     return _MODE_MODEL_ALIAS_MAP.get(mode_id, "default")
 
 
@@ -258,17 +274,24 @@ def explicit_deep_query(message: str) -> str | None:
     return str(match.group("query") or "").strip()
 
 
-def preferred_model_id_for_route(*, raw_message: str, mode_id: str, deep_route: bool) -> str:
+def preferred_model_id_for_route(
+    *,
+    raw_message: str,
+    mode_id: str,
+    deep_route: bool,
+    manifest: ModelManifest | None = None,
+) -> str:
     """Return the preferred model id for a route decision.
 
     ``raw_message`` is kept in the signature for callers that may use it for
     message-aware model selection in future hosts; the core host routes by
-    mode alias only.
+    mode alias only. When a manifest with a ``mode_models`` override for the
+    mode is provided, that explicit model reference wins.
     """
     del raw_message
     if deep_route:
         return "deep"
-    return model_alias_for_mode(mode_id)
+    return model_alias_for_mode(mode_id, manifest=manifest)
 
 
 def predict_model(runtime: HostRuntime, preferred_model_id: str) -> tuple[str, str]:
