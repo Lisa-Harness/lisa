@@ -32,7 +32,7 @@ Use your local venv if needed:
 List pack activation state (always-on, bundled, runtime-installed):
 
 ```powershell
-uv run lisa packs list --no-log
+uv run lisa pack list --no-log
 ```
 
 From chat/REPL, same operation:
@@ -100,7 +100,7 @@ $env:LISA_AUTO_RESTART = "false"
 Example shape (replace with your real repo/ref):
 
 ```powershell
-uv run lisa packs install "git+https://github.com/the-migus-group/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare" --no-log
+uv run lisa pack install "git+https://github.com/the-migus-group/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare" --no-log
 ```
 
 From REPL/host command surface:
@@ -116,13 +116,13 @@ Local folder installs are supported so you can iterate on packs before publishin
 Example learning pack path:
 
 ```powershell
-uv run lisa packs install "C:\Code\lisa-pack-learning" --no-log
+uv run lisa pack install "C:\Code\lisa-pack-learning" --no-log
 ```
 
 Example cloudflare pack path:
 
 ```powershell
-uv run lisa packs install "C:\Code\lisa-pack-cloudflare" --no-log
+uv run lisa pack install "C:\Code\lisa-pack-cloudflare" --no-log
 ```
 
 Requirements for local folder install:
@@ -175,7 +175,7 @@ On next process start, the CLI host consumes that message and runs it as the fir
 ## 6) Uninstall a Pack
 
 ```powershell
-uv run lisa packs uninstall lisa-pack-cloudflare --no-log
+uv run lisa pack uninstall lisa-pack-cloudflare --no-log
 ```
 
 ## 7) Inspect Installed Pack Metadata
@@ -233,7 +233,7 @@ Supported exclusion formats:
 ## 9) Suggested Quick Validation Sequence
 
 ```powershell
-uv run lisa packs list --no-log
+uv run lisa pack list --no-log
 uv run lisa once "/pack install requests" --no-log
 uv run lisa once "/pack list" --no-log
 ```

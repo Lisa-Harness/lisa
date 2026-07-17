@@ -41,7 +41,7 @@ Little Lisa uses a generated model manifest in `artifacts/models.yaml` (or your 
 `lisa-pack-learning` is now an opt-in pack in this workspace. Install it through the host pack manager when you want memory-backed learning behavior:
 
 ```powershell
-uv run little-lisa packs install "C:\Code\lisa-pack-learning" --no-log
+uv run little-lisa pack install "C:\Code\lisa-pack-learning" --no-log
 ```
 
 Key CLI options:

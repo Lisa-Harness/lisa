@@ -462,7 +462,7 @@ def _consume_restart_resume_message(runtime: HostRuntime) -> None:
     replay it as the first turn, then clear the env var to avoid replay
     loops on subsequent restarts.
 
-    Only consumed in interactive REPL startup; one-shot ``once``/``packs``
+    Only consumed in interactive REPL startup; one-shot ``once``/``pack``
     modes ignore it for deterministic one-shot UX.
     """
     resume_msg = os.environ.pop(_RESTART_RESUME_MESSAGE_ENV, "").strip()
@@ -473,7 +473,7 @@ def _consume_restart_resume_message(runtime: HostRuntime) -> None:
 def _exit_restart_required() -> None:
     """Print a restart-required notice and exit for one-shot commands.
 
-    Used by ``once`` and ``packs install/uninstall`` after a successful
+    Used by ``once`` and ``pack install/uninstall`` after a successful
     pack lifecycle change. Unlike the REPL path, one-shot commands do
     NOT re-exec (re-running the same command would redo the mutation).
     Instead, print a clear notice and exit with
@@ -1095,12 +1095,12 @@ def _mcp_command(
 
 
 # ---------------------------------------------------------------------------
-# packs command
+# pack command
 # ---------------------------------------------------------------------------
 
 
-@app.command("packs", help="Manage runtime pack installs (list/install/uninstall).")
-def _packs_command(
+@app.command("pack", help="Manage runtime pack installs (list/install/uninstall).")
+def _pack_command(
     action: str = typer.Argument(..., help="Action: list, install, uninstall."),
     target: str = typer.Argument(
         "",

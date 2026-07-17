@@ -4,7 +4,7 @@ Covers the platform-aware restart contract:
 - Unix: true in-place ``os.execv`` re-exec.
 - Windows: do NOT spawn (parent-link loss); print a notice and exit with
   ``_RESTART_REQUIRED_EXIT`` so the user manually re-runs ``lisa``.
-- One-shot paths (``once``, ``packs``) exit with ``_RESTART_REQUIRED_EXIT``
+- One-shot paths (``once``, ``pack``) exit with ``_RESTART_REQUIRED_EXIT``
   on all platforms instead of re-execing.
 - Resume-message env var is consumed once on REPL startup, then cleared.
 """
