@@ -797,7 +797,15 @@ async def test_run_turn_on_stage_hook_failure_is_swallowed() -> None:
 
 @pytest.mark.asyncio
 async def test_routing_fsm_synthesis() -> None:
-    """The routing FSM synthesis produces default ↔ all routable modes."""
+    """The routing FSM synthesis produces a full routable mesh.
+
+    Every routable mode (including default) can hand off to every other
+    routable mode. Regression for the 2026-07-17 coding-mode fork gap: a
+    remember+write request issued from coding must be able to fork to
+    learn + markdown, which requires coding → learn and coding → markdown
+    edges to exist. The conservative default-only edge set suppressed the
+    fork hint and made the model fall back to coding_create_worktree.
+    """
     from kernel.ipsar_fsm import (
         get_routable_mode_ids,
         get_routing_targets,
@@ -805,18 +813,23 @@ async def test_routing_fsm_synthesis() -> None:
     )
 
     transitions = synthesize_routing_transitions()
-    # default should be able to hand off to every routable mode (except itself)
-    default_targets = transitions.get("default", [])
     routable_ids = get_routable_mode_ids()
+
+    # Every routable mode should be able to hand off to every other routable
+    # mode (full mesh, excluding itself).
+    for rid in routable_ids:
+        targets = get_routing_targets(rid)
+        for other in routable_ids:
+            if other == rid:
+                assert other not in targets, f"{rid} should not hand off to itself"
+            else:
+                assert other in targets, f"{rid} should be able to hand off to {other}"
+
+    # default specifically must still reach every other routable mode.
+    default_targets = transitions.get("default", [])
     for rid in routable_ids:
         if rid != "default":
             assert rid in default_targets, f"default should be able to hand off to {rid}"
-
-    # Every routable mode should be able to hand off back to default
-    for rid in routable_ids:
-        if rid != "default":
-            targets = get_routing_targets(rid)
-            assert "default" in targets, f"{rid} should be able to hand off back to default"
 
 
 def test_parse_fork_target_string() -> None:
@@ -1078,4 +1091,28 @@ def test_routing_hint_fork_preserves_target_case() -> None:
         capability_manifest=_empty_manifest(),
         routing_targets=["learn", "markdown"],
     )
+    assert "fork:learn,markdown" in hint
+
+
+def test_routing_hint_forks_from_coding_mode() -> None:
+    """From coding mode, a remember+write-markdown request must still steer
+    to fork:learn,markdown once the routing FSM is a full mesh.
+
+    Regression for docs/lisa-coding-mode-fork-failure-2026-07-17.md: with the
+    conservative default-only edge set, coding's routing_targets were
+    ["default"] and the fork branch's "learn"/"markdown" membership guard
+    never passed. The model then fell back to coding_create_worktree
+    (approval-gated), producing a worktree approval loop instead of a fork.
+    """
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    hint = _compute_capability_routing_hint(
+        mode_id="coding",
+        query="remember the entire thing and write a markdown document of it",
+        capability_manifest=_empty_manifest(),
+        # Post-mesh coding routing targets include learn + markdown.
+        routing_targets=["default", "learn", "markdown", "thinkabout", "search"],
+    )
+    assert hint != ""
+    assert "transition_stage" in hint
     assert "fork:learn,markdown" in hint

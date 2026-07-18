@@ -1144,11 +1144,17 @@ def synthesize_routing_transitions(
 ) -> dict[str, list[str]]:
     """Compute the routing FSM: which modes each mode can hand off to.
 
-    Initially conservative:
-    - ``default`` can transition to every routable mode.
-    - Every routable mode can transition back to ``default``.
-    - Mode-to-mode transitions (e.g. coding → markdown) are authored opt-in
-      for future iterations.
+    Full routable mesh: every routable mode (including ``default``) can hand
+    off to every other routable mode. This unblocks the proactive fork
+    routing hint (see ``kernel/turn_runner.py ::
+    _compute_capability_routing_hint``) from every entry mode the user can
+    reach, not just ``default`` — e.g. a remember+write request issued from
+    ``coding`` can fork to ``learn`` + ``markdown`` instead of falling back
+    to the current mode's approval-gated write tool.
+
+    Per-edge restrictions (e.g. forbidding ``search`` → ``coding``) are
+    deferred to a later, smaller change — the default is permissive ("all
+    work items on by default, externalize later").
 
     Returns a dict mapping mode_id → list of allowed handoff target mode_ids.
     """
@@ -1157,12 +1163,9 @@ def synthesize_routing_transitions(
     routable_ids = get_routable_mode_ids(catalog)
     transitions: dict[str, list[str]] = {}
     for mode_id, mode_config in catalog.items():
-        if mode_id == "default":
-            # default can hand off to every routable mode (excluding itself)
-            transitions[mode_id] = [m for m in routable_ids if m != "default"]
-        elif mode_config.routable:
-            # Routable modes can hand off back to default
-            transitions[mode_id] = ["default"]
+        if mode_config.routable:
+            # Every routable mode can hand off to every other routable mode.
+            transitions[mode_id] = [m for m in routable_ids if m != mode_id]
         else:
             transitions[mode_id] = []
     return transitions
