@@ -6,14 +6,13 @@ into the core pack:
 - ``self_model`` — a deterministic producer that walks the wired runtime
   catalogs (modes, operations, tools, models) and emits a
   ``LisaSelfModelArtifact`` with entries across all seven
-  ``SelfKnowledgeCategory`` buckets. Invoked by the slice system, not by the
-  LLM; no model call, runs entirely within the slice budget.
-- ``architecture_atlas`` — a declarative operation that generates a
-  structured architecture overview from the kernel layer model and codebase
-  layout.
+  ``SelfKnowledgeCategory`` buckets. Invoked by the post-turn slice, not by
+  the LLM; no model call, runs entirely within the slice budget.
 - ``reflect_self`` — a declarative operation that forms a holistic
   self-assessment from the deterministic self-model, live introspection
-  telemetry, and recent turn context.
+  telemetry, and recent turn context. Available as an allowed operation on
+  modes where the model may benefit from self-introspection during
+  problem-solving.
 
 The kernel owns the contracts (``LisaSelfModelArtifact``,
 ``OperationExecutionContext``, the operation registry mechanism); this pack

@@ -98,6 +98,14 @@ def build_unified_state(
     if isinstance(strategy, str) and strategy.strip():
         state.strategy_vibe = strategy.strip()
 
+    self_model_vibe = snapshot.get("self_model_vibe")
+    if isinstance(self_model_vibe, str) and self_model_vibe.strip():
+        state.self_model_vibe = self_model_vibe.strip()
+
+    reflection_vibe = snapshot.get("reflection_vibe")
+    if isinstance(reflection_vibe, str) and reflection_vibe.strip():
+        state.reflection_vibe = reflection_vibe.strip()
+
     return state
 
 

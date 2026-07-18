@@ -20,11 +20,12 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
+from kernel.introspect import gather_introspection
 from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from kernel.operations.registry import execute_operation
 from kernel.pack_configuration import SessionPackConfigurationResolver
 from kernel.seams.protocols import ContentRegistry
-from kernel.slice import SliceTuning
+from kernel.slice import SliceOutcome, SliceTuning
 from kernel.turn_runner import CheckpointTuning, ContextSeams, TurnHooks
 
 from hosts.core.context_assembly import (
@@ -284,12 +285,66 @@ def build_turn_hooks(
         persisted_last_slice_finished_at = runtime.last_slice_finished_at
 
     # ── Slice callables ────────────────────────────────────────────
+    async def _introspect_fn() -> Any:
+        """Gather a live introspection snapshot for the self-model operation."""
+        return await gather_introspection(
+            mcp_pool=runtime.mcp_tool_pool,
+            log_path=runtime.host_log_path,
+            token_usage_path=runtime.token_usage_path,
+        )
+
+    async def _run_self_model_slice() -> tuple[int, str, str]:
+        """Run the deterministic self-model and write the vibe to state when degraded.
+
+        Returns ``(work_items, last_item, note)``. The self-model is no-LLM
+        and typically completes in <50ms. The vibe is only written to
+        ``runtime.state_snapshot`` when ``operational_health`` is
+        ``degraded`` or ``struggling`` — healthy state leaves the vibe empty
+        so the context mapper injects zero self-awareness tokens (ambient
+        silence when nothing is wrong).
+        """
+        try:
+            ctx = OperationExecutionContext(
+                operation_id="self_model",
+                user_slug=runtime.config.user_slug,
+                introspect_fn=_introspect_fn,
+                extra={"timezone": runtime.config.timezone},
+            )
+            result = await execute_operation("self_model", ctx)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.debug("self_model slice failed: %s", exc, exc_info=True)
+            return 0, "", ""
+        artifact_json = result.output_json
+        if not isinstance(artifact_json, dict):
+            return 0, "", ""
+        health = str(artifact_json.get("operational_health") or "")
+        if health not in ("degraded", "struggling"):
+            return 0, "", ""
+        vibe = result.output_text.strip()
+        if not vibe:
+            return 0, "", ""
+        if runtime.state_snapshot is None:
+            runtime.state_snapshot = {}
+        runtime.state_snapshot["self_model_vibe"] = vibe
+        return 1, "self_model", f"self_model health={health}"
+
     async def _pre_turn_slice(policy: Any) -> Any:
         return await file_state_provider.slice(ctx=None, policy=policy)
 
     async def _post_turn_slice(policy: Any) -> Any:
         outcome = await file_state_provider.slice(ctx=None, policy=policy)
         runtime.last_slice_finished_at = __import__("time").monotonic()
+        # Ambient self-awareness: run the deterministic self-model after file
+        # compaction. Writes the vibe to state only when health is degraded or
+        # struggling — healthy state produces no prompt tokens.
+        sm_items, sm_last, sm_note = await _run_self_model_slice()
+        if sm_items > 0:
+            outcome = SliceOutcome(
+                work_items_completed=outcome.work_items_completed + sm_items,
+                elapsed_ms=outcome.elapsed_ms,
+                last_item=sm_last or outcome.last_item,
+                notes=(*outcome.notes, sm_note) if sm_note else outcome.notes,
+            )
         return outcome
 
     async def _explicit_slice(policy: Any) -> Any:
