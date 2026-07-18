@@ -72,10 +72,16 @@ from kernel.content_roots import discover_installed_content_roots
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import (
     CapabilityManifest,
+    ConversationSurface,
+    MemoryScope,
+    OperationExecutionContext,
+    ToolExecutionContext,
+    ToolResult,
     WorkflowModeConfig,
 )
 from kernel.operations.registry import (
     OperationExecutionError,
+    execute_operation,
     get_operation_catalog,
 )
 from kernel.pack_activation import EXCLUDED_PACK_NAMES, normalize_pack_name
@@ -938,7 +944,7 @@ def _models_help_text(runtime: HostRuntime) -> str:
             "- /models discover --force: overwrite an existing proposal.",
             "- /models apply: validate and promote the proposal as active manifest.",
             "- /models reload: reload active manifest from disk.",
-            "- /models advise: hint for NL model editing via the model-advisor pack.",
+            "- /models update <NL>: edit the manifest with natural language and apply it.",
             "",
             f"- active_path: {active_path}",
             f"- proposal_path: {proposal_path}",
@@ -976,6 +982,154 @@ def _render_discover_notes(report: DiscoveryReport) -> list[str]:
         if note is not None:
             lines.append(f"- {note}")
     return lines
+
+
+def _models_update_tool_executor(runtime: HostRuntime) -> Any:
+    """Build a tool executor routing lisa-storage manifest tools to the MCP pool.
+
+    The ``advise_models`` operation reads/writes the manifest through the
+    ``lisa-storage`` MCP server's ``read_model_manifest`` / ``write_model_manifest``
+    tools. This executor bridges the operation's ``execute_tool_fn`` to the
+    host-owned ``mcp_tool_pool``.
+    """
+
+    pool = runtime.mcp_tool_pool
+
+    async def _executor(tool_id: str, _ctx: Any) -> ToolResult:
+        if pool is None:
+            return ToolResult(tool_id=tool_id, error="no storage pool available")
+        params = getattr(_ctx, "parameters", {}) or {}
+        mcp_result = await pool.call_tool(tool_id, params, server_id="lisa-storage")
+        return ToolResult(
+            tool_id=tool_id,
+            output_text=mcp_result.output_text,
+            error=mcp_result.output_text if mcp_result.is_error else "",
+        )
+
+    return _executor
+
+
+async def _models_update_complete_fn(runtime: HostRuntime) -> Any:
+    """Build a ``complete_fn`` closure for the advise_models operation.
+
+    ``HostRuntime`` does not expose a ``complete_fn``; the turn runner wires it
+    through ``TurnHooks.complete`` (built in ``turn_hooks_builder``). For a
+    host-command path that runs an operation outside a model turn, we build a
+    closure that calls :func:`complete_live` directly with a ``NullTransport`` —
+    the same primitive ``turn_hooks_builder._complete`` uses.
+    """
+
+    from hosts.core.callbacks import NullTransport  # noqa: PLC0415
+    from hosts.core.providers import complete_live  # noqa: PLC0415
+
+    transport = NullTransport()
+
+    async def _complete(**kwargs: Any) -> Any:
+        return await complete_live(runtime=runtime, transport=transport, **kwargs)
+
+    return _complete
+
+
+def _models_update_content_loader() -> Any:
+    """Return the authored-text reader for the advise_models prompts.
+
+    Returns ``None`` when the content registry is not set (graceful failure; the
+    operation raises its own authored-text error at call time).
+    """
+
+    try:
+        from hosts.core.turn_hooks_builder import content_registry  # noqa: PLC0415
+
+        registry = content_registry()
+        if registry is None:
+            return None
+        return registry.read_authored_text
+    except RuntimeError:
+        return None
+
+
+async def _handle_models_update(
+    runtime: HostRuntime,
+    *,
+    instruction: str,
+    proposal_path: Path,
+    active_path: Path,
+) -> str:
+    """Run the NL manifest edit (advise_models) and auto-apply the proposal.
+
+    Flow: build an ``OperationExecutionContext`` wired with a live
+    ``complete_fn`` (via :func:`complete_live`), the storage tool executor,
+    and the authored-text loader; run the ``advise_models`` operation (it
+    edits + validates + writes the proposal); then promote the proposal to
+    the active manifest exactly like ``/models apply``.
+    """
+
+    if not instruction:
+        return (
+            "Usage: /models update <natural language instruction>\n\n"
+            "Example: /models update \"make claude-sonnet-5 the default "
+            "for code reasoning, mark all o-series as premium\""
+        )
+
+    if runtime.mcp_tool_pool is None:
+        return "No storage pool available; the advise_models operation needs lisa-storage."
+
+    complete_fn = await _models_update_complete_fn(runtime)
+
+    def _resolve_model(model_id: str) -> Any:
+        return resolve_little_lisa_model(
+            model_id,
+            runtime_state={"manifest": runtime.manifest},
+            data_dir=runtime.data_dir,
+        )
+
+    ctx = OperationExecutionContext(
+        workspace_id="lite-host",
+        user_id=str(runtime.config.user_slug or "lite-user"),
+        user_slug=str(runtime.config.user_slug or "default"),
+        surface_type=cast(ConversationSurface, runtime.config.surface_type),
+        surface_id=runtime.config.surface_id,
+        memory_scope=cast(MemoryScope, runtime.config.memory_scope or "personal"),
+        mode_id=str(runtime.current_mode_id or "default"),
+        query=instruction,
+        complete_fn=complete_fn,
+        resolve_model_fn=_resolve_model,
+        read_authored_text_fn=_models_update_content_loader(),
+        execute_tool_fn=_models_update_tool_executor(runtime),
+    )
+
+    try:
+        result = await execute_operation("advise_models", ctx)
+    except Exception as exc:  # pylint: disable=broad-except
+        return f"advise_models failed: {exc}"
+
+    summary = (result.output_text or "").strip()
+    if not summary:
+        summary = "advise_models produced no summary."
+
+    # Auto-apply: promote the proposal to the active manifest.
+    if not proposal_path.exists():
+        return (
+            summary
+            + "\n\nProposal not found after update; nothing to apply. "
+            "The operation may have failed to write it."
+        )
+
+    try:
+        manifest = load_model_manifest(proposal_path)
+        active_path.parent.mkdir(parents=True, exist_ok=True)
+        active_path.write_text(proposal_path.read_text(encoding="utf-8"), encoding="utf-8")
+        runtime.manifest = manifest
+    except Exception as exc:  # pylint: disable=broad-except
+        return (
+            summary
+            + f"\n\nUpdate edited the proposal but apply failed: {exc}\n"
+            "Fix the proposal and run /models apply."
+        )
+
+    return summary + "\n\nApplied: " + (
+        f"active_manifest={active_path} model_count={len(manifest.models)}"
+    )
 
 
 async def handle_models_command(
@@ -1095,19 +1249,25 @@ async def handle_models_command(
         )
         return handle_simple_command(runtime, message, "models", response_text)
 
-    if subcommand == "advise":
-        response_text = (
-            "Natural-language model editing is provided by the model-picker pack "
-            "(lisa-pack-models), bundled with the framework and enabled by default.\n"
-            "Use: /advise-models \"<your instruction>\"\n\n"
-            "Example: /advise-models \"make claude-sonnet-5 the default "
-            "for code reasoning, mark all o-series as premium\""
+    if subcommand == "update":
+        # `/models update <natural language>` runs the advise_models
+        # operation (sdk/packs/models), which edits the proposal via an
+        # LLM, validates it, writes it back, then promotes it to the
+        # active manifest in one step. The instruction is everything
+        # after the subcommand token.
+        parts = stripped.split(None, 2)
+        instruction = parts[2].strip() if len(parts) > 2 else ""
+        response_text = await _handle_models_update(
+            runtime,
+            instruction=instruction,
+            proposal_path=proposal_path,
+            active_path=active_path,
         )
         return handle_simple_command(runtime, message, "models", response_text)
 
     response_text = (
         f"Unknown /models command '{subcommand}'. "
-        "Supported: show, discover, apply, reload, advise, edit, help."
+        "Supported: show, discover, apply, reload, update, edit, help."
     )
     return handle_simple_command(runtime, message, "models", response_text)
 
