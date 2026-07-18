@@ -295,7 +295,7 @@ class TestAuthoredTextLoader:
             read_authored_text_fn=_make_loader(),
         )
         result = await execute(ctx)
-        assert "advise-models" in result.output_text
+        assert "/models update" in result.output_text
 
     @pytest.mark.asyncio
     async def test_system_prompt_loaded_from_authored_text(self) -> None:

@@ -18,7 +18,7 @@ class ManifestChange(BaseModel):
 
 
 class AdviseModelsResult(BaseModel):
-    """Structured result of one ``/advise-models`` invocation."""
+    """Structured result of one ``/models update`` invocation."""
 
     target_path: str
     changes: list[ManifestChange] = Field(default_factory=list)

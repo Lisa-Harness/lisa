@@ -3,7 +3,8 @@
 Reads the current model manifest (proposal if it exists, else active), pipes
 it + the user's natural-language instruction through an LLM, validates the
 edited YAML against the kernel's manifest loader, and writes the result
-back to the proposal file. The user still runs ``/models apply`` to promote.
+back to the proposal file. The ``/models update`` host command then promotes
+the proposal to the active manifest.
 
 The operation does NOT touch the filesystem directly. It reads and writes
 the manifest through the ``lisa-storage`` MCP server's
