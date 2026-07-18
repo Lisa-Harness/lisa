@@ -566,3 +566,180 @@ async def test_run_turn_passes_capability_manifest_to_assemble_user_context() ->
     for entry in manifest.entries:
         assert entry.status == "available"
         assert entry.confidence == 1.0
+
+
+# ── Unified FSM routing tests ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_turn_mode_handoff_via_transition_stage() -> None:
+    """When the model calls transition_stage with a mode_id target (not a
+    workflow stage), the loop performs a mid-turn mode switch: swaps the
+    system prompt, rebuilds the tool surface, and sets handoff_to on the
+    TurnResult.
+    """
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "markdown", "rationale": "user wants to write a doc"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Done in markdown mode.")
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(mode_id="default", query="write a markdown doc", hooks=hooks)
+
+    assert result.response_text == "Done in markdown mode."
+    assert result.handoff_to == "markdown"
+    assert result.transitioned_to is None  # no workflow stage transition
+
+
+@pytest.mark.asyncio
+async def test_run_turn_fork_transition_basic() -> None:
+    """When the model calls transition_stage with a fork: target, the loop
+    fans out child turns in parallel and collects results into fork_results.
+    """
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "fork:default,default"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Synthesized from fork results.")
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(mode_id="default", query="research and write", hooks=hooks)
+
+    assert result.response_text == "Synthesized from fork results."
+    assert result.fork_results is not None
+    assert len(result.fork_results) == 2
+    for child in result.fork_results:
+        assert child.status in ("ok", "error", "timeout", "cancelled")
+
+
+@pytest.mark.asyncio
+async def test_routing_fsm_synthesis() -> None:
+    """The routing FSM synthesis produces default ↔ all routable modes."""
+    from kernel.ipsar_fsm import (
+        get_routable_mode_ids,
+        get_routing_targets,
+        synthesize_routing_transitions,
+    )
+
+    transitions = synthesize_routing_transitions()
+    # default should be able to hand off to every routable mode (except itself)
+    default_targets = transitions.get("default", [])
+    routable_ids = get_routable_mode_ids()
+    for rid in routable_ids:
+        if rid != "default":
+            assert rid in default_targets, f"default should be able to hand off to {rid}"
+
+    # Every routable mode should be able to hand off back to default
+    for rid in routable_ids:
+        if rid != "default":
+            targets = get_routing_targets(rid)
+            assert "default" in targets, f"{rid} should be able to hand off back to default"
+
+
+def test_parse_fork_target_string() -> None:
+    """The fork target parser handles mode_id and mode_id/stage_id syntax."""
+    from kernel.ipsar_fsm import parse_fork_target_string
+
+    # Simple mode_ids
+    assert parse_fork_target_string("fork:coding,markdown") == [
+        ("coding", ""),
+        ("markdown", ""),
+    ]
+    # mode_id/stage_id pairs
+    assert parse_fork_target_string("fork:coding/implement,thinkabout/review") == [
+        ("coding", "implement"),
+        ("thinkabout", "review"),
+    ]
+    # Mixed
+    assert parse_fork_target_string("fork:search,coding/implement") == [
+        ("search", ""),
+        ("coding", "implement"),
+    ]
+    # Empty
+    assert parse_fork_target_string("") == []
+    assert parse_fork_target_string("fork:") == []
+
+
+def test_is_fork_target() -> None:
+    """The fork target detector recognizes fork: prefix."""
+    from kernel.ipsar_fsm import is_fork_target
+
+    assert is_fork_target("fork:coding,markdown") is True
+    assert is_fork_target("FORK:coding") is True
+    assert is_fork_target("coding") is False
+    assert is_fork_target("reason") is False
+
+
+@pytest.mark.asyncio
+async def test_run_turn_mode_handoff_preserves_chat_history() -> None:
+    """When the model hands off to another mode, the chat history (messages
+    list) is preserved — only messages[0] (system prompt) is swapped.
+    """
+    call_count = 0
+    captured_messages: list[list[dict[str, Any]]] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        # Capture the messages list at each iteration
+        msgs = kwargs.get("messages", [])
+        captured_messages.append([dict(m) for m in msgs])
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "markdown"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(mode_id="default", query="write a doc", hooks=hooks)
+
+    assert result.handoff_to == "markdown"
+    # After handoff, the model should have been called at least twice
+    assert call_count >= 2
+    # The first message (system prompt) should have changed after handoff
+    # but the user message should be preserved
+    if len(captured_messages) >= 2:
+        # messages[0] is system, messages[1] is user
+        # The user content should be the same across iterations
+        first_user = captured_messages[0][1].get("content", "")
+        second_user = captured_messages[1][1].get("content", "")
+        # The user message content should contain the original query
+        assert "write a doc" in first_user

@@ -1,7 +1,4 @@
 """Runtime-neutral OpenTelemetry span helpers.
-
-This module intentionally stays free of app-layer config and Azure exporter
-bootstrap so kernel code can annotate spans without depending on app.*.
 """
 
 from __future__ import annotations

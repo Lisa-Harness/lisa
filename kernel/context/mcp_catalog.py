@@ -27,9 +27,6 @@ from kernel.models import (
     ToolDefinition,
     WorkflowModeConfig,
     WorkflowStageConfig,
-    WorkshopBudgetConfig,
-    WorkshopPanelModeConfig,
-    WorkshopRenderConfig,
 )
 from kernel.operations.declarative import DeclarativeOperationModule
 from kernel.tools.mcp_client import MCPClientConfig
@@ -146,12 +143,6 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         stage_id: _deserialize_stage(stage_dict)
         for stage_id, stage_dict in (data.get("stages") or {}).items()
     }
-    workshop_panels = [
-        WorkshopPanelModeConfig(**panel)
-        for panel in (data.get("workshop_panels") or [])
-    ]
-    workshop_budget = WorkshopBudgetConfig(**(data.get("workshop_budget") or {}))
-    workshop_rendering = WorkshopRenderConfig(**(data.get("workshop_rendering") or {}))
     intent_bridges = [
         DefaultIntentBridge(**bridge)
         for bridge in (data.get("default_intent_bridges") or [])
@@ -181,11 +172,6 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         allowed_tool_ids=data.get("allowed_tool_ids", []),
         tools_authoritative=data.get("tools_authoritative", True),
         entry_failure_policy=data.get("entry_failure_policy", "abort"),
-        workshop_panels=workshop_panels,
-        workshop_budget=workshop_budget,
-        workshop_planner_prompt_file=data.get("workshop_planner_prompt_file", ""),
-        workshop_synthesis_prompt_file=data.get("workshop_synthesis_prompt_file", ""),
-        workshop_rendering=workshop_rendering,
         default_intent_bridges=intent_bridges,
         mode_provider_id=str(data.get("mode_provider_id", "") or ""),
         context_evidence_packs=[

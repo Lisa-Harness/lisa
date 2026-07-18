@@ -87,50 +87,6 @@ class SurfaceContext(BaseModel):
     thread_owner_id: str = ""
 
 
-RouterPromptProfile = Literal["compact", "standard", "rich"]
-RoutePlannerSource = Literal[
-    "deterministic",
-    "fast_path_verified",
-    "fast_path_deterministic",
-    "model_bounded",
-    "user_preset",
-    "active_session",
-]
-
-
-class RouteDecisionAlternative(BaseModel):
-    """One alternative mode considered by the router planner."""
-
-    mode_id: str
-    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
-
-
-OptionalContextLane = Literal[
-    "reflection",
-    "passive_intelligence",
-    "memory_recall",
-    "architecture_context",
-    "capability_snapshot",
-]
-
-
-class RouteDecision(BaseModel):
-    """Bounded routing decision for one inbound user turn."""
-
-    reasoning: str = ""
-    selected_mode_id: str = "default"
-    normalized_query: str = ""
-    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
-    alternatives: list[RouteDecisionAlternative] = Field(default_factory=list)
-    clarification_needed: bool = False
-    clarification_question: str = ""
-    direct_response: str = ""
-    planner_source: RoutePlannerSource = "deterministic"
-    prompt_profile: RouterPromptProfile = "standard"
-    optional_context_include: list[OptionalContextLane] = Field(default_factory=list)
-    optional_context_exclude: list[OptionalContextLane] = Field(default_factory=list)
-
-
 @runtime_checkable
 class OperationHooks(Protocol):
     """Optional plugin contract for one internal operation implementation module.
@@ -235,13 +191,10 @@ class OperationExecutionContext(BaseModel):
     resolve_model_fn: Any = Field(default=None, exclude=True)
     read_authored_text_fn: Any = Field(default=None, exclude=True)
     generate_image_fn: Any = Field(default=None, exclude=True)
-    build_workshop_context_bundle_fn: Any = Field(default=None, exclude=True)
     execute_tool_fn: Any = Field(default=None, exclude=True)
     execute_operation_fn: Any = Field(default=None, exclude=True)
     memory_recall_default_limit: int | None = Field(default=None, exclude=True)
     state_provider: Any = Field(default=None, exclude=True)
-    workflow_turn_runner: Any = Field(default=None, exclude=True)
-    workflow_session_factory: Any = Field(default=None, exclude=True)
     introspect_fn: Any = Field(default=None, exclude=True)
     preferred_model_id: str | None = Field(default=None, exclude=True)
 
@@ -1130,17 +1083,6 @@ class DefaultIntentBridge(BaseModel):
     response_appendix: str = ""  # Optional text to append to mode response (e.g. grounding hint)
 
 
-class WorkshopPanelModeConfig(BaseModel):
-    """Declarative workshop panel mode entry loaded from mode front-matter."""
-
-    panel_id: str = ""
-    title: str = ""
-    mode_id: str
-    model_alias: str = ""
-    query_prefix: str = ""
-    query_prompt_file: str = ""
-
-
 class TurnBudget(BaseModel):
     """Whole-turn resource budget spanning inference + compute.
 
@@ -1188,35 +1130,6 @@ class CallLedger(BaseModel):
         if max_calls <= 0:
             return False
         return self.counts.get(target_id, 0) >= max_calls
-
-
-class WorkshopBudgetConfig(BaseModel):
-    """Authored workshop budget envelope loaded from mode front-matter."""
-
-    shared_context_tokens: int = Field(default=700, ge=0)
-    per_panel_context_tokens: int = Field(default=500, ge=1)
-    synthesis_max_tokens: int = Field(default=700, ge=1)
-    max_parallel_panels: int = Field(default=4, ge=1)
-
-
-WorkshopListStyle = Literal["bulleted", "numbered"]
-
-
-class WorkshopRenderConfig(BaseModel):
-    """Mode-authored rendering preferences for workshop synthesis output."""
-
-    title_prefix: str = ""
-    include_query_in_title: bool = True
-    verdict_heading: str = ""
-    agreements_heading: str = "Converging Signal"
-    agreements_list_style: WorkshopListStyle = "bulleted"
-    tensions_heading: str = "Tensions"
-    tensions_list_style: WorkshopListStyle = "bulleted"
-    next_steps_heading: str = "Next Moves"
-    next_steps_list_style: WorkshopListStyle = "numbered"
-    incomplete_panels_note: str = (
-        "Some panels did not finish cleanly, so this summary leans on the completed runs only."
-    )
 
 
 class WorkflowModeConfig(BaseModel):
@@ -1278,11 +1191,6 @@ class WorkflowModeConfig(BaseModel):
     # are authoritative: empty means no tools/operations are advertised to the
     # LLM. When False, empty means all pass through.
     tools_authoritative: bool = True
-    workshop_panels: list[WorkshopPanelModeConfig] = Field(default_factory=list)
-    workshop_budget: WorkshopBudgetConfig = Field(default_factory=WorkshopBudgetConfig)
-    workshop_planner_prompt_file: str = ""
-    workshop_synthesis_prompt_file: str = ""
-    workshop_rendering: WorkshopRenderConfig = Field(default_factory=WorkshopRenderConfig)
     # Natural-language intent bridges: declarative routing from default chat to modes (SDK-owned).
     default_intent_bridges: list[DefaultIntentBridge] = Field(default_factory=list)
     # The distribution package name that owns this mode (e.g.
@@ -1379,122 +1287,36 @@ class WorkflowDelegationRequest(BaseModel):
     model_alias: str = ""
 
 
-WorkshopPanelKind = Literal[
-    "analysis",
-    "synthesis",
-    "challenge",
-    "decision",
-    "custom",
-]
-WorkshopChildStatus = Literal["ok", "timeout", "cancelled", "error"]
+# ---------------------------------------------------------------------------
+# Unified FSM routing: fork fan-out (replaces workshop execution)
+# ---------------------------------------------------------------------------
 
 
-class WorkshopPanelSpec(BaseModel):
-    """Declarative plan for one workshop panel run.
+class ForkTarget(BaseModel):
+    """One fork worker spec for a parallel fan-out transition.
 
-    A workshop coordinator uses these panel specs to define the perspective,
-    target mode, and scoped query for each delegated child run before any
-    execution begins.
+    A fork transition fans out to N heterogeneous modes concurrently. Each
+    target carries its own mode_id (determines system prompt + tool surface),
+    an optional stage_id (defaults to the mode's start_stage_id), and a scoped
+    query for that worker.
     """
 
-    panel_id: str
-    title: str = ""
     mode_id: str
-    query: str
-    model_alias: str = ""
-    panel_kind: WorkshopPanelKind = "analysis"
-    connectors: list[str] = Field(default_factory=list)
-    runtime_prefetch_views: list[str] = Field(default_factory=list)
-    setup_instructions: str = ""
+    stage_id: str = ""
+    query: str = ""
 
 
-class WorkshopPlan(BaseModel):
-    """Structured workshop plan produced before panel execution.
-
-    The plan captures the shared problem framing plus the ordered panel specs
-    that will receive curated context bundles and delegated execution.
-    """
-
-    workshop_id: str
-    query: str
-    title: str = ""
-    panel_specs: list[WorkshopPanelSpec] = Field(default_factory=list)
+ForkChildStatus = Literal["ok", "timeout", "cancelled", "error"]
 
 
-class WorkshopPanelContext(BaseModel):
-    """Curated context bundle for one workshop panel.
+class ForkChildResult(BaseModel):
+    """Result of one fork child run in a parallel fan-out transition."""
 
-    This artifact is deterministic and prompt-safe: it contains the ranked
-    evidence packet chosen for one panel, the rendered markdown briefing, and
-    the budget/provenance metadata needed for later synthesis or debugging.
-    """
-
-    panel_id: str
-    title: str = ""
-    mode_id: str
-    query: str
-    model_alias: str = ""
-    panel_kind: WorkshopPanelKind = "analysis"
-    connectors: list[str] = Field(default_factory=list)
-    runtime_prefetch_views: list[str] = Field(default_factory=list)
-    setup_instructions: str = ""
-    surface_context: SurfaceContext = Field(default_factory=SurfaceContext)
-    compiled_at: str = ""
-    allocated_tokens: int = 0
-    used_tokens: int = 0
-    context_packet: ContextPacket
-    context_markdown: str = ""
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class WorkshopContextBundle(BaseModel):
-    """Shared workshop brief plus one curated context bundle per panel."""
-
-    workshop_id: str
-    title: str = ""
-    query: str
-    workspace_id: str = "default"
-    user_id: str = ""
-    user_slug: str = "default"
-    surface_context: SurfaceContext = Field(default_factory=SurfaceContext)
-    compiled_at: str = ""
-    shared_allocated_tokens: int = 0
-    shared_used_tokens: int = 0
-    total_allocated_tokens: int = 0
-    total_used_tokens: int = 0
-    shared_context_packet: ContextPacket
-    shared_context_markdown: str = ""
-    panel_contexts: list[WorkshopPanelContext] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class WorkshopChildResult(BaseModel):
-    """Structured result returned by one delegated workshop child run."""
-
-    panel_id: str
-    mode_id: str
-    child_session_key: str = ""
-    status: WorkshopChildStatus = "ok"
+    target: ForkTarget
+    status: ForkChildStatus = "ok"
     output_text: str = ""
-    output_json: dict[str, Any] = Field(default_factory=dict)
     error_message: str = ""
-    stop_reason: str = ""
-    turn_count: int = 0
-    started_at: str = ""
-    finished_at: str = ""
     duration_ms: int = 0
-
-
-class WorkshopExecutionSummary(BaseModel):
-    """Aggregated status for one workshop fan-out execution pass."""
-
-    workshop_id: str
-    total_children: int = 0
-    succeeded_children: int = 0
-    timed_out_children: int = 0
-    cancelled_children: int = 0
-    failed_children: int = 0
-    results: list[WorkshopChildResult] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

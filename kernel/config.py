@@ -91,14 +91,6 @@ class Settings(BaseSettings):
 
     sdk_content_roots: str = ""
     workspace_id_fallback: str = "default"
-    workshop_max_context_tokens: int = 2800
-    workshop_default_shared_context_tokens: int = 700
-    workshop_default_per_panel_context_tokens: int = 500
-    workshop_max_panels_hard_cap: int = 6
-    workshop_default_max_parallel_panels: int = 4
-    workshop_max_parallel_panels_hard_cap: int = 4
-    workshop_default_synthesis_max_tokens: int = 700
-    workshop_max_synthesis_tokens: int = 1200
 
     # ── Context broker ──────────────────────────────────────────────────
     heartbeat_interval_seconds: int = 60
@@ -185,14 +177,6 @@ class Settings(BaseSettings):
         return value.split("#", 1)[0].strip()
 
     @field_validator(
-        "workshop_max_context_tokens",
-        "workshop_default_shared_context_tokens",
-        "workshop_default_per_panel_context_tokens",
-        "workshop_max_panels_hard_cap",
-        "workshop_default_max_parallel_panels",
-        "workshop_max_parallel_panels_hard_cap",
-        "workshop_default_synthesis_max_tokens",
-        "workshop_max_synthesis_tokens",
         "heartbeat_interval_seconds",
         "repo_context_stale_after_hours",
         "reflection_cadence_minutes",

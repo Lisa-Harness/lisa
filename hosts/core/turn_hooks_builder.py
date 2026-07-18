@@ -274,16 +274,6 @@ def build_turn_hooks(
             state_snapshot=runtime.state_snapshot,
         )
 
-    # ── Workflow session factory ───────────────────────────────────
-    from kernel.ipsar_fsm import create_workflow_session
-
-    def _workflow_session_factory(
-        user_id: str,
-        user_slug: str,
-        mode_id: str,
-    ) -> Any:
-        return create_workflow_session(user_id, user_slug, mode_id)
-
     # ── Last slice finished at ─────────────────────────────────────
     persisted_last_slice_finished_at: float | None = None
     if context is not None:
@@ -334,7 +324,6 @@ def build_turn_hooks(
         surface_id=runtime.config.surface_id,
         memory_scope=runtime.config.memory_scope,
         session_plan_digest=runtime.session_plan.plan_digest,
-        workflow_session_factory=_workflow_session_factory,
         checkpoint_tuning=CheckpointTuning(
             enabled=True,
             on_stage_transition=True,

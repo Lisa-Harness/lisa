@@ -60,9 +60,6 @@ sdk.packs.learning.operations.memory.recall.execute  # noqa: Vulture
 sdk.packs.learning.operations.memory.synthesize_learning.execute  # noqa: Vulture
 
 # reason: operation dispatch via getattr(module, "execute")
-sdk.packs.core.operations.research.workshop_run.execute  # noqa: Vulture
-
-# reason: operation dispatch via getattr(module, "execute")
 sdk.packs.core.operations.self_model.self_model.execute  # noqa: Vulture
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -74,9 +71,6 @@ sdk.packs.search.operations.research.discussion_briefing.DiscussionBriefingStruc
 
 # reason: response-format model loaded via _resolve_model_class string dispatch
 sdk.packs.search.operations.research.web_search.WebSearchStructuredOutput  # noqa: Vulture
-
-# reason: response-format model loaded via _resolve_model_class string dispatch
-sdk.packs.core.operations.research.workshop_run.WorkshopSynthesis  # noqa: Vulture
 
 # reason: response-format model loaded via _resolve_model_class string dispatch
 sdk.packs.core.operations.self_model.architecture_atlas.ArchitectureAtlasOutput  # noqa: Vulture

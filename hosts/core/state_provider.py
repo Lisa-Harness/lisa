@@ -10,9 +10,6 @@ This module owns:
   JSONL entries into a ``thread_digest.md`` sidecar.
 - :func:`_slice_budget_expired` — a private helper used by the provider to
   honour the slice time budget.
-- :func:`build_workshop_context_bundle` — a helper that builds a minimal
-  :class:`WorkshopContextBundle` for workshop runs in hosts that have no
-  context broker.
 
 All functions are transport-neutral: they take explicit ``thread_path`` and
 ``state_snapshot`` parameters rather than reading global runtime state. A
@@ -29,7 +26,6 @@ Public surface
 --------------
 - :func:`build_unified_state`
 - :class:`FileBackedStateProvider`
-- :func:`build_workshop_context_bundle`
 """
 
 from __future__ import annotations
@@ -43,13 +39,10 @@ from typing import Any
 
 from kernel.models import (
     AnomalyAlert,
-    ContextPacket,
     ContextRoutingConfig,
     DomainKnowledgeArtifact,
     IntelCollection,
     UnifiedState,
-    WorkshopContextBundle,
-    WorkshopPanelContext,
 )
 from kernel.slice import SliceOutcome
 from pydantic import ValidationError
@@ -338,63 +331,3 @@ class FileBackedStateProvider:
         if self._digest_max_lines == 1:
             return summary
         return "\n".join([summary, *kept[-(self._digest_max_lines - 1) :]])
-
-
-def build_workshop_context_bundle(
-    *,
-    state: Any,
-    plan: Any,
-    workspace_id: str,
-    user_id: str,
-    user_slug: str,
-    surface_context: Any,
-    workshop_budget: Any,
-    reasoning_model: bool = False,
-) -> Any:
-    """Build a minimal :class:`WorkshopContextBundle` for hosts without a context broker.
-
-    Each panel gets an empty evidence packet. The shared context packet is
-    also empty. This is sufficient for workshop operations that rely on the
-    model's own knowledge rather than curated evidence.
-    """
-    del state, workshop_budget, reasoning_model  # no broker wiring in this host
-
-    compiled_at = datetime.now(UTC).isoformat()
-    empty_packet = ContextPacket(
-        compiled_at=compiled_at,
-        query=getattr(plan, "query", ""),
-        selected_evidence=[],
-    )
-    panel_contexts: list[WorkshopPanelContext] = []
-    for spec in getattr(plan, "panel_specs", []) or []:
-        panel_contexts.append(
-            WorkshopPanelContext(
-                panel_id=spec.panel_id,
-                title=spec.title or spec.panel_id,
-                mode_id=spec.mode_id,
-                query=spec.query,
-                model_alias=spec.model_alias or "",
-                panel_kind=spec.panel_kind,
-                connectors=list(spec.connectors or []),
-                runtime_prefetch_views=list(spec.runtime_prefetch_views or []),
-                setup_instructions=spec.setup_instructions or "",
-                surface_context=surface_context,
-                compiled_at=compiled_at,
-                context_packet=empty_packet.model_copy(deep=True),
-                context_markdown="",
-            )
-        )
-
-    return WorkshopContextBundle(
-        workshop_id=getattr(plan, "workshop_id", ""),
-        title=getattr(plan, "title", ""),
-        query=getattr(plan, "query", ""),
-        workspace_id=workspace_id,
-        user_id=user_id,
-        user_slug=user_slug,
-        surface_context=surface_context,
-        compiled_at=compiled_at,
-        shared_context_packet=empty_packet.model_copy(deep=True),
-        shared_context_markdown="",
-        panel_contexts=panel_contexts,
-    )

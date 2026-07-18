@@ -1,4 +1,4 @@
-"""Kernel turn runner — the single model+tool loop shared by lightweight hosts and the full app.
+"""Kernel turn runner — the single model+tool loop.
 
 This module provides `run_turn()` and `TurnHooks`, the core conversational turn
 loop that executes one mode's pipeline: pre-turn operations, model completion with
@@ -38,9 +38,14 @@ from kernel.capability_manifest import compile_capability_manifest
 from kernel.ipsar_fsm import (
     apply_transition,
     get_mode_system_intro,
+    get_routable_mode_ids,
+    get_routing_targets,
     get_transition_tool_schema,
     get_workflow_catalog,
+    is_fork_target,
+    is_routable_mode,
     is_terminal_stage,
+    parse_fork_target_string,
     run_mode_entry_operations,
     run_mode_pre_turn_operations,
 )
@@ -49,6 +54,8 @@ from kernel.models import (
     CapabilityManifest,
     CheckpointBundle,
     ConversationSurface,
+    ForkChildResult,
+    ForkTarget,
     MemoryScope,
     OperationExecutionContext,
     OperationResult,
@@ -131,6 +138,16 @@ class TurnResult:
     ``stage_id``. None when no transition occurred or the mode is not a
     workflow. The host reads this to persist the updated session and update
     its UI route preview."""
+    handoff_to: str | None = None
+    """When the model called ``transition_stage`` with a ``mode_id`` target
+    (routing FSM handoff), the new ``mode_id``. The host reads this to update
+    ``current_mode_id`` and persist the mode switch. None when no handoff
+    occurred. See ``docs/ROUTING_RFC_HANDOFF.md``."""
+    fork_results: list[ForkChildResult] | None = None
+    """When the model called ``transition_stage`` with a ``fork:`` target,
+    the collected results from all parallel child runs. None when no fork
+    occurred. The host and subsequent stages read this to synthesize from
+    the fan-out outputs."""
     workflow_terminated: bool = False
     """True when the transition moved the session to a terminal stage. The
     loop forces one final no-tools completion using the terminal stage's
@@ -389,19 +406,6 @@ class TurnHooks:
     shipped under ``kernel.context``; the production app overrides any of
     them with its own."""
 
-    # ── Workshop child-workflow execution ──────────────────────────────────
-    workflow_turn_runner: Any | None = None
-    """Callable matching ``WorkflowTurnRunner`` protocol for workshop child
-    workflow execution. When set, injected into ``OperationExecutionContext``
-    so workshop operations can fan out child turns. Default: None (workshop
-    operations will report the runner is missing)."""
-
-    workflow_session_factory: Any | None = None
-    """Callable matching ``(user_id, user_slug, mode_id) -> WorkflowSessionState``
-    for creating isolated child workflow sessions. When set, injected into
-    ``OperationExecutionContext`` so workshop operations can create child
-    sessions. Default: None."""
-
     workflow_session: Any | None = None
     """Callable returning the current ``WorkflowSessionState`` for the active
     user/mode, or ``None`` when no workflow session is active. When set, the
@@ -423,7 +427,7 @@ class TurnHooks:
     state_provider: Any | None = None
     """Callable returning a ``UnifiedState`` for the current host session.
     When set, injected into ``OperationExecutionContext`` so operations that
-    need cached runtime state (e.g. workshop) can access it. Default: None."""
+    need cached runtime state can access it. Default: None."""
 
     pack_configuration_resolver: Any | None = None
     """Session-owned resolver for immutable, target-pack configuration."""
@@ -444,12 +448,6 @@ class TurnHooks:
     surface_id: str = "lite-host-console"
     memory_scope: str = "personal"
     session_plan_digest: str = ""
-
-    # ── Workshop context bundle builder ────────────────────────────────────
-    build_workshop_context_bundle_fn: Any | None = None
-    """Callable building a ``WorkshopContextBundle`` from a plan and state.
-    When set, injected into ``OperationExecutionContext`` so the workshop
-    operation can curate per-panel context bundles. Default: None."""
 
     # ── Live introspection ─────────────────────────────────────────────────
     introspect: Any | None = None
@@ -993,10 +991,7 @@ async def execute_approved_invocation(
             ),
             execute_tool_fn=_nested_tool_executor,
             execute_operation_fn=hooks.execute_operation or _default_execute_operation,
-            workflow_turn_runner=hooks.workflow_turn_runner,
-            workflow_session_factory=hooks.workflow_session_factory,
             state_provider=hooks.state_provider,
-            build_workshop_context_bundle_fn=hooks.build_workshop_context_bundle_fn,
             **common,
         )
         execute_operation_fn = hooks.execute_operation or _default_execute_operation
@@ -1089,10 +1084,7 @@ async def _run_turn_inner(
             ),
             execute_tool_fn=_mcp_tool_executor,
             execute_operation_fn=exec_op,
-            workflow_turn_runner=hooks.workflow_turn_runner,
-            workflow_session_factory=hooks.workflow_session_factory,
             state_provider=hooks.state_provider,
-            build_workshop_context_bundle_fn=hooks.build_workshop_context_bundle_fn,
             pack_configuration_resolver=hooks.pack_configuration_resolver,
             approval_service=hooks.approval_service,
             code_change_artifact_store=hooks.code_change_artifact_store,
@@ -1127,10 +1119,7 @@ async def _run_turn_inner(
         ),
         execute_tool_fn=_mcp_tool_executor,
         execute_operation_fn=exec_op,
-        workflow_turn_runner=hooks.workflow_turn_runner,
-        workflow_session_factory=hooks.workflow_session_factory,
         state_provider=hooks.state_provider,
-        build_workshop_context_bundle_fn=hooks.build_workshop_context_bundle_fn,
         pack_configuration_resolver=hooks.pack_configuration_resolver,
         approval_service=hooks.approval_service,
         code_change_artifact_store=hooks.code_change_artifact_store,
@@ -1265,7 +1254,12 @@ async def _run_turn_inner(
         and mode_config.mode_kind == "workflow"
         and hooks.workflow_session is not None
     )
-    if is_workflow:
+    # Unified FSM routing: also advertise transition_stage for chat/action
+    # modes that have routing targets (mode handoffs) or fork targets. This
+    # lets the model hand off between modes mid-turn via the same mechanism
+    # as workflow stage advancement. See docs/ROUTING_RFC_HANDOFF.md.
+    has_routing_targets = bool(get_routing_targets(mode_id)) if mode_config else False
+    if is_workflow or has_routing_targets:
         tool_schemas.extend(get_transition_tool_schema())
 
     # Apply one final model-facing prune pass so the payload sent to the
@@ -1274,6 +1268,7 @@ async def _run_turn_inner(
         tool_schemas=tool_schemas,
         mode_config=mode_config,
         is_workflow=is_workflow,
+        has_routing_targets=has_routing_targets,
     )
     if tool_prune_stats["input_count"] != tool_prune_stats["output_count"]:
         _log.debug(
@@ -1291,6 +1286,20 @@ async def _run_turn_inner(
     capability_manifest = compile_capability_manifest(
         tool_schemas, mode_config=mode_config
     )
+
+    # Unified FSM routing: capability-manifest-aware proactive hint injection.
+    # Compare the manifest against the user's query — if the current mode
+    # lacks tools the query seems to need, inject a routing hint into the
+    # system prompt. This is proactive (zero wasted iterations) and zero-cost
+    # when the current mode can handle the request. See docs/ROUTING_RFC_HANDOFF.md.
+    routing_hint = _compute_capability_routing_hint(
+        mode_id=mode_id,
+        query=query,
+        capability_manifest=capability_manifest,
+        routing_targets=get_routing_targets(mode_id) if mode_config else [],
+    )
+    if routing_hint:
+        system_prompt = system_prompt + "\n\n" + routing_hint
 
     user_context = assemble_user(mode_id, query, pre_briefing, capability_manifest)
     memory_snippet = ""
@@ -1322,6 +1331,8 @@ async def _run_turn_inner(
 
     content = ""
     transitioned_to: str | None = None
+    handoff_to: str | None = None
+    fork_results: list[ForkChildResult] | None = None
     workflow_terminated = False
     total_tool_calls = 0
     iteration = 0
@@ -1522,13 +1533,136 @@ async def _run_turn_inner(
                 # against the current stage's allowed_next_stages, updates
                 # the session, and notifies the host via
                 # workflow_session_updater.
-                if tool_name == _TRANSITION_TOOL_NAME and is_workflow:
+                #
+                # Unified FSM routing (see docs/ROUTING_RFC_HANDOFF.md):
+                # transition_stage now handles three target kinds:
+                #   1. fork:mode/stage,... — parallel fan-out to heterogeneous modes
+                #   2. mode_id (routable) — mid-turn mode switch (handoff)
+                #   3. workflow stage — existing apply_transition path
+                if tool_name == _TRANSITION_TOOL_NAME:
                     target_stage = str(tool_arguments.get("target_stage_id") or "").strip()
                     rationale = str(tool_arguments.get("rationale") or "").strip()
                     missing = tool_arguments.get("required_missing_inputs") or []
                     if not target_stage:
                         tool_output = "transition_stage requires target_stage_id."
-                    else:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "name": tool_name,
+                            "content": tool_output,
+                        })
+                        continue
+
+                    # ── Case A: fork fan-out ──────────────────────────────
+                    if is_fork_target(target_stage):
+                        fork_targets_raw = parse_fork_target_string(target_stage)
+                        if not fork_targets_raw:
+                            tool_output = "Fork target has no valid mode/stage pairs."
+                        else:
+                            catalog = get_workflow_catalog()
+                            # Build ForkTarget list, validating mode_ids
+                            fork_targets: list[ForkTarget] = []
+                            queries = tool_arguments.get("queries") or []
+                            if not isinstance(queries, list):
+                                queries = []
+                            for idx, (f_mode_id, f_stage_id) in enumerate(fork_targets_raw):
+                                f_mode = catalog.get(f_mode_id)
+                                if f_mode is None:
+                                    tool_output = f"Fork target mode '{f_mode_id}' not found."
+                                    break
+                                resolved_stage = f_stage_id or f_mode.start_stage_id
+                                f_query = (
+                                    queries[idx]
+                                    if idx < len(queries) and isinstance(queries[idx], str)
+                                    else query
+                                )
+                                fork_targets.append(ForkTarget(
+                                    mode_id=f_mode_id,
+                                    stage_id=resolved_stage,
+                                    query=f_query,
+                                ))
+                            else:
+                                # All targets valid — execute fan-out
+                                fork_results_list = await _execute_fork_fanout(
+                                    fork_targets=fork_targets,
+                                    hooks=hooks,
+                                    pool=pool,
+                                    resolve_model=resolve_model,
+                                    complete=complete,
+                                    exec_op=exec_op,
+                                    turn_budget=turn_budget,
+                                    turn_start_mono=turn_start_mono,
+                                    logger_override=_log,
+                                )
+                                fork_results = fork_results_list
+                                succeeded = sum(1 for r in fork_results_list if r.status == "ok")
+                                tool_output = (
+                                    f"Fork fan-out completed: {succeeded}/{len(fork_targets)} "
+                                    f"children succeeded. Results are in stage_data.fork_results."
+                                )
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "name": tool_name,
+                            "content": tool_output,
+                        })
+                        continue
+
+                    # ── Case B: mode handoff (routing FSM) ────────────────
+                    if is_routable_mode(target_stage):
+                        routing_targets = get_routing_targets(mode_id)
+                        if target_stage not in routing_targets and target_stage != "default":
+                            tool_output = (
+                                f"Mode handoff not allowed: '{mode_id}' cannot "
+                                f"transition to '{target_stage}'."
+                            )
+                        else:
+                            # Mid-turn mode switch: swap system prompt + tool surface
+                            target_mode_config = get_workflow_catalog().get(target_stage)
+                            if target_mode_config is None:
+                                tool_output = f"Target mode '{target_stage}' not found."
+                            else:
+                                # Swap system prompt
+                                target_mode_instruction = get_mode_system_intro(target_stage)
+                                messages[0] = {
+                                    "role": "system",
+                                    "content": assemble_system(
+                                        target_mode_instruction, None
+                                    ),
+                                }
+                                # Rebuild tool schemas for the new mode
+                                tool_schemas = await _rebuild_tool_schemas_for_mode(
+                                    target_stage,
+                                    target_mode_config,
+                                    pool=pool,
+                                    hooks=hooks,
+                                    is_workflow_for_target=(
+                                        target_mode_config.mode_kind == "workflow"
+                                        and hooks.workflow_session is not None
+                                    ),
+                                )
+                                # Recompile capability manifest for new surface
+                                capability_manifest = compile_capability_manifest(
+                                    tool_schemas, mode_config=target_mode_config
+                                )
+                                # Update runtime state
+                                mode_id = target_stage
+                                mode_config = target_mode_config
+                                handoff_to = target_stage
+                                tool_output = (
+                                    f"Handed off to mode: {target_stage}."
+                                    + (f" Rationale: {rationale}" if rationale else "")
+                                )
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "name": tool_name,
+                            "content": tool_output,
+                        })
+                        continue
+
+                    # ── Case C: workflow stage transition (existing path) ──
+                    if is_workflow:
                         wf_session_fn = hooks.workflow_session
                         current_session = wf_session_fn() if wf_session_fn is not None else None
                         if current_session is None:
@@ -1557,6 +1691,11 @@ async def _run_turn_inner(
                                     f"Transition failed: "
                                     f"{type(trans_exc).__name__}: {trans_exc}"
                                 )
+                    else:
+                        tool_output = (
+                            f"Unknown transition target: '{target_stage}'. "
+                            f"It is not a routable mode, a fork target, or a workflow stage."
+                        )
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
@@ -1771,8 +1910,245 @@ async def _run_turn_inner(
         slice_outcomes=slice_outcomes,
         blocked=turn_blocked,
         transitioned_to=transitioned_to,
+        handoff_to=handoff_to,
+        fork_results=fork_results,
         workflow_terminated=workflow_terminated,
     )
+
+
+# ---------------------------------------------------------------------------
+# Unified FSM routing helpers
+# ---------------------------------------------------------------------------
+
+
+# Keyword-to-capability-gap lookup for proactive routing hints.
+# Maps user-query keywords to the capability kind that would be needed.
+_CAPABILITY_GAP_KEYWORDS: dict[str, list[str]] = {
+    "write": ["tool"],
+    "save": ["tool"],
+    "document": ["tool"],
+    "file": ["tool"],
+    "search": ["tool"],
+    "code": ["tool"],
+    "read": ["tool"],
+}
+
+
+def _compute_capability_routing_hint(
+    *,
+    mode_id: str,
+    query: str,
+    capability_manifest: CapabilityManifest,
+    routing_targets: list[str],
+) -> str:
+    """Compute a proactive routing hint when the current mode lacks tools.
+
+    Compares the user's query keywords against the capability manifest. If
+    the query mentions actions the current mode can't perform, and the mode
+    has routing targets (other modes it can hand off to), inject a hint
+    telling the model to call ``transition_stage`` to switch modes.
+
+    Returns an empty string when no hint is needed (zero tokens).
+    """
+    if not routing_targets:
+        return ""
+    query_lower = query.lower()
+    # Collect the capability kinds present in the current mode
+    available_kinds: set[str] = set()
+    for entry in capability_manifest.entries:
+        available_kinds.add(entry.kind)
+    # Check if the query mentions actions that need tools the mode lacks
+    has_tool_gap = "tool" not in available_kinds and any(
+        kw in query_lower for kw in ("write", "save", "document", "file", "code", "read")
+    )
+    has_search_gap = not any(
+        "search" in (entry.capability_id.lower() or "")
+        for entry in capability_manifest.entries
+    ) and "search" in query_lower
+    if not (has_tool_gap or has_search_gap):
+        return ""
+    # Build the hint
+    targets_str = ", ".join(routing_targets)
+    hint = (
+        "## Routing Hint\n\n"
+        "Your current mode may lack the tools needed for this request. "
+        f"You can hand off to a better-suited mode by calling "
+        f"`transition_stage` with one of these target_stage_id values: "
+        f"{targets_str}."
+    )
+    return hint
+
+
+async def _rebuild_tool_schemas_for_mode(
+    target_mode_id: str,
+    target_mode_config: Any,
+    *,
+    pool: MCPToolPool,
+    hooks: TurnHooks,
+    is_workflow_for_target: bool,
+) -> list[dict[str, Any]]:
+    """Rebuild the tool schema list for a new mode after a mid-turn handoff.
+
+    Mirrors the tool assembly logic in ``_run_turn_inner`` Phase 1 but
+    without re-running pre-turn operations or the input guard. The new
+    mode's ``allowed_tool_ids`` and ``tools_authoritative`` determine the
+    tool surface.
+    """
+    allowed_server_ids: set[str] | None = None
+    if target_mode_config and target_mode_config.allowed_tool_ids:
+        allowed_set = set(target_mode_config.allowed_tool_ids)
+        allowed_server_ids = {
+            c.server_id
+            for c in getattr(pool, "configs", [])
+            if any(t.startswith(c.server_id + ".") for t in allowed_set)
+        }
+    elif target_mode_config and target_mode_config.tools_authoritative and not target_mode_config.allowed_tool_ids:
+        allowed_server_ids = set()
+
+    mcp_tools = await pool.list_tools(allowed_server_ids=allowed_server_ids)
+    if target_mode_config and (target_mode_config.allowed_tool_ids or target_mode_config.tools_authoritative):
+        allowed = set(target_mode_config.allowed_tool_ids)
+        mcp_tools = [t for t in mcp_tools if t.name in allowed]
+    new_tool_schemas: list[dict[str, Any]] = [
+        mcp_tool_to_openai_function(
+            name=spec.name,
+            description=spec.description,
+            input_schema=spec.input_schema,
+        )
+        for spec in mcp_tools
+    ]
+    new_tool_schemas.extend(
+        build_operation_tool_schemas(
+            target_mode_id,
+            tools_authoritative=bool(
+                target_mode_config and target_mode_config.tools_authoritative
+            ),
+        )
+    )
+    new_tool_schemas.extend(_build_in_process_tool_schemas(target_mode_config))
+    if is_workflow_for_target:
+        new_tool_schemas.extend(get_transition_tool_schema())
+    target_has_routing = bool(get_routing_targets(target_mode_id)) if target_mode_config else False
+    new_tool_schemas, _ = _prune_model_tool_schemas(
+        tool_schemas=new_tool_schemas,
+        mode_config=target_mode_config,
+        is_workflow=is_workflow_for_target,
+        has_routing_targets=target_has_routing,
+    )
+    return new_tool_schemas
+
+
+async def _execute_fork_fanout(
+    *,
+    fork_targets: list[ForkTarget],
+    hooks: TurnHooks,
+    pool: MCPToolPool,
+    resolve_model: Callable[[str], Any],
+    complete: Callable[..., Awaitable[Any]],
+    exec_op: Callable[..., Awaitable[OperationResult]],
+    turn_budget: TurnBudget | None,
+    turn_start_mono: float,
+    logger_override: logging.Logger | None,
+) -> list[ForkChildResult]:
+    """Execute a parallel fork fan-out to heterogeneous modes.
+
+    Each child runs in an isolated session with its own mode's system prompt
+    and tool surface. Children are fanned out via ``asyncio.TaskGroup`` and
+    collected into a list of ``ForkChildResult``.
+
+    The parent turn's ``TurnBudget`` is divided equally across N children.
+    Each child gets a sub-budget. If a child exhausts its sub-budget, it
+    returns a partial result.
+    """
+    import asyncio
+    import time as _time
+
+    _flog = logger_override or logger
+    n = len(fork_targets)
+    if n == 0:
+        return []
+
+    # Sub-budget allocation: divide parent budget equally across children.
+    # Each field set to 0 means unlimited — pass through as 0 (unlimited).
+    def _child_budget(idx: int) -> TurnBudget | None:
+        if turn_budget is None:
+            return None
+        return TurnBudget(
+            max_tool_calls=(
+                turn_budget.max_tool_calls // n
+                if turn_budget.max_tool_calls
+                else 0
+            ),
+            max_total_tokens=(
+                turn_budget.max_total_tokens // n
+                if turn_budget.max_total_tokens
+                else 0
+            ),
+            max_wall_ms=(
+                turn_budget.max_wall_ms // n
+                if turn_budget.max_wall_ms
+                else 0
+            ),
+        )
+
+    results: list[ForkChildResult | None] = [None] * n
+
+    async def _run_child(idx: int, target: ForkTarget) -> None:
+        started = _time.monotonic()
+        child_budget = _child_budget(idx)
+        try:
+            child_result = await run_turn(
+                mode_id=target.mode_id,
+                query=target.query,
+                hooks=hooks,
+                max_tool_iterations=5,
+                turn_budget=child_budget,
+                logger_override=_flog,
+            )
+            elapsed_ms = int((_time.monotonic() - started) * 1000)
+            results[idx] = ForkChildResult(
+                target=target,
+                status="ok",
+                output_text=child_result.response_text,
+                duration_ms=elapsed_ms,
+            )
+        except asyncio.TimeoutError:
+            elapsed_ms = int((_time.monotonic() - started) * 1000)
+            results[idx] = ForkChildResult(
+                target=target,
+                status="timeout",
+                error_message="Child turn timed out.",
+                duration_ms=elapsed_ms,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            elapsed_ms = int((_time.monotonic() - started) * 1000)
+            _flog.warning("fork child %s failed: %s: %s", target.mode_id, type(exc).__name__, exc)
+            results[idx] = ForkChildResult(
+                target=target,
+                status="error",
+                error_message=f"{type(exc).__name__}: {exc}",
+                duration_ms=elapsed_ms,
+            )
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            for idx, target in enumerate(fork_targets):
+                tg.create_task(_run_child(idx, target))
+    except ExceptionGroup as eg:  # pylint: disable=broad-except
+        _flog.warning("fork fan-out TaskGroup had errors: %s", eg.exceptions)
+
+    # Fill in any None slots as cancelled
+    final_results: list[ForkChildResult] = []
+    for idx, r in enumerate(results):
+        if r is not None:
+            final_results.append(r)
+        else:
+            final_results.append(ForkChildResult(
+                target=fork_targets[idx],
+                status="cancelled",
+                error_message="Child turn was cancelled.",
+            ))
+    return final_results
 
 
 def _build_minimal_context(
@@ -1784,10 +2160,7 @@ def _build_minimal_context(
     read_authored_text_fn: Any,
     execute_tool_fn: Any,
     execute_operation_fn: Any,
-    workflow_turn_runner: Any = None,
-    workflow_session_factory: Any = None,
     state_provider: Any = None,
-    build_workshop_context_bundle_fn: Any = None,
     pack_configuration_resolver: Any = None,
     approval_service: Any = None,
     code_change_artifact_store: Any = None,
@@ -1821,10 +2194,7 @@ def _build_minimal_context(
         read_authored_text_fn=read_authored_text_fn,
         execute_tool_fn=execute_tool_fn,
         execute_operation_fn=execute_operation_fn,
-        workflow_turn_runner=workflow_turn_runner,
-        workflow_session_factory=workflow_session_factory,
         state_provider=state_provider,
-        build_workshop_context_bundle_fn=build_workshop_context_bundle_fn,
         pack_configuration_resolver=pack_configuration_resolver,
         approval_service=approval_service,
         session_plan_digest=session_plan_digest,
@@ -1988,6 +2358,7 @@ def _prune_model_tool_schemas(
     tool_schemas: list[dict[str, Any]],
     mode_config: Any,
     is_workflow: bool,
+    has_routing_targets: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Apply one final model-facing prune pass over assembled tool schemas.
 
@@ -2022,7 +2393,7 @@ def _prune_model_tool_schemas(
         seen_names.add(name)
 
         if name == _TRANSITION_TOOL_NAME:
-            if is_workflow:
+            if is_workflow or has_routing_targets:
                 pruned.append(schema)
             else:
                 dropped_disallowed += 1

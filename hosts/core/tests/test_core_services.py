@@ -36,7 +36,6 @@ from kernel.model_manifest import ModelManifest
 from kernel.models import (
     OperationExecutionContext,
     OperationResult,
-    RouteDecision as RouterRouteDecision,
     ToolResult,
     WorkflowModeConfig,
 )
@@ -45,7 +44,7 @@ from kernel.session_plan import ProviderSelections
 from kernel.turn_runner import TurnResult
 from pydantic import BaseModel
 
-from hosts.core import commands, config_resolver, context_assembly, routing
+from hosts.core import commands, config_resolver, context_assembly
 from hosts.core import mcp_pool, model_runtime, providers, session_context, token_accounting
 from hosts.core import turn_hooks_builder
 from hosts.core.callbacks import NullTransport
@@ -435,31 +434,6 @@ def test_assemble_system_prompt_orders_harness_session_mode_and_stage() -> None:
     assert system_prompt.index("Mode instruction") < system_prompt.index("Stage instruction")
 
 
-# ── Router fast-path verifier prompt ───────────────────────────────
-
-
-def test_load_fast_path_verifier_prompt_reads_authored_asset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _fake_read_authored_text(relative_path: str) -> str:
-        if relative_path == "router/fast_path_verifier.md":
-            return "loaded fast-path verifier prompt"
-        raise AssertionError(f"Unexpected authored content path: {relative_path}")
-
-    result = context_assembly.load_fast_path_verifier_prompt(_fake_read_authored_text)
-    assert result == "loaded fast-path verifier prompt"
-
-
-def test_load_fast_path_verifier_prompt_returns_empty_when_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _missing_authored_text(relative_path: str) -> str:
-        raise FileNotFoundError(relative_path)
-
-    result = context_assembly.load_fast_path_verifier_prompt(_missing_authored_text)
-    assert result == ""
-
-
 # ── Dynamic user context ──────────────────────────────────────────────
 
 
@@ -494,68 +468,7 @@ def test_assemble_dynamic_user_context_skips_user_context_when_absent(
     assert "user_slug: none" in context
 
 
-# ── Router route planning ──────────────────────────────────────────
-# The plan_route signature changed dramatically — it now takes
-# all dependencies as callables. These tests need deep rewriting.
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(reason="plan_route signature changed; needs callable injection migration")
-async def test_plan_route_uses_markdown_prompt_and_router_alias(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(reason="plan_route signature changed; needs callable injection migration")
-async def test_plan_route_falls_back_when_completion_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(reason="plan_route signature changed; needs callable injection migration")
-async def test_plan_route_falls_back_when_completion_returns_invalid_json(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(reason="plan_route signature changed; needs callable injection migration")
-async def test_plan_route_retries_without_response_format(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(reason="plan_route signature changed; needs callable injection migration")
-async def test_plan_route_retries_when_structured_output_empty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(reason="plan_route signature changed; needs callable injection migration")
-async def test_plan_route_falls_back_when_both_attempts_empty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
-
-
 # ── handle_message router routing ─────────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(reason="handle_message now takes (runtime, msg, transport); needs deep migration")
-async def test_handle_message_uses_route_planner_for_natural_language(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
 
 
 @pytest.mark.asyncio
@@ -639,16 +552,16 @@ def test_runtime_no_start_mode_defaults_to_default(tmp_path: Path, monkeypatch: 
 
 
 @pytest.mark.asyncio
-async def test_start_mode_default_does_not_bypass_router(
+async def test_start_mode_default_goes_to_current_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """start_mode: default must NOT bypass the router.
+    """start_mode: default means NL turns go to current_mode_id (default).
 
-    Regression: ``default`` is the router's own fallback, not a real owning
-    mode. Pinning it (the implicit default) used to trigger the start_mode
-    bypass on every turn (``current_mode_id == "default" == start_mode``),
-    silently disabling routing. The fix exempts ``default`` so the router
-    runs and can route NL turns to the right mode.
+    Under the unified FSM routing (see docs/ROUTING_RFC_HANDOFF.md), there is
+    no separate router planner. NL turns go directly to ``current_mode_id``,
+    which defaults to ``default``. The model can hand off mid-turn via
+    ``transition_stage``. This test verifies that ``_execute_mode_turn`` is
+    called with mode_id="default" for NL turns when start_mode is "default".
     """
     from unittest.mock import AsyncMock, patch
 
@@ -659,42 +572,29 @@ async def test_start_mode_default_does_not_bypass_router(
     assert runtime.start_mode_id == "default"
     assert runtime.current_mode_id == "default"
 
-    plan_route_mock = AsyncMock(
-        return_value=SimpleNamespace(
-            selected_mode_id="default",
-            normalized_query="hello",
-            clarification_needed=False,
-            clarification_question="",
-            direct_response="",
-            confidence_score=0.9,
-            reasoning="test",
-            alternatives=[],
-            planner_source="model_bounded",
-        ),
-    )
+    execute_mock = AsyncMock(return_value="ok")
     transport = NullTransport()
-    # Patch _plan_route (the module-level wrapper that delegates to the
-    # shared router). Also patch _execute_mode_turn so we don't need a real
-    # model/pool — we only care that _plan_route was called.
-    with patch.object(handle_message_mod, "_plan_route", plan_route_mock), \
-         patch.object(handle_message_mod, "_execute_mode_turn", AsyncMock(return_value="ok")):
+    with patch.object(handle_message_mod, "_execute_mode_turn", execute_mock):
         await handle_message(runtime, "write a markdown document", transport)
 
-    assert plan_route_mock.called, (
-        "Router (_plan_route) must be called for NL turns when "
-        "start_mode == 'default' — the bypass must NOT fire for default."
+    assert execute_mock.called, (
+        "_execute_mode_turn must be called for NL turns when "
+        "start_mode == 'default'."
     )
+    # The mode_id argument should be "default" (current_mode_id).
+    call_args = execute_mock.call_args
+    assert call_args.kwargs.get("mode_id", call_args.args[2] if len(call_args.args) > 2 else "") == "default"
 
 
 @pytest.mark.asyncio
-async def test_start_mode_non_default_still_bypasses_router(
+async def test_start_mode_non_default_still_bypasses_to_pinned_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A real owning start_mode (e.g. research) still bypasses the router.
+    """A real owning start_mode (e.g. research) still bypasses to the pinned mode.
 
     The bypass is valuable for pinned modes like learn, coding, research.
     Only ``default`` is exempted. This test confirms the bypass still fires
-    for non-default start_mode.
+    for non-default start_mode — NL turns go directly to the pinned mode.
     """
     from unittest.mock import AsyncMock, patch
 
@@ -725,16 +625,17 @@ async def test_start_mode_non_default_still_bypasses_router(
     assert runtime.start_mode_id == "research"
     assert runtime.current_mode_id == "research"
 
-    plan_route_mock = AsyncMock()
+    execute_mock = AsyncMock(return_value="ok")
     transport = NullTransport()
-    with patch.object(handle_message_mod, "_plan_route", plan_route_mock), \
-         patch.object(handle_message_mod, "_execute_mode_turn", AsyncMock(return_value="ok")):
+    with patch.object(handle_message_mod, "_execute_mode_turn", execute_mock):
         await handle_message(runtime, "some natural language", transport)
 
-    assert not plan_route_mock.called, (
-        "Router (_plan_route) must NOT be called when a non-default "
-        "start_mode is pinned and current_mode_id == start_mode."
+    assert execute_mock.called, (
+        "_execute_mode_turn must be called for NL turns."
     )
+    # The mode_id argument should be "research" (the pinned start_mode).
+    call_args = execute_mock.call_args
+    assert call_args.kwargs.get("mode_id", call_args.args[2] if len(call_args.args) > 2 else "") == "research"
 
 
 def test_file_backed_state_provider_caps_digest_with_lossy_summary(tmp_path: Path) -> None:
@@ -984,18 +885,6 @@ def test_normalize_response_format_passes_through_dict() -> None:
 
 def test_normalize_response_format_returns_none_for_none() -> None:
     assert providers._normalize_response_format(None) is None
-
-
-def test_normalize_response_format_emits_json_schema_for_route_decision() -> None:
-    normalized = providers._normalize_response_format(RouterRouteDecision)
-    assert normalized is not None
-    assert normalized["type"] == "json_schema"
-    inner = normalized["json_schema"]
-    assert inner["name"] == "RouteDecision"
-    schema = inner["schema"]
-    assert "selected_mode_id" in schema["properties"]
-    assert "confidence_score" in schema["properties"]
-    assert "alternatives" in schema["properties"]
 
 
 # ── Model resolution ───────────────────────────────────────────────────

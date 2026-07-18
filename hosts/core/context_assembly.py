@@ -8,12 +8,7 @@ imports. Transport hosts inject ``content_loader``, ``user_slug``,
 Public API (leading underscores removed)::
 
     load_system_prompt(content_loader)
-    load_route_prompt(content_loader)
-    load_fast_path_verifier_prompt(content_loader)
     assemble_system_prompt(mode_instruction, stage_instruction, content_loader)
-    router_mode_supported(mode_id, mode, mode_support_gap)
-    build_route_catalog_markdown(mode_support_gap)
-    build_user_prompt(...)
     handoff_note(...)
     build_turn_context(...)
     build_brokered_context_markdown(mode_id, query, state)
@@ -30,7 +25,6 @@ from pathlib import Path
 from typing import Any
 
 from kernel.config import settings
-from kernel import router as shared_router
 from kernel.capability_manifest import render_capability_manifest_context
 from kernel.context.context_broker import (
     build_ambient_facts,
@@ -79,24 +73,6 @@ def load_system_prompt(content_loader: Callable[[str], str]) -> str:
         return ""
 
 
-def load_route_prompt(content_loader: Callable[[str], str]) -> str:
-    """Load the route planner prompt from ``router/route.md``."""
-    try:
-        return content_loader("router/route.md").strip()
-    except FileNotFoundError:
-        return ""
-
-
-def load_fast_path_verifier_prompt(
-    content_loader: Callable[[str], str],
-) -> str:
-    """Load the fast-path verifier prompt from ``router/fast_path_verifier.md``."""
-    try:
-        return content_loader("router/fast_path_verifier.md").strip()
-    except FileNotFoundError:
-        return ""
-
-
 # ---------------------------------------------------------------------------
 # System-prompt assembly
 # ---------------------------------------------------------------------------
@@ -118,66 +94,6 @@ def assemble_system_prompt(
     if stage_instruction:
         parts.append(stage_instruction)
     return "\n\n".join(part for part in parts if part.strip())
-
-
-# ---------------------------------------------------------------------------
-# Router helpers
-# ---------------------------------------------------------------------------
-
-
-def router_mode_supported(
-    _mode_id: str,
-    mode: WorkflowModeConfig,
-    mode_support_gap: Callable[[WorkflowModeConfig], str | None],
-) -> bool:
-    """Return True when the host can run *mode* (no support gap)."""
-    return mode_support_gap(mode) is None
-
-
-def build_route_catalog_markdown(
-    mode_support_gap: Callable[[WorkflowModeConfig], str | None],
-) -> str:
-    """Render the route catalog the router planner sees."""
-    return shared_router.build_route_catalog_markdown(
-        "rich",
-        catalog=get_workflow_catalog(),
-        mode_supported=lambda mid, mode: router_mode_supported(
-            mid, mode, mode_support_gap
-        ),
-    )
-
-
-def build_user_prompt(
-    *,
-    normalized_message: str,
-    surface_context: SurfaceContext,
-    preferred_mode_id: str,
-    conversation_excerpt_markdown: str,
-    user_slug: str,
-    fast_path_candidate_mode_id: str = "",
-    is_default_executor: bool = False,
-) -> str:
-    """Build the user prompt submitted to the route planner."""
-    _ = surface_context
-    _ = preferred_mode_id
-    parts = [
-        "## Router Input",
-        f"- user_slug: {user_slug or 'none'}",
-        f"- raw_message: {normalized_message}",
-        f"- is_default_executor: {str(is_default_executor).lower()}",
-    ]
-    if is_default_executor:
-        parts.append(
-            "Optimization Hint: You are ALSO the default executor for this turn. "
-            "If you route to 'default', you may provide the final user-facing answer "
-            "directly in the `direct_response` field to save one LLM call."
-        )
-    if fast_path_candidate_mode_id:
-        parts.append(f"- fast_path_candidate_mode: {fast_path_candidate_mode_id}")
-    if conversation_excerpt_markdown.strip():
-        parts.extend(["", "## Recent Conversation", conversation_excerpt_markdown.strip()])
-    parts.extend(["", "## User Query", normalized_message.strip()])
-    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

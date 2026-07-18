@@ -359,7 +359,6 @@ def test_build_operation_tool_schemas_authoritative_excludes_unbound() -> None:
     assert "recall_memory" in names
     # Operations not bound to learn should NOT appear
     assert "self_model" not in names
-    assert "workshop_run" not in names
 
 
 def test_build_operation_tool_schemas_non_authoritative_includes_unbound() -> None:

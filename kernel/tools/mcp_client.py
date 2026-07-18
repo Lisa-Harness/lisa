@@ -22,23 +22,24 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "SYNTHETIC_SERVER_ID",
     "MCPClientConfig",
     "MCPConnectionError",
     "MCPToolPool",
     "MCPToolResult",
     "MCPToolSpec",
     "SyntheticToolSpec",
-    "SYNTHETIC_SERVER_ID",
-    "namespaced_tool_name",
     "bare_tool_name",
+    "namespaced_tool_name",
 ]
 
 #: The ``server_id`` stamped on synthetic (host-owned) tool specs so the

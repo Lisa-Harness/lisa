@@ -86,13 +86,16 @@ flowchart TD
     B -->|no| D[Run turn in current mode]
     D --> E[Model loop with tools]
     E --> F{Model calls transition_stage?}
-    F -->|yes| G{Target is a mode_id?}
-    G -->|yes| H[Swap system prompt + tool surface<br/>for new mode]
-    G -->|no| I[Apply workflow stage transition<br/>existing FSM path]
-    H --> J[Continue loop in new mode]
-    I --> J
-    F -->|no| K[Normal tool dispatch / final response]
-    J --> K
+    F -->|yes| G{Target kind?}
+    G -->|fork:mode/stage,...| H[Create child sessions<br/>fan out via TaskGroup<br/>collect into stage_data]
+    G -->|mode_id| I[Swap system prompt + tool surface<br/>for new mode]
+    G -->|workflow stage| J[Apply workflow stage transition<br/>existing FSM path]
+    H --> K[Auto-transition to next stage]
+    I --> L[Continue loop in new mode]
+    J --> L
+    K --> L
+    F -->|no| M[Normal tool dispatch / final response]
+    L --> M
 ```
 
 #### Core mechanism: extend `transition_stage`, don't add `transfer_to_mode`
@@ -198,20 +201,225 @@ stage advancement, all existing guardrails apply automatically:
 - **`max_tool_iterations`** — the global iteration cap still applies; mode
   switches don't reset it.
 
+### Codex-like handoff chains are a configuration, not a special case
+
+OpenAI's Codex CLI popularized a specific handoff pattern: a coordinator
+agent plans work, delegates to specialist sub-agents, collects results, and
+synthesizes. The sub-agents are stateless — they receive a prompt, do one
+thing, and return. The coordinator owns the conversation.
+
+Lisa's unified FSM can express this pattern as a **configuration** of the
+routing FSM, not a separate mechanism:
+
+```yaml
+# _mode.md for a "coding" mode that chains codex-style
+workshop_panels:
+  - panel_id: plan
+    mode_id: thinkabout
+    query_prefix: "Plan the implementation for:"
+  - panel_id: implement
+    mode_id: coding
+    query_prefix: "Implement the plan:"
+  - panel_id: review
+    mode_id: thinkabout
+    query_prefix: "Review this implementation for correctness:"
+```
+
+This is the existing `workshop_panels` declaration in `_mode.md` front matter
+(`kernel/models.py:1281`). The workshop operation (`workshop_run`) currently
+plans, fans out, and synthesizes. Under the unified FSM, this becomes a
+**fork transition** — the model calls `transition_stage` with a fork target,
+and the FSM handles the rest (see §Fan-out below).
+
+The difference between a codex chain and a workshop is **who decides the
+handoff targets**:
+
+| Pattern | Who decides targets | When | Mechanism |
+| --- | --- | --- | --- |
+| Codex chain | Mode author (declarative `workshop_panels`) | At mode-authoring time | FSM fork transition |
+| Ad-hoc handoff | Model (calls `transition_stage`) | At runtime, mid-turn | FSM routing interception |
+| Slice-driven routing | Slice (analyzes conversation) | Between turns, zero-cost | Slice writes routing hint blob |
+
+All three use the same `transition_stage` interception point. The codex chain
+is just the case where the handoff targets are **pre-declared** rather than
+**model-discovered**. The user can articulate a codex-like scheme by
+configuring `workshop_panels` in their mode's `_mode.md` — the FSM executes it
+through the same `workflow_turn_runner` + `workflow_session_factory` hooks
+that already power fan-out.
+
+**The FSM is not limited to codex.** A mode author can:
+
+- Pre-declare a fixed chain (codex style).
+- Let the model discover handoff targets at runtime (Swarm style).
+- Let a slice pre-compute routing context from conversation analysis (Lisa's
+  unique contribution).
+- Combine all three: pre-declared panels for known subtasks, model-discovered
+  handoff for surprises, slice-driven context for cross-turn awareness.
+
+The unified FSM is the **one mechanism** that enables all of these. Codex is a
+configuration, not a special case.
+
+### Fan-out as a first-class FSM transition (replaces `workshop_run`)
+
+The workshop fan-out system (`sdk/workshop_execution.py`,
+`sdk/packs/core/operations/research/workshop_run.py`) currently lives at the
+**operation** layer. A mode declares `workshop_panels` in its front matter,
+binds `workshop_run` as an `allowed_operation_id`, and the model calls it as a
+tool. The operation plans panels, builds context bundles, fans out child
+workflow turns via `WorkshopExecutionService`, and synthesizes.
+
+This works, but it treats fan-out as an opaque operation — the FSM has no
+visibility into what happened. The routing FSM unification creates an
+opportunity to **promote fan-out to a first-class FSM transition** and remove
+the separate workshop mechanism entirely.
+
+#### Fan-out means parallel workers in *different* modes/stages
+
+A critical design point: fan-out is not "run the same mode 3 times in
+parallel." It is "invoke 3 **different** modes (or stages) concurrently, each
+with its own system prompt, tool surface, and model." The model decides which
+modes to fan out to based on the user's query:
+
+- "Research this topic AND write a markdown summary" → fan out to `research`
+  and `markdown` in parallel.
+- "Code-review this PR from security, performance, and style perspectives" →
+  fan out to three `thinkabout` stages with different query prefixes.
+- "Search the web, check my calendar, and draft an email" → fan out to
+  `search`, `calendar`, and `email` modes concurrently.
+
+Each fork target is a `(mode_id, stage_id, query)` tuple. The mode_id
+determines the system prompt and tool surface. The stage_id (optional,
+defaults to the mode's `start_stage_id`) determines the workflow stage. The
+query is the scoped prompt for that worker. All three can be different.
+
+#### Current state (operation-layer fan-out)
+
+```mermaid
+flowchart TD
+    A[Mode: research] --> B[Model calls workshop_run operation]
+    B --> C[Operation plans panels]
+    C --> D[WorkshopExecutionService fans out children]
+    D --> E[Children run in isolated sessions]
+    E --> F[Operation synthesizes results]
+    F --> G[Model receives synthesis as tool output]
+```
+
+The FSM sees only "the model called a tool and got a result." It has no
+knowledge that fan-out happened, no ability to budget across children, and no
+way to persist intermediate child results as FSM stage data.
+
+#### Target state (FSM-layer fan-out)
+
+```mermaid
+flowchart TD
+    A[Mode: research, Stage: analyze] --> B[Model calls transition_stage
+    target=fork:coding/implement,thinkabout/review,markdown/write]
+    B --> C[FSM interception: fork detected]
+    C --> D[Create child sessions for each fork target]
+    D --> E[Fan out children via asyncio.TaskGroup]
+    E --> F[Collect child results into stage_data.fork_results]
+    F --> G[Auto-transition to synthesis stage]
+    G --> H[Model synthesizes from stage_data.fork_results]
+```
+
+The key change: `transition_stage` gains a **fork** target syntax. When
+`target_stage_id` starts with `fork:`, the FSM interception parses a
+comma-separated list of `mode_id/stage_id` pairs (stage_id optional), creates
+N child sessions — each potentially in a **different mode** with its own
+tools and prompt — fans them out in parallel via `asyncio.TaskGroup`, collects
+results into `stage_data.fork_results`, and auto-transitions to the next
+stage (the synthesis stage). The model never calls `workshop_run` as a tool —
+it calls `transition_stage` with a fork target, and the FSM handles the rest.
+
+Fork target syntax:
+
+```plaintext
+fork:coding/implement,thinkabout/review,markdown/write
+fork:search,calendar,email
+fork:thinkabout/security,thinkabout/performance,thinkabout/style
+```
+
+Each segment is `mode_id` or `mode_id/stage_id`. The query for each worker is
+derived from the user's original message plus the mode's `query_prefix` (if
+configured in `workshop_panels`). When the model calls fork without
+pre-declared panels, it passes per-worker queries in `tool_arguments`.
+
+#### What this unlocks
+
+1. **FSM visibility.** The FSM knows fan-out happened. It persists child
+   results in `WorkflowSessionState.stage_data.fork_results`, making them
+   available to subsequent stages and to the slice-driven routing context.
+
+2. **Heterogeneous parallel workers.** Each fork target is a different mode
+   with its own system prompt, tool surface, and model. The model can fan out
+   to `search` + `calendar` + `email` in one turn — three completely
+   different tool surfaces running concurrently.
+
+3. **Budget enforcement across children.** `TurnBudget` and `CallLedger`
+   already track per-turn resource usage. With FSM-layer fan-out, the budget
+   is allocated across children — each child gets a sub-budget, and the
+   parent turn's budget is the sum.
+
+4. **Stuck-detection for fan-out.** `_STAGE_NUDGE_CAP` already prevents
+   ping-pong between stages. The same guard prevents infinite fan-out: if a
+   fork produces no useful results after N attempts, the FSM forces a
+   synthesis with whatever it has.
+
+5. **Slice-driven fan-out planning.** A post-turn slice could analyze the
+   conversation, detect that a fan-out would be useful, and pre-compute fork
+   targets into a state blob. The next turn's model sees the pre-computed
+   fork targets as suggested `allowed_next_stages` on `transition_stage`.
+
+6. **Unified mechanism.** Fan-out is no longer a special operation — it's a
+   `transition_stage` call with a fork target. The same interception point,
+   the same budget enforcement, the same stuck-detection, the same persistence.
+   One mechanism for sequential handoff, parallel fan-out, and workflow stage
+   advancement.
+
+#### What gets removed
+
+The `workshop_run` operation and `WorkshopExecutionService` are removed
+entirely (hard cutover). Their responsibilities move into the FSM:
+
+| Old (workshop operation) | New (FSM fork transition) |
+| --- | --- |
+| `workshop_run` operation | `transition_stage` with `fork:` target |
+| `WorkshopExecutionService` | `asyncio.TaskGroup` in the FSM interception path |
+| `WorkshopPlan`, `WorkshopPanelSpec` | `ForkTarget` model (mode_id, stage_id, query) |
+| `WorkshopContextBundle` | `stage_data.fork_context` (built by the same context broker) |
+| `WorkshopSynthesis` (operation-internal) | Synthesis stage in the mode's FSM |
+| `workshop_panels` in `_mode.md` | Pre-declared fork targets synthesized into `allowed_next_stages` |
+| `workshop_budget` in `_mode.md` | `TurnBudget` sub-allocation across children |
+
+The `WorkshopPanelModeConfig`, `WorkshopBudgetConfig`, `WorkshopRenderConfig`,
+`WorkshopPlan`, `WorkshopPanelSpec`, `WorkshopPanelContext`,
+`WorkshopContextBundle`, `WorkshopChildResult`, and
+`WorkshopExecutionSummary` models are all removed from `kernel/models.py`.
+The `workshop_execution.py` module is deleted. The `workshop_run.py` operation
+is deleted. The `workshop_panels`, `workshop_budget`, `workshop_rendering`,
+`workshop_planner_prompt_file`, and `workshop_synthesis_prompt_file` fields
+are removed from `WorkflowModeConfig`.
+
 ### What changes
 
 | Component | Change |
 | --- | --- |
-| `kernel/turn_runner.py` `transition_stage` interception (line 1532) | Extend to handle `target_stage_id` that is a `mode_id` (not in current workflow). Swap system prompt + tool surface mid-loop. |
-| `kernel/turn_runner.py` schema injection | Synthesize routing FSM transitions: every routable mode can transition to every other routable mode (initially: default ↔ all). Inject `transition_stage` schema with the synthesized `allowed_next_stages` enum. |
-| `kernel/turn_runner.py:TurnResult` | Add `handoff_to: str \| None = None` |
+| `kernel/turn_runner.py` `transition_stage` interception (line 1532) | Extend to handle three target kinds: (1) `mode_id` — mid-turn mode switch, (2) `fork:mode/stage,...` — parallel fan-out to heterogeneous modes, (3) workflow stage — existing `apply_transition` path. |
+| `kernel/turn_runner.py` schema injection | Synthesize routing FSM transitions: every routable mode can transition to every other routable mode (initially: default ↔ all). Synthesize fork targets from `workshop_panels` declarations. Inject `transition_stage` schema with the synthesized `allowed_next_stages` enum. |
+| `kernel/turn_runner.py:TurnResult` | Add `handoff_to: str \| None = None` and `fork_results: list[ForkChildResult] \| None = None` |
 | `kernel/turn_runner.py` system prompt assembly | Add capability-manifest-aware proactive hint injection (conditional, zero-cost when not needed) |
+| `kernel/turn_runner.py` fork execution | Add `asyncio.TaskGroup` fan-out in the `transition_stage` interception path for `fork:` targets. Each child runs in an isolated session with its own mode's system prompt + tool surface. |
 | `hosts/core/handle_message.py` `_execute_mode_turn` | Check `TurnResult.handoff_to`, persist `current_mode_id` update |
 | `hosts/core/handle_message.py` `_route_model_turn` | Remove router planner call; NL turns go directly to `current_mode_id` |
 | `kernel/router.py` `plan_route` | Remove (hard cutover) |
 | `kernel/router.py` `_try_router_shortcut`, `_try_router_clarification` | Remove |
 | `kernel/router.py` fast-path regex | Keep as zero-cost pre-turn hint that short-circuits to a mode without a tool-call round-trip |
 | `kernel/models.py` `RouteDecision`, `RouteDecisionAlternative`, `RoutePlannerSource` | Remove |
+| `kernel/models.py` `WorkshopPanelModeConfig`, `WorkshopBudgetConfig`, `WorkshopRenderConfig`, `WorkshopPlan`, `WorkshopPanelSpec`, `WorkshopPanelContext`, `WorkshopContextBundle`, `WorkshopChildResult`, `WorkshopExecutionSummary` | Remove (replaced by `ForkTarget` and `ForkChildResult`) |
+| `kernel/models.py` | Add `ForkTarget` (mode_id, stage_id, query) and `ForkChildResult` (target, status, output_text, duration_ms) |
+| `kernel/models.py` `WorkflowModeConfig` | Remove `workshop_panels`, `workshop_budget`, `workshop_rendering`, `workshop_planner_prompt_file`, `workshop_synthesis_prompt_file` fields |
+| `sdk/workshop_execution.py` | Delete (hard cutover — fan-out moves into the FSM) |
+| `sdk/packs/core/operations/research/workshop_run.py` | Delete (hard cutover — replaced by `transition_stage fork:`) |
 | Router planner prompt, verifier prompt | Remove |
 
 ### What stays
@@ -226,22 +434,50 @@ stage advancement, all existing guardrails apply automatically:
 - **`start_mode` bypass for real owning modes** — unchanged. Only `default` is
   exempt (see `ROUTER_DESIGN.md` §3).
 - **`transition_stage` for workflow FSMs** — unchanged. The interception
-  block gains a new branch for mode routing; the existing workflow path is
-  untouched.
+  block gains two new branches (mode routing and fork fan-out); the existing
+  workflow path is untouched.
+- **`workflow_turn_runner` and `workflow_session_factory` hooks** — kept.
+  These are the seams the FSM uses to execute fork children. They were
+  previously injected into `OperationExecutionContext` for `workshop_run`;
+  they move to the FSM interception path.
+- **`workshop_panels` declarations in `_mode.md`** — kept as the declarative
+  syntax for pre-declared fork targets. The field moves from
+  `WorkflowModeConfig.workshop_panels` to a `fork_targets` field (same shape,
+  new name). The FSM synthesizes these into `allowed_next_stages` on
+  `transition_stage`.
+
+### What is removed (hard cutover)
+
+- **`workshop_run` operation** — replaced by `transition_stage` with `fork:` target.
+- **`WorkshopExecutionService`** (`sdk/workshop_execution.py`) — fan-out moves into the FSM interception path using `asyncio.TaskGroup`.
+- **Workshop models** — `WorkshopPanelModeConfig`, `WorkshopBudgetConfig`, `WorkshopRenderConfig`, `WorkshopPlan`, `WorkshopPanelSpec`, `WorkshopPanelContext`, `WorkshopContextBundle`, `WorkshopChildResult`, `WorkshopExecutionSummary`. Replaced by `ForkTarget` and `ForkChildResult`.
+- **Workshop fields on `WorkflowModeConfig`** — `workshop_panels`, `workshop_budget`, `workshop_rendering`, `workshop_planner_prompt_file`, `workshop_synthesis_prompt_file`. Replaced by `fork_targets` and per-mode budget config on the FSM.
 
 ### Migration: hard cutover
 
 Per the project's "no compat or migration" preference:
 
-1. Extend `transition_stage` interception to handle `mode_id` targets.
+1. Extend `transition_stage` interception to handle three target kinds:
+   `mode_id` (sequential handoff), `fork:mode/stage,...` (parallel fan-out),
+   and workflow stage (existing path).
 2. Synthesize the routing FSM from the mode catalog.
-3. Add capability-manifest-aware proactive hints.
-4. Remove `plan_route` and its call site in `handle_message.py`.
-5. Remove the router planner prompt, verifier prompt, `RouteDecision` model,
+3. Synthesize fork targets from `workshop_panels` declarations (renamed to
+   `fork_targets`).
+4. Add `asyncio.TaskGroup` fan-out in the FSM interception path for `fork:`
+   targets. Each child runs in an isolated session with its own mode's system
+   prompt + tool surface.
+5. Add capability-manifest-aware proactive hints.
+6. Remove `plan_route` and its call site in `handle_message.py`.
+7. Remove the router planner prompt, verifier prompt, `RouteDecision` model,
    `_try_router_shortcut`, and `_try_router_clarification`.
-6. Natural-language turns go directly to `current_mode_id` (defaulting to
-   `default`). The model hands off via `transition_stage` if needed.
-7. Keep `fast_path_patterns` as the deterministic short-circuit.
+8. Remove `workshop_run` operation, `WorkshopExecutionService`, and all
+   workshop models (`WorkshopPlan`, `WorkshopPanelSpec`, etc.).
+9. Rename `workshop_panels` to `fork_targets` on `WorkflowModeConfig` (same
+   shape, new name — the declarative syntax survives).
+10. Natural-language turns go directly to `current_mode_id` (defaulting to
+    `default`). The model hands off or fans out via `transition_stage` if
+    needed.
+11. Keep `fast_path_patterns` as the deterministic short-circuit.
 
 ### Why this is better
 
@@ -254,7 +490,8 @@ Per the project's "no compat or migration" preference:
 | Mode opacity | Sees description only | Sees actual tool surface | Sees actual tool surface **plus** proactive capability-gap hints |
 | Cross-turn routing state | None | None (stateless between turns) | Slice-driven routing context (future) |
 | Stuck detection | None | None | `_STAGE_NUDGE_CAP` + `TurnBudget` (free from FSM) |
-| Mechanism count | 2 (planner + FSM) | 2 (handoff + FSM) | **1** (FSM only) |
+| Parallel fan-out | Separate `workshop_run` operation (opaque to FSM) | Not a primitive (orchestrator pattern only) | First-class `fork:` transition — heterogeneous modes, same interception point, same budget/stuck guards |
+| Mechanism count | 3 (planner + FSM + workshop) | 2 (handoff + FSM) | **1** (FSM only) |
 
 ## Open Questions
 
@@ -279,11 +516,32 @@ Per the project's "no compat or migration" preference:
    hint is a conditional string append — a keyword-to-capability-gap lookup
    that costs zero tokens when the current mode can handle the request.
 
-5. **Supervisor pattern for composition?** The unified FSM handles simple
-   handoff. If composition ("search AND write markdown") becomes common, a
-   future enhancement could add a supervisor mode that calls sub-modes as
-   tools — but this is out of scope for the initial cutover. The slice-driven
-   routing context (enhancement 2) is the more uniquely-Lisa investment.
+5. **How does the model know what fork targets are available?** The
+   synthesized `allowed_next_stages` on `transition_stage` includes both
+   sequential handoff targets (`mode_id`) and fork targets
+   (`fork:mode/stage,...`). Pre-declared `fork_targets` in `_mode.md` are
+   synthesized into the enum. The model can also construct ad-hoc fork
+   targets at runtime by specifying `mode_id/stage_id` pairs directly.
+
+6. **What is the fork target query derivation?** When fork targets are
+   pre-declared in `_mode.md`, each target's `query_prefix` is prepended to
+   the user's original message. When the model constructs ad-hoc fork targets
+   at runtime, it passes per-worker queries in `tool_arguments.queries` (a
+   list parallel to the fork target list). If no queries are provided, each
+   worker receives the user's original message unchanged.
+
+7. **What happens when a fork child fails or times out?** The FSM collects
+   all child results (including failures) into `stage_data.fork_results` and
+   auto-transitions to the synthesis stage. The synthesis stage sees which
+   children succeeded and which failed, and can decide to retry, ask the
+   user, or synthesize from partial results. This is the same pattern the
+   current `workshop_run` operation uses — just moved into the FSM.
+
+8. **Does fan-out reset the turn budget?** No. The parent turn's
+   `TurnBudget` is allocated across children. Each child gets a sub-budget
+   (total / N children, configurable). If a child exhausts its sub-budget,
+   it returns a partial result. The parent turn's budget is the hard cap —
+   fan-out doesn't grant extra resources.
 
 ## References
 

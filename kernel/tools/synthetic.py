@@ -16,7 +16,8 @@ wired to a live :class:`MCPToolPool`.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Callable
+from typing import Any
 
 from kernel.tools.mcp_client import MCPToolPool, SyntheticToolSpec
 
@@ -103,8 +104,3 @@ def mcp_alias_tool(
         target_server_id=target_server_id,
         result_map=result_map,
     )
-
-
-# Type re-exported for convenience so callers can build custom synthetic tools
-# (not just aliases) without importing from two modules.
-_AsyncHandler = Callable[[dict[str, Any]], Awaitable[str]]

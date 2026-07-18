@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "TokenUsageTelemetryHandler",
     "build_token_usage_event",
-    "coerce_non_negative_int",
     "coerce_non_negative_float",
+    "coerce_non_negative_int",
     "ensure_usage_entry",
 ]
 

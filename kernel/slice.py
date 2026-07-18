@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-class SliceMode(str, enum.Enum):
+class SliceMode(enum.StrEnum):
     """When a slice runs within a turn."""
 
     NEVER = "never"

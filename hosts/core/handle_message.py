@@ -38,7 +38,6 @@ from typing import TYPE_CHECKING, Any
 from kernel.ipsar import parse_route
 from kernel.approval import ApprovalIdentity, ApprovalRequired, render_approval_request
 from kernel.ipsar_fsm import get_workflow_catalog
-from kernel.models import RouteDecision as RouterRouteDecision
 from kernel.operations.registry import OperationExecutionError
 from kernel.turn_runner import TurnResult, execute_approved_invocation, run_turn
 
@@ -55,7 +54,6 @@ from hosts.core.commands import (
     handle_pack_command,
     handle_simple_command,
     mode_support_gap,
-    model_alias_for_mode,
     preferred_model_id_for_route,
     render_modes_list,
     render_operations_list,
@@ -65,13 +63,12 @@ from hosts.core.commands import (
     set_runtime_route_preview,
 )
 from hosts.core.context_assembly import build_turn_context
-from hosts.core.routing import plan_route
 from hosts.core.host_commands import (
     register_host_command_exacts,
     register_host_command_prefix,
     register_host_command_prefixes,
 )
-from hosts.core.thread import append_thread_entry, build_recent_thread_excerpt
+from hosts.core.thread import append_thread_entry
 from hosts.core.token_accounting import apply_turn_usage, coerce_non_negative_int
 from hosts.core.turn_hooks_builder import build_turn_hooks
 from hosts.core.types import HostCommandResult
@@ -455,16 +452,17 @@ async def _route_model_turn(
     message: str,
     transport: TransportCallbacks,
 ) -> str:
-    """Handle model-backed routing: router planning and run_turn dispatch.
+    """Handle model-backed routing: mode dispatch and run_turn execution.
 
-    Routing order:
+    Routing order (unified FSM — see docs/ROUTING_RFC_HANDOFF.md):
     1. ``/deep`` prefix → default mode with deep-designated model.
     2. Other slash commands → ``kernel.ipsar.parse_route``.
     3. Natural language → check ``start_mode`` override from session
-       context front matter. When set, bypass router entirely
-       and route directly to the declared mode.
-    4. Otherwise → router with direct-response shortcut and
-       clarification attempts.
+       context front matter. When set, bypass and route directly to
+       the declared mode.
+    4. Otherwise → go directly to ``current_mode_id`` (defaults to
+       ``default``). The model hands off between modes mid-turn via
+       ``transition_stage`` — no separate planner call.
     5. Execute the resolved mode turn via ``kernel.turn_runner.run_turn``.
     """
     # Ensure the (possibly deferred) MCP pool is ready before building
@@ -479,15 +477,12 @@ async def _route_model_turn(
         mode_id, query = parse_route(message)
     else:
         # Check for start_mode override from session-context front matter.
-        # When set to a real owning mode (learn, coding, etc.), bypass the
-        # router and go directly to the declared mode — this keeps the user
-        # pinned in that mode unless they explicitly /switch. `default` is
-        # the router's own fallback, NOT a real owning mode: pinning it
-        # would silently disable routing on every turn
-        # (current_mode_id == "default" == start_mode → bypass fires
-        # forever, router never runs). Exempt `default` so that
-        # start_mode: default means "let the router decide" — the
-        # intuitive intent. See docs/ROUTER_DESIGN.md §3.
+        # When set to a real owning mode (learn, coding, etc.), bypass and
+        # go directly to the declared mode — this keeps the user pinned
+        # in that mode unless they explicitly /switch. `default` is NOT a
+        # real owning mode: pinning it would silently disable handoff
+        # routing on every turn. Exempt `default` so that
+        # start_mode: default means "let the model decide via handoff."
         start_mode = runtime.start_mode_id
         if (
             start_mode
@@ -498,205 +493,16 @@ async def _route_model_turn(
             query = message
             logger.debug(
                 "start_mode bypass: routing directly to mode %r "
-                "(router skipped)", start_mode,
+                "(handoff skipped)", start_mode,
             )
         else:
-            # Try router direct-response shortcut.
-            direct = await _try_router_shortcut(runtime, message, transport)
-            if direct is not None:
-                return direct
-
-            # Plan the full route.
-            route_decision = await _plan_route(runtime, message)
-            clarification = _try_router_clarification(
-                runtime, message, route_decision, transport,
-            )
-            if clarification is not None:
-                return clarification
-
-            mode_id = route_decision.selected_mode_id
-            query = route_decision.normalized_query or message
+            # Natural language: go directly to current_mode_id. The model
+            # can hand off to a better-suited mode mid-turn by calling
+            # transition_stage. No separate planner call needed.
+            mode_id = runtime.current_mode_id or "default"
+            query = message
 
     return await _execute_mode_turn(runtime, message, mode_id, query, deep_route, transport)
-
-
-async def _try_router_shortcut(
-    runtime: HostRuntime,
-    message: str,
-    transport: TransportCallbacks,
-) -> str | None:
-    """Try the router direct-response optimization; return response or ``None``.
-
-    When the router planner provides a ``direct_response`` and the
-    selected mode is ``default``, skip the full model turn and return the
-    planner's response directly.
-    """
-    route_decision = await _plan_route(runtime, message)
-    if (
-        route_decision.clarification_needed
-        or not route_decision.direct_response
-        or route_decision.selected_mode_id != "default"
-    ):
-        return None
-
-    response_text = route_decision.direct_response
-    planner_debug = runtime.last_router_debug or {}
-
-    # Build turn context for the shortcut.
-    from hosts.core.commands import _resolve_model as _resolve_model_cmd
-
-    resolved_default = _resolve_model_cmd(runtime, "default")
-    direct_context: dict[str, Any] = {
-        "timestamp_utc": datetime.now(UTC).isoformat(),
-        "raw_message": message,
-        "mode_id": "default",
-        "handoff": "router optimization (direct response)",
-        "router_route": route_decision.model_dump(mode="json"),
-        "router_debug": planner_debug or None,
-    }
-    _set_turn_context(runtime, direct_context)
-
-    # Persist thread and token usage.
-    append_thread_entry(
-        thread_path=runtime.thread_path,
-        user_slug=runtime.config.user_slug,
-        mode_id="default",
-        query=route_decision.normalized_query or message,
-        response_text=response_text,
-        provenance={"source": "system-verified", "finish_reason": "router", "model_id": "none"},
-    )
-    _apply_turn_usage(
-        runtime,
-        TurnResult(
-            response_text=response_text,
-            prompt_tokens=0,
-            completion_tokens=0,
-        ),
-        model_id=resolved_default.model_id,
-        mode_id="default",
-        stage_id="-",
-        router_routing=planner_debug or None,
-    )
-
-    await transport.on_stage("router", {"shortcut": "direct_response"})
-    return response_text
-
-
-def _try_router_clarification(
-    runtime: HostRuntime,
-    message: str,
-    route_decision: RouterRouteDecision,
-    _transport: TransportCallbacks,
-) -> str | None:
-    """Return a clarification question if the router requests one."""
-    _ = _transport  # reserved for future stage callbacks
-    if not (route_decision.clarification_needed and route_decision.clarification_question):
-        return None
-
-    response_text = route_decision.clarification_question
-    planner_debug = runtime.last_router_debug or {}
-    clarification_context: dict[str, Any] = {
-        "timestamp_utc": datetime.now(UTC).isoformat(),
-        "raw_message": message,
-        "mode_id": "router",
-        "handoff": "router clarification",
-        "router_route": route_decision.model_dump(mode="json"),
-        "router_debug": planner_debug or None,
-    }
-    _set_turn_context(runtime, clarification_context)
-
-    append_thread_entry(
-        thread_path=runtime.thread_path,
-        user_slug=runtime.config.user_slug,
-        mode_id="router",
-        query=message,
-        response_text=response_text,
-        provenance={"source": "system-verified", "finish_reason": "router-clarification", "model_id": "none"},
-    )
-    return response_text
-
-
-async def _plan_route(
-    runtime: HostRuntime,
-    message: str,
-) -> RouterRouteDecision:
-    """Plan the route for a natural-language message.
-
-    Delegates to ``hosts.core.routing.plan_route`` with
-    all callables resolved from the runtime.
-    """
-    from hosts.core.commands import _resolve_model as _resolve_model_cmd
-    from hosts.core.context_assembly import (
-        build_user_prompt,
-        load_fast_path_verifier_prompt,
-        load_route_prompt,
-    )
-    from hosts.core.routing import last_debug_dict
-    from hosts.core.providers import complete_live
-    from hosts.core.turn_hooks_builder import content_loader
-
-    loader = content_loader(runtime)
-    conversation_excerpt = build_recent_thread_excerpt(
-        thread_path=runtime.thread_path,
-        limit=3,
-    )
-
-    def _resolve_model(model_id: str) -> Any:
-        return _resolve_model_cmd(runtime, model_id)
-
-    async def _complete_live(**kwargs: Any) -> Any:
-        return await complete_live(
-            runtime=runtime,
-            transport=None,
-            **kwargs,
-        )
-
-    def _coerce_int(value: Any) -> int:
-        return coerce_non_negative_int(value)
-
-    def _preview(text: str, limit: int) -> str:
-        return text[:limit]
-
-    def _load_route_prompt() -> str:
-        return load_route_prompt(loader)
-
-    def _load_fast_path_verifier_prompt() -> str:
-        return load_fast_path_verifier_prompt(loader)
-
-    def _mode_supported(_mode_id: str, mode: Any) -> bool:
-        return mode_support_gap(mode) is None
-
-    def _build_user_prompt(**kwargs: Any) -> str:
-        # plan_route doesn't pass user_slug — inject it from runtime.
-        kwargs.setdefault("user_slug", runtime.config.user_slug)
-        return build_user_prompt(**kwargs)
-
-    def _get_catalog() -> dict[str, Any]:
-        return get_workflow_catalog()
-
-    def _set_last_router_debug(payload: dict[str, Any]) -> None:
-        runtime.set_last_router_debug(payload)
-
-    decision = await plan_route(
-        raw_message=message,
-        conversation_excerpt_markdown=conversation_excerpt,
-        router_alias=router_model_alias(),
-        resolve_model=_resolve_model,
-        complete_live=_complete_live,
-        model_alias_for_mode=model_alias_for_mode,
-        coerce_int=_coerce_int,
-        preview_fn=_preview,
-        load_route_prompt=_load_route_prompt,
-        load_fast_path_verifier_prompt=_load_fast_path_verifier_prompt,
-        mode_supported=_mode_supported,
-        build_user_prompt=_build_user_prompt,
-        get_workflow_catalog=_get_catalog,
-        set_last_router_debug=_set_last_router_debug,
-        current_mode_id=runtime.current_mode_id,
-    )
-    # The module-level last_debug_dict is also updated by plan_route.
-    _ = last_debug_dict()
-    return decision
 
 
 # ── Turn execution ────────────────────────────────────────────────────
@@ -757,34 +563,22 @@ async def _execute_mode_turn(
         mode=mode,
     )
 
-    # Inject router routing debug info for natural-language turns.
+    # Inject routing context for natural-language turns.
     if not message.lstrip().startswith("/"):
-        planner_debug = runtime.last_router_debug or {}
-        planner_model_payload = planner_debug.get("resolved_model")
-        planner_model_id = ""
-        planner_model_provider = ""
-        if isinstance(planner_model_payload, dict):
-            planner_model_id = str(planner_model_payload.get("model_id") or "")
-            planner_model_provider = str(planner_model_payload.get("provider") or "")
-
         run_context["router_route"] = {
             "selected_mode_id": mode.mode_id,
             "normalized_query": query or message,
             "model_alias": router_model_alias(),
-            "resolved_model_id": planner_model_id,
-            "resolved_model_provider": planner_model_provider,
-            "reasoning": planner_debug.get("planner_reasoning", ""),
-            "confidence_score": planner_debug.get("confidence_score", 0.0),
-            "fallback_used": planner_debug.get("fallback_used", False),
-            "fallback_reason": planner_debug.get("fallback_reason", ""),
-            "prompt_tokens": coerce_non_negative_int(planner_debug.get("planner_prompt_tokens")),
-            "completion_tokens": coerce_non_negative_int(
-                planner_debug.get("planner_completion_tokens")
-            ),
-            "total_tokens": coerce_non_negative_int(planner_debug.get("planner_total_tokens")),
+            "resolved_model_id": resolved_model.model_id,
+            "resolved_model_provider": resolved_model.provider,
+            "reasoning": "unified_fsm_handoff",
+            "confidence_score": 1.0,
+            "fallback_used": False,
+            "fallback_reason": "",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
         }
-        if planner_debug:
-            run_context["router_debug"] = planner_debug
 
     _set_turn_context(runtime, run_context)
 
@@ -828,7 +622,6 @@ async def _execute_mode_turn(
         model_id=resolved_model.model_id,
         mode_id=mode.mode_id,
         stage_id=runtime.current_stage_id or "-",
-        router_routing=runtime.last_router_debug,
     )
 
     # Update completion context.
@@ -871,6 +664,15 @@ async def _execute_mode_turn(
         response_text=result.response_text,
         provenance=provenance,
     )
+
+    # Unified FSM routing: persist mid-turn mode handoff. When the model
+    # called transition_stage with a mode_id target, update current_mode_id
+    # so the next turn starts in the new mode. See docs/ROUTING_RFC_HANDOFF.md.
+    if result.handoff_to and result.handoff_to != mode.mode_id:
+        runtime.current_mode_id = result.handoff_to
+        logger.debug(
+            "mode handoff: %s -> %s", mode.mode_id, result.handoff_to,
+        )
 
     # Emit debug context if debug mode is on.
     if runtime.config.debug:

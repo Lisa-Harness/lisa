@@ -37,7 +37,6 @@ from typing import Any, Literal, cast
 import yaml
 
 from kernel.approval import ApprovalRequired
-from kernel.config import settings
 from kernel.intake.connector_discovery import discover_installed_signal_collectors
 from kernel.models import (
     CallLedger,
@@ -46,15 +45,11 @@ from kernel.models import (
     OperationExecutionContext,
     OperationResult,
     ToolExecutionContext,
-    ToolResult,
     UnifiedState,
     WorkflowModeConfig,
     WorkflowSessionState,
     WorkflowStageConfig,
     WorkflowTransitionRequest,
-    WorkshopBudgetConfig,
-    WorkshopPanelModeConfig,
-    WorkshopRenderConfig,
 )
 from kernel.openai_function_tools import build_strict_openai_function_tool
 from kernel.tools.mcp_client import MCPClientConfig
@@ -301,11 +296,6 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "routable",
         "priority",
         "fast_path_patterns",
-        "workshop_panels",
-        "workshop_budget",
-        "workshop_planner_prompt_file",
-        "workshop_synthesis_prompt_file",
-        "workshop_rendering",
         "default_intent_bridges",
         "artifact_type",
     }
@@ -478,20 +468,6 @@ def load_catalog_from_disk(
         command_pattern = str(raw_pattern)
         require_query = bool(mode_front_matter.get("require_query", False))
         mode_default_model = str(mode_front_matter.get("default_model", "") or "") or None
-        workshop_planner_prompt_file = _resolve_mode_relative_file(
-            mode_dir=mode_dir,
-            authored_path=str(mode_front_matter.get("workshop_planner_prompt_file", "") or ""),
-            mode_config_path=mode_config_path,
-            location="workshop_planner_prompt_file",
-        )
-        workshop_synthesis_prompt_file = _resolve_mode_relative_file(
-            mode_dir=mode_dir,
-            authored_path=str(mode_front_matter.get("workshop_synthesis_prompt_file", "") or ""),
-            mode_config_path=mode_config_path,
-            location="workshop_synthesis_prompt_file",
-        )
-        workshop_rendering = _parse_workshop_rendering(mode_front_matter, mode_config_path)
-
         stages: dict[str, WorkflowStageConfig] = {}
 
         for stage_path in sorted(mode_dir.glob("*.md")):
@@ -649,47 +625,6 @@ def load_catalog_from_disk(
                 )
             examples.append(example)
 
-        workshop_budget = _parse_workshop_budget(mode_front_matter, mode_config_path)
-        workshop_panels: list[WorkshopPanelModeConfig] = []
-        workshop_panels_raw = mode_front_matter.get("workshop_panels") or []
-        if not isinstance(workshop_panels_raw, list):
-            raise WorkflowValidationError(
-                "workshop_panels must be a list, got "
-                f"{type(workshop_panels_raw).__name__} in {mode_config_path}"
-            )
-        for idx, panel_config in enumerate(workshop_panels_raw):
-            if not isinstance(panel_config, dict):
-                raise WorkflowValidationError(
-                    f"workshop_panels[{idx}] must be a dict, got "
-                    f"{type(panel_config).__name__} in {mode_config_path}"
-                )
-            mode_id_value = _require_str_field(
-                panel_config,
-                "mode_id",
-                mode_config_path,
-                location=f"workshop_panels[{idx}]",
-            )
-            panel_id_value = str(panel_config.get("panel_id", "") or "").strip()
-            title_value = str(panel_config.get("title", "") or "").strip()
-            model_alias_value = str(panel_config.get("model_alias", "") or "").strip()
-            query_prefix_value = str(panel_config.get("query_prefix", "") or "").strip()
-            query_prompt_file_value = _resolve_mode_relative_file(
-                mode_dir=mode_dir,
-                authored_path=str(panel_config.get("query_prompt_file", "") or ""),
-                mode_config_path=mode_config_path,
-                location=f"workshop_panels[{idx}].query_prompt_file",
-            )
-            workshop_panels.append(
-                WorkshopPanelModeConfig(
-                    panel_id=panel_id_value,
-                    title=title_value,
-                    mode_id=mode_id_value,
-                    model_alias=model_alias_value,
-                    query_prefix=query_prefix_value,
-                    query_prompt_file=query_prompt_file_value,
-                )
-            )
-
         # Parse default_intent_bridges: list of bridge configs from mode front-matter.
         default_intent_bridges = []
         bridges_raw = mode_front_matter.get("default_intent_bridges") or []
@@ -783,11 +718,6 @@ def load_catalog_from_disk(
             allowed_operation_ids=allowed_operation_ids,
             allowed_tool_ids=allowed_tool_ids,
             tools_authoritative=tools_authoritative,
-            workshop_panels=workshop_panels,
-            workshop_budget=workshop_budget,
-            workshop_planner_prompt_file=workshop_planner_prompt_file,
-            workshop_synthesis_prompt_file=workshop_synthesis_prompt_file,
-            workshop_rendering=workshop_rendering,
             default_intent_bridges=default_intent_bridges,
             mode_provider_id=str(mode_front_matter.get("mode_provider_id", "") or ""),
             context_evidence_packs=[
@@ -920,136 +850,6 @@ def _optional_int_field(
     return value
 
 
-def _parse_workshop_budget(
-    mode_front_matter: dict[str, Any],
-    mode_config_path: Path,
-) -> WorkshopBudgetConfig:
-    """Parse one authored workshop budget block with host-backed defaults."""
-
-    workshop_budget_raw = mode_front_matter.get("workshop_budget") or {}
-    if not isinstance(workshop_budget_raw, dict):
-        raise WorkflowValidationError(
-            "workshop_budget must be a dict, got "
-            f"{type(workshop_budget_raw).__name__} in {mode_config_path}"
-        )
-
-    shared_context_tokens = _optional_int_field(
-        workshop_budget_raw,
-        "shared_context_tokens",
-        mode_config_path,
-        location="workshop_budget",
-        minimum=0,
-    )
-    per_panel_context_tokens = _optional_int_field(
-        workshop_budget_raw,
-        "per_panel_context_tokens",
-        mode_config_path,
-        location="workshop_budget",
-        minimum=1,
-    )
-    synthesis_max_tokens = _optional_int_field(
-        workshop_budget_raw,
-        "synthesis_max_tokens",
-        mode_config_path,
-        location="workshop_budget",
-        minimum=1,
-    )
-    max_parallel_panels = _optional_int_field(
-        workshop_budget_raw,
-        "max_parallel_panels",
-        mode_config_path,
-        location="workshop_budget",
-        minimum=1,
-    )
-
-    return WorkshopBudgetConfig(
-        shared_context_tokens=(
-            shared_context_tokens
-            if shared_context_tokens is not None
-            else settings.workshop_default_shared_context_tokens
-        ),
-        per_panel_context_tokens=(
-            per_panel_context_tokens
-            if per_panel_context_tokens is not None
-            else settings.workshop_default_per_panel_context_tokens
-        ),
-        synthesis_max_tokens=(
-            synthesis_max_tokens
-            if synthesis_max_tokens is not None
-            else settings.workshop_default_synthesis_max_tokens
-        ),
-        max_parallel_panels=(
-            max_parallel_panels
-            if max_parallel_panels is not None
-            else settings.workshop_default_max_parallel_panels
-        ),
-    )
-
-
-def _parse_workshop_rendering(
-    mode_front_matter: dict[str, Any],
-    mode_config_path: Path,
-) -> WorkshopRenderConfig:
-    """Parse optional workshop rendering preferences from mode front-matter."""
-
-    workshop_rendering_raw = mode_front_matter.get("workshop_rendering") or {}
-    if not isinstance(workshop_rendering_raw, dict):
-        raise WorkflowValidationError(
-            "workshop_rendering must be a dict, got "
-            f"{type(workshop_rendering_raw).__name__} in {mode_config_path}"
-        )
-
-    try:
-        return WorkshopRenderConfig.model_validate(workshop_rendering_raw)
-    except Exception as exc:  # pylint: disable=broad-except
-        raise WorkflowValidationError(
-            f"Invalid workshop_rendering in '{mode_config_path}': {exc}"
-        ) from exc
-
-
-def _derived_workshop_panel_limit(budget: WorkshopBudgetConfig) -> int:
-    """Return the host-bounded maximum panel count allowed for one workshop."""
-
-    remaining_context = settings.workshop_max_context_tokens - budget.shared_context_tokens
-    if remaining_context <= 0:
-        return 0
-    context_limited = remaining_context // budget.per_panel_context_tokens
-    return max(0, min(settings.workshop_max_panels_hard_cap, context_limited))
-
-
-def _validate_workshop_budget(mode: WorkflowModeConfig) -> None:
-    """Validate one mode's authored workshop budget against host ceilings."""
-
-    budget = mode.workshop_budget
-    if budget.shared_context_tokens > settings.workshop_max_context_tokens:
-        raise WorkflowValidationError(
-            f"Mode '{mode.mode_id}' workshop shared_context_tokens exceeds host ceiling "
-            f"{settings.workshop_max_context_tokens}."
-        )
-    if budget.synthesis_max_tokens > settings.workshop_max_synthesis_tokens:
-        raise WorkflowValidationError(
-            f"Mode '{mode.mode_id}' workshop synthesis_max_tokens exceeds host ceiling "
-            f"{settings.workshop_max_synthesis_tokens}."
-        )
-    if budget.max_parallel_panels > settings.workshop_max_parallel_panels_hard_cap:
-        raise WorkflowValidationError(
-            f"Mode '{mode.mode_id}' workshop max_parallel_panels exceeds host ceiling "
-            f"{settings.workshop_max_parallel_panels_hard_cap}."
-        )
-
-    derived_panel_limit = _derived_workshop_panel_limit(budget)
-    if mode.workshop_panels and derived_panel_limit <= 0:
-        raise WorkflowValidationError(
-            f"Mode '{mode.mode_id}' workshop budget leaves no room for panel "
-            "contexts under the host ceiling."
-        )
-    if len(mode.workshop_panels) > derived_panel_limit:
-        raise WorkflowValidationError(
-            f"Mode '{mode.mode_id}' declares {len(mode.workshop_panels)} workshop panels, "
-            f"but the authored budget allows at most {derived_panel_limit}."
-        )
-
-
 # ---------------------------------------------------------------------------
 # Catalog validation
 # ---------------------------------------------------------------------------
@@ -1170,21 +970,6 @@ def validate_workflow_catalog(catalog: dict[str, WorkflowModeConfig]) -> None:
     """
     for mode in catalog.values():
         validate_workflow_mode(mode)
-
-    for mode in catalog.values():
-        _validate_workshop_budget(mode)
-        for panel in mode.workshop_panels:
-            panel_mode = catalog.get(panel.mode_id)
-            if panel_mode is None:
-                raise WorkflowValidationError(
-                    f"Mode '{mode.mode_id}' workshop panel references unknown "
-                    f"mode '{panel.mode_id}'."
-                )
-            if panel_mode.mode_kind != "workflow":
-                raise WorkflowValidationError(
-                    f"Mode '{mode.mode_id}' workshop panel mode '{panel.mode_id}' "
-                    "must be workflow mode."
-                )
 
 
 def _assert_all_paths_reach_terminal(mode: WorkflowModeConfig) -> None:
@@ -1317,6 +1102,114 @@ def is_terminal_stage(session: WorkflowSessionState) -> bool:
     """Return True when the session currently points at a terminal stage."""
     mode = get_workflow_catalog()[session.mode_id]
     return mode.stages[session.stage_id].terminal
+
+
+# ---------------------------------------------------------------------------
+# Unified FSM routing synthesis
+#
+# The routing FSM is a meta-FSM that sits above the per-mode workflow FSM.
+# Every routable mode gets synthesized allowed_next_stages — the modes it can
+# hand off to. The model calls transition_stage with a mode_id target to
+# switch modes mid-turn. See docs/ROUTING_RFC_HANDOFF.md.
+# ---------------------------------------------------------------------------
+
+
+def get_routable_mode_ids(catalog: dict[str, WorkflowModeConfig] | None = None) -> list[str]:
+    """Return the ordered list of routable mode IDs from the catalog.
+
+    Routable modes are those with ``routable=True``. Ordered by priority
+    (descending) then mode_id (ascending) for deterministic iteration.
+    """
+    if catalog is None:
+        catalog = get_workflow_catalog()
+    routable = [m for m in catalog.values() if m.routable]
+    routable.sort(key=lambda m: (-m.priority, m.mode_id))
+    return [m.mode_id for m in routable]
+
+
+def is_routable_mode(target: str, catalog: dict[str, WorkflowModeConfig] | None = None) -> bool:
+    """Return True when ``target`` is a routable mode_id in the catalog.
+
+    Used by the transition_stage interception to distinguish a mode handoff
+    target from a workflow stage transition target.
+    """
+    if catalog is None:
+        catalog = get_workflow_catalog()
+    mode = catalog.get(target)
+    return mode is not None and mode.routable
+
+
+def synthesize_routing_transitions(
+    catalog: dict[str, WorkflowModeConfig] | None = None,
+) -> dict[str, list[str]]:
+    """Compute the routing FSM: which modes each mode can hand off to.
+
+    Initially conservative:
+    - ``default`` can transition to every routable mode.
+    - Every routable mode can transition back to ``default``.
+    - Mode-to-mode transitions (e.g. coding → markdown) are authored opt-in
+      for future iterations.
+
+    Returns a dict mapping mode_id → list of allowed handoff target mode_ids.
+    """
+    if catalog is None:
+        catalog = get_workflow_catalog()
+    routable_ids = get_routable_mode_ids(catalog)
+    transitions: dict[str, list[str]] = {}
+    for mode_id, mode_config in catalog.items():
+        if mode_id == "default":
+            # default can hand off to every routable mode (excluding itself)
+            transitions[mode_id] = [m for m in routable_ids if m != "default"]
+        elif mode_config.routable:
+            # Routable modes can hand off back to default
+            transitions[mode_id] = ["default"]
+        else:
+            transitions[mode_id] = []
+    return transitions
+
+
+def get_routing_targets(
+    mode_id: str,
+    catalog: dict[str, WorkflowModeConfig] | None = None,
+) -> list[str]:
+    """Return the list of mode_ids that ``mode_id`` can hand off to.
+
+    Returns an empty list when the mode has no routing targets.
+    """
+    transitions = synthesize_routing_transitions(catalog)
+    return transitions.get(mode_id, [])
+
+
+def parse_fork_target_string(fork_str: str) -> list[tuple[str, str]]:
+    """Parse a ``fork:mode_id/stage_id,mode_id,...`` string into target pairs.
+
+    Each segment is ``mode_id`` or ``mode_id/stage_id``. The stage_id is
+    empty string when not specified (the caller defaults to start_stage_id).
+
+    Returns a list of (mode_id, stage_id) tuples. Returns an empty list
+    when the input is empty or malformed.
+    """
+    body = fork_str.strip()
+    if body.startswith("fork:"):
+        body = body[5:]
+    if not body:
+        return []
+    targets: list[tuple[str, str]] = []
+    for segment in body.split(","):
+        segment = segment.strip()
+        if not segment:
+            continue
+        if "/" in segment:
+            mode_id, stage_id = segment.split("/", 1)
+            targets.append((mode_id.strip(), stage_id.strip()))
+        else:
+            targets.append((segment, ""))
+    return targets
+
+
+def is_fork_target(target_stage_id: str) -> bool:
+    """Return True when ``target_stage_id`` is a fork fan-out target."""
+    return target_stage_id.strip().lower().startswith("fork:")
 
 
 def get_stage_config(session: WorkflowSessionState) -> WorkflowStageConfig:

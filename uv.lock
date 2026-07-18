@@ -12,6 +12,7 @@ resolution-markers = [
 [manifest]
 members = [
     "lisa-framework-workspace",
+    "lisa-host",
     "lisa-host-cli",
     "lisa-host-core",
     "lisa-host-vscode",
@@ -873,6 +874,7 @@ name = "lisa-framework-workspace"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "lisa-host" },
     { name = "lisa-host-cli" },
     { name = "lisa-host-core" },
     { name = "lisa-host-vscode" },
@@ -904,6 +906,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "lisa-host", editable = "packaging/lisa-host" },
     { name = "lisa-host-cli", editable = "hosts/cli" },
     { name = "lisa-host-core", editable = "hosts/core" },
     { name = "lisa-host-vscode", editable = "hosts/vscode" },
@@ -929,6 +932,21 @@ requires-dist = [
     { name = "vulture", marker = "extra == 'dev'", specifier = ">=2.11" },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-host"
+version = "0.1.0"
+source = { editable = "packaging/lisa-host" }
+dependencies = [
+    { name = "lisa-host-cli" },
+    { name = "lisa-host-web" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lisa-host-cli", editable = "hosts/cli" },
+    { name = "lisa-host-web", editable = "hosts/web" },
+]
 
 [[package]]
 name = "lisa-host-cli"
@@ -1383,7 +1401,7 @@ name = "macholib"
 version = "1.16.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "altgraph", marker = "python_full_version >= '3.15' or sys_platform != 'win32'" },
+    { name = "altgraph" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/10/2f/97589876ea967487978071c9042518d28b958d87b17dceb7cdc1d881f963/macholib-1.16.4.tar.gz", hash = "sha256:f408c93ab2e995cd2c46e34fe328b130404be143469e41bc366c807448979362", size = 59427, upload-time = "2025-11-22T08:28:38.373Z" }
 wheels = [
@@ -2154,7 +2172,7 @@ name = "pyobjc-framework-cocoa"
 version = "12.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyobjc-core", marker = "python_full_version >= '3.15' or sys_platform != 'win32'" },
+    { name = "pyobjc-core" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6d/cc/927169225e72bab9c9b44285656768fb75052a0bc85fdbca62740e1ca43c/pyobjc_framework_cocoa-12.2.tar.gz", hash = "sha256:20b392e2b7241caad0538dfde12143343e5dfe48f72e7df660a7548e635903dc", size = 3125555, upload-time = "2026-05-30T12:35:09.273Z" }
 wheels = [
@@ -2173,8 +2191,8 @@ name = "pyobjc-framework-quartz"
 version = "12.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyobjc-core", marker = "python_full_version >= '3.15' or sys_platform != 'win32'" },
-    { name = "pyobjc-framework-cocoa", marker = "python_full_version >= '3.15' or sys_platform != 'win32'" },
+    { name = "pyobjc-core" },
+    { name = "pyobjc-framework-cocoa" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/91/a3/5ae4c90c13999b46315f549694f25c374c48a9f7ab18f98ace6e74f4a5c1/pyobjc_framework_quartz-12.2.tar.gz", hash = "sha256:b343395d4790323b0376fe20c83ac468510ba19f65429323ca211708c939d107", size = 3215525, upload-time = "2026-05-30T12:44:27.759Z" }
 wheels = [
@@ -2280,7 +2298,7 @@ name = "python-xlib"
 version = "0.33"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "six", marker = "python_full_version >= '3.15' or sys_platform != 'win32'" },
+    { name = "six" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/86/f5/8c0653e5bb54e0cbdfe27bf32d41f27bc4e12faa8742778c17f2a71be2c0/python-xlib-0.33.tar.gz", hash = "sha256:55af7906a2c75ce6cb280a584776080602444f75815a7aff4d287bb2d7018b32", size = 269068, upload-time = "2022-12-25T18:53:00.824Z" }
 wheels = [

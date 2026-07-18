@@ -90,8 +90,8 @@ def _build_json_schema_response_format(
 
     Emits the full schema so the provider can constrain the model to the declared
     shape, not merely ``json_object``. ``strict`` is left unset (defaults to
-    false on the provider side) because ``RouteDecision`` has optional fields
-    with defaults that would otherwise violate strict-schema constraints.
+    false on the provider side) because structured output models have optional
+    fields with defaults that would otherwise violate strict-schema constraints.
     """
     schema = response_format.model_json_schema()
     return {
