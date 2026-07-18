@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from kernel.models import (
+    CapabilityManifest,
     OperationExecutionContext,
     OperationResult,
 )
@@ -743,3 +744,124 @@ async def test_run_turn_mode_handoff_preserves_chat_history() -> None:
         second_user = captured_messages[1][1].get("content", "")
         # The user message content should contain the original query
         assert "write a doc" in first_user
+
+
+# ── Proactive capability routing hint tests ─────────────────────────
+
+
+def _empty_manifest() -> CapabilityManifest:
+    """A manifest with no entries — simulates a mode with no tools."""
+    return CapabilityManifest(generated_at="2026-01-01T00:00:00Z", entries=[])
+
+
+def _manifest_with_search() -> CapabilityManifest:
+    """A manifest advertising a web_search capability."""
+    from kernel.models import CapabilityEntry
+
+    return CapabilityManifest(
+        generated_at="2026-01-01T00:00:00Z",
+        entries=[
+            CapabilityEntry(
+                capability_id="web_search",
+                kind="tool",
+                status="available",
+                source="mcp_pool",
+            )
+        ],
+    )
+
+
+def test_routing_hint_returns_empty_when_no_routing_targets() -> None:
+    """No routing targets means no hint is injected (zero tokens)."""
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    hint = _compute_capability_routing_hint(
+        mode_id="default",
+        query="understand the latest frameworks and do a SWOT",
+        capability_manifest=_empty_manifest(),
+        routing_targets=[],
+    )
+    assert hint == ""
+
+
+def test_routing_hint_returns_empty_when_mode_has_search_and_no_reasoning() -> None:
+    """A mode that already has search and a pure-search query gets no hint."""
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    hint = _compute_capability_routing_hint(
+        mode_id="search",
+        query="what is the latest news on rust",
+        capability_manifest=_manifest_with_search(),
+        routing_targets=["default", "thinkabout"],
+    )
+    assert hint == ""
+
+
+def test_routing_hint_prefers_thinkabout_for_research_then_reason() -> None:
+    """A query pairing a research cue with a reasoning cue (understand +
+    SWOT + latest) should point to thinkabout, not the generic target list.
+    This is the regression case for the incident where 'latest frameworks
+    and do a SWOT' was routed to the one-shot search action mode.
+    """
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    hint = _compute_capability_routing_hint(
+        mode_id="default",
+        query="get a better understanding of the latest frameworks and agent building tools on the market today and do a SWOT based on it",
+        capability_manifest=_empty_manifest(),
+        routing_targets=["search", "thinkabout", "markdown", "coding"],
+    )
+    assert hint != ""
+    assert "thinkabout" in hint
+    # Must explicitly steer away from the one-shot search action mode
+    assert "search" in hint.lower()
+    assert "one-shot" in hint.lower() or "one shot" in hint.lower()
+    assert "transition_stage" in hint
+
+
+def test_routing_hint_detects_analyze_tradeoff_intent() -> None:
+    """'analyze the latest tradeoffs' is research-then-reason → thinkabout."""
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    hint = _compute_capability_routing_hint(
+        mode_id="default",
+        query="analyze the latest tradeoffs in serverless frameworks",
+        capability_manifest=_empty_manifest(),
+        routing_targets=["search", "thinkabout"],
+    )
+    assert "thinkabout" in hint
+
+
+def test_routing_hint_falls_back_to_generic_list_for_tool_gap() -> None:
+    """A pure tool-gap query (write a file) with no reasoning cue lists all
+    targets rather than singling out thinkabout.
+    """
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    hint = _compute_capability_routing_hint(
+        mode_id="default",
+        query="write a file with the results",
+        capability_manifest=_empty_manifest(),
+        routing_targets=["markdown", "coding", "thinkabout"],
+    )
+    assert hint != ""
+    assert "transition_stage" in hint
+    # No thinkabout-specific steering copy
+    assert "one-shot" not in hint.lower()
+
+
+def test_routing_hint_search_gap_without_reasoning_lists_targets() -> None:
+    """A pure 'search the web' query (no reasoning cue) gets the generic
+    target list, not the thinkabout-preferred copy.
+    """
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    hint = _compute_capability_routing_hint(
+        mode_id="default",
+        query="search the web for cloud costs",
+        capability_manifest=_empty_manifest(),
+        routing_targets=["search", "thinkabout"],
+    )
+    assert hint != ""
+    assert "transition_stage" in hint
+    assert "one-shot" not in hint.lower()

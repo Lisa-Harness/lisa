@@ -172,7 +172,7 @@ def build_content_mcp_config(
 
     ``SDK_CONTENT_ROOTS`` includes both the pack root (for modes/operations
     discovery) and the ``content/`` subdirectory (so ``read_authored_text``
-    can resolve authored text assets like ``router/route.md`` without a
+    can resolve authored text assets like ``prompts/system-prompt.md`` without a
     ``content/`` prefix).
 
     Args:

@@ -1955,19 +1955,56 @@ def _compute_capability_routing_hint(
     query_lower = query.lower()
     # Collect the capability kinds present in the current mode
     available_kinds: set[str] = set()
+    available_capability_ids: set[str] = set()
     for entry in capability_manifest.entries:
         available_kinds.add(entry.kind)
-    # Check if the query mentions actions that need tools the mode lacks
+        available_capability_ids.add((entry.capability_id or "").lower())
+    has_search_capability = any(
+        "search" in cid for cid in available_capability_ids
+    )
+    # Tool gap: query mentions file/code actions the mode lacks tools for.
     has_tool_gap = "tool" not in available_kinds and any(
         kw in query_lower for kw in ("write", "save", "document", "file", "code", "read")
     )
-    has_search_gap = not any(
-        "search" in (entry.capability_id.lower() or "")
-        for entry in capability_manifest.entries
-    ) and "search" in query_lower
-    if not (has_tool_gap or has_search_gap):
+    # Search gap: query asks for fresh/external info the mode can't fetch.
+    has_search_gap = not has_search_capability and any(
+        kw in query_lower
+        for kw in ("search", "latest", "recent", "current", "news", "update", "today")
+    )
+    # Research-then-reason gap: query pairs a research cue with a reasoning
+    # cue (understand, SWOT, analyze, evaluate, compare). This is the shape
+    # that belongs in thinkabout (research-then-reason workflow), not the
+    # one-shot search action mode. Detect even when the current mode has
+    # search, because the reasoning half is what the current mode lacks.
+    _research_cues = (
+        "latest", "recent", "current", "news", "update", "today",
+        "framework", "tool", "market", "landscape",
+    )
+    _reasoning_cues = (
+        "understand", "swot", "analyze", "analyse", "evaluate",
+        "compare", "comparison", "tradeoff", "trade-off", "pros and cons",
+        "deep dive", "go in depth", "reason",
+    )
+    has_research_cue = any(cue in query_lower for cue in _research_cues)
+    has_reasoning_cue = any(cue in query_lower for cue in _reasoning_cues)
+    has_research_then_reason_gap = has_research_cue and has_reasoning_cue
+    if not (has_tool_gap or has_search_gap or has_research_then_reason_gap):
         return ""
-    # Build the hint
+    # Build the hint. Prefer thinkabout for research-then-reason intent;
+    # otherwise list all routing targets. Keep the hint actionable and short.
+    targets_lower = {t.lower(): t for t in routing_targets}
+    if has_research_then_reason_gap and "thinkabout" in targets_lower:
+        preferred = targets_lower["thinkabout"]
+        hint = (
+            "## Routing Hint\n\n"
+            "This request pairs research (fresh/external information) with "
+            "reasoning (understand, analyze, SWOT, compare, evaluate). The "
+            f"`{preferred}` workflow mode researches then reasons — hand off "
+            f"by calling `transition_stage` with target_stage_id `{preferred}`. "
+            "Do not use the one-shot `search` action mode for this; it cannot "
+            "do the reasoning half."
+        )
+        return hint
     targets_str = ", ".join(routing_targets)
     hint = (
         "## Routing Hint\n\n"
