@@ -714,6 +714,7 @@ async def complete_live_openai_compatible(
     message = choice.message
     content = _first_message_content(message)
     tool_calls = _extract_completion_tool_calls(getattr(message, "tool_calls", None))
+    finish_reason = getattr(choice, "finish_reason", None)
     (
         prompt_tokens,
         completion_tokens,
@@ -734,6 +735,7 @@ async def complete_live_openai_compatible(
         cached_tokens=cached_tokens,
         reasoning_tokens=reasoning_tokens,
         duration_ms=elapsed_ms,
+        finish_reason=finish_reason,
     )
     log_completion_response(
         model_def=model_def,

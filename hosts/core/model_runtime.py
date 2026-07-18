@@ -33,6 +33,13 @@ class StubCompletion:
     ``duration_ms`` flow through from the provider response so the
     host's token-usage ledger can bill cache hits, reasoning tokens,
     and time-based providers (e.g. Ollama local GPU time) accurately.
+
+    ``finish_reason`` carries the provider's termination signal
+    (``'stop'``, ``'length'``, ``'tool_calls'``, or ``None``/``'unknown'``
+    for backends that do not report it). Operations that synthesize
+    long-form output (e.g. forge_document) use it to detect mid-document
+    truncation and issue a continuation pass rather than persisting a
+    partial artifact.
     """
 
     content: str
@@ -43,6 +50,7 @@ class StubCompletion:
     cached_tokens: int = 0
     reasoning_tokens: int = 0
     duration_ms: float = 0.0
+    finish_reason: str | None = None
 
 
 def active_manifest_path(*, data_dir: Path) -> Path:

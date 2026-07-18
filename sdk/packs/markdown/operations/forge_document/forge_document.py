@@ -62,14 +62,37 @@ _EMPTY_RESPONSE_PATH = f"{_PROMPT_DIR}/forge_document_empty_response.md"
 _EMPTY_DOCUMENT_PATH = f"{_PROMPT_DIR}/forge_document_empty_document.md"
 _NO_OUTLINE_PATH = f"{_PROMPT_DIR}/forge_document_no_outline.md"
 _STORAGE_FAILED_PATH = f"{_PROMPT_DIR}/forge_document_storage_failed.md"
+_CONTINUE_PROMPT_PATH = f"{_PROMPT_DIR}/forge_document_continue.md"
 
-_MAX_COMPLETION_TOKENS = 2000
+# Token cap for the synthesizing pass. Bumped from 2000 → 7500 on
+# 2026-07-18 after a local Ollama gemma4:cloud run truncated a detailed
+# SWOT mid-section ("finished" at section 2.1 with finish_reason=unknown).
+# 2000 tokens is tight for any document with a SWOT + architectural
+# invariants section; 7500 matches the yml ``completion_max_tokens`` so
+# the python-authored op and the declarative metadata agree. See
+# /memories/repo/forge-document-truncation-contract.md.
+_MAX_COMPLETION_TOKENS = 7500
+# Continuation pass uses the same cap. The continuation appends only the
+# missing tail, so the same budget is sufficient for nearly all cases.
+_MAX_CONTINUE_TOKENS = _MAX_COMPLETION_TOKENS
+# Hard ceiling on continuation attempts. One retry covers the
+# "model ran out of tokens one section early" case; two covers the
+# rare "still truncated, one more chunk needed" case. Beyond this we
+# give up and annotate the document as truncated rather than looping.
+_MAX_CONTINUE_ATTEMPTS = 2
 _MAX_RECALL_RECORDS = 8
 _MAX_DOCUMENT_CHARS = 20_000
 _MAX_QUERY_CHARS = 2_000
 
 # Minimum structural bar for a forged document: at least one heading.
 _MIN_HEADINGS = 1
+
+# Finish-reason values that signal the model stopped before completing
+# the document. ``"length"`` is the OpenAI-standard "hit max_tokens"
+# signal. ``"unknown"`` / ``None`` cover local backends (Ollama) that do
+# not populate ``finish_reason`` — empirically these stop mid-stream on
+# long documents. ``"stop"`` and ``"tool_calls"`` are NOT truncation.
+_TRUNCATING_FINISH_REASONS = frozenset({"length", "unknown", None})
 
 
 def _load_text(ctx: OperationExecutionContext, path: str) -> str:
@@ -280,11 +303,12 @@ async def _call_llm(
     user_input: str,
     memory_context: str,
     existing_document: str = "",
-) -> tuple[str, Any]:
+) -> tuple[str, Any, str | None]:
     """Call the host's completion function with the forging prompt.
 
-    Returns a ``(content, model_def)`` tuple so the caller can annotate the
-    document with the resolved model.
+    Returns a ``(content, model_def, finish_reason)`` triple so the caller
+    can annotate the document with the resolved model and detect
+    mid-document truncation (``finish_reason in {"length", "unknown", None}``).
     """
     if ctx.complete_fn is None or ctx.resolve_model_fn is None:
         raise RuntimeError("markdown requires complete_fn and resolve_model_fn")
@@ -318,7 +342,143 @@ async def _call_llm(
         response_format=None,
     )
     content = getattr(completion, "content", "") or ""
-    return content.strip(), model_def
+    finish_reason = _coerce_finish_reason(getattr(completion, "finish_reason", None))
+    return content.strip(), model_def, finish_reason
+
+
+def _coerce_finish_reason(raw: Any) -> str | None:
+    """Normalize a provider finish_reason into a comparable string or None.
+
+    Providers occasionally return ``""`` or whitespace for "no signal"; coerce
+    those to ``None`` so they fall into the truncation set (a missing signal
+    on a long document is empirically a truncation, not a clean stop).
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip().lower()
+    if not text:
+        return None
+    return text
+
+
+def _is_truncated(finish_reason: str | None) -> bool:
+    """Return True when the finish reason signals mid-stream truncation."""
+    normalized = finish_reason if finish_reason is not None else None
+    return normalized in _TRUNCATING_FINISH_REASONS
+
+
+async def _continue_llm(
+    ctx: OperationExecutionContext,
+    user_input: str,
+    document_so_far: str,
+    model_def: Any,
+) -> tuple[str, str | None]:
+    """Issue one continuation pass to finish a truncated document.
+
+    Appends a continuation instruction to the original message list (so the
+    model has full context) and asks for ONLY the remaining tail. Returns
+    ``(continuation_content, finish_reason)`` where ``continuation_content``
+    is the raw model output (caller extracts the fenced markdown block).
+    """
+    if ctx.complete_fn is None:
+        raise RuntimeError("markdown requires complete_fn to continue a truncated document")
+
+    continue_template = _load_text(ctx, _CONTINUE_PROMPT_PATH)
+    continue_prompt = _format_template(
+        continue_template,
+        user_input=user_input,
+        document_so_far=document_so_far,
+    )
+    messages = [
+        {"role": "user", "content": continue_prompt},
+    ]
+    completion = await ctx.complete_fn(
+        messages=messages,
+        model_def=model_def,
+        max_tokens=_MAX_CONTINUE_TOKENS,
+        temperature=0.2,
+        tools=None,
+        response_format=None,
+    )
+    content = getattr(completion, "content", "") or ""
+    finish_reason = _coerce_finish_reason(getattr(completion, "finish_reason", None))
+    return content.strip(), finish_reason
+
+
+def _looks_complete(document: str) -> bool:
+    """Heuristic: does the document end on a clean paragraph/list boundary?
+
+    Used after a continuation pass to decide whether the merged document is
+    plausibly finished or whether we should try another continuation. A
+    document ending mid-word, mid-sentence, or with a dangling list marker
+    is treated as still-truncated.
+    """
+    if not document:
+        return False
+    stripped = document.rstrip()
+    if not stripped:
+        return False
+    # Dangling list marker (e.g. "- " or "1. " at end of file) = truncated.
+    if re.search(r"[\-\*\+] +$", stripped):
+        return False
+    # Dangling fenced code block (odd number of fences) = truncated.
+    fence_count = len(re.findall(r"^```", stripped, flags=re.MULTILINE))
+    if fence_count % 2 == 1:
+        return False
+    last_line = stripped.splitlines()[-1].rstrip()
+    if not last_line:
+        return True  # ends on a blank line — clean
+    # Ends with sentence-final punctuation, a heading, or a code fence.
+    if last_line.endswith(("```", ".", "!", "?", ":", ";", ">", ")")):
+        return True
+    # Ends with a list item that has content after the marker.
+    if re.match(r"^\s*[\-\*\+] +\S", last_line) or re.match(r"^\s*\d+\. +\S", last_line):
+        return True
+    # Ends with a heading line.
+    if last_line.lstrip().startswith("#"):
+        return True
+    # Otherwise: mid-sentence — treat as truncated.
+    return False
+
+
+def _merge_continuation(document_so_far: str, tail: str) -> str:
+    """Concatenate the document-so-far with a continuation tail.
+
+    The continuation prompt asks for ONLY the remaining body, but local
+    models sometimes re-emit a leading heading or blank line. This helper
+    collapses the join boundary to exactly one blank line and strips any
+    leading blank lines from the tail so the merge does not produce
+    doubled paragraph breaks.
+    """
+    head = document_so_far.rstrip()
+    tail_body = tail.lstrip("\n").rstrip()
+    if not tail_body:
+        return document_so_far
+    if not head:
+        return tail_body + "\n"
+    return head + "\n\n" + tail_body + "\n"
+
+
+def _tail_is_duplicate(document_so_far: str, tail: str) -> bool:
+    """Return True when the continuation just re-emits the existing tail.
+
+    Some local models, when asked to "continue", repeat the last paragraph or
+    the entire document-so-far instead of appending new content. Detecting
+    this prevents the merge from producing a doubled or looped document. The
+    check is conservative: it only flags tails whose non-empty lines are a
+    contiguous suffix of the existing document.
+    """
+    head_lines = [ln for ln in document_so_far.splitlines() if ln.strip()]
+    tail_lines = [ln for ln in tail.splitlines() if ln.strip()]
+    if not tail_lines:
+        return True
+    if len(tail_lines) > len(head_lines):
+        # The continuation is longer than the entire document-so-far — it
+        # must contain new content, so not a pure duplicate.
+        return False
+    # Compare the last len(tail_lines) lines of the head to the tail.
+    suffix = head_lines[-len(tail_lines):]
+    return suffix == tail_lines
 
 
 def _extract_markdown_block(text: str) -> str:
@@ -356,11 +516,23 @@ def _format_markdown(document: str) -> str:
         return document
 
 
-def _build_model_annotation(model_def: Any) -> str:
+def _build_model_annotation(
+    model_def: Any,
+    *,
+    truncated: bool = False,
+    final_finish_reason: str | None = None,
+    continue_attempts: int = 0,
+) -> str:
     """Build a trailing HTML-comment attribution line for the resolved model.
 
     The comment is non-rendering in every CommonMark renderer, so it annotates
     the source without polluting the visible document.
+
+    When ``truncated`` is True, an explicit ``truncated by model`` marker is
+    appended so a reader scanning the artifact knows the document is
+    incomplete even though the operation persisted it. The final
+    ``finish_reason`` and the number of continuation attempts are included
+    for triage.
     """
     provider = str(getattr(model_def, "provider", "") or "").strip()
     model_id = str(getattr(model_def, "model_id", "") or "").strip()
@@ -369,6 +541,11 @@ def _build_model_annotation(model_def: Any) -> str:
         parts.append(f"provider: {provider}")
     if model_id:
         parts.append(f"model: {model_id}")
+    if truncated:
+        reason = final_finish_reason or "unknown"
+        parts.append(f"truncated by model · finish_reason: {reason}")
+        if continue_attempts:
+            parts.append(f"continue_attempts: {continue_attempts}")
     if not parts:
         return ""
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -451,6 +628,89 @@ async def _persist_document(
     return data if isinstance(data, dict) else {}
 
 
+async def _continue_until_complete(
+    ctx: OperationExecutionContext,
+    *,
+    user_input: str,
+    document: str,
+    model_def: Any,
+    first_finish_reason: str | None,
+) -> tuple[str, bool, int, str | None]:
+    """Run continuation passes until the document looks complete or budget is hit.
+
+    Returns ``(document, was_truncated, attempts, final_finish_reason)``.
+    The caller annotates and persists ``document``; the other three values
+    feed the truncated-annotation marker and the triage fields in
+    ``OperationResult.output_json``.
+
+    The contract is documented in
+    /memories/repo/forge-document-truncation-contract.md:
+    - Only truncate-flagged first passes (``length``/``unknown``/``None``)
+      trigger continuation; clean ``stop`` returns the document as-is.
+    - A continuation that returns empty or duplicates the existing tail is
+      treated as "model has nothing more to add" — stop and mark truncated.
+    - A merged document that ends on a clean boundary (``_looks_complete``)
+      AND whose continuation reported a non-truncating finish_reason is
+      considered complete; otherwise we keep going up to the budget.
+    """
+    if not _is_truncated(first_finish_reason):
+        return document, False, 0, first_finish_reason
+
+    logger.warning(
+        "forge_document: first pass finish_reason=%r; attempting continuation",
+        first_finish_reason,
+    )
+    attempts = 0
+    final_finish_reason = first_finish_reason
+    current = document
+    for attempt in range(1, _MAX_CONTINUE_ATTEMPTS + 1):
+        attempts = attempt
+        continuation_text, cont_finish_reason = await _continue_llm(
+            ctx,
+            user_input=user_input,
+            document_so_far=current,
+            model_def=model_def,
+        )
+        final_finish_reason = cont_finish_reason
+        if not continuation_text or not continuation_text.strip():
+            logger.warning(
+                "forge_document: continuation pass %d returned empty; giving up",
+                attempt,
+            )
+            break
+        tail = _extract_markdown_block(continuation_text)
+        # If the fenced block extracted was empty but the raw continuation
+        # had content, the model emitted prose outside the fence (or an
+        # empty fence). Either way, there is no usable markdown tail to
+        # append — treat this as "continuation had nothing to add" and
+        # stop. Persisting prose-as-tail would corrupt the document.
+        if not tail.strip():
+            logger.warning(
+                "forge_document: continuation pass %d yielded no markdown tail; giving up",
+                attempt,
+            )
+            break
+        if _tail_is_duplicate(current, tail):
+            logger.warning(
+                "forge_document: continuation pass %d duplicated existing tail; giving up",
+                attempt,
+            )
+            break
+        current = _merge_continuation(current, tail)
+        if _looks_complete(current) and not _is_truncated(cont_finish_reason):
+            logger.info(
+                "forge_document: continuation pass %d completed the document", attempt,
+            )
+            return current, False, attempts, cont_finish_reason
+        if attempt >= _MAX_CONTINUE_ATTEMPTS:
+            logger.warning(
+                "forge_document: exhausted %d continuation attempts; "
+                "persisting with truncated annotation (final finish_reason=%r)",
+                attempt, cont_finish_reason,
+            )
+    return current, True, attempts, final_finish_reason
+
+
 async def execute(ctx: OperationExecutionContext) -> OperationResult:
     """Forge a markdown document from user input + recalled memory and persist it."""
     params = ctx.params or {}
@@ -485,8 +745,8 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         memory_context,
         existing_document=existing_document,
     )
-    # _call_llm returns (content, model_def); model_def is used for annotation.
-    completion_text, model_def = completion
+    # _call_llm returns (content, model_def, finish_reason).
+    completion_text, model_def, first_finish_reason = completion
     if not completion_text or not completion_text.strip():
         return OperationResult(output_text=_load_text(ctx, _EMPTY_RESPONSE_PATH))
 
@@ -498,16 +758,41 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         )
         return OperationResult(output_text=text)
 
+    # Truncation handling: when the first pass stopped mid-document
+    # (finish_reason in {length, unknown, None}), issue up to
+    # _MAX_CONTINUE_ATTEMPTS continuation passes. Each pass appends only the
+    # missing tail. If the merged document still looks truncated after the
+    # budget is exhausted, mark it truncated and annotate the persisted
+    # artifact so a reader knows it is incomplete. See
+    # /memories/repo/forge-document-truncation-contract.md.
+    document, was_truncated, continue_attempts, final_finish_reason = (
+        await _continue_until_complete(
+            ctx,
+            user_input=user_input,
+            document=document,
+            model_def=model_def,
+            first_finish_reason=first_finish_reason,
+        )
+    )
+
     # Lint/format the document so the persisted output is clean and consistent.
     document = _format_markdown(document)
 
     if len(document) > _MAX_DOCUMENT_CHARS:
         document = document[:_MAX_DOCUMENT_CHARS] + "\n\n<!-- truncated -->\n"
+        # A char-budget truncation overrides the model-finish signal: the
+        # artifact is definitely truncated.
+        was_truncated = True
 
     # Annotate with the model that wrote it, unless the user opted out.
     annotate_model = bool(params.get("annotate_model", True))
     if annotate_model and not _user_asked_not_to_annotate(user_input):
-        annotation = _build_model_annotation(model_def)
+        annotation = _build_model_annotation(
+            model_def,
+            truncated=was_truncated,
+            final_finish_reason=final_finish_reason if was_truncated else None,
+            continue_attempts=continue_attempts if was_truncated else 0,
+        )
         if annotation:
             document = document.rstrip() + "\n\n" + annotation + "\n"
 
@@ -547,6 +832,12 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         f"Document forged and stored at `{stored_path}` "
         f"({byte_count} bytes, {heading_count} headings)."
     )
+    if was_truncated:
+        summary += (
+            f" WARNING: persisted truncated after {continue_attempts} "
+            f"continuation attempt(s) (final finish_reason="
+            f"{final_finish_reason!r}). See annotation in document."
+        )
     return OperationResult(
         output_text=summary,
         output_json={
@@ -554,9 +845,15 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             "bytes": byte_count,
             "heading_count": heading_count,
             "outline": outline,
+            "truncated": was_truncated,
+            "continue_attempts": continue_attempts,
+            "first_finish_reason": first_finish_reason,
+            "final_finish_reason": final_finish_reason,
         },
         extra={
             "memory_context_lines": memory_context.count("\n") + 1 if memory_context else 0,
             "document_path": stored_path,
+            "truncated": was_truncated,
+            "continue_attempts": continue_attempts,
         },
     )
