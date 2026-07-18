@@ -79,12 +79,65 @@ tool-policy / mode allowlist), so both calls were rejected by the turn runner.
 The model then correctly reported the failure and offered remediation paths
 rather than silently fabricating a file write.
 
-### Remediation options Lisa offered
+### Correct dispatch (per `docs/ROUTER_DESIGN.md` §9 — Fork Fan-Out)
+
+This request had **two concurrent goals**, not one:
+
+1. **Remember / learn the exchange** → belongs in `learn` (or `thinkabout`)
+   mode, which owns the learning tool surface.
+2. **Write it out as a markdown file** → belongs in `markdown` mode, which
+   owns `markdown_forge_document` / `markdown_generate`.
+
+The correct dispatch is a **fork fan-out**, not a single stage handoff. Lisa
+should have emitted:
+
+```jsonc
+transition_stage(
+  target_stage_id = "fork:learn,markdown",
+  tool_arguments = {
+    "queries": [
+      "Store the verbatim user prompt + Lisa response exchange as a learning checkpoint.",
+      "Forge docs/lisa-framework-assessment.md from the verbatim exchange."
+    ]
+  }
+)
+```
+
+Per `ROUTER_DESIGN.md` §9, this would:
+
+1. Parse `fork:learn,markdown` into `("learn", <start_stage>)` and
+   `("markdown", <start_stage>)` targets.
+2. Validate each target against the mode catalog.
+3. Fan out children via `asyncio.TaskGroup` — each child runs `run_turn()`
+   with **its own** mode's system prompt and tool surface (so the
+   `markdown` child gets `markdown_forge_document`; the `learn` child gets
+   `synthesize_and_store_learning`).
+4. Split the parent `TurnBudget` equally across the two children.
+5. Collect results into `fork_results: list[ForkChildResult]`.
+6. Continue the loop — the parent model sees both children's outputs and can
+   synthesize a single response.
+
+### Why Lisa's actual behavior was wrong
+
+Lisa treated the request as a single-goal markdown write and tried to call
+`markdown_forge_document` / `markdown_generate` **directly from `default`
+mode**. That is a tool-policy violation by construction — those tools are
+mode-scoped, not default-scoped. The correct move was to recognize the two
+goals and fork, which would have given each goal the correct tool surface
+without ever requiring a default-mode markdown tool.
+
+Equivalently, Lisa's offered remediation options were also suboptimal:
 
 1. Re-issue the request in `markdown` mode (force the stage transition first).
-2. Paste Sections 3+ so the full content is in-context when the forge does run.
-3. Confirm "Option B" explicitly and retry the forge once file-write tools are
-   available.
+   → Wrong: this drops the `learn` goal.
+2. Paste Sections 3+ so the full content is in-context when the forge does
+   run. → Workable, but still single-goal.
+3. Confirm "Option B" explicitly and retry the forge once file-write tools
+   are available. → Same.
+
+The correct remediation Lisa should have offered: "I'll fork into
+`learn` and `markdown` so both the memory write and the file forge happen
+in parallel in their correct modes."
 
 ---
 
@@ -95,6 +148,8 @@ rather than silently fabricating a file write.
 - **Sections 3+**: **LOST** — not in memory, not in this transcript window, and
   not persisted to disk. Recovery requires the user to re-paste them.
 - **Target file** (`docs/lisa-framework-assessment.md`): **NOT WRITTEN.**
+- **Root cause (corrected)**: Lisa dispatched as a single-goal markdown write
+  from `default` mode instead of forking into `learn` + `markdown`.
 
 ---
 
