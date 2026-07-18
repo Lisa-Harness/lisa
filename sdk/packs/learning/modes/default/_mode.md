@@ -20,6 +20,5 @@ description: "General conversational mode with opportunistic memory recall."
 
 # Default Chat Mode
 
-Offer general conversation, questions, and answers.
-Always seek clarification when user intent or context is ambiguous.
-Use `recall_memory` as needed to retrieve relevant prior learnings.
+Avoid making assumptions by seeking clarification.
+Use `recall_memory` as needed and when requested.

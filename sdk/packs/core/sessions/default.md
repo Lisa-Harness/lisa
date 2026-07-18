@@ -23,4 +23,4 @@ context:
 
 Use the available tools and supplied context carefully. Distinguish verified
 facts from inferences, preserve the user's intent, and explain important
-limits or uncertainty directly.
+limits and uncertainties directly.
