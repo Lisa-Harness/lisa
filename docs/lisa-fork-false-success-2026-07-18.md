@@ -120,7 +120,7 @@ attempt payloads: the original messages, then `json_only_retry_messages(...)`.
 - Added `_fork_mode_requires_tools(mode_id)`: returns True when the mode's
   `WorkflowModeConfig` declares non-empty `allowed_operation_ids` or
   `allowed_tool_ids` (learn, markdown); False for chat-only modes (default,
-  thinkabout).
+  ponder).
 - `_run_fork_child_turn` now marks `status="no_tools"` when a child returns
   with `tool_call_count == 0` AND its mode requires tools. The
   `ForkChildStatus` literal gained `"no_tools"`.

@@ -3,9 +3,9 @@ stage_id: reason
 allowed_next_stages: [formulate, exit]
 description: "Discuss findings, identify trade-offs, and align on logical paths."
 ---
-# Thinkabout Mode: Reason Stage
+# Ponder Mode: Reason Stage
 
-You are in the Reason stage of the Thinkabout mode.
+You are in the Reason stage of the Ponder mode.
 
 Objectives:
 

@@ -334,13 +334,13 @@ async def test_run_turn_injects_workflow_stage_instruction() -> None:
     def workflow_session() -> Any:
         from kernel.models import WorkflowSessionState
 
-        mode = get_workflow_catalog().get("thinkabout")
+        mode = get_workflow_catalog().get("ponder")
         if mode is None:
             return None
         return WorkflowSessionState(
             user_id="test-user",
             user_slug="test",
-            mode_id="thinkabout",
+            mode_id="ponder",
             stage_id="inquire",
             entered_at="2026-01-01T00:00:00Z",
         )
@@ -349,7 +349,7 @@ async def test_run_turn_injects_workflow_stage_instruction() -> None:
     hooks.assemble_system_prompt = assemble_system
     hooks.workflow_session = workflow_session
 
-    result = await run_turn(mode_id="thinkabout", query="analyze this", hooks=hooks)
+    result = await run_turn(mode_id="ponder", query="analyze this", hooks=hooks)
 
     assert result.response_text == "Done."
     assert len(captured_stage_instructions) >= 1
@@ -372,7 +372,7 @@ async def test_run_turn_workflow_transition_dispatches_apply_transition() -> Non
     session = WorkflowSessionState(
         user_id="test-user",
         user_slug="test",
-        mode_id="thinkabout",
+        mode_id="ponder",
         stage_id="inquire",
         entered_at="2026-01-01T00:00:00Z",
     )
@@ -411,7 +411,7 @@ async def test_run_turn_workflow_transition_dispatches_apply_transition() -> Non
     hooks.workflow_session = workflow_session
     hooks.workflow_session_updater = workflow_session_updater
 
-    result = await run_turn(mode_id="thinkabout", query="analyze this", hooks=hooks)
+    result = await run_turn(mode_id="ponder", query="analyze this", hooks=hooks)
 
     assert result.response_text == "Done reasoning."
     assert result.transitioned_to == "reason"
@@ -430,7 +430,7 @@ async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
     session = WorkflowSessionState(
         user_id="test-user",
         user_slug="test",
-        mode_id="thinkabout",
+        mode_id="ponder",
         stage_id="inquire",
         entered_at="2026-01-01T00:00:00Z",
         turn_count=4,  # at the nudge threshold
@@ -449,7 +449,7 @@ async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
     hooks = _build_minimal_hooks(complete)
     hooks.workflow_session = workflow_session
 
-    result = await run_turn(mode_id="thinkabout", query="analyze this", hooks=hooks)
+    result = await run_turn(mode_id="ponder", query="analyze this", hooks=hooks)
 
     assert result.response_text == "Done."
     # The nudge message should be present in the messages sent to the model.
@@ -695,7 +695,7 @@ async def test_run_turn_fork_marks_no_tools_child_when_action_mode_skipped_tools
 def test_fork_mode_requires_tools_true_for_action_modes() -> None:
     """``_fork_mode_requires_tools`` returns True for modes that declare
     non-empty ``allowed_operation_ids`` or ``allowed_tool_ids`` (learn,
-    markdown), and False for chat-only modes (default, thinkabout)."""
+    markdown), and False for chat-only modes (default, ponder)."""
     from kernel.turn_runner import _fork_mode_requires_tools
 
     assert _fork_mode_requires_tools("learn") is True
@@ -904,9 +904,9 @@ def test_parse_fork_target_string() -> None:
         ("markdown", ""),
     ]
     # mode_id/stage_id pairs
-    assert parse_fork_target_string("fork:coding/implement,thinkabout/review") == [
+    assert parse_fork_target_string("fork:coding/implement,ponder/review") == [
         ("coding", "implement"),
-        ("thinkabout", "review"),
+        ("ponder", "review"),
     ]
     # Mixed
     assert parse_fork_target_string("fork:search,coding/implement") == [
@@ -1020,14 +1020,14 @@ def test_routing_hint_returns_empty_when_mode_has_search_and_no_reasoning() -> N
         mode_id="search",
         query="what is the latest news on rust",
         capability_manifest=_manifest_with_search(),
-        routing_targets=["default", "thinkabout"],
+        routing_targets=["default", "ponder"],
     )
     assert hint == ""
 
 
-def test_routing_hint_prefers_thinkabout_for_research_then_reason() -> None:
+def test_routing_hint_prefers_ponder_for_research_then_reason() -> None:
     """A query pairing a research cue with a reasoning cue (understand +
-    SWOT + latest) should point to thinkabout, not the generic target list.
+    SWOT + latest) should point to ponder, not the generic target list.
     This is the regression case for the incident where 'latest frameworks
     and do a SWOT' was routed to the one-shot search action mode.
     """
@@ -1037,10 +1037,10 @@ def test_routing_hint_prefers_thinkabout_for_research_then_reason() -> None:
         mode_id="default",
         query="get a better understanding of the latest frameworks and agent building tools on the market today and do a SWOT based on it",
         capability_manifest=_empty_manifest(),
-        routing_targets=["search", "thinkabout", "markdown", "coding"],
+        routing_targets=["search", "ponder", "markdown", "coding"],
     )
     assert hint != ""
-    assert "thinkabout" in hint
+    assert "ponder" in hint
     # Must explicitly steer away from the one-shot search action mode
     assert "search" in hint.lower()
     assert "one-shot" in hint.lower() or "one shot" in hint.lower()
@@ -1048,21 +1048,21 @@ def test_routing_hint_prefers_thinkabout_for_research_then_reason() -> None:
 
 
 def test_routing_hint_detects_analyze_tradeoff_intent() -> None:
-    """'analyze the latest tradeoffs' is research-then-reason → thinkabout."""
+    """'analyze the latest tradeoffs' is research-then-reason → ponder."""
     from kernel.turn_runner import _compute_capability_routing_hint
 
     hint = _compute_capability_routing_hint(
         mode_id="default",
         query="analyze the latest tradeoffs in serverless frameworks",
         capability_manifest=_empty_manifest(),
-        routing_targets=["search", "thinkabout"],
+        routing_targets=["search", "ponder"],
     )
-    assert "thinkabout" in hint
+    assert "ponder" in hint
 
 
 def test_routing_hint_falls_back_to_generic_list_for_tool_gap() -> None:
     """A pure tool-gap query (write a file) with no reasoning cue lists all
-    targets rather than singling out thinkabout.
+    targets rather than singling out ponder.
     """
     from kernel.turn_runner import _compute_capability_routing_hint
 
@@ -1070,17 +1070,17 @@ def test_routing_hint_falls_back_to_generic_list_for_tool_gap() -> None:
         mode_id="default",
         query="write a file with the results",
         capability_manifest=_empty_manifest(),
-        routing_targets=["markdown", "coding", "thinkabout"],
+        routing_targets=["markdown", "coding", "ponder"],
     )
     assert hint != ""
     assert "transition_stage" in hint
-    # No thinkabout-specific steering copy
+    # No ponder-specific steering copy
     assert "one-shot" not in hint.lower()
 
 
 def test_routing_hint_search_gap_without_reasoning_lists_targets() -> None:
     """A pure 'search the web' query (no reasoning cue) gets the generic
-    target list, not the thinkabout-preferred copy.
+    target list, not the ponder-preferred copy.
     """
     from kernel.turn_runner import _compute_capability_routing_hint
 
@@ -1088,7 +1088,7 @@ def test_routing_hint_search_gap_without_reasoning_lists_targets() -> None:
         mode_id="default",
         query="search the web for cloud costs",
         capability_manifest=_empty_manifest(),
-        routing_targets=["search", "thinkabout"],
+        routing_targets=["search", "ponder"],
     )
     assert hint != ""
     assert "transition_stage" in hint
@@ -1114,7 +1114,7 @@ def test_routing_hint_forks_for_remember_and_write_markdown() -> None:
         mode_id="default",
         query="remember that pretty much verbatim and also write a markdown of it",
         capability_manifest=_empty_manifest(),
-        routing_targets=["learn", "markdown", "coding", "thinkabout", "search"],
+        routing_targets=["learn", "markdown", "coding", "ponder", "search"],
     )
     assert hint != ""
     assert "transition_stage" in hint
@@ -1173,7 +1173,7 @@ def test_routing_hint_forks_from_coding_mode() -> None:
         query="remember the entire thing and write a markdown document of it",
         capability_manifest=_empty_manifest(),
         # Post-mesh coding routing targets include learn + markdown.
-        routing_targets=["default", "learn", "markdown", "thinkabout", "search"],
+        routing_targets=["default", "learn", "markdown", "ponder", "search"],
     )
     assert hint != ""
     assert "transition_stage" in hint

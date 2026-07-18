@@ -2,11 +2,11 @@
 stage_id: exit
 terminal: true
 allow_user_questions: false
-description: "Summarize and close the Thinkabout session."
+description: "Summarize and close the Ponder session."
 ---
-# Thinkabout Mode: Exit Stage
+# Ponder Mode: Exit Stage
 
-You are closing the Thinkabout mode.
+You are closing the Ponder mode.
 
 Objectives:
 

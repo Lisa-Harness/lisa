@@ -1,11 +1,36 @@
 ---
-mode_id: thinkabout
+mode_id: ponder
 mode_provider_id: lisa-pack-search
 start_stage_id: inquire
 mode_kind: workflow
 require_query: true
 routable: true
 priority: 8
+routing_intent_tags: [research, reasoning]
+routing_intent_keywords:
+  - latest
+  - recent
+  - current
+  - news
+  - update
+  - today
+  - framework
+  - tool
+  - market
+  - landscape
+  - understand
+  - swot
+  - analyze
+  - analyse
+  - evaluate
+  - compare
+  - comparison
+  - tradeoff
+  - trade-off
+  - pros and cons
+  - deep dive
+  - go in depth
+  - reason
 allowed_operation_ids: [web_search]
 fast_path_patterns:
   - "\\bthink\\s+about\\b"
@@ -13,11 +38,11 @@ fast_path_patterns:
   - "\\banalyze\\s+(?:this|tradeoffs?)\\b"
   - "\\bevaluate\\s+(?:this|tradeoffs?)\\b"
 description: "Exploratory reasoning and forming opinion workflow."
-command_pattern: "^(?:/)?(?:thinkabout)(?:[\\s,:;]+(?P<query>.+))?$"
+command_pattern: "^(?:/)?(?:ponder)(?:[\\s,:;]+(?P<query>.+))?$"
 ---
-# Thinkabout Mode
+# Ponder Mode
 
-Thinkabout workflow mode is designed to help the user reason through a specific question, decision, or tradeoff. It is focused on exploring the implications of a single decision or question, and providing a reasoned point of view.
+Ponder workflow mode is designed to help the user reason through a specific question, decision, or tradeoff. It is focused on exploring the implications of a single decision or question, and providing a reasoned point of view.
 
 - Build a reasoned point of view from evidence, constraints, and counterarguments.
 - Consider and address counterarguments, especially those that are common or intuitive.

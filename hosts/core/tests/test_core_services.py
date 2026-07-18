@@ -399,7 +399,7 @@ async def test_debug_router_reports_last_planner_payload(tmp_path: Path) -> None
     runtime = _make_runtime(tmp_path)
     runtime.set_last_router_debug(
         {
-            "selected_mode_id": "thinkabout",
+            "selected_mode_id": "ponder",
             "planner_reasoning": "explicit think-about wording",
             "fallback_used": False,
         }
@@ -408,7 +408,7 @@ async def test_debug_router_reports_last_planner_payload(tmp_path: Path) -> None
     output = await handle_message(runtime, "/debug router", transport)
 
     assert "Router Debug" in output.text
-    assert "thinkabout" in output.text
+    assert "ponder" in output.text
     assert "planner_reasoning" in output.text
 
 

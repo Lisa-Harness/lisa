@@ -1,7 +1,7 @@
 """Tests for the search pack's catalog discovery.
 
 Verifies that the ``lisa-content`` server discovers the web_search tool,
-the two operations, and the three modes (discuss, search, thinkabout) from
+the two operations, and the three modes (discuss, search, ponder) from
 the search pack's content root.
 """
 
@@ -35,7 +35,7 @@ def test_web_search_tool_discovered() -> None:
 
 
 def test_search_pack_modes_discovered() -> None:
-    """The search pack owns discuss, search, and thinkabout modes.
+    """The search pack owns discuss, search, and ponder modes.
 
     Discuss was absorbed from the core pack so each conversational/research
     mode is co-located with its enrichment operations in the search pack.
@@ -45,7 +45,7 @@ def test_search_pack_modes_discovered() -> None:
 
     catalog = json.loads(build_mode_catalog_json(roots))
 
-    assert set(catalog) >= {"discuss", "search", "thinkabout"}, catalog.keys()
+    assert set(catalog) >= {"discuss", "search", "ponder"}, catalog.keys()
 
     discuss = catalog["discuss"]
     assert discuss["mode_kind"] == "chat"

@@ -4,7 +4,7 @@ A self-contained, externalizable research toolset providing the web search
 capability plus conversational and reasoning modes that consume it:
 
 - Modes: ``discuss`` (conversational research companion), ``search``
-  (one-shot grounded answer), and ``thinkabout`` (reasoned-opinion workflow).
+  (one-shot grounded answer), and ``ponder`` (reasoned-opinion workflow).
 - Operations: the ``web_search`` research loop, the ``discussion_briefing``
   pre-turn enrichment for discuss, and (planned) ``deep_research`` for
   multi-hop fetch-and-synthesize.

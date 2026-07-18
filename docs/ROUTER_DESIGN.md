@@ -107,8 +107,8 @@ routing:
   priority_adjustments:
     discuss: 50             # override mode priority for catalog ordering
   hints:
-    thinkabout:             # per-mode hint strings (used by fast-path, not a planner)
-      - "Prefer thinkabout for tradeoff analysis."
+    ponder:             # per-mode hint strings (used by fast-path, not a planner)
+      - "Prefer ponder for tradeoff analysis."
 ```
 
 ### `start_mode` — the bypass pin
@@ -206,7 +206,7 @@ distinguishes three cases based on the `target_stage_id` argument:
 | Target kind | Example `target_stage_id` | What happens |
 | --- | --- | --- |
 | **Mode handoff** | `"markdown"` | Swap system prompt + tool surface for the new mode. Set `handoff_to` on `TurnResult`. Continue the loop. |
-| **Fork fan-out** | `"fork:coding/implement,thinkabout/review"` | Parse targets, fan out children via `asyncio.TaskGroup`, collect results into `fork_results`. Continue the loop. |
+| **Fork fan-out** | `"fork:coding/implement,ponder/review"` | Parse targets, fan out children via `asyncio.TaskGroup`, collect results into `fork_results`. Continue the loop. |
 | **Workflow stage** | `"reason"` (a stage in the current mode's FSM) | Existing `apply_transition` path. Update `workflow_session`. Continue the loop. |
 
 The interception checks in this order:
@@ -247,7 +247,7 @@ Fork target syntax:
 
 ```plaintext
 fork:coding,markdown                         # two modes, default start_stage
-fork:coding/implement,thinkabout/review       # with explicit stages
+fork:coding/implement,ponder/review       # with explicit stages
 fork:search,calendar,email                   # heterogeneous parallel workers
 ```
 
@@ -403,9 +403,9 @@ flowchart LR
     WF --> TR
 ```
 
-### Example: thinkabout workflow with handoff
+### Example: ponder workflow with handoff
 
-`thinkabout` is a `mode_kind: workflow` mode with stages:
+`ponder` is a `mode_kind: workflow` mode with stages:
 `inquire → reason → formulate → exit`.
 
 ```mermaid
@@ -417,22 +417,22 @@ sequenceDiagram
 
     U->>HM: "analyze this tradeoff"
     HM->>TR: mode_id=default (current_mode_id)
-    TR->>TR: model sees routing hint (default lacks thinkabout tools)
-    TR->>FSM: model calls transition_stage("thinkabout")
-    FSM->>TR: swap to thinkabout prompt + tools
+    TR->>TR: model sees routing hint (default lacks ponder tools)
+    TR->>FSM: model calls transition_stage("ponder")
+    FSM->>TR: swap to ponder prompt + tools
     TR->>FSM: workflow_session → stage=inquire
     TR->>TR: inject inquire.md instructions
     TR-->>U: inquire stage response
 
     U->>HM: "here's the data"
-    HM->>TR: mode_id=thinkabout (current_mode_id preserved)
+    HM->>TR: mode_id=ponder (current_mode_id preserved)
     TR->>FSM: workflow_session → stage=inquire
     TR->>FSM: model calls transition_stage("reason")
     FSM->>TR: apply_transition → stage=reason
     TR-->>U: reason stage response
 
     U->>HM: "actually, write this as a markdown doc"
-    HM->>TR: mode_id=thinkabout (current_mode_id preserved)
+    HM->>TR: mode_id=ponder (current_mode_id preserved)
     TR->>FSM: model calls transition_stage("markdown")
     FSM->>TR: swap to markdown prompt + tools
     TR-->>U: markdown response (with handoff_to=markdown)
@@ -444,14 +444,14 @@ sequenceDiagram
 Each stage is a Markdown file in the mode directory with YAML front matter:
 
 ```yaml
-# sdk/packs/search/modes/thinkabout/reason.md
+# sdk/packs/search/modes/ponder/reason.md
 ---
 stage_id: reason
 allowed_next_stages: [formulate, exit]
 description: "Discuss findings, identify trade-offs, and align on logical paths."
 ---
 
-# Thinkabout Mode: Reason Stage
+# Ponder Mode: Reason Stage
 
 You are in the Reason stage. Analyze findings, brainstorm 2-3 logical paths...
 ```
@@ -482,7 +482,7 @@ Fan-out is now a first-class `transition_stage` target.
 ### When to use fork
 
 - "Research this topic AND write a markdown summary" → `fork:search,markdown`
-- "Code-review this PR from security, performance, and style perspectives" → `fork:thinkabout/security,thinkabout/performance,thinkabout/style`
+- "Code-review this PR from security, performance, and style perspectives" → `fork:ponder/security,ponder/performance,ponder/style`
 - "Search the web, check my calendar, and draft an email" → `fork:search,calendar,email`
 
 Each fork target is a `(mode_id, stage_id, query)` tuple. The `mode_id`

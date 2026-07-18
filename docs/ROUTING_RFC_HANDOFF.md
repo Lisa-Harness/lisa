@@ -215,13 +215,13 @@ routing FSM, not a separate mechanism:
 # _mode.md for a "coding" mode that chains codex-style
 workshop_panels:
   - panel_id: plan
-    mode_id: thinkabout
+    mode_id: ponder
     query_prefix: "Plan the implementation for:"
   - panel_id: implement
     mode_id: coding
     query_prefix: "Implement the plan:"
   - panel_id: review
-    mode_id: thinkabout
+    mode_id: ponder
     query_prefix: "Review this implementation for correctness:"
 ```
 
@@ -283,7 +283,7 @@ modes to fan out to based on the user's query:
 - "Research this topic AND write a markdown summary" → fan out to `research`
   and `markdown` in parallel.
 - "Code-review this PR from security, performance, and style perspectives" →
-  fan out to three `thinkabout` stages with different query prefixes.
+  fan out to three `ponder` stages with different query prefixes.
 - "Search the web, check my calendar, and draft an email" → fan out to
   `search`, `calendar`, and `email` modes concurrently.
 
@@ -313,7 +313,7 @@ way to persist intermediate child results as FSM stage data.
 ```mermaid
 flowchart TD
     A[Mode: research, Stage: analyze] --> B[Model calls transition_stage
-    target=fork:coding/implement,thinkabout/review,markdown/write]
+    target=fork:coding/implement,ponder/review,markdown/write]
     B --> C[FSM interception: fork detected]
     C --> D[Create child sessions for each fork target]
     D --> E[Fan out children via asyncio.TaskGroup]
@@ -334,9 +334,9 @@ it calls `transition_stage` with a fork target, and the FSM handles the rest.
 Fork target syntax:
 
 ```plaintext
-fork:coding/implement,thinkabout/review,markdown/write
+fork:coding/implement,ponder/review,markdown/write
 fork:search,calendar,email
-fork:thinkabout/security,thinkabout/performance,thinkabout/style
+fork:ponder/security,ponder/performance,ponder/style
 ```
 
 Each segment is `mode_id` or `mode_id/stage_id`. The query for each worker is

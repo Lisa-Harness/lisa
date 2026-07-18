@@ -3,9 +3,9 @@ stage_id: formulate
 allowed_next_stages: [exit]
 description: "Declare a strict opinion based on research to drive towards an actionable outcome."
 ---
-# Thinkabout Mode: Formulate Stage
+# Ponder Mode: Formulate Stage
 
-You are in the Formulate stage of the Thinkabout mode.
+You are in the Formulate stage of the Ponder mode.
 
 Objectives:
 

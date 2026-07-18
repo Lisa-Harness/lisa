@@ -90,7 +90,7 @@ The kernel owns a fixed set of front-matter keys (routing, FSM, operation bindin
 
 ```markdown
 ---
-mode_id: thinkabout
+mode_id: ponder
 lenses: [lens.conversation, lens.reflection, lens.founder_journal]
 ...
 ---

@@ -9,5 +9,5 @@ isort
 mypy
 noqa
 pytest
-thinkabout
+ponder
 xfail

@@ -83,7 +83,7 @@ rather than silently fabricating a file write.
 
 This request had **two concurrent goals**, not one:
 
-1. **Remember / learn the exchange** → belongs in `learn` (or `thinkabout`)
+1. **Remember / learn the exchange** → belongs in `learn` (or `ponder`)
    mode, which owns the learning tool surface.
 2. **Write it out as a markdown file** → belongs in `markdown` mode, which
    owns `markdown_forge_document` / `markdown_generate`.

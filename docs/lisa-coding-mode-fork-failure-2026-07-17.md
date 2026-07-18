@@ -106,7 +106,7 @@ The fork-detection fix (see `/memories/repo/routing-hint-fork-detection.md`
 and the regression tests in `kernel/tests/test_turn_runner.py`) only covers
 the **`default` → fork** path. From `default`, `routing_targets` includes
 every routable mode, so the fork hint fires. From any other routable mode
-(`coding`, `search`, `thinkabout`, …), `routing_targets` is `["default"]`,
+(`coding`, `search`, `ponder`, …), `routing_targets` is `["default"]`,
 so the fork hint is silently suppressed. This is a second, distinct failure
 surface from the one documented in
 `docs/lisa-markdown-stage-failure-2026-07-17.md` (which was the `default`-mode
@@ -148,7 +148,7 @@ recommended.
 ### Option C — Add explicit per-mode routing edges
 
 Author `coding → learn`, `coding → markdown` (and likely
-`search → learn`, `thinkabout → markdown`, …) explicitly. Most precise, but
+`search → learn`, `ponder → markdown`, …) explicitly. Most precise, but
 violates "all on by default, externalize later" and requires a matrix of
 edges to maintain. Defer unless Option A proves too permissive in practice.
 
