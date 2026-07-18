@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["../.."]
+include = ["sdk.packs.introspect*"]
+
+[tool.setuptools.package-data]
+"sdk.packs.introspect" = ["operations/**/*.md", "operations/**/*.yml"]
+
+[project]
+name = "lisa-pack-introspect"
+version = "0.1.0"
+description = "Lisa introspect pack - operational self-model, architecture atlas, and reflective self-assessment operations"
+requires-python = ">=3.11"
+dependencies = [
+    "lisa-kernel",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.14.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["../.."]
+testpaths = ["tests"]
+
+[project.entry-points."lisa.extensions.content_roots"]
+introspect = "sdk.packs.introspect:get_content_root"

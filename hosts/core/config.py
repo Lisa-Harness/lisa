@@ -157,6 +157,7 @@ class HostConfig:
     # ── Pack policy ────────────────────────────────────────────────────
     always_on_packs: tuple[str, ...] = (
         "lisa-pack-core",
+        "lisa-pack-introspect",
     )
 
     @property
@@ -306,6 +307,7 @@ class HostConfig:
         resolved_memory_scope = ""
         resolved_always_on_packs: tuple[str, ...] = (
             "lisa-pack-core",
+            "lisa-pack-introspect",
         )
 
         return cls(

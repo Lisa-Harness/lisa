@@ -60,7 +60,7 @@ sdk.packs.learning.operations.memory.recall.execute  # noqa: Vulture
 sdk.packs.learning.operations.memory.synthesize_learning.execute  # noqa: Vulture
 
 # reason: operation dispatch via getattr(module, "execute")
-sdk.packs.core.operations.self_model.self_model.execute  # noqa: Vulture
+sdk.packs.introspect.operations.self_model.self_model.execute  # noqa: Vulture
 
 # ──────────────────────────────────────────────────────────────────────────
 # Pydantic structured-output models — loaded via _resolve_model_class()
@@ -73,10 +73,10 @@ sdk.packs.search.operations.research.discussion_briefing.DiscussionBriefingStruc
 sdk.packs.search.operations.research.web_search.WebSearchStructuredOutput  # noqa: Vulture
 
 # reason: response-format model loaded via _resolve_model_class string dispatch
-sdk.packs.core.operations.self_model.architecture_atlas.ArchitectureAtlasOutput  # noqa: Vulture
+sdk.packs.introspect.operations.self_model.architecture_atlas.ArchitectureAtlasOutput  # noqa: Vulture
 
 # reason: response-format model loaded via _resolve_model_class string dispatch
-sdk.packs.core.operations.self_model.reflect_self.ReflectSelfOutput  # noqa: Vulture
+sdk.packs.introspect.operations.self_model.reflect_self.ReflectSelfOutput  # noqa: Vulture
 
 # reason: operation parameter model loaded via _resolve_model_class string dispatch
 sdk.packs.learning.operations.memory.recall.Parameters  # noqa: Vulture

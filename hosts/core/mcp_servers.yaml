@@ -26,6 +26,7 @@ pack_policy:
   exclude_servers: []
   always_on_packs:
     - lisa-pack-core
+    - lisa-pack-introspect
 
 # ──────────────────────────────────────────────────────────────────────────
 # Memory backends + memory MCP tool servers

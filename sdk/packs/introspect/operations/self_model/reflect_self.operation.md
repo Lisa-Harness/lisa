@@ -5,7 +5,7 @@ timeout_seconds: 30
 max_calls_per_turn: 1
 completion_max_tokens: 1000
 preferred_model_id: default
-response_format_model_path: sdk.packs.core.operations.self_model.reflect_self.ReflectSelfOutput
+response_format_model_path: sdk.packs.introspect.operations.self_model.reflect_self.ReflectSelfOutput
 response_output_text_field: health_reasoning
 ---
 

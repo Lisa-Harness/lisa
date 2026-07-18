@@ -10,6 +10,7 @@ dependencies = [
     "lisa-pack-learning",
     "lisa-pack-coding",
     "lisa-pack-core",
+    "lisa-pack-introspect",
     "lisa-pack-search",
     "lisa-pack-checkpoint",
     "lisa-pack-markdown",
@@ -43,6 +44,7 @@ members = [
     "sdk",
     "mcp_server",
     "sdk/packs/core",
+    "sdk/packs/introspect",
     "sdk/packs/learning",
     "sdk/packs/coding",
     "sdk/packs/search",
@@ -66,6 +68,7 @@ lisa-pack-cloudflare = { path = "../lisa_packs/cloudflare" }
 lisa-pack-github = { path = "../lisa_packs/github" }
 lisa-pack-stripe = { path = "../lisa_packs/stripe" }
 lisa-pack-core = { workspace = true }
+lisa-pack-introspect = { workspace = true }
 lisa-pack-search = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
 lisa-pack-markdown = { workspace = true }

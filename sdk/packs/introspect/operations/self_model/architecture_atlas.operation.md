@@ -5,7 +5,7 @@ max_calls_per_turn: 1
 completion_temperature: 0
 completion_max_tokens: 2000
 preferred_model_id: router
-response_format_model_path: sdk.packs.core.operations.self_model.architecture_atlas.ArchitectureAtlasOutput
+response_format_model_path: sdk.packs.introspect.operations.self_model.architecture_atlas.ArchitectureAtlasOutput
 response_output_text_field: atlas_markdown
 ---
 

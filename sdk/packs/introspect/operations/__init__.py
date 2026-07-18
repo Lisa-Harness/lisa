@@ -1,0 +1,1 @@
+"""Self-awareness operations shipped with the Lisa self pack."""

@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 _PACK_LOCK_FILE_NAME = "installed-packs.json"
 _DEFAULT_ALWAYS_ON_PACKAGES: tuple[str, ...] = (
     "lisa-pack-core",
+    "lisa-pack-introspect",
 )
 _RUNTIME_INSTALL_SOURCE_KINDS = {"package", "git", "local"}
 

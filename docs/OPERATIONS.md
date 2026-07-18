@@ -63,7 +63,7 @@ skips it as a runtime entry point, using it only as the response contract for th
 declarative runtime.
 
 Real examples: `sdk/packs/search/operations/research/web_search.operation.md`,
-`sdk/packs/core/operations/self_model/reflect_self.operation.md`.
+`sdk/packs/introspect/operations/self_model/reflect_self.operation.md`.
 
 **Precedence rule:** if a directory contains both `<stem>.operation.md` and
 `<stem>.py`, the Markdown operation takes precedence and the Python file is treated as

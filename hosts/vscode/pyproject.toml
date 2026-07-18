@@ -19,6 +19,7 @@ dependencies = [
     "lisa-pack-learning",
     "lisa-pack-search",
     "lisa-pack-core",
+    "lisa-pack-introspect",
     "lisa-pack-checkpoint",
     "openai>=1.30.0",
     "pyyaml>=6.0",

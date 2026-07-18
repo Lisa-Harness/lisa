@@ -636,8 +636,8 @@ def _infer_module_path(py_path: Path, root: Path) -> str:
     """Infer a dotted Python module path from the file path relative to root.
 
     The ``operations`` directory name is included in the path so that
-    ``sdk/packs/core/operations/self_model/self_model.py`` resolves to
-    ``sdk.packs.core.operations.self_model``.
+    ``sdk/packs/introspect/operations/self_model/self_model.py`` resolves to
+    ``sdk.packs.introspect.operations.self_model``.
     """
 
     relative = py_path.relative_to(root).with_suffix("")
