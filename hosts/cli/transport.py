@@ -55,13 +55,20 @@ class RichTransport:
         # printing it again would double-render (raw inline + formatted panel)
         # with a misaligned header.
         self._streamed_during_turn: bool = False
+        # Fork fan-out live state. Populated by ``on_stage("fork_*")`` so the
+        # stage line can render one line per active child instead of a single
+        # coarse "fork" label. Reset by ``fork_start`` / ``fork_complete`` /
+        # ``start_thinking``.
+        self._fork_children: dict[int, dict[str, Any]] = {}
+        self._fork_total: int = 0
 
     def start_thinking(self, stage: str = "routing") -> None:
-        """Start a status spinner so the user sees the turn is active.
-        """
+        """Start a status spinner so the user sees the turn is active."""
         self.stop_thinking()
         self._thinking_stage = stage
         self._streamed_during_turn = False
+        self._fork_children = {}
+        self._fork_total = 0
         self._status = self.console.status(f"thinking… ({stage})", spinner="dots", spinner_style=STYLE_STAGE)
         self._status.start()
 
@@ -76,24 +83,114 @@ class RichTransport:
                 pass
 
     async def on_stage(self, label: str, data: dict[str, Any] | None = None) -> None:
-        """Update the status spinner with the current stage."""
-        suffix = ""
-        if data:
-            # Compact one-line rendering of stage metadata.
-            parts: list[str] = []
-            for key in ("model_id", "provider", "mode_id", "iteration", "tool", "name"):
-                value = data.get(key)
-                if value not in (None, "", 0):
-                    parts.append(f"{key}={value}")
-            if parts:
-                suffix = f" ({', '.join(parts)})"
-                
+        """Update the status spinner with the current stage.
+
+        Renders a single detailed line for normal stages. When a fork
+        fan-out is active, renders one line per child so the user sees
+        every parallel call progressing independently.
+        """
+        data = data or {}
+
+        # ── Fork fan-out tracking ──────────────────────────────────────
+        if label == "fork_start":
+            self._fork_children = {}
+            self._fork_total = int(data.get("children", 0)) or 0
+            text = self._render_fork_stage()
+            self._update_status(text)
+            return
+        if label == "fork_child_start":
+            idx = int(data.get("child_index", -1))
+            if idx >= 0:
+                self._fork_children[idx] = {
+                    "mode_id": data.get("mode_id", ""),
+                    "stage_id": data.get("stage_id", ""),
+                    "status": "running",
+                    "query_preview": data.get("query_preview", ""),
+                }
+            text = self._render_fork_stage()
+            self._update_status(text)
+            return
+        if label == "fork_child_complete":
+            idx = int(data.get("child_index", -1))
+            if idx >= 0:
+                existing = self._fork_children.get(idx, {})
+                existing.update({
+                    "status": data.get("status", "ok"),
+                    "duration_ms": data.get("duration_ms"),
+                })
+                self._fork_children[idx] = existing
+            text = self._render_fork_stage()
+            self._update_status(text)
+            return
+        if label == "fork_complete":
+            ok = int(data.get("ok", 0))
+            failed = int(data.get("failed", 0))
+            self._fork_children = {}
+            self._fork_total = 0
+            text = f"stage: fork complete ({ok} ok, {failed} failed)"
+            self._update_status(text)
+            return
+
+        # ── Normal stage line (detailed) ───────────────────────────────
+        suffix = self._render_stage_suffix(data)
         text = f"stage: {label}{suffix}"
-        
+        self._update_status(text)
+
+    def _update_status(self, text: str) -> None:
+        """Push ``text`` to the spinner, or print it inline if no spinner."""
         if self._status is not None:
             self._status.update(text)
         else:
             self.console.print(Text(text, style=STYLE_STAGE))
+
+    def _render_stage_suffix(self, data: dict[str, Any]) -> str:
+        """Compact one-line rendering of stage metadata."""
+        parts: list[str] = []
+        for key in (
+            "mode_id", "provider", "model_id", "iteration",
+            "tool_calls_so_far", "tool", "tool_kind", "tool_calls",
+            "duration_ms", "stage_id", "turn_count",
+        ):
+            value = data.get(key)
+            if value in (None, "", 0):
+                continue
+            parts.append(f"{key}={value}")
+        # Token counts are nested under model_call_complete.
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = data.get(key)
+            if value:
+                parts.append(f"{key}={value}")
+        if parts:
+            return f" ({', '.join(parts)})"
+        return ""
+
+    def _render_fork_stage(self) -> str:
+        """Render the fork fan-out as one line per active child.
+
+        Example with two children::
+
+            stage: fork (2 children)
+              #0 coding · running · query preview…
+              #1 markdown · running · query preview…
+        """
+        if not self._fork_children:
+            return f"stage: fork ({self._fork_total} children)"
+        lines = [f"stage: fork ({self._fork_total} children)"]
+        for idx in sorted(self._fork_children):
+            child = self._fork_children[idx]
+            mode_id = child.get("mode_id", "?")
+            stage_id = child.get("stage_id", "")
+            status = child.get("status", "running")
+            stage_part = f"{stage_id} · " if stage_id else ""
+            line = f"  #{idx} {mode_id} · {stage_part}{status}"
+            preview = child.get("query_preview", "")
+            if preview:
+                line += f" · {preview}"
+            duration_ms = child.get("duration_ms")
+            if duration_ms is not None:
+                line += f" · {duration_ms}ms"
+            lines.append(line)
+        return "\n".join(lines)
 
     async def on_text_chunk(self, text: str) -> None:
         """Print a streamed text chunk inline (no panel, no newline)."""

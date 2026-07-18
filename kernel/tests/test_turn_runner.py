@@ -643,6 +643,159 @@ async def test_run_turn_fork_transition_basic() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_turn_emits_model_call_stage_events() -> None:
+    """The on_stage hook fires model_call and model_call_complete around
+    each model completion, carrying iteration and token metadata.
+    """
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def on_stage(label: str, data: dict[str, Any]) -> None:
+        events.append((label, dict(data)))
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.on_stage = on_stage
+
+    result = await run_turn(mode_id="default", query="hello", hooks=hooks)
+
+    assert result.response_text == "Done."
+    labels = [label for label, _ in events]
+    assert "model_call" in labels
+    assert "model_call_complete" in labels
+    # model_call_complete should be the last event and carry token counts.
+    last_label, last_data = events[-1]
+    assert last_label == "model_call_complete"
+    assert "iteration" in last_data
+    assert "tool_calls" in last_data
+
+
+@pytest.mark.asyncio
+async def test_run_turn_emits_tool_dispatch_stage_events() -> None:
+    """The on_stage hook fires tool_dispatch and tool_dispatch_complete
+    around each operation/tool dispatch, with a tool_kind label.
+    """
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def on_stage(label: str, data: dict[str, Any]) -> None:
+        events.append((label, dict(data)))
+
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"q": "test"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.execute_operation = _stub_execute_operation
+    hooks.on_stage = on_stage
+
+    result = await run_turn(mode_id="default", query="test", hooks=hooks)
+
+    assert result.response_text == "Done."
+    assert result.tool_call_count == 1
+    dispatch_events = [e for e in events if e[0] == "tool_dispatch"]
+    complete_events = [e for e in events if e[0] == "tool_dispatch_complete"]
+    assert len(dispatch_events) == 1
+    assert len(complete_events) == 1
+    assert dispatch_events[0][1]["tool"] == "web_search"
+    assert dispatch_events[0][1]["tool_kind"] == "operation"
+    assert "duration_ms" in complete_events[0][1]
+
+
+@pytest.mark.asyncio
+async def test_run_turn_emits_fork_child_stage_events_per_child() -> None:
+    """The on_stage hook fires fork_start, one fork_child_start and one
+    fork_child_complete per child, then fork_complete — so a transport
+    can render a line per active call.
+    """
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def on_stage(label: str, data: dict[str, Any]) -> None:
+        events.append((label, dict(data)))
+
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "fork:default,default"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Synthesized.")
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.on_stage = on_stage
+
+    result = await run_turn(mode_id="default", query="fan out", hooks=hooks)
+
+    assert result.fork_results is not None
+    assert len(result.fork_results) == 2
+    labels = [label for label, _ in events]
+    assert labels.count("fork_start") == 1
+    assert labels.count("fork_child_start") == 2
+    assert labels.count("fork_child_complete") == 2
+    assert "fork_complete" in labels
+    # fork_start should carry the target list.
+    start_event = next(e for e in events if e[0] == "fork_start")
+    assert start_event[1]["children"] == 2
+    assert len(start_event[1]["targets"]) == 2
+    # fork_child_start events carry a child_index.
+    child_starts = [e for e in events if e[0] == "fork_child_start"]
+    child_indices = sorted(e[1]["child_index"] for e in child_starts)
+    assert child_indices == [0, 1]
+    # fork_complete carries ok/failed counts.
+    complete_event = next(e for e in events if e[0] == "fork_complete")
+    assert complete_event[1]["children"] == 2
+    assert complete_event[1]["ok"] + complete_event[1]["failed"] == 2
+
+
+@pytest.mark.asyncio
+async def test_run_turn_on_stage_hook_failure_is_swallowed() -> None:
+    """A failing on_stage hook is logged and swallowed; the turn continues."""
+    call_count = 0
+
+    async def on_stage(label: str, data: dict[str, Any]) -> None:
+        raise RuntimeError("transport exploded")
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.on_stage = on_stage
+
+    result = await run_turn(mode_id="default", query="hello", hooks=hooks)
+
+    # The turn still completes despite the on_stage hook raising every call.
+    assert result.response_text == "Done."
+
+
+@pytest.mark.asyncio
 async def test_routing_fsm_synthesis() -> None:
     """The routing FSM synthesis produces default ↔ all routable modes."""
     from kernel.ipsar_fsm import (
@@ -865,3 +1018,64 @@ def test_routing_hint_search_gap_without_reasoning_lists_targets() -> None:
     assert hint != ""
     assert "transition_stage" in hint
     assert "one-shot" not in hint.lower()
+
+
+# ── Two-goal fork routing hint tests ──────────────────────────────────
+
+
+def test_routing_hint_forks_for_remember_and_write_markdown() -> None:
+    """A request pairing remember/learn with write-a-markdown-doc has two
+    concurrent goals. The hint must steer the model to a fork fan-out
+    (`fork:learn,markdown`), not a single-mode handoff.
+
+    Regression case for docs/lisa-markdown-stage-failure-2026-07-17.md: the
+    model called markdown_forge_document / markdown_generate from default
+    mode (mode-scoped tools, rejected by tool policy) instead of forking.
+    The proactive hint must surface before the model wastes an iteration.
+    """
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    hint = _compute_capability_routing_hint(
+        mode_id="default",
+        query="remember that pretty much verbatim and also write a markdown of it",
+        capability_manifest=_empty_manifest(),
+        routing_targets=["learn", "markdown", "coding", "thinkabout", "search"],
+    )
+    assert hint != ""
+    assert "transition_stage" in hint
+    # Must name the fork target, not a single mode handoff
+    assert "fork:learn,markdown" in hint
+    # Must warn that mode-scoped tools would be rejected from default
+    assert "mode-scoped" in hint.lower() or "rejected" in hint.lower()
+
+
+def test_routing_hint_fork_requires_both_routable_modes() -> None:
+    """When one of learn/markdown is not a routing target, do not suggest a
+    fork — fall back to the single-goal branches (or no hint).
+    """
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    # markdown not routable from here → no fork hint; learn+write cues with
+    # no tool/search/research-reason gap means no hint at all.
+    hint = _compute_capability_routing_hint(
+        mode_id="default",
+        query="remember the decision and write a markdown of it",
+        capability_manifest=_empty_manifest(),
+        routing_targets=["learn", "coding"],  # markdown missing
+    )
+    assert "fork:" not in hint
+
+
+def test_routing_hint_fork_preserves_target_case() -> None:
+    """The fork target string preserves the original (non-lowercased) mode
+    IDs from routing_targets, matching what the FSM catalog expects.
+    """
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    hint = _compute_capability_routing_hint(
+        mode_id="default",
+        query="take a note of this and write a markdown document",
+        capability_manifest=_empty_manifest(),
+        routing_targets=["learn", "markdown"],
+    )
+    assert "fork:learn,markdown" in hint

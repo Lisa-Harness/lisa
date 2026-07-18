@@ -295,6 +295,16 @@ def build_turn_hooks(
     async def _explicit_slice(policy: Any) -> Any:
         return await file_state_provider.slice(ctx=None, policy=policy)
 
+    # ── Live stage telemetry ─────────────────────────────────────────
+    # Forward the kernel's fine-grained stage events to the transport so the
+    # CLI/web/VS Code stage line can show model_call, tool_dispatch, and
+    # fork-child progress as it happens. The kernel's ``_emit_stage`` helper
+    # swallows hook failures, so a transport error never breaks the turn.
+    async def _on_stage_event(label: str, data: dict[str, Any]) -> None:
+        if transport is None:
+            return
+        await transport.on_stage(label, data)
+
     return TurnHooks(
         resolve_model=_resolve_model,
         complete=_complete,
@@ -339,4 +349,10 @@ def build_turn_hooks(
         context_seams=ContextSeams(
             content_registry=cast("Any", content_registry()),
         ),
+        # Forward the kernel's fine-grained stage events to the transport so
+        # the CLI/web/VS Code stage line can show model_call, tool_dispatch,
+        # and fork-child progress as it happens. The kernel's _emit_stage
+        # helper swallows hook failures, so a transport error never breaks
+        # the turn.
+        on_stage=_on_stage_event,
     )

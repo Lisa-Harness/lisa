@@ -477,6 +477,30 @@ class TurnHooks:
     they do not break the turn. The kernel builds the bundle; the host
     owns persistence and turn-history population."""
 
+    # ── Live stage telemetry ─────────────────────────────────────────────
+    on_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
+    """Async callable invoked at key points during the turn so the host
+    transport can render a frequently-updated, detailed stage line.
+
+    The kernel emits ``(label, data)`` pairs at:
+      - ``"model_call"`` / ``"model_call_complete"`` — around each model
+        completion (carries ``mode_id``, ``model_id``, ``provider``,
+        ``iteration``, ``tool_calls_so_far``).
+      - ``"tool_dispatch"`` / ``"tool_dispatch_complete"`` — around each
+        tool/operation dispatch (carries ``tool``, ``tool_kind`` one of
+        ``"operation"|"pack_tool"|"mcp_tool"|"transition"``).
+      - ``"workflow_stage"`` — when the workflow session's stage is read
+        (carries ``stage_id``, ``turn_count``).
+      - ``"fork_start"`` / ``"fork_child_start"`` /
+        ``"fork_child_complete"`` / ``"fork_complete"`` — around the fork
+        fan-out, one event per child so a transport can show a line per
+        active call.
+
+    Failures in this hook are caught and logged; they never break the
+    turn. Default: None (no stage telemetry; the host's own
+    ``complete_live`` stage callbacks still fire separately when the
+    provider streaming mode is ``stage``/``hybrid``)."""
+
 
 # ── Streaming adapter ──────────────────────────────────────────────────────
 
@@ -1039,6 +1063,21 @@ async def _run_turn_inner(
     # check measures from the same origin.
     turn_start_mono = time.monotonic()
 
+    # ── Stage telemetry helper ──────────────────────────────────────────
+    # Wraps the optional ``hooks.on_stage`` callback so the loop can fire
+    # fine-grained stage events without each call site repeating the
+    # None-check and the try/except. Failures are logged and swallowed — a
+    # transport error never breaks the turn.
+    _on_stage_hook = hooks.on_stage
+
+    async def _emit_stage(label: str, data: dict[str, Any] | None = None) -> None:
+        if _on_stage_hook is None:
+            return
+        try:
+            await _on_stage_hook(label, data or {})
+        except Exception as stage_exc:  # pylint: disable=broad-except
+            _log.debug("on_stage(%s) hook failed: %s", label, stage_exc)
+
     async def _mcp_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
         """Bridge OperationExecutionContext.execute_tool_fn to in-process tools.
 
@@ -1400,6 +1439,12 @@ async def _run_turn_inner(
             wf_session = hooks.workflow_session()
             if wf_session is not None:
                 turns_in_stage = wf_session.turn_count
+                await _emit_stage("workflow_stage", {
+                    "mode_id": mode_id,
+                    "stage_id": wf_session.stage_id,
+                    "turn_count": turns_in_stage,
+                    "iteration": iteration,
+                })
                 if turns_in_stage >= _STAGE_NUDGE_CAP:
                     _log.warning(
                         "workflow mode=%s stuck in stage=%s for %d turns; forcing final",
@@ -1431,6 +1476,14 @@ async def _run_turn_inner(
                 total_tokens,
             )
         effective_model_def = _resolve_iteration_model(iteration)
+        await _emit_stage("model_call", {
+            "mode_id": mode_id,
+            "model_id": getattr(effective_model_def, "model_id", ""),
+            "provider": getattr(effective_model_def, "provider", ""),
+            "iteration": iteration,
+            "tool_calls_so_far": total_tool_calls,
+            "tools_offered": bool(effective_tools),
+        })
         if hooks.complete_stream is not None:
             # ── Streaming path ──────────────────────────────────────────
             # v1: stream tokens to the host. When the stream indicates
@@ -1484,6 +1537,17 @@ async def _run_turn_inner(
         total_duration_ms += duration_ms
         total_latency_ms += latency_ms
 
+        await _emit_stage("model_call_complete", {
+            "mode_id": mode_id,
+            "model_id": getattr(effective_model_def, "model_id", ""),
+            "iteration": iteration,
+            "tool_calls": len(getattr(completion, "tool_calls", None) or []),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": completion_total_tokens,
+            "duration_ms": duration_ms,
+        })
+
         assistant_msg: dict[str, Any] = {"role": "assistant"}
         if getattr(completion, "content", None):
             assistant_msg["content"] = completion.content
@@ -1526,6 +1590,27 @@ async def _run_turn_inner(
                     continue
 
             tools_dispatched = True
+            # Determine the tool kind for stage telemetry. Computed here so
+            # the dispatch branches below stay unchanged; the value is only
+            # read by ``_emit_stage``. ``"transition"`` is special-cased so
+            # the transport can distinguish a workflow/routing/fork action
+            # from a plain tool call.
+            if tool_name == _TRANSITION_TOOL_NAME:
+                _tool_kind = "transition"
+            elif tool_name in operation_catalog:
+                _tool_kind = "operation"
+            elif tool_name in tool_catalog:
+                _tool_kind = "pack_tool"
+            else:
+                _tool_kind = "mcp_tool"
+            await _emit_stage("tool_dispatch", {
+                "tool": tool_name,
+                "tool_kind": _tool_kind,
+                "iteration": iteration,
+                "tool_calls_so_far": total_tool_calls + 1,
+                "mode_id": mode_id,
+            })
+            _tool_dispatch_started = time.monotonic()
             try:
                 # Transition interception: the model called transition_stage.
                 # This is handled in-loop, not through the operation/tool/MCP
@@ -1550,6 +1635,15 @@ async def _run_turn_inner(
                             "tool_call_id": tool_call_id,
                             "name": tool_name,
                             "content": tool_output,
+                        })
+                        await _emit_stage("tool_dispatch_complete", {
+                            "tool": tool_name,
+                            "tool_kind": "transition",
+                            "iteration": iteration,
+                            "tool_calls_so_far": total_tool_calls,
+                            "ok": False,
+                            "transition": "missing_target",
+                            "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
                         })
                         continue
 
@@ -1593,6 +1687,7 @@ async def _run_turn_inner(
                                     turn_budget=turn_budget,
                                     turn_start_mono=turn_start_mono,
                                     logger_override=_log,
+                                    emit_stage=_emit_stage,
                                 )
                                 fork_results = fork_results_list
                                 succeeded = sum(1 for r in fork_results_list if r.status == "ok")
@@ -1600,6 +1695,16 @@ async def _run_turn_inner(
                                     f"Fork fan-out completed: {succeeded}/{len(fork_targets)} "
                                     f"children succeeded. Results are in stage_data.fork_results."
                                 )
+                        await _emit_stage("tool_dispatch_complete", {
+                            "tool": tool_name,
+                            "tool_kind": "transition",
+                            "iteration": iteration,
+                            "tool_calls_so_far": total_tool_calls,
+                            "ok": True,
+                            "transition": "fork",
+                            "fork_children": len(fork_results_list) if fork_results_list else 0,
+                            "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
+                        })
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call_id,
@@ -1653,6 +1758,16 @@ async def _run_turn_inner(
                                     f"Handed off to mode: {target_stage}."
                                     + (f" Rationale: {rationale}" if rationale else "")
                                 )
+                        await _emit_stage("tool_dispatch_complete", {
+                            "tool": tool_name,
+                            "tool_kind": "transition",
+                            "iteration": iteration,
+                            "tool_calls_so_far": total_tool_calls,
+                            "ok": True,
+                            "transition": "handoff",
+                            "handoff_to": target_stage,
+                            "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
+                        })
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call_id,
@@ -1696,6 +1811,16 @@ async def _run_turn_inner(
                             f"Unknown transition target: '{target_stage}'. "
                             f"It is not a routable mode, a fork target, or a workflow stage."
                         )
+                    await _emit_stage("tool_dispatch_complete", {
+                        "tool": tool_name,
+                        "tool_kind": "transition",
+                        "iteration": iteration,
+                        "tool_calls_so_far": total_tool_calls,
+                        "ok": transitioned_to is not None,
+                        "transition": "workflow_stage" if is_workflow else "unknown",
+                        "transitioned_to": transitioned_to,
+                        "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
+                    })
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
@@ -1737,6 +1862,15 @@ async def _run_turn_inner(
             except Exception as exc:  # pylint: disable=broad-except
                 _log.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
                 tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
+
+            await _emit_stage("tool_dispatch_complete", {
+                "tool": tool_name,
+                "tool_kind": _tool_kind,
+                "iteration": iteration,
+                "tool_calls_so_far": total_tool_calls,
+                "ok": not tool_output.startswith("Tool execution failed:"),
+                "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
+            })
 
             if not tool_output.strip():
                 tool_output = "Done"
@@ -1988,11 +2122,52 @@ def _compute_capability_routing_hint(
     has_research_cue = any(cue in query_lower for cue in _research_cues)
     has_reasoning_cue = any(cue in query_lower for cue in _reasoning_cues)
     has_research_then_reason_gap = has_research_cue and has_reasoning_cue
+    # Build the lookup of routable target mode IDs (lowercased → original).
+    targets_lower = {t.lower(): t for t in routing_targets}
+    # Two-goal detection: the request simultaneously asks to remember/learn
+    # something AND to write it out as a markdown document/file. This is the
+    # fork fan-out shape (see docs/ROUTER_DESIGN.md §9): it belongs in two
+    # modes at once (learn for the memory write, markdown for the file
+    # forge), not one. A single-goal handoff drops half the intent. Detect
+    # this before the single-goal branches so we steer the model to fork.
+    _learn_cues = (
+        "remember", "note", "take a note", "reflect", "learning",
+        "insight", "distill", "learn", "capture", "store",
+    )
+    _write_cues = (
+        "write", "markdown", "document", "doc", "file", "draft",
+        "compose", "output", "forge", "produce",
+    )
+    has_learn_cue = any(cue in query_lower for cue in _learn_cues)
+    has_write_cue = any(cue in query_lower for cue in _write_cues)
+    has_two_goal_learn_and_write = has_learn_cue and has_write_cue
+    if has_two_goal_learn_and_write and "learn" in targets_lower and "markdown" in targets_lower:
+        # Build the fork target string from the routable mode IDs that are
+        # actually present. The model must call transition_stage with this
+        # fork target so the FSM fans out two children — each with its own
+        # correct tool surface (learn → memory ops, markdown → file forge).
+        learn_id = targets_lower["learn"]
+        markdown_id = targets_lower["markdown"]
+        fork_target = f"fork:{learn_id},{markdown_id}"
+        hint = (
+            "## Routing Hint\n\n"
+            "This request has two concurrent goals: (1) remember/learn the "
+            "exchange into long-term memory, and (2) write it out as a "
+            "markdown document. Neither goal is a subset of the other — a "
+            "single-mode handoff would drop half the intent. Hand off by "
+            f"calling `transition_stage` with target_stage_id "
+            f"`{fork_target}`. This forks into parallel children: the "
+            f"`{learn_id}` child persists the exchange to memory; the "
+            f"`{markdown_id}` child forges the document to disk. Each child "
+            "runs in its own mode with its own tool surface. Do not call "
+            "markdown or memory tools from the current mode — they are "
+            "mode-scoped and will be rejected."
+        )
+        return hint
     if not (has_tool_gap or has_search_gap or has_research_then_reason_gap):
         return ""
     # Build the hint. Prefer thinkabout for research-then-reason intent;
     # otherwise list all routing targets. Keep the hint actionable and short.
-    targets_lower = {t.lower(): t for t in routing_targets}
     if has_research_then_reason_gap and "thinkabout" in targets_lower:
         preferred = targets_lower["thinkabout"]
         hint = (
@@ -2075,6 +2250,140 @@ async def _rebuild_tool_schemas_for_mode(
     return new_tool_schemas
 
 
+async def _run_fork_child_turn(
+    *,
+    target: ForkTarget,
+    hooks: TurnHooks,
+    child_budget: TurnBudget | None,
+    started: float,
+    logger_override: logging.Logger | None,
+) -> tuple[ForkChildResult, str, int]:
+    """Run one fork child turn and map the outcome to a ``ForkChildResult``.
+
+    Returns ``(result, status, elapsed_ms)`` so the caller can emit a
+    ``fork_child_complete`` stage event without re-deriving the status.
+    Extracted from ``_execute_fork_fanout`` to keep that function under
+    the McCabe complexity cap.
+    """
+    import time as _time
+
+    _flog = logger_override or logger
+    try:
+        child_result = await run_turn(
+            mode_id=target.mode_id,
+            query=target.query,
+            hooks=hooks,
+            max_tool_iterations=5,
+            turn_budget=child_budget,
+            logger_override=_flog,
+        )
+        elapsed_ms = int((_time.monotonic() - started) * 1000)
+        return (
+            ForkChildResult(
+                target=target,
+                status="ok",
+                output_text=child_result.response_text,
+                duration_ms=elapsed_ms,
+            ),
+            "ok",
+            elapsed_ms,
+        )
+    except TimeoutError:
+        elapsed_ms = int((_time.monotonic() - started) * 1000)
+        return (
+            ForkChildResult(
+                target=target,
+                status="timeout",
+                error_message="Child turn timed out.",
+                duration_ms=elapsed_ms,
+            ),
+            "timeout",
+            elapsed_ms,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        elapsed_ms = int((_time.monotonic() - started) * 1000)
+        _flog.warning("fork child %s failed: %s: %s", target.mode_id, type(exc).__name__, exc)
+        return (
+            ForkChildResult(
+                target=target,
+                status="error",
+                error_message=f"{type(exc).__name__}: {exc}",
+                duration_ms=elapsed_ms,
+            ),
+            "error",
+            elapsed_ms,
+        )
+
+
+def _fork_child_budget(
+    turn_budget: TurnBudget | None, n: int
+) -> TurnBudget | None:
+    """Divide the parent turn budget equally across ``n`` children.
+
+    A field set to ``0`` means unlimited and is passed through as ``0``.
+    Returns ``None`` when the parent has no budget.
+    """
+    if turn_budget is None:
+        return None
+    return TurnBudget(
+        max_tool_calls=(
+            turn_budget.max_tool_calls // n if turn_budget.max_tool_calls else 0
+        ),
+        max_total_tokens=(
+            turn_budget.max_total_tokens // n if turn_budget.max_total_tokens else 0
+        ),
+        max_wall_ms=(
+            turn_budget.max_wall_ms // n if turn_budget.max_wall_ms else 0
+        ),
+    )
+
+
+async def _run_fork_child(
+    *,
+    idx: int,
+    target: ForkTarget,
+    results: list[ForkChildResult | None],
+    turn_budget: TurnBudget | None,
+    n: int,
+    hooks: TurnHooks,
+    emit_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
+    logger_override: logging.Logger | None,
+) -> None:
+    """Run one fork child: emit start, run the child turn, store result, emit complete.
+
+    Extracted from ``_execute_fork_fanout`` to keep that orchestrator under
+    the McCabe complexity cap. ``results`` is mutated in place at ``idx``.
+    """
+    import time as _time
+
+    _flog = logger_override or logger
+    started = _time.monotonic()
+    child_budget = _fork_child_budget(turn_budget, n)
+    if emit_stage is not None:
+        await emit_stage("fork_child_start", {
+            "child_index": idx,
+            "mode_id": target.mode_id,
+            "stage_id": target.stage_id,
+            "query_preview": (target.query or "")[:80],
+        })
+    result, status, elapsed_ms = await _run_fork_child_turn(
+        target=target,
+        hooks=hooks,
+        child_budget=child_budget,
+        started=started,
+        logger_override=_flog,
+    )
+    results[idx] = result
+    if emit_stage is not None:
+        await emit_stage("fork_child_complete", {
+            "child_index": idx,
+            "mode_id": target.mode_id,
+            "stage_id": target.stage_id,
+            "status": status,
+            "duration_ms": elapsed_ms,
+        })
+
+
 async def _execute_fork_fanout(
     *,
     fork_targets: list[ForkTarget],
@@ -2086,6 +2395,7 @@ async def _execute_fork_fanout(
     turn_budget: TurnBudget | None,
     turn_start_mono: float,
     logger_override: logging.Logger | None,
+    emit_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
 ) -> list[ForkChildResult]:
     """Execute a parallel fork fan-out to heterogeneous modes.
 
@@ -2096,76 +2406,39 @@ async def _execute_fork_fanout(
     The parent turn's ``TurnBudget`` is divided equally across N children.
     Each child gets a sub-budget. If a child exhausts its sub-budget, it
     returns a partial result.
+
+    ``emit_stage`` is the parent turn's ``_emit_stage`` helper. When set,
+    the fan-out emits ``fork_start`` / ``fork_child_start`` (one per
+    child) / ``fork_child_complete`` (one per child) / ``fork_complete``
+    so a transport can render one line per active child. Child turns
+    run with ``on_stage`` suppressed on their hooks so their internal
+    stage events do not mix into the parent's stage line.
     """
     import asyncio
-    import time as _time
 
     _flog = logger_override or logger
     n = len(fork_targets)
     if n == 0:
         return []
 
-    # Sub-budget allocation: divide parent budget equally across children.
-    # Each field set to 0 means unlimited — pass through as 0 (unlimited).
-    def _child_budget(idx: int) -> TurnBudget | None:
-        if turn_budget is None:
-            return None
-        return TurnBudget(
-            max_tool_calls=(
-                turn_budget.max_tool_calls // n
-                if turn_budget.max_tool_calls
-                else 0
-            ),
-            max_total_tokens=(
-                turn_budget.max_total_tokens // n
-                if turn_budget.max_total_tokens
-                else 0
-            ),
-            max_wall_ms=(
-                turn_budget.max_wall_ms // n
-                if turn_budget.max_wall_ms
-                else 0
-            ),
-        )
+    if emit_stage is not None:
+        await emit_stage("fork_start", {"children": n, "targets": [
+            {"mode_id": t.mode_id, "stage_id": t.stage_id} for t in fork_targets
+        ]})
 
     results: list[ForkChildResult | None] = [None] * n
 
     async def _run_child(idx: int, target: ForkTarget) -> None:
-        started = _time.monotonic()
-        child_budget = _child_budget(idx)
-        try:
-            child_result = await run_turn(
-                mode_id=target.mode_id,
-                query=target.query,
-                hooks=hooks,
-                max_tool_iterations=5,
-                turn_budget=child_budget,
-                logger_override=_flog,
-            )
-            elapsed_ms = int((_time.monotonic() - started) * 1000)
-            results[idx] = ForkChildResult(
-                target=target,
-                status="ok",
-                output_text=child_result.response_text,
-                duration_ms=elapsed_ms,
-            )
-        except asyncio.TimeoutError:
-            elapsed_ms = int((_time.monotonic() - started) * 1000)
-            results[idx] = ForkChildResult(
-                target=target,
-                status="timeout",
-                error_message="Child turn timed out.",
-                duration_ms=elapsed_ms,
-            )
-        except Exception as exc:  # pylint: disable=broad-except
-            elapsed_ms = int((_time.monotonic() - started) * 1000)
-            _flog.warning("fork child %s failed: %s: %s", target.mode_id, type(exc).__name__, exc)
-            results[idx] = ForkChildResult(
-                target=target,
-                status="error",
-                error_message=f"{type(exc).__name__}: {exc}",
-                duration_ms=elapsed_ms,
-            )
+        await _run_fork_child(
+            idx=idx,
+            target=target,
+            results=results,
+            turn_budget=turn_budget,
+            n=n,
+            hooks=hooks,
+            emit_stage=emit_stage,
+            logger_override=_flog,
+        )
 
     try:
         async with asyncio.TaskGroup() as tg:
@@ -2185,6 +2458,12 @@ async def _execute_fork_fanout(
                 status="cancelled",
                 error_message="Child turn was cancelled.",
             ))
+    if emit_stage is not None:
+        await emit_stage("fork_complete", {
+            "children": n,
+            "ok": sum(1 for r in final_results if r.status == "ok"),
+            "failed": sum(1 for r in final_results if r.status != "ok"),
+        })
     return final_results
 
 
