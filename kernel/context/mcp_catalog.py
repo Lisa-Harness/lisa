@@ -161,7 +161,6 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         routable=data.get("routable", False),
         priority=data.get("priority", 0),
         fast_path_patterns=data.get("fast_path_patterns", []),
-        route_hints=data.get("route_hints", []),
         examples=data.get("examples", []),
         command_pattern=data.get("command_pattern", ""),
         require_query=data.get("require_query", False),

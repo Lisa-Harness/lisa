@@ -341,8 +341,6 @@ routable: true              # required for handoff targets
 priority: 6                 # higher = earlier in catalog ordering
 fast_path_patterns:         # regex list for zero-cost pre-turn hint
   - '\bmarkdown\b'
-route_hints:                # used by fast-path, not a planner
-  - "Prefer markdown when the user wants to write a markdown document."
 command_pattern: '^(?:/)?markdown(?:[\s,:;]+(?P<query>.+))?$'
 allowed_tool_ids:
   - markdown_generate
@@ -358,7 +356,6 @@ tools_authoritative: true
 | `routable` | Must be `true` to appear as a handoff target | Yes |
 | `priority` | Catalog ordering (higher = earlier) | No (default 0) |
 | `fast_path_patterns` | Regex list for zero-cost pre-turn hint | No |
-| `route_hints` | Hint strings for the fast-path verifier | No |
 | `command_pattern` | Slash-command regex for `parse_route` | No (for `/mode` entry) |
 | `allowed_tool_ids` | Tool surface for this mode | No (but recommended) |
 | `tools_authoritative` | When `true`, empty `allowed_tool_ids` = no tools | No (default `true`) |

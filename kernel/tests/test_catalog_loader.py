@@ -179,24 +179,24 @@ def test_apply_mode_overrides_allows_kernel_owned_overridable_keys(tmp_path: Pat
     assert merged["default_model"] == "gpt-new"
 
 
-def test_apply_mode_overrides_deep_merges_route_hints(tmp_path: Path) -> None:
+def test_apply_mode_overrides_deep_merges_app_owned_lists(tmp_path: Path) -> None:
     """Dict-valued overrides are deep-merged; list-valued overrides replace."""
     mode_dir = tmp_path / "demo"
     mode_dir.mkdir()
     base = {
         "mode_id": "demo",
         "custom": {"a": 1, "nested": {"x": 1}},
-        "route_hints": ["old"],
+        "custom_list": ["old"],
     }
     _write_overrides(
         mode_dir,
-        {"custom": {"b": 2, "nested": {"y": 2}}, "route_hints": ["new"]},
+        {"custom": {"b": 2, "nested": {"y": 2}}, "custom_list": ["new"]},
     )
 
     merged = _apply_mode_overrides(mode_dir, base)
     assert merged["custom"] == {"a": 1, "b": 2, "nested": {"x": 1, "y": 2}}
     # Lists replace (no concatenation).
-    assert merged["route_hints"] == ["new"]
+    assert merged["custom_list"] == ["new"]
 
 
 def test_apply_mode_overrides_replaces_lenses(tmp_path: Path) -> None:
@@ -315,8 +315,6 @@ def test_load_catalog_from_disk_does_not_leak_kernel_keys_into_extra_front_matte
         extra_front_matter={
             "routable": True,
             "priority": 5,
-            "route_hints": ["hint"],
-            "examples": ["example"],
             "default_model": "gpt-demo",
             "description": "should not leak",
         },
@@ -326,15 +324,11 @@ def test_load_catalog_from_disk_does_not_leak_kernel_keys_into_extra_front_matte
     extra = catalog["demo"].extra_front_matter
     assert "routable" not in extra
     assert "priority" not in extra
-    assert "route_hints" not in extra
-    assert "examples" not in extra
     assert "default_model" not in extra
     assert "description" not in extra
     # And the typed fields picked them up.
     assert catalog["demo"].routable is True
     assert catalog["demo"].priority == 5
-    assert catalog["demo"].route_hints == ["hint"]
-    assert catalog["demo"].examples == ["example"]
     assert catalog["demo"].default_model == "gpt-demo"
     assert catalog["demo"].description == "should not leak"
 

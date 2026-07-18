@@ -6,17 +6,6 @@ mode_kind: chat
 routable: true
 priority: 5
 pre_turn_operation_ids: [discussion_briefing]
-route_hints:
-  - Route to `discuss` when the user asks to brainstorm, debate, or explore ideas conversationally without asking for research.
-  - Prefer `discuss` when the user is asking for a discussion, brainstorming, or conversational exploration of a topic.
-examples:
-  - reasoning: "User asks for conversational evaluation; discuss owns that shape."
-    selected_mode_id: discuss
-    normalized_query: Is this a good idea?
-    clarification_needed: false
-    clarification_question: ""
-    direct_response: ""
-    confidence_score: 0.85
 command_pattern: "^(?:/)?discuss(?:[\\s,:;]+(?P<query>.+))?$"
 description: "Conversational discussion mode with an optional pre-turn briefing."
 ---

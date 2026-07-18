@@ -1162,12 +1162,6 @@ class WorkflowModeConfig(BaseModel):
     # Optional regex patterns for high-precision fast-path candidate detection.
     # Patterns are authored in mode front matter and evaluated case-insensitively.
     fast_path_patterns: list[str] = Field(default_factory=list)
-    # Optional natural-language route hints for the router planner prompt.
-    # These are mode-authored prompt fragments, not executable matchers.
-    route_hints: list[str] = Field(default_factory=list)
-    # Optional route examples for the router planner prompt.
-    # Each entry is markdown/plaintext content authored per mode.
-    examples: list[str] = Field(default_factory=list)
     # Python regex string used by parse_route() to detect activation.
     # Must include a named group (?P<query>...) for the trailing user text.
     command_pattern: str = ""

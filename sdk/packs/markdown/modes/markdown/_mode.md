@@ -9,24 +9,6 @@ fast_path_patterns:
   - '\b(forge|draft|write|compose|output|create|generate|make|produce)\b.*\b(document|doc|markdown|runbook|post|note)\b'
   - '\b(document|doc|markdown|runbook|post|note)\b.*\b(forge|draft|write|compose|output|create|generate|make|produce)\b'
   - '\bmarkdown\b'
-route_hints:
-  - Prefer `markdown` when the user wants to output, create, generate, write, or produce a markdown document (e.g. "output a markdown that captures...", "create a markdown runbook", "generate a doc").
-  - Prefer `markdown` when the user asks to turn the conversation or research into a markdown document.
-examples:
-  - reasoning: "User wants to output a markdown document capturing research and conversation."
-    selected_mode_id: markdown
-    normalized_query: output a markdown that captures all the detail of that research and the subsequent conversation
-    clarification_needed: false
-    clarification_question: ""
-    direct_response: ""
-    confidence_score: 0.9
-  - reasoning: "User wants to draft a markdown document from memory."
-    selected_mode_id: markdown
-    normalized_query: write a markdown document that summarizes our conversation
-    clarification_needed: false
-    clarification_question: ""
-    direct_response: ""
-    confidence_score: 0.9
 allowed_operation_ids: []
 allowed_tool_ids:
   - markdown_generate

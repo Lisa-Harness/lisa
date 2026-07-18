@@ -309,8 +309,6 @@ _KERNEL_OWNED_FRONT_MATTER_KEYS: frozenset[str] = _MODE_OVERRIDES_PROTECTED_KEYS
     {
         "description",
         "default_model",
-        "route_hints",
-        "examples",
         "mode_provider_id",
         "context_evidence_packs",
     }
@@ -585,46 +583,6 @@ def load_catalog_from_disk(
                 ) from exc
             fast_path_patterns.append(pattern)
 
-        route_hints_raw = mode_front_matter.get("route_hints")
-        if route_hints_raw is None:
-            route_hints_raw = []
-        if not isinstance(route_hints_raw, list):
-            raise WorkflowValidationError(
-                f"route_hints must be a list in {mode_config_path}"
-            )
-        route_hints: list[str] = []
-        for idx, raw_hint in enumerate(route_hints_raw):
-            if not isinstance(raw_hint, str):
-                raise WorkflowValidationError(
-                    f"route_hints[{idx}] must be a string in {mode_config_path}"
-                )
-            hint = raw_hint.strip()
-            if not hint:
-                raise WorkflowValidationError(
-                    f"route_hints[{idx}] cannot be empty in {mode_config_path}"
-                )
-            route_hints.append(hint)
-
-        examples_raw = mode_front_matter.get("examples")
-        if examples_raw is None:
-            examples_raw = []
-        if not isinstance(examples_raw, list):
-            raise WorkflowValidationError(
-                f"examples must be a list in {mode_config_path}"
-            )
-        examples: list[str] = []
-        for idx, raw_example in enumerate(examples_raw):
-            if not isinstance(raw_example, str):
-                raise WorkflowValidationError(
-                    f"examples[{idx}] must be a string in {mode_config_path}"
-                )
-            example = raw_example.strip()
-            if not example:
-                raise WorkflowValidationError(
-                    f"examples[{idx}] cannot be empty in {mode_config_path}"
-                )
-            examples.append(example)
-
         # Parse default_intent_bridges: list of bridge configs from mode front-matter.
         default_intent_bridges = []
         bridges_raw = mode_front_matter.get("default_intent_bridges") or []
@@ -708,8 +666,6 @@ def load_catalog_from_disk(
             routable=routable,
             priority=priority,
             fast_path_patterns=fast_path_patterns,
-            route_hints=route_hints,
-            examples=examples,
             command_pattern=command_pattern,
             require_query=require_query,
             entry_operation_ids=entry_operation_ids,

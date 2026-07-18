@@ -210,11 +210,6 @@ def _load_one_mode(
         "routable": bool(front_matter.get("routable", False)),
         "priority": int(front_matter.get("priority", 0) or 0),
         "fast_path_patterns": [str(p) for p in (front_matter.get("fast_path_patterns") or [])],
-        "route_hints": [str(h) for h in (front_matter.get("route_hints") or [])],
-        "examples": [
-            json.dumps(e) if isinstance(e, dict) else str(e)
-            for e in (front_matter.get("examples") or [])
-        ],
         "command_pattern": str(front_matter.get("command_pattern", "") or ""),
         "require_query": bool(front_matter.get("require_query", False)),
         "entry_operation_ids": [str(o) for o in (front_matter.get("entry_operation_ids") or [])],

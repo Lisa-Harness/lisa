@@ -190,7 +190,7 @@ All IDs must be non-empty strings.
 
 ### `routing`
 
-Session-level routing is currently a single seed: the initial mode the runtime pins at startup. Per-mode routing hints and priority are authored in each mode's `_mode.md` front matter (`route_hints`, `priority`), not in the session plan.
+Session-level routing is currently a single seed: the initial mode the runtime pins at startup. Per-mode routing priority is authored in each mode's `_mode.md` front matter (`priority`), not in the session plan.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |

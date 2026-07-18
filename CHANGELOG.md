@@ -6,6 +6,10 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Changed
 
+#### `route_hints` and `examples` front-matter fields removed (hard cutover)
+
+- **`route_hints` and `examples` removed from all `_mode.md` front matter and the loader.** Both fields were vestigial from the removed separate-stateless-planner router (`kernel/router.py:plan_route`). Under the unified FSM, no runtime path read either field — they were parsed, validated, stored on `WorkflowModeConfig`, and never consumed at turn time. Removed from: all mode `_mode.md` files (`default` ×2, `learn`, `markdown`, `discuss`, `search`, `thinkabout`), `kernel/ipsar_fsm.py` (loader blocks + `_KERNEL_OWNED_FRONT_MATTER_KEYS`), `kernel/models.py` (`WorkflowModeConfig.route_hints` + `WorkflowModeConfig.examples` fields), `kernel/context/mcp_catalog.py`, `sdk/content/_catalog.py`, and `kernel/tests/test_catalog_loader.py`.
+
 #### Pack repository split
 
 - **External packs moved to `github.com/lisa-framework/packs`**: `lisa_pack_brave_search`, `lisa_pack_cloudflare`, `lisa_pack_github`, `lisa_pack_gmail`, `lisa_pack_mem0`, `lisa_pack_model_picker`, and `lisa_pack_stripe` are now in the standalone `lisa_packs` repo. Import paths renamed from `lisa_pack_*` to the shared `lisa_packs.*` namespace (e.g. `lisa_packs.cloudflare`). The framework consumes them via path dependencies (`../lisa_packs/<pack>`).
@@ -20,7 +24,7 @@ All notable changes to the Lisa Framework will be documented in this file.
 #### Kernel (`lisa-kernel`)
 
 - Extension front matter support: `WorkflowModeConfig.extra_front_matter` now carries every app/pack-owned front-matter key the kernel does not interpret (e.g. `lenses` — mode perspective tags like `lens.conversation`, `lens.reflection`). The kernel owns a fixed set of front-matter keys (routing, FSM, operation bindings, workshop config) and passes everything else through opaquely as extension data. Hosts and packs read `extra_front_matter` directly; the kernel never names, validates, or curates app-owned keys, so adding a new app-owned front-matter key requires no kernel change.
-- Front-matter overrides via an optional sibling `_overrides.yaml` file beside each `_mode.md`. Apps can manage extension front matter (and a small set of kernel-owned but overridable fields: `description`, `default_model`, `route_hints`, `examples`) without editing pack-owned `_mode.md` files. The boundary is a **denylist**: the kernel names only the keys it owns and protects (routing, FSM, operation bindings, workshop config); attempting to override any kernel-owned key is rejected with a startup validation error. Every other key is app/pack-owned and passes through untouched. Overrides are deep-merged on top of the authored front matter; list values replace (not concatenate).
+- Front-matter overrides via an optional sibling `_overrides.yaml` file beside each `_mode.md`. Apps can manage extension front matter (and a small set of kernel-owned but overridable fields: `description`, `default_model`) without editing pack-owned `_mode.md` files. The boundary is a **denylist**: the kernel names only the keys it owns and protects (routing, FSM, operation bindings, workshop config); attempting to override any kernel-owned key is rejected with a startup validation error. Every other key is app/pack-owned and passes through untouched. Overrides are deep-merged on top of the authored front matter; list values replace (not concatenate).
 
 ### Changed
 
