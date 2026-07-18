@@ -1,35 +1,53 @@
 # Router Design
 
 This document is the consolidated reference for the Lisa Framework's routing
-system. It covers the turn-time dispatch contract, the router planner engine,
-the interaction with staged workflow modes, the session-context controls that
-gate routing, and the known design tensions.
+system. It covers the turn-time dispatch contract, the unified FSM routing
+mechanism (mode handoff via `transition_stage`), the interaction with staged
+workflow modes, the session-context controls that gate routing, and the
+fork fan-out pattern.
+
+> **What changed.** The old separate stateless router planner
+> (`kernel/router.py:plan_route`) was removed in a hard cutover. There is no
+> longer a pre-turn model call to decide which mode owns a turn. Instead,
+> natural-language turns go directly to `current_mode_id` (defaults to
+> `default`), and the model hands off between modes mid-turn by calling
+> `transition_stage` — the same mechanism already used for workflow stage
+> advancement. One mechanism, one interception point, zero extra model calls.
+> See `docs/ROUTING_RFC_HANDOFF.md` for the full design rationale.
 
 ---
 
 ## 1. Overview
 
-The router decides which **user-facing mode** owns one natural-language turn.
-It is a bounded, stateless planner: one model call (or a fast-path shortcut) per
-turn, producing a `RouteDecision` that selects a mode, optionally normalizes the
-query, and may request clarification or return a direct response.
+Routing decides which **user-facing mode** owns one natural-language turn.
+Under the unified FSM, routing is an **emergent property of the turn loop**,
+not a separate pre-turn planner.
 
-The router is **not** a general dispatcher. Slash commands, deep-mode prefixes,
-and the `start_mode` pin all bypass it entirely. It only runs on natural-language
-turns, and only when the user is not sitting in the session's pinned start mode.
+The model starts every NL turn in `current_mode_id` (usually `default`).
+If the current mode can handle the request, the model just does the work.
+If a better-suited mode exists, the model calls `transition_stage` with the
+target `mode_id` — the turn loop intercepts it, swaps the system prompt and
+tool surface, and continues the loop in the new mode. Chat history is
+preserved across the handoff.
 
 ### Design Principles
 
-- **Contracts over implementations.** The kernel defines `RouteDecision`,
-  `SurfaceContext`, and the planner protocol. Hosts inject completion functions
-  and prompt loaders.
-- **No compat or migration layers.** The old `kernel/frontdoor.py` was removed
-  in a hard cutover. There is no shim, no dual-path, no fallback to the old name.
-- **Bounded by default.** The planner model gets a tight token budget, a
-  structured output schema (`RouteDecision`), and a catalog of routable modes.
-  It cannot call tools or invent capabilities.
-- **Stateless.** The router has no memory of prior turns, active workflow
-  sessions, or FSM stage. Each NL turn is a fresh mode-ownership decision.
+- **One mechanism.** `transition_stage` handles workflow stage advancement,
+  mode handoff, and fork fan-out. There is no separate router, no separate
+  handoff primitive, no separate fan-out operation.
+- **No compat or migration layers.** The old `kernel/router.py`,
+  `hosts/core/routing.py`, `RouteDecision` model, and `WorkshopExecutionService`
+  were all removed in a hard cutover. No shims, no dual-path.
+- **Zero extra model calls.** The old router spent one planner call per NL
+  turn before the real turn. The unified FSM folds routing into the main
+  turn's tool-call loop — the model hands off as part of its normal work.
+- **Full conversation context.** The old router saw only a short excerpt.
+  The unified FSM sees the full chat history because routing happens inside
+  the turn loop.
+- **Proactive hints, not reactive discovery.** A capability-manifest-aware
+  hint is injected into the system prompt *before* the model call when the
+  current mode lacks tools the query seems to need. The model doesn't waste
+  an iteration discovering it can't do something.
 
 ---
 
@@ -46,30 +64,32 @@ flowchart TD
     D -->|yes| E[ipsar.parse_route<br/>string parser, no model call]
     D -->|no| F{start_mode != default
 AND current == start_mode?}
-    F -->|yes| G[start_mode bypass<br/>router skipped]
-    F -->|no| H[Router planner]
-    H --> I{clarification needed?}
-    I -->|yes| J[Return clarification question]
-    I -->|no| K{direct_response and default mode?}
-    K -->|yes| L[Return direct response]
-    K -->|no| M[Execute resolved mode turn]
-    G --> M
-    C --> M
-    E --> M
+    F -->|yes| G[start_mode bypass<br/>go directly to pinned mode]
+    F -->|no| H[Go to current_mode_id<br/>usually default]
+    H --> I[Model runs in current mode]
+    I --> J{Model calls transition_stage?}
+    J -->|mode_id target| K[Mid-turn handoff:<br/>swap prompt + tools]
+    J -->|fork: target| L[Parallel fan-out<br/>via asyncio.TaskGroup]
+    J -->|workflow stage| M[FSM stage transition<br/>existing path]
+    J -->|no| N[Normal tool dispatch / final response]
+    K --> I
+    L --> I
+    M --> I
+    G --> I
+    C --> I
+    E --> I
 ```
 
 | Priority | Path | Mechanism | Model call? |
 | --- | --- | --- | --- |
-| 1 | `/deep <query>` | `explicit_deep_query()` → default mode + deep model | No |
+| 1 | `/deep <query>` | `explicit_deep_query()` → default mode + deep model | No (for routing) |
 | 2 | `/<command> <query>` | `kernel.ipsar.parse_route()` — string parser | No |
-| 3a | NL, `start_mode != default` and `current_mode_id == start_mode` | Start-mode bypass — direct to mode | No |
-| 3b | NL, otherwise (incl. `start_mode == default`) | Router planner (`plan_route`) | Yes |
+| 3a | NL, `start_mode != default` and `current_mode_id == start_mode` | Start-mode bypass — direct to pinned mode | No |
+| 3b | NL, otherwise (incl. `start_mode == default`) | Go to `current_mode_id` (usually `default`) | No (for routing) |
 
-The key guard is branch 3a. When `start_mode` is a real owning mode (not
-`default`) and `current_mode_id == start_mode`, the router is **skipped
-entirely** and the turn goes straight to the declared mode. `default` is
-exempt (see §3) so the router runs on natural-language turns when the
-session starts in `default` — the common case.
+The key change from the old design: branch 3b no longer calls a router
+planner. It goes directly to `current_mode_id`. The model decides during
+the turn whether to hand off to a different mode.
 
 ---
 
@@ -87,7 +107,7 @@ routing:
   priority_adjustments:
     discuss: 50             # override mode priority for catalog ordering
   hints:
-    thinkabout:             # per-mode routing hints injected into the planner prompt
+    thinkabout:             # per-mode hint strings (used by fast-path, not a planner)
       - "Prefer thinkabout for tradeoff analysis."
 ```
 
@@ -101,25 +121,24 @@ class SessionRouting(_StrictSessionModel):
     hints: dict[str, tuple[str, ...]] = Field(default_factory=dict)
 ```
 
-`start_mode` defaults to `"default"` and is **never `None`** at the plan level.
-The runtime initializes `current_mode_id` to the same value:
+`start_mode` defaults to `"default"` and seeds `current_mode_id` at runtime
+initialization:
 
 ```python
 # hosts/core/runtime.py
 self.current_mode_id: str = self.session_plan.manifest.routing.start_mode
 ```
 
-The `start_mode` key is a **bypass pin**: when `current_mode_id == start_mode`,
-the router is skipped and the turn goes directly to the pinned mode. This keeps
-the user pinned in a declared owning mode (e.g. `learn`, `coding`, `research`)
-unless they explicitly `/switch` away.
+The `start_mode` key is a **bypass pin**: when `current_mode_id == start_mode`
+and `start_mode != "default"`, the turn goes directly to the pinned mode. This
+keeps the user pinned in a declared owning mode (e.g. `learn`, `coding`,
+`research`) unless they explicitly `/switch` away.
 
 ### `default` is exempt from the bypass
 
-`default` is the router's own fallback, not a real owning mode. Pinning it
-would silently disable routing on every turn (`current_mode_id == "default"
-== start_mode` → bypass fires forever, router never runs). The bypass guard
-in `handle_message.py` therefore exempts `default`:
+`default` is not a real owning mode — it's the routing hub. Pinning it would
+silently disable handoff routing on every turn. The bypass guard in
+`handle_message.py` exempts `default`:
 
 ```python
 if (
@@ -127,249 +146,267 @@ if (
     and start_mode != "default"
     and runtime.current_mode_id == start_mode
 ):
-    # bypass: go directly to start_mode, skip router
+    # bypass: go directly to start_mode
 ```
 
-This means `start_mode: default` (the implicit default) means "let the router
-decide," not "pin to default." Natural-language turns in default mode are
-routed by the planner. Only real owning modes trigger the bypass.
+This means `start_mode: default` (the implicit default) means "let the model
+decide via handoff," not "pin to default."
 
-### Other routing keys
+### How `current_mode_id` changes
 
-| Key | Purpose |
-| --- | --- |
-| `aliases` | Maps short slash commands to mode IDs (e.g. `go: discuss`). |
-| `priority_adjustments` | Overrides mode `priority` from `_mode.md` front matter for catalog ordering. |
-| `hints` | Per-mode hint strings injected into the router system prompt via `{{ROUTER_ROUTE_HINTS}}`. |
+After each turn, `_execute_mode_turn` checks `TurnResult.handoff_to`. If the
+model called `transition_stage` with a `mode_id` target, the host updates
+`current_mode_id`:
+
+```python
+# hosts/core/handle_message.py — after run_turn returns
+if result.handoff_to and result.handoff_to != mode.mode_id:
+    runtime.current_mode_id = result.handoff_to
+```
+
+The next NL turn starts in the new mode. The model can hand off back to
+`default` or to any other routable mode.
 
 ---
 
-## 4. Router Planner Engine
+## 4. Unified FSM Routing
 
-The planner lives in `kernel/router.py`. Its entry point is `plan_route()`.
+### The routing FSM
 
-### Three-tier resolution
+The routing FSM is a **meta-FSM** that sits above the per-mode workflow FSM.
+It is synthesized from the mode catalog at startup by
+`kernel/ipsar_fsm.py:synthesize_routing_transitions()`:
 
-```mermaid
-flowchart TD
-    A[plan_route] --> B{Empty or model-config question?}
-    B -->|yes| C[Deterministic fallback]
-    B -->|no| D{Fast-path regex match?}
-    D -->|yes| E[Fast-path verifier model call]
-    E -->|verifier confirms| F[fast_path_verified decision]
-    E -->|verifier abstains| G[Model-bounded route]
-    D -->|no| G
-    G --> H{Model call succeeds?}
-    H -->|yes| I[model_bounded decision]
-    H -->|no| C
-```
-
-| Tier | Source | Model call | How it decides |
-| --- | --- | --- | --- |
-| 1. Fast-path regex | `fast_path_deterministic` / `fast_path_verified` | 0 or 1 (verifier) | Mode-authored `fast_path_patterns` regex match → optional verifier confirmation. |
-| 2. Model-bounded | `model_bounded` | 1 | Full router prompt with catalog + hints + examples; model returns `RouteDecision` JSON. |
-| 3. Deterministic fallback | `deterministic` | 0 | Preserve `current_route_mode` or fall back to `"default"`. |
-
-### Fast-path tier
-
-Each mode may declare `fast_path_patterns` in `_mode.md` front matter — a list
-of regexes. On each NL turn, the router tests the normalized message against all
-routable modes' patterns in priority order. If exactly one matches (and the
-message has no multi-intent disqualifiers like "and", "also", "versus", or
-multiple question marks), the router sends a **bounded verifier** call to the
-planner model with just the candidate mode's description. If the verifier
-returns `outcome: "confirm"`, routing is decided without the full prompt.
-
-```yaml
-# _mode.md front matter
-fast_path_patterns:
-  - "\\bthink\\s+about\\b"
-  - "\\bgo\\s+in\\s+depth\\b"
-  - "\\banalyze\\s+(?:this|tradeoffs?)\\b"
-```
-
-Multi-intent disqualifiers (`_FAST_PATH_MULTI_INTENT_RE`): `and`, `also`,
-`plus`, `as well as`, `along with`, `then`, `after that`, `vs.`, `versus`.
-When any of these appear, the fast path is skipped and the full model-bounded
-route runs.
-
-### Model-bounded tier
-
-The full router prompt is composed from `sdk/packs/core/content/router/route.md`
-with three placeholders filled:
-
-| Placeholder | Injected content |
-| --- | --- |
-| `{{ROUTER_ROUTE_CATALOG}}` | Markdown summary of all routable modes (id, description, kind, query-required). |
-| `{{ROUTER_ROUTE_HINTS}}` | Mode-authored `route_hints` bullets, plus session-authored `routing.hints`. |
-| `{{ROUTER_ROUTE_EXAMPLES}}` | Mode-authored `examples` (JSON `RouteDecision`-shaped few-shot examples). |
-
-The planner model returns a `RouteDecision` JSON object. If the selected mode
-is not in the allowed set, it falls back to `"default"`. If the model call fails
-(ValidationError, RuntimeError, etc.), the deterministic fallback preserves the
-current mode.
-
-### Prompt profiles
-
-The router prompt verbosity adapts to the planner model:
+- **`default`** can hand off to every routable mode.
+- **Every routable mode** can hand off back to `default`.
+- **Mode-to-mode transitions** (e.g. `coding → markdown`) are a future
+  authored opt-in. The initial FSM is conservative: `default ↔ all`.
 
 ```python
-def select_prompt_profile(model_id: str) -> RouterPromptProfile:
-    if "nano" in lowered: return "compact"
-    if "mini" in lowered: return "standard"
-    return "rich"
+# kernel/ipsar_fsm.py
+def synthesize_routing_transitions(catalog) -> dict[str, list[str]]:
+    routable_ids = get_routable_mode_ids(catalog)
+    transitions = {}
+    for mode_id, mode_config in catalog.items():
+        if mode_id == "default":
+            transitions[mode_id] = [m for m in routable_ids if m != "default"]
+        elif mode_config.routable:
+            transitions[mode_id] = ["default"]
+        else:
+            transitions[mode_id] = []
+    return transitions
 ```
 
-| Profile | Catalog detail | Example content |
+### How `transition_stage` handles three target kinds
+
+The `transition_stage` tool is now advertised to **all routable modes** (not
+just workflow modes). The interception block in `kernel/turn_runner.py`
+distinguishes three cases based on the `target_stage_id` argument:
+
+| Target kind | Example `target_stage_id` | What happens |
 | --- | --- | --- |
-| `compact` | Mode id + one-sentence description | None |
-| `standard` | + mode kind, query-required flag | None |
-| `rich` | + direct command hint (`/<mode_id>`) | Full examples |
+| **Mode handoff** | `"markdown"` | Swap system prompt + tool surface for the new mode. Set `handoff_to` on `TurnResult`. Continue the loop. |
+| **Fork fan-out** | `"fork:coding/implement,thinkabout/review"` | Parse targets, fan out children via `asyncio.TaskGroup`, collect results into `fork_results`. Continue the loop. |
+| **Workflow stage** | `"reason"` (a stage in the current mode's FSM) | Existing `apply_transition` path. Update `workflow_session`. Continue the loop. |
 
-### Direct-response shortcut
+The interception checks in this order:
 
-When the router planner returns a `direct_response` and the selected mode is
-`default`, the turn runner **skips the full model turn** and returns the
-planner's response directly. This is the `_try_router_shortcut` path in
-`handle_message.py`. It avoids a second model call for trivial questions the
-planner can answer inline.
+1. Is it a fork target? (`is_fork_target()` — starts with `fork:`)
+2. Is it a routable mode? (`is_routable_mode()` — in the mode catalog with `routable: true`)
+3. Is it a workflow stage? (existing `is_workflow` path)
 
-### Model configuration guard
+### Mid-turn mode handoff (Case 1)
 
-Messages asking about model selection ("which model", "switch to", "default
-chat", etc.) are detected by `looks_like_model_configuration_question()` and
-routed deterministically to `default` — the router never spends a planner call
-on meta-questions about routing itself.
+When the model calls `transition_stage(target_stage_id="markdown")`:
+
+1. The loop validates the handoff is allowed (`target in get_routing_targets(current_mode_id)`).
+2. `messages[0]` (system prompt) is swapped to the new mode's `_mode.md` body.
+3. Tool schemas are rebuilt for the new mode's `allowed_tool_ids`.
+4. The capability manifest is recompiled for the new tool surface.
+5. `mode_id` and `mode_config` are updated to the new mode.
+6. `handoff_to` is set on the `TurnResult`.
+7. The loop continues — the next model call uses the new prompt + tools.
+
+**Chat history is preserved.** Only `messages[0]` (system prompt) changes.
+All prior user/assistant/tool messages stay in the `messages` list.
+
+### Fork fan-out (Case 2)
+
+When the model calls `transition_stage(target_stage_id="fork:coding,markdown")`:
+
+1. The fork string is parsed into `(mode_id, stage_id)` pairs.
+2. Each target is validated against the mode catalog.
+3. Children are fanned out via `asyncio.TaskGroup` — each child runs
+   `run_turn()` with its own mode's system prompt and tool surface.
+4. The parent turn's `TurnBudget` is divided equally across N children.
+5. Results are collected into `fork_results: list[ForkChildResult]`.
+6. The loop continues — the model sees the fork results as the tool output
+   and can synthesize from them.
+
+Fork target syntax:
+
+```plaintext
+fork:coding,markdown                         # two modes, default start_stage
+fork:coding/implement,thinkabout/review       # with explicit stages
+fork:search,calendar,email                   # heterogeneous parallel workers
+```
+
+Per-worker queries can be passed in `tool_arguments.queries` (a list parallel
+to the fork targets). When not provided, each worker receives the user's
+original message.
+
+### Workflow stage transition (Case 3)
+
+This is the existing path, unchanged. When the model calls
+`transition_stage(target_stage_id="reason")` and `reason` is a stage in the
+current workflow mode's FSM:
+
+1. `apply_transition()` validates the transition against `allowed_next_stages`.
+2. `workflow_session_updater` persists the new `stage_id`.
+3. If the new stage is terminal, the loop forces one final no-tools completion.
+4. A stuck-session guard nudges after `_STAGE_NUDGE_THRESHOLD` (4) turns and
+   forces completion after `_STAGE_NUDGE_CAP` (6).
 
 ---
 
-## 5. RouteDecision Contract
+## 5. Capability-Manifest-Aware Proactive Hints
 
-The structured output schema returned by the router planner. Defined in
-`kernel/models.py`.
+Before the model call, the turn runner compiles a `CapabilityManifest` from
+the live tool schemas. It then compares the manifest against the user's query:
 
-```python
-class RouteDecision(BaseModel):
-    reasoning: str = ""
-    selected_mode_id: str = "default"
-    normalized_query: str = ""
-    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
-    alternatives: list[RouteDecisionAlternative] = Field(default_factory=list)
-    clarification_needed: bool = False
-    clarification_question: str = ""
-    direct_response: str = ""
-    planner_source: RoutePlannerSource = "deterministic"
-    prompt_profile: RouterPromptProfile = "standard"
-    optional_context_include: list[OptionalContextLane] = Field(default_factory=list)
-    optional_context_exclude: list[OptionalContextLane] = Field(default_factory=list)
+- If the current mode lacks file-writing tools and the query mentions "write",
+  "save", "document", "file", "code", or "read" → inject a routing hint.
+- If the current mode lacks search tools and the query mentions "search" →
+  inject a routing hint.
+
+The hint is a conditional string appended to the system prompt:
+
+```text
+## Routing Hint
+
+Your current mode may lack the tools needed for this request. You can hand
+off to a better-suited mode by calling `transition_stage` with one of these
+target_stage_id values: markdown, coding, search.
 ```
 
-### Planner sources
-
-```python
-RoutePlannerSource = Literal[
-    "deterministic",        # fallback, no model call
-    "fast_path_verified",    # regex + verifier confirmed
-    "fast_path_deterministic",  # regex only (reserved)
-    "model_bounded",        # full planner model call
-    "user_preset",          # start_mode bypass or slash command
-    "active_session",       # (reserved, not yet wired)
-]
-```
-
-### Optional context lanes
-
-The router can hint which optional context lanes to include or exclude for the
-executing mode. Sanitized against a fixed order:
-
-```python
-_OPTIONAL_CONTEXT_LANE_ORDER = (
-    "reflection",
-    "passive_intelligence",
-    "memory_recall",
-    "architecture_context",
-    "capability_snapshot",
-)
-```
+This is **proactive** — the model knows before it tries. And it's **zero-cost**
+when the current mode can handle the request (no hint is injected, no extra
+tokens).
 
 ---
 
-## 6. Router Prompt
+## 6. What the Model Sees
 
-The base prompt is authored in
-`sdk/packs/core/content/router/route.md`. It is intentionally narrow and
-bounded:
+The model sees `transition_stage` as a tool with a `target_stage_id` parameter.
+The tool description tells it what values are valid. For a `default` mode
+session, the valid targets include every routable mode:
 
-```markdown
-You are the Router. Your job is narrow and bounded:
-
-1. Think carefully first and document your thinking in `reasoning`.
-2. Decide which user-facing mode should own this turn.
-3. Rewrite the request only when a tiny normalization makes the chosen mode
-   easier to run.
-4. Ask a clarification question only when routing would otherwise be
-   meaningfully wrong.
-
-Rules:
-- Do not answer the user unless you are also the default executor and choose
-  to fulfill the request directly in `direct_response`.
-- Do not invent capabilities.
-- Do not call tools.
+```json
+{
+  "name": "transition_stage",
+  "description": "Move to the next workflow stage or hand off to another mode...",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "target_stage_id": {
+        "type": "string",
+        "description": "The target stage or mode_id..."
+      },
+      "rationale": { "type": "string" }
+    }
+  }
+}
 ```
 
-The output format is strictly one JSON object matching `RouteDecision`. No
-Markdown fences, no prose, no commentary. The `reasoning` field is capped at
-one sentence (under 40 words) to stay within the token budget.
+The model discovers routing targets from:
 
-### Mode-authored routing metadata
+1. The **system prompt** — the mode's `_mode.md` body describes what it can do.
+2. The **routing hint** — injected when the current mode lacks tools the query needs.
+3. The **tool surface** — the `transition_stage` tool is present, signaling
+   that handoff is available.
 
-Packs declare routing metadata in each mode's `_mode.md` front matter:
+---
+
+## 7. Mode Authoring for Routing
+
+### Making a mode routable
+
+A mode is routable when its `_mode.md` front matter has `routable: true`:
 
 ```yaml
-routable: true                    # must be true to appear in the router catalog
-priority: 8                       # higher = earlier in catalog ordering
-fast_path_patterns: [...]          # regex list for fast-path tier
-route_hints: [...]                 # injected into {{ROUTER_ROUTE_HINTS}}
-examples: [...]                     # JSON RouteDecision objects for {{ROUTER_ROUTE_EXAMPLES}}
-command_pattern: "^/mode_name..."  # slash-command regex for ipsar.parse_route
+---
+mode_id: markdown
+mode_kind: chat
+routable: true              # required for handoff targets
+priority: 6                 # higher = earlier in catalog ordering
+fast_path_patterns:         # regex list for zero-cost pre-turn hint
+  - '\bmarkdown\b'
+route_hints:                # used by fast-path, not a planner
+  - "Prefer markdown when the user wants to write a markdown document."
+command_pattern: '^(?:/)?markdown(?:[\s,:;]+(?P<query>.+))?$'
+allowed_tool_ids:
+  - markdown_generate
+  - write_file
+tools_authoritative: true
+---
 ```
 
-Only modes with `routable: true` and `mode_kind` in `{workflow, chat, action}`
-appear in the router catalog. The `router_mode_ids()` function returns them
-sorted by descending priority.
+### Front-matter keys for routing
+
+| Key | Purpose | Required for routing? |
+| --- | --- | --- |
+| `routable` | Must be `true` to appear as a handoff target | Yes |
+| `priority` | Catalog ordering (higher = earlier) | No (default 0) |
+| `fast_path_patterns` | Regex list for zero-cost pre-turn hint | No |
+| `route_hints` | Hint strings for the fast-path verifier | No |
+| `command_pattern` | Slash-command regex for `parse_route` | No (for `/mode` entry) |
+| `allowed_tool_ids` | Tool surface for this mode | No (but recommended) |
+| `tools_authoritative` | When `true`, empty `allowed_tool_ids` = no tools | No (default `true`) |
+
+### Fast-path patterns (kept as a zero-cost hint)
+
+`fast_path_patterns` are still evaluated as a zero-cost regex match before
+the turn. If a message matches a mode's patterns, the host can short-circuit
+directly to that mode without even starting the turn in `default`. This is a
+*hint*, not a *gate* — if it misses, the model can still hand off mid-turn
+via `transition_stage`.
+
+### What was removed from `_mode.md`
+
+The following front-matter keys were removed in the hard cutover and are no
+longer recognized:
+
+- `workshop_panels` — replaced by `fork:` targets in `transition_stage`
+- `workshop_budget` — replaced by `TurnBudget` sub-allocation
+- `workshop_rendering` — synthesis is now a workflow stage
+- `workshop_planner_prompt_file` — no longer needed
+- `workshop_synthesis_prompt_file` — no longer needed
 
 ---
 
-## 7. Staged Workflow Modes and the Router
+## 8. Staged Workflow Modes and Routing
 
-This is the critical architectural relationship. The router and the workflow FSM
-(`kernel/ipsar_fsm.py`) are **two independent layers** that do not communicate.
+### How routing and workflow FSMs compose
 
-### What each layer owns
-
-| Layer | Scope | Stateful? | Key module |
-| --- | --- | --- | --- |
-| Router | Mode selection (which mode owns this turn) | No | `kernel/router.py` |
-| FSM | Stage progression (which stage within a mode) | Yes | `kernel/ipsar_fsm.py` |
-| Turn runner | Stage instruction injection + transition handling | Yes (via hooks) | `kernel/turn_runner.py` |
-
-### How they compose
+The routing FSM (mode handoff) and the per-mode workflow FSM (stage
+advancement) are **two layers of the same mechanism**. `transition_stage`
+checks the routing FSM first (is the target a `mode_id`?), then falls through
+to the workflow FSM (is the target a stage in the current mode?).
 
 ```mermaid
 flowchart LR
-    NL[NL turn] --> R[Router<br/>stateless mode pick]
-    R -->|selected_mode_id| TR[Turn runner]
-    TR -->|reads workflow_session hook| FS[FSM<br/>stateful stage]
-    FS -->|stage instruction_body| TR
-    TR -->|model may call transition_stage| FS
+    NL[NL turn] --> CM[current_mode_id<br/>usually default]
+    CM --> TR[Turn runner]
+    TR -->|model calls transition_stage| RH{Target kind?}
+    RH -->|mode_id| HO[Routing FSM:<br/>swap prompt + tools]
+    RH -->|fork:| FO[Fork fan-out:<br/>asyncio.TaskGroup]
+    RH -->|stage_id| WF[Workflow FSM:<br/>apply_transition]
+    HO --> TR
+    FO --> TR
+    WF --> TR
 ```
 
-The router picks the mode. The turn runner reads the current stage from the
-`workflow_session` hook and injects the stage's `instruction_body` into the
-system prompt. The model can call the `transition_stage` tool to advance the
-FSM. The router never sees the stage.
-
-### Example: thinkabout workflow
+### Example: thinkabout workflow with handoff
 
 `thinkabout` is a `mode_kind: workflow` mode with stages:
 `inquire → reason → formulate → exit`.
@@ -378,32 +415,31 @@ FSM. The router never sees the stage.
 sequenceDiagram
     participant U as User
     participant HM as handle_message
-    participant R as Router
     participant TR as Turn runner
-    participant FSM as FSM (workflow_session)
+    participant FSM as Routing + Workflow FSM
 
-    U->>HM: "/mode thinkabout"
-    HM->>HM: parse_route (string parser)
-    HM->>TR: mode_id=thinkabout, stage=inquire
-    TR->>FSM: workflow_session() → stage=inquire
+    U->>HM: "analyze this tradeoff"
+    HM->>TR: mode_id=default (current_mode_id)
+    TR->>TR: model sees routing hint (default lacks thinkabout tools)
+    TR->>FSM: model calls transition_stage("thinkabout")
+    FSM->>TR: swap to thinkabout prompt + tools
+    TR->>FSM: workflow_session → stage=inquire
     TR->>TR: inject inquire.md instructions
     TR-->>U: inquire stage response
 
-    U->>HM: "analyze this tradeoff"
-    HM->>R: current_mode != start_mode → plan_route
-    R-->>HM: selected_mode_id=thinkabout
-    HM->>TR: mode_id=thinkabout, stage=reason
-    TR->>FSM: workflow_session() → stage=reason
-    TR->>TR: inject reason.md instructions
+    U->>HM: "here's the data"
+    HM->>TR: mode_id=thinkabout (current_mode_id preserved)
+    TR->>FSM: workflow_session → stage=inquire
     TR->>FSM: model calls transition_stage("reason")
+    FSM->>TR: apply_transition → stage=reason
     TR-->>U: reason stage response
 
-    U->>HM: "what's the weather?"
-    HM->>R: current_mode != start_mode → plan_route
-    R-->>HM: selected_mode_id=default (not thinkabout)
-    Note over HM: current_mode_id reset to default == start_mode
-    HM->>TR: mode_id=default (no stage injection)
-    TR-->>U: general response
+    U->>HM: "actually, write this as a markdown doc"
+    HM->>TR: mode_id=thinkabout (current_mode_id preserved)
+    TR->>FSM: model calls transition_stage("markdown")
+    FSM->>TR: swap to markdown prompt + tools
+    TR-->>U: markdown response (with handoff_to=markdown)
+    Note over HM: current_mode_id updated to markdown
 ```
 
 ### Stage files
@@ -426,40 +462,68 @@ You are in the Reason stage. Analyze findings, brainstorm 2-3 logical paths...
 The body text becomes `WorkflowStageConfig.instruction_body`, injected at
 runtime. Stage files starting with `_` are skipped.
 
-### Stage transition mechanism
+### Stuck-session guards (free from the FSM)
 
-The turn runner intercepts `transition_stage` tool calls before the
-operation/tool/MCP dispatch branches (`_TRANSITION_TOOL_NAME`). When the model
-calls it:
+Because routing uses the same `transition_stage` interception as workflow
+stage advancement, all existing guardrails apply automatically:
 
-1. The turn runner validates the transition against `allowed_next_stages`.
-2. It calls `workflow_session_updater` to persist the new `stage_id`.
-3. If the new stage is terminal (`exit`), the loop forces one final no-tools
-   completion.
-4. A stuck-session guard nudges the model after
-   `_STAGE_NUDGE_THRESHOLD` (4) turns in the same stage, and forces completion
-   after `_STAGE_NUDGE_CAP` (6).
-
-### Checkpoints
-
-Checkpoints are turn-anchored (not wall-clock). They fire in the post-turn phase,
-piggybacking on the turn cadence. Stage transitions are the primary trigger;
-every-N-turns is secondary and off by default. The host opts in via
-`CheckpointTuning(enabled=True)`.
+- **`_STAGE_NUDGE_CAP`** (6) — if the model ping-pongs between modes without
+  making progress, the loop forces a final response.
+- **`TurnBudget`** — tool calls, tokens, and wall time are tracked across
+  mode switches within the same turn. A budget-exhausted turn forces a final
+  no-tools completion regardless of which mode it's in.
+- **`max_tool_iterations`** — the global iteration cap still applies; mode
+  switches don't reset it.
 
 ---
 
-## 8. Model Manifest Integration
+## 9. Fork Fan-Out (Replaces Workshop)
 
-The planner model is resolved by **designation**, not by a hardcoded ID. The
-model manifest (`<data-dir>/models.yaml`) supports four designations:
+The old `workshop_run` operation and `WorkshopExecutionService` were removed.
+Fan-out is now a first-class `transition_stage` target.
+
+### When to use fork
+
+- "Research this topic AND write a markdown summary" → `fork:search,markdown`
+- "Code-review this PR from security, performance, and style perspectives" → `fork:thinkabout/security,thinkabout/performance,thinkabout/style`
+- "Search the web, check my calendar, and draft an email" → `fork:search,calendar,email`
+
+Each fork target is a `(mode_id, stage_id, query)` tuple. The `mode_id`
+determines the system prompt and tool surface. The `stage_id` (optional,
+defaults to the mode's `start_stage_id`) determines the workflow stage. The
+query is the scoped prompt for that worker.
+
+### Budget enforcement
+
+The parent turn's `TurnBudget` is divided equally across N children. Each
+child gets a sub-budget. If a child exhausts its sub-budget, it returns a
+partial result. The parent turn's budget is the hard cap — fan-out doesn't
+grant extra resources.
+
+### Failure handling
+
+The FSM collects all child results (including failures) into `fork_results`
+and continues the loop. The model sees which children succeeded and which
+failed, and can decide to retry, ask the user, or synthesize from partial
+results.
+
+---
+
+## 10. Model Manifest Integration
+
+The model used for each turn is resolved by **designation**, not by a
+hardcoded ID. The model manifest (`<data-dir>/models.yaml`) supports
+designations:
 
 | Designation | Used by |
 | --- | --- |
-| `router` | Router planner model |
 | `default` | Default chat mode |
 | `deep` | `/deep` prefix |
 | `reasoning` | Reasoning-heavy modes |
+
+The old `router` designation is no longer used — there is no separate planner
+model. The `default` model handles routing via `transition_stage` tool calls
+during the normal turn.
 
 Hosts manage manifests through commands:
 
@@ -467,75 +531,29 @@ Hosts manage manifests through commands:
 - `/models apply` — validates and promotes the proposal to `models.yaml`.
 - `/models reload` — reloads from disk.
 
-The `resolve_planner_model` hook (injected by the host) returns the model
-definition for the `router` designation. If resolution fails, the router falls
-back to the deterministic path.
-
 ---
 
-## 9. Known Design Tensions
-
-### 9.1 Router re-evaluates every NL turn in non-start modes
-
-When the user is in a non-default mode (via `/mode` or fast-path entry), every
-subsequent NL turn pays a planner call to re-confirm mode ownership. The router
-has no memory of the active workflow session.
-
-**Cost**: Mid-workflow back-and-forth (e.g. in `thinkabout` stage `reason`)
-spends one planner call per turn just to re-confirm "yes, this is still
-thinkabout."
-
-**Potential mitigation**: Feed `workflow_session` state into `plan_route`'s
-`surface_context`, or add a pre-router guard in `handle_message.py` that skips
-the planner when an active, non-terminal workflow session exists. Neither
-exists today.
-
-### 9.2 Router and FSM are not integrated
-
-The two systems are wired in sequence, not integrated:
-
-```plaintext
-NL turn → router (mode pick, stateless) → turn_runner (stage read, stateful) → model → maybe transition_stage
-```
-
-The router does not consult FSM state. The FSM does not influence the router.
-A mode could be mid-workflow in stage `reason` and the router could still route
-the turn away to `default` if the NL message looks like a general question.
-
-### 9.3 `start_mode` is a bypass, not a default
-
-The `start_mode` key is a **bypass pin**, not a "default mode to route from."
-Because it defaults to `"default"` and is never `None`, the bypass always fires
-in the common case. This is intentional — it ensures the default chat path
-never pays a planner tax — but it means the router is structurally a
-mode-switch evaluator, not a general NL→mode classifier.
-
-### 9.4 `active_session` planner source is reserved
-
-`RoutePlannerSource` includes `"active_session"` but no code path produces it
-yet. This is the intended slot for a future "preserve current mode because
-there's an active workflow session" decision — see 9.1.
-
----
-
-## 10. Module Reference
+## 11. Module Reference
 
 | Module | Role |
 | --- | --- |
-| `kernel/router.py` | Router planner engine: `plan_route`, `build_router_system_prompt`, `build_user_prompt`, fast-path/verifier/model-bounded tiers, deterministic fallback. |
-| `kernel/models.py` | `RouteDecision`, `RouteDecisionAlternative`, `RoutePlannerSource`, `RouterPromptProfile`, `SurfaceContext`, `OptionalContextLane`. |
+| `kernel/turn_runner.py` | Turn execution loop. Intercepts `transition_stage` for mode handoff, fork fan-out, and workflow stage transitions. Compiles capability manifest and injects routing hints. |
+| `kernel/ipsar_fsm.py` | FSM loader and runtime. Synthesizes routing transitions (`synthesize_routing_transitions`, `get_routing_targets`, `is_routable_mode`). Parses fork targets (`parse_fork_target_string`, `is_fork_target`). Validates workflow stage transitions (`apply_transition`). |
+| `kernel/models.py` | `ForkTarget`, `ForkChildResult`, `WorkflowModeConfig`, `WorkflowStageConfig`, `WorkflowTransitionRequest`, `TurnBudget`, `CallLedger`. |
 | `kernel/ipsar.py` | Slash-command route resolution (`parse_route`). String parser, no model call. |
-| `kernel/ipsar_fsm.py` | Workflow FSM loader and runtime. Discovers mode definitions from disk, validates stage transitions, provides operation lifecycle hooks. |
 | `kernel/session_plan.py` | `SessionRouting` model (compiled from session context front matter). Owns `start_mode`, `aliases`, `priority_adjustments`, `hints`. |
-| `kernel/turn_runner.py` | Turn execution loop. Reads `workflow_session` hook for stage injection. Intercepts `transition_stage` tool calls. Owns stuck-session guard. |
-| `hosts/core/handle_message.py` | Turn-time dispatch contract. The fixed priority order: `/deep` → slash commands → `start_mode` bypass → router planner. |
-| `hosts/core/runtime.py` | `HostRuntime.start_mode_id` property and `current_mode_id` initialization. |
-| `hosts/core/session_context.py` | `SessionContextControls` dataclass — extracts `start_mode` from front matter. |
-| `sdk/packs/core/content/router/route.md` | Router system prompt template with three placeholders. |
-| `sdk/packs/search/modes/thinkabout/` | Example staged workflow mode (`inquire → reason → formulate → exit`). |
+| `kernel/capability_manifest.py` | Compiles `CapabilityManifest` from live tool schemas. Used for proactive routing hints. |
+| `hosts/core/handle_message.py` | Turn-time dispatch contract. The fixed priority order: `/deep` → slash commands → `start_mode` bypass → `current_mode_id`. Persists `handoff_to` after the turn. |
+| `hosts/core/runtime.py` | `HostRuntime.start_mode_id` property and `current_mode_id` initialization + update. |
 
 ### Removed
 
 | Module | Status |
 | --- | --- |
-| `kernel/frontdoor.py` | Removed. Renamed to `kernel/router.py` in a hard cutover. No shim, no dual-path. Only a stale mypy cache entry (`frontdoor.data.json`) remains. |
+| `kernel/router.py` | Removed. The stateless router planner (`plan_route`) was replaced by mid-turn `transition_stage` handoff. No shim, no dual-path. |
+| `hosts/core/routing.py` | Removed. The host wrapper around `plan_route`. |
+| `sdk/workshop_execution.py` | Removed. `WorkshopExecutionService` replaced by `fork:` targets in `transition_stage`. |
+| `sdk/packs/core/operations/research/workshop_run.py` | Removed. The `workshop_run` operation replaced by `transition_stage` with `fork:` targets. |
+| `sdk/packs/core/modes/workshop/` | Removed. The workshop mode. |
+| `RouteDecision`, `RouteDecisionAlternative`, `RoutePlannerSource`, `RouterPromptProfile`, `OptionalContextLane` | Removed from `kernel/models.py`. No longer needed — routing is a tool call, not a structured output schema. |
+| `WorkshopPanelModeConfig`, `WorkshopBudgetConfig`, `WorkshopRenderConfig`, `WorkshopPlan`, `WorkshopPanelSpec`, `WorkshopPanelContext`, `WorkshopContextBundle`, `WorkshopChildResult`, `WorkshopExecutionSummary` | Removed from `kernel/models.py`. Replaced by `ForkTarget` and `ForkChildResult`. |
