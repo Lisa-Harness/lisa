@@ -5,6 +5,19 @@ start_stage_id: none
 mode_kind: chat
 routable: true
 priority: 6
+routing_intent_tags: [write]
+routing_intent_keywords:
+  write:
+    - write
+    - markdown
+    - document
+    - doc
+    - file
+    - draft
+    - compose
+    - output
+    - forge
+    - produce
 fast_path_patterns:
   - '\b(forge|draft|write|compose|output|create|generate|make|produce)\b.*\b(document|doc|markdown|runbook|post|note)\b'
   - '\b(document|doc|markdown|runbook|post|note)\b.*\b(forge|draft|write|compose|output|create|generate|make|produce)\b'

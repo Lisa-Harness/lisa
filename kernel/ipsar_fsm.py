@@ -296,6 +296,8 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "routable",
         "priority",
         "fast_path_patterns",
+        "routing_intent_tags",
+        "routing_intent_keywords",
         "default_intent_bridges",
         "artifact_type",
     }
@@ -583,6 +585,63 @@ def load_catalog_from_disk(
                 ) from exc
             fast_path_patterns.append(pattern)
 
+        # Parse routing_intent_tags: declarative intent coverage for proactive
+        # routing hints. Each tag is a lowercase string (e.g. "research",
+        # "reasoning", "learn", "write"). The hint generator checks whether
+        # a single routing target's tags cover all detected query intents,
+        # preferring it over a fork fan-out when they do.
+        routing_intent_tags_raw = mode_front_matter.get("routing_intent_tags") or []
+        if not isinstance(routing_intent_tags_raw, list):
+            raise WorkflowValidationError(
+                f"routing_intent_tags must be a list in {mode_config_path}"
+            )
+        routing_intent_tags: list[str] = []
+        for idx, raw_tag in enumerate(routing_intent_tags_raw):
+            if not isinstance(raw_tag, str):
+                raise WorkflowValidationError(
+                    f"routing_intent_tags[{idx}] must be a string in {mode_config_path}"
+                )
+            tag = raw_tag.strip().lower()
+            if not tag:
+                raise WorkflowValidationError(
+                    f"routing_intent_tags[{idx}] cannot be empty in {mode_config_path}"
+                )
+            routing_intent_tags.append(tag)
+
+        # Parse routing_intent_keywords: per-tag substring keywords for the
+        # proactive routing hint generator. Maps each intent tag to the
+        # substring keywords that signal that specific intent. These are
+        # case-insensitive substring matches (not anchored regexes).
+        routing_intent_keywords_raw = mode_front_matter.get("routing_intent_keywords") or {}
+        if not isinstance(routing_intent_keywords_raw, dict):
+            raise WorkflowValidationError(
+                f"routing_intent_keywords must be a dict in {mode_config_path}"
+            )
+        routing_intent_keywords: dict[str, list[str]] = {}
+        for tag, keywords in routing_intent_keywords_raw.items():
+            tag_str = str(tag).strip().lower()
+            if not tag_str:
+                raise WorkflowValidationError(
+                    f"routing_intent_keywords has an empty tag in {mode_config_path}"
+                )
+            if not isinstance(keywords, list):
+                raise WorkflowValidationError(
+                    f"routing_intent_keywords[{tag_str}] must be a list in {mode_config_path}"
+                )
+            kw_list: list[str] = []
+            for idx, raw_kw in enumerate(keywords):
+                if not isinstance(raw_kw, str):
+                    raise WorkflowValidationError(
+                        f"routing_intent_keywords[{tag_str}][{idx}] must be a string in {mode_config_path}"
+                    )
+                kw = raw_kw.strip().lower()
+                if not kw:
+                    raise WorkflowValidationError(
+                        f"routing_intent_keywords[{tag_str}][{idx}] cannot be empty in {mode_config_path}"
+                    )
+                kw_list.append(kw)
+            routing_intent_keywords[tag_str] = kw_list
+
         # Parse default_intent_bridges: list of bridge configs from mode front-matter.
         default_intent_bridges = []
         bridges_raw = mode_front_matter.get("default_intent_bridges") or []
@@ -666,6 +725,8 @@ def load_catalog_from_disk(
             routable=routable,
             priority=priority,
             fast_path_patterns=fast_path_patterns,
+            routing_intent_tags=routing_intent_tags,
+            routing_intent_keywords=routing_intent_keywords,
             command_pattern=command_pattern,
             require_query=require_query,
             entry_operation_ids=entry_operation_ids,

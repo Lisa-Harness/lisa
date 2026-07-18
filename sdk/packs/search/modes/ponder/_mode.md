@@ -8,29 +8,31 @@ routable: true
 priority: 8
 routing_intent_tags: [research, reasoning]
 routing_intent_keywords:
-  - latest
-  - recent
-  - current
-  - news
-  - update
-  - today
-  - framework
-  - tool
-  - market
-  - landscape
-  - understand
-  - swot
-  - analyze
-  - analyse
-  - evaluate
-  - compare
-  - comparison
-  - tradeoff
-  - trade-off
-  - pros and cons
-  - deep dive
-  - go in depth
-  - reason
+  research:
+    - latest
+    - recent
+    - current
+    - news
+    - update
+    - today
+    - framework
+    - tool
+    - market
+    - landscape
+  reasoning:
+    - understand
+    - swot
+    - analyze
+    - analyse
+    - evaluate
+    - compare
+    - comparison
+    - tradeoff
+    - trade-off
+    - pros and cons
+    - deep dive
+    - go in depth
+    - reason
 allowed_operation_ids: [web_search]
 fast_path_patterns:
   - "\\bthink\\s+about\\b"

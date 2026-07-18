@@ -6,6 +6,18 @@ mode_kind: chat
 require_query: true
 routable: true
 priority: 9
+routing_intent_tags: [learn]
+routing_intent_keywords:
+  learn:
+    - remember
+    - note
+    - reflect
+    - learning
+    - insight
+    - distill
+    - learn
+    - capture
+    - store
 allowed_operation_ids: [synthesize_and_store_learning, recall_memory]
 allowed_tool_ids: [memory.add, memory.search, memory.list]
 description: "LEARN workflow mode to reflect on the conversation and distill durable insights."

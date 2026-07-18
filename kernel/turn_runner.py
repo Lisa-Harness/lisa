@@ -28,6 +28,7 @@ Gaps (use the full `app/agent.py` turn loop when you need):
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -1650,6 +1651,7 @@ async def _run_turn_inner(
                     # ── Case A: fork fan-out ──────────────────────────────
                     if is_fork_target(target_stage):
                         fork_targets_raw = parse_fork_target_string(target_stage)
+                        fork_results_list: list[ForkChildResult] = []
                         if not fork_targets_raw:
                             tool_output = "Fork target has no valid mode/stage pairs."
                         else:
@@ -2077,17 +2079,59 @@ async def _run_turn_inner(
 # ---------------------------------------------------------------------------
 
 
-# Keyword-to-capability-gap lookup for proactive routing hints.
-# Maps user-query keywords to the capability kind that would be needed.
-_CAPABILITY_GAP_KEYWORDS: dict[str, list[str]] = {
-    "write": ["tool"],
-    "save": ["tool"],
-    "document": ["tool"],
-    "file": ["tool"],
-    "search": ["tool"],
-    "code": ["tool"],
-    "read": ["tool"],
-}
+def _detect_query_intents(
+    *,
+    query: str,
+    routing_targets: list[str],
+) -> set[str]:
+    """Detect which intents the user's query expresses, using the routing
+    targets' ``fast_path_patterns`` as the pattern source.
+
+    Returns the set of intent tag strings (lowercased) that the query matches.
+    Each routing target's ``routing_intent_tags`` are attributed to the query
+    when any of that target's ``fast_path_patterns`` matches the query
+    (case-insensitive). This is data-driven: the kernel does not hardcode
+    which keywords map to which intents — the mode front-matter declares both
+    the patterns and the tags.
+    """
+    if not routing_targets:
+        return set()
+    catalog = get_workflow_catalog()
+    query_lower = query.lower()
+    detected: set[str] = set()
+    for target_id in routing_targets:
+        mode_config = catalog.get(target_id)
+        if mode_config is None:
+            continue
+        # Check fast_path_patterns (anchored regex) first.
+        matched = False
+        for pattern in mode_config.fast_path_patterns:
+            try:
+                if re.search(pattern, query_lower, re.IGNORECASE):
+                    detected.update(mode_config.routing_intent_tags)
+                    matched = True
+                    break
+            except re.error:
+                pass
+        if matched:
+            continue
+        # Check routing_intent_keywords (per-tag substring match). Each
+        # keyword only attributes its associated tag, so a "latest" match
+        # only triggers "research", not "reasoning".
+        for tag, keywords in mode_config.routing_intent_keywords.items():
+            for keyword in keywords:
+                if keyword in query_lower:
+                    detected.add(tag)
+                    break
+        # Also check the command_pattern — a query that explicitly names the
+        # mode (e.g. "learn that...") is a strong signal.
+        if not mode_config.routing_intent_keywords and mode_config.command_pattern:
+            try:
+                if re.search(mode_config.command_pattern, query, re.IGNORECASE):
+                    detected.update(mode_config.routing_intent_tags)
+            except re.error:
+                pass
+    return detected
 
 
 def _compute_capability_routing_hint(
@@ -2099,109 +2143,122 @@ def _compute_capability_routing_hint(
 ) -> str:
     """Compute a proactive routing hint when the current mode lacks tools.
 
-    Compares the user's query keywords against the capability manifest. If
-    the query mentions actions the current mode can't perform, and the mode
-    has routing targets (other modes it can hand off to), inject a hint
-    telling the model to call ``transition_stage`` to switch modes.
+    Data-driven: the kernel does not hardcode mode-specific keywords or
+    intent semantics. Each routing target declares its own
+    ``fast_path_patterns`` (what queries it handles) and
+    ``routing_intent_tags`` (what intents it covers) in its _mode.md front
+    matter. This function:
+
+    1. Detects query intents by matching against all routing targets' patterns.
+    2. Checks if the current mode already satisfies those intents (via the
+       capability manifest) — if so, no hint (zero tokens).
+    3. Finds routing targets whose ``routing_intent_tags`` cover all detected
+       intents — if exactly one does, suggest a single handoff.
+    4. If multiple targets each cover a disjoint subset of intents, suggest a
+       ``fork:`` fan-out so each child runs in its own mode with its own tools.
+    5. If no target fully covers the detected intents but a gap exists,
+       fall back to listing all routing targets.
 
     Returns an empty string when no hint is needed (zero tokens).
     """
     if not routing_targets:
         return ""
-    query_lower = query.lower()
-    # Collect the capability kinds present in the current mode
+    catalog = get_workflow_catalog()
+
+    # ── 1. Detect query intents from routing target patterns ──────────
+    detected_intents = _detect_query_intents(
+        query=query, routing_targets=routing_targets
+    )
+
+    # ── 2. Check if the current mode already satisfies detected intents ──
     available_kinds: set[str] = set()
     available_capability_ids: set[str] = set()
     for entry in capability_manifest.entries:
         available_kinds.add(entry.kind)
         available_capability_ids.add((entry.capability_id or "").lower())
-    has_search_capability = any(
-        "search" in cid for cid in available_capability_ids
-    )
-    # Tool gap: query mentions file/code actions the mode lacks tools for.
-    has_tool_gap = "tool" not in available_kinds and any(
-        kw in query_lower for kw in ("write", "save", "document", "file", "code", "read")
-    )
-    # Search gap: query asks for fresh/external info the mode can't fetch.
-    has_search_gap = not has_search_capability and any(
-        kw in query_lower
-        for kw in ("search", "latest", "recent", "current", "news", "update", "today")
-    )
-    # Research-then-reason gap: query pairs a research cue with a reasoning
-    # cue (understand, SWOT, analyze, evaluate, compare). This is the shape
-    # that belongs in thinkabout (research-then-reason workflow), not the
-    # one-shot search action mode. Detect even when the current mode has
-    # search, because the reasoning half is what the current mode lacks.
-    _research_cues = (
-        "latest", "recent", "current", "news", "update", "today",
-        "framework", "tool", "market", "landscape",
-    )
-    _reasoning_cues = (
-        "understand", "swot", "analyze", "analyse", "evaluate",
-        "compare", "comparison", "tradeoff", "trade-off", "pros and cons",
-        "deep dive", "go in depth", "reason",
-    )
-    has_research_cue = any(cue in query_lower for cue in _research_cues)
-    has_reasoning_cue = any(cue in query_lower for cue in _reasoning_cues)
-    has_research_then_reason_gap = has_research_cue and has_reasoning_cue
-    # Build the lookup of routable target mode IDs (lowercased → original).
-    targets_lower = {t.lower(): t for t in routing_targets}
-    # Two-goal detection: the request simultaneously asks to remember/learn
-    # something AND to write it out as a markdown document/file. This is the
-    # fork fan-out shape (see docs/ROUTER_DESIGN.md §9): it belongs in two
-    # modes at once (learn for the memory write, markdown for the file
-    # forge), not one. A single-goal handoff drops half the intent. Detect
-    # this before the single-goal branches so we steer the model to fork.
-    _learn_cues = (
-        "remember", "note", "take a note", "reflect", "learning",
-        "insight", "distill", "learn", "capture", "store",
-    )
-    _write_cues = (
-        "write", "markdown", "document", "doc", "file", "draft",
-        "compose", "output", "forge", "produce",
-    )
-    has_learn_cue = any(cue in query_lower for cue in _learn_cues)
-    has_write_cue = any(cue in query_lower for cue in _write_cues)
-    has_two_goal_learn_and_write = has_learn_cue and has_write_cue
-    if has_two_goal_learn_and_write and "learn" in targets_lower and "markdown" in targets_lower:
-        # Build the fork target string from the routable mode IDs that are
-        # actually present. The model must call transition_stage with this
-        # fork target so the FSM fans out two children — each with its own
-        # correct tool surface (learn → memory ops, markdown → file forge).
-        learn_id = targets_lower["learn"]
-        markdown_id = targets_lower["markdown"]
-        fork_target = f"fork:{learn_id},{markdown_id}"
-        hint = (
-            "## Routing Hint\n\n"
-            "This request has two concurrent goals: (1) remember/learn the "
-            "exchange into long-term memory, and (2) write it out as a "
-            "markdown document. Neither goal is a subset of the other — a "
-            "single-mode handoff would drop half the intent. Hand off by "
-            f"calling `transition_stage` with target_stage_id "
-            f"`{fork_target}`. This forks into parallel children: the "
-            f"`{learn_id}` child persists the exchange to memory; the "
-            f"`{markdown_id}` child forges the document to disk. Each child "
-            "runs in its own mode with its own tool surface. Do not call "
-            "markdown or memory tools from the current mode — they are "
-            "mode-scoped and will be rejected."
-        )
-        return hint
-    if not (has_tool_gap or has_search_gap or has_research_then_reason_gap):
+    has_search_capability = any("search" in cid for cid in available_capability_ids)
+    has_tool_capability = "tool" in available_kinds
+
+    needs_research = "research" in detected_intents and not has_search_capability
+    needs_reasoning = "reasoning" in detected_intents
+    needs_write = "write" in detected_intents and not has_tool_capability
+    needs_learn = "learn" in detected_intents and not has_tool_capability
+    has_gap = needs_research or needs_reasoning or needs_write or needs_learn
+    if not detected_intents and not has_gap:
         return ""
-    # Build the hint. Prefer thinkabout for research-then-reason intent;
-    # otherwise list all routing targets. Keep the hint actionable and short.
-    if has_research_then_reason_gap and "thinkabout" in targets_lower:
-        preferred = targets_lower["thinkabout"]
+    if detected_intents and not has_gap:
+        # The current mode already satisfies all detected intents.
+        return ""
+
+    # ── 3. Find targets that cover all detected intents (single handoff) ──
+    covering_targets: list[str] = []
+    for target_id in routing_targets:
+        mode_config = catalog.get(target_id)
+        if mode_config is None:
+            continue
+        target_tags = set(mode_config.routing_intent_tags)
+        if detected_intents and detected_intents.issubset(target_tags):
+            covering_targets.append(target_id)
+
+    # ── 4. Multi-intent fork detection ─────────────────────────────────
+    # When no single target covers all detected intents but multiple targets
+    # each cover a disjoint subset, suggest a fork fan-out. This is the
+    # generic form of the learn+write case: learn covers "learn", markdown
+    # covers "write", neither covers both → fork:learn,markdown.
+    if not covering_targets and len(detected_intents) >= 2:
+        partial_targets: list[str] = []
+        covered_intents: set[str] = set()
+        for target_id in routing_targets:
+            mode_config = catalog.get(target_id)
+            if mode_config is None:
+                continue
+            target_tags = set(mode_config.routing_intent_tags)
+            overlap = target_tags & detected_intents
+            if overlap:
+                partial_targets.append(target_id)
+                covered_intents.update(overlap)
+        # Only suggest a fork when the partial targets collectively cover
+        # all detected intents and there are at least 2 of them.
+        if len(partial_targets) >= 2 and covered_intents == detected_intents:
+            fork_target = f"fork:{','.join(partial_targets)}"
+            hint = (
+                "## Routing Hint\n\n"
+                "This request has multiple concurrent goals that no single "
+                f"mode covers. Hand off by calling `transition_stage` with "
+                f"target_stage_id `{fork_target}`. This forks into parallel "
+                f"children, each running in its own mode with its own tool "
+                "surface. Do not call mode-scoped tools from the current "
+                "mode — they will be rejected."
+            )
+            return hint
+
+    # ── 5. Single handoff to the covering target ──────────────────────
+    if covering_targets:
+        preferred = covering_targets[0]
+        target_config = catalog.get(preferred)
+        target_tags = set(target_config.routing_intent_tags) if target_config else set()
+        if "reasoning" in target_tags and "research" in target_tags:
+            hint = (
+                "## Routing Hint\n\n"
+                "This request pairs research (fresh/external information) with "
+                "reasoning (understand, analyze, SWOT, compare, evaluate). The "
+                f"`{preferred}` workflow mode researches then reasons — hand off "
+                f"by calling `transition_stage` with target_stage_id `{preferred}`. "
+                "Do not use the one-shot `search` action mode for this; it cannot "
+                "do the reasoning half."
+            )
+            return hint
         hint = (
             "## Routing Hint\n\n"
-            "This request pairs research (fresh/external information) with "
-            "reasoning (understand, analyze, SWOT, compare, evaluate). The "
-            f"`{preferred}` workflow mode researches then reasons — hand off "
-            f"by calling `transition_stage` with target_stage_id `{preferred}`. "
-            "Do not use the one-shot `search` action mode for this; it cannot "
-            "do the reasoning half."
+            f"Your current mode may lack the tools needed for this request. "
+            f"Hand off to `{preferred}` by calling `transition_stage` with "
+            f"target_stage_id `{preferred}`."
         )
         return hint
+
+    # ── 6. Fallback: list all routing targets ──────────────────────────
+    if not has_gap:
+        return ""
     targets_str = ", ".join(routing_targets)
     hint = (
         "## Routing Hint\n\n"
@@ -2284,7 +2341,7 @@ def _fork_mode_requires_tools(mode_id: str) -> bool:
     or in memory. The caller marks these ``status="no_tools"`` instead of
     ``"ok"`` so the parent does not report a false success.
 
-    Chat-only modes (``default``, ``thinkabout``) with empty allowlists
+    Chat-only modes (``default``, ``ponder``) with empty allowlists
     legitimately complete without tools, so this returns False for them.
     """
     mode_config = get_workflow_catalog().get(mode_id)

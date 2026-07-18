@@ -1162,6 +1162,20 @@ class WorkflowModeConfig(BaseModel):
     # Optional regex patterns for high-precision fast-path candidate detection.
     # Patterns are authored in mode front matter and evaluated case-insensitively.
     fast_path_patterns: list[str] = Field(default_factory=list)
+    # Intent tags this mode declares it can satisfy (e.g. ["research", "reasoning"]).
+    # Used by the proactive routing hint generator to detect when a single mode
+    # covers all the intents in the user's query (research-then-reason), vs.
+    # when a fork fan-out is needed (learn + write). Authored in _mode.md front
+    # matter. The kernel never hardcodes mode-specific intent semantics.
+    routing_intent_tags: list[str] = Field(default_factory=list)
+    # Per-tag substring keywords for the proactive routing hint generator.
+    # Maps each intent tag to the broad substring keywords that signal that
+    # specific intent in a user query (e.g. {"research": ["latest", "news"],
+    # "reasoning": ["swot", "analyze"]}). Case-insensitive substring match.
+    # Authored in _mode.md front matter under ``routing_intent_keywords``.
+    # Each keyword only attributes its associated tag, not all of the mode's
+    # tags, so a "latest" match does not falsely trigger a "reasoning" hint.
+    routing_intent_keywords: dict[str, list[str]] = Field(default_factory=dict)
     # Python regex string used by parse_route() to detect activation.
     # Must include a named group (?P<query>...) for the trailing user text.
     command_pattern: str = ""
