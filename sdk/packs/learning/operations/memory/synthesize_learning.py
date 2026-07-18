@@ -80,6 +80,18 @@ def _parse_distilled_learning(content: str) -> DistilledLearning:
     try:
         return cast(DistilledLearning, parse_structured_payload(DistilledLearning, normalized))
     except ValidationError as direct_exc:
+        # Guard: if the response looks like JSON (fenced or bare object), the
+        # prose/bullet fallbacks would misinterpret JSON syntax lines as
+        # facts (e.g. ``json``, ``{``, ``"facts": [``). That produced garbage
+        # memory records like ``json | { | facts": [``. When the model tried
+        # to return JSON but it failed to validate, raise rather than persist
+        # JSON fragments as facts. The caller surfaces the failure instead.
+        if _looks_like_json(normalized):
+            raise RuntimeError(
+                "synthesize_and_store_learning: model returned JSON-shaped "
+                "output that failed validation; refusing to fall back to prose "
+                f"parsing. Raw output: {normalized[:200]!r}"
+            ) from direct_exc
         bullet_pattern = re.compile(r"^(?:[-*\u2022]|\d+[\.)\]])\s+(?P<fact>.+)$")
         facts: list[str] = []
         for line in normalized.splitlines():
@@ -107,6 +119,27 @@ def _parse_distilled_learning(content: str) -> DistilledLearning:
             return DistilledLearning(facts=sentence_facts)
 
         raise direct_exc
+
+
+def _looks_like_json(text: str) -> bool:
+    """Return True when the response looks like JSON (fenced or bare object).
+
+    Used to gate the prose fallbacks in ``_parse_distilled_learning``. When
+    the model attempted JSON but it failed to validate, persisting JSON
+    syntax fragments as facts produces garbage memory records.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return False
+    # Fenced JSON (```json ... ``` or ``` ... ```) or a bare object/array.
+    if stripped.startswith("```"):
+        return True
+    if stripped.startswith("{") or stripped.startswith("["):
+        return True
+    # Inner brace after any leading whitespace/prose — a strong JSON signal.
+    if "{" in stripped and "}" in stripped:
+        return True
+    return False
 
 
 def _default_learning_content(ctx: OperationExecutionContext) -> str:
