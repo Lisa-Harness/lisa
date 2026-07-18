@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import cast
+from typing import Any, cast
 
 from pydantic import BaseModel, Field, ValidationError
 
 from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
-from kernel.operations.structured_output import parse_structured_payload
+from kernel.operations.structured_output import (
+    json_only_retry_messages,
+    parse_structured_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,25 +181,50 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         raise RuntimeError("synthesize_and_store_learning could not resolve a model")
 
     system_prompt = _load_system_prompt(ctx)
-    try:
-        raw = await ctx.complete_fn(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": raw_content},
-            ],
-            model_def=model_def,
-            max_tokens=300,
-            temperature=0.1,
-            response_format=DistilledLearning,
-        )
-        distilled = _parse_distilled_learning(raw.content)
-        distilled_text = " | ".join(distilled.facts)
-    except RuntimeError:
-        raise
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+    # The distillation loop. Local OpenAI-compatible models (Ollama) frequently
+    # ignore ``response_format`` and return empty content, or emit JSON that
+    # truncates mid-array (``max_tokens`` too small for the envelope + 3 facts).
+    # Both produce unparseable output. Per the structured-output contract
+    # (/memories/repo/structured-output-contract.md), retry once with an
+    # explicit JSON-only instruction before surfacing the failure. The retry
+    # covers ALL first-attempt failures — empty output, JSON-truncation
+    # (RuntimeError from the _looks_like_json guard), and ValidationError.
+    first_messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": raw_content},
+    ]
+    # 512 tokens leaves headroom for the JSON envelope + 3 durable facts; 300
+    # truncated the array mid-fact on 2026-07-18, producing invalid JSON that
+    # the _looks_like_json guard correctly refused to fall back to prose.
+    distill_max_tokens = 512
+    distilled_text: str | None = None
+    last_exc: Exception | None = None
+    for attempt_idx, attempt_messages in enumerate(
+        (first_messages, json_only_retry_messages(first_messages, DistilledLearning))
+    ):
+        try:
+            raw = await ctx.complete_fn(
+                messages=attempt_messages,
+                model_def=model_def,
+                max_tokens=distill_max_tokens,
+                temperature=0.1,
+                # First attempt asks for native structured output; the retry
+                # clears response_format so strict hosts don't re-reject and
+                # the model emits free-form JSON per the appended instruction.
+                response_format=DistilledLearning if attempt_idx == 0 else None,
+            )
+            distilled = _parse_distilled_learning(raw.content)
+            distilled_text = " | ".join(distilled.facts)
+            break
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            last_exc = exc
+            if attempt_idx == 0:
+                continue
+            break
+    if distilled_text is None:
         raise RuntimeError(
-            f"synthesize_and_store_learning distillation failed: {exc}"
-        ) from exc
+            f"synthesize_and_store_learning distillation failed: {last_exc}"
+        ) from last_exc
 
     # Step 2: Persist via the memory.add MCP tool (default memory backend).
     content_json: dict[str, object] = {"query": ctx.query, "model": ctx.model_id}

@@ -1691,10 +1691,32 @@ async def _run_turn_inner(
                                 )
                                 fork_results = fork_results_list
                                 succeeded = sum(1 for r in fork_results_list if r.status == "ok")
-                                tool_output = (
-                                    f"Fork fan-out completed: {succeeded}/{len(fork_targets)} "
-                                    f"children succeeded. Results are in stage_data.fork_results."
-                                )
+                                # Surface no_tools children explicitly so the
+                                # parent model does not claim false success.
+                                # A ``no_tools`` child completed its text turn
+                                # but never invoked its write/learn tool, so
+                                # nothing was written to disk or memory.
+                                no_tools_children = [
+                                    f"{r.target.mode_id} (no tool calls; {r.error_message})"
+                                    for r in fork_results_list
+                                    if r.status == "no_tools"
+                                ]
+                                if no_tools_children:
+                                    tool_output = (
+                                        f"Fork fan-out: {succeeded}/{len(fork_targets)} children "
+                                        f"succeeded. The following children reported no tool "
+                                        f"calls (their mode requires action tools — nothing was "
+                                        f"written): {'; '.join(no_tools_children)}. "
+                                        f"Re-issue the fork or instruct those children to call "
+                                        f"their required operation/tool."
+                                    )
+                                else:
+                                    tool_output = (
+                                        f"Fork fan-out completed: "
+                                        f"{succeeded}/{len(fork_targets)} children "
+                                        f"succeeded. Results are in "
+                                        f"stage_data.fork_results."
+                                    )
                         await _emit_stage("tool_dispatch_complete", {
                             "tool": tool_name,
                             "tool_kind": "transition",
@@ -2250,6 +2272,27 @@ async def _rebuild_tool_schemas_for_mode(
     return new_tool_schemas
 
 
+def _fork_mode_requires_tools(mode_id: str) -> bool:
+    """Return True when a fork child's mode declares action operations/tools.
+
+    Modes like ``learn`` and ``markdown`` exist to *take action* (distill +
+    persist memories, write documents). Their ``_mode.md`` front matter
+    declares non-empty ``allowed_operation_ids`` or ``allowed_tool_ids``.
+    A fork child running such a mode that completes with **zero tool calls**
+    almost certainly produced a hallucinated "Done — wrote it to disk" text
+    response without invoking its write/learn tool, leaving nothing on disk
+    or in memory. The caller marks these ``status="no_tools"`` instead of
+    ``"ok"`` so the parent does not report a false success.
+
+    Chat-only modes (``default``, ``thinkabout``) with empty allowlists
+    legitimately complete without tools, so this returns False for them.
+    """
+    mode_config = get_workflow_catalog().get(mode_id)
+    if mode_config is None:
+        return False
+    return bool(mode_config.allowed_operation_ids) or bool(mode_config.allowed_tool_ids)
+
+
 async def _run_fork_child_turn(
     *,
     target: ForkTarget,
@@ -2264,6 +2307,13 @@ async def _run_fork_child_turn(
     ``fork_child_complete`` stage event without re-deriving the status.
     Extracted from ``_execute_fork_fanout`` to keep that function under
     the McCabe complexity cap.
+
+    A child whose mode declares action operations/tools (``learn``,
+    ``markdown``, etc.) but completes with **zero tool calls** is marked
+    ``status="no_tools"`` rather than ``"ok"``. Such a child typically
+    produced a hallucinated "Done — wrote it to disk" text response
+    without invoking its write/learn tool, leaving nothing on disk or
+    in the memory store. The parent must not report these as succeeded.
     """
     import time as _time
 
@@ -2278,6 +2328,27 @@ async def _run_fork_child_turn(
             logger_override=_flog,
         )
         elapsed_ms = int((_time.monotonic() - started) * 1000)
+        if child_result.tool_call_count == 0 and _fork_mode_requires_tools(target.mode_id):
+            _flog.warning(
+                "fork child %s completed with 0 tool calls but its mode declares "
+                "action operations/tools; marking no_tools (likely hallucinated success)",
+                target.mode_id,
+            )
+            return (
+                ForkChildResult(
+                    target=target,
+                    status="no_tools",
+                    output_text=child_result.response_text,
+                    error_message=(
+                        f"fork child {target.mode_id} produced no tool calls; its mode "
+                        "declares action operations/tools, so its reported success is "
+                        "unverified (nothing written to disk or memory)."
+                    ),
+                    duration_ms=elapsed_ms,
+                ),
+                "no_tools",
+                elapsed_ms,
+            )
         return (
             ForkChildResult(
                 target=target,

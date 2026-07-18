@@ -639,7 +639,69 @@ async def test_run_turn_fork_transition_basic() -> None:
     assert result.fork_results is not None
     assert len(result.fork_results) == 2
     for child in result.fork_results:
-        assert child.status in ("ok", "error", "timeout", "cancelled")
+        assert child.status in ("ok", "error", "timeout", "cancelled", "no_tools")
+
+
+@pytest.mark.asyncio
+async def test_run_turn_fork_marks_no_tools_child_when_action_mode_skipped_tools() -> None:
+    """A fork child whose mode declares action operations/tools but
+    completes with zero tool calls is marked ``status="no_tools"`` rather
+    than ``"ok"``.
+
+    Regression for the 2026-07-18 incident: the markdown fork child
+    produced a hallucinated "Done — wrote it to disk" text response
+    without ever calling ``markdown_forge_document`` / ``write_file``,
+    and the parent reported "2/2 children succeeded" while nothing landed
+    on disk. ``learn`` and ``markdown`` declare non-empty
+    ``allowed_operation_ids``/``allowed_tool_ids``; a child running such
+    a mode that made no tool calls did not actually do its job.
+    """
+
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "fork:learn,markdown"}',
+                        },
+                    }
+                ],
+            )
+        # Each fork child returns text only — no tool calls.
+        return _StubCompletion(content="Done — wrote it to disk.")
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(mode_id="default", query="remember this and write a markdown", hooks=hooks)
+
+    assert result.fork_results is not None
+    assert len(result.fork_results) == 2
+    statuses = {child.target.mode_id: child.status for child in result.fork_results}
+    # Both learn and markdown declare action tools/operations, so children
+    # that made zero tool calls must be flagged no_tools, not ok.
+    assert statuses["learn"] == "no_tools"
+    assert statuses["markdown"] == "no_tools"
+    for child in result.fork_results:
+        assert child.status != "ok"
+
+
+def test_fork_mode_requires_tools_true_for_action_modes() -> None:
+    """``_fork_mode_requires_tools`` returns True for modes that declare
+    non-empty ``allowed_operation_ids`` or ``allowed_tool_ids`` (learn,
+    markdown), and False for chat-only modes (default, thinkabout)."""
+    from kernel.turn_runner import _fork_mode_requires_tools
+
+    assert _fork_mode_requires_tools("learn") is True
+    assert _fork_mode_requires_tools("markdown") is True
+    assert _fork_mode_requires_tools("default") is False
+    assert _fork_mode_requires_tools("nonexistent_mode") is False
 
 
 @pytest.mark.asyncio
