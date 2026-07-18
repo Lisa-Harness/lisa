@@ -14,6 +14,7 @@ dependencies = [
     "lisa-pack-search",
     "lisa-pack-checkpoint",
     "lisa-pack-markdown",
+    "lisa-pack-compaction",
     "lisa-host-core",
     "lisa-host-cli",
     "lisa-host-web",
@@ -49,6 +50,7 @@ members = [
     "sdk/packs/search",
     "sdk/packs/checkpoint",
     "sdk/packs/markdown",
+    "sdk/packs/compaction",
     "hosts/core",
     "hosts/cli",
     "hosts/web",
@@ -71,6 +73,7 @@ lisa-pack-introspect = { workspace = true }
 lisa-pack-search = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
 lisa-pack-markdown = { workspace = true }
+lisa-pack-compaction = { workspace = true }
 lisa-pack-mem0 = { path = "../lisa_packs/mem0" }
 lisa-pack-brave-search = { path = "../lisa_packs/brave_search" }
 lisa-pack-gmail = { path = "../lisa_packs/gmail" }

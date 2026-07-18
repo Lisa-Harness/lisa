@@ -37,7 +37,7 @@ from kernel.context.context_mapper import (
     ContextMappingError,
     context_candidates_from_unified_state,
 )
-from kernel.context.models import ContextMapperRequest
+from kernel.context.models import ContextBudgetSnapshot, ContextMapperRequest
 from kernel.session_plan import ContextPlan
 from kernel.context.context_budget import ContextBudgetAllocator, ContextLane
 from kernel.context.provenance import (
@@ -166,6 +166,7 @@ def build_session_mapped_context_markdown(
     active_packs: frozenset[str] | None = None,
     conversation_tokens: int = 0,
     tool_schema_tokens: int = 0,
+    snapshot_sink: Callable[[ContextBudgetSnapshot], None] | None = None,
 ) -> str:
     """Select context via the session-owned ContextMapper and render as Markdown.
 
@@ -173,6 +174,14 @@ def build_session_mapped_context_markdown(
     when no ``context_plan`` is provided. This is the session-owned mapping
     path: candidates from ``UnifiedState`` are gated, ranked, budgeted, and
     rendered into lane-ordered markdown by :class:`ContextMapper`.
+
+    When *snapshot_sink* is provided, the mapper's ``ContextBudgetSnapshot``
+    (window size, conversation tokens, used tokens, lane totals) is handed
+    to the callback before the rendered markdown is returned. This lets a
+    host stash the latest snapshot on its ``TurnHooks.last_context_snapshot``
+    field so utilization-aware slices (e.g. the compaction pack) can read
+    actual context-window pressure without re-running the mapper. The sink
+    is never called on the empty-state fallback paths.
     """
     if state is None or not state.compiled_at or context_plan is None:
         return ""
@@ -199,6 +208,13 @@ def build_session_mapped_context_markdown(
         result = ContextMapper().map(request)
     except ContextMappingError:
         return ""
+    if snapshot_sink is not None:
+        try:
+            snapshot_sink(result.budget)
+        except Exception:  # pylint: disable=broad-except
+            # The snapshot sink is observational only; its failure must
+            # never change the rendered context the model receives.
+            pass
     return result.rendered_context
 
 
@@ -210,6 +226,7 @@ def build_brokered_context_markdown(
     context_plan: ContextPlan | None = None,
     model_context_window_tokens: int = 0,
     active_packs: frozenset[str] | None = None,
+    snapshot_sink: Callable[[ContextBudgetSnapshot], None] | None = None,
 ) -> str:
     """Select ranked context evidence from *state* and render it as Markdown.
 
@@ -220,6 +237,10 @@ def build_brokered_context_markdown(
 
     Returns an empty string when no evidence is selected or when *state*
     is ``None`` / uncompiled.
+
+    *snapshot_sink* is forwarded to the session-owned mapper path; the
+    legacy broker path does not produce a ``ContextBudgetSnapshot`` and
+    therefore never invokes the sink.
     """
     if state is None or not state.compiled_at:
         return ""
@@ -232,6 +253,7 @@ def build_brokered_context_markdown(
             context_plan=context_plan,
             model_context_window_tokens=model_context_window_tokens,
             active_packs=active_packs,
+            snapshot_sink=snapshot_sink,
         )
 
     # Resolve the active mode's pack-scoped evidence boundary. The mode's
@@ -304,6 +326,7 @@ def assemble_dynamic_user_context(
     mode_support_gap: Callable[[WorkflowModeConfig], str | None] | None = None,
     context_plan: ContextPlan | None = None,
     model_context_window_tokens: int = 0,
+    snapshot_sink: Callable[[ContextBudgetSnapshot], None] | None = None,
 ) -> str:
     """Assemble the dynamic user-context block for the current turn.
 
@@ -311,6 +334,9 @@ def assemble_dynamic_user_context(
     reads. The capability-manifest metadata injection (total horizon +
     mode routing map) is preserved as a mutation of the passed-in manifest
     object; the ``_set_last_capability_manifest`` side-effect is dropped.
+
+    *snapshot_sink* is forwarded to the session-owned context mapper so a
+    host can capture the latest ``ContextBudgetSnapshot`` on each turn.
     """
     gap_fn = mode_support_gap or (lambda _m: None)
 
@@ -425,6 +451,7 @@ def assemble_dynamic_user_context(
         state=state,
         context_plan=context_plan,
         model_context_window_tokens=model_context_window_tokens,
+        snapshot_sink=snapshot_sink,
     )
     if packet_markdown:
         raw_sections.append(("ranked_context", "retrieval", packet_markdown))

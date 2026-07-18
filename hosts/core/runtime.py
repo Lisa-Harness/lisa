@@ -195,6 +195,11 @@ class HostRuntime:
 
         # ── Slice ─────────────────────────────────────────────────────
         self.last_slice_finished_at: float | None = None
+        # Latest ContextBudgetSnapshot produced by the context-mapper pass
+        # on this turn. Mutated by the host's ``assemble_user_context``
+        # path; read by utilization-aware slice providers (e.g. the
+        # compaction pack) via ``TurnHooks.last_context_snapshot``.
+        self.last_context_snapshot: Any = None
 
         # ── Last-turn diagnostics ─────────────────────────────────────
         self.last_turn_context: TurnContext | None = None

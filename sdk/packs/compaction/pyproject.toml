@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["../.."]
+include = ["sdk.packs.compaction*"]
+
+[tool.setuptools.package-data]
+"sdk.packs.compaction" = ["operations/**/*.md", "operations/**/*.yml"]
+
+[project]
+name = "lisa-pack-compaction"
+version = "0.1.0"
+description = "Lisa compaction pack - utilization-triggered, pressure-driven context compaction"
+requires-python = ">=3.11"
+
+dependencies = [
+    "lisa-kernel",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.14.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["../.."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[project.entry-points."lisa.extensions.content_roots"]
+compaction = "sdk.packs.compaction:get_content_root"
+
+[project.entry-points."lisa.extensions.host_commands"]
+compaction = "sdk.packs.compaction.commands:get_host_commands"
+
+[project.entry-points."lisa.extensions.slice_providers"]
+compaction = "sdk.packs.compaction.slice_provider:get_slice_provider_factory"

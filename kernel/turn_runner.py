@@ -50,6 +50,7 @@ from kernel.ipsar_fsm import (
     run_mode_entry_operations,
     run_mode_pre_turn_operations,
 )
+from kernel.context.models import ContextBudgetSnapshot
 from kernel.models import (
     CallLedger,
     CapabilityManifest,
@@ -438,6 +439,24 @@ class TurnHooks:
 
     code_change_artifact_store: Any | None = None
     """Host-owned store for pack-neutral local coding workflow artifacts."""
+
+    last_context_snapshot: ContextBudgetSnapshot | None = None
+    """Most recent ``ContextBudgetSnapshot`` produced by the host's
+    context-mapper pass on this turn. Mutated by the host (or its
+    ``assemble_user_context``) after each prompt assembly so slice
+    providers can read actual context-window utilization without
+    re-running the mapper. Default: None (no snapshot; utilization-aware
+    slices treat this as "unknown" and no-op). Read-only from the
+    kernel's perspective — the kernel never writes this field."""
+
+    write_turn_history_fn: Callable[[list[dict[str, Any]]], None] | None = None
+    """Host-owned write-back seam for the live session's turn history.
+    Receives a fully-formed replacement turn-history list (typically a
+    single summary record followed by retained recent turns) and is
+    responsible for persisting it to the session's thread store. Default:
+    None means "host does not support turn-history write-back";
+    compaction slices and the ``/summarize-history`` command detect this
+    and no-op with a warning instead of silently dropping the result."""
 
     workspace_id: str = "lite-host"
     user_id: str = "lite-user"

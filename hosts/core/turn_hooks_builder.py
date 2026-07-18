@@ -17,7 +17,7 @@ Public surface
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from kernel.introspect import gather_introspection
@@ -80,6 +80,46 @@ def content_registry() -> ContentRegistry | None:
 
 
 # ── Turn-hooks builder ────────────────────────────────────────────────
+
+
+class _SliceProviderHooksView:
+    """Minimal read-only view passed to a pack slice-provider factory.
+
+    Exposes only the seams a utilization-aware slice needs:
+    ``last_context_snapshot`` (read from the runtime; the snapshot sink
+    keeps it current each turn), ``write_turn_history_fn`` (the host
+    writer closure), and ``execute_operation`` (the kernel operation
+    dispatcher). This avoids handing the factory the full ``TurnHooks``
+    before it is fully constructed.
+    """
+
+    __slots__ = ("_runtime", "_write_turn_history", "execute_operation")
+
+    def __init__(
+        self,
+        *,
+        runtime: HostRuntime,
+        write_turn_history: Callable[[list[dict[str, Any]]], None],
+    ) -> None:
+        self._runtime = runtime
+        self._write_turn_history = write_turn_history
+        # Lazy: wire execute_operation when the factory asks for it via
+        # attribute access; the closure is defined later in build_turn_hooks
+        # but factories only invoke it at slice time, not at construction.
+
+    @property
+    def last_context_snapshot(self) -> Any:
+        return self._runtime.last_context_snapshot
+
+    @property
+    def write_turn_history_fn(self) -> Callable[[list[dict[str, Any]]], None]:
+        return self._write_turn_history
+
+    def __getattr__(self, name: str) -> Any:
+        # Fall back to runtime attributes for seams the factory may need
+        # (e.g. execute_operation closure is set on this view explicitly
+        # once build_turn_hooks constructs it). Until then, raise.
+        raise AttributeError(f"_SliceProviderHooksView has no attribute {name!r}")
 
 
 def build_turn_hooks(
@@ -203,6 +243,13 @@ def build_turn_hooks(
         resolved_model = _resolve_model("default")
         model_context_window = getattr(resolved_model, "context_window", 0) or 0
 
+        def _snapshot_sink(snapshot: Any) -> None:
+            # Stash the mapper's ContextBudgetSnapshot on the runtime so
+            # the returned TurnHooks.last_context_snapshot reflects the
+            # most-recent context-mapper pass. Utilization-aware slice
+            # providers read this via hooks.last_context_snapshot.
+            runtime.last_context_snapshot = snapshot
+
         return assemble_dynamic_user_context(
             mode_id,
             query,
@@ -217,6 +264,7 @@ def build_turn_hooks(
             capability_manifest=capability_manifest,
             context_plan=context_plan,
             model_context_window_tokens=model_context_window,
+            snapshot_sink=_snapshot_sink,
         )
 
     # ── Operation execution ───────────────────────────────────────
@@ -350,6 +398,24 @@ def build_turn_hooks(
     async def _explicit_slice(policy: Any) -> Any:
         return await file_state_provider.slice(ctx=None, policy=policy)
 
+    # ── Turn-history write-back seam ─────────────────────────────────
+    # Used by utilization-aware compaction (lisa-pack-compaction) and the
+    # /summarize-history command to persist a compacted turn-history list
+    # back to the live thread JSONL. When the host has no thread (e.g.
+    # ``--no-thread``), this is None and callers no-op with a warning.
+    def _write_turn_history(new_history: list[dict[str, Any]]) -> None:
+        thread_path = runtime.thread_path
+        if thread_path is None:
+            raise RuntimeError("write_turn_history: no thread path configured")
+        import json as _json
+
+        thread_path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [_json.dumps(entry, ensure_ascii=False) for entry in new_history]
+        thread_path.write_text(
+            ("\n".join(lines) + "\n") if lines else "",
+            encoding="utf-8",
+        )
+
     # ── Live stage telemetry ─────────────────────────────────────────
     # Forward the kernel's fine-grained stage events to the transport so the
     # CLI/web/VS Code stage line can show model_call, tool_dispatch, and
@@ -359,6 +425,106 @@ def build_turn_hooks(
         if transport is None:
             return
         await transport.on_stage(label, data)
+
+    # ── Pack-provided slice providers ───────────────────────────────
+    # Discover lisa.extensions.slice_providers entry points and chain any
+    # non-None factory result ahead of the host's deterministic
+    # FileBackedStateProvider slices. The first applicable provider wins;
+    # later entries are not consulted for the same slot. A provider
+    # returns None when its session-plan tuning is disabled (e.g.
+    # compaction.enabled=False), in which case it is skipped and the host
+    # falls back to FileBackedStateProvider alone — no behavior change.
+    from kernel.slice_provider_discovery import discover_slice_provider_factories
+
+    _slice_provider_hooks_view = _SliceProviderHooksView(
+        runtime=runtime, write_turn_history=_write_turn_history
+    )
+    _slice_provider_hooks_view.execute_operation = _execute_operation  # type: ignore[attr-defined]
+
+    pack_slice_entries = discover_slice_provider_factories()
+    pack_slice_providers: list[Any] = []
+    for entry in pack_slice_entries:
+        try:
+            provider = entry.factory(
+                # The provider reads last_context_snapshot and
+                # write_turn_history_fn off the view and invokes
+                # execute_operation to fire the summarize operation.
+                _slice_provider_hooks_view,
+                runtime.session_plan,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "slice provider %s factory failed: %s", entry.pack_name, exc
+            )
+            continue
+        if provider is not None:
+            pack_slice_providers.append(provider)
+
+    def _chain_pack_slices(
+        base_slice: Callable[[Any], Awaitable[Any]],
+        trigger_name: str,
+    ) -> Callable[[Any], Awaitable[Any]]:
+        """Wrap a base slice so pack providers for this trigger run first.
+
+        Each pack provider is asked to run; if it reports work or raises,
+        later providers and the base slice still run (compaction and
+        deterministic file compaction are complementary, not exclusive).
+        """
+        applicable: list[Any] = []
+        for provider in pack_slice_providers:
+            # The provider's trigger preference is read from its config;
+            # if it does not expose one, assume post_turn.
+            cfg = getattr(provider, "_config", None)
+            trigger = str(getattr(cfg, "trigger", "post_turn") or "post_turn")
+            if trigger == trigger_name:
+                applicable.append(provider)
+        if not applicable:
+            return base_slice
+
+        async def _chained(policy: Any) -> Any:
+            import time as _time
+
+            total_work = 0
+            last_item = ""
+            notes: list[str] = []
+            elapsed_ms = 0.0
+            for provider in applicable:
+                try:
+                    outcome = await provider.slice(ctx=None, policy=policy)
+                except Exception as exc:  # pylint: disable=broad-except
+                    logger.warning(
+                        "pack slice provider %s failed: %s",
+                        type(provider).__name__,
+                        exc,
+                    )
+                    continue
+                if outcome is None:
+                    continue
+                total_work += int(getattr(outcome, "work_items_completed", 0) or 0)
+                if getattr(outcome, "last_item", ""):
+                    last_item = str(outcome.last_item)
+                outcome_notes = getattr(outcome, "notes", ()) or ()
+                notes.extend(str(n) for n in outcome_notes)
+                elapsed_ms += float(getattr(outcome, "elapsed_ms", 0.0) or 0.0)
+            base_outcome = await base_slice(policy)
+            total_work += int(getattr(base_outcome, "work_items_completed", 0) or 0)
+            if getattr(base_outcome, "last_item", ""):
+                last_item = str(base_outcome.last_item)
+            base_notes = getattr(base_outcome, "notes", ()) or ()
+            notes.extend(str(n) for n in base_notes)
+            elapsed_ms += float(getattr(base_outcome, "elapsed_ms", 0.0) or 0.0)
+            return SliceOutcome(
+                work_items_completed=total_work,
+                elapsed_ms=elapsed_ms,
+                last_item=last_item,
+                notes=tuple(notes) if notes else (),
+            )
+
+        return _chained
+
+    _pre_turn_slice_chained = _chain_pack_slices(_pre_turn_slice, "pre_turn")
+    _post_turn_slice_chained = _chain_pack_slices(_post_turn_slice, "post_turn")
+    _explicit_slice_chained = _chain_pack_slices(_explicit_slice, "explicit")
 
     return TurnHooks(
         resolve_model=_resolve_model,
@@ -371,9 +537,9 @@ def build_turn_hooks(
         assemble_user_context=_assemble_user_context,
         on_turn_complete=_on_turn_complete,
         slice_tuning=slice_tuning,
-        pre_turn_slice=_pre_turn_slice,
-        post_turn_slice=_post_turn_slice,
-        explicit_slice=_explicit_slice,
+        pre_turn_slice=_pre_turn_slice_chained,
+        post_turn_slice=_post_turn_slice_chained,
+        explicit_slice=_explicit_slice_chained,
         last_slice_finished_at=persisted_last_slice_finished_at,
         state_provider=_state_provider,
         pack_configuration_resolver=pack_configuration_resolver,
@@ -389,6 +555,13 @@ def build_turn_hooks(
         surface_id=runtime.config.surface_id,
         memory_scope=runtime.config.memory_scope,
         session_plan_digest=runtime.session_plan.plan_digest,
+        # Stash the latest ContextBudgetSnapshot here each turn via the
+        # _snapshot_sink wired into _assemble_user_context. Utilization-
+        # aware slice providers read this via hooks.last_context_snapshot.
+        last_context_snapshot=runtime.last_context_snapshot,
+        # Host-owned write-back seam for the live thread JSONL. Used by
+        # the compaction pack's slice and by /summarize-history.
+        write_turn_history_fn=_write_turn_history,
         checkpoint_tuning=CheckpointTuning(
             enabled=True,
             on_stage_transition=True,

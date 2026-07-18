@@ -5,8 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from kernel.session_plan import SessionPlanError, compile_session_plan
+from kernel.session_plan import (
+    CompactionTuning,
+    ContextHistoryPlan,
+    SessionPlanError,
+    compile_session_plan,
+)
 
 _SCHEMA_VERSION = 2
 _SHA256_LENGTH = 64
@@ -158,3 +164,132 @@ def test_bundled_default_session_compiles_with_core_mode_provider() -> None:
 
     assert plan.manifest.providers.modes == {"default": "lisa-pack-core"}
     assert plan.manifest.providers.tools == {}
+
+
+# ── CompactionTuning ────────────────────────────────────────────────────
+
+
+def test_compaction_tuning_defaults_disabled_and_post_turn() -> None:
+    """CompactionTuning defaults to disabled, post_turn trigger, safe thresholds."""
+    tuning = CompactionTuning()
+    assert tuning.enabled is False
+    assert tuning.trigger == "post_turn"
+    assert tuning.pressure_threshold == 0.75
+    assert tuning.hard_threshold == 0.90
+    assert tuning.min_interval_turns == 4
+    assert tuning.retention_count == 6
+    assert tuning.preferred_model_id == "deep"
+    assert tuning.summarize_operation == "checkpoint_history_summarize"
+
+
+def test_compaction_tuning_rejects_unknown_keys() -> None:
+    """Strict extra=forbid applies to CompactionTuning."""
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        CompactionTuning.model_validate({"enabled": True, "bogus": 1})
+
+
+def test_compaction_tuning_rejects_thresholds_out_of_range() -> None:
+    """Pressure and hard thresholds must be within [0.0, 1.0]."""
+    with pytest.raises(ValidationError):
+        CompactionTuning.model_validate({"pressure_threshold": 1.5})
+    with pytest.raises(ValidationError):
+        CompactionTuning.model_validate({"hard_threshold": -0.1})
+
+
+def test_compaction_tuning_rejects_hard_below_pressure() -> None:
+    """hard_threshold must be >= pressure_threshold (guardrail invariant)."""
+    with pytest.raises(ValidationError, match="hard_threshold must be >="):
+        CompactionTuning.model_validate(
+            {"pressure_threshold": 0.9, "hard_threshold": 0.5}
+        )
+
+
+def test_compaction_tuning_rejects_bad_trigger_literal() -> None:
+    """trigger is a closed Literal; unknown values fail validation."""
+    with pytest.raises(ValidationError, match="trigger"):
+        CompactionTuning.model_validate({"trigger": "mid_turn"})
+
+
+def test_context_history_plan_defaults_compaction_disabled() -> None:
+    """ContextHistoryPlan.compaction defaults to a disabled CompactionTuning."""
+    plan = ContextHistoryPlan()
+    assert isinstance(plan.compaction, CompactionTuning)
+    assert plan.compaction.enabled is False
+
+
+def test_context_history_plan_accepts_explicit_compaction_block() -> None:
+    """A plan can opt in to compaction via the nested compaction block."""
+    plan = ContextHistoryPlan.model_validate(
+        {
+            "compaction": {
+                "enabled": True,
+                "pressure_threshold": 0.5,
+                "hard_threshold": 0.8,
+                "min_interval_turns": 2,
+            }
+        }
+    )
+    assert plan.compaction.enabled is True
+    assert plan.compaction.pressure_threshold == 0.5
+    assert plan.compaction.min_interval_turns == 2
+
+
+def test_compile_session_plan_accepts_compaction_block_in_history() -> None:
+    """A full session manifest with context.history.compaction compiles."""
+    text = _manifest(
+        extra=(
+            "context:\n"
+            "  history:\n"
+            "    recent_message_limit: 4\n"
+            "    compaction:\n"
+            "      enabled: true\n"
+            "      pressure_threshold: 0.6\n"
+            "      hard_threshold: 0.85\n"
+            "      min_interval_turns: 3\n"
+            "      retention_count: 4\n"
+        )
+    )
+    plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
+    comp = plan.manifest.context.history.compaction
+    assert comp.enabled is True
+    assert comp.pressure_threshold == 0.6
+    assert comp.hard_threshold == 0.85
+    assert comp.min_interval_turns == 3
+    assert comp.retention_count == 4
+
+
+def test_compile_session_plan_rejects_unknown_compaction_key() -> None:
+    """Strict extra=forbid applies inside the compaction block too."""
+    text = _manifest(
+        extra=(
+            "context:\n"
+            "  history:\n"
+            "    compaction:\n"
+            "      enabled: true\n"
+            "      bogus: 1\n"
+        )
+    )
+    with pytest.raises(SessionPlanError, match="Extra inputs are not permitted"):
+        compile_session_plan(text=text, source_uri="workspace:session_context.md")
+
+
+def test_compile_session_plan_rejects_inverted_compaction_thresholds() -> None:
+    """A compaction block with hard < pressure fails plan compilation."""
+    text = _manifest(
+        extra=(
+            "context:\n"
+            "  history:\n"
+            "    compaction:\n"
+            "      enabled: true\n"
+            "      pressure_threshold: 0.9\n"
+            "      hard_threshold: 0.5\n"
+        )
+    )
+    with pytest.raises(SessionPlanError, match="hard_threshold must be >="):
+        compile_session_plan(text=text, source_uri="workspace:session_context.md")
+
+
+def test_compile_session_plan_preserves_default_compaction_when_omitted() -> None:
+    """Existing plans that omit the compaction block still compile and default to disabled."""
+    plan = compile_session_plan(text=_manifest(), source_uri="workspace:session_context.md")
+    assert plan.manifest.context.history.compaction.enabled is False

@@ -296,6 +296,36 @@ Conversation history compaction constraints. This replaces the legacy `replay.*`
 | --- | --- | --- | --- |
 | `digest_max_lines` | `int >= 1` | `200` | Max lines retained in the digest during compaction. |
 | `digest_summary_max_chars` | `int >= 60` | `240` | Max chars for the lossy summary line during digest rollover. |
+| `compaction` | `CompactionTuning` | (see below) | Utilization-triggered, pressure-driven automatic context compaction. |
+
+##### `context.history.compaction`
+
+Utilization-triggered, pressure-driven context compaction. When `enabled` is `false` (the default), no automatic compaction fires and the host's deterministic thread compaction runs unchanged. When `enabled` is `true`, the compaction pack's slice provider reads the live `ContextBudgetSnapshot` each turn and fires the configured `summarize_operation` (default: `checkpoint_history_summarize`) when utilization crosses a threshold — paid for out of the post-turn slice pressure budget, not the user's turn latency.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | `bool` | `false` | Master switch. A host opts in by setting `true`. |
+| `trigger` | `post_turn` \| `pre_turn` \| `explicit` \| `never` | `post_turn` | Which slice slot fires compaction. `post_turn` (default) runs after the user sees the response. |
+| `pressure_threshold` | `float 0.0-1.0` | `0.75` | Fire when `(conversation_tokens + used_context_tokens) / model_context_window_tokens` reaches this fraction, subject to the pressure curve and `min_interval_turns`. |
+| `hard_threshold` | `float 0.0-1.0` | `0.90` | Guardrail: fire regardless of pressure budget or interval when utilization reaches this fraction. Must be `>= pressure_threshold`. |
+| `min_interval_turns` | `int >= 0` | `4` | Don't re-compact more often than every N turns (ignored when `hard_threshold` overrides). |
+| `retention_count` | `int >= 1` | `6` | Most-recent turns kept verbatim; older turns are summarized. |
+| `preferred_model_id` | `string` | `deep` | Model ID used for the summarize operation. |
+| `summarize_operation` | `string` | `checkpoint_history_summarize` | Operation ID invoked to compact. Override to `context_compact` for the utilization-aware prompt shipped by the compaction pack. |
+
+Example:
+
+```yaml
+context:
+  history:
+    recent_message_limit: 6
+    compaction:
+      enabled: true
+      pressure_threshold: 0.65
+      hard_threshold: 0.85
+      min_interval_turns: 3
+      retention_count: 4
+```
 
 ---
 

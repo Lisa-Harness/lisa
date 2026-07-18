@@ -1,0 +1,7 @@
+operation_id: context_compact
+description: Utilization-aware context compaction. Wraps checkpoint_history_summarize with explicit context-window pressure framing so the model summarizes more aggressively when the session is near full. Invoked by the compaction pack's slice provider or the /compact-now command.
+mode_allowlist: [default, discuss, learn]
+tool_ids: []
+timeout_seconds: 20
+max_calls_per_turn: 1
+preferred_model_id: deep
