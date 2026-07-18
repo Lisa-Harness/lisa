@@ -7,12 +7,12 @@ where = ["../.."]
 include = ["sdk.packs.models*"]
 
 [tool.setuptools.package-data]
-"sdk.packs.models" = ["modes/**/*.md", "operations/**/*.md", "operations/**/*.yml", "operations/**/prompts/*.md"]
+"sdk.packs.models" = ["operations/**/*.md", "operations/**/*.yml", "operations/**/prompts/*.md"]
 
 [project]
 name = "lisa-pack-models"
 version = "0.1.0"
-description = "Lisa model-picker pack - natural-language model manifest editing"
+description = "Lisa models pack - natural-language model manifest editing via /models update"
 requires-python = ">=3.11"
 
 [project.optional-dependencies]

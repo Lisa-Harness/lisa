@@ -1,14 +1,15 @@
-"""Model-picker pack — natural-language model manifest editing.
+"""Models pack — natural-language model manifest editing.
 
-Provides the ``advise-models`` mode which lets the user edit the model
-manifest (``models.proposed.yaml`` or ``models.yaml``) using natural
-language instructions instead of hand-editing YAML. The pack calls an
-LLM to interpret the instruction, edits the manifest, validates the
-result, and returns a diff summary.
+Provides the ``advise_models`` operation, invoked by the ``/models update
+<natural language>`` host command (``hosts/core/commands.py``). The operation
+reads the current manifest (``models.proposed.yaml`` or ``models.yaml``),
+calls an LLM to interpret the instruction, edits + validates the manifest,
+and writes the result back to the proposal file. The host command then
+promotes the proposal to the active manifest.
 
 Lives in the framework tree at ``sdk/packs/models`` (import path
-``sdk.packs.models``) and is discovered via the ``lisa.extensions.content_roots``
-entry point.
+``sdk.packs.models``) and is discovered via the
+``lisa.extensions.content_roots`` entry point.
 """
 
 from __future__ import annotations
