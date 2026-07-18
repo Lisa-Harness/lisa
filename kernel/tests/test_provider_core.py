@@ -19,6 +19,7 @@ from kernel.provider_core import (
     CompletionRequest,
     CompletionResult,
     ModelDescriptor,
+    normalize_openai_messages,
 )
 
 # ── Test helpers ──────────────────────────────────────────────────────
@@ -250,6 +251,68 @@ async def test_assistant_tool_calls_translated_to_anthropic() -> None:
     assert tool_msg["content"][0]["type"] == "tool_result"
     assert tool_msg["content"][0]["tool_use_id"] == "call_1"
     assert tool_msg["content"][0]["content"] == "sunny"
+
+
+# ── normalize_openai_messages: strict-backend assistant content fix ──
+
+
+def test_normalize_assistant_with_tool_calls_and_no_content_defaults_to_empty_string() -> None:
+    """Assistant messages with tool_calls and no ``content`` get ``content=""``.
+
+    The turn runner appends ``{"role": "assistant", "tool_calls": [...]}``
+    (no ``content`` key) when the model emits tool calls without text. Strict
+    OpenAI-compatible backends (Ollama) reject ``content: <nil>`` with
+    ``invalid message content type: <nil>``. ``normalize_openai_messages`` is
+    the single chokepoint that must repair this for every OpenAI request.
+    """
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "remember this"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "synthesize", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+    ]
+    normalized = normalize_openai_messages(list(messages))
+    assistant = normalized[1]
+    assert assistant["role"] == "assistant"
+    assert assistant["content"] == ""
+    # tool_calls preserved
+    assert isinstance(assistant.get("tool_calls"), list)
+    assert assistant["tool_calls"][0]["id"] == "call_1"
+
+
+def test_normalize_assistant_with_explicit_none_content_defaults_to_empty_string() -> None:
+    """An assistant message whose content is explicitly ``None`` is repaired."""
+
+    messages: list[dict[str, Any]] = [
+        {"role": "assistant", "content": None, "tool_calls": []},
+    ]
+    normalized = normalize_openai_messages(messages)
+    assert normalized[0]["content"] == ""
+
+
+def test_normalize_preserves_non_assistant_missing_content() -> None:
+    """Only assistant messages are repaired; user/tool pass through untouched."""
+
+    messages: list[dict[str, Any]] = [{"role": "user"}]  # no content key on a user message
+    normalized = normalize_openai_messages(messages)
+    assert "content" not in normalized[0]
+
+
+def test_normalize_preserves_assistant_text_content() -> None:
+    """Assistant messages with real text keep their content unchanged."""
+
+    messages: list[dict[str, Any]] = [{"role": "assistant", "content": "hello"}]
+    normalized = normalize_openai_messages(messages)
+    assert normalized[0]["content"] == "hello"
 
 
 # ── Temperature passed through ─────────────────────────────────────────

@@ -171,11 +171,23 @@ class EmbeddingGateway(Protocol):
 
 
 def normalize_openai_messages(messages: ChatMessages) -> ChatMessages:
-    """Clone one chat history with OpenAI-compatible tool-call payloads."""
+    """Clone one chat history with OpenAI-compatible tool-call payloads.
+
+    Also guarantees every ``assistant`` message carries a string ``content``.
+    The turn runner appends assistant messages with ``tool_calls`` and no
+    ``content`` key when the model emits tool calls without accompanying
+    text. The OpenAI spec treats ``content`` as optional for those messages,
+    but strict OpenAI-compatible backends (notably Ollama) reject
+    ``content: <nil>`` with ``invalid message content type: <nil>``. Defaulting
+    to ``""`` keeps the payload acceptable to both lenient and strict backends.
+    """
 
     normalized_messages: ChatMessages = []
     for message in messages:
         normalized_message = dict(message)
+        if str(normalized_message.get("role", "") or "") == "assistant":
+            if normalized_message.get("content") is None:
+                normalized_message["content"] = ""
         raw_tool_calls = normalized_message.get("tool_calls")
         if isinstance(raw_tool_calls, list):
             normalized_message["tool_calls"] = [
