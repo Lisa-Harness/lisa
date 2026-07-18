@@ -59,7 +59,7 @@ forges the document — each running in its own mode with its own tool surface.
 Lisa was in `coding` mode. It did not fork (or even hand off). Instead it
 called `coding_create_worktree`, the only write-effect tool available in
 `coding` mode, which is `approval_required: true` (see
-`sdk/packs/coding/tools/create_worktree/create_worktree.tool.yml`). The host
+`lisa_packs/coding/tools/create_worktree/create_worktree.tool.yml`). The host
 surfaced the approval prompt. The user did not approve; Lisa re-issued the
 same call, producing the second approval prompt.
 
@@ -193,7 +193,7 @@ def test_routing_hint_forks_from_coding_mode() -> None:
 - `kernel/tests/test_turn_runner.py` — `test_routing_fsm_synthesis`
   (currently pins the conservative `["default"]`-only edge set; must be
   updated alongside Option A) and the fork-hint regression tests.
-- `sdk/packs/coding/tools/create_worktree/create_worktree.tool.yml` — the
+- `lisa_packs/coding/tools/create_worktree/create_worktree.tool.yml` — the
   approval-gated tool Lisa reached for in the absence of a fork hint.
 - `docs/ROUTER_DESIGN.md` §9 — fork fan-out contract.
 - `/memories/repo/routing-hint-fork-detection.md` — the prior

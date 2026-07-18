@@ -9,7 +9,7 @@ resources:
   packs:
     include:
       - lisa-pack-core
-      - lisa-pack-learning
+      - lisa-pack-memory
       - lisa-pack-markdown
       - lisa-pack-search
       - lisa-pack-brave-search
@@ -22,7 +22,7 @@ resources:
         workspace_root: "."
         checks:
           - id: focused-tests
-            argv: [uv, run, pytest, kernel/tests, hosts/core/tests, sdk/packs/coding/tests, lisa_pack_github/tests, -q]
+            argv: [uv, run, pytest, kernel/tests, hosts/core/tests, lisa_packs/coding/tests, lisa_pack_github/tests, -q]
             timeout_seconds: 600
         required_check_ids: [focused-tests]
         branch_prefix: "lisa/"
@@ -35,7 +35,7 @@ resources:
         protected_branches: [main, master, develop, prod, production]
 providers:
   modes:
-    default: lisa-pack-learning
+    default: lisa-pack-memory
   tools:
     web_search: lisa-pack-brave-search
 routing:

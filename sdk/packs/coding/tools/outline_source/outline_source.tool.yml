@@ -1,6 +1,0 @@
-﻿tool_id: coding_outline_source
-pack_id: lisa-pack-coding
-description: "Extract a bounded Python AST outline or explicitly labeled JavaScript fallback outline."
-mode_allowlist: [coding]
-effect: read
-max_calls_per_turn: 30

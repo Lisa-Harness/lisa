@@ -20,10 +20,10 @@ members = [
     "lisa-kernel",
     "lisa-mcp-servers",
     "lisa-pack-checkpoint",
-    "lisa-pack-coding",
     "lisa-pack-core",
-    "lisa-pack-learning",
+    "lisa-pack-introspect",
     "lisa-pack-markdown",
+    "lisa-pack-memory",
     "lisa-pack-search",
     "lisa-sdk",
 ]
@@ -884,8 +884,9 @@ dependencies = [
     { name = "lisa-pack-checkpoint" },
     { name = "lisa-pack-coding" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-learning" },
+    { name = "lisa-pack-introspect" },
     { name = "lisa-pack-markdown" },
+    { name = "lisa-pack-memory" },
     { name = "lisa-pack-search" },
     { name = "lisa-sdk" },
     { name = "rich" },
@@ -914,10 +915,11 @@ requires-dist = [
     { name = "lisa-kernel", editable = "kernel" },
     { name = "lisa-mcp-servers", editable = "mcp_server" },
     { name = "lisa-pack-checkpoint", editable = "sdk/packs/checkpoint" },
-    { name = "lisa-pack-coding", editable = "sdk/packs/coding" },
+    { name = "lisa-pack-coding", directory = "../lisa_packs/coding" },
     { name = "lisa-pack-core", editable = "sdk/packs/core" },
-    { name = "lisa-pack-learning", editable = "sdk/packs/learning" },
+    { name = "lisa-pack-introspect", editable = "sdk/packs/introspect" },
     { name = "lisa-pack-markdown", editable = "sdk/packs/markdown" },
+    { name = "lisa-pack-memory", editable = "sdk/packs/memory" },
     { name = "lisa-pack-search", editable = "sdk/packs/search" },
     { name = "lisa-sdk", editable = "sdk" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
@@ -960,7 +962,8 @@ dependencies = [
     { name = "lisa-mcp-servers" },
     { name = "lisa-pack-checkpoint" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-learning" },
+    { name = "lisa-pack-introspect" },
+    { name = "lisa-pack-memory" },
     { name = "lisa-pack-search" },
     { name = "lisa-sdk" },
     { name = "openai" },
@@ -992,7 +995,8 @@ requires-dist = [
     { name = "lisa-mcp-servers" },
     { name = "lisa-pack-checkpoint" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-learning" },
+    { name = "lisa-pack-introspect" },
+    { name = "lisa-pack-memory" },
     { name = "lisa-pack-search" },
     { name = "lisa-sdk" },
     { name = "openai", specifier = ">=1.30.0" },
@@ -1022,7 +1026,8 @@ dependencies = [
     { name = "lisa-mcp-servers" },
     { name = "lisa-pack-checkpoint" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-learning" },
+    { name = "lisa-pack-introspect" },
+    { name = "lisa-pack-memory" },
     { name = "lisa-pack-search" },
     { name = "lisa-sdk" },
     { name = "openai" },
@@ -1045,7 +1050,8 @@ requires-dist = [
     { name = "lisa-mcp-servers" },
     { name = "lisa-pack-checkpoint" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-learning" },
+    { name = "lisa-pack-introspect" },
+    { name = "lisa-pack-memory" },
     { name = "lisa-pack-search" },
     { name = "lisa-sdk" },
     { name = "openai", specifier = ">=1.30.0" },
@@ -1069,7 +1075,8 @@ dependencies = [
     { name = "lisa-mcp-servers" },
     { name = "lisa-pack-checkpoint" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-learning" },
+    { name = "lisa-pack-introspect" },
+    { name = "lisa-pack-memory" },
     { name = "lisa-pack-search" },
     { name = "lisa-sdk" },
     { name = "openai" },
@@ -1085,7 +1092,8 @@ requires-dist = [
     { name = "lisa-mcp-servers" },
     { name = "lisa-pack-checkpoint" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-learning" },
+    { name = "lisa-pack-introspect" },
+    { name = "lisa-pack-memory" },
     { name = "lisa-pack-search" },
     { name = "lisa-sdk" },
     { name = "openai", specifier = ">=1.30.0" },
@@ -1105,7 +1113,8 @@ dependencies = [
     { name = "lisa-mcp-servers" },
     { name = "lisa-pack-checkpoint" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-learning" },
+    { name = "lisa-pack-introspect" },
+    { name = "lisa-pack-memory" },
     { name = "lisa-pack-search" },
     { name = "lisa-sdk" },
     { name = "openai" },
@@ -1136,7 +1145,8 @@ requires-dist = [
     { name = "lisa-mcp-servers" },
     { name = "lisa-pack-checkpoint" },
     { name = "lisa-pack-core" },
-    { name = "lisa-pack-learning" },
+    { name = "lisa-pack-introspect" },
+    { name = "lisa-pack-memory" },
     { name = "lisa-pack-search" },
     { name = "lisa-sdk" },
     { name = "openai", specifier = ">=1.30.0" },
@@ -1260,7 +1270,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "lisa-pack-coding"
 version = "0.1.0"
-source = { editable = "sdk/packs/coding" }
+source = { directory = "../lisa_packs/coding" }
 dependencies = [
     { name = "lisa-kernel" },
     { name = "lisa-sdk" },
@@ -1270,7 +1280,12 @@ dependencies = [
 requires-dist = [
     { name = "lisa-kernel" },
     { name = "lisa-sdk" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "lisa-pack-core"
@@ -1295,9 +1310,12 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "lisa-pack-learning"
+name = "lisa-pack-introspect"
 version = "0.1.0"
-source = { editable = "sdk/packs/learning" }
+source = { editable = "sdk/packs/introspect" }
+dependencies = [
+    { name = "lisa-kernel" },
+]
 
 [package.optional-dependencies]
 dev = [
@@ -1308,6 +1326,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "lisa-kernel" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
@@ -1338,6 +1357,26 @@ requires-dist = [
     { name = "lisa-sdk" },
     { name = "markdown-it-py", specifier = ">=3.0.0" },
     { name = "mdformat", specifier = ">=0.7.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-memory"
+version = "0.1.0"
+source = { editable = "sdk/packs/memory" }
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },

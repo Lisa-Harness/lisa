@@ -1,0 +1,35 @@
+---
+version: 1
+
+# Memory provides the bundled memory fallback (lisa_memory).
+# External providers (such as Mem0) are contributed by separate packs and can
+# replace this default through host provider-selection policy.
+memory:
+  default_backend: lisa_memory
+  backends:
+    - id: lisa_memory
+      kind: stdio
+      command: "${LISA_MCP_COMMAND:lisa-memory}"
+      args:
+        - --data-dir
+        - "${LISA_DATA_DIR}"
+      tool_names:
+        add: add_memory
+        search: search_memory
+        list: list_memories
+servers:
+  - server_id: lisa-memory
+    runtime_kind: venv_bin
+    entry_point: lisa-memory
+    venv_dir: "${FRAMEWORK_ROOT}"
+    warm: true
+    required: true
+    # tool_policy hides raw native tools from the model-facing catalog.
+    # The model calls the generic aliases (memory.add / memory.search /
+    # memory.list) instead. Internal dispatch (alias forwarding,
+    # operations) still reaches these tools — the per-server index is
+    # NOT filtered, only the model catalog is.
+    tool_policy:
+      denied_tools:
+        - get_surface_context
+        - list_memories
