@@ -32,6 +32,8 @@ from hosts.cli import render as render_mod
 from hosts.core.config import HostConfig
 from hosts.core.runtime import HostRuntime
 from kernel.models import OperationDefinition, ToolDefinition
+from kernel.operations import registry as operations_registry
+from kernel.tools import registry as tools_registry
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -62,7 +64,7 @@ def test_render_operations_lists_ids_and_kinds(tmp_path: Path) -> None:
     }
     console = Console(record=True, width=120)
 
-    with patch.object(render_mod, "get_operation_catalog", return_value=fake_catalog):
+    with patch.object(operations_registry, "get_operation_catalog", return_value=fake_catalog):
         table = render_mod.render_operations(_make_runtime(tmp_path), console=console)
 
     output = console.export_text()
@@ -82,7 +84,7 @@ def test_render_operations_lists_ids_and_kinds(tmp_path: Path) -> None:
 def test_render_operations_empty_catalog_renders_header_only(tmp_path: Path) -> None:
     """An empty operation catalog still returns a table with no data rows."""
     console = Console(record=True, width=80)
-    with patch.object(render_mod, "get_operation_catalog", return_value={}):
+    with patch.object(operations_registry, "get_operation_catalog", return_value={}):
         table = render_mod.render_operations(_make_runtime(tmp_path), console=console)
     assert len(table.rows) == 0
     assert table.title is not None
@@ -103,7 +105,7 @@ def test_render_tools_lists_internal_tool_ids(tmp_path: Path) -> None:
     }
     console = Console(record=True, width=120)
 
-    with patch.object(render_mod, "get_tool_catalog", return_value=fake_tools):
+    with patch.object(tools_registry, "get_tool_catalog", return_value=fake_tools):
         table = render_mod.render_tools(
             _make_runtime(tmp_path), mcp_tools=None, console=console
         )
@@ -123,7 +125,7 @@ def test_render_tools_emits_mcp_section_when_pairs_provided(tmp_path: Path) -> N
     mcp_pairs = [("brave", "brave_search", False), ("github", "create_issue", False)]
     console = Console(record=True, width=120)
 
-    with patch.object(render_mod, "get_tool_catalog", return_value={}):
+    with patch.object(tools_registry, "get_tool_catalog", return_value={}):
         render_mod.render_tools(
             _make_runtime(tmp_path), mcp_tools=mcp_pairs, console=console
         )
@@ -141,7 +143,7 @@ def test_render_tools_emits_mcp_section_when_pairs_provided(tmp_path: Path) -> N
 def test_render_tools_empty_mcp_pairs_omits_mcp_section(tmp_path: Path) -> None:
     """An empty mcp_tools list renders only the internal-tools table."""
     console = Console(record=True, width=120)
-    with patch.object(render_mod, "get_tool_catalog", return_value={}):
+    with patch.object(tools_registry, "get_tool_catalog", return_value={}):
         render_mod.render_tools(_make_runtime(tmp_path), mcp_tools=[], console=console)
     assert "MCP Server Tools" not in console.export_text()
 

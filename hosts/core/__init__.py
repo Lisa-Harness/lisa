@@ -23,9 +23,10 @@ Public surface::
 
 from __future__ import annotations
 
+from typing import Any
+
 from hosts.core.callbacks import DelegatingTransport, NullTransport, TransportCallbacks
 from hosts.core.config import HostConfig, SliceConfig, StreamingConfig, default_data_dir
-from hosts.core.handle_message import handle_message
 from hosts.core.runtime import HostRuntime, TokenCounters, TurnContext
 from hosts.core.types import (
     CompletionProvider,
@@ -51,3 +52,21 @@ __all__ = [
     "default_data_dir",
     "handle_message",
 ]
+
+
+def __getattr__(name: str) -> Any:  # noqa: PLE0604  # PEP 562 lazy module attribute
+    """Lazy-import :func:`handle_message` on first attribute access.
+
+    ``handle_message`` is the single heaviest import in the package (it
+    pulls in ``openai``, ``mcp``, and ``kernel.ipsar_fsm``). Deferring it
+    keeps ``from hosts.core import HostConfig`` / ``HostRuntime`` (used by
+    ``--version``, ``modes``, ``models``, ``verify``) from paying the
+    turn-execution import cost. Direct ``from hosts.core.handle_message
+    import handle_message`` (used by the REPL and ``once``) is unaffected.
+    """
+    if name == "handle_message":
+        from hosts.core.handle_message import handle_message as _handle_message
+
+        globals()["handle_message"] = _handle_message
+        return _handle_message
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

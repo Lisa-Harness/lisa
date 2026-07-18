@@ -74,7 +74,6 @@ from hosts.cli.render import (
     render_tools,
 )
 from hosts.core.config import HostConfig, default_data_dir
-from hosts.core.handle_message import handle_message
 from hosts.core.mcp_pool import (
     compile_mcp_configs,
     configure_runtime,
@@ -83,6 +82,12 @@ from hosts.core.mcp_pool import (
 )
 from hosts.core.runtime import HostRuntime
 from hosts.core.state_provider import load_state_snapshot
+
+# ``handle_message`` is deferred to the turn-execution call sites
+# (``_run_once_with_teardown``) so ``--version`` / ``modes`` / ``models`` /
+# ``verify`` don't pay the ~3s ``openai`` + ``mcp`` + ``kernel.ipsar_fsm``
+# import cost it drags in. See ``hosts/core/__init__.py``'s PEP 562
+# ``__getattr__`` for the package-level lazy import.
 
 from rich.traceback import install
 install(show_locals=True)
@@ -1234,7 +1239,8 @@ async def _run_once_with_teardown(runtime: HostRuntime, message: str) -> bool:
     a pack lifecycle command), so the caller can exit with a restart
     notice instead of a clean exit.
     """
-    from hosts.cli.transport import RichTransport
+    from hosts.cli.transport import RichTransport  # noqa: PLC0415
+    from hosts.core.handle_message import handle_message  # noqa: PLC0415
 
     transport = RichTransport(console=console, debug=runtime.config.debug)
     try:

@@ -13,19 +13,16 @@ Nothing in this module imports from ``hosts.cli.repl`` or
 from __future__ import annotations
 
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from hosts.core.commands import (
-    mode_support_gap,
-    render_pack_list,
-)
-from hosts.core.model_manifest import load_model_manifest
 from hosts.core.runtime import HostRuntime
-from kernel.ipsar_fsm import get_workflow_catalog
-from kernel.operations.registry import get_operation_catalog
-from kernel.tools.registry import get_tool_catalog
+
+# Heavy imports are deferred into the functions that use them so that
+# ``--version`` / ``modes`` / ``models`` / ``verify`` don't pay the cost of
+# ``rich.markdown`` (-> ``markdown_it`` + ``pygments`` ~= 1.4s) or
+# ``kernel.ipsar_fsm`` / operation / tool registries (~= 1.5s) unless a
+# render path that needs them actually runs.
 
 # ── Style constants ───────────────────────────────────────────────────
 STYLE_BORDER_SESSION = "steel_blue3"
@@ -40,6 +37,9 @@ def render_modes(runtime: HostRuntime, *, console: Console | None = None) -> Tab
     ``hosts.core.mcp_pool.setup_framework``) and ``mode_support_gap`` to
     separate supported from unsupported modes.
     """
+    from hosts.core.commands import mode_support_gap  # noqa: PLC0415
+    from kernel.ipsar_fsm import get_workflow_catalog  # noqa: PLC0415
+
     _ = runtime  # catalog is global; runtime kept for future per-host scoping
     catalog = get_workflow_catalog()
     table = Table(title="Lisa Modes")
@@ -67,6 +67,8 @@ def render_models(runtime: HostRuntime, *, console: Console | None = None) -> Ta
     Uses ``hosts.core.model_manifest.load_model_manifest`` against the
     canonical runtime data-dir path.
     """
+    from hosts.core.model_manifest import load_model_manifest  # noqa: PLC0415
+
     path = runtime.models_path
     manifest = load_model_manifest(path)
     table = Table(title="Lisa Models")
@@ -93,6 +95,9 @@ def render_pack_list_panel(runtime: HostRuntime, *, console: Console | None = No
     The core returns a Markdown string; we wrap it in a Rich Panel for the
     terminal host.
     """
+    from rich.markdown import Markdown  # noqa: PLC0415
+    from hosts.core.commands import render_pack_list  # noqa: PLC0415
+
     markdown_text = render_pack_list(runtime)
     panel = Panel(
         Markdown(markdown_text),
@@ -111,6 +116,8 @@ def render_operations(runtime: HostRuntime, *, console: Console | None = None) -
     ``lisa-catalog`` MCP server. The ID column is exactly the string to copy
     into a mode's ``allowed_operation_ids`` front-matter list.
     """
+    from kernel.operations.registry import get_operation_catalog  # noqa: PLC0415
+
     _ = runtime  # catalog is global; runtime kept for future per-host scoping
     catalog = get_operation_catalog()
     table = Table(title="Lisa Operations")
@@ -160,6 +167,8 @@ def render_tools(
     table.add_column("Description")
     table.add_column("Max/Turn")
     table.add_column("Timeout")
+
+    from kernel.tools.registry import get_tool_catalog  # noqa: PLC0415
 
     catalog = get_tool_catalog()
     for tool_id, definition in sorted(catalog.items()):
@@ -225,6 +234,8 @@ def render_markdown_panel(
     Convenience helper for rendering any plain-text/Markdown response from
     ``hosts.core`` in a terminal panel.
     """
+    from rich.markdown import Markdown  # noqa: PLC0415
+
     panel = Panel(Markdown(text), title=title, border_style=border_style)
     if console is not None:
         console.print(panel)
