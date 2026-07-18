@@ -55,6 +55,13 @@ context:
       fallback: true
   ranking:
     relevance_provider: lexical
+  history:
+    compaction:
+      enabled: true
+      pressure_threshold: 0.65
+      hard_threshold: 0.85
+      min_interval_turns: 3
+      retention_count: 4
 ---
 # Testing Session
 
