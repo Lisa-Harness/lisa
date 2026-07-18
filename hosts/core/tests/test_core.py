@@ -12,8 +12,8 @@ from hosts.core import (
     HostConfig,
     HostRuntime,
     NullTransport,
-    handle_message,
 )
+from hosts.core.handle_message import handle_message
 from hosts.core.config_resolver import parse_streaming_option, resolve_timezone
 from hosts.core.runtime import TokenCounters, TurnContext
 

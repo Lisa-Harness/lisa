@@ -19,7 +19,8 @@ from kernel.tools.registry import execute_tool
 from kernel.turn_runner import TurnHooks
 from pydantic import BaseModel
 
-from hosts.core import HostConfig, HostRuntime, NullTransport, handle_message
+from hosts.core import HostConfig, HostRuntime, NullTransport
+from hosts.core.handle_message import handle_message
 
 
 class _Parameters(BaseModel):

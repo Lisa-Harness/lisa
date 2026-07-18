@@ -23,17 +23,27 @@ Public surface::
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hosts.core.callbacks import DelegatingTransport, NullTransport, TransportCallbacks
 from hosts.core.config import HostConfig, SliceConfig, StreamingConfig, default_data_dir
-from hosts.core.runtime import HostRuntime, TokenCounters, TurnContext
 from hosts.core.types import (
     CompletionProvider,
     HostCommandResult,
     ModelResolver,
     ToolExecutor,
 )
+
+if TYPE_CHECKING:
+    # ``hosts.core.runtime`` is the heaviest submodule (pulls
+    # ``kernel.ipsar_fsm`` + ``openai`` via ``session_context``). It is
+    # resolved lazily by ``__getattr__`` below so importing
+    # ``HostConfig`` / ``callbacks`` / ``types`` from the package does not
+    # drag it in. The ``TYPE_CHECKING`` alias keeps these names visible to
+    # type checkers for annotation use without an eager runtime import.
+    from hosts.core.runtime import HostRuntime as HostRuntime
+    from hosts.core.runtime import TokenCounters as TokenCounters
+    from hosts.core.runtime import TurnContext as TurnContext
 
 __all__ = [
     "CompletionProvider",
@@ -55,18 +65,28 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:  # noqa: PLE0604  # PEP 562 lazy module attribute
-    """Lazy-import :func:`handle_message` on first attribute access.
+    """Lazy-import the heavy runtime symbols on first attribute access.
 
-    ``handle_message`` is the single heaviest import in the package (it
-    pulls in ``openai``, ``mcp``, and ``kernel.ipsar_fsm``). Deferring it
-    keeps ``from hosts.core import HostConfig`` / ``HostRuntime`` (used by
+    ``hosts.core.runtime`` is the heaviest submodule in the package (it
+    pulls in ``openai``, ``mcp``, and ``kernel.ipsar_fsm`` via
+    ``session_context``); ``handle_message`` is the heaviest *function*
+    (the turn dispatcher). Deferring both keeps ``from hosts.core import
+    HostConfig`` / ``HostRuntime`` / ``TransportCallbacks`` (used by
     ``--version``, ``modes``, ``models``, ``verify``) from paying the
-    turn-execution import cost. Direct ``from hosts.core.handle_message
-    import handle_message`` (used by the REPL and ``once``) is unaffected.
+    ~2s runtime or ~3s turn-execution import cost. Direct submodule
+    imports (``from hosts.core.runtime import HostRuntime``, ``from
+    hosts.core.handle_message import handle_message``) are unaffected and
+    remain the fast path for code that actually needs the symbol.
     """
     if name == "handle_message":
         from hosts.core.handle_message import handle_message as _handle_message
 
         globals()["handle_message"] = _handle_message
         return _handle_message
+    if name in {"HostRuntime", "TokenCounters", "TurnContext"}:
+        from hosts.core import runtime as _runtime
+
+        value = getattr(_runtime, name)
+        globals()[name] = value
+        return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -23,7 +23,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -74,14 +74,16 @@ from hosts.cli.render import (
     render_tools,
 )
 from hosts.core.config import HostConfig, default_data_dir
-from hosts.core.mcp_pool import (
-    compile_mcp_configs,
-    configure_runtime,
-    discover_framework,
-    setup_framework,
-)
-from hosts.core.runtime import HostRuntime
-from hosts.core.state_provider import load_state_snapshot
+
+# ``HostRuntime`` is used only as a string annotation (``from __future__
+# import annotations`` stringifies signatures) across the Typer callbacks.
+# The runtime construction happens inside ``_initialize_runtime``, which
+# imports ``HostRuntime`` + the mcp_pool / state_provider symbols lazily so
+# ``--version`` (which exits in the eager Typer callback before any command
+# body runs) does not pay the ~2s ``hosts.core.runtime`` ->
+# ``kernel.ipsar_fsm`` -> ``openai`` import chain.
+if TYPE_CHECKING:
+    from hosts.core.runtime import HostRuntime as HostRuntime
 
 # ``handle_message`` is deferred to the turn-execution call sites
 # (``_run_once_with_teardown``) so ``--version`` / ``modes`` / ``models`` /
@@ -334,6 +336,20 @@ def _initialize_runtime(
     The MCP pool is NOT started here â€” ``runtime.start()`` must be called
     inside the host's event loop (see :func:`hosts.cli.repl.run_repl`).
     """
+    # Lazily import the heavy runtime/mcp_pool/state_provider symbols so
+    # that ``--version`` (which never reaches here) skips the ~2s
+    # ``hosts.core.runtime`` import chain. ``HostRuntime`` is also imported
+    # here for the ``HostRuntime(config)`` construction; elsewhere it is a
+    # stringified annotation satisfied by the ``TYPE_CHECKING`` import.
+    from hosts.core.mcp_pool import (  # noqa: PLC0415
+        compile_mcp_configs,
+        configure_runtime,
+        discover_framework,
+        setup_framework,
+    )
+    from hosts.core.runtime import HostRuntime  # noqa: PLC0415, F811
+    from hosts.core.state_provider import load_state_snapshot  # noqa: PLC0415
+
     _ = no_log  # honored via HostConfig.log_path resolution below
     config = HostConfig.from_env(
         debug=debug,

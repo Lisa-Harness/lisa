@@ -12,11 +12,19 @@ Nothing in this module imports from ``hosts.cli.repl`` or
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from hosts.core.runtime import HostRuntime
+if TYPE_CHECKING:
+    # ``HostRuntime`` is used only as a string annotation (stringified by
+    # ``from __future__ import annotations``); the runtime symbols are
+    # passed in at call time. Deferring this import keeps ``render`` from
+    # dragging in ``hosts.core.runtime`` -> ``kernel.ipsar_fsm`` -> ``openai``
+    # (~2s) at module load.
+    from hosts.core.runtime import HostRuntime as HostRuntime
 
 # Heavy imports are deferred into the functions that use them so that
 # ``--version`` / ``modes`` / ``models`` / ``verify`` don't pay the cost of
