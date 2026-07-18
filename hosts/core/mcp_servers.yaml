@@ -31,10 +31,10 @@ pack_policy:
 # ──────────────────────────────────────────────────────────────────────────
 # Memory backends + memory MCP tool servers
 # ──────────────────────────────────────────────────────────────────────────
-# Memory is pack-owned: the learning pack (sdk/packs/learning/mcp_servers.yaml)
+# Memory is pack-owned: the memory pack (sdk/packs/memory/mcp_servers.yaml)
 # declares the ``memory.backends`` list and the ``lisa-memory`` / ``mem0``
 # server entries. The host loads that pack manifest, merges the servers into
-# the pool under namespaced ids (``learning.lisa-memory`` / ``learning.mem0``),
+# the pool under namespaced ids (``memory.lisa-memory`` / ``memory.mem0``),
 # and wires the generic ``memory.*`` synthetic aliases to the pack's default
 # backend. Only one pack may contribute the ``memory:`` section; the first
 # contributor wins.
@@ -49,7 +49,7 @@ pack_policy:
 # MCPToolPool. Adding, removing, disabling, or changing the launch policy
 # (warm/cold/required) of any server is a YAML edit, not a code change.
 #
-# Memory servers (lisa-memory, mem0) live in the learning pack manifest, not
+# Memory servers (lisa-memory, mem0) live in the memory pack manifest, not
 # here — they are pack-contributed and namespaced at compile time.
 #
 # Launch policy fields:

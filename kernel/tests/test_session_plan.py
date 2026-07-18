@@ -22,7 +22,7 @@ surface:
   memory_scope: testing
 resources:
   packs:
-    include: [lisa-pack-core, lisa-pack-learning]
+    include: [lisa-pack-core, lisa-pack-memory]
     required: [lisa-pack-core]
   servers:
     exclude: [legacy-server]

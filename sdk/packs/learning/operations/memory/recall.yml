@@ -1,2 +1,0 @@
-operation_id: recall_memory
-description: Search long-term memory using recency, lexical overlap, and semantic similarity, then synthesize the best recall answer for vague or explicit historical questions.

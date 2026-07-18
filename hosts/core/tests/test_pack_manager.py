@@ -159,13 +159,13 @@ async def test_run_pack_install_local_folder_records_local_source_and_restart(
         _ = kwargs
         return _FakeProc()
 
-    local_pack = tmp_path / "lisa-pack-learning"
+    local_pack = tmp_path / "lisa-pack-memory"
     local_pack.mkdir(parents=True, exist_ok=True)
     (local_pack / "pyproject.toml").write_text(
         "\n".join(
             [
                 "[project]",
-                'name = "lisa-pack-learning"',
+                'name = "lisa-pack-memory"',
                 'version = "0.1.0"',
                 'requires-python = ">=3.11"',
             ]
@@ -186,14 +186,14 @@ async def test_run_pack_install_local_folder_records_local_source_and_restart(
     ok, details = await commands.run_pack_install(runtime, str(local_pack))
 
     assert ok is True
-    assert "Installed 'lisa-pack-learning' from local source" in details
+    assert "Installed 'lisa-pack-memory' from local source" in details
     assert runtime.restart_required is True
-    assert runtime.restart_reason == "pack install: lisa-pack-learning"
+    assert runtime.restart_reason == "pack install: lisa-pack-memory"
 
     lock = _load_lock(runtime)
     assert isinstance(lock.get("packs"), list)
     assert any(
-        str(item.get("package_name")) == "lisa-pack-learning"
+        str(item.get("package_name")) == "lisa-pack-memory"
         and str(item.get("source_kind")) == "local"
         and str(item.get("source_ref")) == str(local_pack)
         for item in lock["packs"]
@@ -289,13 +289,13 @@ def test_validate_pack_spec_for_install_local_folder_accepts_prefixed_project_na
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("LISA_PACK_ALLOWED_PREFIXES", "lisa-pack-")
-    local_pack = tmp_path / "lisa-pack-learning"
+    local_pack = tmp_path / "lisa-pack-memory"
     local_pack.mkdir(parents=True, exist_ok=True)
     (local_pack / "pyproject.toml").write_text(
         "\n".join(
             [
                 "[project]",
-                'name = "lisa-pack-learning"',
+                'name = "lisa-pack-memory"',
                 'version = "0.1.0"',
                 'requires-python = ">=3.11"',
             ]
@@ -314,7 +314,7 @@ def test_validate_pack_spec_for_install_local_folder_rejects_missing_pyproject_n
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("LISA_PACK_ALLOWED_PREFIXES", "lisa-pack-")
-    local_pack = tmp_path / "lisa-pack-learning"
+    local_pack = tmp_path / "lisa-pack-memory"
     local_pack.mkdir(parents=True, exist_ok=True)
     (local_pack / "pyproject.toml").write_text(
         "\n".join(
@@ -460,7 +460,7 @@ def test_compile_mcp_configs_namespaces_pack_memory_servers(
     tmp_path: Path,
 ) -> None:
     runtime = _make_runtime(tmp_path)
-    pack_root = tmp_path / "learning"
+    pack_root = tmp_path / "memory"
     pack_root.mkdir(parents=True, exist_ok=True)
 
     pack_manifest_text = "\n".join(
@@ -510,9 +510,9 @@ def test_compile_mcp_configs_namespaces_pack_memory_servers(
     warm, cold = mcp_pool.compile_mcp_configs(runtime)
     server_ids = {config.server_id for config in [*warm, *cold]}
 
-    assert "learning.lisa-memory" in server_ids
-    assert "learning.mem0" in server_ids
-    assert runtime.memory_config_pack_slug == "learning"
+    assert "memory.lisa-memory" in server_ids
+    assert "memory.mem0" in server_ids
+    assert runtime.memory_config_pack_slug == "memory"
 
 
 def test_set_pack_enabled_rejects_disabling_always_on_pack(
@@ -693,16 +693,16 @@ def test_compile_mcp_configs_uses_session_plan_memory_provider(
     tmp_path: Path,
 ) -> None:
     runtime = _make_runtime_with_memory_provider(tmp_path, "lisa-pack-mem0")
-    learning_root = tmp_path / "learning-pack"
+    memory_root = tmp_path / "memory-pack"
     mem0_root = tmp_path / "mem0-pack"
-    learning_root.mkdir(parents=True, exist_ok=True)
+    memory_root.mkdir(parents=True, exist_ok=True)
     mem0_root.mkdir(parents=True, exist_ok=True)
 
-    (learning_root / "pyproject.toml").write_text(
+    (memory_root / "pyproject.toml").write_text(
         "\n".join(
             [
                 "[project]",
-                'name = "lisa-pack-learning"',
+                'name = "lisa-pack-memory"',
                 'version = "0.1.0"',
             ]
         )
@@ -721,7 +721,7 @@ def test_compile_mcp_configs_uses_session_plan_memory_provider(
         encoding="utf-8",
     )
 
-    (learning_root / "mcp_servers.yaml").write_text(
+    (memory_root / "mcp_servers.yaml").write_text(
         "\n".join(
             [
                 "version: 1",
@@ -784,7 +784,7 @@ def test_compile_mcp_configs_uses_session_plan_memory_provider(
             ]
         },
     )
-    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [learning_root, mem0_root])
+    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [memory_root, mem0_root])
     monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
 
     _warm, _cold = mcp_pool.compile_mcp_configs(runtime)
@@ -796,17 +796,17 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    runtime = _make_runtime_with_memory_provider(tmp_path, "lisa-pack-learning")
-    learning_root = tmp_path / "learning-pack"
+    runtime = _make_runtime_with_memory_provider(tmp_path, "lisa-pack-memory")
+    memory_root = tmp_path / "memory-pack"
     mem0_root = tmp_path / "mem0-pack"
-    learning_root.mkdir(parents=True, exist_ok=True)
+    memory_root.mkdir(parents=True, exist_ok=True)
     mem0_root.mkdir(parents=True, exist_ok=True)
 
-    (learning_root / "pyproject.toml").write_text(
+    (memory_root / "pyproject.toml").write_text(
         "\n".join(
             [
                 "[project]",
-                'name = "lisa-pack-learning"',
+                'name = "lisa-pack-memory"',
                 'version = "0.1.0"',
             ]
         )
@@ -825,7 +825,7 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
         encoding="utf-8",
     )
 
-    (learning_root / "mcp_servers.yaml").write_text(
+    (memory_root / "mcp_servers.yaml").write_text(
         "\n".join(
             [
                 "version: 1",
@@ -891,12 +891,12 @@ def test_compile_mcp_configs_honors_explicit_memory_provider_selection(
             },
         },
     )
-    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [learning_root, mem0_root])
+    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [memory_root, mem0_root])
     monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
 
     _warm, _cold = mcp_pool.compile_mcp_configs(runtime)
 
-    assert runtime.memory_config_pack_slug == "learning-pack"
+    assert runtime.memory_config_pack_slug == "memory-pack"
 
 
 # ---------------------------------------------------------------------------

@@ -275,7 +275,7 @@ All commands are handled by `hosts/core/commands.py` and produce plain text (not
 
 ## MCP Memory
 
-Memory is capability-owned by policy. The bundled learning pack provides the `lisa_memory` fallback in `sdk/packs/learning/mcp_servers.yaml`; external providers (for example `lisa-pack-mem0`) can be installed and selected as the memory owner via host policy/lock state. The host wires generic `memory.*` aliases to the selected provider's backend config.
+Memory is capability-owned by policy. The bundled memory pack provides the `lisa_memory` fallback in `sdk/packs/memory/mcp_servers.yaml`; external providers (for example `lisa-pack-mem0`) can be installed and selected as the memory owner via host policy/lock state. The host wires generic `memory.*` aliases to the selected provider's backend config.
 
 ## Session Context Front Matter
 

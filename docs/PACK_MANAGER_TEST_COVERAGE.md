@@ -51,7 +51,7 @@ This document summarizes test coverage for runtime pack management, pack-contrib
 
 - Two packs with the same declared `server_id` compile to distinct namespaced runtime ids: `<pack_slug>.<server_id>`.
 - Collision is avoided without one-wins behavior.
-- Memory servers from packs are namespaced the same way (e.g. `learning.lisa-memory`, `learning.mem0`).
+- Memory servers from packs are namespaced the same way (e.g. `memory.lisa-memory`, `memory.mem0`).
 
 ### 7. MCP Config Compilation — Memory Provider Selection
 

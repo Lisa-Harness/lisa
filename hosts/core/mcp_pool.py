@@ -439,8 +439,8 @@ def compile_mcp_configs(
     # parses ``warm`` / ``required`` onto the spec. The compiler passes
     # them through to MCPClientConfig. The host manifest no longer carries
     # a ``memory:`` section or memory server entries; memory backends +
-    # memory tool servers are contributed by the learning pack (see
-    # sdk/packs/learning/mcp_servers.yaml) and merged below.
+    # memory tool servers are contributed by the memory pack (see
+    # sdk/packs/memory/mcp_servers.yaml) and merged below.
     specs, memory_config = load_mcp_server_manifest(host_manifest_path)
     for spec in specs:
         registry.register(spec)

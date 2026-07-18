@@ -27,7 +27,7 @@ _CORE_ROOT: Path = (
     Path(__file__).resolve().parents[3] / "sdk" / "packs" / "core"
 ).resolve()
 _LEARNING_ROOT: Path = (
-    Path(__file__).resolve().parents[3] / "sdk" / "packs" / "learning"
+    Path(__file__).resolve().parents[3] / "sdk" / "packs" / "memory"
 ).resolve()
 _SEARCH_ROOT: Path = (
     Path(__file__).resolve().parents[3] / "sdk" / "packs" / "search"

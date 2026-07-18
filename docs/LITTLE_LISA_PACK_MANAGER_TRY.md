@@ -116,7 +116,7 @@ Local folder installs are supported so you can iterate on packs before publishin
 Example learning pack path:
 
 ```powershell
-uv run lisa pack install "C:\Code\lisa-pack-learning" --no-log
+uv run lisa pack install "C:\Code\lisa-pack-memory" --no-log
 ```
 
 Example cloudflare pack path:

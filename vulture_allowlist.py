@@ -54,10 +54,10 @@ sdk.packs.checkpoint.commands.get_host_commands  # noqa: Vulture
 # at kernel/operations/registry.py.
 # ──────────────────────────────────────────────────────────────────────────
 # reason: operation dispatch via getattr(module, "execute")
-sdk.packs.learning.operations.memory.recall.execute  # noqa: Vulture
+sdk.packs.memory.operations.memory.recall.execute  # noqa: Vulture
 
 # reason: operation dispatch via getattr(module, "execute")
-sdk.packs.learning.operations.memory.synthesize_learning.execute  # noqa: Vulture
+sdk.packs.memory.operations.memory.synthesize_learning.execute  # noqa: Vulture
 
 # reason: operation dispatch via getattr(module, "execute")
 sdk.packs.introspect.operations.self_model.self_model.execute  # noqa: Vulture
@@ -79,13 +79,13 @@ sdk.packs.introspect.operations.self_model.architecture_atlas.ArchitectureAtlasO
 sdk.packs.introspect.operations.self_model.reflect_self.ReflectSelfOutput  # noqa: Vulture
 
 # reason: operation parameter model loaded via _resolve_model_class string dispatch
-sdk.packs.learning.operations.memory.recall.Parameters  # noqa: Vulture
+sdk.packs.memory.operations.memory.recall.Parameters  # noqa: Vulture
 
 # reason: operation parameter model loaded via _resolve_model_class string dispatch
-sdk.packs.learning.operations.memory.synthesize_learning.Parameters  # noqa: Vulture
+sdk.packs.memory.operations.memory.synthesize_learning.Parameters  # noqa: Vulture
 
 # reason: operation result model loaded via _resolve_model_class string dispatch
-sdk.packs.learning.operations.memory.synthesize_learning.DistilledLearning  # noqa: Vulture
+sdk.packs.memory.operations.memory.synthesize_learning.DistilledLearning  # noqa: Vulture
 
 # ──────────────────────────────────────────────────────────────────────────
 # Protocol / ABC method parameters — vulture cannot see that these are

@@ -20,7 +20,7 @@ the most important parts.
 Done — I've split your request into two parallel workflows:
   1. Markdown child (lisa-pack-markdown)
      Drafted the full architectural rundown as a markdown document and wrote it to disk.
-  2. Learn child (lisa-pack-learning)
+  2. Learn child (lisa-pack-memory)
      Distilled the most important architectural takeaways and persisted them to long-term memory.
 Both children completed successfully.
 ```
@@ -63,7 +63,7 @@ never invoked `markdown_forge_document` / `write_file`. The fork reported
 
 ### Failure 1 — Broken distillation retry (two bugs in the 2026-07-17 fix)
 
-`sdk/packs/learning/operations/memory/synthesize_learning.py`:
+`sdk/packs/memory/operations/memory/synthesize_learning.py`:
 
 1. **`except RuntimeError: raise` bypassed the retry.** The JSON-truncation
    case raises `RuntimeError` from the `_looks_like_json` guard inside
@@ -101,7 +101,7 @@ that made zero tool calls did not actually do its job.
 
 ### Fix 1 — Distillation retry loop covers all failures, clears response_format, raises max_tokens
 
-`sdk/packs/learning/operations/memory/synthesize_learning.py`:
+`sdk/packs/memory/operations/memory/synthesize_learning.py`:
 
 Replaced the broken try/except/retry structure with a single loop over two
 attempt payloads: the original messages, then `json_only_retry_messages(...)`.
@@ -132,8 +132,8 @@ attempt payloads: the original messages, then `json_only_retry_messages(...)`.
 
 ## Key files
 
-- `sdk/packs/learning/operations/memory/synthesize_learning.py` — retry loop
-- `sdk/packs/learning/tests/test_distill_retry.py` — 3 new retry regression tests
+- `sdk/packs/memory/operations/memory/synthesize_learning.py` — retry loop
+- `sdk/packs/memory/tests/test_distill_retry.py` — 3 new retry regression tests
 - `kernel/turn_runner.py` — `_fork_mode_requires_tools`, `_run_fork_child_turn`
   `no_tools` status, parent `no_tools` message
 - `kernel/models.py` — `ForkChildStatus` literal gains `"no_tools"`
@@ -143,8 +143,8 @@ attempt payloads: the original messages, then `json_only_retry_messages(...)`.
 
 ## Verification
 
-- `sdk/packs/learning/tests/test_distill_retry.py` — 3 passed (empty, truncation, both-fail)
-- `sdk/packs/learning/tests/test_distill_parse.py` — 7 passed (unchanged)
+- `sdk/packs/memory/tests/test_distill_retry.py` — 3 passed (empty, truncation, both-fail)
+- `sdk/packs/memory/tests/test_distill_parse.py` — 7 passed (unchanged)
 - `kernel/tests/test_turn_runner.py` — 39 passed (was 37; +2 fork regression)
 - `kernel/tests/test_provider_core.py` — 21 passed (yesterday's fix, unchanged)
 - 2 pre-existing markdown failures (`test_document_formatted_by_mdformat`,

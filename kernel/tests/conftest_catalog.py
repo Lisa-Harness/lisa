@@ -26,7 +26,7 @@ from kernel.tools.mcp_client import MCPClientConfig
 
 _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core").resolve()
 _LEARNING_ROOT: Path = (
-    Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "learning"
+    Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "memory"
 ).resolve()
 _SEARCH_ROOT: Path = (
     Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "search"

@@ -33,7 +33,7 @@ jobs:
           uv build --package lisa-pack-github
           uv build --package lisa-pack-stripe
           uv build --package lisa-pack-core
-          uv build --package lisa-pack-learning
+          uv build --package lisa-pack-memory
           uv build --package lisa-pack-search
           uv build --package little-lisa
 

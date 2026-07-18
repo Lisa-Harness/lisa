@@ -115,6 +115,6 @@ def test_infer_pack_package_name_maps_lisa_packs_site_packages_to_canonical_name
 def test_infer_pack_package_name_sdk_packs_keep_canonical_name(tmp_path: Path) -> None:
     """SDK workspace packs under ``sdk/packs/<name>`` keep resolving to
     ``lisa-pack-<name>`` — the new lisa_packs branch must not regress them."""
-    sdk_root = tmp_path / "sdk" / "packs" / "learning"
+    sdk_root = tmp_path / "sdk" / "packs" / "memory"
     sdk_root.mkdir(parents=True)
-    assert content_roots.infer_pack_package_name(sdk_root) == "lisa-pack-learning"
+    assert content_roots.infer_pack_package_name(sdk_root) == "lisa-pack-memory"

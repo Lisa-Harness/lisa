@@ -103,14 +103,14 @@ def test_mode_collision_uses_session_provider_selection(
     core = tmp_path / "core_pack"
     learning = tmp_path / "learning_pack"
     _write_default_mode(core, provider_id="lisa-pack-core", description="core default")
-    _write_default_mode(learning, provider_id="lisa-pack-learning", description="learning default")
+    _write_default_mode(learning, provider_id="lisa-pack-memory", description="learning default")
 
     monkeypatch.setenv(
         "LISA_SESSION_PROVIDER_SELECTIONS",
         json.dumps(
             {
                 "modes": {
-                    "default": "lisa-pack-learning",
+                    "default": "lisa-pack-memory",
                 }
             }
         ),
@@ -119,7 +119,7 @@ def test_mode_collision_uses_session_provider_selection(
     mode_roots = resolve_mode_roots([core, learning])
     catalog = json.loads(build_mode_catalog_json(mode_roots))
 
-    assert catalog["default"]["mode_provider_id"] == "lisa-pack-learning"
+    assert catalog["default"]["mode_provider_id"] == "lisa-pack-memory"
     assert catalog["default"]["description"] == "learning default"
 
 
@@ -130,7 +130,7 @@ def test_mode_collision_requires_explicit_session_provider(
     core = tmp_path / "core_pack"
     learning = tmp_path / "learning_pack"
     _write_default_mode(core, provider_id="lisa-pack-core", description="core default")
-    _write_default_mode(learning, provider_id="lisa-pack-learning", description="learning default")
+    _write_default_mode(learning, provider_id="lisa-pack-memory", description="learning default")
 
     monkeypatch.delenv("LISA_SESSION_PROVIDER_SELECTIONS", raising=False)
 

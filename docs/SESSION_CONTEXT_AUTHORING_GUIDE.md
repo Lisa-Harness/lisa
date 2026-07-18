@@ -67,11 +67,11 @@ surface:
 
 resources:
   packs:
-    include: [lisa-pack-core, lisa-pack-search, lisa-pack-learning]
+    include: [lisa-pack-core, lisa-pack-search, lisa-pack-memory]
     required: [lisa-pack-core]
     exclude: [lisa-pack-mem0]
   servers:
-    exclude: [learning.lisa-memory]
+    exclude: [memory.lisa-memory]
 
 providers:
   modes:
@@ -81,7 +81,7 @@ providers:
   tools:
     web_search: lisa-pack-brave-search
   capabilities:
-    memory: lisa-pack-learning
+    memory: lisa-pack-memory
 
 routing:
   start_mode: discuss

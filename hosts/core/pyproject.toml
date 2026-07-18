@@ -15,7 +15,7 @@ dependencies = [
     "lisa-kernel",
     "lisa-sdk",
     "lisa-mcp-servers",
-    "lisa-pack-learning",
+    "lisa-pack-memory",
     "lisa-pack-search",
     "lisa-pack-core",
     "lisa-pack-introspect",

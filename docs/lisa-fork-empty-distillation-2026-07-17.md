@@ -59,7 +59,7 @@ rejects `content: <nil>` on those messages with `invalid message content type: <
 
 ### Failure 1 — No structured-output retry on empty distillation
 
-`sdk/packs/learning/operations/memory/synthesize_learning.py` called
+`sdk/packs/memory/operations/memory/synthesize_learning.py` called
 `ctx.complete_fn(..., response_format=DistilledLearning)` once and parsed
 the result. When the local model ignored `response_format` and returned
 empty content, `_parse_distilled_learning` raised `ValueError("empty
@@ -100,7 +100,7 @@ strict local backends.
 
 ### Fix 1 — Distillation retry on empty/failed output
 
-`sdk/packs/learning/operations/memory/synthesize_learning.py`:
+`sdk/packs/memory/operations/memory/synthesize_learning.py`:
 
 When the first distillation completion fails (empty output, parse failure,
 or any exception), re-issue the call with `json_only_retry_messages(...)`
@@ -128,7 +128,7 @@ backends both accept `""`.
 
 - `kernel/provider_core.py` — `normalize_openai_messages` (assistant content fix)
 - `kernel/tests/test_provider_core.py` — 4 new `test_normalize_*` regression tests
-- `sdk/packs/learning/operations/memory/synthesize_learning.py` — distillation retry
+- `sdk/packs/memory/operations/memory/synthesize_learning.py` — distillation retry
 - `kernel/operations/structured_output.py` — `json_only_retry_messages` (used by fix)
 - `artifacts/host.log` — incident evidence
 - `docs/lisa-coding-mode-fork-failure-2026-07-17.md` — prior FSM fix (this incident's prerequisite)

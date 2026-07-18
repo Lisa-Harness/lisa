@@ -7,7 +7,7 @@ This directory stages the public Lisa framework packages before they are moved t
 - `kernel/`: runtime-neutral contracts, mode routing, workflow state, operation registry, tool protocols, and testing helpers.
 - `sdk/`: author-facing helper contracts for packs, workshop execution, rendering, and integration contracts.
 - `sdk/packs/core/`: baseline public modes (`default`, `workshop`) and shared prompt assets.
-- `sdk/packs/learning/`: memory-backed learning behaviors (`learn`, learning ops, and default override candidate).
+- `sdk/packs/memory/`: memory-backed learning behaviors (`learn`, memory ops, and default override candidate).
 - `sdk/packs/search/`: search/reasoning modes, operations, and tools.
 - `hosts/little_lisa/`: a local non-production terminal host that loads public packs with manifest-driven model routing and OpenAI-compatible provider calls.
 - `mcp_server/`: an MCP (Model Context Protocol) memory server that exposes Lisa's surface-scoped memory tools over stdio.
@@ -38,10 +38,10 @@ uv run little-lisa
 
 Little Lisa uses a generated model manifest in `artifacts/models.yaml` (or your configured data-dir) with `router`, `default`, and `deep` designations. Use `/models discover` then `/models apply` to generate and activate it. It supports live completion through `azure_openai`, `openai`, `anthropic`, and local `ollama` providers, plus local action/chat packs discovered through `SDK_CONTENT_ROOTS`; heavier workflow modes still report the missing host wiring they require.
 
-`lisa-pack-learning` is now an opt-in pack in this workspace. Install it through the host pack manager when you want memory-backed learning behavior:
+`lisa-pack-memory` is now an opt-in pack in this workspace. Install it through the host pack manager when you want memory-backed learning behavior:
 
 ```powershell
-uv run little-lisa pack install "C:\Code\lisa-pack-learning" --no-log
+uv run little-lisa pack install "C:\Code\lisa-pack-memory" --no-log
 ```
 
 Key CLI options:
@@ -70,7 +70,7 @@ For a first custom pack, follow `docs/PACK_AUTHORING_GUIDE.md` and point `SDK_CO
 
 ## Package Layout
 
-The root `pyproject.toml` defines a public-only `uv` workspace. The learning pack is part of the public framework set but not included in the default dependency graph during the split-repo transition:
+The root `pyproject.toml` defines a public-only `uv` workspace. The memory pack is part of the public framework set but not included in the default dependency graph during the split-repo transition:
 
 - `lisa-kernel`
 - `lisa-sdk`
@@ -82,7 +82,7 @@ The root `pyproject.toml` defines a public-only `uv` workspace. The learning pac
 - `lisa-pack-search`
 - `little-lisa`
 
-Install `lisa-pack-learning` through the pack manager when you want memory-backed learning workflows.
+Install `lisa-pack-memory` through the pack manager when you want memory-backed learning workflows.
 
 Private packages such as CloudServers operations, CloudServers packs, and market-intel collectors are intentionally absent.
 
