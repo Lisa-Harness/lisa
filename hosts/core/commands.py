@@ -1097,9 +1097,9 @@ async def handle_models_command(
 
     if subcommand == "advise":
         response_text = (
-            "Natural-language model editing is provided by the model-picker pack.\n"
-            "Install it with: /pack install lisa-pack-model-picker\n"
-            "Then use: /advise-models \"<your instruction>\"\n\n"
+            "Natural-language model editing is provided by the model-picker pack "
+            "(lisa-pack-models), bundled with the framework and enabled by default.\n"
+            "Use: /advise-models \"<your instruction>\"\n\n"
             "Example: /advise-models \"make claude-sonnet-5 the default "
             "for code reasoning, mark all o-series as premium\""
         )

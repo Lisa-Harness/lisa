@@ -18,8 +18,8 @@ Packs live in one of two places depending on whether they are bundled with the f
 
 | Location | Packages | Import namespace | When to use |
 | --- | --- | --- | --- |
-| `sdk/packs/<name>` | `lisa-pack-core`, `lisa-pack-memory`, `lisa-pack-search`, `lisa-pack-checkpoint` | `sdk.packs.<name>` | Bundled reference packs shipped with the framework |
-| `../lisa_packs/<name>` (repo: `github.com/lisa-framework/packs`) | `lisa-pack-brave-search`, `lisa-pack-cloudflare`, `lisa-pack-coding`, `lisa-pack-github`, `lisa-pack-gmail`, `lisa-pack-mem0`, `lisa-pack-model-picker`, `lisa-pack-stripe` | `lisa_packs.<name>` | External integration packs maintained in a separate repo |
+| `sdk/packs/<name>` | `lisa-pack-core`, `lisa-pack-memory`, `lisa-pack-models`, `lisa-pack-search`, `lisa-pack-checkpoint` | `sdk.packs.<name>` | Bundled reference packs shipped with the framework |
+| `../lisa_packs/<name>` (repo: `github.com/lisa-framework/packs`) | `lisa-pack-brave-search`, `lisa-pack-cloudflare`, `lisa-pack-coding`, `lisa-pack-github`, `lisa-pack-gmail`, `lisa-pack-mem0`, `lisa-pack-stripe` | `lisa_packs.<name>` | External integration packs maintained in a separate repo |
 
 The framework `pyproject.toml` consumes external packs via path dependencies (`{ path = "../lisa_packs/<name>" }`). Bundled packs are uv workspace members. Both are installed editable in the venv and discovered through entry points at runtime.
 

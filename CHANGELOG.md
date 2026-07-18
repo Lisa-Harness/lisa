@@ -6,6 +6,11 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Changed
 
+#### `lisa-pack-models` moved back into the framework; `lisa_packs` split into per-pack submodule repos
+
+- **`lisa-pack-models` (formerly `lisa-pack-model-picker`) is now a bundled framework pack at `sdk/packs/models`.** Import path renamed from `lisa_packs.model_picker` back to `sdk.packs.models`; distribution name renamed from `lisa-pack-model-picker` to `lisa-pack-models`; the `advise-models` mode's `mode_provider_id` now `lisa-pack-models`. Consumed as a uv workspace member (`sdk/packs/models`) rather than a path dependency. The `/models advise` hint no longer tells users to `/pack install` it — the bundled pack is seeded enabled by default.
+- **`lisa_packs` is now a parent repo with 7 per-pack submodule repos.** `brave_search`, `cloudflare`, `coding`, `github`, `gmail`, `mem0`, and `stripe` each live in their own `github.com/Lisa-Framework/lisa-pack-<name>` repository and are pinned into `lisa_packs/<pack>/` as git submodules, preserving the `lisa_packs/<pack>/lisa_packs/<pack>/...` namespace layout. `model_picker` is removed from `lisa_packs` (it now lives in this framework tree). Existing clones of `lisa-framework/packs` must run `git submodule update --init --recursive` after pulling the split commit.
+
 #### `route_hints` and `examples` front-matter fields removed (hard cutover)
 
 - **`route_hints` and `examples` removed from all `_mode.md` front matter and the loader.** Both fields were vestigial from the removed separate-stateless-planner router (`kernel/router.py:plan_route`). Under the unified FSM, no runtime path read either field — they were parsed, validated, stored on `WorkflowModeConfig`, and never consumed at turn time. Removed from: all mode `_mode.md` files (`default` ×2, `learn`, `markdown`, `discuss`, `search`, `ponder`), `kernel/ipsar_fsm.py` (loader blocks + `_KERNEL_OWNED_FRONT_MATTER_KEYS`), `kernel/models.py` (`WorkflowModeConfig.route_hints` + `WorkflowModeConfig.examples` fields), `kernel/context/mcp_catalog.py`, `sdk/content/_catalog.py`, and `kernel/tests/test_catalog_loader.py`.

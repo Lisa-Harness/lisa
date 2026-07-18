@@ -41,7 +41,7 @@ operations/stripe_status/
 
 Real examples: `lisa_packs/stripe/operations/stripe_status/`,
 `lisa_packs/github/operations/github_status/`,
-`lisa_packs/model_picker/operations/advise_models/`.
+`sdk/packs/models/operations/advise_models/`.
 
 ### Declarative (prompt) operations (`execution_kind: "prompt"`)
 
