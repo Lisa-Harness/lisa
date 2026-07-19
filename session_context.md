@@ -9,6 +9,7 @@ resources:
   packs:
     include:
       - lisa-pack-core
+      - lisa-pack-letta
       - lisa-pack-memory
       - lisa-pack-markdown
       - lisa-pack-search
@@ -34,6 +35,8 @@ resources:
         branch_prefix: "lisa/"
         protected_branches: [main, master, develop, prod, production]
 providers:
+  capabilities:
+    memory: lisa-pack-memory
   modes:
     default: lisa-pack-memory
   tools:
