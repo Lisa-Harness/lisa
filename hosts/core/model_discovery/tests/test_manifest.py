@@ -19,26 +19,35 @@ class TestBuildManifestPayload:
         payload = build_manifest_payload(())
         assert payload == {"version": 1, "models": []}
 
-    def test_cloud_gpt5_lowest_tier_wins_default(self) -> None:
-        """Cloud default = lowest gpt-5-family model; mini/nano allowed."""
+    def test_cloud_gpt5_cheapest_size_wins_default(self) -> None:
+        """Cloud default = cheapest gpt-5-family model: nano < mini < full."""
         models = (
-            DiscoveredModel(model_id="gpt-5.4", provider="openai"),
             DiscoveredModel(model_id="gpt-5", provider="openai"),
             DiscoveredModel(model_id="gpt-5-mini", provider="openai"),
+            DiscoveredModel(model_id="gpt-5.4", provider="openai"),
         )
         payload = build_manifest_payload(models)
-        assert payload["mode_models"] == {"default": "gpt-5"}
-        assert payload["roles"]["default"] == "gpt-5"
+        assert payload["mode_models"] == {"default": "gpt-5-mini"}
+        assert payload["roles"]["default"] == "gpt-5-mini"
 
-    def test_cloud_gpt5_mini_preferred_when_only_mini_available(self) -> None:
-        """If only gpt-5-mini/nano are present, the mini still wins (gpt-5+ family)."""
+    def test_cloud_gpt5_nano_beats_mini(self) -> None:
+        """nano is cheaper than mini; both beat full gpt-5."""
         models = (
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
             DiscoveredModel(model_id="gpt-5-mini", provider="openai"),
             DiscoveredModel(model_id="gpt-5-nano", provider="openai"),
         )
         payload = build_manifest_payload(models)
-        # Full gpt-5 absent → first gpt-5-family model in discovery order.
-        assert payload["mode_models"] == {"default": "gpt-5-mini"}
+        assert payload["mode_models"] == {"default": "gpt-5-nano"}
+
+    def test_cloud_gpt5_full_when_no_mini_nano(self) -> None:
+        """If only full gpt-5 variants exist, the lowest variant wins."""
+        models = (
+            DiscoveredModel(model_id="gpt-5.4", provider="openai"),
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+        )
+        payload = build_manifest_payload(models)
+        assert payload["mode_models"] == {"default": "gpt-5"}
 
     def test_cloud_falls_back_to_first_cloud_when_no_gpt5(self) -> None:
         """No gpt-5 family probed → first cloud model in discovery order."""
@@ -49,18 +58,31 @@ class TestBuildManifestPayload:
         payload = build_manifest_payload(models)
         assert payload["mode_models"] == {"default": "claude-opus-4"}
 
-    def test_local_highest_context_window_wins(self) -> None:
-        """Local-only: highest context_window, tiebreak reasoning, then order."""
+    def test_local_mid_range_wins_when_local_present(self) -> None:
+        """Local present → default is the median by context_window (mid-range)."""
         models = (
             DiscoveredModel(model_id="small:7b", provider="ollama", context_window=8192),
             DiscoveredModel(model_id="big:70b", provider="ollama", context_window=65536),
             DiscoveredModel(model_id="mid:13b", provider="ollama", context_window=16384),
         )
         payload = build_manifest_payload(models)
-        assert payload["mode_models"] == {"default": "big:70b"}
+        # Sorted by context_window: 8192, 16384, 65536 → median = mid:13b.
+        assert payload["mode_models"] == {"default": "mid:13b"}
+
+    def test_local_even_count_picks_lower_median(self) -> None:
+        """Even count: the lower of the two middle entries wins (cheaper)."""
+        models = (
+            DiscoveredModel(model_id="a:1b", provider="ollama", context_window=2048),
+            DiscoveredModel(model_id="b:7b", provider="ollama", context_window=8192),
+            DiscoveredModel(model_id="c:13b", provider="ollama", context_window=16384),
+            DiscoveredModel(model_id="d:70b", provider="ollama", context_window=65536),
+        )
+        payload = build_manifest_payload(models)
+        # Sorted: 2048, 8192, 16384, 65536 → lower median = b:7b (8192).
+        assert payload["mode_models"] == {"default": "b:7b"}
 
     def test_local_tiebreak_prefers_reasoning(self) -> None:
-        """Equal context_window → reasoning_model wins."""
+        """Equal context_window → reasoning_model wins the tie."""
         models = (
             DiscoveredModel(model_id="plain:70b", provider="ollama", context_window=65536),
             DiscoveredModel(
@@ -71,17 +93,20 @@ class TestBuildManifestPayload:
             ),
         )
         payload = build_manifest_payload(models)
+        # Two models, even count, lower median. Same context_window, reasoning
+        # sorts earlier (not reasoning=False sorts first), so reason:70b wins.
         assert payload["mode_models"] == {"default": "reason:70b"}
 
-    def test_mixed_cloud_wins_default_over_local(self) -> None:
-        """When both cloud and local present, cloud gpt-5 wins as default."""
+    def test_local_wins_default_over_cloud_when_both_present(self) -> None:
+        """Local (ollama) present → local mid-range wins as default, not cloud."""
         models = (
-            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(model_id="gpt-5-mini", provider="openai"),
+            DiscoveredModel(model_id="small:7b", provider="ollama", context_window=8192),
             DiscoveredModel(model_id="big:70b", provider="ollama", context_window=65536),
         )
         payload = build_manifest_payload(models)
-        assert payload["mode_models"] == {"default": "gpt-5"}
-        assert payload["roles"]["default"] == "gpt-5"
+        # Two local models, even count, lower median = small:7b.
+        assert payload["mode_models"] == {"default": "small:7b"}
 
     def test_deep_first_reasoning_any_provider(self) -> None:
         """deep = first reasoning model regardless of provider."""

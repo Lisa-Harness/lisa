@@ -3,11 +3,12 @@
 Discrete default/role selection plus atomic YAML writes. The algorithm is
 deliberately stable and order-independent:
 
-- **default model**: cloud gpt-5-family model if any cloud model exists
-  (lowest tier in the gpt-5 family, mini/nano allowed); otherwise the
-  highest-capability local model (``context_window`` desc, then
-  ``reasoning_model``, then discovery order). When both cloud and local
-  are present, the cloud choice wins — local is the escalation target.
+- **default model**: when any local (ollama) models are present, the default
+  is the local *mid-range* model — the median by ``context_window`` — because
+  local is the cheapest path for the bulk of turns. When only cloud models
+  are present, the default is the cheapest gpt-5-family model
+  (nano < mini < full, then lowest variant), falling back to the first
+  cloud model if no gpt-5+ was probed.
 - **deep role**: first reasoning model (any provider), else the chosen
   default. ``deep`` is the cross-cutting escalation role, so
   reasoning-capability is the right signal regardless of provider.
@@ -49,60 +50,74 @@ def _dedupe(models: tuple[DiscoveredModel, ...]) -> tuple[DiscoveredModel, ...]:
 def _choose_default_model(models: tuple[DiscoveredModel, ...]) -> DiscoveredModel:
     """Pick the default model with a discrete algorithm.
 
-    Cloud (non-ollama) wins over local when both are present. Within cloud:
-    the lowest gpt-5-family model (mini/nano allowed), falling back to the
-    first cloud model if no gpt-5+ model was probed. Within local-only: the
-    highest-capability model by ``context_window`` desc, then
-    ``reasoning_model`` (reasoning is "higher"), then discovery order.
+    Precedence:
+    1. If any local (ollama) models exist, the default is the local
+       *mid-range* model — the median by ``context_window``. Local wins
+       over cloud when both are present because it's the cheapest path
+       for the bulk of turns.
+    2. Otherwise (cloud only): the cheapest gpt-5-family model
+       (nano < mini < full, then lowest variant), falling back to the
+       first cloud model if no gpt-5+ was probed.
+    3. Otherwise: the first model overall.
     """
 
-    cloud = tuple(m for m in models if is_cloud_provider(m.provider))
     local = tuple(m for m in models if is_local_provider(m.provider))
+    if local:
+        return _mid_range_model(local)
 
+    cloud = tuple(m for m in models if is_cloud_provider(m.provider))
     if cloud:
         gpt5 = tuple(m for m in cloud if is_gpt_5_family(m.model_id))
         if gpt5:
-            # Lowest tier in the gpt-5 family: rank by (variant, mini/nano,
-            # discovery index). "variant" is the numeric suffix after gpt-5
-            # (e.g. gpt-5.4 -> 5.4); a bare gpt-5 is 5.0. Lower variant wins;
-            # within a variant, full > mini > nano; within that, discovery
-            # order. This gives a stable, deterministic "lowest gpt-5+" pick.
-            return min(gpt5, key=_gpt5_tier_rank)
+            # Cheapest gpt-5: size tier first (nano < mini < full), then
+            # lowest variant, then discovery order via stable min().
+            return min(gpt5, key=_gpt5_cost_rank)
         return cloud[0]
-
-    if local:
-        # Highest context_window, then reasoning, then first-seen.
-        return max(local, key=lambda m: (m.context_window, m.reasoning_model))
 
     # No models at all — caller guards this, but be defensive.
     return models[0]
 
 
-def _gpt5_tier_rank(model: DiscoveredModel) -> tuple[float, int]:
-    """Return a sort key for a gpt-5-family model; lower = preferred default.
+def _mid_range_model(models: tuple[DiscoveredModel, ...]) -> DiscoveredModel:
+    """Return the median model by ``context_window``.
 
-    The tuple is ``(variant, size_tier)``:
+    Ties: prefer reasoning over non-reasoning (reasoning is the more
+    capable end of a tie), then stable discovery order. The median is the
+    mid-range pick — cheaper than the largest, more capable than the
+    smallest. With an even count, the lower median wins (the cheaper of
+    the two middle entries).
+    """
+    ranked = sorted(
+        enumerate(models),
+        key=lambda im: (im[1].context_window, not im[1].reasoning_model, im[0]),
+    )
+    mid = len(ranked) // 2
+    if len(ranked) % 2 == 0 and mid > 0:
+        mid -= 1
+    return ranked[mid][1]
+
+
+def _gpt5_cost_rank(model: DiscoveredModel) -> tuple[int, float]:
+    """Return a sort key for a gpt-5-family model; lower = cheaper.
+
+    The tuple is ``(size_tier, variant)``:
+    - ``size_tier``: 0 for nano, 1 for mini, 2 for full. Cheaper sizes win
+      first (nano < mini < full), per Adam's "cheapest gpt-5" preference.
     - ``variant``: numeric suffix after ``gpt-5`` (``gpt-5.4`` → 5.4; bare
-      ``gpt-5`` → 5.0). Lower variant = lower tier = preferred.
-    - ``size_tier``: 0 for full, 1 for mini, 2 for nano. Full preferred over
-      mini preferred over nano when variants tie.
+      ``gpt-5`` → 5.0). Lower variant = cheaper within a size tier.
 
-    ``min()`` is stable, so equal keys preserve discovery order — the
-    deterministic first-seen tiebreak for identical-tier models.
+    ``min()`` is stable, so equal keys preserve discovery order.
     """
     raw = model.model_id.strip().lower()
     variant = 5.0
     if raw.startswith("gpt-5."):
         try:
-            # gpt-5.4 -> "5.4" -> 5.4 (parse the "5" + suffix together so the
-            # fractional part adds to the integer, not to zero).
             suffix = raw[len("gpt-5"):]
             variant = float(f"5{suffix.split('-')[0].split(':')[0]}")
         except ValueError:
             variant = 5.0
-    # gpt-5-mini / gpt-5-nano / gpt-5:something keep variant 5.0.
-    size_tier = 2 if "nano" in raw else (1 if "mini" in raw else 0)
-    return (variant, size_tier)
+    size_tier = 0 if "nano" in raw else (1 if "mini" in raw else 2)
+    return (size_tier, variant)
 
 
 def _choose_deep_model(
