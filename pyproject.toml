@@ -10,6 +10,7 @@ dependencies = [
     "lisa-pack-memory",
     "lisa-pack-coding",
     "lisa-pack-core",
+    "lisa-pack-letta",
     "lisa-pack-introspect",
     "lisa-pack-search",
     "lisa-pack-models",
@@ -47,6 +48,7 @@ members = [
     "mcp_server",
     "sdk/packs/core",
     "sdk/packs/introspect",
+    "sdk/packs/letta",
     "sdk/packs/memory",
     "sdk/packs/search",
     "sdk/packs/models",
@@ -64,6 +66,7 @@ members = [
 lisa-kernel = { workspace = true }
 lisa-sdk = { workspace = true }
 lisa-mcp-servers = { workspace = true }
+lisa-pack-letta = { workspace = true }
 lisa-pack-memory = { workspace = true }
 lisa-pack-coding = { path = "../lisa_packs/coding" }
 lisa-pack-cloudflare = { path = "../lisa_packs/cloudflare" }
