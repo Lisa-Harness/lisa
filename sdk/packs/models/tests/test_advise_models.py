@@ -186,6 +186,7 @@ class TestExecuteOperation:
         )
         result = await execute(ctx)
         assert "Usage:" in result.output_text
+        assert result.output_json.get("validated") is False
 
     @pytest.mark.asyncio
     async def test_no_manifest_returns_error(self) -> None:
@@ -197,6 +198,7 @@ class TestExecuteOperation:
         )
         result = await execute(ctx)
         assert "No model manifest" in result.output_text
+        assert result.output_json.get("validated") is False
 
     @pytest.mark.asyncio
     async def test_writes_edited_manifest_via_storage_tool(self) -> None:
@@ -217,6 +219,7 @@ class TestExecuteOperation:
         )
         result = await execute(ctx)
         assert "Manifest updated" in result.output_text
+        assert result.output_json.get("validated") is True
         # The operation must have written the edited manifest to the proposal.
         assert "proposal" in written
         assert "premium" in written["proposal"]
@@ -262,10 +265,11 @@ class TestExecuteOperation:
         )
         result = await execute(ctx)
         assert "did not return a fenced YAML block" in result.output_text
+        assert result.output_json.get("validated") is False
 
     @pytest.mark.asyncio
     async def test_validation_failure_returns_error(self) -> None:
-        storage_fn, _ = _make_storage_executor(proposal=_VALID_MANIFEST)
+        storage_fn, written = _make_storage_executor(proposal=_VALID_MANIFEST)
         invalid_manifest = "version: 1\nmodels: []\n"
 
         async def fake_complete(**kwargs: Any) -> _FakeCompletion:
@@ -283,6 +287,10 @@ class TestExecuteOperation:
         )
         result = await execute(ctx)
         assert "failed validation" in result.output_text
+        assert result.output_json.get("validated") is False
+        # Validation failure must NOT write the proposal — the caller relies
+        # on this to know there is nothing to apply.
+        assert "proposal" not in written
 
 
 class TestAuthoredTextLoader:

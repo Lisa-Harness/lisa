@@ -1107,6 +1107,16 @@ async def _handle_models_update(
     if not summary:
         summary = "advise_models produced no summary."
 
+    # The operation returns a normal OperationResult (not raises) on every
+    # soft-failure path (empty response, no YAML block, validation failed,
+    # too large, no manifest). It sets output_json.validated=False on those
+    # paths and only writes the proposal on the success path. Only apply
+    # when validated is True — otherwise there is nothing to promote.
+    payload = result.output_json or {}
+    validated = bool(payload.get("validated")) if isinstance(payload, dict) else False
+    if not validated:
+        return summary + "\n\nNot applied: the edited manifest did not validate. Refine the instruction and retry."
+
     # Auto-apply: promote the proposal to the active manifest.
     if not proposal_path.exists():
         return (

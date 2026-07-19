@@ -103,7 +103,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
     instruction = ctx.query.strip()
     if not instruction:
-        return OperationResult(output_text=_load_text(ctx, _USAGE_PATH))
+        return OperationResult(output_text=_load_text(ctx, _USAGE_PATH), output_json={"validated": False, "reason": "usage"})
 
     if not callable(ctx.execute_tool_fn):
         raise RuntimeError("advise_models requires execute_tool_fn to call lisa-storage tools")
@@ -112,18 +112,27 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     if current_yaml is None:
         current_yaml = await _read_manifest(ctx, "active")
     if current_yaml is None:
-        return OperationResult(output_text=_load_text(ctx, _NO_MANIFEST_PATH))
+        return OperationResult(
+            output_text=_load_text(ctx, _NO_MANIFEST_PATH),
+            output_json={"validated": False, "reason": "no_manifest"},
+        )
 
     if len(current_yaml) > _MAX_MANIFEST_CHARS:
         text = _format_template(
             _load_text(ctx, _TOO_LARGE_PATH),
             manifest_chars=len(current_yaml),
         )
-        return OperationResult(output_text=text)
+        return OperationResult(
+            output_text=text,
+            output_json={"validated": False, "reason": "too_large"},
+        )
 
     completion = await _call_llm(ctx, current_yaml, instruction)
     if not completion or not completion.strip():
-        return OperationResult(output_text=_load_text(ctx, _EMPTY_RESPONSE_PATH))
+        return OperationResult(
+            output_text=_load_text(ctx, _EMPTY_RESPONSE_PATH),
+            output_json={"validated": False, "reason": "empty_response"},
+        )
 
     edited_yaml = _extract_yaml_block(completion)
     if not edited_yaml:
@@ -131,7 +140,10 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             _load_text(ctx, _NO_YAML_BLOCK_PATH),
             response_preview=completion[:400],
         )
-        return OperationResult(output_text=text)
+        return OperationResult(
+            output_text=text,
+            output_json={"validated": False, "reason": "no_yaml_block"},
+        )
 
     validation_error = _validate_manifest_yaml(edited_yaml)
     if validation_error:
@@ -139,11 +151,17 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             _load_text(ctx, _VALIDATION_FAILED_PATH),
             validation_error=validation_error,
         )
-        return OperationResult(output_text=text)
+        return OperationResult(
+            output_text=text,
+            output_json={"validated": False, "reason": "validation_failed", "validation_error": validation_error},
+        )
 
     await _write_manifest(ctx, edited_yaml, "proposal")
     summary = _render_diff_summary(current_yaml, edited_yaml)
-    return OperationResult(output_text=summary)
+    return OperationResult(
+        output_text=summary,
+        output_json={"validated": True, "reason": "ok"},
+    )
 
 
 async def _read_manifest(ctx: OperationExecutionContext, which: str) -> str | None:
