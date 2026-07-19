@@ -21,6 +21,7 @@ from kernel.models import OperationExecutionContext, ToolResult
 from sdk.packs.models.operations.advise_models.advise_models import (
     _extract_yaml_block,
     _render_diff_summary,
+    _scope_violation,
     _validate_manifest_yaml,
     execute,
 )
@@ -118,11 +119,11 @@ version: 1
 models:
   - model_id: gpt-chat-latest
     provider: openai
-    cost_tier: standard
+    designations: [default, router]
   - model_id: o3
     provider: openai
     reasoning_model: true
-    cost_tier: premium
+    designations: [deep, reasoning]
 mode_models:
   default: gpt-chat-latest
   deep: o3
@@ -167,10 +168,23 @@ class TestValidateManifestYaml:
 
 class TestRenderDiffSummary:
     def test_detects_cost_tier_change(self) -> None:
-        summary = _render_diff_summary(_VALID_MANIFEST, _EDITED_MANIFEST)
+        # _render_diff_summary is a pure helper that can report any field
+        # change; the scope guard prevents cost_tier edits from reaching it
+        # in production, but the helper itself still surfaces them when called
+        # directly. Use a local fixture with a cost_tier change.
+        edited = _VALID_MANIFEST.replace(
+            "  - model_id: gpt-chat-latest\n    provider: openai\n",
+            "  - model_id: gpt-chat-latest\n    provider: openai\n    cost_tier: premium\n",
+        )
+        summary = _render_diff_summary(_VALID_MANIFEST, edited)
         assert "Manifest updated" in summary
         assert "gpt-chat-latest" in summary
         assert "cost_tier" in summary
+
+    def test_detects_designation_change(self) -> None:
+        summary = _render_diff_summary(_VALID_MANIFEST, _EDITED_MANIFEST)
+        assert "Manifest updated" in summary
+        assert "designations" in summary
 
     def test_no_changes_detected(self) -> None:
         summary = _render_diff_summary(_VALID_MANIFEST, _VALID_MANIFEST)
@@ -211,7 +225,7 @@ class TestExecuteOperation:
             return _FakeModel()
 
         ctx = OperationExecutionContext(
-            query="mark o3 as premium tier",
+            query="make o3 the reasoning designation",
             complete_fn=fake_complete,
             resolve_model_fn=fake_resolve,
             read_authored_text_fn=_make_loader(),
@@ -222,7 +236,7 @@ class TestExecuteOperation:
         assert result.output_json.get("validated") is True
         # The operation must have written the edited manifest to the proposal.
         assert "proposal" in written
-        assert "premium" in written["proposal"]
+        assert "designations: [deep, reasoning]" in written["proposal"]
 
     @pytest.mark.asyncio
     async def test_reads_active_when_no_proposal(self) -> None:
@@ -235,7 +249,7 @@ class TestExecuteOperation:
             return _FakeModel()
 
         ctx = OperationExecutionContext(
-            query="mark o3 as premium tier",
+            query="make o3 the reasoning designation",
             complete_fn=fake_complete,
             resolve_model_fn=fake_resolve,
             read_authored_text_fn=_make_loader(),
@@ -270,7 +284,23 @@ class TestExecuteOperation:
     @pytest.mark.asyncio
     async def test_validation_failure_returns_error(self) -> None:
         storage_fn, written = _make_storage_executor(proposal=_VALID_MANIFEST)
-        invalid_manifest = "version: 1\nmodels: []\n"
+        # In-scope (only designations touched) but invalid: the same
+        # designation 'deep' is assigned to two models. The scope guard
+        # passes this through; the kernel manifest loader rejects it.
+        invalid_manifest = (
+            "version: 1\n"
+            "models:\n"
+            "  - model_id: gpt-chat-latest\n"
+            "    provider: openai\n"
+            "    designations: [deep]\n"
+            "  - model_id: o3\n"
+            "    provider: openai\n"
+            "    reasoning_model: true\n"
+            "    designations: [deep]\n"
+            "mode_models:\n"
+            "  default: gpt-chat-latest\n"
+            "  deep: o3\n"
+        )
 
         async def fake_complete(**kwargs: Any) -> _FakeCompletion:
             return _FakeCompletion(content=f"```yaml\n{invalid_manifest}```")
@@ -279,7 +309,7 @@ class TestExecuteOperation:
             return _FakeModel()
 
         ctx = OperationExecutionContext(
-            query="delete everything",
+            query="assign deep to both models",
             complete_fn=fake_complete,
             resolve_model_fn=fake_resolve,
             read_authored_text_fn=_make_loader(),
@@ -288,9 +318,237 @@ class TestExecuteOperation:
         result = await execute(ctx)
         assert "failed validation" in result.output_text
         assert result.output_json.get("validated") is False
+        assert result.output_json.get("reason") == "validation_failed"
         # Validation failure must NOT write the proposal — the caller relies
         # on this to know there is nothing to apply.
         assert "proposal" not in written
+
+    @pytest.mark.asyncio
+    async def test_out_of_scope_add_model_is_rejected(self) -> None:
+        storage_fn, written = _make_storage_executor(proposal=_VALID_MANIFEST)
+        added = (
+            "version: 1\n"
+            "models:\n"
+            "  - model_id: gpt-chat-latest\n"
+            "    provider: openai\n"
+            "  - model_id: o3\n"
+            "    provider: openai\n"
+            "    reasoning_model: true\n"
+            "  - model_id: new-guy\n"
+            "    provider: openai\n"
+            "mode_models:\n"
+            "  default: gpt-chat-latest\n"
+            "  deep: o3\n"
+        )
+
+        async def fake_complete(**kwargs: Any) -> _FakeCompletion:
+            return _FakeCompletion(content=f"```yaml\n{added}```")
+
+        def fake_resolve(model_id: str) -> _FakeModel:
+            return _FakeModel()
+
+        ctx = OperationExecutionContext(
+            query="add a new model called new-guy",
+            complete_fn=fake_complete,
+            resolve_model_fn=fake_resolve,
+            read_authored_text_fn=_make_loader(),
+            execute_tool_fn=storage_fn,
+        )
+        result = await execute(ctx)
+        assert "out of scope" in result.output_text.lower() or "cannot add" in result.output_text.lower()
+        assert result.output_json.get("validated") is False
+        assert result.output_json.get("reason") == "out_of_scope"
+        assert "proposal" not in written
+
+    @pytest.mark.asyncio
+    async def test_out_of_scope_edit_cost_tier_is_rejected(self) -> None:
+        storage_fn, written = _make_storage_executor(proposal=_VALID_MANIFEST)
+        edited = (
+            "version: 1\n"
+            "models:\n"
+            "  - model_id: gpt-chat-latest\n"
+            "    provider: openai\n"
+            "    cost_tier: premium\n"
+            "  - model_id: o3\n"
+            "    provider: openai\n"
+            "    reasoning_model: true\n"
+            "mode_models:\n"
+            "  default: gpt-chat-latest\n"
+            "  deep: o3\n"
+        )
+
+        async def fake_complete(**kwargs: Any) -> _FakeCompletion:
+            return _FakeCompletion(content=f"```yaml\n{edited}```")
+
+        def fake_resolve(model_id: str) -> _FakeModel:
+            return _FakeModel()
+
+        ctx = OperationExecutionContext(
+            query="make gpt-chat-latest premium tier",
+            complete_fn=fake_complete,
+            resolve_model_fn=fake_resolve,
+            read_authored_text_fn=_make_loader(),
+            execute_tool_fn=storage_fn,
+        )
+        result = await execute(ctx)
+        assert "cost_tier" in result.output_text
+        assert result.output_json.get("validated") is False
+        assert result.output_json.get("reason") == "out_of_scope"
+        assert "proposal" not in written
+
+    @pytest.mark.asyncio
+    async def test_designation_only_change_is_accepted(self) -> None:
+        storage_fn, written = _make_storage_executor(proposal=_VALID_MANIFEST)
+        # Only the designations field changes — no model added/removed, no
+        # other per-model field touched. This is the happy path for the
+        # narrowed scope.
+        edited = (
+            "version: 1\n"
+            "models:\n"
+            "  - model_id: gpt-chat-latest\n"
+            "    provider: openai\n"
+            "    designations: [default, router]\n"
+            "  - model_id: o3\n"
+            "    provider: openai\n"
+            "    reasoning_model: true\n"
+            "    designations: [deep, reasoning]\n"
+            "mode_models:\n"
+            "  default: gpt-chat-latest\n"
+            "  deep: o3\n"
+        )
+
+        async def fake_complete(**kwargs: Any) -> _FakeCompletion:
+            return _FakeCompletion(content=f"```yaml\n{edited}```")
+
+        def fake_resolve(model_id: str) -> _FakeModel:
+            return _FakeModel()
+
+        ctx = OperationExecutionContext(
+            query="assign reasoning designation to o3",
+            complete_fn=fake_complete,
+            resolve_model_fn=fake_resolve,
+            read_authored_text_fn=_make_loader(),
+            execute_tool_fn=storage_fn,
+        )
+        result = await execute(ctx)
+        assert result.output_json.get("validated") is True
+        assert "proposal" in written
+
+    @pytest.mark.asyncio
+    async def test_mode_models_only_change_is_accepted(self) -> None:
+        storage_fn, written = _make_storage_executor(proposal=_VALID_MANIFEST)
+        # Only mode_models changes; models list is byte-identical.
+        edited = (
+            "version: 1\n"
+            "models:\n"
+            "  - model_id: gpt-chat-latest\n"
+            "    provider: openai\n"
+            "  - model_id: o3\n"
+            "    provider: openai\n"
+            "    reasoning_model: true\n"
+            "mode_models:\n"
+            "  default: o3\n"
+            "  deep: o3\n"
+        )
+
+        async def fake_complete(**kwargs: Any) -> _FakeCompletion:
+            return _FakeCompletion(content=f"```yaml\n{edited}```")
+
+        def fake_resolve(model_id: str) -> _FakeModel:
+            return _FakeModel()
+
+        ctx = OperationExecutionContext(
+            query="use o3 for the default mode",
+            complete_fn=fake_complete,
+            resolve_model_fn=fake_resolve,
+            read_authored_text_fn=_make_loader(),
+            execute_tool_fn=storage_fn,
+        )
+        result = await execute(ctx)
+        assert result.output_json.get("validated") is True
+        assert "proposal" in written
+
+
+class TestScopeViolationHelper:
+    """Unit-test the _scope_violation guard directly."""
+
+    def test_identical_manifest_is_in_scope(self) -> None:
+        assert _scope_violation(_VALID_MANIFEST, _VALID_MANIFEST) == ""
+
+    def test_designation_change_is_in_scope(self) -> None:
+        edited = (
+            "version: 1\n"
+            "models:\n"
+            "  - model_id: gpt-chat-latest\n"
+            "    provider: openai\n"
+            "    designations: [default]\n"
+            "  - model_id: o3\n"
+            "    provider: openai\n"
+            "    reasoning_model: true\n"
+            "mode_models:\n"
+            "  default: gpt-chat-latest\n"
+            "  deep: o3\n"
+        )
+        assert _scope_violation(_VALID_MANIFEST, edited) == ""
+
+    def test_mode_models_change_is_in_scope(self) -> None:
+        edited = (
+            "version: 1\n"
+            "models:\n"
+            "  - model_id: gpt-chat-latest\n"
+            "    provider: openai\n"
+            "  - model_id: o3\n"
+            "    provider: openai\n"
+            "    reasoning_model: true\n"
+            "mode_models:\n"
+            "  default: o3\n"
+            "  deep: o3\n"
+        )
+        assert _scope_violation(_VALID_MANIFEST, edited) == ""
+
+    def test_removed_model_is_out_of_scope(self) -> None:
+        edited = (
+            "version: 1\n"
+            "models:\n"
+            "  - model_id: gpt-chat-latest\n"
+            "    provider: openai\n"
+            "mode_models:\n"
+            "  default: gpt-chat-latest\n"
+        )
+        reason = _scope_violation(_VALID_MANIFEST, edited)
+        assert "removed" in reason.lower()
+
+    def test_reordered_models_is_out_of_scope(self) -> None:
+        edited = (
+            "version: 1\n"
+            "models:\n"
+            "  - model_id: o3\n"
+            "    provider: openai\n"
+            "    reasoning_model: true\n"
+            "  - model_id: gpt-chat-latest\n"
+            "    provider: openai\n"
+            "mode_models:\n"
+            "  default: gpt-chat-latest\n"
+            "  deep: o3\n"
+        )
+        reason = _scope_violation(_VALID_MANIFEST, edited)
+        assert "reorder" in reason.lower()
+
+    def test_per_model_field_change_is_out_of_scope(self) -> None:
+        edited = (
+            "version: 1\n"
+            "models:\n"
+            "  - model_id: gpt-chat-latest\n"
+            "    provider: anthropic\n"
+            "  - model_id: o3\n"
+            "    provider: openai\n"
+            "    reasoning_model: true\n"
+            "mode_models:\n"
+            "  default: gpt-chat-latest\n"
+            "  deep: o3\n"
+        )
+        reason = _scope_violation(_VALID_MANIFEST, edited)
+        assert "provider" in reason
 
 
 class TestAuthoredTextLoader:

@@ -1,10 +1,17 @@
-"""Advise-models operation: NL-driven model manifest editing.
+"""Advise-models operation: NL-driven manifest *assignment* editing.
 
 Reads the current model manifest (proposal if it exists, else active), pipes
-it + the user's natural-language instruction through an LLM, validates the
-edited YAML against the kernel's manifest loader, and writes the result
-back to the proposal file. The ``/models update`` host command then promotes
-the proposal to the active manifest.
+it + the user's natural-language instruction through an LLM, and writes the
+result back to the proposal file. The ``/models update`` host command then
+promotes the proposal to the active manifest.
+
+Scope is deliberately narrow: the operation may only edit ``mode_models``
+(the mode→model_id map) and the ``designations`` field on each model entry
+(``router`` / ``default`` / ``deep`` / ``reasoning``). It may NOT add or
+remove models, reorder the list, or edit any other per-model field. A
+post-LLM scope guard (``_scope_violation``) rejects any edit that touches
+anything else, so an over-eager model cannot silently rewrite the catalog.
+The manifest loader's full validation runs after the scope guard.
 
 The operation does NOT touch the filesystem directly. It reads and writes
 the manifest through the ``lisa-storage`` MCP server's
@@ -54,6 +61,14 @@ _TOO_LARGE_PATH = f"{_PROMPT_DIR}/advise_models_too_large.md"
 _EMPTY_RESPONSE_PATH = f"{_PROMPT_DIR}/advise_models_empty_response.md"
 _NO_YAML_BLOCK_PATH = f"{_PROMPT_DIR}/advise_models_no_yaml_block.md"
 _VALIDATION_FAILED_PATH = f"{_PROMPT_DIR}/advise_models_validation_failed.md"
+_OUT_OF_SCOPE_PATH = f"{_PROMPT_DIR}/advise_models_out_of_scope.md"
+
+# Per-model fields the operation is allowed to touch. Everything else in
+# each model entry (provider, cost_tier, capabilities, reasoning_model,
+# thinking_model, display_name, context_window, ...) must pass through
+# unchanged. The guard compares the before/after models list and rejects
+# any edit that touches a non-scope field or adds/removes/reorders entries.
+_SCOPE_DESIGNATION_FIELDS = ("designations",)
 
 
 def _load_text(ctx: OperationExecutionContext, path: str) -> str:
@@ -143,6 +158,17 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         return OperationResult(
             output_text=text,
             output_json={"validated": False, "reason": "no_yaml_block"},
+        )
+
+    scope_error = _scope_violation(current_yaml, edited_yaml)
+    if scope_error:
+        text = _format_template(
+            _load_text(ctx, _OUT_OF_SCOPE_PATH),
+            scope_error=scope_error,
+        )
+        return OperationResult(
+            output_text=text,
+            output_json={"validated": False, "reason": "out_of_scope", "scope_error": scope_error},
         )
 
     validation_error = _validate_manifest_yaml(edited_yaml)
@@ -340,6 +366,81 @@ def _validate_manifest_yaml(edited_yaml: str) -> str:
         return str(exc)
     except Exception as exc:  # pylint: disable=broad-except
         return f"Unexpected validation error: {exc}"
+    return ""
+
+
+def _scope_violation(current_yaml: str, edited_yaml: str) -> str:
+    """Return a non-empty reason if the edit is outside the allowed scope.
+
+    The operation may only edit ``mode_models`` and the ``designations``
+    field on each model entry. Everything else — the set of models, their
+    order, and every per-model field other than ``designations`` — must
+    pass through unchanged. Returns an empty string when the edit is in
+    scope.
+    """
+
+    try:
+        current = yaml.safe_load(current_yaml) or {}
+    except yaml.YAMLError as exc:
+        return f"Current manifest is not parseable: {exc}"
+    try:
+        edited = yaml.safe_load(edited_yaml) or {}
+    except yaml.YAMLError as exc:
+        return f"Edited manifest is not parseable: {exc}"
+    if not isinstance(current, dict) or not isinstance(edited, dict):
+        return "Manifest must be a mapping."
+
+    # Top-level keys: only mode_models (and, implicitly, models) may change.
+    # version and any other keys must be unchanged.
+    for key in set(current) | set(edited):
+        if key in ("models", "mode_models"):
+            continue
+        if current.get(key) != edited.get(key):
+            return f"Top-level key '{key}' was changed; only mode_models and designations are editable."
+
+    current_rows = current.get("models") or []
+    edited_rows = edited.get("models") or []
+    if not isinstance(current_rows, list) or not isinstance(edited_rows, list):
+        return "'models' must be a list."
+
+    # The set of model_ids must be identical (no add/remove). Order is not
+    # semantically meaningful to the manifest loader but a reorder still
+    # indicates the LLM rewrote the list; flag it so the user sees the edit
+    # was out of scope rather than silently accepting a reshuffle.
+    current_ids = [str(r.get("model_id") or "").strip() for r in current_rows if isinstance(r, dict)]
+    edited_ids = [str(r.get("model_id") or "").strip() for r in edited_rows if isinstance(r, dict)]
+    if current_ids != edited_ids:
+        added = [m for m in edited_ids if m not in current_ids]
+        removed = [m for m in current_ids if m not in edited_ids]
+        reordered = current_ids != edited_ids and not added and not removed
+        if added:
+            return f"Models were added: {', '.join(added)}. /models update cannot add models."
+        if removed:
+            return f"Models were removed: {', '.join(removed)}. /models update cannot remove models."
+        if reordered:
+            return "The models list was reordered. /models update cannot reorder the models list."
+        return "The models list changed in an unexpected way."
+
+    # Per-model: only the 'designations' field may differ.
+    current_indexed = _index_models(current_rows)
+    edited_indexed = _index_models(edited_rows)
+    for model_id, edited_row in edited_indexed.items():
+        current_row = current_indexed.get(model_id, {})
+        for field, edited_val in edited_row.items():
+            if field == "designations":
+                continue
+            if current_row.get(field) != edited_val:
+                return (
+                    f"Model '{model_id}' field '{field}' was changed. "
+                    "Only designations are editable per-model."
+        )
+        # Also catch a field that was present before and is now missing.
+        for field in current_row:
+            if field == "designations":
+                continue
+            if field not in edited_row:
+                return f"Model '{model_id}' field '{field}' was removed. Only designations are editable per-model."
+
     return ""
 
 

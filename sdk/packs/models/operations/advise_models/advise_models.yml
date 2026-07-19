@@ -1,5 +1,5 @@
 operation_id: advise_models
-description: Edit the model manifest using a natural-language instruction via an LLM.
+description: Reassign mode_models and model designations in the manifest using a natural-language instruction via an LLM. Cannot add/remove models or edit per-model fields.
 tool_ids: [read_model_manifest, write_model_manifest]
 timeout_seconds: 30
 max_calls_per_turn: 1
