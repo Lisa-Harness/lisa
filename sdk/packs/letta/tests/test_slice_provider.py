@@ -125,9 +125,9 @@ async def test_slice_noops_without_snapshot(tmp_path: Path) -> None:
         os.environ.pop("LETTA_SYNC_ENABLED", None)
 
 
-def test_factory_returns_callable() -> None:
-    factory = get_slice_provider_factory()
-    provider = factory(SimpleNamespace(), SimpleNamespace())
+def test_factory_returns_provider() -> None:
+    from types import SimpleNamespace
+    provider = get_slice_provider_factory(SimpleNamespace(), SimpleNamespace())
     assert isinstance(provider, LettaSyncSlice)
 
 

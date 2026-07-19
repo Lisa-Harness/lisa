@@ -61,6 +61,21 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                 output_text=f"⛔ Letta agent creation failed: {exc}",
                 output_json={"error": str(exc)},
             )
+        except Exception as exc:  # pylint: disable=broad-except
+            # Catch httpx.ConnectError, httpx.TimeoutException, and any
+            # transport-level failure so the operation surfaces a clear
+            # "Letta not reachable" message instead of crashing the turn.
+            return OperationResult(
+                output_text=(
+                    f"⛔ Letta is not reachable at {base_url}: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                output_json={
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                    "base_url": base_url,
+                },
+            )
     agent_id = str(agent.get("id") or "")
     if not agent_id:
         return OperationResult(

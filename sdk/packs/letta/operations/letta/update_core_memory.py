@@ -70,6 +70,11 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                 output_text=f"⛔ Letta block update failed: {exc}",
                 output_json={"error": str(exc), "block_id": block_id},
             )
+        except Exception as exc:  # pylint: disable=broad-except
+            return OperationResult(
+                output_text=f"⛔ Letta is not reachable at {base_url}: {type(exc).__name__}: {exc}",
+                output_json={"error": str(exc), "error_type": type(exc).__name__, "base_url": base_url},
+            )
 
     return OperationResult(
         output_text=f"✅ Letta core block {block_id} updated.",

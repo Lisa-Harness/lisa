@@ -93,6 +93,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                 synced += 1
             except LettaError as exc:
                 failures.append(str(exc))
+            except Exception as exc:  # pylint: disable=broad-except
+                failures.append(f"{type(exc).__name__}: {exc}")
+                break
 
     from datetime import UTC, datetime
     current = identity.get(key)

@@ -20,9 +20,9 @@ version: 1
 # The host then namespaces this server id to ``letta.lisa-letta-memory``
 # and wires the generic aliases to the default backend declared here.
 memory:
-  default_backend: letta
+  default_backend: lisa-letta-memory
   backends:
-    - id: letta
+    - id: lisa-letta-memory
       kind: stdio
       command: "${LISA_MCP_COMMAND:lisa-letta-memory}"
       args:

@@ -234,17 +234,16 @@ class LettaSyncSlice:
         )
 
 
-def get_slice_provider_factory() -> SliceProviderFactory:
+def get_slice_provider_factory(
+    turn_hooks: Any,
+    session_plan: Any,
+) -> LettaSyncSlice | None:
     """Entry-point factory for the ``lisa.extensions.slice_providers`` group.
 
-    Returns a callable ``(turn_hooks, session_plan) -> provider | None``.
-    The slice is disabled by default (env-gated), so the factory always
-    returns a provider; the slice itself no-ops when
-    ``LETTA_SYNC_ENABLED`` is unset. The host may set ``thread_dir`` on
-    the returned provider for sidecar persistence.
+    The host calls this function directly with ``(turn_hooks, session_plan)``.
+    The slice is disabled by default (env-gated), so it always returns a
+    provider; the slice itself no-ops when ``LETTA_SYNC_ENABLED`` is unset.
+    The host may set ``thread_dir`` on the returned provider for sidecar
+    persistence.
     """
-
-    def factory(turn_hooks: Any, session_plan: Any) -> LettaSyncSlice:
-        return LettaSyncSlice(turn_hooks=turn_hooks)
-
-    return factory
+    return LettaSyncSlice(turn_hooks=turn_hooks)

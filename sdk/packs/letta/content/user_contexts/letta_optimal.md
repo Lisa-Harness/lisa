@@ -9,6 +9,8 @@
 providers:
   capabilities:
     memory: lisa-pack-letta
+  modes:
+    default: lisa-pack-memory
 routing:
   start_mode: default
 ---
