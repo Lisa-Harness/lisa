@@ -35,7 +35,6 @@ Public surface
 - :func:`render_capability_debug`
 - :func:`render_debug_context`
 - :func:`render_debug_self`
-- :func:`render_debug_router`
 - :func:`render_runtime_settings`
 - :func:`format_token_stats`
 - :func:`build_capability_snapshot`
@@ -44,7 +43,6 @@ Public surface
 - :func:`explicit_deep_query`
 - :func:`preferred_model_id_for_route`
 - :func:`model_alias_for_mode`
-- :func:`router_model_alias`
 - :func:`render_pack_list`
 - :func:`render_modes_list`
 - :func:`render_operations_list`
@@ -238,17 +236,7 @@ def _last_turn_context_dict(runtime: HostRuntime) -> dict[str, Any] | None:
     return dataclasses.asdict(ctx)
 
 
-def _last_router_debug(runtime: HostRuntime) -> dict[str, Any] | None:
-    """Return the last router debug payload from the runtime."""
-    return runtime.last_router_debug
-
-
 # ── Mode / model alias helpers ───────────────────────────────────────
-
-
-def router_model_alias() -> str:
-    """Return the model alias used for routing."""
-    return "router"
 
 
 def model_alias_for_mode(
@@ -262,7 +250,7 @@ def model_alias_for_mode(
     that explicit per-mode model reference is returned directly so the caller
     resolves the concrete model rather than falling back to a designation.
     Otherwise the hardcoded designation map is consulted (e.g. "default",
-    "deep", "router").
+    "deep").
     """
     if manifest is not None:
         mode_model_ref = manifest.mode_models.get(mode_id.strip().lower())
@@ -545,14 +533,6 @@ def render_debug_self(runtime: HostRuntime) -> str:
     return "\n".join(lines)
 
 
-def render_debug_router(runtime: HostRuntime) -> str:
-    """Render routing diagnostics for ``/debug router``."""
-    payload = _last_router_debug(runtime)
-    if payload is None:
-        return "No routing diagnostics are available yet."
-    return "## Router Debug\n\n```json\n" + json.dumps(payload, indent=2) + "\n```"
-
-
 def render_runtime_settings(runtime: HostRuntime) -> str:
     """Render effective runtime settings for ``/settings``."""
     return "\n".join(
@@ -615,11 +595,12 @@ def format_help() -> str:
             "- /deep <request> routes through default mode on the deep-designated model.",
             "- /pack list|enable|disable|install|uninstall manages pack activation "
             "and runtime installs (restart required after changes).",
-            "- Natural-language turns pass through the router planner first.",
+            "- Natural-language turns route directly to the current mode; "
+            "the model hands off mid-turn via the transition_stage tool.",
             "- /help capabilities shows the runtime capability snapshot.",
             "- /settings shows effective profile/timezone/debug/log-level runtime settings.",
             "- /tokens shows detailed session token breakdown by model, mode, and stage.",
-            "- /debug context|capabilities|self|router shows local diagnostics.",
+            "- /debug context|capabilities|self shows local diagnostics.",
             "- /consolidate (or /slice) runs the explicit thread/memory compaction slice.",
             "- /intake runs one intake tick (collect signals, process, write state) in-process.",
             "- /pack list|enable|disable|install|uninstall manages packs.",
@@ -720,7 +701,7 @@ def handle_debug_command(
     if subcommand in {"", "help"}:
         response_text = (
             "Supported debug commands: "
-            "/debug context, /debug capabilities, /debug self, /debug router"
+            "/debug context, /debug capabilities, /debug self"
         )
     elif subcommand == "context":
         response_text = render_debug_context(runtime)
@@ -728,12 +709,10 @@ def handle_debug_command(
         response_text = render_capability_debug(runtime)
     elif subcommand == "self":
         response_text = render_debug_self(runtime)
-    elif subcommand == "router":
-        response_text = render_debug_router(runtime)
     else:
         response_text = (
             f"Unknown debug command '{subcommand}'. "
-            "Supported: context, capabilities, self, router."
+            "Supported: context, capabilities, self."
         )
     return handle_simple_command(runtime, message, "debug", response_text)
 

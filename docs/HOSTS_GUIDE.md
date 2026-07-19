@@ -156,7 +156,7 @@ Model selection is intentionally small and explicit.
 - Active manifest path: `<data-dir>/models.yaml`.
 - Proposal manifest path: `<data-dir>/models.proposed.yaml`.
 - Supported providers: `azure_openai`, `openai`, `anthropic`, `ollama`, `google`.
-- Supported designations: `router`, `default`, `deep`, `reasoning`.
+- Supported designations: `default`, `deep`, `reasoning`.
 
 Model manifests are now generated and managed through host commands:
 
@@ -177,7 +177,7 @@ mode_models:
 models:
   - model_id: gpt-chat-latest
     provider: azure_openai
-    designations: [router, default]
+    designations: [default]
 
   - model_id: gemma4:latest
     provider: ollama

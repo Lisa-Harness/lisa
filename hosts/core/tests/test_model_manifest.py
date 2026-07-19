@@ -22,7 +22,7 @@ def test_load_manifest_reads_designations_and_models(tmp_path: Path) -> None:
             models:
               - model_id: test-router
                 provider: ollama
-                designations: [router, default]
+                designations: [default]
               - model_id: test-deep
                 provider: ollama
                 reasoning_model: true
@@ -35,7 +35,6 @@ def test_load_manifest_reads_designations_and_models(tmp_path: Path) -> None:
     manifest = model_manifest.load_model_manifest(manifest_file)
 
     assert len(manifest.models) >= _MIN_EXPECTED_MODELS
-    assert manifest.designated("router") is not None
     assert manifest.designated("default") is not None
     assert manifest.designated("reasoning") is not None
     assert manifest.designated("deep") is not None
@@ -103,7 +102,7 @@ def test_load_manifest_accepts_anthropic_ollama_and_google_providers(tmp_path: P
             models:
               - model_id: claude-3-5-sonnet
                 provider: anthropic
-                designations: [router, default]
+                designations: [default]
               - model_id: llama3.1
                 provider: ollama
                 designations: [deep]
@@ -116,7 +115,7 @@ def test_load_manifest_accepts_anthropic_ollama_and_google_providers(tmp_path: P
 
     manifest = model_manifest.load_model_manifest(manifest_file)
 
-    assert manifest.designated("router") is not None
+    assert manifest.designated("default") is not None
     assert manifest.designated("deep") is not None
     google_model = manifest.find_model("gemini-2.5-flash")
     assert google_model is not None

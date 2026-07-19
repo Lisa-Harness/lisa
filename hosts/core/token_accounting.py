@@ -143,20 +143,17 @@ def apply_turn_usage(
     model_id: str = "",
     mode_id: str = "",
     stage_id: str = "",
-    router_routing: dict[str, Any] | None = None,
 ) -> None:
     """Persist turn and session token counters from one completed turn result."""
     main_tokens = _extract_main_tokens(result)
-    fd_tokens = _extract_router_tokens(router_routing)
 
-    turn_tokens = _combine_turn_tokens(main_tokens, fd_tokens)
+    turn_tokens = _combine_turn_tokens(main_tokens)
     _set_turn_state(state, turn_tokens)
     _accumulate_session_state(state, turn_tokens)
 
     ledger: list[dict[str, Any]] = state.setdefault("session_token_ledger", [])
     turn_index = len(ledger) + 1
 
-    _record_router_ledger(state, ledger, turn_index, fd_tokens)
     _record_main_ledger(state, ledger, turn_index, main_tokens, model_id, mode_id, stage_id)
 
 
@@ -178,61 +175,16 @@ def _extract_main_tokens(result: Any) -> dict[str, Any]:
     }
 
 
-def _extract_router_tokens(router_routing: dict[str, Any] | None) -> dict[str, Any]:
-    """Extract router planner token counts."""
-    tokens = {
-        "prompt": 0,
-        "completion": 0,
-        "total": 0,
-        "cached": 0,
-        "reasoning": 0,
-        "duration_ms": 0.0,
-        "latency_ms": 0,
-        "model_id": "",
-    }
-    if not isinstance(router_routing, dict):
-        return tokens
-    tokens["prompt"] = coerce_non_negative_int(router_routing.get("planner_prompt_tokens"))
-    tokens["completion"] = coerce_non_negative_int(
-        router_routing.get("planner_completion_tokens")
-    )
-    tokens["total"] = coerce_non_negative_int(router_routing.get("planner_total_tokens"))
-    if tokens["total"] <= 0:
-        tokens["total"] = tokens["prompt"] + tokens["completion"]
-    tokens["cached"] = coerce_non_negative_int(router_routing.get("planner_cached_tokens"))
-    tokens["reasoning"] = coerce_non_negative_int(router_routing.get("planner_reasoning_tokens"))
-    tokens["duration_ms"] = coerce_non_negative_float(router_routing.get("planner_duration_ms"))
-    tokens["latency_ms"] = coerce_non_negative_int(router_routing.get("planner_latency_ms"))
-    tokens["model_id"] = _extract_router_model_id(router_routing)
-    return tokens
-
-
-def _extract_router_model_id(router_routing: dict[str, Any]) -> str:
-    """Extract the resolved model ID from the router debug dict.
-
-    The debug dict has ``resolved_model`` as a nested dict with ``model_id``,
-    not a flat ``resolved_model_id`` key. Check both shapes for safety.
-    """
-    # Nested shape (from routing._resolve_planner_model)
-    resolved_model = router_routing.get("resolved_model")
-    if isinstance(resolved_model, dict):
-        mid = str(resolved_model.get("model_id") or "").strip()
-        if mid:
-            return mid
-    # Flat shape (from run_context['router_route'])
-    return str(router_routing.get("resolved_model_id") or "").strip()
-
-
-def _combine_turn_tokens(main: dict[str, Any], fd: dict[str, Any]) -> dict[str, Any]:
-    """Combine main and router token counts into turn totals."""
+def _combine_turn_tokens(main: dict[str, Any]) -> dict[str, Any]:
+    """Return the turn token totals from the main completion counters."""
     return {
-        "prompt": main["prompt"] + fd["prompt"],
-        "completion": main["completion"] + fd["completion"],
-        "total": main["total"] + fd["total"],
-        "cached": main["cached"] + fd["cached"],
-        "reasoning": main["reasoning"] + fd["reasoning"],
-        "duration_ms": main["duration_ms"] + fd["duration_ms"],
-        "latency_ms": main["latency_ms"] + fd["latency_ms"],
+        "prompt": main["prompt"],
+        "completion": main["completion"],
+        "total": main["total"],
+        "cached": main["cached"],
+        "reasoning": main["reasoning"],
+        "duration_ms": main["duration_ms"],
+        "latency_ms": main["latency_ms"],
     }
 
 
@@ -270,56 +222,6 @@ def _accumulate_session_state(state: dict[str, Any], turn: dict[str, Any]) -> No
     state["session_latency_ms"] = (
         coerce_non_negative_int(state.get("session_latency_ms", 0)) + turn["latency_ms"]
     )
-
-
-def _record_router_ledger(
-    state: dict[str, Any],
-    ledger: list[dict[str, Any]],
-    turn_index: int,
-    fd: dict[str, Any],
-) -> None:
-    """Record router ledger entry and breakdowns if router tokens exist."""
-    if fd["total"] <= 0 and fd["duration_ms"] <= 0:
-        return
-    logger.debug(
-        "recording router ledger entry: model=%s prompt=%d completion=%d total=%d",
-        fd["model_id"] or "router",
-        fd["prompt"],
-        fd["completion"],
-        fd["total"],
-    )
-    ledger.append(
-        {
-            "turn": turn_index,
-            "model_id": fd["model_id"] or "router",
-            "mode_id": "router",
-            "stage_id": "routing",
-            "prompt_tokens": fd["prompt"],
-            "completion_tokens": fd["completion"],
-            "total_tokens": fd["total"],
-            "cached_tokens": fd["cached"],
-            "reasoning_tokens": fd["reasoning"],
-            "duration_ms": fd["duration_ms"],
-            "latency_ms": fd["latency_ms"],
-        }
-    )
-    model_key = fd["model_id"] or "router"
-    if model_key != "-":
-        _accumulate_breakdown(state, "model_token_totals", model_key, **_fd_breakdown_kwargs(fd))
-    _accumulate_breakdown(state, "mode_token_totals", "router", **_fd_breakdown_kwargs(fd))
-
-
-def _fd_breakdown_kwargs(fd: dict[str, Any]) -> dict[str, Any]:
-    """Convert router token dict to _accumulate_breakdown kwargs."""
-    return {
-        "prompt": fd["prompt"],
-        "completion": fd["completion"],
-        "total": fd["total"],
-        "cached": fd["cached"],
-        "reasoning": fd["reasoning"],
-        "duration_ms": fd["duration_ms"],
-        "latency_ms": fd["latency_ms"],
-    }
 
 
 def _record_main_ledger(

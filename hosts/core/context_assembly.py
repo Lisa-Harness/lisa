@@ -112,7 +112,7 @@ def handoff_note(
     if deep_route:
         return "explicit /deep route handoff to deep-designated model"
     if mode_id == "default" and not raw_message.lstrip().startswith("/"):
-        return "natural-language intent parsed by router, executing on default model"
+        return "natural-language intent routed to default model (mid-turn handoff via transition_stage)"
     if raw_message.lstrip().startswith("/"):
         return f"explicit command route handoff to {preferred_model_id} model selection"
     return "default routing handoff"

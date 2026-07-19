@@ -518,9 +518,10 @@ designations:
 | `deep` | `/deep` prefix |
 | `reasoning` | Reasoning-heavy modes |
 
-The old `router` designation is no longer used — there is no separate planner
-model. The `default` model handles routing via `transition_stage` tool calls
-during the normal turn.
+There is no separate planner model: natural-language turns route directly
+to the current mode, and the `default` model hands off mid-turn via
+`transition_stage` tool calls. The legacy `router` designation was removed
+in the unified-FSM cutover — manifests carrying it will fail validation.
 
 Hosts manage manifests through commands:
 

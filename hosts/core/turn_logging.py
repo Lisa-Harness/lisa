@@ -88,15 +88,14 @@ def build_log_record(
     payload: dict[str, Any],
     ctx: dict[str, Any],
     debug_payload: dict[str, Any] | None = None,
-    last_router_debug: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Assemble one JSONL log record, or return ``None`` if filtered out.
 
     The caller is responsible for level normalisation and threshold
     checking.  This function only assembles the record dict.
 
-    When *ctx*["log_level"] is ``"debug"`` and *debug_payload* (or
-    *last_router_debug*) is available, the debug block is attached.
+    When *ctx*["log_level"] is ``"debug"`` and *debug_payload* is available,
+    the debug block is attached.
     """
     record: dict[str, Any] = {
         "logged_at_utc": datetime.now(UTC).isoformat(),
@@ -108,8 +107,6 @@ def build_log_record(
 
     if ctx.get("log_level") == "debug":
         debug_data = dict(debug_payload or {})
-        if "last_router_debug" not in debug_data and isinstance(last_router_debug, dict):
-            debug_data["last_router_debug"] = last_router_debug
         if debug_data:
             record["debug"] = debug_data
 
@@ -126,13 +123,9 @@ def build_turn_log_record(
     """Assemble the ``turn.completed`` log payload from a turn context."""
     response_chars = len(response_text)
     model_info = _extract_model_info(context)
-    router_info = _extract_router_info(context)
     completion_info = _extract_completion_info(context, coerce_int)
 
     mode_model = _format_model_label(model_info["model_id"], model_info["model_provider"])
-    router_model = _format_model_label(
-        router_info["model_id"], router_info["model_provider"]
-    )
 
     return {
         "type": "little_lisa_turn",
@@ -141,17 +134,9 @@ def build_turn_log_record(
         "mode_model_id": model_info["model_id"],
         "mode_model_provider": model_info["model_provider"],
         "mode_reasoning_model": model_info["reasoning_model"],
-        "router_model": router_model,
-        "router_model_id": router_info["model_id"],
-        "router_model_provider": router_info["model_provider"],
-        "router_reasoning_model": router_info["reasoning_model"],
         "mode_prompt_tokens": completion_info["prompt_tokens"],
         "mode_completion_tokens": completion_info["completion_tokens"],
         "mode_total_tokens": completion_info["total_tokens"],
-        "router_prompt_tokens": router_info["prompt_tokens"],
-        "router_completion_tokens": router_info["completion_tokens"],
-        "router_total_tokens": router_info["total_tokens"],
-        "router_completion_attempt_count": router_info["attempt_count"],
         "response": {
             "text": response_text,
             "chars": response_chars,
@@ -193,41 +178,6 @@ def _extract_model_info(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _extract_router_info(context: dict[str, Any]) -> dict[str, Any]:
-    """Extract router model and token info from context."""
-    router_debug = context.get("router_debug") if isinstance(context, dict) else None
-    model_id = ""
-    model_provider = ""
-    reasoning_model = False
-    prompt_tokens = 0
-    completion_tokens = 0
-    total_tokens = 0
-    attempt_count = 0
-
-    if isinstance(router_debug, dict):
-        candidate_payload = router_debug.get("resolved_model")
-        if isinstance(candidate_payload, dict):
-            model_id = str(candidate_payload.get("model_id") or "")
-            model_provider = str(candidate_payload.get("provider") or "")
-            reasoning_model = bool(candidate_payload.get("reasoning_model", False))
-        prompt_tokens = coerce_int_or_zero(router_debug, "planner_prompt_tokens")
-        completion_tokens = coerce_int_or_zero(router_debug, "planner_completion_tokens")
-        total_tokens = coerce_int_or_zero(router_debug, "planner_total_tokens")
-        planner_attempts = router_debug.get("planner_completion_attempts")
-        if isinstance(planner_attempts, list):
-            attempt_count = len(planner_attempts)
-
-    return {
-        "model_id": model_id,
-        "model_provider": model_provider,
-        "reasoning_model": reasoning_model,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": total_tokens,
-        "attempt_count": attempt_count,
-    }
-
-
 def _extract_completion_info(context: dict[str, Any], coerce_int: Any) -> dict[str, Any]:
     """Extract completion token and tool-call counts from context."""
     completion = context.get("completion") if isinstance(context, dict) else None
@@ -258,15 +208,6 @@ def _format_model_label(model_id: str, model_provider: str) -> str:
     if model_provider and model_id:
         return f"{model_provider}:{model_id}"
     return model_id
-
-
-def coerce_int_or_zero(data: dict[str, Any], key: str) -> int:
-    """Safely coerce a dict value to int, defaulting to 0."""
-    value = data.get(key)
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
 
 
 def build_turn_log_debug_payload(

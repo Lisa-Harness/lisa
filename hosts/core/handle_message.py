@@ -11,10 +11,10 @@ This is the core ``handle_message`` entry point that all transport hosts
     ``lisa.extensions.host_commands`` and dispatched after built-in host
     commands.
 2. **Model turn routing** — for non-command messages: checks for ``/deep``
-   prefix, parses slash-command routes, plans routes for natural
-   language, tries the router direct-response shortcut, tries the
-   router clarification, then executes the mode turn via
-   ``kernel.turn_runner.run_turn``.
+   prefix, parses slash-command routes, then routes natural language
+   directly to the current mode and executes the turn via
+   ``kernel.turn_runner.run_turn``. Mode handoff happens mid-turn through
+   the ``transition_stage`` tool — there is no separate router planner.
 3. **Turn execution** — builds ``TurnHooks`` via
    ``hosts.core.turn_hooks_builder.build_turn_hooks``, calls ``run_turn``,
    persists thread entries, updates token counters, and emits transport
@@ -46,7 +46,6 @@ from hosts.core.commands import (
     format_operation_error,
     format_token_stats,
     format_unsupported_mode,
-    router_model_alias,
     handle_debug_command,
     handle_help_command,
     handle_intake_command,
@@ -168,7 +167,6 @@ def _apply_turn_usage(
     model_id: str = "",
     mode_id: str = "",
     stage_id: str = "",
-    router_routing: dict[str, Any] | None = None,
 ) -> None:
     """Apply turn usage via the dict-based token_accounting module."""
     state = _token_state_dict(runtime)
@@ -178,7 +176,6 @@ def _apply_turn_usage(
         model_id=model_id,
         mode_id=mode_id,
         stage_id=stage_id,
-        router_routing=router_routing,
     )
     _sync_token_state(runtime, state)
 
@@ -221,7 +218,7 @@ async def handle_message(
     if cmd_result is not None:
         return cmd_result
 
-    # ── Model turn (router + run_turn) ────────────────────────
+    # ── Model turn (mode dispatch + run_turn) ────────────────────────
     try:
         response_text = await _route_model_turn(runtime, message, tport)
     except OperationExecutionError as exc:
@@ -563,23 +560,6 @@ async def _execute_mode_turn(
         mode=mode,
     )
 
-    # Inject routing context for natural-language turns.
-    if not message.lstrip().startswith("/"):
-        run_context["router_route"] = {
-            "selected_mode_id": mode.mode_id,
-            "normalized_query": query or message,
-            "model_alias": router_model_alias(),
-            "resolved_model_id": resolved_model.model_id,
-            "resolved_model_provider": resolved_model.provider,
-            "reasoning": "unified_fsm_handoff",
-            "confidence_score": 1.0,
-            "fallback_used": False,
-            "fallback_reason": "",
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        }
-
     _set_turn_context(runtime, run_context)
 
     # Emit stage callback.
@@ -744,8 +724,5 @@ def _set_turn_context(runtime: HostRuntime, context: dict[str, Any]) -> None:
         else None,
         completion=context.get("completion")
         if isinstance(context.get("completion"), dict)
-        else None,
-        router_debug=context.get("router_debug")
-        if isinstance(context.get("router_debug"), dict)
         else None,
     )

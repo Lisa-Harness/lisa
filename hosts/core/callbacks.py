@@ -45,7 +45,7 @@ class TransportCallbacks(Protocol):
     async def on_stage(self, label: str, data: dict[str, Any] | None = None) -> None:
         """Notify the transport of a stage transition in the turn pipeline.
 
-        Called at key pipeline points: ``"router"``, ``"model_call"``,
+        Called at key pipeline points: ``"model_call"``,
         ``"tool_loop"``, ``"post_turn"``, ``"slice"``. The optional ``data``
         dict carries stage-specific metadata (model id, provider, iteration
         count, etc.).

@@ -224,7 +224,7 @@ def _resolve_model_manifest(ctx: OperationExecutionContext) -> ModelManifest | N
         return None
     try:
         # The manifest is typically loaded by the host; we try common designations
-        for designation in ("default", "router", "fast_chat"):
+        for designation in ("default", "fast_chat"):
             model = ctx.resolve_model_fn(designation)
             if model is not None:
                 # We got a model entry; the manifest itself isn't directly

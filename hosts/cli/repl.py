@@ -187,13 +187,13 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
     # resolved model before the first turn is executed. When start_mode
     # is set in the session context, use it instead of "default".
     from hosts.core.commands import set_runtime_route_preview
-    from hosts.core.commands import router_model_alias, model_alias_for_mode
+    from hosts.core.commands import model_alias_for_mode
 
     initial_mode = runtime.start_mode_id
     initial_model_alias = (
         model_alias_for_mode(initial_mode, manifest=runtime.manifest)
         if runtime.start_mode_id
-        else router_model_alias()
+        else "default"
     )
     set_runtime_route_preview(
         runtime,
@@ -216,7 +216,7 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
     console.print(
         Panel(
             "Type /help, /help capabilities, /debug context, "
-            "/debug router, /pack list, /models discover, /search <query>, /deep <query>, or /quit.",
+            "/pack list, /models discover, /search <query>, /deep <query>, or /quit.",
             title="Session",
             border_style=STYLE_BORDER_SESSION,
         )
@@ -523,15 +523,14 @@ def _reset_runtime_after_cancelled_turn(runtime: HostRuntime) -> None:
       content-MCP registration — a dependency that is not safe in a
       mid-interrupt teardown path (and breaks unit tests that exercise
       the cancel handler without a full host boot).
-    - Clear ``last_turn_context``/``last_router_debug`` so stale
-      half-built state isn't surfaced by ``/debug context``.
+    - Clear ``last_turn_context`` so stale half-built state isn't surfaced
+      by ``/debug context``.
 
     This does NOT touch the MCP pool, the thread, or session-level
     accumulators (turn/error/cancelled counts are updated by the caller).
     """
     runtime.tokens.reset_turn()
     runtime.last_turn_context = None
-    runtime.last_router_debug = None
     runtime.current_mode_id = runtime.start_mode_id
     runtime.current_stage_id = "-"
     runtime.next_model_id = "-"

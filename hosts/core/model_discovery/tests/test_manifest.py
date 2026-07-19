@@ -28,7 +28,6 @@ class TestBuildManifestPayload:
         # discover no longer emits mode_models; default role is via designations
         assert "mode_models" not in payload
         default_row = next(r for r in payload["models"] if r["model_id"] == "gpt-4o-mini")
-        assert "router" in default_row["designations"]
         assert "default" in default_row["designations"]
 
     def test_deep_from_reasoning(self) -> None:

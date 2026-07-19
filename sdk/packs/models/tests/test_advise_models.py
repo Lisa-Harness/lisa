@@ -119,7 +119,7 @@ version: 1
 models:
   - model_id: gpt-chat-latest
     provider: openai
-    designations: [default, router]
+    designations: [default]
   - model_id: o3
     provider: openai
     reasoning_model: true
@@ -407,7 +407,7 @@ class TestExecuteOperation:
             "models:\n"
             "  - model_id: gpt-chat-latest\n"
             "    provider: openai\n"
-            "    designations: [default, router]\n"
+            "    designations: [default]\n"
             "  - model_id: o3\n"
             "    provider: openai\n"
             "    reasoning_model: true\n"

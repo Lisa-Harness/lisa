@@ -77,7 +77,7 @@ def _make_runtime(tmp_path: Path, **config_kwargs) -> HostRuntime:
                 "models:",
                 "  - model_id: gemma3:latest",
                 "    provider: ollama",
-                "    designations: [router, default]",
+                "    designations: [default]",
                 "  - model_id: deepseek-r1:latest",
                 "    provider: ollama",
                 "    reasoning_model: true",
@@ -394,24 +394,6 @@ async def test_debug_context_reports_last_turn_sections(tmp_path: Path) -> None:
     assert "brief" in output.text
 
 
-@pytest.mark.asyncio
-async def test_debug_router_reports_last_planner_payload(tmp_path: Path) -> None:
-    runtime = _make_runtime(tmp_path)
-    runtime.set_last_router_debug(
-        {
-            "selected_mode_id": "ponder",
-            "planner_reasoning": "explicit think-about wording",
-            "fallback_used": False,
-        }
-    )
-    transport = NullTransport()
-    output = await handle_message(runtime, "/debug router", transport)
-
-    assert "Router Debug" in output.text
-    assert "ponder" in output.text
-    assert "planner_reasoning" in output.text
-
-
 # ── System prompt assembly ────────────────────────────────────────────
 
 
@@ -468,7 +450,7 @@ def test_assemble_dynamic_user_context_skips_user_context_when_absent(
     assert "user_slug: none" in context
 
 
-# ── handle_message router routing ─────────────────────────────────────
+# ── handle_message mode routing ───────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -617,7 +599,7 @@ async def test_start_mode_non_default_still_bypasses_to_pinned_mode(
             "models:",
             "  - model_id: gemma3:latest",
             "    provider: ollama",
-            "    designations: [router, default]",
+            "    designations: [default]",
         ]),
         encoding="utf-8",
     )
@@ -849,8 +831,8 @@ async def test_tokens_command_returns_detailed_stats() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="router+mode token context now on runtime.last_turn_context; needs deep migration")
-async def test_handle_message_surfaces_router_and_mode_token_context(
+@pytest.mark.xfail(reason="mode token context now on runtime.last_turn_context; needs deep migration")
+async def test_handle_message_surfaces_mode_token_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pass
@@ -899,7 +881,7 @@ def test_resolve_model_supports_designations_and_concrete_ids(tmp_path: Path) ->
                 "  - model_id: gemma3:latest",
                 "    provider: ollama",
                 "    context_window: 65536",
-                "    designations: [router, default]",
+                "    designations: [default]",
                 "  - model_id: deepseek-r1:latest",
                 "    provider: ollama",
                 "    reasoning_model: true",
@@ -909,25 +891,21 @@ def test_resolve_model_supports_designations_and_concrete_ids(tmp_path: Path) ->
         encoding="utf-8",
     )
 
-    router_model = resolve_little_lisa_model(
-        "router", runtime_state={}, data_dir=tmp_path
-    )
-    router_model_id = router_model.model_id
-    default_model_id = resolve_little_lisa_model(
+    default_model = resolve_little_lisa_model(
         "default", runtime_state={}, data_dir=tmp_path
-    ).model_id
+    )
+    default_model_id = default_model.model_id
     deep_model_id = resolve_little_lisa_model(
         "deep", runtime_state={}, data_dir=tmp_path
     ).model_id
 
-    assert router_model_id
     assert default_model_id
     assert deep_model_id
-    assert router_model.context_window == 65536
-    resolved_router = resolve_little_lisa_model(
-        router_model_id, runtime_state={}, data_dir=tmp_path
+    assert default_model.context_window == 65536
+    resolved_default = resolve_little_lisa_model(
+        default_model_id, runtime_state={}, data_dir=tmp_path
     ).model_id
-    assert resolved_router == router_model_id
+    assert resolved_default == default_model_id
 
 
 def test_resolve_model_rejects_unknown_manifest_id(tmp_path: Path) -> None:
@@ -938,7 +916,7 @@ def test_resolve_model_rejects_unknown_manifest_id(tmp_path: Path) -> None:
                 "models:",
                 "  - model_id: gemma3:latest",
                 "    provider: ollama",
-                "    designations: [router, default]",
+                "    designations: [default]",
             ]
         ),
         encoding="utf-8",
@@ -1085,7 +1063,7 @@ def test_simple_help_mentions_quit_command() -> None:
 # ── Turn context ──────────────────────────────────────────────────────
 
 
-def test_build_turn_context_marks_router_handoff() -> None:
+def test_build_turn_context_marks_default_mode_handoff() -> None:
     mode = WorkflowModeConfig(
         mode_id="default",
         start_stage_id="default",
@@ -1096,7 +1074,7 @@ def test_build_turn_context_marks_router_handoff() -> None:
         mode_id="default",
         query="hello there",
         deep_route=False,
-        preferred_model_id="router",
+        preferred_model_id="default",
         resolved_model=StubModelDefinition(
             model_id="gpt-4o",
             provider="openai",
@@ -1104,8 +1082,8 @@ def test_build_turn_context_marks_router_handoff() -> None:
         mode=mode,
     )
 
-    assert context["preferred_model_id"] == "router"
-    assert "router" in str(context["handoff"])
+    assert context["preferred_model_id"] == "default"
+    assert "default" in str(context["handoff"])
 
 
 # ── Turn log / log event (no-op stubs in core host) ──────────────────
@@ -1344,22 +1322,6 @@ async def test_complete_live_stream_no_stage_callbacks_for_text_mode(
 
 
 # ── handle_message model turns ───────────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(reason="handle_message now takes (runtime, msg, transport); needs deep migration")
-async def test_handle_message_uses_explicit_router_model_override(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(reason="handle_message now takes (runtime, msg, transport); needs deep migration")
-async def test_handle_message_does_not_force_router_model_for_explicit_mode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
 
 
 @pytest.mark.asyncio

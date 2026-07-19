@@ -89,7 +89,6 @@ def test_process_repl_turn_keyboard_interrupt_returns_prompt(
     assert runtime.next_model_provider == "-"
     # last_turn_context cleared so a stale half-built context isn't surfaced.
     assert runtime.last_turn_context is None
-    assert runtime.last_router_debug is None
 
 
 def test_process_repl_turn_cancelled_error_returns_prompt(
@@ -204,7 +203,6 @@ def test_reset_runtime_after_cancelled_turn_clears_per_turn_state(
     runtime.tokens.turn_prompt_tokens = 123
     runtime.tokens.turn_completion_tokens = 456
     runtime.last_turn_context = object()  # type: ignore[assignment]
-    runtime.last_router_debug = {"partial": True}
     runtime.current_mode_id = "search"
     runtime.next_model_id = "stale-model"
 
@@ -213,7 +211,6 @@ def test_reset_runtime_after_cancelled_turn_clears_per_turn_state(
     assert runtime.tokens.turn_prompt_tokens == 0
     assert runtime.tokens.turn_completion_tokens == 0
     assert runtime.last_turn_context is None
-    assert runtime.last_router_debug is None
     assert runtime.current_mode_id == runtime.start_mode_id
 
 

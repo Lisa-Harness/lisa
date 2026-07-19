@@ -97,7 +97,6 @@ class TurnContext:
     handoff: str = ""
     turn_input: dict[str, Any] | None = None
     completion: dict[str, Any] | None = None
-    router_debug: dict[str, Any] | None = None
 
 
 class HostRuntime:
@@ -203,7 +202,7 @@ class HostRuntime:
 
         # ── Last-turn diagnostics ─────────────────────────────────────
         self.last_turn_context: TurnContext | None = None
-        self.last_router_debug: dict[str, Any] | None = None
+
 
         # ── Restart state ─────────────────────────────────────────────
         self.restart_required: bool = False
@@ -664,9 +663,6 @@ class HostRuntime:
 
     def set_last_turn_context(self, ctx: TurnContext) -> None:
         self.last_turn_context = ctx
-
-    def set_last_router_debug(self, payload: dict[str, Any]) -> None:
-        self.last_router_debug = payload
 
     # ── Restart ───────────────────────────────────────────────────────
 
