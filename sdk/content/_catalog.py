@@ -215,6 +215,7 @@ def _load_one_mode(
             str(tag): [str(k) for k in keywords]
             for tag, keywords in (front_matter.get("routing_intent_keywords") or {}).items()
         },
+        "satisfies_intents": [str(t) for t in (front_matter.get("satisfies_intents") or [])],
         "command_pattern": str(front_matter.get("command_pattern", "") or ""),
         "require_query": bool(front_matter.get("require_query", False)),
         "entry_operation_ids": [str(o) for o in (front_matter.get("entry_operation_ids") or [])],

@@ -36,10 +36,10 @@ from typing import Any, cast
 
 from kernel.approval import ApprovalInvocation, ApprovalRequired, render_approval_request
 from kernel.capability_manifest import compile_capability_manifest
+from kernel.context.models import ContextBudgetSnapshot
 from kernel.ipsar_fsm import (
     apply_transition,
     get_mode_system_intro,
-    get_routable_mode_ids,
     get_routing_targets,
     get_transition_tool_schema,
     get_workflow_catalog,
@@ -50,7 +50,6 @@ from kernel.ipsar_fsm import (
     run_mode_entry_operations,
     run_mode_pre_turn_operations,
 )
-from kernel.context.models import ContextBudgetSnapshot
 from kernel.models import (
     CallLedger,
     CapabilityManifest,
@@ -65,6 +64,7 @@ from kernel.models import (
     ToolExecutionContext,
     ToolResult,
     TurnBudget,
+    WorkflowModeConfig,
     WorkflowTransitionRequest,
 )
 from kernel.openai_function_tools import build_strict_openai_function_tool
@@ -1357,6 +1357,7 @@ async def _run_turn_inner(
         query=query,
         capability_manifest=capability_manifest,
         routing_targets=get_routing_targets(mode_id) if mode_config else [],
+        mode_config=mode_config,
     )
     if routing_hint:
         system_prompt = system_prompt + "\n\n" + routing_hint
@@ -2136,8 +2137,10 @@ def _detect_query_intents(
         if matched:
             continue
         # Check routing_intent_keywords (per-tag substring match). Each
-        # keyword only attributes its associated tag, so a "latest" match
-        # only triggers "research", not "reasoning".
+        # keyword only attributes its associated tag, so a keyword match for
+        # one tag does not falsely trigger a different tag the same mode
+        # declares. The tag vocabulary is pack-authored and opaque to the
+        # kernel.
         for tag, keywords in mode_config.routing_intent_keywords.items():
             for keyword in keywords:
                 if keyword in query_lower:
@@ -2158,20 +2161,33 @@ def _compute_capability_routing_hint(
     *,
     mode_id: str,
     query: str,
-    capability_manifest: CapabilityManifest,
+    capability_manifest: CapabilityManifest,  # retained for API stability
     routing_targets: list[str],
+    mode_config: WorkflowModeConfig | None = None,
 ) -> str:
     """Compute a proactive routing hint when the current mode lacks tools.
 
-    Data-driven: the kernel does not hardcode mode-specific keywords or
-    intent semantics. Each routing target declares its own
-    ``fast_path_patterns`` (what queries it handles) and
-    ``routing_intent_tags`` (what intents it covers) in its _mode.md front
-    matter. This function:
+    Tag-blind and prose-blind: the kernel does not name, hardcode, or
+    hard-author any intent tag (research, reasoning, write, learn, ...) or
+    any steering prose. Intent tags are opaque pack-authored vocabulary;
+    routing prose is pack-authored via each target's ``routing_hint``
+    template. Each routing target declares its own ``fast_path_patterns``
+    (what queries it handles) and ``routing_intent_tags`` (what intents it
+    covers) in its _mode.md front matter. The *current* mode symmetrically
+    declares ``satisfies_intents`` (what intents it handles in-place). This
+    function:
 
     1. Detects query intents by matching against all routing targets' patterns.
-    2. Checks if the current mode already satisfies those intents (via the
-       capability manifest) — if so, no hint (zero tokens).
+       The returned set is opaque strings — the kernel never inspects its
+       members.
+    2. Computes the gap as the set difference of detected intents minus the
+       current mode's ``satisfies_intents``. If the gap is empty, no hint
+       (zero tokens). The live capability manifest is NOT consulted for the
+       gap check: the coarse ``kind == "tool"`` heuristic it implied treated
+       any tool-bearing mode as satisfying every intent, which suppressed
+       handoffs from tool-rich modes that lacked the specific intent's tools
+       (e.g. coding mode falling back to coding_create_worktree instead of
+       handing off to markdown for a write-a-document request).
     3. Finds routing targets whose ``routing_intent_tags`` cover all detected
        intents — if exactly one does, suggest a single handoff.
     4. If multiple targets each cover a disjoint subset of intents, suggest a
@@ -2191,19 +2207,24 @@ def _compute_capability_routing_hint(
     )
 
     # ── 2. Check if the current mode already satisfies detected intents ──
-    available_kinds: set[str] = set()
-    available_capability_ids: set[str] = set()
-    for entry in capability_manifest.entries:
-        available_kinds.add(entry.kind)
-        available_capability_ids.add((entry.capability_id or "").lower())
-    has_search_capability = any("search" in cid for cid in available_capability_ids)
-    has_tool_capability = "tool" in available_kinds
-
-    needs_research = "research" in detected_intents and not has_search_capability
-    needs_reasoning = "reasoning" in detected_intents
-    needs_write = "write" in detected_intents and not has_tool_capability
-    needs_learn = "learn" in detected_intents and not has_tool_capability
-    has_gap = needs_research or needs_reasoning or needs_write or needs_learn
+    # Declarative and tag-blind: the kernel works over opaque intent-tag
+    # sets. It never names any specific intent (research, reasoning, write,
+    # learn, ...) — those are pack-authored vocabulary. The current mode
+    # authors ``satisfies_intents`` in its _mode.md front matter; the
+    # detected intents it does not claim to satisfy are the gap. Default
+    # empty (e.g. ``default`` mode) means every detected intent is a gap,
+    # so a handoff hint is offered. The live capability manifest is NOT
+    # consulted for the gap check: the coarse ``kind == "tool"`` heuristic
+    # it implied treated any tool-bearing mode as satisfying every intent,
+    # which suppressed handoffs from tool-rich modes that lacked the
+    # specific intent's tools (e.g. coding mode falling back to
+    # coding_create_worktree instead of handing off to markdown for a
+    # write-a-document request).
+    current_satisfied: set[str] = set(
+        mode_config.satisfies_intents if mode_config is not None else []
+    )
+    gap_intents = detected_intents - current_satisfied
+    has_gap = bool(gap_intents)
     if not detected_intents and not has_gap:
         return ""
     if detected_intents and not has_gap:
@@ -2255,19 +2276,14 @@ def _compute_capability_routing_hint(
     # ── 5. Single handoff to the covering target ──────────────────────
     if covering_targets:
         preferred = covering_targets[0]
-        target_config = catalog.get(preferred)
-        target_tags = set(target_config.routing_intent_tags) if target_config else set()
-        if "reasoning" in target_tags and "research" in target_tags:
-            hint = (
-                "## Routing Hint\n\n"
-                "This request pairs research (fresh/external information) with "
-                "reasoning (understand, analyze, SWOT, compare, evaluate). The "
-                f"`{preferred}` workflow mode researches then reasons — hand off "
-                f"by calling `transition_stage` with target_stage_id `{preferred}`. "
-                "Do not use the one-shot `search` action mode for this; it cannot "
-                "do the reasoning half."
-            )
-            return hint
+        # The kernel owns no routing prose. The handoff instruction is purely
+        # mechanical: name the tool (transition_stage) and the target id. Any
+        # semantic steering ("researches then reasons", "do not use the
+        # one-shot search action mode", ...) is pack-authored routing *input*
+        # — the target's routing_intent_tags / fast_path_patterns that drove
+        # the decision to pick this target — not kernel-authored routing
+        # *output*. The model reads the chosen mode's own _mode.md body after
+        # the handoff; the kernel does not narrate the mode's purpose here.
         hint = (
             "## Routing Hint\n\n"
             f"Your current mode may lack the tools needed for this request. "

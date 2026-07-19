@@ -298,6 +298,7 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "fast_path_patterns",
         "routing_intent_tags",
         "routing_intent_keywords",
+        "satisfies_intents",
         "default_intent_bridges",
         "artifact_type",
     }
@@ -642,6 +643,33 @@ def load_catalog_from_disk(
                 kw_list.append(kw)
             routing_intent_keywords[tag_str] = kw_list
 
+        # Parse satisfies_intents: intents this mode handles in-place as the
+        # *current* mode, so the proactive routing hint generator knows not
+        # to suggest a handoff for them. Symmetric counterpart to
+        # ``routing_intent_tags`` (which declares coverage when routing *to*
+        # the mode); both share the same pack-authored intent-tag vocabulary.
+        # The kernel never hardcodes mode-specific intent semantics or tool
+        # names — it only reads the mode's declared tags. Default empty means
+        # every detected intent is a gap (safe direction for modes that have
+        # not opted in, e.g. ``default``).
+        satisfies_intents_raw = mode_front_matter.get("satisfies_intents") or []
+        if not isinstance(satisfies_intents_raw, list):
+            raise WorkflowValidationError(
+                f"satisfies_intents must be a list in {mode_config_path}"
+            )
+        satisfies_intents: list[str] = []
+        for idx, raw_tag in enumerate(satisfies_intents_raw):
+            if not isinstance(raw_tag, str):
+                raise WorkflowValidationError(
+                    f"satisfies_intents[{idx}] must be a string in {mode_config_path}"
+            )
+            tag = raw_tag.strip().lower()
+            if not tag:
+                raise WorkflowValidationError(
+                    f"satisfies_intents[{idx}] cannot be empty in {mode_config_path}"
+                )
+            satisfies_intents.append(tag)
+
         # Parse default_intent_bridges: list of bridge configs from mode front-matter.
         default_intent_bridges = []
         bridges_raw = mode_front_matter.get("default_intent_bridges") or []
@@ -727,6 +755,7 @@ def load_catalog_from_disk(
             fast_path_patterns=fast_path_patterns,
             routing_intent_tags=routing_intent_tags,
             routing_intent_keywords=routing_intent_keywords,
+            satisfies_intents=satisfies_intents,
             command_pattern=command_pattern,
             require_query=require_query,
             entry_operation_ids=entry_operation_ids,

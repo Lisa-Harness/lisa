@@ -1176,6 +1176,18 @@ class WorkflowModeConfig(BaseModel):
     # Each keyword only attributes its associated tag, not all of the mode's
     # tags, so a "latest" match does not falsely trigger a "reasoning" hint.
     routing_intent_keywords: dict[str, list[str]] = Field(default_factory=dict)
+    # Intents this mode satisfies in-place when it is the *current* mode, so
+    # the proactive routing hint generator knows not to suggest a handoff for
+    # them. The symmetric counterpart to ``routing_intent_tags``: that field
+    # declares what intents a mode *covers* when routing *to* it; this field
+    # declares what intents a mode already *handles* when routing *from* it.
+    # Both share the same intent-tag vocabulary (research, reasoning, learn,
+    # write, ...) authored by packs; the kernel never hardcodes mode-specific
+    # intent semantics or tool names. Authored in _mode.md front matter under
+    # ``satisfies_intents``. Default empty means every detected intent is a
+    # gap → a handoff hint is offered (the safe direction for modes that have
+    # not opted in, e.g. ``default``).
+    satisfies_intents: list[str] = Field(default_factory=list)
     # Python regex string used by parse_route() to detect activation.
     # Must include a named group (?P<query>...) for the trailing user text.
     command_pattern: str = ""

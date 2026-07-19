@@ -13,6 +13,7 @@ from kernel.models import (
     CapabilityManifest,
     OperationExecutionContext,
     OperationResult,
+    WorkflowModeConfig,
 )
 from kernel.operations.registry import (
     execute_operation,
@@ -999,6 +1000,26 @@ def _manifest_with_search() -> CapabilityManifest:
     )
 
 
+def _mode_config(
+    *,
+    mode_id: str = "default",
+    satisfies_intents: list[str] | None = None,
+) -> WorkflowModeConfig:
+    """A minimal WorkflowModeConfig for routing-hint tests.
+
+    Only the fields the hint function reads are populated. The default
+    ``satisfies_intents=None`` → empty list (every detected intent is a
+    gap), matching the behavior of modes that have not opted in (e.g.
+    ``default``) and preserving the pre-field semantics for existing tests.
+    """
+    return WorkflowModeConfig(
+        mode_id=mode_id,
+        start_stage_id="none",
+        mode_kind="chat",
+        satisfies_intents=list(satisfies_intents) if satisfies_intents else [],
+    )
+
+
 def test_routing_hint_returns_empty_when_no_routing_targets() -> None:
     """No routing targets means no hint is injected (zero tokens)."""
     from kernel.turn_runner import _compute_capability_routing_hint
@@ -1013,7 +1034,15 @@ def test_routing_hint_returns_empty_when_no_routing_targets() -> None:
 
 
 def test_routing_hint_returns_empty_when_mode_has_search_and_no_reasoning() -> None:
-    """A mode that already has search and a pure-search query gets no hint."""
+    """A mode that already satisfies the research intent gets no hint.
+
+    The gap check is declarative: the current mode authors
+    ``satisfies_intents`` in its _mode.md front matter, and the kernel
+    believes it. The live capability manifest is no longer consulted for
+    the gap check — that coarse ``kind == "tool"`` heuristic treated any
+    tool-bearing mode as satisfying every intent, which suppressed
+    handoffs from tool-rich modes that lacked the specific intent's tools.
+    """
     from kernel.turn_runner import _compute_capability_routing_hint
 
     hint = _compute_capability_routing_hint(
@@ -1021,15 +1050,25 @@ def test_routing_hint_returns_empty_when_mode_has_search_and_no_reasoning() -> N
         query="what is the latest news on rust",
         capability_manifest=_manifest_with_search(),
         routing_targets=["default", "ponder"],
+        mode_config=_mode_config(satisfies_intents=["research"]),
     )
     assert hint == ""
 
 
 def test_routing_hint_prefers_ponder_for_research_then_reason() -> None:
     """A query pairing a research cue with a reasoning cue (understand +
-    SWOT + latest) should point to ponder, not the generic target list.
+    SWOT + latest) should hand off to ponder, not the generic target list.
+
     This is the regression case for the incident where 'latest frameworks
-    and do a SWOT' was routed to the one-shot search action mode.
+    and do a SWOT' was routed to the one-shot search action mode. The
+    kernel is a pure mapper: the decision (ponder, not search) is driven
+    entirely by the pack-authored ``routing_intent_tags`` on ponder
+    ([research, reasoning]) vs search ([research]) — ponder covers both
+    detected intents, search covers only one. The kernel emits no
+    semantic steering prose ("do not use the one-shot search action
+    mode"); it names only the mechanics (transition_stage + ponder). Any
+    such prose would be pack-authored routing *input*, not kernel-emitted
+    routing *output*.
     """
     from kernel.turn_runner import _compute_capability_routing_hint
 
@@ -1041,10 +1080,12 @@ def test_routing_hint_prefers_ponder_for_research_then_reason() -> None:
     )
     assert hint != ""
     assert "ponder" in hint
-    # Must explicitly steer away from the one-shot search action mode
-    assert "search" in hint.lower()
-    assert "one-shot" in hint.lower() or "one shot" in hint.lower()
     assert "transition_stage" in hint
+    # The kernel must not narrate the mode's purpose or steer away from
+    # other modes in its own prose — that would be pack coupling. The
+    # handoff instruction is purely mechanical.
+    assert "one-shot" not in hint.lower()
+    assert "researches then reasons" not in hint.lower()
 
 
 def test_routing_hint_detects_analyze_tradeoff_intent() -> None:
@@ -1178,3 +1219,149 @@ def test_routing_hint_forks_from_coding_mode() -> None:
     assert hint != ""
     assert "transition_stage" in hint
     assert "fork:learn,markdown" in hint
+
+
+# ── Single-intent handoff tests (satisfies_intents) ──────────────────
+#
+# The 2026-07-17 fork fix only unblocked the *two-goal* learn+markdown
+# fork from coding. A *single-intent* "write a markdown document" request
+# (no "remember" cue) should produce a single coding → markdown handoff,
+# not a fork and not an approval-gated coding_create_worktree fallback.
+# The gap check must be declarative (mode.satisfies_intents), not the
+# coarse capability-manifest "any tool kind" heuristic that treated
+# coding's 11 coding_* tools as satisfying the write intent.
+
+
+def test_routing_hint_single_handoff_coding_to_markdown() -> None:
+    """A single-intent write-markdown request from coding mode must still
+    steer to markdown, not be suppressed by coding's tool-bearing manifest.
+
+    Regression for the 2026-07-19 coding-mode worktree-approval loop
+    (single-intent variant): coding mode advertises 11 tools, all
+    ``kind="tool"``, none of which can produce a markdown document. Under
+    the old manifest-driven gap check, ``has_tool_capability = True``
+    suppressed ``needs_write``, the hint returned "" at the step-2 early
+    return, and the model fell back to the approval-gated
+    ``coding_create_worktree``. With the declarative ``satisfies_intents``
+    check, coding's declared intents (here: just "coding", explicitly NOT
+    "write") leave the write intent as a gap, the single-handoff branch
+    (step 5) fires, and the hint names markdown.
+    """
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    coding_manifest = _manifest_with_coding_tools()
+    hint = _compute_capability_routing_hint(
+        mode_id="coding",
+        query="write a markdown document of the report you just produced",
+        capability_manifest=coding_manifest,
+        routing_targets=["default", "learn", "markdown", "ponder", "search"],
+        mode_config=_mode_config(
+            mode_id="coding",
+            # Coding declares it handles coding intent in-place, NOT write.
+            # The pack authors this in coding/_mode.md; the kernel believes it.
+            satisfies_intents=["coding"],
+        ),
+    )
+    assert hint != ""
+    assert "transition_stage" in hint
+    assert "markdown" in hint
+    # Single handoff, not a fork — only one intent was detected.
+    assert "fork:" not in hint
+
+
+def test_routing_hint_suppressed_when_mode_satisfies_write_intent() -> None:
+    """If the current mode declares ``satisfies_intents: [write]``, a
+    write-markdown request produces no hint — the mode handles it in-place.
+
+    This is the symmetric counterpart: just as ``routing_intent_tags``
+    declares what a mode covers when routing *to* it, ``satisfies_intents``
+    declares what a mode handles when routing *from* it. Markdown mode
+    itself would author ``satisfies_intents: [write]``; a write request
+    issued from markdown mode should not trigger a handoff hint back to
+    itself or anywhere else.
+    """
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    hint = _compute_capability_routing_hint(
+        mode_id="markdown",
+        query="write a markdown document of the report you just produced",
+        capability_manifest=_empty_manifest(),
+        routing_targets=["default", "learn", "coding", "ponder", "search"],
+        mode_config=_mode_config(
+            mode_id="markdown",
+            satisfies_intents=["write"],
+        ),
+    )
+    assert hint == ""
+
+
+def test_routing_hint_single_handoff_fires_even_with_rich_manifest() -> None:
+    """The gap check ignores the live capability manifest entirely.
+
+    A coding-style manifest with 11 tool entries must NOT suppress the
+    write-intent gap. The declarative ``satisfies_intents`` declaration is
+    the sole source of truth. This pins the regression: the old
+    ``has_tool_capability = "tool" in available_kinds`` check read the
+    manifest and suppressed the gap for any tool-bearing mode; the new
+    check reads ``mode_config.satisfies_intents`` and is manifest-blind.
+    """
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    hint_with_rich_manifest = _compute_capability_routing_hint(
+        mode_id="coding",
+        query="draft a markdown document of the findings",
+        capability_manifest=_manifest_with_coding_tools(),
+        routing_targets=["default", "learn", "markdown", "ponder", "search"],
+        mode_config=_mode_config(mode_id="coding", satisfies_intents=["coding"]),
+    )
+    hint_with_empty_manifest = _compute_capability_routing_hint(
+        mode_id="coding",
+        query="draft a markdown document of the findings",
+        capability_manifest=_empty_manifest(),
+        routing_targets=["default", "learn", "markdown", "ponder", "search"],
+        mode_config=_mode_config(mode_id="coding", satisfies_intents=["coding"]),
+    )
+    # Both must fire and produce identical steering — the manifest is
+    # irrelevant to the gap decision under the declarative check.
+    assert hint_with_rich_manifest != ""
+    assert "markdown" in hint_with_rich_manifest
+    assert hint_with_rich_manifest == hint_with_empty_manifest
+
+
+def _manifest_with_coding_tools() -> CapabilityManifest:
+    """A manifest advertising coding's 11 allowed tools, all kind='tool'.
+
+    Mirrors ``lisa_packs/coding/modes/coding/_mode.md`` allowed_tool_ids.
+    Under the old manifest-driven gap check this suppressed ``needs_write``
+    because ``"tool" in available_kinds`` was True. Under the declarative
+    check it must have no effect on the gap decision.
+    """
+    from kernel.models import CapabilityEntry
+
+    coding_tool_ids = [
+        "coding_list_directory",
+        "coding_find_files",
+        "coding_read_file",
+        "coding_search_code",
+        "coding_outline_source",
+        "coding_create_worktree",
+        "coding_apply_patch",
+        "coding_run_check",
+        "coding_status",
+        "coding_commit",
+        "coding_push",
+        "coding_cleanup_worktree",
+        "github_open_pull_request",
+    ]
+    return CapabilityManifest(
+        generated_at="2026-01-01T00:00:00Z",
+        entries=[
+            CapabilityEntry(
+                capability_id=tid,
+                kind="tool",
+                status="available",
+                source="tool_catalog",
+            )
+            for tid in coding_tool_ids
+        ],
+    )

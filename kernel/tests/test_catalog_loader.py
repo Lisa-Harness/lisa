@@ -344,6 +344,88 @@ def test_load_catalog_from_disk_extra_front_matter_empty_when_no_app_keys(
 
 
 # ---------------------------------------------------------------------------
+# load_catalog_from_disk: satisfies_intents
+# ---------------------------------------------------------------------------
+
+
+def test_load_catalog_from_disk_reads_satisfies_intents(tmp_path: Path) -> None:
+    """``satisfies_intents`` flows from front matter into the typed field.
+
+    Symmetric counterpart to ``routing_intent_tags``: this field declares the
+    intents a mode handles in-place as the *current* mode, so the proactive
+    routing hint generator knows not to suggest a handoff for them. Authored
+    by packs; the kernel never hardcodes mode-specific intent semantics.
+    """
+    _write_mode(tmp_path, extra_front_matter={"satisfies_intents": ["write", "learn"]})
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].satisfies_intents == ["write", "learn"]
+
+
+def test_load_catalog_from_disk_satisfies_intents_default_empty(tmp_path: Path) -> None:
+    """``satisfies_intents`` defaults to empty when absent from front matter.
+
+    Empty means every detected intent is a gap → a handoff hint is offered.
+    This is the safe direction for modes that have not opted in (e.g.
+    ``default``), preserving the pre-field behavior for them.
+    """
+    _write_mode(tmp_path)
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].satisfies_intents == []
+
+
+def test_load_catalog_from_disk_satisfies_intents_not_in_extra_front_matter(
+    tmp_path: Path,
+) -> None:
+    """``satisfies_intents`` is kernel-owned: it never leaks into ``extra_front_matter``."""
+    _write_mode(tmp_path, extra_front_matter={"satisfies_intents": ["write"]})
+    catalog = _load(tmp_path)
+
+    assert "satisfies_intents" not in catalog["demo"].extra_front_matter
+    assert catalog["demo"].satisfies_intents == ["write"]
+
+
+def test_load_catalog_from_disk_satisfies_intents_rejects_non_list(
+    tmp_path: Path,
+) -> None:
+    """``satisfies_intents`` must be a list; any other type is a load error."""
+    _write_mode(tmp_path, extra_front_matter={"satisfies_intents": "write"})
+    with pytest.raises(WorkflowValidationError, match="satisfies_intents must be a list"):
+        _load(tmp_path)
+
+
+def test_load_catalog_from_disk_satisfies_intents_rejects_non_string_element(
+    tmp_path: Path,
+) -> None:
+    """Every ``satisfies_intents`` entry must be a string."""
+    _write_mode(tmp_path, extra_front_matter={"satisfies_intents": ["write", 7]})
+    with pytest.raises(WorkflowValidationError, match="satisfies_intents\\[1\\] must be a string"):
+        _load(tmp_path)
+
+
+def test_load_catalog_from_disk_satisfies_intents_rejects_empty_element(
+    tmp_path: Path,
+) -> None:
+    """Empty/whitespace ``satisfies_intents`` entries are rejected."""
+    _write_mode(tmp_path, extra_front_matter={"satisfies_intents": ["write", "  "]})
+    with pytest.raises(WorkflowValidationError, match="satisfies_intents\\[1\\] cannot be empty"):
+        _load(tmp_path)
+
+
+def test_load_catalog_from_disk_overrides_reject_satisfies_intents(
+    tmp_path: Path,
+) -> None:
+    """``satisfies_intents`` is a kernel-owned routing key: overrides may not touch it."""
+    _write_mode(tmp_path)
+    (tmp_path / "demo" / "_overrides.yaml").write_text(
+        "satisfies_intents: [write]\n", encoding="utf-8"
+    )
+    with pytest.raises(WorkflowValidationError, match="satisfies_intents"):
+        _load(tmp_path)
+
+
+# ---------------------------------------------------------------------------
 # load_catalog_from_disk: tools_authoritative / allowed_tool_ids
 # ---------------------------------------------------------------------------
 

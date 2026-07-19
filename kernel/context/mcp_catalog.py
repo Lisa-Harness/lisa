@@ -163,6 +163,7 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         fast_path_patterns=data.get("fast_path_patterns", []),
         routing_intent_tags=data.get("routing_intent_tags", []),
         routing_intent_keywords=data.get("routing_intent_keywords", {}),
+        satisfies_intents=data.get("satisfies_intents", []),
         command_pattern=data.get("command_pattern", ""),
         require_query=data.get("require_query", False),
         entry_operation_ids=data.get("entry_operation_ids", []),
