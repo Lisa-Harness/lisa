@@ -1,0 +1,5 @@
+operation_id: letta_remember
+description: Push one explicit passage into the mapped Letta agent's archival memory. Use for operator-curated "remember this" actions (e.g. the /letta remember command). Unlike letta_sync_memory this writes a single user-supplied passage, not a bulk Lisa-memory pull.
+mode_allowlist: [letta]
+timeout_seconds: 30
+max_calls_per_turn: 5

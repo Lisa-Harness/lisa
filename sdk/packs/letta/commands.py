@@ -20,16 +20,41 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["get_host_commands", "handle_letta_status", "handle_letta_agent", "handle_letta_sync", "handle_letta_compact"]
+__all__ = [
+    "get_host_commands",
+    "handle_letta_status",
+    "handle_letta_agent",
+    "handle_letta_sync",
+    "handle_letta_compact",
+]
 
 
 def get_host_commands() -> list[HostCommandSpec]:
-    """Register the Letta pack's slash commands."""
+    """Register the Letta pack's operator slash commands.
+
+    These are admin/introspection subcommands only. The bare ``/letta``
+    prefix is deliberately NOT registered: ``/letta <query>`` must fall
+    through host-command dispatch so ``kernel.ipsar.parse_route`` can
+    match the ``letta`` mode's ``command_pattern`` and delegate the turn
+    to the mapped Letta agent. Registering a bare ``/letta`` here would
+    shadow that delegation (it would ``startswith``-match every
+    ``/letta ...`` line and return a status panel instead of routing).
+
+    Order matters: the host dispatcher matches prefixes with
+    ``str.startswith``, so longer/more-specific prefixes are listed
+    BEFORE shorter ones as a defensive habit, though with no bare
+    ``/letta`` registered there is no shadowing risk today.
+    """
     return [
         HostCommandSpec(
-            prefix="/letta",
+            prefix="/letta status",
             handler=handle_letta_status,
             help_text="Show Letta connection status, identity map size, and env config.",
+        ),
+        HostCommandSpec(
+            prefix="/letta compact",
+            handler=handle_letta_compact,
+            help_text="Run letta_compact_agent for the current identity.",
         ),
         HostCommandSpec(
             prefix="/letta agent",
@@ -40,11 +65,6 @@ def get_host_commands() -> list[HostCommandSpec]:
             prefix="/letta sync",
             handler=handle_letta_sync,
             help_text="Run letta_sync_memory for the current identity.",
-        ),
-        HostCommandSpec(
-            prefix="/letta compact",
-            handler=handle_letta_compact,
-            help_text="Run letta_compact_agent for the current identity.",
         ),
     ]
 
@@ -102,7 +122,7 @@ async def handle_letta_agent(
     )
     entry = identity.get(key)
     if entry is None:
-        return f"No Letta agent mapped for identity `{key}`. Run `/letta sync` or a letta-mode turn to create one."
+        return f"No Letta agent mapped for identity `{key}`. Run `/letta sync` or `/letta <query>` in letta mode to create one."
     lines = [
         "## Letta Agent",
         "",
