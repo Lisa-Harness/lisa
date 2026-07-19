@@ -1148,6 +1148,13 @@ def test_routing_hint_forks_for_remember_and_write_markdown() -> None:
     model called markdown_forge_document / markdown_generate from default
     mode (mode-scoped tools, rejected by tool policy) instead of forking.
     The proactive hint must surface before the model wastes an iteration.
+    The kernel is a pure mapper: the decision (fork, not single handoff)
+    is driven entirely by set algebra over the pack-authored
+    routing_intent_tags (learn covers 'learn', markdown covers 'write',
+    neither covers both). The kernel emits no tool-policy narration
+    ('mode-scoped tools', 'rejected'); it names only the mechanics
+    (transition_stage + the fork target id). Any such narration would be
+    kernel-authored routing *output*, which is pack coupling.
     """
     from kernel.turn_runner import _compute_capability_routing_hint
 
@@ -1161,8 +1168,10 @@ def test_routing_hint_forks_for_remember_and_write_markdown() -> None:
     assert "transition_stage" in hint
     # Must name the fork target, not a single mode handoff
     assert "fork:learn,markdown" in hint
-    # Must warn that mode-scoped tools would be rejected from default
-    assert "mode-scoped" in hint.lower() or "rejected" in hint.lower()
+    # The kernel must not narrate tool-policy semantics in its own prose.
+    # The handoff instruction is purely mechanical.
+    assert "mode-scoped" not in hint.lower()
+    assert "rejected" not in hint.lower()
 
 
 def test_routing_hint_fork_requires_both_routable_modes() -> None:

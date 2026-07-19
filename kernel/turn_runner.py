@@ -2262,14 +2262,15 @@ def _compute_capability_routing_hint(
         # all detected intents and there are at least 2 of them.
         if len(partial_targets) >= 2 and covered_intents == detected_intents:
             fork_target = f"fork:{','.join(partial_targets)}"
+            # Purely mechanical: name the tool and the fork target id. The
+            # kernel does not narrate tool-policy semantics ("mode-scoped
+            # tools", "rejected") or the fork's internal mechanics — the
+            # model reads each child mode's own _mode.md body after the
+            # fork. Same prose-blind contract as the single-handoff branch.
             hint = (
                 "## Routing Hint\n\n"
-                "This request has multiple concurrent goals that no single "
-                f"mode covers. Hand off by calling `transition_stage` with "
-                f"target_stage_id `{fork_target}`. This forks into parallel "
-                f"children, each running in its own mode with its own tool "
-                "surface. Do not call mode-scoped tools from the current "
-                "mode — they will be rejected."
+                f"Hand off by calling `transition_stage` with "
+                f"target_stage_id `{fork_target}`."
             )
             return hint
 
