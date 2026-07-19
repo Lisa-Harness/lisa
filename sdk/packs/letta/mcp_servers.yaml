@@ -1,0 +1,59 @@
+---
+version: 1
+
+# Letta (MemGPT) as a pack-owned memory provider.
+#
+# Durable facts stored through Lisa's generic ``memory.add`` /
+# ``memory.search`` / ``memory.list`` aliases are persisted as Letta
+# archival memory passages for the Letta agent mapped to the Lisa
+# identity (see ``utils/identity_map.py``). The adapter MCP server
+# (``lisa-letta-memory``) translates the generic contract to the Letta
+# REST API and normalizes responses back to canonical Lisa
+# ``MemoryRecord`` JSON via the ``result_maps`` below.
+#
+# Select this pack as the memory owner via session context:
+#
+#     providers:
+#       capabilities:
+#         memory: lisa-pack-letta
+#
+# The host then namespaces this server id to ``letta.lisa-letta-memory``
+# and wires the generic aliases to the default backend declared here.
+memory:
+  default_backend: letta
+  backends:
+    - id: letta
+      kind: stdio
+      command: "${LISA_MCP_COMMAND:lisa-letta-memory}"
+      args:
+        - --data-dir
+        - "${LISA_DATA_DIR}"
+      env:
+        LETTA_BASE_URL: "${LETTA_BASE_URL:http://localhost:8283}"
+        LETTA_API_KEY: "${LETTA_API_KEY}"
+        LETTA_DEFAULT_AGENT_NAME: "${LETTA_DEFAULT_AGENT_NAME:lisa-agent}"
+      tool_names:
+        add: add_memory
+        search: search_memory
+        list: list_memories
+      result_maps:
+        add: sdk.packs.letta.utils.result_maps:normalize_add
+        search: sdk.packs.letta.utils.result_maps:normalize_search
+        list: sdk.packs.letta.utils.result_maps:normalize_list
+
+servers:
+  - server_id: lisa-letta-memory
+    runtime_kind: venv_bin
+    entry_point: lisa-letta-memory
+    venv_dir: "${FRAMEWORK_ROOT}"
+    warm: false
+    required: false
+    # Keep the raw adapter tools out of the model-facing catalog; the
+    # model calls the generic ``memory.*`` aliases. Internal dispatch
+    # (alias forwarding, operations) still reaches these tools — the
+    # per-server index is NOT filtered, only the model catalog is.
+    tool_policy:
+      allowed_tools:
+        - add_memory
+        - search_memory
+        - list_memories

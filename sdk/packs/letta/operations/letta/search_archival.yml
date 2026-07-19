@@ -1,0 +1,6 @@
+operation_id: letta_search_archival
+description: Search the mapped Letta agent's archival memory directly. Use when the user explicitly asks to inspect Letta's own memory plane rather than the generic memory recall.
+mode_allowlist: [letta]
+tool_ids: [memory.search]
+timeout_seconds: 30
+max_calls_per_turn: 3

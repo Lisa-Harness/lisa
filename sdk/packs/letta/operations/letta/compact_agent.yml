@@ -1,0 +1,5 @@
+operation_id: letta_compact_agent
+description: Trigger Letta message compaction/summarization for the mapped agent. Frees Letta-side context window. Invoked by the compaction slice or the /letta compact command.
+mode_allowlist: [letta]
+timeout_seconds: 60
+max_calls_per_turn: 1

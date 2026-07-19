@@ -1,0 +1,5 @@
+operation_id: letta_update_core_memory
+description: Update a pinned Letta core memory block (persona, user profile, project rules, etc.) for the mapped agent. Use for high-salience durable context that should stay in-context.
+mode_allowlist: [letta]
+timeout_seconds: 30
+max_calls_per_turn: 3

@@ -1,0 +1,6 @@
+operation_id: letta_sync_memory
+description: Sync selected Lisa memories or distilled facts into the mapped Letta agent's archival memory. Push direction is Lisa to Letta for the MVP. Invoked by the sync slice or the /letta sync command.
+mode_allowlist: [letta]
+tool_ids: [memory.search, memory.add]
+timeout_seconds: 60
+max_calls_per_turn: 1

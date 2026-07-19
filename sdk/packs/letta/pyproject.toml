@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["../.."]
+include = ["sdk.packs.letta*"]
+
+[tool.setuptools.package-data]
+"sdk.packs.letta" = [
+    "mcp_servers.yaml",
+    "modes/**/*.md",
+    "operations/**/*.md",
+    "operations/**/*.yml",
+    "content/**/*.md",
+]
+
+[project]
+name = "lisa-pack-letta"
+version = "0.1.0"
+description = "Lisa Letta (MemGPT) integration pack - Letta as a memory provider and stateful-agent peer"
+requires-python = ">=3.11"
+
+dependencies = [
+    "lisa-kernel",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.14.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["../.."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[project.scripts]
+lisa-letta-memory = "sdk.packs.letta.mcp_memory_server:main"
+
+[project.entry-points."lisa.extensions.content_roots"]
+letta = "sdk.packs.letta:get_content_root"
+
+[project.entry-points."lisa.extensions.host_commands"]
+letta = "sdk.packs.letta.commands:get_host_commands"
+
+[project.entry-points."lisa.extensions.slice_providers"]
+letta = "sdk.packs.letta.slice_provider:get_slice_provider_factory"
