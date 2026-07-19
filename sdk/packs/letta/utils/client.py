@@ -98,6 +98,24 @@ class LettaClient:
         result = await self._get(f"/v1/agents/{agent_id}")
         return result if isinstance(result, dict) else {}
 
+    async def find_agent_by_name(self, name: str) -> dict[str, Any] | None:
+        """Find an existing agent by name. Returns ``None`` if not found.
+
+        Letta Cloud's free plan allows up to 3 agents; creating a new
+        agent when one already exists by name wastes a slot and may hit
+        a 402. Callers should look up before creating.
+        """
+        try:
+            results = await self.list_agents(name=name)
+        except LettaError:
+            return None
+        if not isinstance(results, list):
+            return None
+        for agent in results:
+            if isinstance(agent, dict) and str(agent.get("name") or "") == name:
+                return agent
+        return None
+
     async def create_agent(self, *, name: str, **body: Any) -> dict[str, Any]:
         """Create a new Letta agent.
 

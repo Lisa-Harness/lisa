@@ -30,6 +30,10 @@ class Parameters(BaseModel):
 def _resolve_agent_id(ctx: OperationExecutionContext, explicit: str) -> str | None:
     if explicit:
         return explicit
+    # Fall back to LETTA_AGENT_ID env var if set (bypasses identity map).
+    env_agent_id = os.getenv("LETTA_AGENT_ID", "").strip()
+    if env_agent_id:
+        return env_agent_id
     data_dir = Path(os.getenv("LISA_DATA_DIR", ""))
     identity = IdentityMap(data_dir)
     key = identity_key(

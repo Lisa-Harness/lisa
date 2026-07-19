@@ -54,6 +54,14 @@ def init_server(
     Called by :func:`main` after arg parsing. Tests may call this directly
     with a ``tmp_path`` and an injected ``transport`` (e.g.
     ``httpx.MockTransport``) to pin behavior without spawning the server.
+
+    Env vars:
+        LETTA_BASE_URL: Letta server root.
+        LETTA_API_KEY: Bearer token.
+        LETTA_DEFAULT_AGENT_NAME: Name for agent lookup/creation.
+        LETTA_AGENT_ID: If set, bypass lookup and use this agent id
+            directly. Useful for Letta Cloud when you've already created
+            an agent on the website and want to reuse it.
     """
     global _client, _identity, _default_agent_name
     _identity = IdentityMap(data_dir)
@@ -83,22 +91,51 @@ async def _resolve_agent(
     user_slug: str,
     surface_id: str,
 ) -> str:
-    """Return the mapped Letta agent id, creating one if needed.
+    """Return the mapped Letta agent id, reusing or creating one as needed.
 
-    Auto-create keeps the generic ``memory.add`` contract simple: a fresh
-    user can store a learning on their first turn without a separate
-    provisioning step. Failures (API down, auth error) surface as a
-    ``LettaError`` that the tool handlers wrap in an error envelope.
+    Resolution order:
+    1. If the identity map already has an agent for this identity, use it.
+    2. Otherwise, look up an existing Letta agent by name (so we don't
+       waste a Cloud plan slot or hit a 402 on duplicate creation).
+    3. Only if no agent exists by name, create a new one.
+
+    Failures (API down, auth error, 402) surface as a ``LettaError`` that
+    the tool handlers wrap in an error envelope.
     """
     client, identity = _require()
     key = identity_key(
         workspace_id=workspace_id,
         user_slug=user_slug,
-        surface_id=surface_id,
     )
+
+    # If LETTA_AGENT_ID is set, use it directly — no lookup or creation.
+    # This is the most reliable path for Letta Cloud when you've already
+    # created an agent on the website and know its ID.
+    explicit_agent_id = os.getenv("LETTA_AGENT_ID", "").strip()
+    if explicit_agent_id:
+        identity.upsert(
+            key,
+            IdentityEntry(agent_id=explicit_agent_id, agent_name=_default_agent_name),
+        )
+        return explicit_agent_id
+
     entry = identity.get(key)
     if entry is not None and entry.agent_id:
         return entry.agent_id
+
+    # Look up an existing agent by name before creating — Letta Cloud's
+    # free plan allows only 3 agents, and creating a duplicate may 402.
+    existing = await client.find_agent_by_name(_default_agent_name)
+    if existing is not None and existing.get("id"):
+        agent_id = str(existing["id"])
+        identity.upsert(
+            key,
+            IdentityEntry(
+                agent_id=agent_id,
+                agent_name=str(existing.get("name") or _default_agent_name),
+            ),
+        )
+        return agent_id
 
     agent = await client.create_agent(name=_default_agent_name)
     agent_id = str(agent.get("id") or "")

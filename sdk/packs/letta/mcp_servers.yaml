@@ -32,6 +32,7 @@ memory:
         LETTA_BASE_URL: "${LETTA_BASE_URL:http://localhost:8283}"
         LETTA_API_KEY: "${LETTA_API_KEY}"
         LETTA_DEFAULT_AGENT_NAME: "${LETTA_DEFAULT_AGENT_NAME:lisa-agent}"
+        LETTA_AGENT_ID: "${LETTA_AGENT_ID}"
       tool_names:
         add: add_memory
         search: search_memory
