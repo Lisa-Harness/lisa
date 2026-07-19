@@ -35,16 +35,17 @@ _REASONING_MARKERS = (
     "gemini-2.5-pro",
 )
 
-# Low-latency / "small" model markers.
-_LOW_LATENCY_MARKERS = (
-    "mini",
-    "nano",
-    "flash",
-    "small",
-    "3b",
-    "1b",
-    "haiku",
+# gpt-5-family markers. "gpt-5+" = the gpt-5 family and above, which is
+# the floor for the cloud default-model pick now that gpt-4 is being
+# deprecated. mini/nano variants count as gpt-5+ (they share the family).
+_GPT_5_FAMILY_MARKERS = (
+    "gpt-5",
 )
+
+#: Providers treated as local (everything else is cloud). Single source of
+#: truth for the local/cloud split — the discovery algorithm and any
+#: pack-contributed role defaults consult this.
+_LOCAL_PROVIDERS: frozenset[str] = frozenset({"ollama"})
 
 _KNOWN_MODELS_PATH = Path(__file__).parent / "known_models.yaml"
 
@@ -71,11 +72,25 @@ def is_reasoning_model(model_id: str) -> bool:
     return any(marker in value for marker in _REASONING_MARKERS)
 
 
-def is_low_latency_model(model_id: str) -> bool:
-    """Heuristic: does ``model_id`` look like a small/low-latency model?"""
+def is_gpt_5_family(model_id: str) -> bool:
+    """Heuristic: does ``model_id`` belong to the gpt-5 family or above?
 
+    The cloud default-model pick floors at gpt-5 now that gpt-4 is being
+    deprecated. mini/nano variants are included — they share the family
+    and are valid low-cost defaults.
+    """
     value = model_id.strip().lower()
-    return any(marker in value for marker in _LOW_LATENCY_MARKERS)
+    return any(marker in value for marker in _GPT_5_FAMILY_MARKERS)
+
+
+def is_local_provider(provider: str) -> bool:
+    """Return True if ``provider`` is treated as local (ollama today)."""
+    return provider.strip().lower() in _LOCAL_PROVIDERS
+
+
+def is_cloud_provider(provider: str) -> bool:
+    """Return True if ``provider`` is treated as cloud (non-local)."""
+    return not is_local_provider(provider)
 
 
 @lru_cache(maxsize=1)

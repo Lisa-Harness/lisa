@@ -143,14 +143,6 @@ from hosts.core.paths import (
 
 _FRAMEWORK_ROOT = _framework_root()
 
-_MODE_MODEL_ALIAS_MAP = {
-    "default": "default",
-    "discuss": "default",
-    "search": "default",
-    "deep": "deep",
-}
-
-
 # ── Private no-op stubs (logging wired later) ────────────────────────
 
 
@@ -246,17 +238,17 @@ def model_alias_for_mode(
 ) -> str:
     """Return the model alias for a given mode id.
 
-    When a manifest is provided and has a ``mode_models`` entry for the mode,
-    that explicit per-mode model reference is returned directly so the caller
-    resolves the concrete model rather than falling back to a designation.
-    Otherwise the hardcoded designation map is consulted (e.g. "default",
-    "deep").
+    Single precedence: ``mode_models[mode_id]`` wins; if the mode isn't
+    pinned explicitly, fall back to the ``default`` mode's pin. There is
+    no hardcoded alias map — the manifest is the single source of truth.
     """
-    if manifest is not None:
-        mode_model_ref = manifest.mode_models.get(mode_id.strip().lower())
-        if mode_model_ref:
-            return mode_model_ref
-    return _MODE_MODEL_ALIAS_MAP.get(mode_id, "default")
+    if manifest is None:
+        return "default"
+    normalized = mode_id.strip().lower()
+    model_ref = manifest.mode_models.get(normalized)
+    if model_ref:
+        return model_ref
+    return manifest.mode_models.get("default", "default")
 
 
 def explicit_deep_query(message: str) -> str | None:
@@ -395,7 +387,11 @@ def build_capability_snapshot(runtime: HostRuntime) -> dict[str, Any]:
             {
                 "model_id": model.model_id,
                 "provider": model.provider,
-                "designations": sorted(model.designations),
+                "roles": sorted(
+                    role_name
+                    for role_name, model_ref in manifest.roles.items()
+                    if model_ref == model.model_id
+                ),
                 "reasoning_model": model.reasoning_model,
             }
             for model in manifest.models
@@ -897,18 +893,28 @@ def _render_models_manifest(runtime: HostRuntime) -> str:
         f"- proposal_manifest: {proposal_path}",
         f"- model_count: {len(manifest.models)}",
     ]
+    # Invert manifest.roles so each model knows which roles it holds.
+    roles_by_model: dict[str, list[str]] = {}
+    for role_name, model_ref in sorted(manifest.roles.items()):
+        roles_by_model.setdefault(model_ref, []).append(role_name)
     for model in manifest.models:
-        designations = ", ".join(sorted(model.designations)) or "-"
+        roles = ", ".join(roles_by_model.get(model.model_id, [])) or "-"
         reasoning = "yes" if model.reasoning_model else "no"
         lines.append(
             f"- {model.model_id} (provider={model.provider}, "
-            f"reasoning={reasoning}, designations={designations})"
+            f"reasoning={reasoning}, roles={roles})"
         )
     if manifest.mode_models:
         mode_map = ", ".join(
             f"{mode_id}->{model_id}" for mode_id, model_id in sorted(manifest.mode_models.items())
         )
         lines.append(f"- mode_models: {mode_map}")
+    if manifest.roles:
+        role_map = ", ".join(
+            f"{role_name}->{model_id}"
+            for role_name, model_id in sorted(manifest.roles.items())
+        )
+        lines.append(f"- roles: {role_map}")
     return "\n".join(lines)
 
 

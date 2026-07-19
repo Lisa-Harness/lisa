@@ -33,3 +33,6 @@ markers = [
 
 [project.entry-points."lisa.extensions.content_roots"]
 models = "sdk.packs.models:get_content_root"
+
+[project.entry-points."lisa.extensions.model_roles"]
+deep = "sdk.packs.models:get_declared_roles"

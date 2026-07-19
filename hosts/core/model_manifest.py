@@ -2,15 +2,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Literal
 
 from kernel.model_manifest import ModelManifest
 from kernel.model_manifest import load_model_manifest as load_shared_model_manifest
 
 logger = logging.getLogger(__name__)
-
-SimpleModelDesignation = Literal["default", "deep", "reasoning"]
-_SUPPORTED_DESIGNATIONS: set[str] = {"default", "deep", "reasoning"}
 
 
 def default_manifest_path() -> Path:
@@ -26,10 +22,6 @@ def load_model_manifest(path: Path | None = None) -> ModelManifest:
 
     resolved = path or default_manifest_path()
     logger.debug("loading model manifest from %s", resolved)
-    manifest = load_shared_model_manifest(
-        resolved,
-        require_mode_models=False,
-        supported_designations=_SUPPORTED_DESIGNATIONS,
-    )
+    manifest = load_shared_model_manifest(resolved, require_mode_models=True)
     logger.info("loaded model manifest: %d model(s)", len(manifest.models))
     return manifest

@@ -19,41 +19,120 @@ class TestBuildManifestPayload:
         payload = build_manifest_payload(())
         assert payload == {"version": 1, "models": []}
 
-    def test_default_low_latency_wins(self) -> None:
+    def test_cloud_gpt5_lowest_tier_wins_default(self) -> None:
+        """Cloud default = lowest gpt-5-family model; mini/nano allowed."""
         models = (
-            DiscoveredModel(model_id="gpt-4o", provider="openai"),
-            DiscoveredModel(model_id="gpt-4o-mini", provider="openai"),
+            DiscoveredModel(model_id="gpt-5.4", provider="openai"),
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(model_id="gpt-5-mini", provider="openai"),
         )
         payload = build_manifest_payload(models)
-        # discover no longer emits mode_models; default role is via designations
-        assert "mode_models" not in payload
-        default_row = next(r for r in payload["models"] if r["model_id"] == "gpt-4o-mini")
-        assert "default" in default_row["designations"]
+        assert payload["mode_models"] == {"default": "gpt-5"}
+        assert payload["roles"]["default"] == "gpt-5"
 
-    def test_deep_from_reasoning(self) -> None:
+    def test_cloud_gpt5_mini_preferred_when_only_mini_available(self) -> None:
+        """If only gpt-5-mini/nano are present, the mini still wins (gpt-5+ family)."""
         models = (
-            DiscoveredModel(model_id="gpt-4o", provider="openai"),
-            DiscoveredModel(model_id="o3-mini", provider="openai", reasoning_model=True),
+            DiscoveredModel(model_id="gpt-5-mini", provider="openai"),
+            DiscoveredModel(model_id="gpt-5-nano", provider="openai"),
         )
         payload = build_manifest_payload(models)
-        assert "mode_models" not in payload
-        deep_row = next(r for r in payload["models"] if r["model_id"] == "o3-mini")
-        assert "deep" in deep_row["designations"]
-        assert "reasoning" in deep_row["designations"]
-        assert deep_row.get("reasoning_model") is True
+        # Full gpt-5 absent → first gpt-5-family model in discovery order.
+        assert payload["mode_models"] == {"default": "gpt-5-mini"}
+
+    def test_cloud_falls_back_to_first_cloud_when_no_gpt5(self) -> None:
+        """No gpt-5 family probed → first cloud model in discovery order."""
+        models = (
+            DiscoveredModel(model_id="claude-opus-4", provider="anthropic"),
+            DiscoveredModel(model_id="gemini-2.5-pro", provider="google"),
+        )
+        payload = build_manifest_payload(models)
+        assert payload["mode_models"] == {"default": "claude-opus-4"}
+
+    def test_local_highest_context_window_wins(self) -> None:
+        """Local-only: highest context_window, tiebreak reasoning, then order."""
+        models = (
+            DiscoveredModel(model_id="small:7b", provider="ollama", context_window=8192),
+            DiscoveredModel(model_id="big:70b", provider="ollama", context_window=65536),
+            DiscoveredModel(model_id="mid:13b", provider="ollama", context_window=16384),
+        )
+        payload = build_manifest_payload(models)
+        assert payload["mode_models"] == {"default": "big:70b"}
+
+    def test_local_tiebreak_prefers_reasoning(self) -> None:
+        """Equal context_window → reasoning_model wins."""
+        models = (
+            DiscoveredModel(model_id="plain:70b", provider="ollama", context_window=65536),
+            DiscoveredModel(
+                model_id="reason:70b",
+                provider="ollama",
+                context_window=65536,
+                reasoning_model=True,
+            ),
+        )
+        payload = build_manifest_payload(models)
+        assert payload["mode_models"] == {"default": "reason:70b"}
+
+    def test_mixed_cloud_wins_default_over_local(self) -> None:
+        """When both cloud and local present, cloud gpt-5 wins as default."""
+        models = (
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(model_id="big:70b", provider="ollama", context_window=65536),
+        )
+        payload = build_manifest_payload(models)
+        assert payload["mode_models"] == {"default": "gpt-5"}
+        assert payload["roles"]["default"] == "gpt-5"
+
+    def test_deep_first_reasoning_any_provider(self) -> None:
+        """deep = first reasoning model regardless of provider."""
+        models = (
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(
+                model_id="deepseek-r1:70b",
+                provider="ollama",
+                reasoning_model=True,
+                context_window=65536,
+            ),
+        )
+        payload = build_manifest_payload(models)
+        assert payload["roles"]["deep"] == "deepseek-r1:70b"
+
+    def test_deep_falls_back_to_default_when_no_reasoning(self) -> None:
+        models = (
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+        )
+        payload = build_manifest_payload(models)
+        assert payload["roles"]["deep"] == "gpt-5"
+
+    def test_emits_mode_models_and_roles_no_designations(self) -> None:
+        """Output shape: mode_models + roles at top level; no per-model designations."""
+        models = (
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(
+                model_id="o3-pro",
+                provider="openai",
+                reasoning_model=True,
+            ),
+        )
+        payload = build_manifest_payload(models)
+        assert "mode_models" in payload
+        assert "roles" in payload
+        assert payload["roles"] == {"default": "gpt-5", "deep": "o3-pro"}
+        for row in payload["models"]:
+            assert "designations" not in row
 
     def test_dedup_same_provider_same_id(self) -> None:
         models = (
-            DiscoveredModel(model_id="gpt-4o", provider="openai"),
-            DiscoveredModel(model_id="gpt-4o", provider="openai"),
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
         )
         payload = build_manifest_payload(models)
         assert len(payload["models"]) == 1
 
     def test_dedup_case_insensitive(self) -> None:
         models = (
-            DiscoveredModel(model_id="gpt-4o", provider="openai"),
-            DiscoveredModel(model_id="GPT-4O", provider="openai"),
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(model_id="GPT-5", provider="openai"),
         )
         payload = build_manifest_payload(models)
         assert len(payload["models"]) == 1
@@ -63,46 +142,12 @@ class TestBuildManifestPayload:
         so _dedupe must collapse them (keeping the first-seen entry)."""
 
         models = (
-            DiscoveredModel(model_id="gpt-4o", provider="openai"),
-            DiscoveredModel(model_id="gpt-4o", provider="azure_openai"),
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(model_id="gpt-5", provider="azure_openai"),
         )
         payload = build_manifest_payload(models)
         assert len(payload["models"]) == 1
         assert payload["models"][0]["provider"] == "openai"
-
-    def test_falls_back_to_first_non_reasoning(self) -> None:
-        models = (
-            DiscoveredModel(model_id="o3-pro", provider="openai", reasoning_model=True),
-            DiscoveredModel(model_id="gpt-4o", provider="openai"),
-        )
-        payload = build_manifest_payload(models)
-        default_row = next(r for r in payload["models"] if "default" in r.get("designations", ()))
-        assert default_row["model_id"] == "gpt-4o"
-
-    def test_falls_back_to_first_model_if_all_reasoning(self) -> None:
-        models = (
-            DiscoveredModel(model_id="o3-mini", provider="openai", reasoning_model=True),
-            DiscoveredModel(model_id="o1", provider="openai", reasoning_model=True),
-        )
-        payload = build_manifest_payload(models)
-        # default = first model (all reasoning), deep = first reasoning
-        default_row = next(r for r in payload["models"] if "default" in r.get("designations", ()))
-        assert default_row["model_id"] == "o3-mini"
-        deep_row = next(r for r in payload["models"] if "deep" in r.get("designations", ()))
-        assert deep_row["model_id"] == "o3-mini"
-
-    def test_mode_models_not_emitted(self) -> None:
-        """discover must not emit mode_models; designations carry role info."""
-        models = (
-            DiscoveredModel(model_id="gpt-4o", provider="openai"),
-            DiscoveredModel(model_id="o3-pro", provider="openai", reasoning_model=True),
-        )
-        payload = build_manifest_payload(models)
-        assert "mode_models" not in payload
-        default_row = next(r for r in payload["models"] if "default" in r.get("designations", ()))
-        assert default_row["model_id"] == "gpt-4o"
-        deep_row = next(r for r in payload["models"] if "deep" in r.get("designations", ()))
-        assert deep_row["model_id"] == "o3-pro"
 
 
 class TestRenderManifestYaml:

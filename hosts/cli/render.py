@@ -79,18 +79,22 @@ def render_models(runtime: HostRuntime, *, console: Console | None = None) -> Ta
 
     path = runtime.models_path
     manifest = load_model_manifest(path)
+    # Invert manifest.roles so each model knows which roles it holds.
+    roles_by_model: dict[str, list[str]] = {}
+    for role_name, model_ref in sorted(manifest.roles.items()):
+        roles_by_model.setdefault(model_ref, []).append(role_name)
     table = Table(title="Lisa Models")
     table.add_column("Model", style="bold")
     table.add_column("Provider")
-    table.add_column("Designations")
+    table.add_column("Roles")
     table.add_column("Aliases")
     table.add_column("Reasoning")
 
     for model in manifest.models:
-        designations = ", ".join(sorted(model.designations)) or "—"
+        roles = ", ".join(roles_by_model.get(model.model_id, [])) or "—"
         aliases = ", ".join(sorted(model.aliases)) or "—"
         reasoning = "yes" if model.reasoning_model else "no"
-        table.add_row(model.model_id, model.provider, designations, aliases, reasoning)
+        table.add_row(model.model_id, model.provider, roles, aliases, reasoning)
 
     if console is not None:
         console.print(table)

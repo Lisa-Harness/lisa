@@ -6,12 +6,12 @@ result back to the proposal file. The ``/models update`` host command then
 promotes the proposal to the active manifest.
 
 Scope is deliberately narrow: the operation may only edit ``mode_models``
-(the mode→model_id map) and the ``designations`` field on each model entry
-(``router`` / ``default`` / ``deep`` / ``reasoning``). It may NOT add or
-remove models, reorder the list, or edit any other per-model field. A
-post-LLM scope guard (``_scope_violation``) rejects any edit that touches
-anything else, so an over-eager model cannot silently rewrite the catalog.
-The manifest loader's full validation runs after the scope guard.
+(the mode→model_id map) and the top-level ``roles`` map (role→model_id,
+e.g. ``deep``). It may NOT add or remove models, reorder the list, or edit
+any other per-model field. A post-LLM scope guard (``_scope_violation``)
+rejects any edit that touches anything else, so an over-eager model cannot
+silently rewrite the catalog. The manifest loader's full validation runs
+after the scope guard.
 
 The operation does NOT touch the filesystem directly. It reads and writes
 the manifest through the ``lisa-storage`` MCP server's
@@ -63,12 +63,9 @@ _NO_YAML_BLOCK_PATH = f"{_PROMPT_DIR}/advise_models_no_yaml_block.md"
 _VALIDATION_FAILED_PATH = f"{_PROMPT_DIR}/advise_models_validation_failed.md"
 _OUT_OF_SCOPE_PATH = f"{_PROMPT_DIR}/advise_models_out_of_scope.md"
 
-# Per-model fields the operation is allowed to touch. Everything else in
-# each model entry (provider, cost_tier, capabilities, reasoning_model,
-# thinking_model, display_name, context_window, ...) must pass through
-# unchanged. The guard compares the before/after models list and rejects
-# any edit that touches a non-scope field or adds/removes/reorders entries.
-_SCOPE_DESIGNATION_FIELDS = ("designations",)
+# The operation edits mode_models and roles at the top level only. No
+# per-model field is editable via /models update — the guard compares the
+# before/after models list byte-for-byte and rejects any per-model change.
 
 
 def _load_text(ctx: OperationExecutionContext, path: str) -> str:
@@ -372,11 +369,10 @@ def _validate_manifest_yaml(edited_yaml: str) -> str:
 def _scope_violation(current_yaml: str, edited_yaml: str) -> str:
     """Return a non-empty reason if the edit is outside the allowed scope.
 
-    The operation may only edit ``mode_models`` and the ``designations``
-    field on each model entry. Everything else — the set of models, their
-    order, and every per-model field other than ``designations`` — must
-    pass through unchanged. Returns an empty string when the edit is in
-    scope.
+    The operation may only edit ``mode_models`` and the top-level ``roles``
+    map. Everything else — the set of models, their order, and every
+    per-model field — must pass through unchanged. Returns an empty string
+    when the edit is in scope.
     """
 
     try:
@@ -390,13 +386,13 @@ def _scope_violation(current_yaml: str, edited_yaml: str) -> str:
     if not isinstance(current, dict) or not isinstance(edited, dict):
         return "Manifest must be a mapping."
 
-    # Top-level keys: only mode_models (and, implicitly, models) may change.
-    # version and any other keys must be unchanged.
+    # Top-level keys: only mode_models and roles (and, implicitly, models)
+    # may change. version and any other keys must be unchanged.
     for key in set(current) | set(edited):
-        if key in ("models", "mode_models"):
+        if key in ("models", "mode_models", "roles"):
             continue
         if current.get(key) != edited.get(key):
-            return f"Top-level key '{key}' was changed; only mode_models and designations are editable."
+            return f"Top-level key '{key}' was changed; only mode_models and roles are editable."
 
     current_rows = current.get("models") or []
     edited_rows = edited.get("models") or []
@@ -421,25 +417,26 @@ def _scope_violation(current_yaml: str, edited_yaml: str) -> str:
             return "The models list was reordered. /models update cannot reorder the models list."
         return "The models list changed in an unexpected way."
 
-    # Per-model: only the 'designations' field may differ.
+# Per-model: no field may differ. Role/mode assignments live at the
+    # top level (mode_models, roles), not on model entries.
     current_indexed = _index_models(current_rows)
     edited_indexed = _index_models(edited_rows)
     for model_id, edited_row in edited_indexed.items():
         current_row = current_indexed.get(model_id, {})
         for field, edited_val in edited_row.items():
-            if field == "designations":
-                continue
             if current_row.get(field) != edited_val:
                 return (
                     f"Model '{model_id}' field '{field}' was changed. "
-                    "Only designations are editable per-model."
-        )
+                    "Per-model fields are not editable via /models update; "
+                    "edit mode_models or roles instead."
+                )
         # Also catch a field that was present before and is now missing.
         for field in current_row:
-            if field == "designations":
-                continue
             if field not in edited_row:
-                return f"Model '{model_id}' field '{field}' was removed. Only designations are editable per-model."
+                return (
+                    f"Model '{model_id}' field '{field}' was removed. "
+                    "Per-model fields are not editable via /models update."
+                )
 
     return ""
 
@@ -469,7 +466,6 @@ def _render_diff_summary(
             changes.append(f"+ {model_id}: added")
             continue
         for field in (
-            "designations",
             "cost_tier",
             "latency_tier",
             "capabilities",
@@ -503,6 +499,16 @@ def _render_diff_summary(
         for mode_id in current_modes:
             if mode_id not in edited_modes:
                 changes.append(f"- mode_models: {mode_id} removed")
+
+    current_roles = current.get("roles") or {}
+    edited_roles = edited.get("roles") or {}
+    if current_roles != edited_roles:
+        for role_name, model_ref in edited_roles.items():
+            if current_roles.get(role_name) != model_ref:
+                changes.append(f"~ roles: {role_name} → {model_ref}")
+        for role_name in current_roles:
+            if role_name not in edited_roles:
+                changes.append(f"- roles: {role_name} removed")
 
     header = "Manifest updated.\n"
     if not changes:

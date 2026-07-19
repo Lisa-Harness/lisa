@@ -112,6 +112,9 @@ models:
 mode_models:
   default: gpt-chat-latest
   deep: o3
+roles:
+  default: gpt-chat-latest
+  deep: o3
 """
 
 _EDITED_MANIFEST = """\
@@ -119,14 +122,15 @@ version: 1
 models:
   - model_id: gpt-chat-latest
     provider: openai
-    designations: [default]
   - model_id: o3
     provider: openai
     reasoning_model: true
-    designations: [deep, reasoning]
 mode_models:
   default: gpt-chat-latest
   deep: o3
+roles:
+  default: gpt-chat-latest
+  deep: gpt-chat-latest
 """
 
 
@@ -181,10 +185,11 @@ class TestRenderDiffSummary:
         assert "gpt-chat-latest" in summary
         assert "cost_tier" in summary
 
-    def test_detects_designation_change(self) -> None:
+    def test_detects_roles_change(self) -> None:
         summary = _render_diff_summary(_VALID_MANIFEST, _EDITED_MANIFEST)
         assert "Manifest updated" in summary
-        assert "designations" in summary
+        assert "roles" in summary
+        assert "deep" in summary
 
     def test_no_changes_detected(self) -> None:
         summary = _render_diff_summary(_VALID_MANIFEST, _VALID_MANIFEST)
@@ -225,7 +230,7 @@ class TestExecuteOperation:
             return _FakeModel()
 
         ctx = OperationExecutionContext(
-            query="make o3 the reasoning designation",
+            query="use gpt-chat-latest for the deep role",
             complete_fn=fake_complete,
             resolve_model_fn=fake_resolve,
             read_authored_text_fn=_make_loader(),
@@ -236,7 +241,8 @@ class TestExecuteOperation:
         assert result.output_json.get("validated") is True
         # The operation must have written the edited manifest to the proposal.
         assert "proposal" in written
-        assert "designations: [deep, reasoning]" in written["proposal"]
+        assert "roles:" in written["proposal"]
+        assert "deep: gpt-chat-latest" in written["proposal"]
 
     @pytest.mark.asyncio
     async def test_reads_active_when_no_proposal(self) -> None:
@@ -284,22 +290,22 @@ class TestExecuteOperation:
     @pytest.mark.asyncio
     async def test_validation_failure_returns_error(self) -> None:
         storage_fn, written = _make_storage_executor(proposal=_VALID_MANIFEST)
-        # In-scope (only designations touched) but invalid: the same
-        # designation 'deep' is assigned to two models. The scope guard
-        # passes this through; the kernel manifest loader rejects it.
+        # In-scope (only roles touched) but invalid: the 'deep' role
+        # references a model_id that is not in the models list. The scope
+        # guard passes this through; the kernel manifest loader rejects it.
         invalid_manifest = (
             "version: 1\n"
             "models:\n"
             "  - model_id: gpt-chat-latest\n"
             "    provider: openai\n"
-            "    designations: [deep]\n"
             "  - model_id: o3\n"
             "    provider: openai\n"
             "    reasoning_model: true\n"
-            "    designations: [deep]\n"
             "mode_models:\n"
             "  default: gpt-chat-latest\n"
             "  deep: o3\n"
+            "roles:\n"
+            "  deep: nonexistent-model\n"
         )
 
         async def fake_complete(**kwargs: Any) -> _FakeCompletion:
@@ -397,24 +403,25 @@ class TestExecuteOperation:
         assert "proposal" not in written
 
     @pytest.mark.asyncio
-    async def test_designation_only_change_is_accepted(self) -> None:
+    async def test_roles_only_change_is_accepted(self) -> None:
         storage_fn, written = _make_storage_executor(proposal=_VALID_MANIFEST)
-        # Only the designations field changes — no model added/removed, no
-        # other per-model field touched. This is the happy path for the
-        # narrowed scope.
+        # Only the top-level roles map changes — no model added/removed, no
+        # per-model field touched. This is the happy path for the narrowed
+        # scope.
         edited = (
             "version: 1\n"
             "models:\n"
             "  - model_id: gpt-chat-latest\n"
             "    provider: openai\n"
-            "    designations: [default]\n"
             "  - model_id: o3\n"
             "    provider: openai\n"
             "    reasoning_model: true\n"
-            "    designations: [deep, reasoning]\n"
             "mode_models:\n"
             "  default: gpt-chat-latest\n"
             "  deep: o3\n"
+            "roles:\n"
+            "  default: gpt-chat-latest\n"
+            "  deep: gpt-chat-latest\n"
         )
 
         async def fake_complete(**kwargs: Any) -> _FakeCompletion:
@@ -424,7 +431,7 @@ class TestExecuteOperation:
             return _FakeModel()
 
         ctx = OperationExecutionContext(
-            query="assign reasoning designation to o3",
+            query="use gpt-chat-latest for the deep role",
             complete_fn=fake_complete,
             resolve_model_fn=fake_resolve,
             read_authored_text_fn=_make_loader(),
@@ -475,19 +482,21 @@ class TestScopeViolationHelper:
     def test_identical_manifest_is_in_scope(self) -> None:
         assert _scope_violation(_VALID_MANIFEST, _VALID_MANIFEST) == ""
 
-    def test_designation_change_is_in_scope(self) -> None:
+    def test_roles_change_is_in_scope(self) -> None:
         edited = (
             "version: 1\n"
             "models:\n"
             "  - model_id: gpt-chat-latest\n"
             "    provider: openai\n"
-            "    designations: [default]\n"
             "  - model_id: o3\n"
             "    provider: openai\n"
             "    reasoning_model: true\n"
             "mode_models:\n"
             "  default: gpt-chat-latest\n"
             "  deep: o3\n"
+            "roles:\n"
+            "  default: gpt-chat-latest\n"
+            "  deep: gpt-chat-latest\n"
         )
         assert _scope_violation(_VALID_MANIFEST, edited) == ""
 

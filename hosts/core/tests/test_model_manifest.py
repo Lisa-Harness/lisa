@@ -13,20 +13,23 @@ _MIN_EXPECTED_MODELS = 2
 _CONTEXT_WINDOW_TOKENS = 131072
 
 
-def test_load_manifest_reads_designations_and_models(tmp_path: Path) -> None:
+def test_load_manifest_reads_modes_roles_and_models(tmp_path: Path) -> None:
     manifest_file = tmp_path / "models.yaml"
     manifest_file.write_text(
         textwrap.dedent(
             """\
             version: 1
+            mode_models:
+              default: test-default
+            roles:
+              default: test-default
+              deep: test-deep
             models:
-              - model_id: test-router
+              - model_id: test-default
                 provider: ollama
-                designations: [default]
               - model_id: test-deep
                 provider: ollama
                 reasoning_model: true
-                designations: [deep, reasoning]
             """
         ),
         encoding="utf-8",
@@ -35,16 +38,32 @@ def test_load_manifest_reads_designations_and_models(tmp_path: Path) -> None:
     manifest = model_manifest.load_model_manifest(manifest_file)
 
     assert len(manifest.models) >= _MIN_EXPECTED_MODELS
-    assert manifest.designated("default") is not None
-    assert manifest.designated("reasoning") is not None
-    assert manifest.designated("deep") is not None
-    # No mode_models mapping is required; designation lookup should still work.
-    default_model = manifest.designated("default")
-    assert default_model is not None
-    assert default_model.model_id  # has a non-empty model_id
+    # resolve() precedence: mode_models wins for modes, roles for roles.
+    assert manifest.resolve("default").model_id == "test-default"
+    assert manifest.resolve("deep").model_id == "test-deep"
+    assert manifest.resolve("test-deep").model_id == "test-deep"
+    assert manifest.roles == {"default": "test-default", "deep": "test-deep"}
 
 
-def test_load_manifest_rejects_duplicate_designation(tmp_path: Path) -> None:
+def test_load_manifest_requires_mode_models(tmp_path: Path) -> None:
+    manifest_file = tmp_path / "models.yaml"
+    manifest_file.write_text(
+        textwrap.dedent(
+            """\
+            version: 1
+            models:
+              - model_id: m1
+                provider: ollama
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must include a 'mode_models' mapping"):
+        model_manifest.load_model_manifest(manifest_file)
+
+
+def test_load_manifest_rejects_unknown_role_ref(tmp_path: Path) -> None:
     manifest_file = tmp_path / "models.yaml"
     manifest_file.write_text(
         textwrap.dedent(
@@ -52,19 +71,17 @@ def test_load_manifest_rejects_duplicate_designation(tmp_path: Path) -> None:
             version: 1
             mode_models:
               default: gpt-4o
+            roles:
+              deep: nope
             models:
               - model_id: gpt-4o
                 provider: azure_openai
-                designations: [default]
-              - model_id: gpt-5.4
-                provider: azure_openai
-                designations: [default]
             """
         ),
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="Designation 'default'"):
+    with pytest.raises(ValueError, match="references unknown model"):
         model_manifest.load_model_manifest(manifest_file)
 
 
@@ -79,7 +96,6 @@ def test_load_manifest_rejects_unknown_provider(tmp_path: Path) -> None:
             models:
               - model_id: gpt-4o
                 provider: weird_provider
-                designations: [default]
             """
         ),
         encoding="utf-8",
@@ -99,13 +115,13 @@ def test_load_manifest_accepts_anthropic_ollama_and_google_providers(tmp_path: P
               default: claude-3-5-sonnet
               deep: llama3.1
               discuss: gemini-2.5-flash
+            roles:
+              deep: llama3.1
             models:
               - model_id: claude-3-5-sonnet
                 provider: anthropic
-                designations: [default]
               - model_id: llama3.1
                 provider: ollama
-                designations: [deep]
               - model_id: gemini-2.5-flash
                 provider: google
             """
@@ -115,8 +131,8 @@ def test_load_manifest_accepts_anthropic_ollama_and_google_providers(tmp_path: P
 
     manifest = model_manifest.load_model_manifest(manifest_file)
 
-    assert manifest.designated("default") is not None
-    assert manifest.designated("deep") is not None
+    assert manifest.resolve("default").model_id == "claude-3-5-sonnet"
+    assert manifest.resolve("deep").model_id == "llama3.1"
     google_model = manifest.find_model("gemini-2.5-flash")
     assert google_model is not None
     assert google_model.provider == "google"
@@ -142,7 +158,6 @@ def test_load_manifest_preserves_shared_provider_fields(tmp_path: Path) -> None:
                 base_url_env: GROQ_BASE_URL
                 reasoning_model: true
                 context_window: 131072
-                designations: [default]
             """
         ),
         encoding="utf-8",
@@ -165,6 +180,8 @@ def test_load_manifest_rejects_negative_context_window(tmp_path: Path) -> None:
         textwrap.dedent(
             """\
             version: 1
+            mode_models:
+              default: test-model
             models:
               - model_id: test-model
                 provider: ollama

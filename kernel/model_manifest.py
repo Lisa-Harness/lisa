@@ -30,7 +30,6 @@ class ManifestModelEntry:
     operator_only: bool = False
     default_for_roles: tuple[str, ...] = ()
     deployment_only: bool = False
-    designations: frozenset[str] = frozenset()
     api_key_env: str = ""
     base_url: str = ""
     base_url_env: str = ""
@@ -44,23 +43,27 @@ class ModelManifest:
 
     models: tuple[ManifestModelEntry, ...]
     mode_models: dict[str, str] = field(default_factory=dict)
+    roles: dict[str, str] = field(default_factory=dict)
 
-    def designated(self, designation: str) -> ManifestModelEntry | None:
-        """Return the model entry for one designation, or None."""
+    def resolve(self, ref: str) -> ManifestModelEntry | None:
+        """Resolve one reference to a model entry, or None.
 
-        normalized_designation = designation.strip().lower()
-        for model in self.models:
-            if normalized_designation in model.designations:
-                return model
-        return self.model_for_mode(normalized_designation)
-
-    def model_for_mode(self, mode_id: str) -> ManifestModelEntry | None:
-        """Return the model entry for one mode, or None if not configured."""
-
-        model_ref = self.mode_models.get(mode_id.strip().lower())
-        if not model_ref:
+        Precedence: ``mode_models[ref]`` → ``roles[ref]`` → ``find_model(ref)``.
+        Mode pins win over cross-cutting roles; a concrete model id is the
+        last resort. There is no silent first-model fallback — if the
+        caller asks for a mode/role that isn't mapped, that's None and the
+        caller decides whether to raise.
+        """
+        normalized = ref.strip().lower()
+        if not normalized:
             return None
-        return self.find_model(model_ref)
+        model_ref = self.mode_models.get(normalized)
+        if model_ref:
+            return self.find_model(model_ref)
+        model_ref = self.roles.get(normalized)
+        if model_ref:
+            return self.find_model(model_ref)
+        return self.find_model(ref)
 
     def find_model(self, reference: str) -> ManifestModelEntry | None:
         """Resolve one model by key, model_id, display_alias, or alias."""
@@ -82,7 +85,6 @@ def load_model_manifest(
     path: Path,
     *,
     require_mode_models: bool = False,
-    supported_designations: set[str] | None = None,
     allowed_providers: set[str] | frozenset[str] | None = None,
 ) -> ModelManifest:
     """Load and validate one shared model manifest from YAML or JSON."""
@@ -112,39 +114,51 @@ def load_model_manifest(
                 )
             mode_models[normalized_mode_id] = normalized_model_ref
 
+    raw_roles = raw_payload.get("roles")
+    roles: dict[str, str] = {}
+    if raw_roles is not None:
+        if not isinstance(raw_roles, dict):
+            raise ValueError("Model manifest 'roles' must be a mapping when provided.")
+        for role_name, model_ref in raw_roles.items():
+            normalized_role = str(role_name or "").strip().lower()
+            normalized_model_ref = str(model_ref or "").strip()
+            if not normalized_role or not normalized_model_ref:
+                raise ValueError(
+                    f"roles entry '{role_name}' must have a non-empty key and value."
+                )
+            roles[normalized_role] = normalized_model_ref
+
+    # Merge pack-declared role defaults: packs declare role names + a default
+    # model id. The manifest YAML overrides pack defaults (user wins); roles
+    # declared by packs but absent from the YAML are seeded with the pack's
+    # default. Empty pack defaults (role name only) are skipped — the user
+    # must pin them explicitly.
+    try:
+        from kernel.model_roles import discover_pack_roles  # noqa: PLC0415
+        pack_roles = discover_pack_roles()
+    except Exception:  # pylint: disable=broad-except
+        pack_roles = {}
+    for role_name, model_ref in pack_roles.items():
+        if not model_ref:
+            continue
+        roles.setdefault(role_name, model_ref)
+
     normalized_allowed_providers = {
         provider.strip().lower() for provider in (allowed_providers or _DEFAULT_ALLOWED_PROVIDERS)
     }
-    normalized_supported_designations = (
-        {designation.strip().lower() for designation in supported_designations}
-        if supported_designations is not None
-        else None
-    )
 
     models: list[ManifestModelEntry] = []
     seen_model_refs: set[str] = set()
-    seen_designations: dict[str, str] = {}
     for index, raw_model in enumerate(raw_models, start=1):
         model = _parse_model_entry(
             raw_model,
             index=index,
             allowed_providers=normalized_allowed_providers,
-            supported_designations=normalized_supported_designations,
         )
         for reference in {model.key.lower(), model.model_id.lower()}:
             if reference in seen_model_refs:
                 raise ValueError(f"Manifest model reference '{reference}' is duplicated.")
             seen_model_refs.add(reference)
-
-        for designation in model.designations:
-            if designation in seen_designations:
-                existing_model = seen_designations[designation]
-                raise ValueError(
-                    f"Designation '{designation}' is assigned to both '{existing_model}' "
-                    f"and '{model.model_id}'."
-                )
-            seen_designations[designation] = model.model_id
-
         models.append(model)
 
     if not models:
@@ -160,7 +174,17 @@ def load_model_manifest(
                 f"Available models: {available_models}"
             )
 
-    return ModelManifest(models=tuple(models), mode_models=mode_models)
+    for role_name, model_ref in roles.items():
+        if all(
+            model_ref.lower() not in {model.key.lower(), model.model_id.lower()} for model in models
+        ):
+            available_models = ", ".join(sorted(model.model_id for model in models))
+            raise ValueError(
+                f"roles entry '{role_name}' references unknown model '{model_ref}'. "
+                f"Available models: {available_models}"
+            )
+
+    return ModelManifest(models=tuple(models), mode_models=mode_models, roles=roles)
 
 
 def _parse_model_entry(
@@ -168,7 +192,6 @@ def _parse_model_entry(
     *,
     index: int,
     allowed_providers: set[str],
-    supported_designations: set[str] | None,
 ) -> ManifestModelEntry:
     if not isinstance(raw_model, dict):
         raise ValueError(f"Manifest model entry #{index} must be an object.")
@@ -230,47 +253,12 @@ def _parse_model_entry(
             )
         ),
         deployment_only=bool(raw_model.get("deployment_only", False)),
-        designations=frozenset(
-            _parse_designations(
-                raw_model.get("designations"),
-                model_id=key,
-                supported_designations=supported_designations,
-            )
-        ),
         api_key_env=str(raw_model.get("api_key_env") or "").strip(),
         base_url=str(raw_model.get("base_url") or "").strip(),
         base_url_env=str(raw_model.get("base_url_env") or "").strip(),
         model_id_from_config=model_id_from_config,
         azure_deploy=dict(raw_azure_deploy),
     )
-
-
-def _parse_designations(
-    raw_designations: Any,
-    *,
-    model_id: str,
-    supported_designations: set[str] | None,
-) -> list[str]:
-    parsed_designations = _parse_str_list(
-        raw_designations,
-        field_name="designations",
-        model_id=model_id,
-    )
-    normalized: list[str] = []
-    for designation in parsed_designations:
-        normalized_designation = designation.strip().lower()
-        if (
-            supported_designations is not None
-            and normalized_designation not in supported_designations
-        ):
-            supported = ", ".join(sorted(supported_designations))
-            raise ValueError(
-                f"Unsupported designation '{normalized_designation}' for model '{model_id}'. "
-                f"Allowed: {supported}."
-            )
-        if normalized_designation:
-            normalized.append(normalized_designation)
-    return normalized
 
 
 def _parse_str_list(raw_value: Any, *, field_name: str, model_id: str) -> list[str]:

@@ -5,13 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from kernel.model_manifest import ManifestModelEntry, ModelManifest
+from kernel.model_manifest import ManifestModelEntry
 
 from hosts.core.model_manifest import load_model_manifest
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DESIGNATIONS = frozenset({"default", "deep", "reasoning"})
 _MANIFEST_CACHE_KEY = "manifest"
 
 
@@ -112,25 +111,22 @@ def resolve_little_lisa_model(
     runtime_state: dict[str, Any],
     data_dir: Path,
 ) -> StubModelDefinition:
-    """Resolve one model id or designation against the host's manifest."""
+    """Resolve one model id, mode, or role against the host's manifest.
+
+    Resolution precedence (single path, no divergence):
+    1. ``mode_models[ref]`` — explicit per-mode pin.
+    2. ``roles[ref]`` — cross-cutting role (e.g. ``deep``).
+    3. concrete ``model_id`` lookup.
+
+    No silent first-model fallback: a missing ``default`` mode is a
+    load-time validation error (``require_mode_models=True``), not a
+    runtime fallback. Empty input defaults to ``"default"`` so callers
+    that pass through a bare alias resolve against the default mode.
+    """
 
     manifest = load_manifest(runtime_state, data_dir=data_dir)
     requested = (model_id or "default").strip()
-    normalized = requested.lower()
-
-    if normalized in _DEFAULT_DESIGNATIONS:
-        designated = _designated_model(manifest, normalized)
-        if designated is not None:
-            logger.debug("resolved designation %r -> %s", normalized, designated.model_id)
-            return _to_stub_model_definition(designated)
-        if normalized == "default":
-            first_model = manifest.models[0]
-            logger.debug("no 'default' designation; using first model %s", first_model.model_id)
-            return _to_stub_model_definition(first_model)
-        logger.error("manifest missing designation %r", normalized)
-        raise ValueError(f"The host manifest is missing the '{normalized}' designation.")
-
-    resolved = _find_model(manifest, requested)
+    resolved = manifest.resolve(requested)
     if resolved is None:
         known_models = ", ".join(model.model_id for model in manifest.models)
         logger.error("model %r not in manifest (configured: %s)", requested, known_models)
@@ -138,25 +134,8 @@ def resolve_little_lisa_model(
             f"Model '{requested}' is not in the host's manifest. "
             f"Configured models: {known_models}"
         )
-    logger.debug("resolved model id %r -> %s", requested, resolved.model_id)
+    logger.debug("resolved %r -> %s", requested, resolved.model_id)
     return _to_stub_model_definition(resolved)
-
-
-def _find_model(manifest: ModelManifest, model_id: str) -> ManifestModelEntry | None:
-    exact_model_id = model_id.strip().lower()
-    for model in manifest.models:
-        if model.model_id.strip().lower() == exact_model_id:
-            return model
-    return manifest.find_model(model_id)
-
-
-def _designated_model(
-    manifest: ModelManifest,
-    designation: str,
-) -> ManifestModelEntry | None:
-    if designation not in _DEFAULT_DESIGNATIONS:
-        return None
-    return manifest.designated(designation)
 
 
 def _to_stub_model_definition(model: ManifestModelEntry) -> StubModelDefinition:
