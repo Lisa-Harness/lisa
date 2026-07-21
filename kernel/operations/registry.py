@@ -219,6 +219,106 @@ def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
                     )
 
 
+_PROVIDER_PREFIX = "lisa-pack-"
+
+
+def _provider_slug(raw: str) -> str:
+    """Normalize a provider id for same-pack comparison.
+
+    Strips the ``lisa-pack-``/``lisa_pack-`` distribution prefix and lower-cases
+    so that a capability's inferred provider id (e.g. ``coding``, from the
+    pack directory name) matches the mode's ``mode_provider_id``
+    (e.g. ``lisa-pack-coding``, the full distribution name). Without this,
+    every same-pack reference would be misflagged as cross-pack because the
+    SDK infers provider ids from directory names while ``mode_provider_id``
+    carries the full package name.
+    """
+    value = (raw or "").strip().lower().replace("_", "-")
+    if value.startswith(_PROVIDER_PREFIX):
+        value = value[len(_PROVIDER_PREFIX):]
+    return value
+
+
+def validate_export_boundaries(
+    operation_catalog: dict[str, OperationDefinition] | None = None,
+) -> None:
+    """Reject cross-pack references to non-exported capabilities.
+
+    A capability (operation or tool) owned by one pack may be referenced by a
+    mode in another pack only when the capability's ``exportable`` flag is
+    True. Otherwise the capability is private to its owning pack. This is a
+    generic rule over ``provider_id`` and ``exportable`` — the kernel never
+    names capability ids.
+
+    Iterates every mode in the workflow catalog and checks each id in its
+    ``allowed_operation_ids``, ``allowed_tool_ids``, and lifecycle bindings
+    (``entry_operation_ids`` / ``pre_turn_operation_ids`` /
+    ``post_turn_operation_ids``) against the owning capability's
+    ``exportable`` flag. A reference is allowed when the capability's
+    provider matches the mode's provider, or the capability is exported, or
+    the capability is not in the catalog (deferred to the existing
+    "unknown tool" check).
+
+    Args:
+        operation_catalog: Optional pre-resolved operation catalog. When
+            omitted, ``get_operation_catalog()`` is used. The tool catalog is
+            always resolved via the tool registry.
+
+    Raises:
+        OperationValidationError: If a mode references a non-exported
+            capability owned by a different pack.
+    """
+    # pylint: disable=import-outside-toplevel
+    from kernel.ipsar_fsm import get_workflow_catalog
+    from kernel.tools.registry import get_tool_catalog
+
+    ops = operation_catalog if operation_catalog is not None else get_operation_catalog()
+    tools = get_tool_catalog() or {}
+    try:
+        modes = get_workflow_catalog()
+    except RuntimeError:
+        # Catalog not loaded yet (e.g. during early unit tests). Nothing to
+        # validate; the check runs again once the workflow catalog is live.
+        return
+
+    for mode in modes.values():
+        mode_provider = _provider_slug(mode.mode_provider_id)
+        referenced_op_ids = set(
+            mode.allowed_operation_ids
+            + mode.entry_operation_ids
+            + mode.pre_turn_operation_ids
+            + mode.post_turn_operation_ids
+        )
+        for op_id in referenced_op_ids:
+            op = ops.get(op_id)
+            if op is None:
+                continue  # unknown-id check is owned by validate_operation_catalog
+            op_provider = _provider_slug(op.provider_id or op.pack_id)
+            if op_provider and op_provider != mode_provider and not op.exportable:
+                raise OperationValidationError(
+                    f"Mode '{mode.mode_id}' (provider '{mode_provider}') "
+                    f"references operation '{op_id}' (provider '{op_provider}') "
+                    "which is not exported. Set `exportable: true` on the "
+                    "operation or remove the cross-pack reference."
+                )
+        for tool_id in mode.allowed_tool_ids:
+            tool = tools.get(tool_id)
+            if tool is None:
+                continue
+            tool_provider = _provider_slug(
+                getattr(tool, "provider_id", "") or getattr(tool, "pack_id", "")
+            )
+            if tool_provider and tool_provider != mode_provider and not getattr(
+                tool, "exportable", False
+            ):
+                raise OperationValidationError(
+                    f"Mode '{mode.mode_id}' (provider '{mode_provider}') "
+                    f"references tool '{tool_id}' (provider '{tool_provider}') "
+                    "which is not exported. Set `exportable: true` on the "
+                    "tool or remove the cross-pack reference."
+                )
+
+
 _OPERATION_CATALOG: dict[str, OperationDefinition] = {}
 
 

@@ -2407,7 +2407,12 @@ def _fork_mode_requires_tools(mode_id: str) -> bool:
     mode_config = get_workflow_catalog().get(mode_id)
     if mode_config is None:
         return False
-    return bool(mode_config.allowed_operation_ids) or bool(mode_config.allowed_tool_ids)
+    # Use the *authored* allowlists, not the merged (effective) ones, so a
+    # chat-only mode that inherits ambient capabilities (e.g. recall_memory
+    # via default_available) is not misflagged as requiring tools to complete.
+    return bool(mode_config.authored_allowed_operation_ids) or bool(
+        mode_config.authored_allowed_tool_ids
+    )
 
 
 async def _run_fork_child_turn(

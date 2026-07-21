@@ -377,6 +377,29 @@ def test_build_operation_tool_schemas_non_authoritative_includes_unbound() -> No
     assert len(schemas) >= len(authoritative_schemas)
 
 
+def test_markdown_mode_inherits_recall_memory_via_default_available() -> None:
+    """The markdown mode (empty allowed_operation_ids, authoritative) inherits
+    recall_memory via the default_available merge in the SDK catalog loader.
+
+    This is the end-to-end regression guard for the ambient-capability merge:
+    markdown/_mode.md does not list recall_memory, but recall.yml declares
+    default_available: true, so the merged catalog's markdown mode should
+    advertise recall_memory to the model under tools_authoritative=True.
+    """
+    from kernel.ipsar_fsm import get_workflow_catalog
+    from kernel.operations.registry import build_operation_tool_schemas
+
+    markdown = get_workflow_catalog().get("markdown")
+    assert markdown is not None
+    # The merge should have added recall_memory to the markdown mode's
+    # allowed_operation_ids (the SDK loader runs before the kernel sees it).
+    assert "recall_memory" in markdown.allowed_operation_ids
+    # And the schema builder should advertise it under authoritative filtering.
+    schemas = build_operation_tool_schemas("markdown", tools_authoritative=True)
+    names = {s["function"]["name"] for s in schemas}
+    assert "recall_memory" in names
+
+
 @pytest.mark.asyncio
 async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
     """When tools_authoritative=True and allowed_tool_ids is empty,

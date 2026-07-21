@@ -86,7 +86,15 @@ async def list_modes() -> str:
     ``stages``.
     """
     mode_roots = resolve_mode_roots(_all_roots())
-    return build_mode_catalog_json(mode_roots)
+    operation_roots = resolve_operation_roots(_all_roots())
+    tool_roots = resolve_tool_roots(_all_roots())
+    operation_catalog_json = build_operation_catalog_json(operation_roots)
+    tool_catalog_json = build_tool_catalog_json(tool_roots)
+    return build_mode_catalog_json(
+        mode_roots,
+        operation_catalog_json=operation_catalog_json,
+        tool_catalog_json=tool_catalog_json,
+    )
 
 
 @mcp.tool()

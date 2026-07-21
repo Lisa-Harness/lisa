@@ -471,6 +471,69 @@ def test_load_catalog_from_disk_tools_authoritative_not_in_extra_front_matter(
 
 
 # ---------------------------------------------------------------------------
+# load_catalog_from_disk: accept_default_capabilities / excluded_*_ids
+# ---------------------------------------------------------------------------
+
+
+def test_load_catalog_from_disk_accept_default_capabilities_defaults_true(
+    tmp_path: Path,
+) -> None:
+    """accept_default_capabilities defaults to True when absent from front matter."""
+    _write_mode(tmp_path)
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].accept_default_capabilities is True
+
+
+def test_load_catalog_from_disk_reads_explicit_accept_default_capabilities_false(
+    tmp_path: Path,
+) -> None:
+    """An explicit accept_default_capabilities: false is honored."""
+    _write_mode(
+        tmp_path,
+        extra_front_matter={"accept_default_capabilities": False},
+    )
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].accept_default_capabilities is False
+
+
+def test_load_catalog_from_disk_reads_excluded_operation_ids(tmp_path: Path) -> None:
+    """excluded_operation_ids are parsed from front matter into the typed field."""
+    _write_mode(
+        tmp_path,
+        extra_front_matter={"excluded_operation_ids": ["recall_memory"]},
+    )
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].excluded_operation_ids == ["recall_memory"]
+
+
+def test_load_catalog_from_disk_reads_excluded_tool_ids(tmp_path: Path) -> None:
+    """excluded_tool_ids are parsed from front matter into the typed field."""
+    _write_mode(
+        tmp_path,
+        extra_front_matter={"excluded_tool_ids": ["web_search"]},
+    )
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].excluded_tool_ids == ["web_search"]
+
+
+def test_load_catalog_from_disk_accept_default_capabilities_not_in_extra_front_matter(
+    tmp_path: Path,
+) -> None:
+    """accept_default_capabilities is kernel-owned; it never leaks into extra_front_matter."""
+    _write_mode(
+        tmp_path,
+        extra_front_matter={"accept_default_capabilities": False},
+    )
+    catalog = _load(tmp_path)
+
+    assert "accept_default_capabilities" not in catalog["demo"].extra_front_matter
+
+
+# ---------------------------------------------------------------------------
 # load_catalog_from_disk: _overrides.yaml application
 # ---------------------------------------------------------------------------
 

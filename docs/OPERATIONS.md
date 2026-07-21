@@ -104,6 +104,55 @@ tools that are explicitly bound or allowlisted. A mode with an empty
 `allowed_operation_ids` list will not offer any operation to the model, even if the
 operations declare that mode in their `mode_allowlist`.
 
+## Default-available and exportable capabilities
+
+Two pack-authored flags on operation and tool YAML control cross-pack visibility
+and ambient availability:
+
+- **`exportable`** (default `false`) — when `true`, a capability (operation or
+  tool) may be referenced by modes in *other* packs. When `false`, the capability
+  is private to its owning pack; a foreign mode that lists it in
+  `allowed_operation_ids` / `allowed_tool_ids` is rejected at startup by
+  `validate_export_boundaries` (`kernel/operations/registry.py`). The check is a
+  generic rule over `provider_id` + `exportable`; the kernel never names
+  capability ids.
+- **`default_available`** (default `false`) — when `true`, the SDK catalog loader
+  (`sdk/content/_catalog.py :: _merge_default_capabilities`) auto-merges the
+  capability id into every mode's effective `allowed_operation_ids` /
+  `allowed_tool_ids` *before* the kernel sees them. This lets a pack ship ambient
+  capabilities (e.g. `recall_memory`) without forcing every mode author to
+  re-list them. The merge is idempotent (set union) and happens entirely in the
+  SDK layer; the kernel's `tools_authoritative` filter is unchanged.
+
+Modes opt out via three front-matter keys:
+
+- **`accept_default_capabilities`** (default `true`) — when `false`, the mode keeps
+  its explicit allowlists untouched and inherits no ambient capabilities. Set
+  this to `false` for a mode that genuinely wants zero tools.
+- **`excluded_operation_ids`** / **`excluded_tool_ids`** (default `[]`) — subtract
+  specific ambient ids from the merge while keeping the rest. Does not affect ids
+  the mode lists explicitly in `allowed_operation_ids` / `allowed_tool_ids`.
+
+The kernel distinguishes the *authored* allowlists
+(`authored_allowed_operation_ids` / `authored_allowed_tool_ids`) from the merged
+*effective* ones (`allowed_operation_ids` / `allowed_tool_ids`) so that
+`_fork_mode_requires_tools` checks only the authored set — a chat-only mode that
+inherits `recall_memory` is not misflagged as requiring tools to complete.
+
+```yaml
+# recall.yml — ambient + exported
+operation_id: recall_memory
+exportable: true
+default_available: true
+```
+
+```yaml
+# web_search.tool.yml — exported but not ambient (costly)
+tool_id: web_search
+exportable: true
+# default_available omitted (false) — modes opt in via allowed_tool_ids
+```
+
 ## Tool capability budget: `tool_ids`
 
 Every operation declares which tools it may use via `tool_ids`. This serves two

@@ -145,6 +145,13 @@ class ToolDefinition(BaseModel):
     tool_id: str
     description: str = ""
     pack_id: str = ""
+    # The full distribution-package name that owns this tool (e.g.
+    # ``lisa-pack-search``), inferred from the content-root path during SDK
+    # catalog build. Distinct from ``pack_id`` (the raw pack slug authored in
+    # YAML). Used by ``validate_export_boundaries`` to compare against
+    # ``WorkflowModeConfig.mode_provider_id`` so same-pack references are not
+    # misflagged as cross-pack.
+    provider_id: str = ""
     effect: EffectKind = "read"
     approval_required: bool = False
     approval_preview: str = ""
@@ -154,6 +161,17 @@ class ToolDefinition(BaseModel):
     timeout_seconds: int = Field(default=30)
     module_path: str = ""
     implementation_module: Any = Field(default=None, exclude=True)
+    # When ``False`` (default), this tool is private to its owning pack: a
+    # mode in another pack may not reference it in ``allowed_tool_ids``. When
+    # ``True``, the owning pack explicitly exports it for cross-pack use.
+    exportable: bool = False
+    # When ``True``, the SDK catalog loader auto-merges this tool id into
+    # every mode's effective ``allowed_tool_ids`` (unless the mode opts out
+    # via ``accept_default_capabilities: false`` or lists it in
+    # ``excluded_tool_ids``). Lets a pack ship ambient tools (e.g. recall)
+    # without forcing every mode author to re-list them. The kernel never
+    # names tool ids; it only filters on the already-merged allowlist.
+    default_available: bool = False
 
 
 class OperationExecutionContext(BaseModel):
@@ -213,6 +231,13 @@ class OperationDefinition(BaseModel):
     operation_id: str
     description: str = ""
     pack_id: str = ""
+    # The full distribution-package name that owns this operation (e.g.
+    # ``lisa-pack-memory``), inferred from the content-root path during SDK
+    # catalog build. Distinct from ``pack_id`` (the raw, often short pack
+    # slug authored in YAML). Used by ``validate_export_boundaries`` to
+    # compare against ``WorkflowModeConfig.mode_provider_id`` so same-pack
+    # references are not misflagged as cross-pack.
+    provider_id: str = ""
     effect: EffectKind = "read"
     approval_required: bool = False
     approval_preview: str = ""
@@ -230,6 +255,21 @@ class OperationDefinition(BaseModel):
     completion_max_tokens: int = Field(default=1500)
     completion_temperature: float = Field(default=0.2)
     instruction_markdown_path: str = ""
+    # When ``False`` (default), this operation is private to its owning pack:
+    # a mode in another pack may not reference it in ``allowed_operation_ids``
+    # or lifecycle bindings. When ``True``, the owning pack explicitly
+    # exports it for cross-pack use. Validated generically in
+    # ``validate_operation_catalog`` against ``operation_provider_id`` vs.
+    # ``mode_provider_id`` — the kernel never names operation ids.
+    exportable: bool = False
+    # When ``True``, the SDK catalog loader auto-merges this operation id
+    # into every mode's effective ``allowed_operation_ids`` (unless the mode
+    # opts out via ``accept_default_capabilities: false`` or lists it in
+    # ``excluded_operation_ids``). Lets a pack ship ambient operations
+    # (e.g. ``recall_memory``) without forcing every mode author to re-list
+    # them. The kernel never names operation ids; it only filters on the
+    # already-merged allowlist.
+    default_available: bool = False
     instruction_body: str = Field(default="", exclude=True)
     implementation_module: Any = Field(default=None, exclude=True)
 
@@ -1202,6 +1242,16 @@ class WorkflowModeConfig(BaseModel):
     post_turn_operation_ids: list[str] = Field(default_factory=list)
     allowed_operation_ids: list[str] = Field(default_factory=list)
     allowed_tool_ids: list[str] = Field(default_factory=list)
+    # The explicit ``allowed_operation_ids`` / ``allowed_tool_ids`` as authored
+    # in ``_mode.md`` front matter, *before* the SDK catalog loader merges in
+    # any ``default_available`` capabilities. The merged (effective) sets live
+    # in ``allowed_operation_ids`` / ``allowed_tool_ids`` above; these authored
+    # sets let the kernel distinguish "the mode declared action tools" from
+    # "the mode inherited ambient capabilities" — e.g. ``_fork_mode_requires_tools``
+    # checks the authored set so a chat-only mode that inherits ``recall_memory``
+    # is not misflagged as requiring tools to complete successfully.
+    authored_allowed_operation_ids: list[str] = Field(default_factory=list)
+    authored_allowed_tool_ids: list[str] = Field(default_factory=list)
     # Failure policy for entry (action-mode) bindings. ``abort`` (default) is
     # the historical behavior: a failing entry target kills the mode transition.
     # ``skip`` logs the failure and continues to the next binding, mirroring the
@@ -1211,6 +1261,23 @@ class WorkflowModeConfig(BaseModel):
     # are authoritative: empty means no tools/operations are advertised to the
     # LLM. When False, empty means all pass through.
     tools_authoritative: bool = True
+    # When True (default), the SDK catalog loader auto-merges any operation
+    # or tool flagged ``default_available: true`` into this mode's effective
+    # ``allowed_operation_ids`` / ``allowed_tool_ids``. Lets a pack ship
+    # ambient capabilities (e.g. ``recall_memory``) without forcing every
+    # mode author to re-list them. A mode that genuinely wants zero tools
+    # sets this to False. The merge happens entirely in the SDK catalog
+    # layer; the kernel only ever sees the already-merged allowlist.
+    accept_default_capabilities: bool = True
+    # Operation ids to subtract from the default-available merge, letting a
+    # mode opt out of specific ambient operations while keeping the rest.
+    # Only consulted when ``accept_default_capabilities`` is True. Does not
+    # affect capabilities the mode lists explicitly in
+    # ``allowed_operation_ids`` — those survive regardless.
+    excluded_operation_ids: list[str] = Field(default_factory=list)
+    # Tool ids to subtract from the default-available merge. Symmetric to
+    # ``excluded_operation_ids``.
+    excluded_tool_ids: list[str] = Field(default_factory=list)
     # Natural-language intent bridges: declarative routing from default chat to modes (SDK-owned).
     default_intent_bridges: list[DefaultIntentBridge] = Field(default_factory=list)
     # The distribution package name that owns this mode (e.g.

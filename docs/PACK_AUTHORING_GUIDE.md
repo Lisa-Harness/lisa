@@ -125,7 +125,30 @@ description: "Overridden description for the app's deployment."
 
 Overrides are deep-merged on top of the `_mode.md` front matter at load time. The boundary is a **denylist**, not an allowlist: the kernel names only the keys it owns and protects (routing, FSM, operation bindings, workshop config). Attempting to override any kernel-owned key is rejected with a startup validation error. Every other key is app/pack-owned and passes through untouched — the kernel does not name, interpret, or allowlist those keys.
 
-Kernel-owned keys that overrides may **not** touch include: `mode_id`, `start_stage_id`, `mode_kind`, `command_pattern`, `require_query`, `entry_operation_ids`, `pre_turn_operation_ids`, `post_turn_operation_ids`, `allowed_operation_ids`, `routable`, `priority`, `fast_path_patterns`, `routing_intent_tags`, `routing_intent_keywords`, `satisfies_intents`, `workshop_panels`, `workshop_budget`, `workshop_planner_prompt_file`, `workshop_synthesis_prompt_file`, `workshop_rendering`, `default_intent_bridges`, `artifact_type`.
+Kernel-owned keys that overrides may **not** touch include: `mode_id`, `start_stage_id`, `mode_kind`, `command_pattern`, `require_query`, `entry_operation_ids`, `pre_turn_operation_ids`, `post_turn_operation_ids`, `allowed_operation_ids`, `allowed_tool_ids`, `tools_authoritative`, `accept_default_capabilities`, `excluded_operation_ids`, `excluded_tool_ids`, `routable`, `priority`, `fast_path_patterns`, `routing_intent_tags`, `routing_intent_keywords`, `satisfies_intents`, `workshop_panels`, `workshop_budget`, `workshop_planner_prompt_file`, `workshop_synthesis_prompt_file`, `workshop_rendering`, `default_intent_bridges`, `artifact_type`.
+
+### Exportable and default-available capabilities
+
+Operations and tools declare two visibility flags in their YAML front matter:
+
+- **`exportable`** (default `false`) — when `true`, the capability may be referenced by modes in other packs. When `false`, it is private to its owning pack; a foreign mode referencing it is rejected at startup by `validate_export_boundaries`.
+- **`default_available`** (default `false`) — when `true`, the SDK catalog loader auto-merges the capability id into every mode's effective `allowed_operation_ids` / `allowed_tool_ids` (unless the mode opts out). Lets a pack ship ambient capabilities (e.g. `recall_memory`) without forcing every mode author to re-list them.
+
+```yaml
+# operation YAML
+operation_id: recall_memory
+exportable: true
+default_available: true
+```
+
+```yaml
+# tool YAML (.tool.yml)
+tool_id: web_search
+exportable: true
+# default_available omitted — modes opt in via allowed_tool_ids
+```
+
+Modes opt out of the ambient merge via `accept_default_capabilities: false` (disables all defaults) or `excluded_operation_ids` / `excluded_tool_ids` (subtracts specific ids). The kernel distinguishes the authored allowlists from the merged effective ones so that `_fork_mode_requires_tools` checks only the authored set.
 
 Kernel-owned keys that overrides **may** replace (read into typed fields but not security-sensitive): `description`, `default_model`.
 

@@ -171,7 +171,12 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         post_turn_operation_ids=data.get("post_turn_operation_ids", []),
         allowed_operation_ids=data.get("allowed_operation_ids", []),
         allowed_tool_ids=data.get("allowed_tool_ids", []),
+        authored_allowed_operation_ids=data.get("authored_allowed_operation_ids", []),
+        authored_allowed_tool_ids=data.get("authored_allowed_tool_ids", []),
         tools_authoritative=data.get("tools_authoritative", True),
+        accept_default_capabilities=data.get("accept_default_capabilities", True),
+        excluded_operation_ids=data.get("excluded_operation_ids", []),
+        excluded_tool_ids=data.get("excluded_tool_ids", []),
         entry_failure_policy=data.get("entry_failure_policy", "abort"),
         default_intent_bridges=intent_bridges,
         mode_provider_id=str(data.get("mode_provider_id", "") or ""),
@@ -302,6 +307,7 @@ def _deserialize_operation(data: dict[str, Any]) -> OperationDefinition:
         operation_id=data["operation_id"],
         description=data.get("description", ""),
         pack_id=str(data.get("pack_id", "") or ""),
+        provider_id=str(data.get("operation_provider_id", "") or ""),
         effect=data.get("effect", "read"),
         approval_required=bool(data.get("approval_required", False)),
         approval_preview=data.get("approval_preview", ""),
@@ -321,6 +327,8 @@ def _deserialize_operation(data: dict[str, Any]) -> OperationDefinition:
         instruction_markdown_path=data.get("instruction_markdown_path", ""),
         instruction_body=data.get("instruction_body", ""),
         implementation_module=implementation_module,
+        exportable=bool(data.get("exportable", False)),
+        default_available=bool(data.get("default_available", False)),
     )
 
 
@@ -445,6 +453,7 @@ def _deserialize_tool(data: dict[str, Any]) -> ToolDefinition:
         tool_id=data["tool_id"],
         description=data.get("description", ""),
         pack_id=str(data.get("pack_id", "") or ""),
+        provider_id=str(data.get("tool_provider_id", "") or ""),
         effect=data.get("effect", "read"),
         approval_required=bool(data.get("approval_required", False)),
         approval_preview=data.get("approval_preview", ""),
@@ -454,6 +463,8 @@ def _deserialize_tool(data: dict[str, Any]) -> ToolDefinition:
         timeout_seconds=data.get("timeout_seconds", 30),
         module_path=module_path,
         implementation_module=implementation_module,
+        exportable=bool(data.get("exportable", False)),
+        default_available=bool(data.get("default_available", False)),
     )
 
 

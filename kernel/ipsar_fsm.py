@@ -293,6 +293,9 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "allowed_operation_ids",
         "allowed_tool_ids",
         "tools_authoritative",
+        "accept_default_capabilities",
+        "excluded_operation_ids",
+        "excluded_tool_ids",
         "routable",
         "priority",
         "fast_path_patterns",
@@ -542,11 +545,32 @@ def load_catalog_from_disk(
             str(tool_id)
             for tool_id in (mode_front_matter.get("allowed_tool_ids") or [])
         ]
+        # The disk path does not run the SDK default-available merge, so the
+        # authored and effective allowlists are identical. The SDK MCP path
+        # sets authored_allowed_*_ids to the pre-merge values and lets the
+        # merge populate allowed_*_ids with ambient capabilities.
+        authored_allowed_operation_ids = list(allowed_operation_ids)
+        authored_allowed_tool_ids = list(allowed_tool_ids)
         tools_authoritative = mode_front_matter.get("tools_authoritative", True)
         if not isinstance(tools_authoritative, bool):
             raise WorkflowValidationError(
                 f"tools_authoritative must be a boolean in {mode_config_path}"
             )
+        accept_default_capabilities = mode_front_matter.get(
+            "accept_default_capabilities", True
+        )
+        if not isinstance(accept_default_capabilities, bool):
+            raise WorkflowValidationError(
+                f"accept_default_capabilities must be a boolean in {mode_config_path}"
+            )
+        excluded_operation_ids = [
+            str(op_id)
+            for op_id in (mode_front_matter.get("excluded_operation_ids") or [])
+        ]
+        excluded_tool_ids = [
+            str(tool_id)
+            for tool_id in (mode_front_matter.get("excluded_tool_ids") or [])
+        ]
         routable = mode_front_matter.get("routable", False)
         if not isinstance(routable, bool):
             raise WorkflowValidationError(
@@ -763,7 +787,12 @@ def load_catalog_from_disk(
             post_turn_operation_ids=post_turn_operation_ids,
             allowed_operation_ids=allowed_operation_ids,
             allowed_tool_ids=allowed_tool_ids,
+            authored_allowed_operation_ids=authored_allowed_operation_ids,
+            authored_allowed_tool_ids=authored_allowed_tool_ids,
             tools_authoritative=tools_authoritative,
+            accept_default_capabilities=accept_default_capabilities,
+            excluded_operation_ids=excluded_operation_ids,
+            excluded_tool_ids=excluded_tool_ids,
             default_intent_bridges=default_intent_bridges,
             mode_provider_id=str(mode_front_matter.get("mode_provider_id", "") or ""),
             context_evidence_packs=[
@@ -1337,6 +1366,12 @@ def _ensure_catalog_loaded() -> None:
     catalog_loader = MCPModeCatalog(_content_mcp_config)
     _workflow_catalog = catalog_loader.get_workflow_catalog()
     validate_workflow_catalog(_workflow_catalog)
+    # Enforce the cross-pack export boundary now that both the workflow catalog
+    # and the operation/tool catalogs are loaded. Generic rule over
+    # ``provider_id`` + ``exportable``; the kernel never names capability ids.
+    from kernel.operations.registry import validate_export_boundaries  # noqa: PLC0415
+
+    validate_export_boundaries()
 
 
 def get_workflow_catalog() -> dict[str, WorkflowModeConfig]:

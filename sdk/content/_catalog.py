@@ -94,12 +94,26 @@ _MODE_CONFIG_FILENAME = "_mode.md"
 _SESSION_PROVIDER_SELECTIONS_ENV = "LISA_SESSION_PROVIDER_SELECTIONS"
 
 
-def build_mode_catalog_json(mode_roots: list[Path]) -> str:
+def build_mode_catalog_json(
+    mode_roots: list[Path],
+    *,
+    operation_catalog_json: str | None = None,
+    tool_catalog_json: str | None = None,
+) -> str:
     """Scan mode roots and return a JSON-serializable mode catalog.
 
     Returns a JSON string encoding ``dict[str, dict]`` where each value is a
     mode config dict with nested ``stages``. The kernel deserializes this into
     ``WorkflowModeConfig`` objects.
+
+    When ``operation_catalog_json`` and/or ``tool_catalog_json`` are provided,
+    each mode's ``allowed_operation_ids`` / ``allowed_tool_ids`` are augmented
+    with the ids of operations/tools flagged ``default_available: true`` in
+    those catalogs (unless the mode opts out via
+    ``accept_default_capabilities: false`` or lists an id in
+    ``excluded_operation_ids`` / ``excluded_tool_ids``). This keeps the
+    ambient-capability merge entirely in the SDK catalog layer so the kernel
+    only ever sees the already-merged allowlists.
     """
     cache_key = "modes:" + _roots_fingerprint(mode_roots) + _provider_selection_cache_key()
     cached = _catalog_cache.get(cache_key)
@@ -128,9 +142,77 @@ def build_mode_catalog_json(mode_roots: list[Path]) -> str:
         )
         for mode_id, candidates in candidates_by_id.items()
     }
+    if operation_catalog_json is not None or tool_catalog_json is not None:
+        _merge_default_capabilities(
+            modes=merged,
+            operation_catalog=_decode_optional_catalog(operation_catalog_json),
+            tool_catalog=_decode_optional_catalog(tool_catalog_json),
+        )
     result = json.dumps(merged)
     _catalog_cache[cache_key] = result
     return result
+
+
+def _decode_optional_catalog(raw: str | None) -> dict[str, dict[str, Any]]:
+    """Decode a catalog JSON string into a dict, tolerating None/empty input."""
+    if not raw:
+        return {}
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _merge_default_capabilities(
+    *,
+    modes: dict[str, dict[str, Any]],
+    operation_catalog: dict[str, dict[str, Any]],
+    tool_catalog: dict[str, dict[str, Any]],
+) -> None:
+    """Merge ``default_available`` ops/tools into each mode's allowlists in place.
+
+    For every mode that has ``accept_default_capabilities`` truthy (default
+    True), union its ``allowed_operation_ids`` with the ids of operations
+    flagged ``default_available: true`` in ``operation_catalog``, then
+    subtract the mode's ``excluded_operation_ids``. Symmetric for tools. The
+    merge is idempotent (set union) so modes that already list an ambient id
+    are unaffected. Modes with ``accept_default_capabilities: false`` keep
+    their explicit allowlists untouched. The kernel never names ids; it only
+    filters on the merged allowlists it receives.
+    """
+    default_op_ids = {
+        op_id
+        for op_id, op in operation_catalog.items()
+        if bool(op.get("default_available", False))
+    }
+    default_tool_ids = {
+        tool_id
+        for tool_id, tool in tool_catalog.items()
+        if bool(tool.get("default_available", False))
+    }
+    if not default_op_ids and not default_tool_ids:
+        return
+    for mode in modes.values():
+        if not mode.get("accept_default_capabilities", True):
+            continue
+        excluded_ops = set(mode.get("excluded_operation_ids") or [])
+        excluded_tools = set(mode.get("excluded_tool_ids") or [])
+        existing_ops = list(mode.get("allowed_operation_ids") or [])
+        existing_tools = list(mode.get("allowed_tool_ids") or [])
+        # Preserve the mode's authored order; append new defaults at the end.
+        seen_ops = set(existing_ops)
+        for op_id in sorted(default_op_ids - excluded_ops):
+            if op_id not in seen_ops:
+                existing_ops.append(op_id)
+                seen_ops.add(op_id)
+        seen_tools = set(existing_tools)
+        for tool_id in sorted(default_tool_ids - excluded_tools):
+            if tool_id not in seen_tools:
+                existing_tools.append(tool_id)
+                seen_tools.add(tool_id)
+        mode["allowed_operation_ids"] = existing_ops
+        mode["allowed_tool_ids"] = existing_tools
 
 
 def _load_one_mode(
@@ -223,7 +305,22 @@ def _load_one_mode(
         "post_turn_operation_ids": [str(o) for o in (front_matter.get("post_turn_operation_ids") or [])],
         "allowed_operation_ids": [str(o) for o in (front_matter.get("allowed_operation_ids") or [])],
         "allowed_tool_ids": [str(t) for t in (front_matter.get("allowed_tool_ids") or [])],
+        "authored_allowed_operation_ids": [
+            str(o) for o in (front_matter.get("allowed_operation_ids") or [])
+        ],
+        "authored_allowed_tool_ids": [
+            str(t) for t in (front_matter.get("allowed_tool_ids") or [])
+        ],
         "tools_authoritative": bool(front_matter.get("tools_authoritative", True)),
+        "accept_default_capabilities": bool(
+            front_matter.get("accept_default_capabilities", True)
+        ),
+        "excluded_operation_ids": [
+            str(o) for o in (front_matter.get("excluded_operation_ids") or [])
+        ],
+        "excluded_tool_ids": [
+            str(t) for t in (front_matter.get("excluded_tool_ids") or [])
+        ],
         "entry_failure_policy": str(front_matter.get("entry_failure_policy", "abort") or "abort"),
         "workshop_panels": workshop_panels,
         "workshop_budget": front_matter.get("workshop_budget") or {},
@@ -591,6 +688,8 @@ def _load_markdown_operation(md_path: Path) -> dict[str, Any] | None:
         "instruction_markdown_path": str(md_path),
         "instruction_body": body,
         "module_path": "",
+        "exportable": bool(metadata.get("exportable", False)),
+        "default_available": bool(metadata.get("default_available", False)),
     }
 
 
@@ -635,6 +734,8 @@ def _load_runtime_operation(
         "instruction_markdown_path": "",
         "instruction_body": "",
         "module_path": module_path,
+        "exportable": bool(metadata.get("exportable", False)),
+        "default_available": bool(metadata.get("default_available", False)),
     }
 
 
@@ -806,4 +907,6 @@ def _load_runtime_tool(
         "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 3) or 3),
         "timeout_seconds": int(metadata.get("timeout_seconds", 30) or 30),
         "module_path": module_path,
+        "exportable": bool(metadata.get("exportable", False)),
+        "default_available": bool(metadata.get("default_available", False)),
     }

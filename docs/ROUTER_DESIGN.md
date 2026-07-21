@@ -359,6 +359,9 @@ tools_authoritative: true
 | `command_pattern` | Slash-command regex for `parse_route` | No (for `/mode` entry) |
 | `allowed_tool_ids` | Tool surface for this mode | No (but recommended) |
 | `tools_authoritative` | When `true`, empty `allowed_tool_ids` = no tools | No (default `true`) |
+| `accept_default_capabilities` | When `true` (default), inherit `default_available` ops/tools | No (default `true`) |
+| `excluded_operation_ids` | Ops to subtract from the default-available merge | No (default `[]`) |
+| `excluded_tool_ids` | Tools to subtract from the default-available merge | No (default `[]`) |
 
 ### Fast-path patterns (kept as a zero-cost hint)
 

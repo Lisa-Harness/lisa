@@ -5,6 +5,7 @@ tool_ids: [web_search]
 timeout_seconds: 120
 completion_max_tokens: 4000
 response_format_model_path: sdk.packs.search.operations.research.web_search.WebSearchStructuredOutput
+exportable: true
 ---
 
 # Web Search
