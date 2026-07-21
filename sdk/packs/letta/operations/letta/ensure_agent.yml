@@ -1,5 +1,5 @@
 operation_id: letta_ensure_agent
-description: Resolve or create the Letta agent for the current Lisa identity. Idempotent — returns the existing agent_id when mapped. Call once at the start of a Letta-backed workflow.
-mode_allowlist: [letta]
+description: Resolve or create the Letta agent for the current Lisa identity. Idempotent — returns the existing agent_id when mapped. Call once at the start of a Letta-backed workflow (letta chat mode or letta-agent action mode).
+mode_allowlist: [letta, letta-agent]
 timeout_seconds: 30
 max_calls_per_turn: 1

@@ -19,7 +19,12 @@ routing:
 
 This session uses Letta (MemGPT) as the memory provider. Durable facts stored via `memory.add` are persisted as Letta archival memory passages for the Letta agent mapped to your identity. Existing learn and recall workflows work unchanged.
 
-To delegate a turn to the stateful Letta agent, switch to the `letta` mode with `/letta <query>` or `/ask-letta <query>`. The first delegation creates or resolves your mapped Letta agent automatically.
+To delegate a turn to the stateful Letta agent, use one of two entry points:
+
+- `/letta-agent <query>` — **direct delegation** (no Lisa model call). Sends the query straight to the mapped Letta agent and returns its response. Fastest path; use when you just want to talk to the agent.
+- `/letta <query>` — **model-dispatched** chat mode. The Lisa model picks among the Letta sub-operations (`letta_send_message`, `letta_search_archival`, `letta_update_core_memory`, `letta_remember`, `letta_sync_memory`, `letta_compact_agent`, `recall_memory`) based on your phrasing. Use when you want Lisa to decide which Letta primitive to invoke.
+
+The first delegation via either entry point creates or resolves your mapped Letta agent automatically (via the shared `letta_ensure_agent` entry operation).
 
 Environment:
 
