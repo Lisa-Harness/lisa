@@ -357,6 +357,65 @@ async def test_handoff_swaps_system_prompt() -> None:
     assert captured_system_prompts[0] != captured_system_prompts[1]
 
 
+@pytest.mark.asyncio
+async def test_handoff_updates_ctx_mode_id_for_post_handoff_dispatch() -> None:
+    """Regression: after a mid-turn mode handoff, subsequent operation/tool
+    dispatches must authorize against the *new* mode, not the entry mode.
+
+    Before the fix, ``ctx`` was built once in Phase 1 with the entry
+    mode_id and never refreshed. When the model called ``transition_stage``
+    to hand off to (e.g.) ``markdown`` and then called a markdown operation,
+    ``op_ctx = ctx.model_copy(update={...})`` preserved the stale
+    ``mode_id='default'``, so ``execute_operation`` rejected the call with
+    "Operation '...' is not allowed for mode 'default'." — the exact
+    "Letta tools are not allowed in the default mode" symptom.
+    """
+    captured_op_ctx_modes: list[str] = []
+
+    async def stub_execute_op(
+        operation_id: str, ctx: OperationExecutionContext
+    ) -> OperationResult:
+        captured_op_ctx_modes.append(str(getattr(ctx, "mode_id", "")))
+        return OperationResult(output_text=f"ran {operation_id} in {getattr(ctx, 'mode_id', '')}")
+
+    call_count = 0
+
+    async def three_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # First, hand off to markdown.
+            return _StubCompletion(
+                content="",
+                tool_calls=[_transition_call("call_1", "markdown")],
+            )
+        if call_count == 2:
+            # Then call a markdown-bound operation. This must dispatch
+            # with ctx.mode_id == "markdown", not "default".
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    _make_tool_call(
+                        "call_2",
+                        "markdown_forge_document",
+                        {"topic": "handoff auth"},
+                    )
+                ],
+            )
+        return _StubCompletion(content="Document forged.")
+
+    hooks = _build_hooks(three_step, execute_operation=stub_execute_op)
+    result = await run_turn(mode_id="default", query="write a doc", hooks=hooks)
+
+    assert result.handoff_to == "markdown"
+    # The operation should have been dispatched exactly once, and the ctx
+    # it received must carry the post-handoff mode_id.
+    assert captured_op_ctx_modes == ["markdown"], (
+        f"expected post-handoff ctx.mode_id='markdown', got {captured_op_ctx_modes}"
+    )
+    assert result.tool_call_count >= 1
+
+
 # ── Workflow stage transition ─────────────────────────────────────────
 
 

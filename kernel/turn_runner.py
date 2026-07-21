@@ -1795,10 +1795,33 @@ async def _run_turn_inner(
                                 capability_manifest = compile_capability_manifest(
                                     tool_schemas, mode_config=target_mode_config
                                 )
-                                # Update runtime state
+                                # Update runtime state. The ctx built in
+                                # Phase 1 carries the *entry* mode_id, so
+                                # post-handoff operation/tool dispatches
+                                # (op_ctx = ctx.model_copy(...), _to_tool_context)
+                                # would inherit the stale mode and be rejected
+                                # by execute_operation / execute_tool with
+                                # "... is not allowed for mode '<entry>'".
+                                # Patch ctx.mode_id so subsequent dispatches
+                                # authorize against the new mode.
                                 mode_id = target_stage
                                 mode_config = target_mode_config
                                 handoff_to = target_stage
+                                try:
+                                    ctx = ctx.model_copy(
+                                        update={"mode_id": target_stage}
+                                    )
+                                except Exception:  # pylint: disable=broad-except
+                                    # Fallback for non-pydantic ctx shapes.
+                                    try:
+                                        setattr(ctx, "mode_id", target_stage)
+                                    except Exception:  # pylint: disable=broad-except
+                                        _log.warning(
+                                            "Could not update ctx.mode_id after "
+                                            "handoff to '%s'; post-handoff "
+                                            "operations may be mis-authorized.",
+                                            target_stage,
+                                        )
                                 tool_output = (
                                     f"Handed off to mode: {target_stage}."
                                     + (f" Rationale: {rationale}" if rationale else "")
