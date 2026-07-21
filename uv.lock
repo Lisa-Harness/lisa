@@ -1302,6 +1302,7 @@ version = "0.1.0"
 source = { editable = "sdk/packs/compaction" }
 dependencies = [
     { name = "lisa-kernel" },
+    { name = "lisa-pack-checkpoint" },
 ]
 
 [package.optional-dependencies]
@@ -1314,6 +1315,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "lisa-kernel" },
+    { name = "lisa-pack-checkpoint" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },

@@ -10,7 +10,9 @@ the more aggressive, pressure-aware prompt.
 The implementation deliberately reuses the existing structured-output
 contract (``HistorySummary``) and the same model-call path as
 ``checkpoint_history_summarize``. One compaction primitive, two prompts,
-two triggers — no forking of the compaction logic itself.
+two triggers — no forking of the compaction logic itself. The
+``HistorySummary`` model is imported from the checkpoint pack rather than
+redeclared here, so the two operations can never drift apart.
 """
 
 from __future__ import annotations
@@ -22,10 +24,11 @@ from pydantic import BaseModel, Field, ValidationError
 
 from kernel.models import OperationExecutionContext, OperationResult
 from kernel.operations.structured_output import parse_structured_payload
+from sdk.packs.checkpoint.operations.checkpoint_history_summarize import HistorySummary
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ContextCompactSummary", "Parameters", "execute"]
+__all__ = ["Parameters", "execute"]
 
 
 class Parameters(BaseModel):
@@ -50,19 +53,6 @@ class Parameters(BaseModel):
         ge=0.0,
         le=1.0,
         description="Current context-window utilization fraction (0.0-1.0).",
-    )
-
-
-class ContextCompactSummary(BaseModel):
-    """Structured summary returned by the model for compacted old turns."""
-
-    condensed_narrative: str = Field(
-        default="",
-        description="Short narrative summary of older turns.",
-    )
-    key_points: list[str] = Field(
-        default_factory=list,
-        description="Grounded bullet points worth retaining.",
     )
 
 
@@ -147,11 +137,11 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             model_def=model_def,
             max_tokens=350,
             temperature=0.1,
-            response_format=ContextCompactSummary,
+            response_format=HistorySummary,
         )
         content = getattr(raw, "content", "") or str(raw)
         summary = cast(
-            ContextCompactSummary, parse_structured_payload(ContextCompactSummary, content)
+            HistorySummary, parse_structured_payload(HistorySummary, content)
         )
     except ValidationError as exc:
         raise RuntimeError(f"context_compact structured output parse failed: {exc}") from exc
