@@ -133,12 +133,12 @@ LISA_PACK_REQUIRE_GIT_REF_ENV = "LISA_PACK_REQUIRE_GIT_REF"
 # local pack specs that live under the repo. In tool-install mode this is
 # sys.prefix — local pack specs are rare there but the resolver stays correct.
 # Also import the packs venv resolver — used by run_pack_install/uninstall
-# to target the dedicated ~/.lisa/packs-venv rather than the tool/repo venv.
+# to target the dedicated <data_dir>/packs-venv rather than the tool/repo venv.
+# packs_venv_for honors the runtime's resolved data_dir (and LISA_PACKS_VENV),
+# so a --data-dir override is applied consistently across the host.
 from hosts.core.paths import (  # noqa: E402
-    default_packs_venv as _default_packs_venv,
-)
-from hosts.core.paths import (
     framework_root as _framework_root,
+    packs_venv_for as _packs_venv_for,
 )
 
 _FRAMEWORK_ROOT = _framework_root()
@@ -1699,10 +1699,10 @@ async def run_pack_install(
         if _is_local_pack_spec(normalized_spec)
         else normalized_spec
     )
-    # Install into the dedicated packs venv (~/.lisa/packs-venv) so that
+    # Install into the dedicated packs venv (<data_dir>/packs-venv) so that
     # the tool venv stays immutable and the packs venv site-packages is
     # already on sys.path at the next launch for entry-point discovery.
-    packs_venv = _default_packs_venv()
+    packs_venv = _packs_venv_for(runtime.data_dir)
     ensured, ensure_err = await _ensure_packs_venv(packs_venv)
     if not ensured:
         return False, f"Install failed for '{normalized_spec}'.\n{ensure_err}"
@@ -1774,7 +1774,7 @@ async def run_pack_uninstall(
     if not normalized:
         return False, "Usage: /pack uninstall <package-name>"
 
-    packs_venv = _default_packs_venv()
+    packs_venv = _packs_venv_for(runtime.data_dir)
     ensured, ensure_err = await _ensure_packs_venv(packs_venv)
     if not ensured:
         return False, f"Uninstall failed for '{normalized}'.\n{ensure_err}"

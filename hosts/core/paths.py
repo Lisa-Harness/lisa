@@ -105,8 +105,28 @@ def venv_root() -> Path:
     return Path(sys.prefix)
 
 
+def packs_venv_for(data_dir: Path) -> Path:
+    """Return the packs venv path for a resolved host ``data_dir``.
+
+    Resolution order:
+      1. ``LISA_PACKS_VENV`` — explicit override (absolute venv path).
+         Takes precedence over everything, including ``data_dir``.
+      2. ``<data_dir>/packs-venv`` — the packs venv always lives inside
+         the host's resolved data directory, so a ``--data-dir`` override
+         is honored consistently across pack install/uninstall and the
+         rest of the host.
+
+    Use :func:`default_packs_venv` for the startup-time resolution that
+    also consults ``LISA_DATA_DIR`` and the platform default data dir.
+    """
+    override = os.getenv(LISA_PACKS_VENV_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    return data_dir / _PACKS_VENV_DIR_NAME
+
+
 def default_packs_venv() -> Path:
-    """Return the default packs venv path.
+    """Return the default packs venv path (startup-time resolution).
 
     Resolution order (matches :func:`HostConfig.from_env`):
       1. ``LISA_PACKS_VENV`` — explicit override (absolute venv path).
@@ -117,6 +137,10 @@ def default_packs_venv() -> Path:
 
     A trailing path separator on ``LISA_DATA_DIR`` (e.g. ``artifacts/``) is
     handled correctly by :class:`pathlib.Path`.
+
+    Prefer :func:`packs_venv_for` when a resolved ``data_dir`` is already
+    available (e.g. from a ``HostRuntime``) so that a ``--data-dir`` CLI
+    override is honored consistently instead of re-reading the env var.
     """
     override = os.getenv(LISA_PACKS_VENV_ENV, "").strip()
     if override:
@@ -166,6 +190,7 @@ __all__ = [
     "framework_root",
     "inject_packs_venv_site_packages",
     "is_tool_install",
+    "packs_venv_for",
     "packs_venv_site_packages",
     "venv_root",
 ]
