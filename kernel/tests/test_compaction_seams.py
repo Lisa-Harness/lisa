@@ -92,7 +92,8 @@ def test_discover_slice_provider_factories_filters_excluded_packs(
 
 def test_compaction_factory_returns_none_when_disabled() -> None:
     """The compaction pack's factory returns None when the plan disables it."""
-    from sdk.packs.compaction.slice_provider import get_slice_provider_factory
+    pytest.importorskip("lisa_packs.compaction")
+    from lisa_packs.compaction.slice_provider import get_slice_provider_factory
 
     class _Tuning:
         enabled = False
@@ -122,7 +123,8 @@ def test_compaction_factory_returns_none_when_disabled() -> None:
 
 def test_compaction_factory_returns_slice_when_enabled() -> None:
     """The compaction pack's factory returns a ContextCompactionSlice when enabled."""
-    from sdk.packs.compaction.slice_provider import (
+    pytest.importorskip("lisa_packs.compaction")
+    from lisa_packs.compaction.slice_provider import (
         ContextCompactionSlice,
         get_slice_provider_factory,
     )

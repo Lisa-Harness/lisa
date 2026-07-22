@@ -62,7 +62,7 @@ without exposing an `execute` function. The catalog loader recognises that shape
 skips it as a runtime entry point, using it only as the response contract for the
 declarative runtime.
 
-Real examples: `sdk/packs/search/operations/research/web_search.operation.md`,
+Real examples: `lisa_packs/search/operations/research/web_search.operation.md`,
 `sdk/packs/introspect/operations/self_model/reflect_self.operation.md`.
 
 **Precedence rule:** if a directory contains both `<stem>.operation.md` and

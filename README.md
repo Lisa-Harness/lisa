@@ -8,7 +8,9 @@ This directory stages the public Lisa framework packages before they are moved t
 - `sdk/`: author-facing helper contracts for packs, workshop execution, rendering, and integration contracts.
 - `sdk/packs/core/`: baseline public modes (`default`, `workshop`) and shared prompt assets.
 - `sdk/packs/memory/`: memory-backed learning behaviors (`learn`, memory ops, and default override candidate).
-- `sdk/packs/search/`: search/reasoning modes, operations, and tools.
+- `sdk/packs/introspect/`: operational self-model and reflective self-assessment operations.
+- `sdk/packs/models/`: natural-language model manifest assignment editing (`/models update`).
+- `sdk/packs/checkpoint/`: LLM-enriched checkpoint/restore operations.
 - `hosts/little_lisa/`: a local non-production terminal host that loads public packs with manifest-driven model routing and OpenAI-compatible provider calls.
 - `mcp_server/`: an MCP (Model Context Protocol) memory server that exposes Lisa's surface-scoped memory tools over stdio.
 
@@ -79,7 +81,6 @@ The root `pyproject.toml` defines a public-only `uv` workspace. The memory pack 
 - `lisa-pack-github`
 - `lisa-pack-stripe`
 - `lisa-pack-core`
-- `lisa-pack-search`
 - `little-lisa`
 
 Install `lisa-pack-memory` through the pack manager when you want memory-backed learning workflows.
@@ -95,7 +96,7 @@ uv run python -c "import kernel, sdk; print(kernel.__file__); print(sdk.__file__
 uv run little-lisa verify
 uv run little-lisa modes
 uv run little-lisa models
-uv run pytest --import-mode=importlib hosts/little_lisa/test_little_lisa.py kernel/tests sdk/tests sdk/packs/cloudflare/tests sdk/packs/github/tests sdk/packs/stripe/tests -m "not live" -v --tb=short
+uv run pytest --import-mode=importlib hosts/little_lisa/test_little_lisa.py kernel/tests sdk/tests -m "not live" -v --tb=short
 uv run --extra dev ruff check --select F,I kernel sdk mcp_server hosts
 ```
 

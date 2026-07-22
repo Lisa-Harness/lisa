@@ -1,9 +1,0 @@
-operation_id: markdown_forge_document
-description: Combine user input with recalled memory context (and optionally an existing document), synthesize or revise a markdown document via an LLM, validate its structure with the markdown-it-py outline tool, and persist it to lisa-storage.
-mode_allowlist: [markdown]
-tool_ids: [markdown_generate, write_file, read_file, memory.search]
-timeout_seconds: 120
-max_calls_per_turn: 3
-completion_max_tokens: 7500
-completion_temperature: 0.2
-preferred_model_id: default

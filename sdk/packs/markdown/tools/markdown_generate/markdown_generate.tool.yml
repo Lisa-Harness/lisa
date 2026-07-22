@@ -1,5 +1,0 @@
-tool_id: markdown_generate
-pack_id: lisa-pack-markdown
-description: "Parse markdown text with markdown-it-py and return a structural outline (headings, list depth, code spans)."
-mode_allowlist: [markdown]
-effect: read

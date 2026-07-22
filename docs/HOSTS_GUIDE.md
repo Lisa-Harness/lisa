@@ -65,6 +65,12 @@ uv sync --extra dev
 # Interactive REPL
 uv run lisa cli --debug
 
+# The /search, /discuss, /ponder, /markdown, /compact-now, and /letta modes
+# ship as on-demand packs. Install the ones you want before first use:
+#   uv pip install -e ../lisa_packs/search      # /search, /discuss, /ponder
+#   uv pip install -e ../lisa_packs/markdown    # /markdown
+# (or via the in-app pack manager: /pack install lisa-pack-search)
+
 # Single-turn commands
 uv run lisa once "/search recent Python packaging guidance"
 uv run lisa once "/markdown Draft a short incident-review outline"

@@ -29,13 +29,26 @@ _CORE_ROOT: Path = (
 _LEARNING_ROOT: Path = (
     Path(__file__).resolve().parents[3] / "sdk" / "packs" / "memory"
 ).resolve()
-_SEARCH_ROOT: Path = (
-    Path(__file__).resolve().parents[3] / "sdk" / "packs" / "search"
-).resolve()
+# search, markdown, compaction, and letta migrated to ../../lisa_packs/<name>
+# (external submodules). Only include a content root when the submodule is
+# checked out alongside the framework; tests that need a migrated mode skip
+# when absent.
+_PACKS_ROOT: Path = (Path(__file__).resolve().parents[3].parent / "lisa_packs").resolve()
+
+
+def _external_pack_roots() -> list[Path]:
+    """Return the content roots of migrated packs that are checked out."""
+    roots: list[Path] = []
+    for name in ("search", "markdown", "compaction", "letta"):
+        root = (_PACKS_ROOT / name / "lisa_packs" / name).resolve()
+        if root.exists():
+            roots.append(root)
+    return roots
 
 
 def _make_catalog_mcp_config() -> MCPClientConfig:
     """Build an MCPClientConfig that spawns lisa-catalog with the core pack."""
+    content_roots = [_CORE_ROOT, _LEARNING_ROOT, *_external_pack_roots()]
     return MCPClientConfig(
         server_id="lisa-catalog-test",
         command=sys.executable,
@@ -46,7 +59,7 @@ def _make_catalog_mcp_config() -> MCPClientConfig:
             str(_CORE_ROOT),
         ],
         env={
-            "SDK_CONTENT_ROOTS": f"{_CORE_ROOT};{_LEARNING_ROOT};{_SEARCH_ROOT}",
+            "SDK_CONTENT_ROOTS": ";".join(str(r) for r in content_roots),
             "LISA_SESSION_PROVIDER_SELECTIONS": json.dumps(
                 {"modes": {"default": "lisa-pack-core"}}
             ),

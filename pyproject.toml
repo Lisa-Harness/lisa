@@ -8,15 +8,10 @@ dependencies = [
     "lisa-sdk",
     "lisa-mcp-servers",
     "lisa-pack-memory",
-    "lisa-pack-coding",
     "lisa-pack-core",
-    "lisa-pack-letta",
     "lisa-pack-introspect",
-    "lisa-pack-search",
     "lisa-pack-models",
     "lisa-pack-checkpoint",
-    "lisa-pack-markdown",
-    "lisa-pack-compaction",
     "lisa-host-core",
     "lisa-host-cli",
     "lisa-host-web",
@@ -48,13 +43,9 @@ members = [
     "mcp_server",
     "sdk/packs/core",
     "sdk/packs/introspect",
-    "sdk/packs/letta",
     "sdk/packs/memory",
-    "sdk/packs/search",
     "sdk/packs/models",
     "sdk/packs/checkpoint",
-    "sdk/packs/markdown",
-    "sdk/packs/compaction",
     "hosts/core",
     "hosts/cli",
     "hosts/web",
@@ -66,7 +57,6 @@ members = [
 lisa-kernel = { workspace = true }
 lisa-sdk = { workspace = true }
 lisa-mcp-servers = { workspace = true }
-lisa-pack-letta = { workspace = true }
 lisa-pack-memory = { workspace = true }
 lisa-pack-coding = { path = "../lisa_packs/coding" }
 lisa-pack-cloudflare = { path = "../lisa_packs/cloudflare" }
@@ -75,13 +65,14 @@ lisa-pack-stripe = { path = "../lisa_packs/stripe" }
 lisa-pack-core = { workspace = true }
 lisa-pack-models = { workspace = true }
 lisa-pack-introspect = { workspace = true }
-lisa-pack-search = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
-lisa-pack-markdown = { workspace = true }
-lisa-pack-compaction = { workspace = true }
 lisa-pack-mem0 = { path = "../lisa_packs/mem0" }
 lisa-pack-brave-search = { path = "../lisa_packs/brave_search" }
 lisa-pack-gmail = { path = "../lisa_packs/gmail" }
+lisa-pack-search = { path = "../lisa_packs/search" }
+lisa-pack-markdown = { path = "../lisa_packs/markdown" }
+lisa-pack-compaction = { path = "../lisa_packs/compaction" }
+lisa-pack-letta = { path = "../lisa_packs/letta" }
 lisa-host-core = { workspace = true }
 lisa-host-cli = { workspace = true }
 lisa-host-web = { workspace = true }

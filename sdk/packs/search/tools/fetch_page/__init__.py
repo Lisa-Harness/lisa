@@ -1,1 +1,0 @@
-"""Fetch page tool."""

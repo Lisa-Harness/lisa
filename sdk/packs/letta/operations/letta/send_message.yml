@@ -1,5 +1,0 @@
-operation_id: letta_send_message
-description: Send the current user query (or an explicit message) to the mapped Letta agent and return its response. Use for stateful-agent delegation in the letta chat mode or the letta-agent action mode.
-mode_allowlist: [letta, letta-agent]
-timeout_seconds: 120
-max_calls_per_turn: 1
