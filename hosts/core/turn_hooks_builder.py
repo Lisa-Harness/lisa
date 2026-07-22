@@ -445,13 +445,26 @@ def build_turn_hooks(
     pack_slice_providers: list[Any] = []
     for entry in pack_slice_entries:
         try:
-            provider = entry.factory(
-                # The provider reads last_context_snapshot and
-                # write_turn_history_fn off the view and invokes
-                # execute_operation to fire the summarize operation.
-                _slice_provider_hooks_view,
-                runtime.session_plan,
-            )
+            # The entry point is expected to be the factory callable
+            # ``(turn_hooks, session_plan) -> provider | None``. Some packs
+            # (notably lisa-pack-compaction) register a *factory-factory*
+            # that takes 0 args and returns the real factory. Resolve that
+            # double-indirection by trying the direct call first and falling
+            # back to the factory-factory unwrap on TypeError.
+            try:
+                provider = entry.factory(
+                    # The provider reads last_context_snapshot and
+                    # write_turn_history_fn off the view and invokes
+                    # execute_operation to fire the summarize operation.
+                    _slice_provider_hooks_view,
+                    runtime.session_plan,
+                )
+            except TypeError:
+                factory = entry.factory()
+                provider = factory(
+                    _slice_provider_hooks_view,
+                    runtime.session_plan,
+                )
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning(
                 "slice provider %s factory failed: %s", entry.pack_name, exc
