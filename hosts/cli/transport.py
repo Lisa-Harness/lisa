@@ -61,15 +61,40 @@ class RichTransport:
         # ``start_thinking``.
         self._fork_children: dict[int, dict[str, Any]] = {}
         self._fork_total: int = 0
+        # The mode that currently owns the turn, tracked live across stage
+        # events. Seeded from ``model_call.mode_id`` and updated when a
+        # mid-turn handoff lands (``tool_dispatch_complete`` with
+        # ``transition="handoff"`` and ``handoff_to``). Shown as the
+        # ``[mode]`` prefix on every status line so the user always knows
+        # who owns their turn — including mid-turn handoffs.
+        self._current_mode: str = ""
 
-    def start_thinking(self, stage: str = "routing") -> None:
-        """Start a status spinner so the user sees the turn is active."""
+    def start_thinking(self, stage: str = "dispatch") -> None:
+        """Start a status spinner so the user sees the turn is active.
+
+        The default stage is ``dispatch`` — the pre-pipeline phase where
+        ``handle_message`` parses commands, resolves the ``start_mode``
+        bypass, and selects ``current_mode_id``. There is no separate
+        router; mode handoff happens mid-turn via ``transition_stage``, so
+        ``routing`` would be a misnomer here.
+
+        The dispatch phase uses a distinct spinner (``dots2``) so the user
+        can tell "still deciding where this goes" from "model is
+        generating" once the first ``model_call`` stage event arrives and
+        switches to the normal ``dots`` spinner.
+        """
         self.stop_thinking()
         self._thinking_stage = stage
         self._streamed_during_turn = False
         self._fork_children = {}
         self._fork_total = 0
-        self._status = self.console.status(f"thinking… ({stage})", spinner="dots", spinner_style=STYLE_STAGE)
+        self._current_mode = ""
+        is_dispatch = stage == "dispatch"
+        spinner = "dots2" if is_dispatch else "dots"
+        label = self._render_status_line(stage)
+        self._status = self.console.status(
+            label, spinner=spinner, spinner_style=STYLE_STAGE,
+        )
         self._status.start()
 
     def stop_thinking(self) -> None:
@@ -91,12 +116,22 @@ class RichTransport:
         """
         data = data or {}
 
+        # ── Live mode tracking ───────────────────────────────────────
+        # model_call carries the entry mode; a mid-turn handoff surfaces
+        # via tool_dispatch_complete with transition="handoff" and
+        # handoff_to. Update _current_mode so the [mode] prefix on every
+        # subsequent status line reflects who owns the turn now.
+        if label == "model_call" and data.get("mode_id"):
+            self._current_mode = str(data["mode_id"])
+        elif label == "tool_dispatch_complete":
+            if data.get("transition") == "handoff" and data.get("handoff_to"):
+                self._current_mode = str(data["handoff_to"])
+
         # ── Fork fan-out tracking ──────────────────────────────────────
         if label == "fork_start":
             self._fork_children = {}
             self._fork_total = int(data.get("children", 0)) or 0
-            text = self._render_fork_stage()
-            self._update_status(text)
+            self._update_status(self._render_fork_stage())
             return
         if label == "fork_child_start":
             idx = int(data.get("child_index", -1))
@@ -107,8 +142,7 @@ class RichTransport:
                     "status": "running",
                     "query_preview": data.get("query_preview", ""),
                 }
-            text = self._render_fork_stage()
-            self._update_status(text)
+            self._update_status(self._render_fork_stage())
             return
         if label == "fork_child_complete":
             idx = int(data.get("child_index", -1))
@@ -119,22 +153,40 @@ class RichTransport:
                     "duration_ms": data.get("duration_ms"),
                 })
                 self._fork_children[idx] = existing
-            text = self._render_fork_stage()
-            self._update_status(text)
+            self._update_status(self._render_fork_stage())
             return
         if label == "fork_complete":
+            # Keep the per-child table visible so the user sees *which*
+            # children succeeded/failed, not just counts. The table is
+            # cleared on the next start_thinking.
             ok = int(data.get("ok", 0))
             failed = int(data.get("failed", 0))
-            self._fork_children = {}
             self._fork_total = 0
-            text = f"stage: fork complete ({ok} ok, {failed} failed)"
+            text = self._render_fork_stage(summary=(ok, failed))
             self._update_status(text)
             return
 
         # ── Normal stage line (detailed) ───────────────────────────────
-        suffix = self._render_stage_suffix(data)
-        text = f"stage: {label}{suffix}"
+        text = self._render_status_line(label, data)
         self._update_status(text)
+
+    def _render_status_line(self, label: str, data: dict[str, Any] | None = None) -> str:
+        """Render one status line, prefixed with the active mode.
+
+        ``[mode] stage: <label> (…meta…)``. The mode prefix is the single
+        most informative fact for the user; it updates live on mid-turn
+        handoff so a ``default → coding`` switch is visible on the line.
+        """
+        data = data or {}
+        prefix = f"[{self._current_mode}] " if self._current_mode else ""
+        # tool_dispatch gets a legible kind glyph instead of a flat
+        # tool_kind=… suffix key, so the user can tell an in-process
+        # operation from an MCP call from a mid-turn handoff at a glance.
+        if label == "tool_dispatch":
+            body = self._render_tool_dispatch(data)
+            return f"{prefix}{body}"
+        suffix = self._render_stage_suffix(data)
+        return f"{prefix}stage: {label}{suffix}"
 
     def _update_status(self, text: str) -> None:
         """Push ``text`` to the spinner, or print it inline if no spinner."""
@@ -147,8 +199,8 @@ class RichTransport:
         """Compact one-line rendering of stage metadata."""
         parts: list[str] = []
         for key in (
-            "mode_id", "provider", "model_id", "iteration",
-            "tool_calls_so_far", "tool", "tool_kind", "tool_calls",
+            "provider", "model_id", "iteration",
+            "tool_calls_so_far", "tool_calls",
             "duration_ms", "stage_id", "turn_count",
         ):
             value = data.get(key)
@@ -164,7 +216,49 @@ class RichTransport:
             return f" ({', '.join(parts)})"
         return ""
 
-    def _render_fork_stage(self) -> str:
+    # ── tool_dispatch legible rendering ──────────────────────────────
+    # The kernel tags every dispatch with tool_kind: "operation",
+    # "pack_tool", "mcp_tool", or "transition". Render a compact glyph +
+    # kind word so the user can distinguish in-process work, MCP calls,
+    # and mid-turn handoffs/forks without parsing a flat key=value list.
+    _TOOL_KIND_GLYPH: dict[str, str] = {
+        "operation": "→ op",
+        "pack_tool": "→ tool",
+        "mcp_tool": "→ mcp",
+        "transition": "↦",
+    }
+
+    def _render_tool_dispatch(self, data: dict[str, Any]) -> str:
+        tool = str(data.get("tool") or "")
+        kind = str(data.get("tool_kind") or "")
+        glyph = self._TOOL_KIND_GLYPH.get(kind, "→")
+        # Transitions (handoff/fork/workflow) are rendered with a target
+        # suffix so the direction of the mid-turn move is explicit.
+        if kind == "transition":
+            target = ""
+            if data.get("handoff_to"):
+                target = f"→ {data['handoff_to']}"
+            elif data.get("transition") == "fork":
+                n = data.get("fork_children") or 0
+                target = f"fork ({n} children)"
+            elif data.get("transitioned_to"):
+                target = f"→ {data['transitioned_to']}"
+            suffix_parts = [f"{glyph} {tool}"]
+            if target:
+                suffix_parts.append(target)
+            body = " ".join(suffix_parts)
+        else:
+            body = f"{glyph}: {tool}"
+        meta: list[str] = []
+        if data.get("iteration"):
+            meta.append(f"iter={data['iteration']}")
+        if data.get("tool_calls_so_far"):
+            meta.append(f"calls={data['tool_calls_so_far']}")
+        if meta:
+            body += f" ({', '.join(meta)})"
+        return f"stage: tool_dispatch {body}"
+
+    def _render_fork_stage(self, summary: tuple[int, int] | None = None) -> str:
         """Render the fork fan-out as one line per active child.
 
         Example with two children::
@@ -172,10 +266,23 @@ class RichTransport:
             stage: fork (2 children)
               #0 coding · running · query preview…
               #1 markdown · running · query preview…
+
+        When ``summary`` is set (called from ``fork_complete``), the
+        per-child table is kept so the user sees *which* children
+        succeeded/failed — not just counts. The header line carries the
+        ok/failed totals in that case.
         """
         if not self._fork_children:
+            if summary is not None:
+                ok, failed = summary
+                return f"stage: fork complete ({ok} ok, {failed} failed)"
             return f"stage: fork ({self._fork_total} children)"
-        lines = [f"stage: fork ({self._fork_total} children)"]
+        if summary is not None:
+            ok, failed = summary
+            header = f"stage: fork complete ({ok} ok, {failed} failed)"
+        else:
+            header = f"stage: fork ({self._fork_total} children)"
+        lines = [header]
         for idx in sorted(self._fork_children):
             child = self._fork_children[idx]
             mode_id = child.get("mode_id", "?")

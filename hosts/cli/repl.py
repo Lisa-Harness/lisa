@@ -370,9 +370,11 @@ async def _process_repl_turn(
     # Start the thinking spinner immediately so the terminal is not dead
     # between submit and the first pipeline stage callback. The spinner
     # is stopped by the transport on the first on_stage/on_response/
-    # on_error/on_text_chunk.
+    # on_error/on_text_chunk. The stage is "dispatch" — the pre-pipeline
+    # phase (command parse, start_mode bypass, current_mode_id selection).
+    # There is no separate router; handoff is mid-turn via transition_stage.
     if isinstance(transport, RichTransport):
-        transport.start_thinking("routing")
+        transport.start_thinking("dispatch")
     try:
         result = await handle_message(runtime, message, transport)
     except (asyncio.CancelledError, KeyboardInterrupt):
@@ -445,10 +447,56 @@ async def _process_repl_turn(
     if result.text and not isinstance(transport, RichTransport):
         await transport.on_response(result.text)
 
+    # Compact turn-summary footer: mode · model · tokens · elapsed, plus a
+    # handoff note when the model switched modes mid-turn. Sourced from
+    # ``runtime.last_turn_context`` (populated by handle_message) and the
+    # per-turn elapsed timer. Skipped when there's no completion context
+    # (e.g. an early-exit host-command path).
+    _render_turn_footer(console, runtime, elapsed_ms)
+
     console.print(Rule(style=STYLE_RULE))
 
 
 # ── Rendering helpers ────────────────────────────────────────────────
+
+
+def _render_turn_footer(
+    console: Console, runtime: HostRuntime, elapsed_ms: float
+) -> None:
+    """Render a one-line post-response summary: mode · model · tokens · time.
+
+    Draws from ``runtime.last_turn_context`` (the ``completion`` dict
+    populated by ``handle_message``) plus the per-turn elapsed timer.
+    When a mid-turn mode handoff occurred, appends ``→  <new mode>`` so
+    the user sees the transition that happened during the turn. Quiet
+    (no-op) when no completion context is available.
+    """
+    ctx = runtime.last_turn_context
+    if ctx is None or not getattr(ctx, "completion", None):
+        return
+    comp = ctx.completion or {}
+    mode_id = str(comp.get("mode_id") or ctx.mode_id or "default")
+    resolved = comp.get("resolved_model") or {}
+    if not isinstance(resolved, dict):
+        resolved = {}
+    model_id = str(resolved.get("model_id") or "")
+    total_tokens = comp.get("total_tokens")
+    parts: list[str] = []
+    parts.append(f"▾ {mode_id}")
+    if model_id:
+        parts.append(model_id)
+    if total_tokens:
+        parts.append(f"{total_tokens} tok")
+    parts.append(f"{int(elapsed_ms)}ms")
+    # Mid-turn handoff: the host already updated runtime.current_mode_id
+    # from result.handoff_to. If it differs from the entry mode, surface
+    # the transition on the footer.
+    entry_mode = str(comp.get("mode_id") or "")
+    current = runtime.current_mode_id
+    if current and current != entry_mode and entry_mode:
+        parts.append(f"→ {current}")
+    footer = "  ·  ".join(parts)
+    console.print(Text(footer, style=STYLE_TEXT_MUTED))
 
 
 def _print_startup_banner(console: Console) -> None:

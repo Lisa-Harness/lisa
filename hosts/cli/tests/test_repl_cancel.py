@@ -52,7 +52,7 @@ def test_process_repl_turn_keyboard_interrupt_returns_prompt(
     runtime = _make_runtime(tmp_path)
     console = Console(quiet=True)
     transport = RichTransport(console=console, debug=False)
-    transport.start_thinking("routing")
+    transport.start_thinking("dispatch")
 
     async def _raise_interrupt(*a: Any, **k: Any) -> Any:
         raise KeyboardInterrupt

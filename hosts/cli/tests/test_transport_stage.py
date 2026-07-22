@@ -93,9 +93,14 @@ async def test_on_stage_fork_renders_one_line_per_child() -> None:
     assert transport._fork_children[0]["duration_ms"] == 42
 
     await transport.on_stage("fork_complete", {"children": 2, "ok": 1, "failed": 1})
-    # fork_complete clears the live fork state.
-    assert transport._fork_children == {}
+    # fork_complete keeps the per-child table visible so the user sees
+    # *which* children succeeded/failed, not just counts. The table is
+    # cleared by the next start_thinking (verified by the reset test).
+    assert transport._fork_children != {}
     assert transport._fork_total == 0
+    # Re-running start_thinking clears the fork state.
+    transport.start_thinking("dispatch")
+    assert transport._fork_children == {}
 
 
 @pytest.mark.asyncio
@@ -154,3 +159,132 @@ async def test_on_stage_no_spinner_prints_inline() -> None:
 
     # Should not raise.
     await transport.on_stage("model_call", {"mode_id": "default", "iteration": 1})
+
+
+@pytest.mark.asyncio
+async def test_mode_prefix_tracked_from_model_call() -> None:
+    """model_call seeds _current_mode and the [mode] prefix appears on the
+    status line. mode_id is no longer buried in a suffix key=value list.
+    """
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("dispatch")
+    # Before any model_call, no mode prefix.
+    assert transport._current_mode == ""
+
+    await transport.on_stage("model_call", {
+        "mode_id": "coding",
+        "model_id": "haiku",
+        "provider": "anthropic",
+        "iteration": 1,
+    })
+    assert transport._current_mode == "coding"
+
+    line = transport._render_status_line("model_call", {
+        "mode_id": "coding", "model_id": "haiku", "provider": "anthropic",
+        "iteration": 1,
+    })
+    # [coding] prefix present; mode_id no longer appears as a suffix key.
+    assert line.startswith("[coding] ")
+    assert "mode_id=" not in line
+
+
+@pytest.mark.asyncio
+async def test_mode_prefix_updates_on_mid_turn_handoff() -> None:
+    """A mid-turn handoff (tool_dispatch_complete with transition=handoff)
+    updates _current_mode so the [mode] prefix reflects the new owner.
+    """
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("dispatch")
+
+    await transport.on_stage("model_call", {"mode_id": "default", "iteration": 1})
+    assert transport._current_mode == "default"
+
+    await transport.on_stage("tool_dispatch_complete", {
+        "tool": "transition_stage",
+        "tool_kind": "transition",
+        "transition": "handoff",
+        "handoff_to": "coding",
+        "ok": True,
+        "iteration": 1,
+    })
+    assert transport._current_mode == "coding"
+
+    line = transport._render_status_line("model_call", {"mode_id": "coding"})
+    assert line.startswith("[coding] ")
+
+
+@pytest.mark.asyncio
+async def test_tool_dispatch_renders_legible_kind_glyphs() -> None:
+    """tool_dispatch renders a glyph + kind word per tool_kind, not a flat
+    tool_kind=key=value suffix. operation → op, mcp_tool → mcp, transition
+    → handoff target.
+    """
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("dispatch")
+    await transport.on_stage("model_call", {"mode_id": "coding", "iteration": 1})
+
+    # operation
+    line = transport._render_tool_dispatch({
+        "tool": "write_file", "tool_kind": "operation",
+        "iteration": 1, "tool_calls_so_far": 1,
+    })
+    assert line == "stage: tool_dispatch → op: write_file (iter=1, calls=1)"
+
+    # mcp_tool
+    line = transport._render_tool_dispatch({
+        "tool": "brave_search", "tool_kind": "mcp_tool",
+        "iteration": 2, "tool_calls_so_far": 3,
+    })
+    assert "→ mcp: brave_search" in line
+
+    # transition handoff — shows the target
+    line = transport._render_tool_dispatch({
+        "tool": "transition_stage", "tool_kind": "transition",
+        "transition": "handoff", "handoff_to": "markdown",
+    })
+    assert "↦ transition_stage → markdown" in line
+
+    # transition fork — shows child count
+    line = transport._render_tool_dispatch({
+        "tool": "transition_stage", "tool_kind": "transition",
+        "transition": "fork", "fork_children": 3,
+    })
+    assert "↦ transition_stage fork (3 children)" in line
+
+
+@pytest.mark.asyncio
+async def test_fork_complete_keeps_per_child_table() -> None:
+    """fork_complete keeps the per-child table so the user sees which
+    children succeeded/failed, with ok/failed totals in the header.
+    """
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("dispatch")
+
+    await transport.on_stage("fork_start", {"children": 2})
+    await transport.on_stage("fork_child_start", {
+        "child_index": 0, "mode_id": "coding", "stage_id": "implement",
+        "query_preview": "write",
+    })
+    await transport.on_stage("fork_child_start", {
+        "child_index": 1, "mode_id": "markdown", "stage_id": "",
+        "query_preview": "doc",
+    })
+    await transport.on_stage("fork_child_complete", {
+        "child_index": 0, "status": "ok", "duration_ms": 42,
+    })
+    await transport.on_stage("fork_child_complete", {
+        "child_index": 1, "status": "no_tools", "duration_ms": 30,
+    })
+    await transport.on_stage("fork_complete", {"children": 2, "ok": 1, "failed": 1})
+
+    # Table survives fork_complete.
+    assert transport._fork_children != {}
+    text = transport._render_fork_stage(summary=(1, 1))
+    lines = text.splitlines()
+    assert lines[0] == "stage: fork complete (1 ok, 1 failed)"
+    assert "#0 coding · implement · ok · write · 42ms" in lines[1]
+    assert "#1 markdown · no_tools · doc · 30ms" in lines[2]

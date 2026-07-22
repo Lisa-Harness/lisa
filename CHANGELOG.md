@@ -4,6 +4,22 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+#### CLI status line reflects mid-turn transitions (not routing)
+
+The initial thinking-spinner stage was renamed from `routing` to `dispatch`. The separate stateless router planner was removed in a hard cutover; routing is now an emergent property of the turn loop (mode handoff happens mid-turn via `transition_stage`), so `routing` was a misnomer for the pre-pipeline phase the spinner actually covers (command parse, `start_mode` bypass, `current_mode_id` selection).
+
+Along with the rename, the CLI status line now surfaces turn detail that was already emitted by the kernel but not rendered:
+
+- **Active mode prefix.** Every status line is prefixed with `[mode]`, tracked live from `model_call.mode_id` and updated when a mid-turn handoff lands (`tool_dispatch_complete` with `transition="handoff"`). A `default → coding` switch is now visible on the spinner line itself.
+- **Legible tool dispatch.** `tool_dispatch` renders a glyph + kind word per `tool_kind` — `→ op:`, `→ tool:`, `→ mcp:`, and `↦ transition_stage →  <target>` (or `fork (N children)`) — instead of a flat `tool_kind=…` suffix key, so the user can distinguish in-process operations, MCP calls, and mid-turn handoffs/forks at a glance.
+- **Per-child fork table through `fork_complete`.** The fork fan-out's per-child table now survives `fork_complete` so the user sees *which* children succeeded/failed (`#0 coding · implement · ok`, `#1 markdown · no_tools`), not just ok/failed counts. The table is cleared on the next `start_thinking`.
+- **Turn-summary footer.** A one-line footer after the response renders `▾ mode · model · tokens · elapsed`, plus a `→  <new mode>` note when the model handed off mid-turn. Sourced from `runtime.last_turn_context` and the per-turn elapsed timer.
+- **Distinct dispatch spinner.** The `dispatch` phase uses a `dots2` spinner (vs the normal `dots`) so the user can tell "still deciding where this goes" from "model is generating."
+
+Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_status_line`, `_render_tool_dispatch`, `_render_fork_stage`), `hosts/cli/repl.py` (`_render_turn_footer`), tests in `hosts/cli/tests/test_transport_stage.py` and the new `hosts/cli/tests/test_repl_footer.py`.
+
 ### Added
 
 #### Exportable and default-available capabilities
