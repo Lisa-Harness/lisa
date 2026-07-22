@@ -1595,7 +1595,13 @@ async def _run_turn_inner(
             # ledger is the single enforcement point across operations and
             # pack tools. MCP tools have no catalog definition, so they are
             # bounded only by the global iteration count.
-            target_def = operation_catalog.get(tool_name) or tool_catalog.get(tool_name)
+            from kernel.capability import resolve_capability_for_turn_limit
+
+            target_def = resolve_capability_for_turn_limit(
+                tool_name,
+                operation_catalog=operation_catalog,
+                tool_catalog=tool_catalog,
+            )
             if target_def is not None:
                 max_calls = getattr(target_def, "max_calls_per_turn", 0)
                 if ledger.is_exhausted(tool_name, max_calls):

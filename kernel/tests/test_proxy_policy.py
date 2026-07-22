@@ -72,6 +72,7 @@ def _patch_refresh_with_proxy(
         self._tools = []
         self._tool_index = {}
         self._tool_index_by_server = {}
+        self._bare_to_server_index = {}
         for config in self._configs:
             server_index: dict[str, MCPToolSpec] = {}
             for name, description, input_schema in server_tools.get(config.server_id, []):
@@ -96,6 +97,8 @@ def _patch_refresh_with_proxy(
                 if namespaced not in self._tool_index:
                     self._tool_index[namespaced] = (config.server_id, namespaced_spec)
                     self._tools.append(namespaced_spec)
+                if name not in self._bare_to_server_index:
+                    self._bare_to_server_index[name] = config.server_id
             self._tool_index_by_server[config.server_id] = server_index
         self._reindex_synthetic_tools()
 

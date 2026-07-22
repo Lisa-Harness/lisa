@@ -5,6 +5,18 @@ kernel speaks MCP natively for tool discovery and dispatch; provider-specific
 schemas (OpenAI function, Anthropic tool-use) are translated at the provider
 edge by ``kernel.tools.schema_translator``.
 
+Tool-id keying convention (see ``kernel.tools.registry`` for the full split):
+
+    * **MCP-native tools** (this module) are keyed **namespaced** as
+      ``server_id.tool`` in the merged ``_tool_index`` (e.g.
+      ``lisa-storage.read_model_manifest``) so two servers exposing the same
+      bare name never collide in the model-facing catalog. A precomputed
+      ``_bare_to_server_index`` maps bare names → ``server_id`` for internal
+      callers (operations) that pass bare MCP tool names; resolution is an
+      O(1) dict lookup, not a side-effecting scan.
+    * **Internal pack tools** (``kernel.tools.registry``) are keyed **bare**
+      and dispatched in-process. They are not in this pool's index.
+
 Design — MCP at the edges, Protocols in the middle:
 
     MCP is a wire protocol. The kernel uses it to cross process boundaries
@@ -266,6 +278,16 @@ class MCPToolPool:
         # server-scoped dispatch (call_tool(..., server_id=...)) so an alias can
         # pin a call to a specific backend regardless of bare-name collisions.
         self._tool_index_by_server: dict[str, dict[str, MCPToolSpec]] = {}
+        # Precomputed bare-name -> server_id index, rebuilt in
+        # ``_refresh_tool_index``. Covers only currently-connected servers;
+        # cold servers are merged in when they connect and the index is
+        # refreshed. Used by ``_resolve_server_for_bare_name`` so bare-name
+        # resolution is an O(1) dict lookup over connected servers, not a
+        # linear scan. Cold-server lazy connect still happens when a bare
+        # name is absent (a cold server's tools are not in this index until
+        # it is connected), but only once per unknown bare name, and never
+        # for names already resolvable from warm/connected servers.
+        self._bare_to_server_index: dict[str, str] = {}
         self._tools: list[MCPToolSpec] = []
         self._started = False
         self._warm_failed: set[str] = set()
@@ -845,6 +867,7 @@ class MCPToolPool:
         self._tools = []
         self._tool_index = {}
         self._tool_index_by_server = {}
+        self._bare_to_server_index = {}
         for config in self._configs:
             session = self._sessions.get(config.server_id)
             if session is None:
@@ -879,6 +902,15 @@ class MCPToolPool:
             for spec in server_tools:
                 server_index[spec.name] = spec
             self._tool_index_by_server[config.server_id] = server_index
+            # Bare-name index: merge this server's bare names into the
+            # pool-wide bare-to-server map. First-registered-wins mirrors
+            # the merged _tool_index collision policy. Bare-name collisions
+            # across connected servers are logged below via the namespaced
+            # index warning; here the bare index just keeps the first owner
+            # so bare-name resolution is deterministic.
+            for bare_name in server_index:
+                if bare_name not in self._bare_to_server_index:
+                    self._bare_to_server_index[bare_name] = config.server_id
 
             # Model-facing catalog: apply tool_policy (hide tools the model
             # should not call directly) then proxy_policy (strip ambient
@@ -1021,23 +1053,27 @@ class MCPToolPool:
         await self._refresh_tool_index()
 
     async def _resolve_server_for_bare_name(self, tool_id: str) -> str | None:
-        """Find which server exposes a bare tool name, connecting cold servers.
+        """Find which server exposes a bare tool name.
 
-        Searches the per-server indices (``_tool_index_by_server``) for a
-        bare tool name. Connected warm servers are checked first (no spawn).
-        Cold servers that haven't been connected yet are lazily started
-        (best-effort) and re-indexed so their per-server index is available.
-
-        Returns the first matching ``server_id``, or ``None`` when no server
-        exposes the tool. Used by ``call_tool`` as a bare-name fallback for
-        internal callers (operations) that pass the bare MCP tool name.
+        Uses the precomputed ``_bare_to_server_index`` (rebuilt in
+        ``_refresh_tool_index``) for an O(1) lookup over connected servers.
+        Only when the bare name is absent from that index are cold servers
+        lazily connected (best-effort) and the index rebuilt so their tools
+        become resolvable — this keeps the cold-connect side effect out of
+        the hot path for any name already resolvable from warm/connected
+        servers. Returns the owning ``server_id``, or ``None`` when no
+        server exposes the tool. Used by ``call_tool`` as a bare-name
+        fallback for internal callers (operations) that pass the bare MCP
+        tool name; model-facing calls always use namespaced names.
         """
-        # Check already-connected servers first (warm servers are always up;
-        # cold servers that have been touched before are indexed too).
-        for server_id, server_index in self._tool_index_by_server.items():
-            if tool_id in server_index:
-                return server_id
-        # Lazily connect cold servers and re-index, then check again.
+        # Hot path: O(1) dict lookup over already-connected servers.
+        cached = self._bare_to_server_index.get(tool_id)
+        if cached is not None:
+            return cached
+        # Cold path: the bare name is not in the precomputed index, which
+        # means no connected server exposes it. Lazily connect cold servers
+        # that have not been tried yet, re-indexing after each so their bare
+        # names enter _bare_to_server_index, and re-check the index.
         for config in self._cold_configs:
             if config.server_id in self._sessions:
                 continue
@@ -1056,9 +1092,9 @@ class MCPToolPool:
                 self._cold_failed.add(config.server_id)
                 continue
             await self._refresh_tool_index()
-            server_index = self._tool_index_by_server.get(config.server_id, {})
-            if tool_id in server_index:
-                return config.server_id
+            cached = self._bare_to_server_index.get(tool_id)
+            if cached is not None:
+                return cached
         return None
 
     async def restart_warm(self, server_id: str) -> bool:
@@ -1245,9 +1281,10 @@ class MCPToolPool:
             # ``execute_tool_fn`` with a bare MCP tool name like
             # ``read_model_manifest``) won't find the tool in the merged
             # index because it is keyed by namespaced names
-            # (``lisa-storage.read_model_manifest``). Search every server's
-            # per-server index (which uses bare names) and lazily connect
-            # cold servers. Model-facing calls always use namespaced names,
+            # (``lisa-storage.read_model_manifest``). Resolve via the
+            # precomputed ``_bare_to_server_index`` (O(1) over connected
+            # servers; cold servers lazily connected only when the bare name
+            # is absent). Model-facing calls always use namespaced names,
             # so this fallback never shadows the namespaced path.
             resolved_server_id = await self._resolve_server_for_bare_name(tool_id)
             if resolved_server_id is not None:

@@ -173,6 +173,19 @@ class ToolDefinition(BaseModel):
     # names tool ids; it only filters on the already-merged allowlist.
     default_available: bool = False
 
+    def effective_provider_id(self) -> str:
+        """Return the canonical owning-provider id for this tool.
+
+        The single accessor for all provider-id comparisons (export
+        boundaries, pack-config lookups, telemetry). Prefers the
+        fully-qualified ``provider_id`` (inferred from the content root
+        during SDK catalog build) and falls back to the raw authored
+        ``pack_id`` slug. After SDK load both are populated, so the
+        fallback is belt-and-suspenders; callers should never read
+        ``provider_id``/``pack_id`` directly for comparison.
+        """
+        return self.provider_id or self.pack_id
+
 
 class OperationExecutionContext(BaseModel):
     """Execution context passed to every internal operation."""
@@ -272,6 +285,19 @@ class OperationDefinition(BaseModel):
     default_available: bool = False
     instruction_body: str = Field(default="", exclude=True)
     implementation_module: Any = Field(default=None, exclude=True)
+
+    def effective_provider_id(self) -> str:
+        """Return the canonical owning-provider id for this operation.
+
+        The single accessor for all provider-id comparisons (export
+        boundaries, pack-config lookups, telemetry). Prefers the
+        fully-qualified ``provider_id`` (inferred from the content root
+        during SDK catalog build) and falls back to the raw authored
+        ``pack_id`` slug. After SDK load both are populated, so the
+        fallback is belt-and-suspenders; callers should never read
+        ``provider_id``/``pack_id`` directly for comparison.
+        """
+        return self.provider_id or self.pack_id
 
 
 class CapabilityConstraint(BaseModel):

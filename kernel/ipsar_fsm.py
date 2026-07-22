@@ -800,6 +800,27 @@ def load_catalog_from_disk(
             ],
             extra_front_matter=extra_front_matter,
         )
+        resolved_provider_id = catalog[mode_id].mode_provider_id
+        if not resolved_provider_id and (
+            entry_operation_ids
+            or pre_turn_operation_ids
+            or post_turn_operation_ids
+            or allowed_operation_ids
+            or allowed_tool_ids
+        ):
+            # Empty provider id with capability references: the export-boundary
+            # validator will raise a loud OperationValidationError at startup.
+            # Log here so the unresolved mode_id is visible in telemetry before
+            # the validator runs, and the operator can correlate the failure to
+            # the missing mode_provider_id authoring.
+            logger.debug(
+                "Mode '%s' has an empty mode_provider_id but references "
+                "capabilities (%d ops, %d tools); export-boundary validation "
+                "will reject it. Set mode_provider_id in the mode front matter.",
+                mode_id,
+                len(allowed_operation_ids),
+                len(allowed_tool_ids),
+            )
 
     return catalog
 
@@ -1454,7 +1475,13 @@ async def _execute_mode_target_ids(
     for target_id in target_ids:
         # Per-turn cap enforcement (uniform across operations and tools).
         if ledger is not None:
-            definition = operation_catalog.get(target_id) or tool_catalog.get(target_id)
+            from kernel.capability import resolve_capability_for_turn_limit
+
+            definition = resolve_capability_for_turn_limit(
+                target_id,
+                operation_catalog=operation_catalog,
+                tool_catalog=tool_catalog,
+            )
             if definition is not None:
                 max_calls = getattr(definition, "max_calls_per_turn", 0)
                 if ledger.is_exhausted(target_id, max_calls):

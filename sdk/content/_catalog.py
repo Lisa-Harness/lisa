@@ -408,6 +408,30 @@ def _normalize_provider_id(raw: str) -> str:
     return value
 
 
+def _backfill_provider_ids(
+    cap_dict: dict[str, Any],
+    inferred_provider_id: str,
+    *,
+    provider_field: str,
+) -> None:
+    """Populate both provider-id fields on a capability dict in place.
+
+    Symmetric backfill so ``pack_id`` (raw authored slug) and
+    ``provider_field`` (the fully-qualified ``tool_provider_id`` /
+    ``operation_provider_id``) are never empty after load. Each field is
+    filled from the other when one is authored and the other is not, and
+    both fall back to the content-root-inferred id. This removes the
+    ``provider_id or pack_id`` fallback chains in kernel consumers: after
+    load, ``ToolDefinition.effective_provider_id()`` /
+    ``OperationDefinition.effective_provider_id()`` always return a
+    populated value for a capability that belongs to a discoverable pack.
+    """
+    if not cap_dict.get(provider_field):
+        cap_dict[provider_field] = inferred_provider_id or str(cap_dict.get("pack_id", "") or "").strip()
+    if not str(cap_dict.get("pack_id", "") or "").strip():
+        cap_dict["pack_id"] = cap_dict[provider_field]
+
+
 def _resolve_catalog_candidates(
     *,
     resource_kind: str,
@@ -600,8 +624,7 @@ def _load_operations_from_root(
     for md_path in _iter_operation_markdown_files(root):
         op_dict = _load_markdown_operation(md_path)
         if op_dict is not None:
-            if not op_dict.get("operation_provider_id"):
-                op_dict["operation_provider_id"] = inferred_provider_id
+            _backfill_provider_ids(op_dict, inferred_provider_id, provider_field="operation_provider_id")
             catalog[op_dict["operation_id"]] = op_dict
 
     # 2. Python runtime operations with .yml metadata
@@ -612,8 +635,7 @@ def _load_operations_from_root(
             continue
         op_dict = _load_runtime_operation(py_path, yml_path, root)
         if op_dict is not None:
-            if not op_dict.get("operation_provider_id"):
-                op_dict["operation_provider_id"] = inferred_provider_id
+            _backfill_provider_ids(op_dict, inferred_provider_id, provider_field="operation_provider_id")
             op_id = op_dict["operation_id"]
             if op_id in catalog and catalog[op_id].get("execution_kind") == "prompt":
                 logger.info(
@@ -833,8 +855,7 @@ def _load_tools_from_root(
             continue
         tool_dict = _load_runtime_tool(py_path, yml_path, root)
         if tool_dict is not None:
-            if not tool_dict.get("tool_provider_id"):
-                tool_dict["tool_provider_id"] = inferred_provider_id
+            _backfill_provider_ids(tool_dict, inferred_provider_id, provider_field="tool_provider_id")
             catalog[tool_dict["tool_id"]] = tool_dict
     return catalog
 

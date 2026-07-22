@@ -10,8 +10,25 @@ scans ``tools/`` subdirectories in all discovered content roots, parses
 ``.tool.yml`` metadata, and returns the catalog as JSON. The kernel imports
 the implementation module locally using the ``module_path`` field.
 
+Tool-id keying convention (two distinct populations, by design):
+
+    * **Internal pack tools** (this registry) are keyed **bare** by the
+      ``tool_id`` authored in YAML (e.g. ``web_search``). They have an
+      in-process ``implementation_module`` and never spawn a subprocess.
+    * **MCP-native tools** (``kernel.tools.mcp_client``) are keyed
+      **namespaced** as ``server_id.tool`` (e.g.
+      ``lisa-storage.read_model_manifest``). They run in subprocesses and
+      have no kernel ``ToolDefinition``.
+
+These two populations do not overlap. The MCP client pool owns the
+namespace bridging for the MCP-native population (a bare-name index with a
+precomputed fallback — see ``kernel.tools.mcp_client``). This registry and
+``kernel.capability`` resolve against the bare-keyed internal population
+only, so resolution never spawns a subprocess.
+
 Called by: kernel.turn_runner (tool dispatch in the model+tool loop)
            kernel.operations.registry (tool-id validation for operations)
+           kernel.capability (shared resolution layer)
 """
 
 from __future__ import annotations
@@ -216,10 +233,11 @@ def _resolve_execution_configuration(
     """Attach only the target pack's immutable session configuration."""
 
     resolver = ctx.pack_configuration_resolver
-    if not definition.pack_id or resolver is None:
+    pack_key = definition.effective_provider_id()
+    if not pack_key or resolver is None:
         ctx.pack_config = EMPTY_PACK_CONFIGURATION
         return
-    ctx.pack_config = resolver.for_pack(definition.pack_id)
+    ctx.pack_config = resolver.for_pack(pack_key)
 
 
 def _validate_parameters(definition: ToolDefinition, ctx: ToolExecutionContext) -> None:

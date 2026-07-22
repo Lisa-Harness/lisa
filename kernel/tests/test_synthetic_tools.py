@@ -67,6 +67,7 @@ def _patch_refresh_with(
         self._tools = []
         self._tool_index = {}
         self._tool_index_by_server = {}
+        self._bare_to_server_index = {}
         for config in self._configs:
             server_index: dict[str, MCPToolSpec] = {}
             for name, description, input_schema in server_tools.get(config.server_id, []):
@@ -87,6 +88,8 @@ def _patch_refresh_with(
                 if namespaced not in self._tool_index:
                     self._tool_index[namespaced] = (config.server_id, namespaced_spec)
                     self._tools.append(namespaced_spec)
+                if name not in self._bare_to_server_index:
+                    self._bare_to_server_index[name] = config.server_id
             self._tool_index_by_server[config.server_id] = server_index
         self._reindex_synthetic_tools()
 
@@ -389,6 +392,7 @@ async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.Mo
         self._tools = []
         self._tool_index = {}
         self._tool_index_by_server = {}
+        self._bare_to_server_index = {}
         for config in self._configs:
             session = self._sessions.get(config.server_id)
             if session is None:
@@ -413,6 +417,8 @@ async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.Mo
                 if namespaced not in self._tool_index:
                     self._tool_index[namespaced] = (config.server_id, namespaced_spec)
                     self._tools.append(namespaced_spec)
+                if tool.name not in self._bare_to_server_index:
+                    self._bare_to_server_index[tool.name] = config.server_id
             self._tool_index_by_server[config.server_id] = server_index
         self._reindex_synthetic_tools()
 

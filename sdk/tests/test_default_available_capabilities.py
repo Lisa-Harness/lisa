@@ -300,6 +300,7 @@ def test_validate_export_boundaries_rejects_non_exported_cross_pack_reference(
         pack_id="",
         provider_id="lisa-pack-b",
         exportable=False,
+        effective_provider_id=lambda: "lisa-pack-b",
     )
     mode = SimpleNamespace(
         mode_id="chat",
@@ -337,6 +338,7 @@ def test_validate_export_boundaries_allows_exported_cross_pack_reference(
         pack_id="",
         provider_id="lisa-pack-memory",
         exportable=True,
+        effective_provider_id=lambda: "lisa-pack-memory",
     )
     mode = SimpleNamespace(
         mode_id="chat",
@@ -374,6 +376,7 @@ def test_validate_export_boundaries_allows_same_pack_reference(
         pack_id="",
         provider_id="lisa-pack-a",
         exportable=False,
+        effective_provider_id=lambda: "lisa-pack-a",
     )
     mode = SimpleNamespace(
         mode_id="chat",
@@ -414,6 +417,7 @@ def test_validate_export_boundaries_allows_same_pack_with_prefix_mismatch(
         pack_id="",
         provider_id="coding",
         exportable=False,
+        effective_provider_id=lambda: "coding",
     )
     mode = SimpleNamespace(
         mode_id="coding",

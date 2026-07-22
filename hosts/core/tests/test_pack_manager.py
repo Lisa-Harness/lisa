@@ -934,6 +934,7 @@ def test_seed_bundled_packs_lock_first_boot_seeds_discovered_packs(
         "discover_installed_content_roots",
         lambda: [cloudflare_root, github_root],
     )
+    monkeypatch.setattr(content_roots, "_is_bundled_pack_root", lambda _root: True)
 
     written = content_roots.seed_bundled_packs_lock(tmp_path)
 
@@ -946,6 +947,31 @@ def test_seed_bundled_packs_lock_first_boot_seeds_discovered_packs(
         assert entry["source_kind"] == "bundled"
         assert entry["source_ref"] == "bundled"
         assert entry["updated_at"]
+
+
+def test_seed_bundled_packs_lock_stamps_external_packs_as_package(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A discovered pack whose root is not under sdk/packs/ is source_kind=package."""
+    external_root = _bundled_root(tmp_path, "lisa_pack_search", "lisa-pack-search")
+    monkeypatch.setattr(
+        content_roots,
+        "discover_installed_content_roots",
+        lambda: [external_root],
+    )
+    # Do NOT monkeypatch _is_bundled_pack_root — the tmp_path root is not
+    # under sdk/packs/, so the real classifier returns False.
+
+    written = content_roots.seed_bundled_packs_lock(tmp_path)
+
+    assert written is True
+    lock = content_roots.load_installed_packs_lock(tmp_path)
+    by_name = {entry["package_name"]: entry for entry in lock["packs"]}
+    assert set(by_name) == {"lisa-pack-search"}
+    assert by_name["lisa-pack-search"]["source_kind"] == "package"
+    assert by_name["lisa-pack-search"]["source_ref"] == "package"
+    assert by_name["lisa-pack-search"]["enabled"] is True
 
 
 def test_seed_bundled_packs_lock_is_idempotent(
@@ -1018,6 +1044,7 @@ def test_seed_bundled_packs_lock_preserves_runtime_installed_and_provider_select
         "discover_installed_content_roots",
         lambda: [github_root],
     )
+    monkeypatch.setattr(content_roots, "_is_bundled_pack_root", lambda _root: True)
 
     _write_lock(
         HostRuntime(HostConfig.from_env(data_dir=str(tmp_path))),

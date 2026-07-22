@@ -50,6 +50,28 @@ _DEFAULT_ALWAYS_ON_PACKAGES: tuple[str, ...] = (
 _RUNTIME_INSTALL_SOURCE_KINDS = {"package", "git", "local"}
 
 
+def _is_bundled_pack_root(root: Path) -> bool:
+    """Return True if ``root`` is a bundled pack under ``sdk/packs/``.
+
+    Bundled packs ship with the framework tree (``<framework_root>/sdk/packs/
+    <name>``). External packs discovered via entry points — whether installed
+    editable from ``lisa_packs/<name>`` or runtime ``pip install``ed into the
+    packs venv — are not bundled and should be stamped ``source_kind=
+    "package"`` by the seeder.
+    """
+    try:
+        from hosts.core.paths import framework_root
+
+        bundled_root = framework_root() / "sdk" / "packs"
+    except Exception:  # pylint: disable=broad-except
+        return False
+    try:
+        root.resolve().relative_to(bundled_root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def unique_paths(paths: list[Path]) -> list[Path]:
     """Return ``paths`` with duplicates (by resolved path) removed, order kept."""
     deduped: list[Path] = []
@@ -261,12 +283,13 @@ def seed_bundled_packs_lock(data_dir: Path) -> bool:
             continue
         if package_name in EXCLUDED_PACK_NAMES:
             continue
+        is_bundled = _is_bundled_pack_root(root)
         entries.append(
             {
                 "package_name": package_name,
                 "enabled": True,
-                "source_kind": "bundled",
-                "source_ref": "bundled",
+                "source_kind": "bundled" if is_bundled else "package",
+                "source_ref": "bundled" if is_bundled else "package",
                 "updated_at": now_iso,
             }
         )

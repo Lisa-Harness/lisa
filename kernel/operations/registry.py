@@ -92,12 +92,28 @@ def _resolve_tool_catalog() -> dict[str, Any]:
     """Return the effective tool catalog, preferring the MCP-loaded registry.
 
     Falls back to the legacy host callback if the tool registry is empty
-    (e.g. a host that hasn't called ``register_tool_mcp`` yet).
+    (e.g. a host that hasn't called ``register_tool_mcp`` yet). When both
+    sources are populated, logs a warning if their key sets differ — a
+    divergent key set (e.g. a host callback returning bare keys while the
+    MCP registry returns namespaced ``server_id.tool`` keys) would silently
+    split tool-id resolution across the two sources.
     """
     from kernel.tools.registry import get_tool_catalog
 
     mcp_catalog = get_tool_catalog()
     if mcp_catalog:
+        if _get_tool_catalog_fn is not None:
+            host_catalog = _get_tool_catalog_fn()
+            if host_catalog and set(host_catalog) != set(mcp_catalog):
+                logger.warning(
+                    "Tool catalog key sets diverge between the host-injected "
+                    "callback (%d keys) and the MCP-loaded registry (%d keys). "
+                    "Tool-id resolution may silently miss tools present in one "
+                    "source but not the other. Ensure both use the same keying "
+                    "convention (bare tool_id for internal pack tools).",
+                    len(host_catalog),
+                    len(mcp_catalog),
+                )
         return mcp_catalog
     if _get_tool_catalog_fn is not None:
         return _get_tool_catalog_fn()
@@ -289,11 +305,24 @@ def validate_export_boundaries(
             + mode.pre_turn_operation_ids
             + mode.post_turn_operation_ids
         )
+        # Loud failure: a mode with an unresolved ``mode_provider_id`` (author
+        # omitted it AND SDK content-root inference returned "") would otherwise
+        # silently flag *every* referenced capability as cross-pack, because
+        # any non-empty ``op_provider != mode_provider`` is True. Fail fast with
+        # a clear startup error instead of producing wrong export-boundary results.
+        has_any_reference = bool(referenced_op_ids or mode.allowed_tool_ids)
+        if has_any_reference and not mode_provider:
+            raise OperationValidationError(
+                f"Mode '{mode.mode_id}' has an empty 'mode_provider_id' but "
+                "references capabilities. Set `mode_provider_id` in the mode's "
+                "front matter, or ensure the SDK content-root path allows "
+                "provider-id inference (pack directory name)."
+            )
         for op_id in referenced_op_ids:
             op = ops.get(op_id)
             if op is None:
                 continue  # unknown-id check is owned by validate_operation_catalog
-            op_provider = _provider_slug(op.provider_id or op.pack_id)
+            op_provider = _provider_slug(op.effective_provider_id())
             if op_provider and op_provider != mode_provider and not op.exportable:
                 raise OperationValidationError(
                     f"Mode '{mode.mode_id}' (provider '{mode_provider}') "
@@ -305,9 +334,7 @@ def validate_export_boundaries(
             tool = tools.get(tool_id)
             if tool is None:
                 continue
-            tool_provider = _provider_slug(
-                getattr(tool, "provider_id", "") or getattr(tool, "pack_id", "")
-            )
+            tool_provider = _provider_slug(tool.effective_provider_id())
             if tool_provider and tool_provider != mode_provider and not getattr(
                 tool, "exportable", False
             ):
@@ -567,10 +594,11 @@ def _resolve_execution_configuration(
     """Attach only the target pack's immutable session configuration."""
 
     resolver = ctx.pack_configuration_resolver
-    if not definition.pack_id or resolver is None:
+    pack_key = definition.effective_provider_id()
+    if not pack_key or resolver is None:
         ctx.pack_config = EMPTY_PACK_CONFIGURATION
         return
-    ctx.pack_config = resolver.for_pack(definition.pack_id)
+    ctx.pack_config = resolver.for_pack(pack_key)
 
 
 def _validate_parameters(
