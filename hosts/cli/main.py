@@ -30,23 +30,19 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-# Inject the packs venv site-packages into sys.path BEFORE importing
-# hosts.core so that importlib.metadata.entry_points discovers packs
-# installed via /pack install into ~/.lisa/packs-venv. This must run
-# before any hosts.core / kernel import that triggers entry-point scanning.
-from hosts.core.paths import (
-    framework_root as _framework_root,
-    inject_packs_venv_site_packages as _inject_packs_venv_site_packages,
-)
-
-_inject_packs_venv_site_packages()
-
-# Load .env before importing hosts.core so that HostConfig.from_env sees
-# the provider credentials and config values. Search order:
+# Load .env BEFORE injecting the packs venv site-packages so that
+# LISA_DATA_DIR (and LISA_PACKS_VENV) are honored when resolving the
+# packs venv location. The loader only needs framework_root() and
+# default_data_dir(), both of which are env-independent, so it can run
+# safely before any hosts.core import. Search order:
 #   (1) CWD — for repo-mode dev sessions
 #   (2) ~/.lisa/.env — for tool-install mode (uv tool install lisa)
 #   (3) project root — repo-mode back-compat
 #   (4) hosts/little_lisa/.env — legacy repo-mode back-compat
+from hosts.core.paths import (
+    framework_root as _framework_root,
+)
+
 try:
     from dotenv import load_dotenv
 
@@ -62,8 +58,18 @@ try:
         if _env_candidate.exists():
             load_dotenv(dotenv_path=_env_candidate, override=False)
             break
-except ImportError:  # pragma: no cover â€” python-dotenv is optional
+except ImportError:  # pragma: no cover — python-dotenv is optional
     pass
+
+# Inject the packs venv site-packages into sys.path BEFORE importing
+# hosts.core so that importlib.metadata.entry_points discovers packs
+# installed via /pack install into the packs venv. This must run
+# before any hosts.core / kernel import that triggers entry-point scanning.
+from hosts.core.paths import (
+    inject_packs_venv_site_packages as _inject_packs_venv_site_packages,
+)
+
+_inject_packs_venv_site_packages()
 
 from hosts.cli.render import (
     render_models,

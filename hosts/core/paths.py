@@ -106,13 +106,24 @@ def venv_root() -> Path:
 
 
 def default_packs_venv() -> Path:
-    """Return the default packs venv path (``~/.lisa/packs-venv``).
+    """Return the default packs venv path.
 
-    Overridable via the ``LISA_PACKS_VENV`` environment variable.
+    Resolution order (matches :func:`HostConfig.from_env`):
+      1. ``LISA_PACKS_VENV`` — explicit override (absolute venv path).
+      2. ``LISA_DATA_DIR`` — the packs venv is ``<data_dir>/packs-venv``.
+         A relative value is resolved against the current working
+         directory, matching ``HostConfig.from_env``'s ``.resolve()``.
+      3. ``~/.lisa/packs-venv`` — the default data dir.
+
+    A trailing path separator on ``LISA_DATA_DIR`` (e.g. ``artifacts/``) is
+    handled correctly by :class:`pathlib.Path`.
     """
     override = os.getenv(LISA_PACKS_VENV_ENV, "").strip()
     if override:
         return Path(override).expanduser()
+    data_dir_env = os.getenv("LISA_DATA_DIR", "").strip()
+    if data_dir_env:
+        return Path(data_dir_env).expanduser().resolve() / _PACKS_VENV_DIR_NAME
     from hosts.core.config import default_data_dir  # noqa: PLC0415
 
     return default_data_dir() / _PACKS_VENV_DIR_NAME

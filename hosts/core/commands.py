@@ -1626,21 +1626,86 @@ def _validate_pack_spec_for_install(spec: str) -> tuple[bool, str]:  # noqa: C90
     return True, ""
 
 
+async def _ensure_packs_venv(packs_venv: Path) -> tuple[bool, str]:
+    """Ensure the packs venv exists as a real virtual environment.
+
+    ``uv pip install --python <path>`` requires a real venv (a directory with
+    ``pyvenv.cfg`` and an interpreter), not merely an empty directory. If the
+    venv is missing or is not a valid venv, run ``uv venv`` to create one. The
+    packs venv lives inside the data dir, so the parent directory is created
+    first.
+
+    Returns ``(True, "")`` on success (venv exists or was created) or
+    ``(False, message)`` if venv creation failed.
+    """
+    # A valid venv has pyvenv.cfg at its root. If present, assume usable.
+    if (packs_venv / "pyvenv.cfg").is_file():
+        return True, ""
+
+    packs_venv.parent.mkdir(parents=True, exist_ok=True)
+    process = await asyncio.create_subprocess_exec(
+        "uv",
+        "venv",
+        str(packs_venv),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=str(_FRAMEWORK_ROOT),
+    )
+    output_bytes, _ = await process.communicate()
+    if process.returncode != 0:
+        output = output_bytes.decode("utf-8", errors="replace") if output_bytes else ""
+        preview = "\n".join(output.splitlines()[-12:]).strip()
+        return False, (
+            f"Failed to create packs venv at '{packs_venv}'.\n{preview}"
+        )
+    logger.info("Created packs venv at %s", packs_venv)
+    return True, ""
+
+
+def _normalize_pack_install_spec(spec: str) -> str:
+    """Normalize a pack install spec before validation.
+
+    Bare ``https://``/``http://`` GitHub-style URLs are rewritten to the
+    ``git+https://`` form that :func:`_is_git_pack_spec` and uv both
+    expect. This lets users paste a plain repo URL (e.g.
+    ``https://github.com/Lisa-Framework/lisa-pack-brave-search``) instead
+    of having to remember the ``git+`` prefix, and routes them through
+    the git-validation path (host allowlist + ref-pinning policy) so the
+    error messages stay actionable.
+
+    Local paths and specs already carrying ``git+`` are returned as-is.
+    """
+    raw = spec.strip().strip('"')
+    if not raw:
+        return spec
+    lowered = raw.lower()
+    if lowered.startswith("https://") or lowered.startswith("http://"):
+        return "git+" + raw
+    return spec
+
+
 async def run_pack_install(
     runtime: HostRuntime,
     spec: str,
 ) -> tuple[bool, str]:
     """Install one pack ref using uv pip and persist provenance metadata."""
-    is_allowed, reason = _validate_pack_spec_for_install(spec)
+    normalized_spec = _normalize_pack_install_spec(spec)
+    is_allowed, reason = _validate_pack_spec_for_install(normalized_spec)
     if not is_allowed:
         return False, reason
 
-    install_target = spec.strip().strip('"') if _is_local_pack_spec(spec) else spec
+    install_target = (
+        normalized_spec.strip().strip('"')
+        if _is_local_pack_spec(normalized_spec)
+        else normalized_spec
+    )
     # Install into the dedicated packs venv (~/.lisa/packs-venv) so that
     # the tool venv stays immutable and the packs venv site-packages is
     # already on sys.path at the next launch for entry-point discovery.
     packs_venv = _default_packs_venv()
-    packs_venv.mkdir(parents=True, exist_ok=True)
+    ensured, ensure_err = await _ensure_packs_venv(packs_venv)
+    if not ensured:
+        return False, f"Install failed for '{normalized_spec}'.\n{ensure_err}"
     process = await asyncio.create_subprocess_exec(
         "uv",
         "pip",
@@ -1656,15 +1721,15 @@ async def run_pack_install(
     output = output_bytes.decode("utf-8", errors="replace") if output_bytes else ""
     if process.returncode != 0:
         preview = "\n".join(output.splitlines()[-12:]).strip()
-        return False, f"Install failed for '{spec}'.\n{preview}"
+        return False, f"Install failed for '{normalized_spec}'.\n{preview}"
 
-    package_name = normalize_pack_name(_extract_package_name_from_spec(spec))
+    package_name = normalize_pack_name(_extract_package_name_from_spec(normalized_spec))
     if not package_name:
-        return False, f"Install succeeded for '{spec}' but package name could not be inferred."
+        return False, f"Install succeeded for '{normalized_spec}' but package name could not be inferred."
     source_kind = (
         "local"
-        if _is_local_pack_spec(spec)
-        else ("git" if _is_git_pack_spec(spec) else "package")
+        if _is_local_pack_spec(normalized_spec)
+        else ("git" if _is_git_pack_spec(normalized_spec) else "package")
     )
     lock = _load_installed_packs_lock(runtime)
     entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]
@@ -1709,13 +1774,17 @@ async def run_pack_uninstall(
     if not normalized:
         return False, "Usage: /pack uninstall <package-name>"
 
+    packs_venv = _default_packs_venv()
+    ensured, ensure_err = await _ensure_packs_venv(packs_venv)
+    if not ensured:
+        return False, f"Uninstall failed for '{normalized}'.\n{ensure_err}"
     process = await asyncio.create_subprocess_exec(
         "uv",
         "pip",
         "uninstall",
         "-y",
         "--python",
-        str(_default_packs_venv()),
+        str(packs_venv),
         normalized,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
