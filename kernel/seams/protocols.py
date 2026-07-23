@@ -18,6 +18,49 @@ from kernel.models import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class RouterRequest:
+    """Inputs to one model-router ``choose`` call.
+
+    The turn loop constructs one ``RouterRequest`` per iteration and passes
+    it to the active ``ModelRouter`` (if wired). The router inspects these
+    fields and returns a ``RouterDecision`` naming the model to use for that
+    iteration.
+
+    Fields mirror the information already available inside the turn loop:
+    the statically-resolved default model, the iteration number, how many
+    tool calls have fired, how much tool-call budget remains, the user query,
+    the last tool result text (if any), the capabilities the current mode's
+    tool surface requires, the active mode id, and the cross-cutting roles
+    the turn requested (e.g. ``("deep",)`` for ``/deep``).
+    """
+
+    default_model_id: str
+    iteration: int
+    tool_calls_so_far: int
+    budget_remaining: int | None
+    query: str = ""
+    last_tool_result: str | None = None
+    required_capabilities: tuple[str, ...] = ()
+    mode_id: str = ""
+    roles_needed: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RouterDecision:
+    """The output of one model-router ``choose`` call.
+
+    ``model_id`` references a model in the manifest — the turn loop feeds it
+    back through ``resolve_model()`` and the existing provider-gateway path.
+    ``reason`` is a human-readable string for telemetry/audit. ``routed_by``
+    identifies which router made the decision (e.g. ``"lisa-router"``).
+    """
+
+    model_id: str
+    reason: str = ""
+    routed_by: str = ""
+
+
 @runtime_checkable
 class StateProvider(Protocol):
     """Protocol for in-memory state access.
@@ -175,6 +218,29 @@ class ModelPolicy(Protocol):
     # ``ManifestModelPolicy``) to stub it. Hosts that want per-iteration
     # selection add the method to their own implementation; the runtime
     # duck-types it.
+
+
+@runtime_checkable
+class ModelRouter(Protocol):
+    """Per-iteration model selection backed by a pluggable router.
+
+    Distinct from ``ModelPolicy``: ``ModelPolicy`` resolves aliases and
+    checks availability statically; ``ModelRouter`` decides which concrete
+    model to use for *one iteration* of the turn loop, based on turn state.
+
+    Hosts wire a ``ModelRouter`` into ``ContextSeams.model_router`` at
+    assembly time. When ``None``, the loop falls back to the existing
+    ``ModelPolicy.choose`` duck-type path, then to the statically-resolved
+    ``preferred_model_id`` — preserving today's behavior exactly.
+
+    Routers are discovered via the ``lisa.extensions.model_routers``
+    entry-point group (see ``kernel.model_router_discovery``). The
+    built-in ``lisa-router`` pack ships a rules-based engine; external packs
+    (e.g. ``lisa-pack-aoi-router``) register vendor-backed routers under the
+    same group.
+    """
+
+    def choose(self, req: RouterRequest) -> RouterDecision | None: ...
 
 
 @runtime_checkable

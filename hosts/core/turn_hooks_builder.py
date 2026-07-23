@@ -21,6 +21,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from kernel.introspect import gather_introspection
+from kernel.model_router_discovery import discover_model_router_factories
 from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from kernel.operations.registry import execute_operation
 from kernel.pack_configuration import SessionPackConfigurationResolver
@@ -172,6 +173,31 @@ def build_turn_hooks(
             runtime_state={"manifest": runtime.manifest},
             data_dir=runtime.data_dir,
         )
+
+    # ── Model router discovery ────────────────────────────────────
+    # Discover pack-registered model routers (lisa.extensions.model_routers)
+    # and wire the first non-None factory result into ContextSeams. When no
+    # router pack is installed, or the manifest has no ``router:`` block, the
+    # factories return None and model_router stays None — the turn loop falls
+    # back to static resolution.
+    def _discover_active_router() -> Any:
+        if runtime.manifest is None:
+            runtime.manifest = load_manifest({}, data_dir=runtime.data_dir)
+        session_plan = getattr(runtime, "session_plan", None)
+        for entry in discover_model_router_factories():
+            try:
+                router = entry.factory(runtime.manifest, session_plan)
+            except Exception:  # pylint: disable=broad-except
+                logger.warning(
+                    "model router factory %r failed: %s",
+                    entry.pack_name,
+                    exc_info=True,
+                )
+                continue
+            if router is not None:
+                logger.info("active model router: %s", entry.pack_name)
+                return router
+        return None
 
     # ── Completion ────────────────────────────────────────────────
     async def _complete(**kwargs: Any) -> Any:
@@ -606,8 +632,15 @@ def build_turn_hooks(
         # content_loader() reads; setup_framework(runtime) populates it at host
         # startup. When unset, content_registry stays None and operations fail at
         # call time with their authored-text error (preserving graceful failure).
+        #
+        # Also wire the discovered model router (lisa.extensions.model_routers)
+        # so the turn loop can do per-iteration model selection. When no router
+        # pack is active (or the manifest has no ``router:`` block),
+        # ``model_router`` stays ``None`` and the loop falls back to static
+        # resolution — preserving today's behavior.
         context_seams=ContextSeams(
-            content_registry=cast("Any", content_registry()),
+            content_registry=cast("Any", content_registry() or None),
+            model_router=_discover_active_router(runtime),
         ),
         # Forward the kernel's fine-grained stage events to the transport so
         # the CLI/web/VS Code stage line can show model_call, tool_dispatch,

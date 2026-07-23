@@ -1,0 +1,219 @@
+# Model Router
+
+The Lisa Framework supports a pluggable model-router mechanism that selects
+a model **per turn-loop iteration** based on turn state, rather than pinning
+one model for the entire turn. This is layered on top of the existing static
+`mode_models`/`roles` resolution — it does not replace it.
+
+> **What's new.** A `ModelRouter` Protocol (`kernel/seams/protocols.py`) and
+> `lisa.extensions.model_routers` entry-point group let packs contribute
+> router backends. The built-in `lisa-router` pack ships a rules-based engine
+> that makes zero extra model calls. External packs (e.g. `lisa-pack-aoi-router`
+> in `../lisa_packs/`) can register vendor-backed routers under the same group.
+
+---
+
+## How it works
+
+### Three-tier fallback
+
+The turn loop (`kernel/turn_runner.py:_resolve_iteration_model`) resolves the
+model for each iteration with this precedence:
+
+1. **`ContextSeams.model_router`** — the formal `ModelRouter` Protocol with
+   a widened `RouterRequest` carrying `query`, `last_tool_result`,
+   `required_capabilities`, `mode_id`, and `roles_needed`. This is the
+   pluggable router path.
+2. **`ModelPolicy.choose`** — the legacy duck-typed optional method with the
+   narrow `(default_model_id, iteration, tool_calls_so_far, budget_remaining)`
+   signature. Preserved for backward compatibility.
+3. **Static `model_def`** — the once-resolved `preferred_model_id`. This is
+   the default behavior when no router and no `choose` are wired.
+
+When no router is wired (the default), the loop behaves exactly as before.
+
+### Data flow
+
+```
+models.yaml
+  → load_model_manifest()               # kernel/model_manifest.py
+  → ModelManifest(models, mode_models, roles, router)
+
+run_turn()
+  → resolve_model(preferred_model_id)  # mode_models → roles → find_model
+  → per iteration:
+      → ModelRouter.choose(RouterRequest) → RouterDecision(model_id)
+      → resolve_model(decision.model_id) → ManifestModelEntry
+      → complete(model_def=...) → ProviderGateway.complete()
+```
+
+The router's output is a `model_id` string that flows back through the
+existing `resolve_model()` → provider-gateway path. **No new completion code
+path.** The router only picks the model; completion still flows through the
+existing gateway.
+
+---
+
+## Configuration
+
+Add an optional `router:` block to `models.yaml`:
+
+```yaml
+mode_models: {}
+roles: {default: 'gemma4:cloud', deep: 'gpt-5.4'}
+
+router:
+  backend: lisa-router          # or "aoi-router" (external pack)
+  rules:
+    - when: required_capabilities includes "code"
+      use: gpt-5.2-codex
+    - when: iteration > 1 and last_tool_result is not None
+      use: gpt-5.4              # synthesize on the frontier model
+    - when: tool_calls_so_far >= 5
+      use: gpt-5.4-mini         # downgrade when budget is running low
+  fallback: gemma4:cloud        # if no rule matches, stay on the default
+```
+
+- **`backend`** — names the active router backend. When empty or absent, no
+  router is active and static `mode_models`/`roles` resolution is the only
+  path.
+- **`rules`** — ordered list of `{when, use}` entries evaluated
+  first-match-wins.
+- **`fallback`** — the model used when no rule matches. If empty, the router
+  returns `None` and the loop falls back to the statically-resolved
+  `preferred_model_id`.
+
+### Relationship to `mode_models` / `roles`
+
+These are **not replaced**. They become the router's input defaults:
+
+- `mode_models[mode_id]` / `roles["deep"]` sets the **starting model** for
+  the turn (`preferred_model_id`).
+- The router receives this as `RouterRequest.default_model_id` and can
+  override it per iteration.
+- When the router is absent or returns `None`, the static default is used.
+
+Remove the `router:` block (or set `backend: ""`) and you're back to pure
+static selection — no code path changes.
+
+---
+
+## Supported rule conditions (lisa-router)
+
+The built-in `lisa-router` engine supports simple, dependency-free predicates:
+
+| Condition | True when |
+|---|---|
+| `required_capabilities includes "code"` | Every listed capability is in `RouterRequest.required_capabilities` |
+| `iteration > N` / `iteration >= N` | The iteration number exceeds / meets the threshold |
+| `tool_calls_so_far >= N` | Tool calls so far meet the threshold |
+| `last_tool_result is not None` | At least one tool has returned a result this turn |
+| `last_tool_result is None` | No tool has returned yet |
+
+Predicates can be joined with `and` / `or`:
+
+```yaml
+rules:
+  - when: iteration > 1 and last_tool_result is not None
+    use: gpt-5.4
+  - when: required_capabilities includes "code" or iteration > 5
+    use: gpt-5.2-codex
+```
+
+Conditions are intentionally simple — single predicates joined by `and` /
+`or`. This keeps the engine dependency-free (no `eval`, no AST parser) and
+auditable. Complex routing needs should use a vendor backend.
+
+---
+
+## Pluggable backends
+
+### Built-in: `lisa-router`
+
+- **Pack**: `sdk/packs/router/` (dist `lisa-pack-router`)
+- **Entry point**: `lisa.extensions.model_routers` →
+  `sdk.packs.router:get_router_factory`
+- **Zero model calls**: the engine evaluates rules locally against
+  `ManifestModelEntry` metadata (`cost_tier`, `latency_tier`, `capabilities`)
+  and `RouterRequest` fields.
+- **Active when**: `router.backend == "lisa-router"` in the manifest.
+
+### External: `lisa-pack-aoi-router` (deferred)
+
+- **Pack**: `../lisa_packs/aoi-router/` (independent repo)
+- **Entry point**: same `lisa.extensions.model_routers` group
+- **Model call**: the vendor router is itself a completion call (using
+  `kernel.provider_core.AzureOpenAIGateway` with `response_format` for
+  structured output), which returns a `model_id`. This is the latency cost
+  you accept for ML-based routing.
+- **Active when**: `router.backend == "aoi-router"` in the manifest.
+
+### Writing a custom router
+
+1. Create a pack with a `pyproject.toml` entry point:
+
+```toml
+[project.entry-points."lisa.extensions.model_routers"]
+my-router = "my_pack.router:get_router_factory"
+```
+
+2. Implement the factory:
+
+```python
+from kernel.model_manifest import ModelManifest
+from kernel.seams.protocols import ModelRouter, RouterDecision, RouterRequest
+
+
+def get_router_factory():
+    return _factory
+
+
+def _factory(manifest: ModelManifest | None, session_plan) -> ModelRouter | None:
+    if manifest is None or manifest.router is None:
+        return None
+    if manifest.router.backend != "my-router":
+        return None
+    return MyRouter(manifest)
+
+
+class MyRouter(ModelRouter):
+    def choose(self, req: RouterRequest) -> RouterDecision | None:
+        # ... your routing logic ...
+        return RouterDecision(model_id="...", reason="...", routed_by="my-router")
+```
+
+3. Return `None` from the factory when your backend is not active (so the
+   host skips it and other factories get a chance).
+
+The factory receives `(manifest, session_plan)`. The first non-`None` factory
+result wins — ordering is deterministic by entry-point discovery order.
+
+---
+
+## Telemetry
+
+Each `RouterDecision` carries:
+
+- `model_id` — the chosen model
+- `reason` — human-readable explanation (e.g. `"lisa-router: rule 'iteration > 1' matched at iteration 2"`)
+- `routed_by` — which router made the decision (e.g. `"lisa-router"`)
+
+The turn loop's `on_stage` hook emits `model_call` events that carry the
+chosen `model_id` and `provider`. Router decisions are auditable via the
+`reason` and `routed_by` fields.
+
+---
+
+## Design principles
+
+- **Zero extra model calls (rules-based).** The `lisa-router` engine is
+  pure-Python local evaluation — no model call. This preserves the "zero
+  extra model calls" principle from `docs/ROUTER_DESIGN.md`. Vendor routers
+  (e.g. `aoi-router`) are opt-in and accept the latency cost.
+- **No replacement, layering.** `mode_models`/`roles` are demoted from
+  "pinned model" to "starting model + fallback" but are not removed. They
+  remain the default when the router is absent or declines.
+- **First-non-None wins.** Router discovery uses the same first-non-None
+  pattern as `lisa.extensions.slice_providers`, keeping ordering deterministic.
+- **Graceful failure.** Router exceptions are caught and logged; the loop
+  falls back to static resolution. A broken router never breaks the turn.

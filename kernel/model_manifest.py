@@ -38,12 +38,42 @@ class ManifestModelEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class RouterRule:
+    """One conditional routing rule from the ``router.rules`` manifest block.
+
+    ``when`` is a free-form condition string interpreted by the active router
+    backend (e.g. ``required_capabilities includes "code"``).
+    ``use`` is the model_id to route to when the condition matches.
+    """
+
+    when: str
+    use: str
+
+
+@dataclass(frozen=True, slots=True)
+class RouterConfig:
+    """Optional model-router configuration parsed from the manifest's ``router:`` block.
+
+    ``backend`` names the active router backend (e.g. ``"lisa-router"``).
+    ``rules`` is an ordered list of ``RouterRule`` entries evaluated
+    first-match-wins. ``fallback`` is the model_id used when no rule matches.
+    When ``backend`` is empty, no router is active — the manifest's
+    ``mode_models``/``roles`` static resolution is the only path.
+    """
+
+    backend: str = ""
+    rules: tuple[RouterRule, ...] = ()
+    fallback: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ModelManifest:
     """Validated shared model manifest used by hosts and provider wrappers."""
 
     models: tuple[ManifestModelEntry, ...]
     mode_models: dict[str, str] = field(default_factory=dict)
     roles: dict[str, str] = field(default_factory=dict)
+    router: RouterConfig | None = None
 
     def resolve(self, ref: str) -> ManifestModelEntry | None:
         """Resolve one reference to a model entry, or None.
@@ -184,7 +214,75 @@ def load_model_manifest(
                 f"Available models: {available_models}"
             )
 
-    return ModelManifest(models=tuple(models), mode_models=mode_models, roles=roles)
+    # Parse the optional ``router:`` block. Absence means no router —
+    # the manifest's ``mode_models``/``roles`` static resolution is the
+    # only path, preserving today's behavior.
+    router_config = _parse_router_config(raw_payload.get("router"), models=models)
+
+    return ModelManifest(
+        models=tuple(models),
+        mode_models=mode_models,
+        roles=roles,
+        router=router_config,
+    )
+
+
+def _parse_router_config(
+    raw_router: Any,
+    *,
+    models: list[ManifestModelEntry],
+) -> RouterConfig | None:
+    """Parse and validate the optional ``router:`` block from the manifest."""
+
+    if raw_router is None:
+        return None
+    if not isinstance(raw_router, dict):
+        raise ValueError("Model manifest 'router' must be a mapping when provided.")
+
+    backend = str(raw_router.get("backend") or "").strip()
+    fallback = str(raw_router.get("fallback") or "").strip()
+
+    raw_rules = raw_router.get("rules")
+    if raw_rules is None:
+        raw_rules = []
+    if not isinstance(raw_rules, list):
+        raise ValueError("Model manifest 'router.rules' must be a list when provided.")
+
+    rules: list[RouterRule] = []
+    for index, raw_rule in enumerate(raw_rules, start=1):
+        if not isinstance(raw_rule, dict):
+            raise ValueError(f"router.rules entry #{index} must be an object.")
+        condition = str(raw_rule.get("when") or "").strip()
+        use = str(raw_rule.get("use") or "").strip()
+        if not condition:
+            raise ValueError(f"router.rules entry #{index} must include a non-empty 'when'.")
+        if not use:
+            raise ValueError(f"router.rules entry #{index} must include a non-empty 'use'.")
+        rules.append(RouterRule(when=condition, use=use))
+
+    # Validate that ``fallback`` and every ``rules[].use`` reference a known model.
+    for rule in rules:
+        if all(
+            rule.use.lower() not in {model.key.lower(), model.model_id.lower()}
+            for model in models
+        ):
+            available = ", ".join(sorted(model.model_id for model in models))
+            raise ValueError(
+                f"router.rules entry 'when: {rule.when}' references unknown model '{rule.use}'. "
+                f"Available models: {available}"
+            )
+    if fallback:
+        if all(
+            fallback.lower() not in {model.key.lower(), model.model_id.lower()}
+            for model in models
+        ):
+            available = ", ".join(sorted(model.model_id for model in models))
+            raise ValueError(
+                f"router.fallback references unknown model '{fallback}'. "
+                f"Available models: {available}"
+            )
+
+    return RouterConfig(backend=backend, rules=tuple(rules), fallback=fallback)
 
 
 def _parse_model_entry(

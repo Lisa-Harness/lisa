@@ -83,8 +83,11 @@ from kernel.seams.protocols import (
     ExtensionEvidenceBuilder,
     InputGuard,
     ModelPolicy,
+    ModelRouter,
     OutputGuard,
     ProviderGatewayProvider,
+    RouterDecision,
+    RouterRequest,
 )
 from kernel.slice import (
     SliceMode,
@@ -214,6 +217,12 @@ class ContextSeams:
 
     content_registry: ContentRegistry = field(default=None)  # type: ignore[assignment]
     model_policy: ModelPolicy = field(default_factory=_lazy_model_policy)
+    model_router: ModelRouter | None = None
+    """Per-iteration model router. When ``None`` (default), the loop falls
+    back to ``ModelPolicy.choose`` if present, then to the statically-resolved
+    ``preferred_model_id`` — preserving today's behavior. Hosts wire a
+    discovered ``ModelRouter`` (from ``lisa.extensions.model_routers``) here
+    to enable per-iteration model selection without extra model calls."""
     provider_gateways: ProviderGatewayProvider = field(default_factory=_lazy_provider_gateways)
     event_bus: EventBus = field(default_factory=_lazy_event_bus)
     data_sanitizer: DataSanitizer = field(default_factory=_lazy_data_sanitizer)
@@ -1413,6 +1422,22 @@ async def _run_turn_inner(
     workflow_terminated = False
     total_tool_calls = 0
     iteration = 0
+
+    # Mutable turn-state read by ``_resolve_iteration_model`` so the router
+    # can see what has happened so far this turn. ``last_tool_result_text``
+    # is updated after each tool dispatch; ``required_capabilities`` and
+    # ``roles_needed`` are derived once from the mode config and the
+    # preferred-model resolution. They default to empty — a router that does
+    # not need them ignores them.
+    last_tool_result_text: str | None = None
+    required_capabilities: tuple[str, ...] = ()
+    if mode_config is not None:
+        required_capabilities = tuple(
+            getattr(mode_config, "required_capabilities", ()) or ()
+        )
+    roles_needed: tuple[str, ...] = ()
+    if isinstance(preferred_model_id, str) and preferred_model_id.strip():
+        roles_needed = (preferred_model_id.strip(),)
     total_prompt_tokens = 0
     total_completion_tokens = 0
     total_tokens = 0
@@ -1441,13 +1466,60 @@ async def _run_turn_inner(
                 return True
         return False
 
-    # Per-iteration model selection (item 5). When the host wires
-    # ``hooks.model_policy``, the loop consults it each iteration instead of
-    # resolving one model for the whole turn. The policy can upgrade or
-    # downgrade the model based on whether tools have run and how much budget
-    # remains. This lets a host express "cheap model routes, expensive model
-    # synthesizes" without the operation indirection.
+    # Per-iteration model selection. Three-tier fallback:
+    #   1. ``ContextSeams.model_router`` — the formal ``ModelRouter`` Protocol
+    #      with a widened ``RouterRequest`` carrying query, last_tool_result,
+    #      required_capabilities, mode_id, and roles_needed. This is the
+    #      pluggable router path (``lisa.extensions.model_routers``).
+    #   2. ``ModelPolicy.choose`` — the legacy duck-typed optional method with
+    #      the narrow ``(default_model_id, iteration, tool_calls_so_far,
+    #      budget_remaining)`` signature. Preserved for backward compatibility.
+    #   3. Static ``model_def`` — the once-resolved ``preferred_model_id``.
+    #      This is today's default behavior when no router and no ``choose``
+    #      are wired.
     def _resolve_iteration_model(iteration_num: int) -> Any:
+        router = hooks.context_seams.model_router
+        if router is not None:
+            req = RouterRequest(
+                default_model_id=preferred_model_id,
+                iteration=iteration_num,
+                tool_calls_so_far=total_tool_calls,
+                budget_remaining=(
+                    None
+                    if turn_budget is None
+                    else max(0, turn_budget.max_tool_calls - total_tool_calls)
+                    if turn_budget.max_tool_calls
+                    else None
+                ),
+                query=query,
+                last_tool_result=last_tool_result_text,
+                required_capabilities=required_capabilities,
+                mode_id=mode_id,
+                roles_needed=roles_needed,
+            )
+            try:
+                decision = router.choose(req)
+            except Exception:  # pylint: disable=broad-except
+                _log.warning(
+                    "model_router.choose failed (iteration=%d): %s",
+                    iteration_num,
+                    exc_info=True,
+                )
+                decision = None
+            if isinstance(decision, RouterDecision) and decision.model_id.strip():
+                resolved = resolve_model(decision.model_id.strip())
+                if resolved is not None:
+                    return resolved
+                _log.warning(
+                    "model_router returned unknown model_id %r; falling back",
+                    decision.model_id,
+                )
+            elif isinstance(decision, str) and decision.strip():
+                # Tolerate routers that return a bare model_id string.
+                resolved = resolve_model(decision.strip())
+                if resolved is not None:
+                    return resolved
+        # Legacy duck-typed ``choose`` on ModelPolicy.
         policy = hooks.context_seams.model_policy
         choose_fn = getattr(policy, "choose", None)
         if callable(choose_fn):
@@ -2063,6 +2135,9 @@ async def _run_turn_inner(
 
             if not tool_output.strip():
                 tool_output = "Done"
+
+            # Track the latest tool result for the model router.
+            last_tool_result_text = str(tool_output)
 
             tool_result_msg: dict[str, Any] = {
                 "role": "tool",
