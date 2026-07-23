@@ -453,11 +453,14 @@ def _backfill_provider_ids(
     ``OperationDefinition.effective_provider_id()`` always return a
     populated value for a capability that belongs to a discoverable pack.
     """
+    authored_pack_id = str(cap_dict.get("pack_id", "") or "").strip()
     if not cap_dict.get(provider_field):
-        cap_dict[provider_field] = (
-            inferred_provider_id or str(cap_dict.get("pack_id", "") or "").strip()
-        )
-    if not str(cap_dict.get("pack_id", "") or "").strip():
+        # The authored pack_id is authoritative (e.g. "lisa-pack-coding").
+        # The content-root-inferred id is a fallback guess from the directory
+        # structure (e.g. "lisa-packs") and may not match session plan config
+        # keys. Prefer pack_id so resolver.for_pack() lookups succeed.
+        cap_dict[provider_field] = authored_pack_id or inferred_provider_id
+    if not authored_pack_id:
         cap_dict["pack_id"] = cap_dict[provider_field]
 
 

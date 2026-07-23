@@ -438,3 +438,69 @@ def test_validate_export_boundaries_allows_same_pack_with_prefix_mismatch(
     )
     # Should not raise: 'coding' slug matches 'lisa-pack-coding' after stripping.
     validate_export_boundaries({"coding_list_directory": op})
+
+
+# ── _backfill_provider_ids priority ────────────────────────────────────────
+
+
+def test_backfill_provider_id_prefers_authored_pack_id_over_inferred(tmp_path: Path) -> None:
+    """The authored pack_id takes priority over the content-root-inferred id.
+
+    Regression: when a tool YAML specifies ``pack_id: lisa-pack-coding`` but
+    not ``tool_provider_id``, the backfill used the inferred id from the
+    directory structure (e.g. "lisa-packs" from the parent dir name) instead
+    of the authoritative pack_id. This caused resolver.for_pack() lookups to
+    fail because the session plan config key ("lisa-pack-coding") didn't
+    match the tool's effective_provider_id ("lisa-packs"), leaving the tool
+    with empty pack configuration.
+    """
+    from sdk.content._catalog import _backfill_provider_ids
+
+    cap_dict = {
+        "tool_id": "coding_list_directory",
+        "pack_id": "lisa-pack-coding",
+        "tool_provider_id": "",
+    }
+    _backfill_provider_ids(
+        cap_dict,
+        inferred_provider_id="lisa-packs",  # wrong guess from dir structure
+        provider_field="tool_provider_id",
+    )
+    assert cap_dict["tool_provider_id"] == "lisa-pack-coding"
+    assert cap_dict["pack_id"] == "lisa-pack-coding"
+
+
+def test_backfill_provider_id_falls_back_to_inferred_when_no_pack_id() -> None:
+    """When pack_id is absent, the inferred id is used as fallback."""
+    from sdk.content._catalog import _backfill_provider_ids
+
+    cap_dict = {
+        "tool_id": "mystery_tool",
+        "pack_id": "",
+        "tool_provider_id": "",
+    }
+    _backfill_provider_ids(
+        cap_dict,
+        inferred_provider_id="lisa-pack-mystery",
+        provider_field="tool_provider_id",
+    )
+    assert cap_dict["tool_provider_id"] == "lisa-pack-mystery"
+    assert cap_dict["pack_id"] == "lisa-pack-mystery"
+
+
+def test_backfill_provider_id_respects_explicitly_set_provider_id() -> None:
+    """When tool_provider_id is already set in YAML, backfill doesn't override it."""
+    from sdk.content._catalog import _backfill_provider_ids
+
+    cap_dict = {
+        "tool_id": "custom_tool",
+        "pack_id": "lisa-pack-a",
+        "tool_provider_id": "lisa-pack-b",  # explicitly set, should not be overridden
+    }
+    _backfill_provider_ids(
+        cap_dict,
+        inferred_provider_id="lisa-packs",
+        provider_field="tool_provider_id",
+    )
+    assert cap_dict["tool_provider_id"] == "lisa-pack-b"
+    assert cap_dict["pack_id"] == "lisa-pack-a"
