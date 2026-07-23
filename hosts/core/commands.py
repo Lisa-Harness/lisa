@@ -1648,18 +1648,45 @@ def _validate_pack_spec_for_install(spec: str) -> tuple[bool, str]:  # noqa: C90
 _FRAMEWORK_SEED_PACKAGES: tuple[str, ...] = ("kernel", "sdk", "mcp_server")
 
 
+def _bundled_pack_dirs() -> list[Path]:
+    """Discover bundled pack source directories under ``sdk/packs/``.
+
+    Bundled packs ship with the framework tree (``<framework_root>/sdk/packs/
+    <name>``) and are **not** published to PyPI. External packs may declare
+    cross-pack dependencies on them (e.g. ``lisa-pack-compaction`` depends on
+    ``lisa-pack-checkpoint`` — see ``docs/PACK_AUTHORING_GUIDE.md``). Without
+    seeding the packs venv with editable installs of these directories, ``uv
+    pip install`` of the depending external pack fails dependency resolution:
+    *"lisa-pack-checkpoint was not found in the package registry"*.
+
+    Returns the sorted list of bundled pack directories (each containing a
+    ``pyproject.toml``).
+    """
+    root = _FRAMEWORK_ROOT / "sdk" / "packs"
+    if not root.is_dir():
+        return []
+    dirs: list[Path] = []
+    for child in sorted(root.iterdir()):
+        if child.is_dir() and (child / "pyproject.toml").is_file():
+            dirs.append(child)
+    return dirs
+
+
 async def _seed_packs_venv_with_framework(packs_venv: Path) -> tuple[bool, str]:
-    """Seed the packs venv with editable installs of framework workspace packages.
+    """Seed the packs venv with editable installs of framework packages.
 
     External packs (installed from git or PyPI) declare dependencies on
-    ``lisa-kernel``, ``lisa-sdk``, and ``lisa-mcp-servers`` — all workspace
-    packages that are **not** published to PyPI. Without seeding, ``uv pip
-    install`` fails: *"lisa-kernel was not found in the package registry"*.
+    ``lisa-kernel``, ``lisa-sdk``, ``lisa-mcp-servers``, and any bundled
+    ``lisa-pack-*`` (e.g. ``lisa-pack-checkpoint``) — all workspace packages
+    that are **not** published to PyPI. Without seeding, ``uv pip install``
+    fails: *"lisa-kernel was not found in the package registry"* (or, for a
+    cross-pack dependency, *"lisa-pack-checkpoint was not found"*).
 
     This installs the framework packages as editable ``-e`` installs from
     their source directories so the packs venv can resolve those dependencies.
     Seeding is idempotent: ``uv pip install -e`` is a no-op if the package is
-    already present at the same version.
+    already present at the same version, so this is safe to call on every
+    install (existing venvs are retro-seeded without side effects).
     """
     seed_targets: list[str] = []
     for member in _FRAMEWORK_SEED_PACKAGES:
@@ -1667,6 +1694,11 @@ async def _seed_packs_venv_with_framework(packs_venv: Path) -> tuple[bool, str]:
         if member_path.is_dir():
             seed_targets.append("-e")
             seed_targets.append(str(member_path))
+    # Also seed bundled packs under sdk/packs/ so external packs that
+    # cross-depend on a bundled pack (e.g. compaction → checkpoint) resolve.
+    for bundled in _bundled_pack_dirs():
+        seed_targets.append("-e")
+        seed_targets.append(str(bundled))
     if not seed_targets:
         return True, ""
 
@@ -1701,11 +1733,12 @@ async def _ensure_packs_venv(packs_venv: Path) -> tuple[bool, str]:
     packs venv lives inside the data dir, so the parent directory is created
     first.
 
-    After creating the venv, it is seeded with editable installs of the
-    framework workspace packages (``lisa-kernel``, ``lisa-sdk``,
-    ``lisa-mcp-servers``) so that external packs declaring dependencies on
-    them can resolve successfully — these packages are workspace-only and not
-    published to PyPI.
+    Seeding (editable installs of framework workspace packages **and** bundled
+    packs under ``sdk/packs/``) is performed by the caller —
+    :func:`run_pack_install` calls :func:`_seed_packs_venv_with_framework` on
+    **every** install, not only on venv creation, so that existing venvs that
+    predate a bundled pack are retro-seeded (seeding is idempotent). This
+    module's ``_ensure_packs_venv`` only owns venv creation, not seeding.
 
     Returns ``(True, "")`` on success (venv exists or was created) or
     ``(False, message)`` if venv creation failed.
@@ -1729,13 +1762,6 @@ async def _ensure_packs_venv(packs_venv: Path) -> tuple[bool, str]:
         preview = "\n".join(output.splitlines()[-12:]).strip()
         return False, (f"Failed to create packs venv at '{packs_venv}'.\n{preview}")
     logger.info("Created packs venv at %s", packs_venv)
-
-    # Seed the freshly-created venv with framework workspace packages so
-    # external packs that depend on lisa-kernel / lisa-sdk / lisa-mcp-servers
-    # can resolve their dependencies (these are not on PyPI).
-    seeded, seed_err = await _seed_packs_venv_with_framework(packs_venv)
-    if not seeded:
-        return False, seed_err
     return True, ""
 
 
@@ -1831,6 +1857,14 @@ async def run_pack_install(
     ensured, ensure_err = await _ensure_packs_venv(packs_venv)
     if not ensured:
         return False, f"Install failed for '{normalized_spec}'.\n{ensure_err}"
+    # Seed on every install (not only on venv creation) so existing venvs that
+    # predate a bundled pack are retro-seeded. Seeding is idempotent. Without
+    # this, an external pack that cross-depends on a bundled pack (e.g.
+    # lisa-pack-compaction → lisa-pack-checkpoint) cannot resolve because the
+    # bundled pack is workspace-only and not on PyPI.
+    seeded, seed_err = await _seed_packs_venv_with_framework(packs_venv)
+    if not seeded:
+        return False, f"Install failed for '{normalized_spec}'.\n{seed_err}"
     process = await asyncio.create_subprocess_exec(
         "uv",
         "pip",

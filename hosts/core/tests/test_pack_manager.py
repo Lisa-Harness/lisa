@@ -409,11 +409,11 @@ def test_validate_pack_spec_for_install_expanded_bare_name_passes(
 
 
 @pytest.mark.asyncio
-async def test_ensure_packs_venv_seeds_framework_packages_on_creation(
+async def test_ensure_packs_venv_creates_venv_without_seeding(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A freshly-created packs venv is seeded with framework workspace packages."""
+    """_ensure_packs_venv creates the venv but does NOT seed it (caller owns seeding)."""
     packs_venv = tmp_path / "packs-venv"
     # Simulate that pyvenv.cfg does NOT exist → venv will be created.
     assert not (packs_venv / "pyvenv.cfg").is_file()
@@ -436,24 +436,80 @@ async def test_ensure_packs_venv_seeds_framework_packages_on_creation(
     assert ok is True
     assert err == ""
 
-    # First call: uv venv <path>
+    # Exactly one call: uv venv <path>. Seeding is now the caller's job.
+    assert len(calls) == 1
     assert calls[0][:3] == ["uv", "venv", str(packs_venv)]
-    # Second call: uv pip install --python <path> -e <kernel> -e <sdk> -e <mcp_server>
-    assert calls[1][:5] == ["uv", "pip", "install", "--python", str(packs_venv)]
-    assert "-e" in calls[1]
-    # The -e targets should reference framework member directories.
-    e_indices = [i for i, arg in enumerate(calls[1]) if arg == "-e"]
-    for idx in e_indices:
-        target = calls[1][idx + 1]
-        assert any(member in target for member in ("kernel", "sdk", "mcp_server"))
 
 
 @pytest.mark.asyncio
-async def test_ensure_packs_venv_skips_seeding_when_already_exists(
+async def test_seed_packs_venv_seeds_framework_and_bundled_packs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """An existing valid packs venv (pyvenv.cfg present) skips creation and seeding."""
+    """_seed_packs_venv_with_framework seeds framework members AND bundled packs."""
+    packs_venv = tmp_path / "packs-venv"
+    packs_venv.mkdir(parents=True, exist_ok=True)
+    (packs_venv / "pyvenv.cfg").write_text("home = /fake\n", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"ok", b"")
+
+    async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> _FakeProc:
+        calls.append([str(a) for a in args])
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    ok, err = await commands._seed_packs_venv_with_framework(packs_venv)
+    assert ok is True
+    assert err == ""
+
+    # Exactly one call: uv pip install --python <path> -e <member> ...
+    assert len(calls) == 1
+    assert calls[0][:5] == ["uv", "pip", "install", "--python", str(packs_venv)]
+    assert "-e" in calls[0]
+    e_indices = [i for i, arg in enumerate(calls[0]) if arg == "-e"]
+    targets = [calls[0][idx + 1] for idx in e_indices]
+    # Framework members are present.
+    assert any("kernel" in t for t in targets)
+    assert any("sdk" in t for t in targets)
+    assert any("mcp_server" in t for t in targets)
+    # Bundled packs under sdk/packs/ are present (e.g. checkpoint, core, ...).
+    bundled = commands._bundled_pack_dirs()
+    assert bundled, "expected at least one bundled pack dir under sdk/packs/"
+    bundled_names = {p.name for p in bundled}
+    # Every bundled dir must appear as a -e target.
+    for name in bundled_names:
+        assert any(name in t for t in targets), f"bundled pack {name!r} missing from seed targets"
+
+
+@pytest.mark.asyncio
+async def test_bundled_pack_dirs_discovers_packs_with_pyproject(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """_bundled_pack_dirs returns dirs under sdk/packs/ that have a pyproject.toml."""
+    dirs = commands._bundled_pack_dirs()
+    assert dirs, "expected bundled pack dirs under sdk/packs/ in this repo"
+    for d in dirs:
+        assert d.is_dir()
+        assert (d / "pyproject.toml").is_file()
+    # checkpoint is the pack that compaction cross-depends on; it must be found.
+    names = {d.name for d in dirs}
+    assert "checkpoint" in names
+
+
+@pytest.mark.asyncio
+async def test_ensure_packs_venv_skips_creation_when_already_exists(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An existing valid packs venv (pyvenv.cfg present) skips creation."""
     packs_venv = tmp_path / "packs-venv"
     packs_venv.mkdir(parents=True, exist_ok=True)
     (packs_venv / "pyvenv.cfg").write_text("home = /fake\n", encoding="utf-8")
