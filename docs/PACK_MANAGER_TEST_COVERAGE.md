@@ -31,6 +31,17 @@ This document summarizes test coverage for runtime pack management, pack-contrib
 - Local folder refs are validated by `pyproject.toml` `project.name` and constrained by allowed prefixes.
 - Local folder refs with a missing `project.name` are rejected.
 
+### 2a. Bare-Pack-Name Shorthand Expansion
+
+- Bare pack names (e.g. `lisa-pack-brave-search`) are expanded to `git+` URLs
+  via `LISA_PACK_GIT_ROOT` (default: `git+https://github.com/Lisa-framework/{pack}@main`).
+- The `{pack}` placeholder is replaced with the bare package name.
+- Setting `LISA_PACK_GIT_ROOT` to an empty string disables expansion (bare names
+  fall back to PyPI resolution).
+- Specs with version pins (e.g. `lisa-pack-cloudflare==0.1.0`), extras
+  (e.g. `lisa-pack-core[extra]`), or whitespace are **not** expanded.
+- `git+` specs, local paths, and `https://`/`http://` URLs are not affected.
+
 ### 3. Restart + Resume Signaling
 
 - `runtime.request_restart(reason)` sets the restart flag and reason.

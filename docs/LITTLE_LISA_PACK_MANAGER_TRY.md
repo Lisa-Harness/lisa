@@ -7,6 +7,7 @@ This guide lets you exercise the new runtime pack capabilities in a local dev lo
 - Runtime pack list/enable/disable/install/uninstall commands.
 - Activation gating: bundled packs are off until `/pack enable`.
 - Package trust policy enforcement (prefix + Git host allowlist).
+- Bare-pack-name shorthand expansion (`LISA_PACK_GIT_ROOT`).
 - Git-based pack refs (not just package-index refs).
 - Auto-restart after pack lifecycle changes.
 - Optional resume message after restart.
@@ -108,6 +109,36 @@ From REPL/host command surface:
 ```powershell
 uv run lisa once "/pack install git+https://github.com/the-migus-group/lisa-pack-cloudflare.git@v0.1.0#egg=lisa-pack-cloudflare" --no-log
 ```
+
+## 4a) Install by Bare Pack Name (Shorthand)
+
+Bare pack names matching the allowed prefix (e.g. `lisa-pack-brave-search`) are
+expanded to a `git+` URL using `LISA_PACK_GIT_ROOT` (default:
+`git+https://github.com/Lisa-framework/{pack}@main`). This is a shorthand for
+installing framework packs without typing a full git URL:
+
+```powershell
+uv run lisa pack install "lisa-pack-brave-search" --no-log
+```
+
+This expands to `git+https://github.com/Lisa-framework/lisa-pack-brave-search@main`
+and routes through the same git-validation path (host allowlist + ref-pinning).
+
+Override the expansion template to proxy or replace the pack root:
+
+```powershell
+$env:LISA_PACK_GIT_ROOT = "git+https://gitlab.example.com/lisa-mirror/{pack}@main"
+```
+
+Disable bare-name expansion entirely (fall back to PyPI resolution):
+
+```powershell
+$env:LISA_PACK_GIT_ROOT = ""
+```
+
+Specs with version pins (e.g. `lisa-pack-cloudflare==0.1.0`), extras
+(e.g. `lisa-pack-core[extra]`), or whitespace are **not** expanded — they
+are passed through to `uv pip install` as-is.
 
 ## 4b) Install From Local Folder (Split-Repos Workflow)
 

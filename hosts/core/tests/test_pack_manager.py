@@ -333,6 +333,76 @@ def test_validate_pack_spec_for_install_local_folder_rejects_missing_pyproject_n
     assert "missing a valid pyproject.toml project.name" in reason
 
 
+def test_normalize_pack_install_spec_expands_bare_pack_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bare ``lisa-pack-*`` names expand to the framework git root template."""
+    monkeypatch.delenv("LISA_PACK_GIT_ROOT", raising=False)
+
+    result = commands._normalize_pack_install_spec("lisa-pack-brave-search")
+    assert result == "git+https://github.com/Lisa-framework/lisa-pack-brave-search@main"
+
+
+def test_normalize_pack_install_spec_bare_name_respects_custom_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``LISA_PACK_GIT_ROOT`` overrides the expansion template."""
+    monkeypatch.setenv(
+        "LISA_PACK_GIT_ROOT",
+        "git+https://gitlab.example.com/lisa-mirror/{pack}@main",
+    )
+
+    result = commands._normalize_pack_install_spec("lisa-pack-brave-search")
+    assert result == "git+https://gitlab.example.com/lisa-mirror/lisa-pack-brave-search@main"
+
+
+def test_normalize_pack_install_spec_bare_name_disabled_when_root_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setting ``LISA_PACK_GIT_ROOT`` to empty disables bare-name expansion."""
+    monkeypatch.setenv("LISA_PACK_GIT_ROOT", "")
+
+    result = commands._normalize_pack_install_spec("lisa-pack-brave-search")
+    assert result == "lisa-pack-brave-search"
+
+
+def test_normalize_pack_install_spec_bare_name_preserves_version_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Specs with version pins or extras are not expanded (not bare names)."""
+    monkeypatch.delenv("LISA_PACK_GIT_ROOT", raising=False)
+
+    assert commands._normalize_pack_install_spec("lisa-pack-cloudflare==0.1.0") == "lisa-pack-cloudflare==0.1.0"
+    assert commands._normalize_pack_install_spec("lisa-pack-core[extra]") == "lisa-pack-core[extra]"
+
+
+def test_normalize_pack_install_spec_git_and_local_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """git+ specs and local paths are returned as-is (not bare names)."""
+    monkeypatch.delenv("LISA_PACK_GIT_ROOT", raising=False)
+
+    git_spec = "git+https://github.com/acme/lisa-pack-cloudflare.git@v1.2.3"
+    assert commands._normalize_pack_install_spec(git_spec) == git_spec
+
+    local_pack = tmp_path / "lisa-pack-memory"
+    local_pack.mkdir(parents=True, exist_ok=True)
+    assert commands._normalize_pack_install_spec(str(local_pack)) == str(local_pack)
+
+
+def test_validate_pack_spec_for_install_expanded_bare_name_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare name expanded to the default framework git root passes validation."""
+    monkeypatch.delenv("LISA_PACK_GIT_ROOT", raising=False)
+    monkeypatch.setenv("LISA_PACK_GIT_ALLOW_HOSTS", "github.com")
+    monkeypatch.setenv("LISA_PACK_REQUIRE_GIT_REF", "true")
+
+    expanded = commands._normalize_pack_install_spec("lisa-pack-brave-search")
+    ok, reason = commands._validate_pack_spec_for_install(expanded)
+    assert ok is True
+    assert reason == ""
+
+
 def test_request_and_consume_restart_resume_message(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

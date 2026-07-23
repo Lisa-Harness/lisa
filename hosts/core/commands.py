@@ -128,6 +128,7 @@ logger = logging.getLogger(__name__)
 LISA_PACK_ALLOWED_PREFIXES_ENV = "LISA_PACK_ALLOWED_PREFIXES"
 LISA_PACK_GIT_ALLOW_HOSTS_ENV = "LISA_PACK_GIT_ALLOW_HOSTS"
 LISA_PACK_REQUIRE_GIT_REF_ENV = "LISA_PACK_REQUIRE_GIT_REF"
+LISA_PACK_GIT_ROOT_ENV = "LISA_PACK_GIT_ROOT"
 
 # Framework root (repo checkout or tool-venv root). Used for resolving
 # local pack specs that live under the repo. In tool-install mode this is
@@ -1514,6 +1515,25 @@ def pack_require_git_ref() -> bool:
     return configured not in {"0", "false", "no", "off"}
 
 
+# Default git root template for expanding bare pack names (e.g.
+# ``lisa-pack-brave-search`` → ``git+https://github.com/Lisa-framework/lisa-pack-brave-search@main``).
+# The ``{pack}`` placeholder is replaced with the bare package name. Set
+# ``LISA_PACK_GIT_ROOT`` to override with a custom template or to empty ("")
+# to disable expansion and fall back to PyPI resolution for bare names.
+_DEFAULT_PACK_GIT_ROOT = "git+https://github.com/Lisa-framework/{pack}@main"
+
+
+def pack_git_root_template() -> str:
+    """Return the git root template for expanding bare pack names.
+
+    Reads ``LISA_PACK_GIT_ROOT`` (default:
+    ``git+https://github.com/Lisa-framework/{pack}@main``). The ``{pack}``
+    placeholder is replaced with the bare package name at expansion time.
+    Set the env var to an empty string to disable bare-name expansion.
+    """
+    return os.getenv(LISA_PACK_GIT_ROOT_ENV, _DEFAULT_PACK_GIT_ROOT).strip()
+
+
 def _is_git_pack_spec(spec: str) -> bool:
     return spec.strip().lower().startswith("git+")
 
@@ -1662,16 +1682,60 @@ async def _ensure_packs_venv(packs_venv: Path) -> tuple[bool, str]:
     return True, ""
 
 
+def _is_bare_pack_name(spec: str) -> bool:
+    """Return True if *spec* is a bare package name with no version pins or extras.
+
+    A bare name is one that is not a local path, not a ``git+`` URL, not a
+    plain ``https://``/``http://`` URL, and contains no version operators
+    (``>=``, ``==``, …), extras (``[...]``), or whitespace. Only bare names
+    are eligible for expansion via :func:`pack_git_root_template`.
+    """
+    raw = spec.strip().strip('"')
+    if not raw:
+        return False
+    if _is_git_pack_spec(raw) or _is_local_pack_spec(raw):
+        return False
+    lowered = raw.lower()
+    if lowered.startswith("https://") or lowered.startswith("http://"):
+        return False
+    # Version operators, extras brackets, or spaces disqualify.
+    if re.search(r"[<>=!~\[\s]", raw):
+        return False
+    return True
+
+
+def _expand_bare_pack_name(spec: str) -> str:
+    """Expand a bare pack name to a git+ URL using the configured root template.
+
+    Returns *spec* unchanged when the template is empty (feature disabled) or
+    when the template does not contain the ``{pack}`` placeholder.
+    """
+    template = pack_git_root_template()
+    if not template or "{pack}" not in template:
+        return spec
+    return template.replace("{pack}", spec.strip())
+
+
 def _normalize_pack_install_spec(spec: str) -> str:
     """Normalize a pack install spec before validation.
 
-    Bare ``https://``/``http://`` GitHub-style URLs are rewritten to the
-    ``git+https://`` form that :func:`_is_git_pack_spec` and uv both
-    expect. This lets users paste a plain repo URL (e.g.
-    ``https://github.com/Lisa-Framework/lisa-pack-brave-search``) instead
-    of having to remember the ``git+`` prefix, and routes them through
-    the git-validation path (host allowlist + ref-pinning policy) so the
-    error messages stay actionable.
+    Three normalizations are applied:
+
+    1. Bare ``https://``/``http://`` GitHub-style URLs are rewritten to the
+       ``git+https://`` form that :func:`_is_git_pack_spec` and uv both
+       expect. This lets users paste a plain repo URL (e.g.
+       ``https://github.com/Lisa-Framework/lisa-pack-brave-search``) instead
+       of having to remember the ``git+`` prefix.
+    2. Bare pack names matching the allowed prefix (e.g.
+       ``lisa-pack-brave-search``) are expanded to a ``git+`` URL using
+       :func:`pack_git_root_template` (default:
+       ``git+https://github.com/Lisa-framework/{pack}@main``). This is a
+       shorthand so users can type just the pack name for framework packs
+       instead of a full git URL. Set ``LISA_PACK_GIT_ROOT`` to override the
+       template or to empty to disable expansion.
+
+    Both normalizations route through the git-validation path (host allowlist
+    + ref-pinning policy) so error messages stay actionable.
 
     Local paths and specs already carrying ``git+`` are returned as-is.
     """
@@ -1681,6 +1745,10 @@ def _normalize_pack_install_spec(spec: str) -> str:
     lowered = raw.lower()
     if lowered.startswith("https://") or lowered.startswith("http://"):
         return "git+" + raw
+    if _is_bare_pack_name(raw):
+        expanded = _expand_bare_pack_name(raw)
+        if expanded != raw:
+            return expanded
     return spec
 
 
