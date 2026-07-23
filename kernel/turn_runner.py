@@ -2935,11 +2935,24 @@ def _stringify_pack_tool_result(result: ToolResult) -> str:
     AND the structured payload in ``output_json`` (the entry list itself). Emitting
     only the summary starves the model of the data it called the tool to get. When
     both are present, concatenate the summary and the JSON payload.
+
+    When the tool returns an error (``result.error`` is non-empty), the error
+    MUST be surfaced to the model. Otherwise the model sees only "Done" and
+    cannot understand why the tool produced no data, leading it to report
+    that the tool "returned a generic Done message" instead of diagnosing
+    the actual failure (e.g. missing pack configuration, bad workspace root).
     """
     import json as _json
 
     summary = result.output_text.strip()
     payload = result.output_json
+    if result.error.strip():
+        error_text = f"Error: {result.error.strip()}"
+        if summary:
+            return f"{summary}\n{error_text}"
+        if payload:
+            return f"{error_text}\n{_json.dumps(payload, indent=2, sort_keys=True)}"
+        return error_text
     if summary and payload:
         return f"{summary}\n{_json.dumps(payload, indent=2, sort_keys=True)}"
     if summary:

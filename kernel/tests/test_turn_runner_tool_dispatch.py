@@ -190,6 +190,53 @@ def test_stringify_pack_tool_result_summary_stripped() -> None:
     assert rendered.startswith("spaced")
 
 
+def test_stringify_pack_tool_result_surfaces_error_when_no_output() -> None:
+    """When a tool returns an error with empty output_text/json, the error is surfaced.
+
+    Regression: previously, _stringify_pack_tool_result ignored the ``error``
+    field on ToolResult. When a pack tool (e.g. coding_list_directory) failed
+    with an error (e.g. missing workspace_root config), output_text and
+    output_json were both empty, so the function returned "Done" — hiding
+    the actual error from the model and causing it to report that the tool
+    "returned a generic Done message" instead of diagnosing the failure.
+    """
+    result = ToolResult(
+        tool_id="coding_list_directory",
+        error="workspace_root is not a directory: /nonexistent",
+    )
+    rendered = _stringify_pack_tool_result(result)
+    assert "Error:" in rendered
+    assert "workspace_root is not a directory" in rendered
+    assert rendered != "Done"
+
+
+def test_stringify_pack_tool_result_error_alongside_summary() -> None:
+    """When both summary and error are present, both are emitted."""
+    result = ToolResult(
+        tool_id="coding_list_directory",
+        output_text="Listed 0 entries.",
+        error="Partial failure: some paths unreadable",
+    )
+    rendered = _stringify_pack_tool_result(result)
+    assert "Listed 0 entries." in rendered
+    assert "Error:" in rendered
+    assert "Partial failure" in rendered
+
+
+def test_stringify_pack_tool_result_error_alongside_json() -> None:
+    """When both JSON payload and error are present, both are emitted."""
+    result = ToolResult(
+        tool_id="coding_find_files",
+        output_json={"files": ["a.py"]},
+        error="Search was truncated",
+    )
+    rendered = _stringify_pack_tool_result(result)
+    assert "Error:" in rendered
+    assert "Search was truncated" in rendered
+    assert '"files"' in rendered
+    assert "a.py" in rendered
+
+
 # ── _extract_pre_turn_briefing ─────────────────────────────────────────
 
 
