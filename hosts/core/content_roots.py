@@ -416,8 +416,10 @@ def active_installed_pack_roots(
     # re-scan after ``sys.path`` is modified at startup.
     from kernel.content_roots import (  # noqa: PLC0415
         discover_installed_content_roots as _discover_entry_point_roots,
-        discover_packs_venv_content_roots as _discover_packs_venv_roots,
     )  # type: ignore[import-not-found]
+    from kernel.content_roots import (
+        discover_packs_venv_content_roots as _discover_packs_venv_roots,
+    )
 
     all_roots = [*_discover_entry_point_roots(), *_discover_packs_venv_roots(data_dir)]
     for root in all_roots:

@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
 
 from kernel.model_manifest import ModelManifest, RouterRule
 from kernel.seams.protocols import ModelRouter, RouterDecision, RouterRequest

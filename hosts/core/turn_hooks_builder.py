@@ -569,7 +569,6 @@ def build_turn_hooks(
             return base_slice
 
         async def _chained(policy: Any) -> Any:
-            import time as _time
 
             total_work = 0
             last_item = ""

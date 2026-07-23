@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -30,7 +29,6 @@ from kernel.models import (
 )
 from kernel.turn_runner import (
     TurnHooks,
-    TurnResult,
     _fork_child_budget,
     _fork_mode_requires_tools,
     run_turn,
@@ -267,7 +265,6 @@ async def test_fork_transition_empty_target_string_returns_error() -> None:
 async def test_handoff_to_non_routable_target_rejected() -> None:
     """Handoff to a mode that is not in routing_targets (and not 'default')
     is rejected with an error message in the tool output."""
-    from kernel.ipsar_fsm import get_workflow_catalog
 
     call_count = 0
     captured_tool_outputs: list[str] = []

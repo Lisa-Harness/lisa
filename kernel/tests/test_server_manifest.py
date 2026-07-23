@@ -17,10 +17,8 @@ import pytest
 
 from kernel.mcp_launch.policy import RuntimeKind
 from kernel.mcp_launch.server_manifest import (
-    MemoryBackendConfig,
     load_mcp_server_manifest,
 )
-
 
 # ── Manifest loader ─────────────────────────────────────────────────────────
 

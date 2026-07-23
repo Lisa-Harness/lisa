@@ -20,33 +20,26 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
-import textwrap
 import time
 from datetime import UTC
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from zoneinfo import ZoneInfoNotFoundError
 
-import httpx
 import pytest
-from kernel.model_manifest import ModelManifest
 from kernel.models import (
-    OperationExecutionContext,
-    OperationResult,
-    ToolResult,
     WorkflowModeConfig,
 )
-from kernel.operations.registry import OperationExecutionError
 from kernel.session_plan import ProviderSelections
 from kernel.turn_runner import TurnResult
-from pydantic import BaseModel
 
-from hosts.core import commands, config_resolver, context_assembly
-from hosts.core import mcp_pool, model_runtime, providers, session_context, token_accounting
-from hosts.core import turn_hooks_builder
+from hosts.core import (
+    commands,
+    context_assembly,
+    mcp_pool,
+    providers,
+    turn_hooks_builder,
+)
 from hosts.core.callbacks import NullTransport
 from hosts.core.config import HostConfig
 from hosts.core.config_resolver import resolve_log_level, resolve_stream_enabled, resolve_timezone
@@ -55,10 +48,9 @@ from hosts.core.handle_message import handle_message
 # ``hosts.core.__init__`` re-exports ``handle_message`` as the *function*,
 # shadowing the submodule attribute, so grab the real module from sys.modules
 # for monkeypatching module-private functions (e.g. _route_model_turn).
-import sys  # noqa: E402
 
 handle_message_mod = sys.modules["hosts.core.handle_message"]
-from hosts.core.model_runtime import StubCompletion, StubModelDefinition, resolve_little_lisa_model
+from hosts.core.model_runtime import StubModelDefinition, resolve_little_lisa_model
 from hosts.core.runtime import HostRuntime, TurnContext
 from hosts.core.state_provider import FileBackedStateProvider
 from hosts.core.token_accounting import apply_turn_usage, format_session_exit_summary_lines

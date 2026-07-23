@@ -100,8 +100,8 @@ def discover_slice_provider_factories(
 
 
 __all__ = [
-    "PackSliceProviderEntry",
     "SLICE_PROVIDERS_ENTRY_POINT_GROUP",
+    "PackSliceProviderEntry",
     "SliceProviderFactory",
     "discover_slice_provider_factories",
 ]

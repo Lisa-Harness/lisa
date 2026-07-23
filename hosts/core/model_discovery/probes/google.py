@@ -192,10 +192,7 @@ def _enrich_google_model(model_id: str, row: dict) -> DiscoveredModel:
     lowered = model_id.lower()
     cost_tier = ""
     latency_tier = ""
-    if "flash-lite" in lowered or "flash_lite" in lowered:
-        cost_tier = "budget"
-        latency_tier = "low"
-    elif "flash" in lowered:
+    if "flash-lite" in lowered or "flash_lite" in lowered or "flash" in lowered:
         cost_tier = "budget"
         latency_tier = "low"
     elif "pro" in lowered:

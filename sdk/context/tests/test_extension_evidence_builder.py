@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from importlib.metadata import EntryPoint
-
 from sdk.context.extension_evidence_builder import EntryPointExtensionEvidenceBuilder
 
 

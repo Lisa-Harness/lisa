@@ -9,7 +9,6 @@ is expected to preserve the same observable semantics.
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -194,7 +193,7 @@ async def test_recall_ranks_by_token_overlap(tmp_path: Path) -> None:
     result = await store.recall("chose postgresql primary", user_slug="adam", limit=5)
 
     lines = result.splitlines()
-    assert "We chose PostgreSQL for the primary database." == lines[0][2:]
+    assert lines[0][2:] == "We chose PostgreSQL for the primary database."
 
 
 @pytest.mark.asyncio

@@ -64,7 +64,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str) -> Any:  # noqa: PLE0604  # PEP 562 lazy module attribute
+def __getattr__(name: str) -> Any:  # PEP 562 lazy module attribute
     """Lazy-import the heavy runtime symbols on first attribute access.
 
     ``hosts.core.runtime`` is the heaviest submodule in the package (it

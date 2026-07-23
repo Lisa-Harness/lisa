@@ -19,9 +19,7 @@ import asyncio
 import logging
 import os
 import platform
-import subprocess
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, TYPE_CHECKING
 
@@ -157,7 +155,7 @@ def _restart_current_process() -> None:
 
 def _get_version() -> str:
     try:
-        from importlib.metadata import PackageNotFoundError, version as _pkg_version
+        from importlib.metadata import version as _pkg_version
 
         return _pkg_version("lisa-host-cli")
     except Exception:  # pylint: disable=broad-except

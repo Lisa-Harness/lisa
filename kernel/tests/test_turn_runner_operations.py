@@ -21,7 +21,6 @@ from kernel.models import (
 )
 from kernel.operations.registry import (
     build_operation_tool_schemas,
-    execute_operation,
     get_operation_catalog,
 )
 from kernel.turn_runner import TurnHooks, _prune_model_tool_schemas, run_turn
@@ -140,7 +139,7 @@ async def test_non_operation_tool_call_dispatches_via_pool() -> None:
             pool_calls.append(tool_id)
             return MCPToolResult(tool_id=tool_id, output_text="MCP tool result")
 
-        async def __aenter__(self) -> "_StubPool":
+        async def __aenter__(self) -> _StubPool:
             return self
 
         async def __aexit__(self, *_args: object) -> None:
@@ -302,7 +301,7 @@ async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
         async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> Any:
             return type("_R", (), {"output_text": "done", "is_error": False})()
 
-        async def __aenter__(self) -> "_StubPool":
+        async def __aenter__(self) -> _StubPool:
             return self
 
         async def __aexit__(self, *_args: object) -> None:
@@ -434,7 +433,7 @@ async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
         async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> Any:
             return type("_R", (), {"output_text": "done", "is_error": False})()
 
-        async def __aenter__(self) -> "_StubPool":
+        async def __aenter__(self) -> _StubPool:
             return self
 
         async def __aexit__(self, *_args: object) -> None:
@@ -525,7 +524,7 @@ async def test_run_turn_prunes_duplicate_tools_before_model_call() -> None:
         async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> Any:
             return type("_R", (), {"output_text": "done", "is_error": False})()
 
-        async def __aenter__(self) -> "_StubPool":
+        async def __aenter__(self) -> _StubPool:
             return self
 
         async def __aexit__(self, *_args: object) -> None:

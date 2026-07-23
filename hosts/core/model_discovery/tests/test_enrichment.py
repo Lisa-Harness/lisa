@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import yaml
-
 from hosts.core.model_discovery.classify import (
     apply_known_override,
     load_known_models,

@@ -17,19 +17,15 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
 
 from kernel.models import (
     CallLedger,
     OperationExecutionContext,
     OperationResult,
-    ToolDefinition,
-    ToolExecutionContext,
     ToolResult,
 )
 from kernel.turn_runner import (
     TurnHooks,
-    TurnResult,
     _build_minimal_context,
     _extract_pre_turn_briefing,
     _stringify_pack_tool_result,
@@ -452,7 +448,7 @@ async def test_mcp_tool_dispatch_via_pool_call_tool() -> None:
             pool_calls.append(tool_id)
             return MCPToolResult(tool_id=tool_id, output_text="MCP result")
 
-        async def __aenter__(self) -> "_StubPool":
+        async def __aenter__(self) -> _StubPool:
             return self
 
         async def __aexit__(self, *_a: object) -> None:
@@ -493,7 +489,7 @@ async def test_mcp_tool_error_continues_turn() -> None:
         async def call_tool(self, tool_id: str, _args: dict[str, Any]) -> Any:
             raise RuntimeError("MCP server crashed")
 
-        async def __aenter__(self) -> "_FailingPool":
+        async def __aenter__(self) -> _FailingPool:
             return self
 
         async def __aexit__(self, *_a: object) -> None:
@@ -538,7 +534,7 @@ async def test_empty_tool_output_coerced_to_done() -> None:
         async def call_tool(self, tool_id: str, _args: dict[str, Any]) -> MCPToolResult:
             return MCPToolResult(tool_id=tool_id, output_text="")
 
-        async def __aenter__(self) -> "_EmptyPool":
+        async def __aenter__(self) -> _EmptyPool:
             return self
 
         async def __aexit__(self, *_a: object) -> None:
@@ -587,7 +583,7 @@ async def test_thought_signature_preserved_in_tool_result(monkeypatch: pytest.Mo
         async def call_tool(self, tool_id: str, _args: dict[str, Any]) -> MCPToolResult:
             return MCPToolResult(tool_id=tool_id, output_text="ok")
 
-        async def __aenter__(self) -> "_StubPool":
+        async def __aenter__(self) -> _StubPool:
             return self
 
         async def __aexit__(self, *_a: object) -> None:
@@ -639,7 +635,7 @@ async def test_thought_signature_preserved_nested_in_function(monkeypatch: pytes
         async def call_tool(self, tool_id: str, _args: dict[str, Any]) -> MCPToolResult:
             return MCPToolResult(tool_id=tool_id, output_text="ok")
 
-        async def __aenter__(self) -> "_StubPool":
+        async def __aenter__(self) -> _StubPool:
             return self
 
         async def __aexit__(self, *_a: object) -> None:
@@ -957,8 +953,8 @@ def test_should_checkpoint_false_on_transition_when_disabled() -> None:
 
 def test_should_checkpoint_true_on_every_n_turns() -> None:
     """_should_checkpoint returns True when turn_count is a multiple of every_n_turns."""
-    from kernel.turn_runner import CheckpointTuning, TurnHooks, _should_checkpoint
     from kernel.models import WorkflowSessionState
+    from kernel.turn_runner import CheckpointTuning, TurnHooks, _should_checkpoint
 
     session = WorkflowSessionState(
         user_id="u",
@@ -980,8 +976,8 @@ def test_should_checkpoint_true_on_every_n_turns() -> None:
 
 def test_should_checkpoint_false_when_turn_count_not_multiple() -> None:
     """_should_checkpoint returns False when turn_count is not a multiple."""
-    from kernel.turn_runner import CheckpointTuning, TurnHooks, _should_checkpoint
     from kernel.models import WorkflowSessionState
+    from kernel.turn_runner import CheckpointTuning, TurnHooks, _should_checkpoint
 
     session = WorkflowSessionState(
         user_id="u",

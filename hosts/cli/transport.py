@@ -12,12 +12,10 @@ imports Rich; it only calls these methods on the injected transport.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
-from rich.console import Console, RenderableType
-from rich.live import Live
+from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.status import Status

@@ -118,7 +118,7 @@ class TestNormalizeMarkdownToTagged:
     def test_converts_fences_to_xml_tags(self) -> None:
         text = "```authoritative\nmode: default\n```"
         result = normalize_markdown_to_tagged(text)
-        assert "<authoritative>\nmode: default\n</authoritative>" == result
+        assert result == "<authoritative>\nmode: default\n</authoritative>"
 
     def test_prose_and_fences_mix(self) -> None:
         text = "Prose here.\n```recalled_memory\nA memory.\n```"

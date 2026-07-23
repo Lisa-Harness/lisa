@@ -14,14 +14,12 @@ into a SchemaBuilder module (Phase 4) can verify behavior parity.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from kernel.models import OperationResult
 from kernel.turn_runner import (
     TurnHooks,
     _build_in_process_tool_schemas,
@@ -429,7 +427,7 @@ async def test_schema_assembly_excludes_mcp_tools_not_in_allowlist() -> None:
         async def call_tool(self, tool_id: str, _args: dict[str, Any]) -> Any:
             return type("_R", (), {"output_text": "done", "is_error": False})()
 
-        async def __aenter__(self) -> "_StubPool":
+        async def __aenter__(self) -> _StubPool:
             return self
 
         async def __aexit__(self, *_a: object) -> None:
@@ -477,7 +475,7 @@ async def test_schema_assembly_authoritative_empty_allowlist_no_mcp_tools() -> N
         async def call_tool(self, tool_id: str, _args: dict[str, Any]) -> Any:
             return type("_R", (), {"output_text": "done", "is_error": False})()
 
-        async def __aenter__(self) -> "_StubPool":
+        async def __aenter__(self) -> _StubPool:
             return self
 
         async def __aexit__(self, *_a: object) -> None:
@@ -535,7 +533,7 @@ async def test_schema_assembly_deduplicates_before_model_call() -> None:
         async def call_tool(self, tool_id: str, _args: dict[str, Any]) -> Any:
             return type("_R", (), {"output_text": "done", "is_error": False})()
 
-        async def __aenter__(self) -> "_StubPool":
+        async def __aenter__(self) -> _StubPool:
             return self
 
         async def __aexit__(self, *_a: object) -> None:

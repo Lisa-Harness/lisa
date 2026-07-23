@@ -13,10 +13,8 @@ See ``deferred-start-owns-teardown.md`` and commit 868162a for background.
 from __future__ import annotations
 
 # pylint: disable=protected-access
-
 import asyncio
 from pathlib import Path
-from typing import Any
 
 import pytest
 

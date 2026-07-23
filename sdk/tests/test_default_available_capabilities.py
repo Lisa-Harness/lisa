@@ -23,7 +23,6 @@ from sdk.content import (
     resolve_tool_roots,
 )
 
-
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
 
@@ -292,8 +291,7 @@ def test_validate_export_boundaries_rejects_non_exported_cross_pack_reference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A mode referencing a non-exported op from another pack is rejected."""
-    from kernel.operations.registry import validate_export_boundaries
-    from kernel.operations.registry import OperationValidationError
+    from kernel.operations.registry import OperationValidationError, validate_export_boundaries
 
     op = SimpleNamespace(
         operation_id="private_op",

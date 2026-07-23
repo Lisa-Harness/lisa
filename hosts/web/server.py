@@ -35,7 +35,6 @@ from typing import Any
 
 from aiohttp import web
 
-from hosts.core.callbacks import TransportCallbacks
 from hosts.core.handle_message import handle_message
 from hosts.core.runtime import HostRuntime, TurnContext
 

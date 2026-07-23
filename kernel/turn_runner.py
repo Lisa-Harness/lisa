@@ -2007,7 +2007,7 @@ async def _run_turn_inner(
                                 except Exception:  # pylint: disable=broad-except
                                     # Fallback for non-pydantic ctx shapes.
                                     try:
-                                        setattr(ctx, "mode_id", target_stage)
+                                        ctx.mode_id = target_stage
                                     except Exception:  # pylint: disable=broad-except
                                         _log.warning(
                                             "Could not update ctx.mode_id after "

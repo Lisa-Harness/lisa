@@ -26,7 +26,6 @@ from kernel.models import (
     ToolResult,
 )
 
-
 # ── Test helpers ──────────────────────────────────────────────────────
 
 
@@ -70,7 +69,7 @@ def _make_ctx(
 def _mock_tool_executor(return_text: str, is_error: bool = False) -> Callable[[str, Any], Awaitable[ToolResult]]:
     """Build a mock execute_tool_fn that returns the given text."""
 
-    async def _executor(tool_id: str, _ctx: Any) -> ToolResult:  # noqa: ARG001
+    async def _executor(tool_id: str, _ctx: Any) -> ToolResult:
         return ToolResult(tool_id=tool_id, output_text=return_text, error="" if not is_error else return_text)
 
     return _executor
@@ -90,7 +89,7 @@ def _mock_resolve_model() -> Callable[[str], Any]:
     stub = MagicMock()
     stub.model_id = "test-model"
 
-    def _resolve(_alias: str) -> Any:  # noqa: ARG001
+    def _resolve(_alias: str) -> Any:
         return stub
 
     return _resolve

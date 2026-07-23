@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kernel.introspect import gather_introspection
-from kernel.models import IntrospectSnapshot, McpConnectionStatus
+from kernel.models import IntrospectSnapshot
 
 
 @pytest.mark.asyncio

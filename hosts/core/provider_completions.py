@@ -15,9 +15,8 @@ import json
 from typing import Any
 
 import httpx
-from pydantic import ValidationError
-
 from kernel.operations.structured_output import parse_structured_payload
+from pydantic import ValidationError
 
 
 def _extract_anthropic_error_detail(response: httpx.Response) -> str:

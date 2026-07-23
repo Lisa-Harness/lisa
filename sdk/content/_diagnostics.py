@@ -16,7 +16,6 @@ from typing import Any
 
 from kernel.content_roots import CONTENT_ROOT_ENTRY_POINT_GROUP
 from kernel.pack_activation import load_disabled_pack_names_from_env
-
 from sdk.content._catalog import (
     _DECLARATIVE_OPERATION_SUFFIX,
     _MODE_CONFIG_FILENAME,

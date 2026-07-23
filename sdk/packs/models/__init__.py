@@ -26,8 +26,8 @@ Lives in the framework tree at ``sdk/packs/models`` (import path
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 
 def get_content_root() -> Path:

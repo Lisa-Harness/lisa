@@ -9,14 +9,12 @@ which contained ``?key=<plaintext>``.
 from __future__ import annotations
 
 import httpx
-import pytest
 
 from hosts.core.model_discovery.redact import (
     classify_status,
     redact_url,
     safe_http_error,
 )
-
 
 # ── redact_url ───────────────────────────────────────────────────────
 

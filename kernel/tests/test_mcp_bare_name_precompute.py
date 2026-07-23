@@ -20,10 +20,7 @@ import pytest
 from kernel.tools.mcp_client import (
     MCPClientConfig,
     MCPToolPool,
-    MCPToolSpec,
-    namespaced_tool_name,
 )
-
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 

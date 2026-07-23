@@ -21,15 +21,14 @@ from typing import Any
 import pytest
 
 from kernel.tools.mcp_client import (
+    SYNTHETIC_SERVER_ID,
     MCPClientConfig,
     MCPToolPool,
     MCPToolSpec,
-    SYNTHETIC_SERVER_ID,
     SyntheticToolSpec,
     namespaced_tool_name,
 )
 from kernel.tools.synthetic import mcp_alias_tool
-
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 

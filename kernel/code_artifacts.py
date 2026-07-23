@@ -11,9 +11,9 @@ from pydantic import BaseModel, Field
 __all__ = [
     "CodeChangeArtifact",
     "CodeChangeArtifactStore",
+    "CodeChangeStatus",
     "CodeCheckRecord",
     "CodeCheckStatus",
-    "CodeChangeStatus",
 ]
 
 CodeCheckStatus = Literal["pending", "passed", "failed", "timed_out"]

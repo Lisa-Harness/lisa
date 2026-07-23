@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["get_host_commands", "handle_checkpoint", "handle_restore", "handle_summarize_history", "handle_list_checkpoints"]
+__all__ = ["get_host_commands", "handle_checkpoint", "handle_list_checkpoints", "handle_restore", "handle_summarize_history"]
 
 
 def _load_turn_history(runtime: HostRuntime, limit: int = 50) -> list[dict[str, Any]]:

@@ -76,7 +76,7 @@ def safe_http_error(exc: Exception, provider: str) -> str:
     return f"{provider}: unexpected error (see logs)"
 
 
-def classify_status(exc: Exception) -> "str":
+def classify_status(exc: Exception) -> str:
     """Map an exception to a :class:`ProbeStatus` value name.
 
     Returns the enum *name* (string) so this function has no hard import

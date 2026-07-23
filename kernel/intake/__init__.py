@@ -17,12 +17,12 @@ host's ``_state_provider()``.
 """
 
 from kernel.intake.connectors import SignalCollector, SignalRunMode
-from kernel.intake.contracts import ProcessContext, ProcessingLoop, ProcessedState
+from kernel.intake.contracts import ProcessContext, ProcessedState, ProcessingLoop
 
 __all__ = [
     "ProcessContext",
-    "ProcessingLoop",
     "ProcessedState",
+    "ProcessingLoop",
     "SignalCollector",
     "SignalRunMode",
 ]

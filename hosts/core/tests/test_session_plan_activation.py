@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from kernel.session_plan import compile_session_plan
 
 from hosts.core import content_roots
-from kernel.session_plan import compile_session_plan
 
 
 def _plan_with_packs(

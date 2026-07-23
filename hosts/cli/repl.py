@@ -23,7 +23,6 @@ import asyncio
 import logging
 import os
 import time
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -338,7 +337,7 @@ async def _read_repl_input(console: Console, prompt_session: Any) -> str | None:
             )
             return (
                 await prompt_session.prompt_async(
-                    [(f"class:prompt", "❯ ")],
+                    [("class:prompt", "❯ ")],
                     cursor=cursor,
                 )
             ).strip()
@@ -742,8 +741,6 @@ def _build_repl_key_bindings() -> Any:
 def _render_status_line(console: Console) -> None:
     """Render a powerline-style status row above the input prompt."""
     from rich.cells import cell_len
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-    from datetime import datetime
 
     left = Text()
     segments = _fitted_status_segments(console)

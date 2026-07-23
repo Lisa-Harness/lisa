@@ -12,15 +12,12 @@ Covers:
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
-from types import SimpleNamespace
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
 from kernel.models import (
-    OperationExecutionContext,
-    OperationResult,
     SurfaceContext,
     WorkflowSessionState,
 )

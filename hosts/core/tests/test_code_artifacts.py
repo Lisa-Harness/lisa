@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from kernel.code_artifacts import CodeChangeArtifact, CodeCheckRecord
 
 from hosts.core.code_artifacts import FileCodeChangeArtifactStore
-from kernel.code_artifacts import CodeChangeArtifact, CodeCheckRecord
 
 
 @pytest.mark.asyncio

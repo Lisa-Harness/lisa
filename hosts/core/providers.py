@@ -42,14 +42,17 @@ from hosts.core.provider_completions import (
     _extract_anthropic_text,
     _extract_anthropic_tool_calls,
     _extract_completion_tool_calls,
-    _extract_json_object,
-    _extract_usage_counts as _provider_extract_usage_counts,
     _first_message_content,
-    _normalize_google_base_url as _provider_normalize_google_base_url,
     _normalize_ollama_host_to_base_url,
     _normalize_structured_content,
     _to_anthropic_payload_messages,
     _to_anthropic_tools,
+)
+from hosts.core.provider_completions import (
+    _extract_usage_counts as _provider_extract_usage_counts,
+)
+from hosts.core.provider_completions import (
+    _normalize_google_base_url as _provider_normalize_google_base_url,
 )
 from hosts.core.runtime import HostRuntime
 from hosts.core.token_accounting import coerce_non_negative_int
@@ -813,7 +816,6 @@ async def complete_live_stream(
     an optional per-chunk asyncio sleep so terminal streaming can be paced
     for readability. ``0`` means no delay.
     """
-    from kernel.provider_core import StreamedChunk
 
     tport = transport or NullTransport()
     streaming_cfg = runtime.config.streaming

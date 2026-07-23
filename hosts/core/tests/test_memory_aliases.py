@@ -14,8 +14,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import pytest
-
 from hosts.core.memory_aliases import register_memory_aliases
 
 

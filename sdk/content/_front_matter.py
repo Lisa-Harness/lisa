@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-__all__ = ["parse_front_matter", "FrontMatterError"]
+__all__ = ["FrontMatterError", "parse_front_matter"]
 
 _FRONT_MATTER_DELIMITER = "---"
 

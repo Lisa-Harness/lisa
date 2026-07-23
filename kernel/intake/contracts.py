@@ -20,7 +20,6 @@ timer, cron, or ``little-lisa bottom --tick`` and exits when done.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 

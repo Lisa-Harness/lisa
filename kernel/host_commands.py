@@ -13,9 +13,8 @@ the operations they call.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from hosts.core.runtime import HostRuntime

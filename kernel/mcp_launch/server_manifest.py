@@ -49,9 +49,9 @@ from kernel.mcp_launch.policy import (
 )
 
 __all__ = [
+    "MCPServerManifestError",
     "MemoryBackendConfig",
     "MemoryBackendSpec",
-    "MCPServerManifestError",
     "load_mcp_server_manifest",
 ]
 
@@ -131,7 +131,7 @@ def _expand_env_value(raw: Any) -> str:
     if not isinstance(raw, str):
         return str(raw)
 
-    def _replace(match: "re.Match[str]") -> str:
+    def _replace(match: re.Match[str]) -> str:
         return os.getenv(match.group(1), "")
 
     return _ENV_REF_RE.sub(_replace, raw)

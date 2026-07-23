@@ -68,12 +68,12 @@ from typing import Any, cast
 
 from kernel.content_roots import discover_installed_content_roots
 from kernel.ipsar_fsm import get_workflow_catalog
+from kernel.model_manifest import ModelManifest
 from kernel.models import (
     CapabilityManifest,
     ConversationSurface,
     MemoryScope,
     OperationExecutionContext,
-    ToolExecutionContext,
     ToolResult,
     WorkflowModeConfig,
 )
@@ -115,7 +115,6 @@ from hosts.core.model_runtime import (
     reload_manifest,
     resolve_little_lisa_model,
 )
-from kernel.model_manifest import ModelManifest
 from hosts.core.runtime import HostRuntime, TurnContext
 from hosts.core.state_provider import FileBackedStateProvider
 from hosts.core.thread import append_thread_entry, load_recent_thread_entries
@@ -139,6 +138,8 @@ LISA_PACK_GIT_ROOT_ENV = "LISA_PACK_GIT_ROOT"
 # so a --data-dir override is applied consistently across the host.
 from hosts.core.paths import (  # noqa: E402
     framework_root as _framework_root,
+)
+from hosts.core.paths import (
     packs_venv_for as _packs_venv_for,
 )
 

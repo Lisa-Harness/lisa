@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime
 from typing import Any
 
-import pytest
 from pydantic import BaseModel
 
-from kernel.models import OperationExecutionContext, OperationResult
 from sdk.packs.introspect.operations.self_model.reflect_self import ReflectSelfOutput
 
 

@@ -13,10 +13,9 @@ from hosts.core import (
     HostRuntime,
     NullTransport,
 )
-from hosts.core.handle_message import handle_message
 from hosts.core.config_resolver import parse_streaming_option, resolve_timezone
+from hosts.core.handle_message import handle_message
 from hosts.core.runtime import TokenCounters, TurnContext
-
 
 # ── HostConfig ──────────────────────────────────────────────────────
 
@@ -190,10 +189,10 @@ class TestHostRuntime:
         installs a fake ``_connect`` that enters a real anyio task group
         so the cross-task guard is exercised for real.
         """
-        import anyio
         from contextlib import AsyncExitStack
         from unittest.mock import patch
 
+        import anyio
         from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
 
         runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path)))

@@ -17,6 +17,12 @@ not part of the stable API but may be imported by tests.
 
 from __future__ import annotations
 
+from .discover import discover_models
+from .manifest import (
+    build_manifest_payload,
+    render_manifest_yaml,
+    write_manifest_yaml,
+)
 from .types import (
     DiscoveredModel,
     DiscoveryReport,
@@ -24,12 +30,6 @@ from .types import (
     ProbeResult,
     ProbeStatus,
 )
-from .manifest import (
-    build_manifest_payload,
-    render_manifest_yaml,
-    write_manifest_yaml,
-)
-from .discover import discover_models
 
 __all__ = (
     "DiscoveredModel",

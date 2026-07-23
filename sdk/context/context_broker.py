@@ -23,8 +23,8 @@ from kernel.context.context_broker import (
 __all__ = [
     "build_ambient_facts",
     "build_context_evidence_catalog",
-    "reset_extension_evidence_builder",
     "render_context_packet_markdown",
+    "reset_extension_evidence_builder",
     "select_ranked_context",
     "set_extension_evidence_builder",
 ]

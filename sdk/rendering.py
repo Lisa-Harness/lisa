@@ -7,13 +7,11 @@ Host layers still own wire conversion and channel-specific delivery.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from kernel.models import AttachmentKind, UnifiedState
+from kernel.models import AttachmentKind
 
 
 class RichAttachment(BaseModel):

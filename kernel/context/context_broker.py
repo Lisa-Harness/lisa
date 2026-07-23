@@ -46,7 +46,6 @@ from kernel.models import (
     ContextEvidenceSourceType,
     ContextPacket,
     ContextRoutingConfig,
-    IntelCollection,
     UnifiedState,
 )
 from kernel.seams.protocols import ExtensionEvidenceBuilder

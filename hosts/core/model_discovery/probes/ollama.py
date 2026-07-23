@@ -5,8 +5,7 @@ from __future__ import annotations
 import httpx
 
 from ..classify import env_any
-from ..redact import safe_http_error
-from ..types import DiscoveredModel, ProbeError, ProbeResult, ProbeStatus
+from ..types import DiscoveredModel
 from .base import ProviderProbe, _extract_rows, _model
 
 _LISA_OLLAMA_HOST_ENV = "LISA_OLLAMA_HOST"

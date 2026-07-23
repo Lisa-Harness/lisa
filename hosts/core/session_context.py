@@ -42,7 +42,6 @@ from pathlib import Path
 from kernel.ipsar_fsm import parse_front_matter
 from kernel.session_plan import SessionPlan, compile_session_plan
 
-from hosts.core.lisa_config import context_slug_to_thread_name
 from hosts.core.session_context_fetch import fetch_session_context_url
 
 logger = logging.getLogger(__name__)

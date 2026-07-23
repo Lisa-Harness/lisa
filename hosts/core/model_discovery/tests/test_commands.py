@@ -6,11 +6,6 @@ the ``--force`` overwrite guard, and the typed-error rendering.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
-
-import pytest
-
 from hosts.core.commands import _parse_models_subcommand, _render_discover_notes
 from hosts.core.model_discovery.types import (
     DiscoveredModel,

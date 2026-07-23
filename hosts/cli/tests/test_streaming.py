@@ -15,7 +15,6 @@ In the new structure:
 
 from __future__ import annotations
 
-import pytest
 
 from hosts.core.config import HostConfig, StreamingConfig
 from hosts.core.config_resolver import parse_streaming_option

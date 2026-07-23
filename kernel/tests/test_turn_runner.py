@@ -15,10 +15,6 @@ from kernel.models import (
     OperationResult,
     WorkflowModeConfig,
 )
-from kernel.operations.registry import (
-    execute_operation,
-    get_operation_catalog,
-)
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn
 
 # ── Module-level setup ────────────────────────────────────────────

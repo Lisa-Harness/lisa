@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -147,7 +147,7 @@ def fetch_session_context_url(
             if response.status_code == 304 and have_cache:
                 logger.debug("session_context_fetch: 304 Not Modified %s", s)
                 # update fetched attr
-                meta["fetched_at"] = datetime.now(timezone.utc).isoformat()
+                meta["fetched_at"] = datetime.now(UTC).isoformat()
                 cache_meta.write_text(json.dumps(meta), encoding="utf-8")
                 return cache_md
 
@@ -160,7 +160,7 @@ def fetch_session_context_url(
             # Write meta
             new_meta = {
                 "source_ref": s,
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "fetched_at": datetime.now(UTC).isoformat(),
                 "etag": response.headers.get("etag", ""),
                 "last_modified": response.headers.get("last-modified", ""),
             }

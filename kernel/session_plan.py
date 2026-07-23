@@ -284,7 +284,7 @@ class CompactionTuning(_StrictSessionModel):
     summarize_operation: str = "checkpoint_history_summarize"
 
     @model_validator(mode="after")
-    def _validate_thresholds(self) -> "CompactionTuning":
+    def _validate_thresholds(self) -> CompactionTuning:
         if self.hard_threshold < self.pressure_threshold:
             raise ValueError(
                 "compaction.hard_threshold must be >= compaction.pressure_threshold"

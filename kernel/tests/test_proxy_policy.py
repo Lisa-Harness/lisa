@@ -40,7 +40,6 @@ from kernel.tools.mcp_client import (
     namespaced_tool_name,
 )
 
-
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 

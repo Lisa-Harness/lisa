@@ -21,7 +21,6 @@ the MCP pool or hitting a real model.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer

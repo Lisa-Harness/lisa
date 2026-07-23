@@ -48,7 +48,7 @@ app = typer.Typer(
 
 def _get_version() -> str:
     try:
-        from importlib.metadata import PackageNotFoundError, version as _pkg_version
+        from importlib.metadata import version as _pkg_version
 
         return _pkg_version("lisa-host-web")
     except Exception:  # pylint: disable=broad-except

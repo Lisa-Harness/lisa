@@ -31,7 +31,6 @@ from kernel.ipsar_fsm import (
 )
 from kernel.models import WorkflowModeConfig
 
-
 # ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------

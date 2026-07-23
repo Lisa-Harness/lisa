@@ -22,7 +22,6 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from _pytest.monkeypatch import MonkeyPatch
 
 from kernel.tools.mcp_client import (
@@ -107,9 +106,8 @@ async def test_start_warm_required_raises_on_connect_failure() -> None:
     # Patch sleep to zero so the backoff doesn't slow the test.
     with patch("kernel.tools.mcp_client.asyncio.sleep", new=AsyncMock()), patch.object(
         MCPToolPool, "_connect", new=_failing_connect()
-    ):
-        with pytest.raises(MCPConnectionError, match="Required warm MCP server 'w'"):
-            await pool.start()
+    ), pytest.raises(MCPConnectionError, match="Required warm MCP server 'w'"):
+        await pool.start()
     await pool.aclose()
 
 

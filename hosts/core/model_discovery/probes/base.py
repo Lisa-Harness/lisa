@@ -13,7 +13,7 @@ so no individual probe can accidentally leak a raw exception string.
 from __future__ import annotations
 
 import time
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import httpx
 

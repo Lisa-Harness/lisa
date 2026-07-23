@@ -25,24 +25,22 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
-import json
 import logging
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
-
 from kernel.intake.connector_discovery import discover_installed_signal_collectors
 from kernel.intake.contracts import (
     CollectionResult,
     ProcessContext,
-    ProcessingLoop,
     ProcessedState,
+    ProcessingLoop,
 )
 from kernel.models import UnifiedState
 from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
+
 from hosts.core.content_roots import seed_bundled_packs_lock
 
 logger = logging.getLogger(__name__)

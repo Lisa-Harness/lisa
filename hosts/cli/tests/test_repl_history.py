@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 prompt_toolkit = pytest.importorskip("prompt_toolkit")
-from prompt_toolkit.history import InMemoryHistory  # noqa: E402
 
 from hosts.cli.repl import _SurrogateSafeFileHistory  # noqa: E402
 

@@ -27,14 +27,12 @@ from kernel.config import settings
 from kernel.context.context_budget import ContextBudgetAllocator
 from kernel.models import (
     AnomalyAlert,
-    ContextEvidence,
     ContextPacket,
     ContextUsageEvent,
     IntelCollection,
     UnifiedState,
 )
 from sdk.context.context_broker import (
-    build_context_evidence_catalog,
     render_context_packet_markdown,
     select_ranked_context,
 )

@@ -6,8 +6,6 @@ that the kernel's ``on_stage`` telemetry hook drives.
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
 
 import pytest
 from rich.console import Console

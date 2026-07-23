@@ -28,7 +28,6 @@ from kernel.capability import (
 )
 from kernel.models import OperationDefinition, ToolDefinition, WorkflowModeConfig
 
-
 # ── Stubs ────────────────────────────────────────────────────────────────
 
 

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 import httpx
 import pytest
@@ -11,7 +12,7 @@ import pytest
 
 def _handler_from_map(
     routes: Mapping[str, Any],
-) -> "httpx.MockTransport":
+) -> httpx.MockTransport:
     """Build an ``httpx.MockTransport`` that serves canned responses.
 
     ``routes`` maps a URL path prefix (matched against ``request.url.path``)

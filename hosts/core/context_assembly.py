@@ -22,40 +22,38 @@ import logging
 import platform
 from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
-from kernel.config import settings
 from kernel.capability_manifest import render_capability_manifest_context
+from kernel.config import settings
 from kernel.context.context_broker import (
     build_ambient_facts,
     render_context_packet_markdown,
     resolve_host_name,
     select_ranked_context,
 )
+from kernel.context.context_budget import ContextBudgetAllocator, ContextLane
 from kernel.context.context_mapper import (
     ContextMapper,
     ContextMappingError,
     context_candidates_from_unified_state,
 )
 from kernel.context.models import ContextBudgetSnapshot, ContextMapperRequest
-from kernel.session_plan import ContextPlan
-from kernel.context.context_budget import ContextBudgetAllocator, ContextLane
 from kernel.context.provenance import (
     normalize_markdown_to_tagged,
     wrap_section,
 )
-from kernel.ipsar_fsm import get_workflow_catalog, parse_front_matter
+from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import (
     CapabilityManifest,
-    SurfaceContext,
     UnifiedState,
     WorkflowModeConfig,
 )
+from kernel.session_plan import ContextPlan
+from sdk.content import require_authored_text
 
 from hosts.core.model_runtime import StubModelDefinition
 from hosts.core.session_context import ReplayControls
-from sdk.content import MissingAuthoredContentError, require_authored_text
 
 logger = logging.getLogger(__name__)
 
@@ -550,15 +548,15 @@ class _ReplayPolicy:
     """Resolved replay controls after tighten-only clamping."""
 
     __slots__ = (
-        "trigger_mode",
-        "include_prior_conversation_digest",
-        "include_recent_conversation",
-        "include_diagnostic_reflection",
+        "digest_max_lines",
         "effective_history_max_tokens",
         "effective_reflection_max_tokens",
+        "include_diagnostic_reflection",
+        "include_prior_conversation_digest",
+        "include_recent_conversation",
         "min_query_chars",
-        "digest_max_lines",
         "thread_digest_text",
+        "trigger_mode",
     )
 
     def __init__(

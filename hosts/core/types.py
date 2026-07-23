@@ -8,7 +8,6 @@ or tool executor.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 

@@ -14,9 +14,9 @@ full request URL).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable
 
 
 class ProbeStatus(str, Enum):
@@ -138,5 +138,5 @@ class DiscoveryReport:
         return tuple(r for r in self.results if r.provider.lower() == lowered)
 
     @classmethod
-    def from_results(cls, results: Iterable[ProbeResult]) -> "DiscoveryReport":
+    def from_results(cls, results: Iterable[ProbeResult]) -> DiscoveryReport:
         return cls(results=tuple(results))

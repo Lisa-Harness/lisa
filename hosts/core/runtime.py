@@ -24,9 +24,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from kernel.session_plan import SessionPlan
+
 from hosts.core.config import HostConfig
 from hosts.core.session_context import compile_selected_session_plan
-from kernel.session_plan import SessionPlan
 
 logger = logging.getLogger(__name__)
 
