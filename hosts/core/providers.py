@@ -297,17 +297,43 @@ def log_completion_response(
 
 async def publish_completion_usage(
     *,
+    runtime: HostRuntime,
     model_def: StubModelDefinition,
     result: StubCompletion,
     elapsed_ms: float,
     call_site: str,
 ) -> None:
-    """Publish token usage for a completed provider call.
+    """Publish one ``TokenUsageEvent`` for a completed provider call.
 
-    Currently a no-op — usage publishing will be wired through the runtime
-    in a later step.
+    Builds a durable token-usage record from the completion's token counters
+    and the host-measured wall-clock duration, then publishes it to the
+    runtime's ``TokenUsageTelemetryHandler``. The handler appends it as one
+    JSONL line to ``token-usage.jsonl``; ``introspect`` reads that file to
+    build the 24h token summary. Failures are swallowed — telemetry must
+    never break the turn loop.
     """
-    _ = (model_def, result, elapsed_ms, call_site)
+    handler = runtime.token_usage_handler
+    if handler is None:
+        return
+    try:
+        from kernel.token_usage import build_token_usage_event
+
+        event = build_token_usage_event(
+            provider=model_def.provider,
+            model_id=model_def.model_id,
+            kind="chat_completion",
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            total_tokens=result.total_tokens,
+            cached_tokens=result.cached_tokens,
+            reasoning_tokens=result.reasoning_tokens,
+            duration_ms=elapsed_ms,
+            latency_ms=int(elapsed_ms),
+            call_site=call_site,
+        )
+        await handler.publish(event)
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("token-usage publish failed for %s", call_site, exc_info=True)
 
 
 # ── Provider client factories ────────────────────────────────────────
@@ -661,6 +687,7 @@ async def complete_live_anthropic(
     )
     final_result = with_duration(result, elapsed_ms)
     await publish_completion_usage(
+        runtime=runtime,
         model_def=model_def,
         result=final_result,
         elapsed_ms=elapsed_ms,
@@ -744,6 +771,7 @@ async def complete_live_openai_compatible(
         result=result,
     )
     await publish_completion_usage(
+        runtime=runtime,
         model_def=model_def,
         result=result,
         elapsed_ms=elapsed_ms,
@@ -807,6 +835,7 @@ async def complete_live_stream(
     if stream_stage:
         await tport.on_stage("model_call", {"label": stage_label})
 
+    final_usage: Any = None
     try:
         if model_def.provider == "anthropic":
             async for chunk in _stream_anthropic_chunks(
@@ -817,6 +846,8 @@ async def complete_live_stream(
                 temperature=temperature,
                 tools=tools,
             ):
+                if chunk.usage is not None:
+                    final_usage = chunk.usage
                 if chunk.content:
                     await tport.on_text_chunk(chunk.content)
                     if char_delay_ms > 0:
@@ -832,6 +863,8 @@ async def complete_live_stream(
                 tools=tools,
                 response_format=response_format,
             ):
+                if chunk.usage is not None:
+                    final_usage = chunk.usage
                 if chunk.content:
                     await tport.on_text_chunk(chunk.content)
                     if char_delay_ms > 0:
@@ -853,6 +886,31 @@ async def complete_live_stream(
 
     if stream_stage:
         await tport.on_stage("model_call_complete", {"label": stage_label})
+
+    # Publish the streamed call's token usage to the durable telemetry
+    # handler. The final ``StreamedChunk`` carries the provider's usage
+    # object (a ``CompletionUsage``); without this the streaming path's
+    # tokens never reach ``token-usage.jsonl`` and the session count stays
+    # zero even though the model was called.
+    elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+    if final_usage is not None:
+        streamed_result = StubCompletion(
+            content="",
+            tool_calls=[],
+            prompt_tokens=getattr(final_usage, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(final_usage, "completion_tokens", 0) or 0,
+            total_tokens=getattr(final_usage, "total_tokens", 0) or 0,
+            cached_tokens=getattr(final_usage, "cached_tokens", 0) or 0,
+            reasoning_tokens=getattr(final_usage, "reasoning_tokens", 0) or 0,
+            duration_ms=elapsed_ms,
+        )
+        await publish_completion_usage(
+            runtime=runtime,
+            model_def=model_def,
+            result=streamed_result,
+            elapsed_ms=elapsed_ms,
+            call_site="complete_live.stream",
+        )
 
 
 async def _stream_openai_compatible_chunks(

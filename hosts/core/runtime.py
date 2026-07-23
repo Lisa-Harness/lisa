@@ -222,7 +222,20 @@ class HostRuntime:
         )
 
         # ── Token usage handler ───────────────────────────────────────
-        self._token_usage_handler: Any = None
+        # The durable JSONL appender for ``TokenUsageEvent`` payloads. The
+        # host's completion dispatch (``publish_completion_usage``) publishes
+        # one event per provider call to this handler, which appends it to
+        # ``token-usage.jsonl`` under the data directory. ``introspect`` reads
+        # that file to build the 24h token summary. Without this wiring the
+        # session token count is always zero even though models were called.
+        from kernel.token_usage import TokenUsageTelemetryHandler
+
+        self._token_usage_handler: Any = TokenUsageTelemetryHandler(self.token_usage_path)
+
+    @property
+    def token_usage_handler(self) -> Any:
+        """Return the durable ``TokenUsageTelemetryHandler`` for this runtime."""
+        return self._token_usage_handler
 
     @property
     def start_mode_id(self) -> str:
