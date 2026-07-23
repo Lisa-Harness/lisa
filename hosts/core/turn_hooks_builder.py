@@ -640,7 +640,7 @@ def build_turn_hooks(
         # resolution — preserving today's behavior.
         context_seams=ContextSeams(
             content_registry=cast("Any", content_registry() or None),
-            model_router=_discover_active_router(runtime),
+            model_router=_discover_active_router(),
         ),
         # Forward the kernel's fine-grained stage events to the transport so
         # the CLI/web/VS Code stage line can show model_call, tool_dispatch,
