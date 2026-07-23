@@ -14,6 +14,7 @@ from kernel.pack_activation import normalize_pack_name
 logger = logging.getLogger(__name__)
 
 CONTENT_ROOT_ENTRY_POINT_GROUP = "lisa.extensions.content_roots"
+_LISA_PACKS_DIR_NAME = "lisa_packs"
 
 
 def _entry_point_pack_name(ep: importlib.metadata.EntryPoint) -> str:
@@ -64,6 +65,85 @@ def discover_installed_content_roots(
     return _dedupe_paths(roots)
 
 
+def discover_packs_venv_content_roots(
+    data_dir: Path | None = None,
+    *,
+    excluded_packs: set[str] | None = None,
+) -> list[Path]:
+    """Discover content roots from packs installed in the packs venv.
+
+    External packs are installed into a separate ``packs-venv`` whose
+    site-packages contain ``lisa_packs/<pack_name>/`` directories. These
+    directories hold ``modes/``, ``operations/``, ``tools/``, and
+    ``content/`` subdirectories — the same layout bundled packs use under
+    ``sdk/packs/<pack_name>/``.
+
+    Entry-point discovery (``discover_installed_content_roots``) cannot
+    find these packs because ``importlib.metadata.entry_points()`` does not
+    re-scan after the packs venv's site-packages are added to ``sys.path``
+    at startup. This function scans the filesystem directly, finding every
+    ``lisa_packs/<pack_name>/`` directory that looks like a content pack
+    (has a ``pyproject.toml`` with a ``[project] name`` starting with
+    ``lisa-pack-``).
+
+    Args:
+        data_dir: Host data directory used to resolve the packs venv path.
+            When ``None``, falls back to ``default_packs_venv()``.
+        excluded_packs: Normalized pack names to exclude from discovery.
+
+    Returns:
+        Content root paths (the ``lisa_packs/<pack_name>/`` directory),
+        deduped and filtered. Returns an empty list when the packs venv
+        does not exist or contains no ``lisa_packs/`` directory.
+    """
+    from hosts.core.paths import (  # noqa: PLC0415
+        default_packs_venv,
+        packs_venv_for,
+        packs_venv_site_packages,
+    )  # type: ignore[import-not-found]
+
+    try:
+        if data_dir is not None:
+            venv_path = packs_venv_for(Path(data_dir))
+        else:
+            venv_path = default_packs_venv()
+    except Exception:  # pylint: disable=broad-except
+        return []
+
+    site_packages = packs_venv_site_packages(venv_path)
+    lisa_packs_dir = site_packages / _LISA_PACKS_DIR_NAME
+    if not lisa_packs_dir.is_dir():
+        return []
+
+    import tomllib  # noqa: PLC0415
+
+    roots: list[Path] = []
+    for pack_dir in sorted(lisa_packs_dir.iterdir()):
+        if not pack_dir.is_dir():
+            continue
+        if pack_dir.name.startswith("_") or pack_dir.name.startswith("."):
+            continue
+        # Infer the package name from pyproject.toml.
+        pyproject = pack_dir / "pyproject.toml"
+        if pyproject.is_file():
+            try:
+                payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+                project = payload.get("project") if isinstance(payload, dict) else None
+                name = project.get("name") if isinstance(project, dict) else None
+            except (OSError, ValueError):
+                name = None
+        else:
+            name = None
+        if not name:
+            # Fallback: infer from the directory name.
+            name = f"lisa-pack-{pack_dir.name}"
+        normalized = normalize_pack_name(str(name))
+        if excluded_packs and normalized in excluded_packs:
+            continue
+        roots.append(pack_dir)
+    return _dedupe_paths(roots)
+
+
 def discover_configured_content_roots() -> list[Path]:
     """Return folder-installed content roots from ``SDK_CONTENT_ROOTS``.
 
@@ -104,5 +184,6 @@ __all__ = [
     "CONTENT_ROOT_ENTRY_POINT_GROUP",
     "discover_configured_content_roots",
     "discover_installed_content_roots",
+    "discover_packs_venv_content_roots",
     "resolve_content_subdir_roots",
 ]

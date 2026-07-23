@@ -409,7 +409,18 @@ def active_installed_pack_roots(
     session_excluded = _normalize_pack_names(session_pack_exclude)
 
     active: list[Path] = []
-    for root in discover_installed_content_roots():
+    # Combine entry-point-discovered roots (bundled packs installed in the
+    # framework venv) with packs-venv-discovered roots (external packs
+    # installed in the separate packs venv). Entry-point discovery cannot
+    # find packs venv packages because ``importlib.metadata`` does not
+    # re-scan after ``sys.path`` is modified at startup.
+    from kernel.content_roots import (  # noqa: PLC0415
+        discover_installed_content_roots as _discover_entry_point_roots,
+        discover_packs_venv_content_roots as _discover_packs_venv_roots,
+    )  # type: ignore[import-not-found]
+
+    all_roots = [*_discover_entry_point_roots(), *_discover_packs_venv_roots(data_dir)]
+    for root in all_roots:
         package_name = infer_pack_package_name(root)
         if not package_name:
             continue

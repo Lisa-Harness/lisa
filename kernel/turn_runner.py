@@ -1330,16 +1330,19 @@ async def _run_turn_inner(
         is_workflow=is_workflow,
         has_routing_targets=has_routing_targets,
     )
-    if tool_prune_stats["input_count"] != tool_prune_stats["output_count"]:
-        _log.debug(
-            "tool schema prune mode=%s in=%d out=%d dup=%d disallowed=%d invalid=%d",
-            mode_id,
-            tool_prune_stats["input_count"],
-            tool_prune_stats["output_count"],
-            tool_prune_stats["dropped_duplicate"],
-            tool_prune_stats["dropped_disallowed"],
-            tool_prune_stats["dropped_invalid"],
-        )
+    _log.info(
+        "tool schema mode=%s in=%d out=%d dup=%d disallowed=%d invalid=%d "
+        "is_workflow=%s has_routing=%s names=[%s]",
+        mode_id,
+        tool_prune_stats["input_count"],
+        tool_prune_stats["output_count"],
+        tool_prune_stats["dropped_duplicate"],
+        tool_prune_stats["dropped_disallowed"],
+        tool_prune_stats["dropped_invalid"],
+        is_workflow,
+        has_routing_targets,
+        ", ".join(_tool_schema_name(s) for s in tool_schemas),
+    )
 
     # Compile a deterministic capability manifest from the final tool payload
     # so the model's self-knowledge context matches what it can actually call.
@@ -1360,7 +1363,10 @@ async def _run_turn_inner(
         mode_config=mode_config,
     )
     if routing_hint:
+        _log.info("routing hint injected mode=%s hint_len=%d hint=%s", mode_id, len(routing_hint), routing_hint[:200])
         system_prompt = system_prompt + "\n\n" + routing_hint
+    else:
+        _log.info("no routing hint mode=%s (satisfies_intents=%s routing_targets=%s)", mode_id, getattr(mode_config, "satisfies_intents", None), get_routing_targets(mode_id) if mode_config else [])
 
     user_context = assemble_user(mode_id, query, pre_briefing, capability_manifest)
     memory_snippet = ""
@@ -1450,6 +1456,9 @@ async def _run_turn_inner(
             if isinstance(chosen_id, str) and chosen_id.strip():
                 return resolve_model(chosen_id.strip())
         return model_def
+
+    tools_dispatched_ever = False  # tracks if *any* tool was called this turn
+    _narration_nudge_count = 0  # guards against infinite narration retries
 
     while iteration < max_tool_iterations:
         iteration += 1
@@ -1583,6 +1592,76 @@ async def _run_turn_inner(
         if not tool_calls:
             content = getattr(completion, "content", "") or ""
             content = content.strip()
+
+            # ── Hallucinated-transition guard ──────────────────────────
+            # Weak models (e.g. Gemma/GLM via Ollama) sometimes *narrate* a
+            # stage transition or handoff in their text output ("I have
+            # transitioned to the search stage…") instead of actually
+            # calling the ``transition_stage`` tool. When a routing hint
+            # was injected into the system prompt, detect transition-like
+            # language and inject a correction nudge so the model retries
+            # with the actual tool call. Without this guard the user sees
+            # a false "I transitioned" message and no work is done.
+            #
+            # The guard fires when:
+            #   - A routing hint was injected (the model was told to hand off)
+            #   - The model has NOT yet called transition_stage this turn
+            #     (``transitioned_to`` is still None)
+            #   - The model has NOT yet dispatched any other tool
+            #     (``tools_dispatched_ever`` is False — once the model does
+            #     real work, a narrated transition in a summary is harmless)
+            #   - We haven't exhausted the retry cap (prevents infinite
+            #     loops with models that never learn to call the tool)
+            #
+            # After the cap, the guard gives up and lets the narrated
+            # response through so the user sees something rather than a
+            # silent hang.
+            _NARRATION_NUDGE_CAP = 3
+            if (
+                routing_hint
+                and transitioned_to is None
+                and not tools_dispatched_ever
+                and _narration_nudge_count < _NARRATION_NUDGE_CAP
+            ):
+                lowered = content.lower()
+                transition_markers = (
+                    "i have transitioned",
+                    "i'll transition",
+                    "i'll hand off",
+                    "i will now transition",
+                    "i am now transitioning",
+                    "i will now hand off",
+                    "i have moved to",
+                    "i am now in the",
+                    "moving to the",
+                    "transitioning to the",
+                )
+                if any(m in lowered for m in transition_markers):
+                    _narration_nudge_count += 1
+                    _log.warning(
+                        "model narrated a transition without calling "
+                        "transition_stage; injecting correction nudge "
+                        "(mode=%s, iteration=%d, nudge=%d/%d)",
+                        mode_id,
+                        iteration,
+                        _narration_nudge_count,
+                        _NARRATION_NUDGE_CAP,
+                    )
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You wrote that you are transitioning, but you "
+                            "did not actually call the `transition_stage` "
+                            "tool. A transition only happens when you call "
+                            "the tool — writing about it does nothing. "
+                            "Call `transition_stage` now with the "
+                            "appropriate `target_stage_id`. If you cannot "
+                            "or should not transition, respond directly to "
+                            "the user without claiming a transition."
+                        ),
+                    })
+                    continue
+
             break
 
         # Dispatch tool calls — MCP tools via pool, operations in-process.
@@ -1618,6 +1697,7 @@ async def _run_turn_inner(
                     continue
 
             tools_dispatched = True
+            tools_dispatched_ever = True
             # Determine the tool kind for stage telemetry. Computed here so
             # the dispatch branches below stay unchanged; the value is only
             # read by ``_emit_stage``. ``"transition"`` is special-cased so
@@ -1720,24 +1800,49 @@ async def _run_turn_inner(
                                 )
                                 fork_results = fork_results_list
                                 succeeded = sum(1 for r in fork_results_list if r.status == "ok")
-                                # Surface no_tools children explicitly so the
-                                # parent model does not claim false success.
-                                # A ``no_tools`` child completed its text turn
-                                # but never invoked its write/learn tool, so
-                                # nothing was written to disk or memory.
-                                no_tools_children = [
-                                    f"{r.target.mode_id} (no tool calls; {r.error_message})"
-                                    for r in fork_results_list
-                                    if r.status == "no_tools"
+                                # Surface failed children (timeout, error,
+                                # no_tools, cancelled) explicitly so the
+                                # parent model does not claim false success or
+                                # hallucinate a deferred response it cannot
+                                # deliver. The framework is strictly
+                                # turn-by-turn — there is no background
+                                # scheduler, so a failed child's work is lost
+                                # unless the user re-issues the request.
+                                failed_children = [
+                                    r for r in fork_results_list if r.status != "ok"
                                 ]
-                                if no_tools_children:
+                                if failed_children:
+                                    failure_parts: list[str] = []
+                                    for r in failed_children:
+                                        if r.status == "no_tools":
+                                            failure_parts.append(
+                                                f"{r.target.mode_id} (no tool calls; "
+                                                f"{r.error_message})"
+                                            )
+                                        elif r.status == "timeout":
+                                            failure_parts.append(
+                                                f"{r.target.mode_id} (timed out; "
+                                                f"{r.error_message or 'child turn timed out'})"
+                                            )
+                                        elif r.status == "cancelled":
+                                            failure_parts.append(
+                                                f"{r.target.mode_id} (cancelled; "
+                                                f"{r.error_message or 'child turn was cancelled'})"
+                                            )
+                                        else:
+                                            failure_parts.append(
+                                                f"{r.target.mode_id} ({r.status}; "
+                                                f"{r.error_message})"
+                                            )
                                     tool_output = (
-                                        f"Fork fan-out: {succeeded}/{len(fork_targets)} children "
-                                        f"succeeded. The following children reported no tool "
-                                        f"calls (their mode requires action tools — nothing was "
-                                        f"written): {'; '.join(no_tools_children)}. "
-                                        f"Re-issue the fork or instruct those children to call "
-                                        f"their required operation/tool."
+                                        f"Fork fan-out: {succeeded}/{len(fork_targets)} "
+                                        f"children succeeded. The following children failed "
+                                        f"(their results are NOT available — the framework is "
+                                        f"turn-by-turn with no background scheduler, so a "
+                                        f"failed child's work is lost; re-issue the request "
+                                        f"to retry): {'; '.join(failure_parts)}. "
+                                        f"Do not tell the user you will report back later — "
+                                        f"you cannot. Report the failure and suggest re-issuing."
                                     )
                                 else:
                                     tool_output = (

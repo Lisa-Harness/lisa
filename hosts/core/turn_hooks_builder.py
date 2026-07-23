@@ -448,20 +448,39 @@ def build_turn_hooks(
             # The entry point is expected to be the factory callable
             # ``(turn_hooks, session_plan) -> provider | None``. Some packs
             # (notably lisa-pack-compaction) register a *factory-factory*
-            # that takes 0 args and returns the real factory. Resolve that
-            # double-indirection by trying the direct call first and falling
-            # back to the factory-factory unwrap on TypeError.
+            # that takes 0 args and returns the real factory. Detect the
+            # arity via ``inspect.signature`` and resolve the double-
+            # indirection without relying on ``TypeError`` catching (which
+            # can silently swallow TypeErrors raised *inside* the factory
+            # body — e.g. an import-time TypeError in a dependency — and
+            # re-attempt the 0-arg call, masking the real failure).
+            import inspect as _inspect
+
             try:
+                sig = _inspect.signature(entry.factory)
+                min_params = sum(
+                    1
+                    for p in sig.parameters.values()
+                    if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+                    and p.default is p.empty
+                )
+            except (ValueError, TypeError):
+                min_params = 2  # assume direct factory if signature fails
+
+            if min_params == 0:
+                # Factory-factory: call with 0 args to get the real
+                # ``(turn_hooks, session_plan) -> provider | None`` factory.
+                factory = entry.factory()  # type: ignore[call-arg]
+                provider = factory(  # type: ignore[misc]
+                    _slice_provider_hooks_view,
+                    runtime.session_plan,
+                )
+            else:
+                # Direct factory: call with 2 args.
                 provider = entry.factory(
                     # The provider reads last_context_snapshot and
                     # write_turn_history_fn off the view and invokes
                     # execute_operation to fire the summarize operation.
-                    _slice_provider_hooks_view,
-                    runtime.session_plan,
-                )
-            except TypeError:
-                factory = entry.factory()
-                provider = factory(
                     _slice_provider_hooks_view,
                     runtime.session_plan,
                 )
