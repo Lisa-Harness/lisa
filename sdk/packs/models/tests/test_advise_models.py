@@ -361,7 +361,10 @@ class TestExecuteOperation:
             execute_tool_fn=storage_fn,
         )
         result = await execute(ctx)
-        assert "out of scope" in result.output_text.lower() or "cannot add" in result.output_text.lower()
+        assert (
+            "out of scope" in result.output_text.lower()
+            or "cannot add" in result.output_text.lower()
+        )
         assert result.output_json.get("validated") is False
         assert result.output_json.get("reason") == "out_of_scope"
         assert "proposal" not in written

@@ -96,6 +96,7 @@ if TYPE_CHECKING:
 # ``__getattr__`` for the package-level lazy import.
 
 from rich.traceback import install
+
 install(show_locals=True)
 
 logger = logging.getLogger(__name__)
@@ -401,9 +402,7 @@ def _configure_root_logging(config: HostConfig) -> None:
     host_log.parent.mkdir(parents=True, exist_ok=True)
     handler = _logging.FileHandler(host_log, encoding="utf-8")
     handler.setLevel(level)
-    handler.setFormatter(
-        _logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s")
-    )
+    handler.setFormatter(_logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
     root.addHandler(handler)
 
 
@@ -468,6 +467,7 @@ def _run_default_no_args_mode(
         return
     _consume_restart_resume_message(runtime)
     from hosts.cli.repl import run_repl  # noqa: PLC0415 â€” deferred to keep
+
     #                                   --version/modes/verify fast
     restart_requested = asyncio.run(run_repl(runtime, console=console))
     if restart_requested:
@@ -602,6 +602,7 @@ def _cli_command(
         return
     _consume_restart_resume_message(runtime)
     from hosts.cli.repl import run_repl  # noqa: PLC0415 â€” deferred to keep
+
     #                                   --version/modes/verify fast
     restart_requested = asyncio.run(run_repl(runtime, console=console))
     if restart_requested:
@@ -689,9 +690,11 @@ def _verify_check_ollama() -> tuple[str, str]:
 
     import httpx  # noqa: PLC0415 â€” deferred to keep --version/modes fast
 
-    configured_host = os.getenv("LISA_OLLAMA_HOST", "").strip() or os.getenv(
-        "OLLAMA_HOST", ""
-    ).strip() or "127.0.0.1:11434"
+    configured_host = (
+        os.getenv("LISA_OLLAMA_HOST", "").strip()
+        or os.getenv("OLLAMA_HOST", "").strip()
+        or "127.0.0.1:11434"
+    )
 
     async def _ping() -> tuple[str, str]:
         try:
@@ -725,22 +728,35 @@ def _verify_check_provider_keys() -> tuple[str, str]:
     # Check LISA_* vars first (the new host's env vars), then fall back to
     # the bare AZURE_OPENAI_* / OPENAI_* / ANTHROPIC_* / GOOGLE_* vars that
     # the providers module also accepts.
-    azure_key = os.getenv("LISA_AZURE_OPENAI_API_KEY", "").strip() or os.getenv("AZURE_OPENAI_API_KEY", "").strip()
-    azure_endpoint = os.getenv("LISA_AZURE_OPENAI_ENDPOINT", "").strip() or os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
+    azure_key = (
+        os.getenv("LISA_AZURE_OPENAI_API_KEY", "").strip()
+        or os.getenv("AZURE_OPENAI_API_KEY", "").strip()
+    )
+    azure_endpoint = (
+        os.getenv("LISA_AZURE_OPENAI_ENDPOINT", "").strip()
+        or os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
+    )
     if azure_key and azure_endpoint:
         parts.append(f"Azure OpenAI: {_redact_key(azure_key)} @ {azure_endpoint}")
     elif azure_key or azure_endpoint:
         parts.append("Azure OpenAI: partially configured")
 
-    openai_key = os.getenv("LISA_OPENAI_API_KEY", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
+    openai_key = (
+        os.getenv("LISA_OPENAI_API_KEY", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
+    )
     if openai_key:
         parts.append(f"OpenAI: {_redact_key(openai_key)}")
 
-    anthropic_key = os.getenv("LISA_ANTHROPIC_API_KEY", "").strip() or os.getenv("ANTHROPIC_API_KEY", "").strip()
+    anthropic_key = (
+        os.getenv("LISA_ANTHROPIC_API_KEY", "").strip()
+        or os.getenv("ANTHROPIC_API_KEY", "").strip()
+    )
     if anthropic_key:
         parts.append(f"Anthropic: {_redact_key(anthropic_key)}")
 
-    google_key = os.getenv("LISA_GOOGLE_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+    google_key = (
+        os.getenv("LISA_GOOGLE_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+    )
     if google_key:
         parts.append(f"Google Gemini: {_redact_key(google_key)}")
 
@@ -1062,10 +1078,7 @@ async def _collect_mcp_tools(runtime: HostRuntime) -> list[McpToolEntry]:
             return []
         tools = await pool.list_tools()
         # Capture is_alias flags BEFORE aclose() clears _synthetic_handlers.
-        entries = {
-            (spec.server_id, spec.name, pool.is_synthetic_tool(spec.name))
-            for spec in tools
-        }
+        entries = {(spec.server_id, spec.name, pool.is_synthetic_tool(spec.name)) for spec in tools}
     except Exception as exc:  # pylint: disable=broad-except
         logger.debug("MCP tool collection failed: %s", exc)
         return []

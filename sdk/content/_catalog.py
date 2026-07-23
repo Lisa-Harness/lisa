@@ -191,9 +191,7 @@ def _merge_default_capabilities(
     filters on the merged allowlists it receives.
     """
     default_op_ids = {
-        op_id
-        for op_id, op in operation_catalog.items()
-        if bool(op.get("default_available", False))
+        op_id for op_id, op in operation_catalog.items() if bool(op.get("default_available", False))
     }
     default_tool_ids = {
         tool_id
@@ -317,7 +315,9 @@ def _load_one_mode(
         "start_stage_id": str(front_matter.get("start_stage_id", "") or ""),
         "stages": stages,
         "mode_kind": str(front_matter.get("mode_kind", "workflow") or "workflow"),
-        "artifact_type": str(front_matter.get("artifact_type", "workflow_summary") or "workflow_summary"),
+        "artifact_type": str(
+            front_matter.get("artifact_type", "workflow_summary") or "workflow_summary"
+        ),
         "description": str(front_matter.get("description", "") or ""),
         "instruction_body": body.strip(),
         "mode_markdown_path": str(mode_config_path),
@@ -334,33 +334,35 @@ def _load_one_mode(
         "command_pattern": str(front_matter.get("command_pattern", "") or ""),
         "require_query": bool(front_matter.get("require_query", False)),
         "entry_operation_ids": [str(o) for o in (front_matter.get("entry_operation_ids") or [])],
-        "pre_turn_operation_ids": [str(o) for o in (front_matter.get("pre_turn_operation_ids") or [])],
-        "post_turn_operation_ids": [str(o) for o in (front_matter.get("post_turn_operation_ids") or [])],
-        "allowed_operation_ids": [str(o) for o in (front_matter.get("allowed_operation_ids") or [])],
+        "pre_turn_operation_ids": [
+            str(o) for o in (front_matter.get("pre_turn_operation_ids") or [])
+        ],
+        "post_turn_operation_ids": [
+            str(o) for o in (front_matter.get("post_turn_operation_ids") or [])
+        ],
+        "allowed_operation_ids": [
+            str(o) for o in (front_matter.get("allowed_operation_ids") or [])
+        ],
         "allowed_tool_ids": [str(t) for t in (front_matter.get("allowed_tool_ids") or [])],
         "authored_allowed_operation_ids": [
             str(o) for o in (front_matter.get("allowed_operation_ids") or [])
         ],
-        "authored_allowed_tool_ids": [
-            str(t) for t in (front_matter.get("allowed_tool_ids") or [])
-        ],
+        "authored_allowed_tool_ids": [str(t) for t in (front_matter.get("allowed_tool_ids") or [])],
         "tools_authoritative": bool(front_matter.get("tools_authoritative", True)),
-        "accept_default_capabilities": bool(
-            front_matter.get("accept_default_capabilities", True)
-        ),
+        "accept_default_capabilities": bool(front_matter.get("accept_default_capabilities", True)),
         "excluded_operation_ids": [
             str(o) for o in (front_matter.get("excluded_operation_ids") or [])
         ],
-        "excluded_tool_ids": [
-            str(t) for t in (front_matter.get("excluded_tool_ids") or [])
-        ],
+        "excluded_tool_ids": [str(t) for t in (front_matter.get("excluded_tool_ids") or [])],
         "entry_failure_policy": str(front_matter.get("entry_failure_policy", "abort") or "abort"),
         "workshop_panels": workshop_panels,
         "workshop_budget": front_matter.get("workshop_budget") or {},
         "workshop_planner_prompt_file": workshop_planner_prompt_file,
         "workshop_synthesis_prompt_file": workshop_synthesis_prompt_file,
         "workshop_rendering": front_matter.get("workshop_rendering") or {},
-        "default_intent_bridges": _parse_intent_bridges(front_matter.get("default_intent_bridges") or []),
+        "default_intent_bridges": _parse_intent_bridges(
+            front_matter.get("default_intent_bridges") or []
+        ),
         "context_evidence_packs": [
             str(p) for p in (front_matter.get("context_evidence_packs") or [])
         ],
@@ -387,13 +389,9 @@ def _load_session_provider_selections() -> dict[str, dict[str, str]]:
     try:
         decoded = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise CatalogCollisionError(
-            f"Invalid JSON in {_SESSION_PROVIDER_SELECTIONS_ENV}"
-        ) from exc
+        raise CatalogCollisionError(f"Invalid JSON in {_SESSION_PROVIDER_SELECTIONS_ENV}") from exc
     if not isinstance(decoded, dict):
-        raise CatalogCollisionError(
-            f"{_SESSION_PROVIDER_SELECTIONS_ENV} must contain an object"
-        )
+        raise CatalogCollisionError(f"{_SESSION_PROVIDER_SELECTIONS_ENV} must contain an object")
 
     unexpected_kinds = set(decoded) - set(selections)
     if unexpected_kinds:
@@ -406,15 +404,11 @@ def _load_session_provider_selections() -> dict[str, dict[str, str]]:
             raise CatalogCollisionError(f"Provider selections for {kind} must be an object")
         for resource_id, provider_id in assignments.items():
             if not isinstance(resource_id, str) or not isinstance(provider_id, str):
-                raise CatalogCollisionError(
-                    f"Provider selections for {kind} require string IDs"
-                )
+                raise CatalogCollisionError(f"Provider selections for {kind} require string IDs")
             normalized_resource = resource_id.strip()
             normalized_provider = _normalize_provider_id(provider_id)
             if not normalized_resource or not normalized_provider:
-                raise CatalogCollisionError(
-                    f"Provider selections for {kind} require non-empty IDs"
-                )
+                raise CatalogCollisionError(f"Provider selections for {kind} require non-empty IDs")
             parsed_assignments[normalized_resource] = normalized_provider
     return selections
 
@@ -460,7 +454,9 @@ def _backfill_provider_ids(
     populated value for a capability that belongs to a discoverable pack.
     """
     if not cap_dict.get(provider_field):
-        cap_dict[provider_field] = inferred_provider_id or str(cap_dict.get("pack_id", "") or "").strip()
+        cap_dict[provider_field] = (
+            inferred_provider_id or str(cap_dict.get("pack_id", "") or "").strip()
+        )
     if not str(cap_dict.get("pack_id", "") or "").strip():
         cap_dict["pack_id"] = cap_dict[provider_field]
 
@@ -486,8 +482,7 @@ def _resolve_catalog_candidates(
     matching = [
         candidate
         for candidate in candidates
-        if _normalize_provider_id(str(candidate.get(provider_field) or ""))
-        == selected_provider
+        if _normalize_provider_id(str(candidate.get(provider_field) or "")) == selected_provider
     ]
     if len(matching) == 1:
         return matching[0]
@@ -507,7 +502,9 @@ def _resolve_catalog_candidates(
     )
 
 
-def _load_one_stage(stage_path: Path, *, mode_kind: str, strict: bool = False) -> dict[str, Any] | None:
+def _load_one_stage(
+    stage_path: Path, *, mode_kind: str, strict: bool = False
+) -> dict[str, Any] | None:
     """Load one stage markdown file into a JSON-serializable dict.
 
     Returns None if the file has no ``stage_id`` in its front-matter (it's an
@@ -590,16 +587,26 @@ def _parse_intent_bridges(bridges_raw: Any) -> list[dict[str, Any]]:
     for bridge in bridges_raw:
         if not isinstance(bridge, dict):
             continue
-        result.append({
-            "target_mode_id": str(bridge.get("target_mode_id", "") or ""),
-            "matcher_patterns": [str(p) for p in (bridge.get("matcher_patterns") or [])],
-            "query_extraction_strategy": str(bridge.get("query_extraction_strategy", "passthrough") or "passthrough"),
-            "prerequisites": [str(p) for p in (bridge.get("prerequisites") or [])],
-            "recent_handoff_source_modes": [str(m) for m in (bridge.get("recent_handoff_source_modes") or [])],
-            "recent_handoff_required_artifact_keys": [str(k) for k in (bridge.get("recent_handoff_required_artifact_keys") or [])],
-            "recent_handoff_context_key": str(bridge.get("recent_handoff_context_key", "") or ""),
-            "response_appendix": str(bridge.get("response_appendix", "") or ""),
-        })
+        result.append(
+            {
+                "target_mode_id": str(bridge.get("target_mode_id", "") or ""),
+                "matcher_patterns": [str(p) for p in (bridge.get("matcher_patterns") or [])],
+                "query_extraction_strategy": str(
+                    bridge.get("query_extraction_strategy", "passthrough") or "passthrough"
+                ),
+                "prerequisites": [str(p) for p in (bridge.get("prerequisites") or [])],
+                "recent_handoff_source_modes": [
+                    str(m) for m in (bridge.get("recent_handoff_source_modes") or [])
+                ],
+                "recent_handoff_required_artifact_keys": [
+                    str(k) for k in (bridge.get("recent_handoff_required_artifact_keys") or [])
+                ],
+                "recent_handoff_context_key": str(
+                    bridge.get("recent_handoff_context_key", "") or ""
+                ),
+                "response_appendix": str(bridge.get("response_appendix", "") or ""),
+            }
+        )
     return result
 
 
@@ -618,7 +625,9 @@ def build_operation_catalog_json(operation_roots: list[Path]) -> str:
     ``OperationDefinition`` objects, importing the implementation module
     locally (using the ``module_path`` field).
     """
-    cache_key = "operations:" + _roots_fingerprint(operation_roots) + _provider_selection_cache_key()
+    cache_key = (
+        "operations:" + _roots_fingerprint(operation_roots) + _provider_selection_cache_key()
+    )
     cached = _catalog_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -661,7 +670,9 @@ def _load_operations_from_root(
     for md_path in _iter_operation_markdown_files(root):
         op_dict = _load_markdown_operation(md_path)
         if op_dict is not None:
-            _backfill_provider_ids(op_dict, inferred_provider_id, provider_field="operation_provider_id")
+            _backfill_provider_ids(
+                op_dict, inferred_provider_id, provider_field="operation_provider_id"
+            )
             catalog[op_dict["operation_id"]] = op_dict
 
     # 2. Python runtime operations with .yml metadata
@@ -672,7 +683,9 @@ def _load_operations_from_root(
             continue
         op_dict = _load_runtime_operation(py_path, yml_path, root)
         if op_dict is not None:
-            _backfill_provider_ids(op_dict, inferred_provider_id, provider_field="operation_provider_id")
+            _backfill_provider_ids(
+                op_dict, inferred_provider_id, provider_field="operation_provider_id"
+            )
             op_id = op_dict["operation_id"]
             if op_id in catalog and catalog[op_id].get("execution_kind") == "prompt":
                 logger.info(
@@ -736,10 +749,19 @@ def _load_markdown_operation(md_path: Path) -> dict[str, Any] | None:
         "execution_kind": "prompt",
         "tool_ids": [str(t) for t in (metadata.get("tool_ids") or [])],
         "mode_allowlist": [str(m) for m in (metadata.get("mode_allowlist") or [])],
-        "preferred_model_id": (str(metadata["preferred_model_id"]) if "preferred_model_id" in metadata else None),
-        "response_format_model_path": str(metadata.get("response_format_model_path", "") or "").strip(),
-        "response_output_text_field": str(metadata.get("response_output_text_field", "output_text") or "output_text").strip() or "output_text",
-        "response_output_json_passthrough": _parse_string_mapping(metadata.get("response_output_json_passthrough")),
+        "preferred_model_id": (
+            str(metadata["preferred_model_id"]) if "preferred_model_id" in metadata else None
+        ),
+        "response_format_model_path": str(
+            metadata.get("response_format_model_path", "") or ""
+        ).strip(),
+        "response_output_text_field": str(
+            metadata.get("response_output_text_field", "output_text") or "output_text"
+        ).strip()
+        or "output_text",
+        "response_output_json_passthrough": _parse_string_mapping(
+            metadata.get("response_output_json_passthrough")
+        ),
         "timeout_seconds": int(metadata.get("timeout_seconds", 60) or 60),
         "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 3) or 3),
         "completion_max_tokens": int(metadata.get("completion_max_tokens", 1500) or 1500),
@@ -787,7 +809,9 @@ def _load_runtime_operation(
         "execution_kind": "runtime",
         "tool_ids": [str(t) for t in (metadata.get("tool_ids") or [])],
         "mode_allowlist": [str(m) for m in (metadata.get("mode_allowlist") or [])],
-        "preferred_model_id": (str(metadata["preferred_model_id"]) if "preferred_model_id" in metadata else None),
+        "preferred_model_id": (
+            str(metadata["preferred_model_id"]) if "preferred_model_id" in metadata else None
+        ),
         "timeout_seconds": int(metadata.get("timeout_seconds", 60) or 60),
         "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 3) or 3),
         "instruction_markdown_path": "",
@@ -892,7 +916,9 @@ def _load_tools_from_root(
             continue
         tool_dict = _load_runtime_tool(py_path, yml_path, root)
         if tool_dict is not None:
-            _backfill_provider_ids(tool_dict, inferred_provider_id, provider_field="tool_provider_id")
+            _backfill_provider_ids(
+                tool_dict, inferred_provider_id, provider_field="tool_provider_id"
+            )
             catalog[tool_dict["tool_id"]] = tool_dict
     return catalog
 

@@ -110,7 +110,10 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
     instruction = ctx.query.strip()
     if not instruction:
-        return OperationResult(output_text=_load_text(ctx, _USAGE_PATH), output_json={"validated": False, "reason": "usage"})
+        return OperationResult(
+            output_text=_load_text(ctx, _USAGE_PATH),
+            output_json={"validated": False, "reason": "usage"},
+        )
 
     if not callable(ctx.execute_tool_fn):
         raise RuntimeError("advise_models requires execute_tool_fn to call lisa-storage tools")
@@ -171,7 +174,11 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         )
         return OperationResult(
             output_text=text,
-            output_json={"validated": False, "reason": "validation_failed", "validation_error": validation_error},
+            output_json={
+                "validated": False,
+                "reason": "validation_failed",
+                "validation_error": validation_error,
+            },
         )
 
     await _write_manifest(ctx, edited_yaml, "proposal")
@@ -398,7 +405,9 @@ def _scope_violation(current_yaml: str, edited_yaml: str) -> str:
     # semantically meaningful to the manifest loader but a reorder still
     # indicates the LLM rewrote the list; flag it so the user sees the edit
     # was out of scope rather than silently accepting a reshuffle.
-    current_ids = [str(r.get("model_id") or "").strip() for r in current_rows if isinstance(r, dict)]
+    current_ids = [
+        str(r.get("model_id") or "").strip() for r in current_rows if isinstance(r, dict)
+    ]
     edited_ids = [str(r.get("model_id") or "").strip() for r in edited_rows if isinstance(r, dict)]
     if current_ids != edited_ids:
         added = [m for m in edited_ids if m not in current_ids]
@@ -407,12 +416,14 @@ def _scope_violation(current_yaml: str, edited_yaml: str) -> str:
         if added:
             return f"Models were added: {', '.join(added)}. /models update cannot add models."
         if removed:
-            return f"Models were removed: {', '.join(removed)}. /models update cannot remove models."
+            return (
+                f"Models were removed: {', '.join(removed)}. /models update cannot remove models."
+            )
         if reordered:
             return "The models list was reordered. /models update cannot reorder the models list."
         return "The models list changed in an unexpected way."
 
-# Per-model: no field may differ. Role/mode assignments live at the
+    # Per-model: no field may differ. Role/mode assignments live at the
     # top level (mode_models, roles), not on model entries.
     current_indexed = _index_models(current_rows)
     edited_indexed = _index_models(edited_rows)

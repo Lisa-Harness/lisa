@@ -74,7 +74,9 @@ async def test_storage_lists_eleven_tools(storage_setup: None) -> None:
 async def test_write_read_roundtrip(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
-    write_result = await mcp.call_tool("write_file", {"path": "reports/daily.md", "content": "# Hello"})
+    write_result = await mcp.call_tool(
+        "write_file", {"path": "reports/daily.md", "content": "# Hello"}
+    )
     data = json.loads(_tool_text(write_result))
     assert data["ok"] is True
     assert data["bytes"] > 0

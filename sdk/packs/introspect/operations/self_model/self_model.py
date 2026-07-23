@@ -155,9 +155,7 @@ def build_self_model_vibe(artifact: LisaSelfModelArtifact) -> str:
             f"tasks={artifact.asyncio_tasks}, threads={artifact.python_threads}, "
             f"rss={artifact.process_rss_mb:.0f}MB"
         )
-        failed_mcp = [
-            sid for sid, h in artifact.mcp_pool_health.items() if h.status == "failed"
-        ]
+        failed_mcp = [sid for sid, h in artifact.mcp_pool_health.items() if h.status == "failed"]
         if failed_mcp:
             runtime_line += f", mcp_down={','.join(failed_mcp)}"
         if artifact.operational_health != "unknown":
@@ -357,8 +355,7 @@ def _build_capability_entries(
                     category="capability",
                     title=model.model_id,
                     body=(
-                        f"Model '{model.model_id}' (provider: {model.provider}, "
-                        f"roles: {roles})."
+                        f"Model '{model.model_id}' (provider: {model.provider}, roles: {roles})."
                     ),
                     confidence=1.0,
                     source_refs=["model_manifest"],
@@ -418,11 +415,7 @@ def _build_memory_entries(ctx: OperationExecutionContext, now_iso: str) -> list[
             entry_id=_make_entry_id("memory", 0),
             category="memory",
             title="Memory store",
-            body=(
-                "Memory tools available via MCP."
-                if has_memory
-                else "Memory tools not wired."
-            ),
+            body=("Memory tools available via MCP." if has_memory else "Memory tools not wired."),
             confidence=1.0,
             source_refs=["ctx.execute_tool_fn"],
             tags=["memory"],

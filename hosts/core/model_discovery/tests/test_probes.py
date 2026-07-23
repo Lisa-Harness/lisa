@@ -54,7 +54,9 @@ class TestNormalizeAzureEndpoint:
         assert once == twice
 
     def test_strips_trailing_slash_bare(self) -> None:
-        assert normalize_azure_endpoint("https://x.openai.azure.com/") == "https://x.openai.azure.com"
+        assert (
+            normalize_azure_endpoint("https://x.openai.azure.com/") == "https://x.openai.azure.com"
+        )
 
 
 # ── Google base URL normalization ────────────────────────────────────
@@ -65,30 +67,38 @@ class TestNormalizeGoogleBaseUrl:
         assert normalize_google_base_url("") == "https://generativelanguage.googleapis.com"
 
     def test_strips_trailing_slash(self) -> None:
-        assert normalize_google_base_url("https://custom.example.com/") == "https://custom.example.com"
+        assert (
+            normalize_google_base_url("https://custom.example.com/") == "https://custom.example.com"
+        )
 
     def test_preserves_bare_host(self) -> None:
-        assert normalize_google_base_url("https://custom.example.com") == "https://custom.example.com"
+        assert (
+            normalize_google_base_url("https://custom.example.com") == "https://custom.example.com"
+        )
 
     def test_strips_v1beta_models_suffix(self) -> None:
-        assert normalize_google_base_url(
-            "https://generativelanguage.googleapis.com/v1beta/models"
-        ) == "https://generativelanguage.googleapis.com"
+        assert (
+            normalize_google_base_url("https://generativelanguage.googleapis.com/v1beta/models")
+            == "https://generativelanguage.googleapis.com"
+        )
 
     def test_strips_v1beta3_models_suffix(self) -> None:
-        assert normalize_google_base_url(
-            "https://generativelanguage.googleapis.com/v1beta3/models"
-        ) == "https://generativelanguage.googleapis.com"
+        assert (
+            normalize_google_base_url("https://generativelanguage.googleapis.com/v1beta3/models")
+            == "https://generativelanguage.googleapis.com"
+        )
 
     def test_strips_bare_v1beta_suffix(self) -> None:
-        assert normalize_google_base_url(
-            "https://generativelanguage.googleapis.com/v1beta"
-        ) == "https://generativelanguage.googleapis.com"
+        assert (
+            normalize_google_base_url("https://generativelanguage.googleapis.com/v1beta")
+            == "https://generativelanguage.googleapis.com"
+        )
 
     def test_strips_bare_models_suffix(self) -> None:
-        assert normalize_google_base_url(
-            "https://generativelanguage.googleapis.com/models"
-        ) == "https://generativelanguage.googleapis.com"
+        assert (
+            normalize_google_base_url("https://generativelanguage.googleapis.com/models")
+            == "https://generativelanguage.googleapis.com"
+        )
 
 
 # ── Ollama probe ─────────────────────────────────────────────────────
@@ -118,6 +128,7 @@ class TestOllamaProbe:
     async def test_network_error_on_connection_failure(self) -> None:
         def _handler(req: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("refused")
+
         transport = httpx.MockTransport(_handler)
         result = await OllamaProbe().probe(_client(transport), timeout=5.0)
         assert result.status is ProbeStatus.NETWORK
@@ -143,13 +154,15 @@ class TestOpenAIProbe:
         transport = httpx.MockTransport(
             lambda req: httpx.Response(
                 200,
-                json={"data": [
-                    {"id": "gpt-4o"},
-                    {"id": "gpt-4o-mini"},
-                    {"id": "o3-mini"},
-                    {"id": "text-embedding-3-small"},
-                    {"id": "whisper-1"},
-                ]},
+                json={
+                    "data": [
+                        {"id": "gpt-4o"},
+                        {"id": "gpt-4o-mini"},
+                        {"id": "o3-mini"},
+                        {"id": "text-embedding-3-small"},
+                        {"id": "whisper-1"},
+                    ]
+                },
             )
         )
         result = await OpenAIProbe().probe(_client(transport), timeout=5.0)
@@ -247,10 +260,12 @@ class TestAzureProbe:
             if path.endswith("/openai/deployments") and version == "2022-12-01":
                 return httpx.Response(
                     200,
-                    json={"data": [
-                        {"id": "o4-mini", "model": "o4-mini", "object": "deployment"},
-                        {"id": "gpt-4o", "model": "gpt-4o", "object": "deployment"},
-                    ]},
+                    json={
+                        "data": [
+                            {"id": "o4-mini", "model": "o4-mini", "object": "deployment"},
+                            {"id": "gpt-4o", "model": "gpt-4o", "object": "deployment"},
+                        ]
+                    },
                 )
             return httpx.Response(404)
 
@@ -277,10 +292,15 @@ class TestAzureProbe:
             if path.endswith("/openai/models"):
                 return httpx.Response(
                     200,
-                    json={"data": [
-                        {"id": "gpt-4o", "capabilities": {"chat_completion": True}},
-                        {"id": "text-embedding-3-small", "capabilities": {"chat_completion": False}},
-                    ]},
+                    json={
+                        "data": [
+                            {"id": "gpt-4o", "capabilities": {"chat_completion": True}},
+                            {
+                                "id": "text-embedding-3-small",
+                                "capabilities": {"chat_completion": False},
+                            },
+                        ]
+                    },
                 )
             return httpx.Response(404)
 
@@ -329,10 +349,18 @@ class TestGoogleProbe:
         transport = httpx.MockTransport(
             lambda req: httpx.Response(
                 200,
-                json={"models": [
-                    {"name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent", "countTokens"]},
-                    {"name": "models/gemini-2.5-pro", "supportedGenerationMethods": ["generateContent", "countTokens"]},
-                ]},
+                json={
+                    "models": [
+                        {
+                            "name": "models/gemini-2.5-flash",
+                            "supportedGenerationMethods": ["generateContent", "countTokens"],
+                        },
+                        {
+                            "name": "models/gemini-2.5-pro",
+                            "supportedGenerationMethods": ["generateContent", "countTokens"],
+                        },
+                    ]
+                },
             )
         )
         result = await GoogleProbe().probe(_client(transport), timeout=5.0)
@@ -347,14 +375,24 @@ class TestGoogleProbe:
         the probe must strip it and hit /v1beta/models instead."""
 
         monkeypatch.setenv("LISA_GOOGLE_API_KEY", _FAKE_KEY)
-        monkeypatch.setenv("LISA_GOOGLE_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta3/models")
+        monkeypatch.setenv(
+            "LISA_GOOGLE_API_BASE_URL", "https://generativelanguage.googleapis.com/v1beta3/models"
+        )
         captured: dict[str, str] = {}
 
         def _handler(req: httpx.Request) -> httpx.Response:
             captured["url"] = str(req.url)
-            return httpx.Response(200, json={"models": [
-                {"name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent"]}
-            ]})
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {
+                            "name": "models/gemini-2.5-flash",
+                            "supportedGenerationMethods": ["generateContent"],
+                        }
+                    ]
+                },
+            )
 
         transport = httpx.MockTransport(_handler)
         result = await GoogleProbe().probe(_client(transport), timeout=5.0)
@@ -371,9 +409,17 @@ class TestGoogleProbe:
         def _handler(req: httpx.Request) -> httpx.Response:
             captured["url"] = str(req.url)
             captured["x_goog_api_key"] = req.headers.get("x-goog-api-key", "")
-            return httpx.Response(200, json={"models": [
-                {"name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent"]}
-            ]})
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {
+                            "name": "models/gemini-2.5-flash",
+                            "supportedGenerationMethods": ["generateContent"],
+                        }
+                    ]
+                },
+            )
 
         transport = httpx.MockTransport(_handler)
         await GoogleProbe().probe(_client(transport), timeout=5.0)
@@ -390,23 +436,49 @@ class TestGoogleProbe:
         transport = httpx.MockTransport(
             lambda req: httpx.Response(
                 200,
-                json={"models": [
-                    # Chat models — keep
-                    {"name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent", "countTokens"]},
-                    {"name": "models/gemini-2.5-pro", "supportedGenerationMethods": ["generateContent", "countTokens"]},
-                    # TTS — filter out (no generateContent AND name marker)
-                    {"name": "models/gemini-3.1-flash-tts-preview", "supportedGenerationMethods": ["generateContent", "countTokens"]},
-                    # Image — filter out (name marker)
-                    {"name": "models/gemini-3-pro-image", "supportedGenerationMethods": ["generateContent", "countTokens"]},
-                    # Embedding — filter out (no generateContent)
-                    {"name": "models/gemini-embedding-2", "supportedGenerationMethods": ["embedContent", "countTokens"]},
-                    # Video — filter out (no generateContent)
-                    {"name": "models/veo-3.1-generate-preview", "supportedGenerationMethods": ["predictLongRunning"]},
-                    # Deep research — filter out (name marker)
-                    {"name": "models/deep-research-preview-04-2026", "supportedGenerationMethods": ["generateContent", "countTokens"]},
-                    # Robotics — filter out (name marker)
-                    {"name": "models/gemini-robotics-er-1.5-preview", "supportedGenerationMethods": ["generateContent", "countTokens"]},
-                ]},
+                json={
+                    "models": [
+                        # Chat models — keep
+                        {
+                            "name": "models/gemini-2.5-flash",
+                            "supportedGenerationMethods": ["generateContent", "countTokens"],
+                        },
+                        {
+                            "name": "models/gemini-2.5-pro",
+                            "supportedGenerationMethods": ["generateContent", "countTokens"],
+                        },
+                        # TTS — filter out (no generateContent AND name marker)
+                        {
+                            "name": "models/gemini-3.1-flash-tts-preview",
+                            "supportedGenerationMethods": ["generateContent", "countTokens"],
+                        },
+                        # Image — filter out (name marker)
+                        {
+                            "name": "models/gemini-3-pro-image",
+                            "supportedGenerationMethods": ["generateContent", "countTokens"],
+                        },
+                        # Embedding — filter out (no generateContent)
+                        {
+                            "name": "models/gemini-embedding-2",
+                            "supportedGenerationMethods": ["embedContent", "countTokens"],
+                        },
+                        # Video — filter out (no generateContent)
+                        {
+                            "name": "models/veo-3.1-generate-preview",
+                            "supportedGenerationMethods": ["predictLongRunning"],
+                        },
+                        # Deep research — filter out (name marker)
+                        {
+                            "name": "models/deep-research-preview-04-2026",
+                            "supportedGenerationMethods": ["generateContent", "countTokens"],
+                        },
+                        # Robotics — filter out (name marker)
+                        {
+                            "name": "models/gemini-robotics-er-1.5-preview",
+                            "supportedGenerationMethods": ["generateContent", "countTokens"],
+                        },
+                    ]
+                },
             )
         )
         result = await GoogleProbe().probe(_client(transport), timeout=5.0)
@@ -464,7 +536,9 @@ class TestAnthropicProbe:
         transport = httpx.MockTransport(
             lambda req: httpx.Response(
                 200,
-                json={"data": [{"id": "claude-sonnet-4-20250514"}, {"id": "claude-opus-4-20250514"}]},
+                json={
+                    "data": [{"id": "claude-sonnet-4-20250514"}, {"id": "claude-opus-4-20250514"}]
+                },
             )
         )
         result = await AnthropicProbe().probe(_client(transport), timeout=5.0)

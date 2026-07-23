@@ -23,12 +23,8 @@ from kernel.operations.registry import (
 )
 from kernel.tools.mcp_client import MCPClientConfig
 
-_CORE_ROOT: Path = (
-    Path(__file__).resolve().parents[3] / "sdk" / "packs" / "core"
-).resolve()
-_LEARNING_ROOT: Path = (
-    Path(__file__).resolve().parents[3] / "sdk" / "packs" / "memory"
-).resolve()
+_CORE_ROOT: Path = (Path(__file__).resolve().parents[3] / "sdk" / "packs" / "core").resolve()
+_LEARNING_ROOT: Path = (Path(__file__).resolve().parents[3] / "sdk" / "packs" / "memory").resolve()
 # search, markdown, compaction, and letta migrated to ../../lisa_packs/<name>
 # (external submodules). Only include a content root when the submodule is
 # checked out alongside the framework; tests that need a migrated mode skip

@@ -106,7 +106,7 @@ def append_thread_entry(
     }
     if provenance:
         entry["provenance"] = provenance
-        
+
     thread_path.parent.mkdir(parents=True, exist_ok=True)
     with thread_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=True) + "\n")

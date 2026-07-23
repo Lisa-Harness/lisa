@@ -283,9 +283,7 @@ async def test_recall_excludes_expired_memories(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_recall_includes_non_expired_memories(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    await store.record_memory(
-        _write(content="postgres decision today", memory_tier="long_term")
-    )
+    await store.record_memory(_write(content="postgres decision today", memory_tier="long_term"))
 
     result = await store.recall("postgres decision", user_slug="adam", limit=5)
 
@@ -409,9 +407,7 @@ async def test_recall_isolates_by_user_scope_and_surface(tmp_path: Path) -> None
 
     adam_personal = await store.recall("postgres", user_slug="adam", limit=5)
     nadia_personal = await store.recall("postgres", user_slug="nadia", limit=5)
-    adam_channel = await store.recall(
-        "postgres", user_slug="adam", surface_id="chan", limit=5
-    )
+    adam_channel = await store.recall("postgres", user_slug="adam", surface_id="chan", limit=5)
 
     assert "adam postgres note" in adam_personal
     assert "adam channel postgres note" not in adam_personal

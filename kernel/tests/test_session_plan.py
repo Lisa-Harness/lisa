@@ -69,10 +69,13 @@ def test_compile_session_plan_preserves_primary_instruction_and_plan_digest() ->
     assert plan.instructions.primary_body == "# Primary Session\n\nAct precisely."
     assert len(plan.instructions.source_sha256) == _SHA256_LENGTH
     assert len(plan.plan_digest) == _SHA256_LENGTH
-    assert plan.plan_digest == compile_session_plan(
-        text=text,
-        source_uri="workspace:session_context.md",
-    ).plan_digest
+    assert (
+        plan.plan_digest
+        == compile_session_plan(
+            text=text,
+            source_uri="workspace:session_context.md",
+        ).plan_digest
+    )
 
 
 def test_compile_session_plan_preserves_owner_pack_configuration() -> None:
@@ -118,15 +121,15 @@ def test_compile_session_plan_rejects_conflicting_resource_selection() -> None:
 
 def test_compile_session_plan_rejects_context_rules_for_unknown_lanes() -> None:
     text = _manifest(
-    extra=(
-      "context:\n"
-      "  lanes:\n"
-      "    - lane_id: operational\n"
-      "  sources:\n"
-      "    - rule_id: invalid\n"
-      "      lane_id: missing\n"
-      "      fallback: true\n"
-    )
+        extra=(
+            "context:\n"
+            "  lanes:\n"
+            "    - lane_id: operational\n"
+            "  sources:\n"
+            "    - rule_id: invalid\n"
+            "      lane_id: missing\n"
+            "      fallback: true\n"
+        )
     )
 
     with pytest.raises(SessionPlanError, match="unknown lanes"):
@@ -151,12 +154,7 @@ def test_bundled_default_session_compiles_with_core_mode_provider() -> None:
     stays pack-encapsulated (no reference to external search provider packs).
     """
     default_session_path = (
-        Path(__file__).resolve().parents[2]
-        / "sdk"
-        / "packs"
-        / "core"
-        / "sessions"
-        / "default.md"
+        Path(__file__).resolve().parents[2] / "sdk" / "packs" / "core" / "sessions" / "default.md"
     )
     text = default_session_path.read_text(encoding="utf-8")
 
@@ -199,9 +197,7 @@ def test_compaction_tuning_rejects_thresholds_out_of_range() -> None:
 def test_compaction_tuning_rejects_hard_below_pressure() -> None:
     """hard_threshold must be >= pressure_threshold (guardrail invariant)."""
     with pytest.raises(ValidationError, match="hard_threshold must be >="):
-        CompactionTuning.model_validate(
-            {"pressure_threshold": 0.9, "hard_threshold": 0.5}
-        )
+        CompactionTuning.model_validate({"pressure_threshold": 0.9, "hard_threshold": 0.5})
 
 
 def test_compaction_tuning_rejects_bad_trigger_literal() -> None:
@@ -261,13 +257,7 @@ def test_compile_session_plan_accepts_compaction_block_in_history() -> None:
 def test_compile_session_plan_rejects_unknown_compaction_key() -> None:
     """Strict extra=forbid applies inside the compaction block too."""
     text = _manifest(
-        extra=(
-            "context:\n"
-            "  history:\n"
-            "    compaction:\n"
-            "      enabled: true\n"
-            "      bogus: 1\n"
-        )
+        extra=("context:\n  history:\n    compaction:\n      enabled: true\n      bogus: 1\n")
     )
     with pytest.raises(SessionPlanError, match="Extra inputs are not permitted"):
         compile_session_plan(text=text, source_uri="workspace:session_context.md")

@@ -58,7 +58,9 @@ def register_memory_aliases(
         current_mode_id: The active mode id for ambient injection.
         app_id: The host app id for ambient injection (e.g. ``"little-lisa"``).
     """
-    _set_ambient_resolvers(pool, user_slug=user_slug, current_mode_id=current_mode_id, app_id=app_id)
+    _set_ambient_resolvers(
+        pool, user_slug=user_slug, current_mode_id=current_mode_id, app_id=app_id
+    )
     _register_memory_synthetic_tools(
         pool,
         memory_config=memory_config,
@@ -187,43 +189,46 @@ def _register_generic_router(
 
     add_schema, search_schema, list_schema = _memory_schemas()
 
-    pool.add_synthetic_tools([
-        mcp_alias_tool(
-            name="memory.add",
-            description="Persist a memory record via the default memory backend.",
-            pool=pool,
-            target_tool=tool_names["add"],
-            input_schema=add_schema,
-            target_server_id=server_id,
-            arg_map=add_arg_map,
-            result_map=add_result_map,
-        ),
-        mcp_alias_tool(
-            name="memory.search",
-            description="Recall memories matching a free-text query via the default backend.",
-            pool=pool,
-            target_tool=tool_names["search"],
-            input_schema=search_schema,
-            target_server_id=server_id,
-            arg_map=search_arg_map,
-            result_map=search_result_map,
-        ),
-        mcp_alias_tool(
-            name="memory.list",
-            description="List recent memory records for a user scope via the default backend.",
-            pool=pool,
-            target_tool=tool_names["list"],
-            input_schema=list_schema,
-            target_server_id=server_id,
-            arg_map=list_arg_map,
-            result_map=list_result_map,
-        ),
-    ])
+    pool.add_synthetic_tools(
+        [
+            mcp_alias_tool(
+                name="memory.add",
+                description="Persist a memory record via the default memory backend.",
+                pool=pool,
+                target_tool=tool_names["add"],
+                input_schema=add_schema,
+                target_server_id=server_id,
+                arg_map=add_arg_map,
+                result_map=add_result_map,
+            ),
+            mcp_alias_tool(
+                name="memory.search",
+                description="Recall memories matching a free-text query via the default backend.",
+                pool=pool,
+                target_tool=tool_names["search"],
+                input_schema=search_schema,
+                target_server_id=server_id,
+                arg_map=search_arg_map,
+                result_map=search_result_map,
+            ),
+            mcp_alias_tool(
+                name="memory.list",
+                description="List recent memory records for a user scope via the default backend.",
+                pool=pool,
+                target_tool=tool_names["list"],
+                input_schema=list_schema,
+                target_server_id=server_id,
+                arg_map=list_arg_map,
+                result_map=list_result_map,
+            ),
+        ]
+    )
 
 
 def _backend_arg_maps(backend_id: str) -> tuple[Any, Any, Any]:
     """Return (add_arg_map, search_arg_map, list_arg_map) for a backend."""
     if backend_id == "mem0":
+
         def _mem0_add_arg_map(args: dict[str, Any]) -> dict[str, Any]:
             mapped = {
                 "text": args.get("content", ""),

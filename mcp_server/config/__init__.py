@@ -11,4 +11,3 @@ endpoints). Path-like configuration comes exclusively from CLI args.
 from mcp_server.config.cli import build_parser, configure_logging, resolve_data_dir
 
 __all__ = ["build_parser", "configure_logging", "resolve_data_dir"]
-

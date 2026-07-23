@@ -251,7 +251,7 @@ def _provider_slug(raw: str) -> str:
     """
     value = (raw or "").strip().lower().replace("_", "-")
     if value.startswith(_PROVIDER_PREFIX):
-        value = value[len(_PROVIDER_PREFIX):]
+        value = value[len(_PROVIDER_PREFIX) :]
     return value
 
 
@@ -335,8 +335,10 @@ def validate_export_boundaries(
             if tool is None:
                 continue
             tool_provider = _provider_slug(tool.effective_provider_id())
-            if tool_provider and tool_provider != mode_provider and not getattr(
-                tool, "exportable", False
+            if (
+                tool_provider
+                and tool_provider != mode_provider
+                and not getattr(tool, "exportable", False)
             ):
                 raise OperationValidationError(
                     f"Mode '{mode.mode_id}' (provider '{mode_provider}') "

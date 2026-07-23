@@ -325,7 +325,9 @@ async def test_catalog_diagnostics_detects_missing_mode_config(tmp_path: Path, m
 
 
 @pytest.mark.asyncio
-async def test_catalog_diagnostics_detects_missing_operation_metadata(tmp_path: Path, monkeypatch) -> None:
+async def test_catalog_diagnostics_detects_missing_operation_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
     """A .py operation module without a .yml sibling should be reported."""
     from mcp_server.catalog import server
     from mcp_server.catalog.server import init_catalog, mcp
@@ -345,7 +347,9 @@ async def test_catalog_diagnostics_detects_missing_operation_metadata(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_catalog_diagnostics_detects_missing_tool_metadata(tmp_path: Path, monkeypatch) -> None:
+async def test_catalog_diagnostics_detects_missing_tool_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
     """A .py tool module without a .tool.yml sibling should be reported."""
     from mcp_server.catalog import server
     from mcp_server.catalog.server import init_catalog, mcp
@@ -374,7 +378,7 @@ async def test_catalog_diagnostics_clean_report(tmp_path: Path, monkeypatch) -> 
     mode_dir = root / "modes" / "good_mode"
     mode_dir.mkdir(parents=True, exist_ok=True)
     (mode_dir / "_mode.md").write_text(
-        "---\nmode_id: good_mode\nmode_kind: chat\nstart_stage_id: \"\"\ndescription: \"ok\"\n---\n# Good\n",
+        '---\nmode_id: good_mode\nmode_kind: chat\nstart_stage_id: ""\ndescription: "ok"\n---\n# Good\n',
         encoding="utf-8",
     )
 
@@ -386,4 +390,3 @@ async def test_catalog_diagnostics_clean_report(tmp_path: Path, monkeypatch) -> 
     assert data["operation_issues"] == []
     assert data["tool_issues"] == []
     assert data["summary"]["total_issues"] == 0
-

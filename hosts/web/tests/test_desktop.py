@@ -168,7 +168,9 @@ async def test_turn_endpoint_surfaces_runtime_errors(tmp_path) -> None:
         await client.close()
 
 
-def test_run_web_server_wires_browser_startup_hook(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_run_web_server_wires_browser_startup_hook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
     config = HostConfig.from_env(data_dir=str(tmp_path))
     runtime = HostRuntime(config)
 

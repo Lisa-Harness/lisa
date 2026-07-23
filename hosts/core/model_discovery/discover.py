@@ -67,9 +67,7 @@ async def discover_models(
     async with httpx.AsyncClient() as client:
         tasks = []
         for idx, probe in enumerate(probe_list):
-            if idx == anthropic_idx and isinstance(
-                probe, AnthropicProbe
-            ):
+            if idx == anthropic_idx and isinstance(probe, AnthropicProbe):
                 tasks.append(probe.probe_with_fallback(client, timeout))
             else:
                 tasks.append(probe.probe(client, timeout))

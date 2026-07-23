@@ -22,27 +22,33 @@ async def test_on_stage_renders_detailed_suffix() -> None:
     transport = RichTransport(console=console, debug=False)
     transport.start_thinking("model_call")
 
-    await transport.on_stage("model_call", {
-        "mode_id": "default",
-        "model_id": "haiku",
-        "provider": "anthropic",
-        "iteration": 1,
-        "tool_calls_so_far": 0,  # should be omitted (zero)
-        "tools_offered": True,   # not in the render allowlist
-    })
+    await transport.on_stage(
+        "model_call",
+        {
+            "mode_id": "default",
+            "model_id": "haiku",
+            "provider": "anthropic",
+            "iteration": 1,
+            "tool_calls_so_far": 0,  # should be omitted (zero)
+            "tools_offered": True,  # not in the render allowlist
+        },
+    )
 
     # The spinner text is private; stop and inspect the thinking stage label
     # by capturing a non-spinner render.
     transport.stop_thinking()
     # When no spinner is active, on_stage prints the line inline.
-    await transport.on_stage("model_call_complete", {
-        "mode_id": "default",
-        "model_id": "haiku",
-        "iteration": 1,
-        "tool_calls": 2,
-        "total_tokens": 120,
-        "duration_ms": 340,
-    })
+    await transport.on_stage(
+        "model_call_complete",
+        {
+            "mode_id": "default",
+            "model_id": "haiku",
+            "iteration": 1,
+            "tool_calls": 2,
+            "total_tokens": 120,
+            "duration_ms": 340,
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -57,36 +63,51 @@ async def test_on_stage_fork_renders_one_line_per_child() -> None:
     transport = RichTransport(console=console, debug=False)
     transport.start_thinking("model_call")
 
-    await transport.on_stage("fork_start", {"children": 2, "targets": [
-        {"mode_id": "coding", "stage_id": "implement"},
-        {"mode_id": "markdown", "stage_id": ""},
-    ]})
+    await transport.on_stage(
+        "fork_start",
+        {
+            "children": 2,
+            "targets": [
+                {"mode_id": "coding", "stage_id": "implement"},
+                {"mode_id": "markdown", "stage_id": ""},
+            ],
+        },
+    )
     assert transport._fork_total == 2
     assert transport._fork_children == {}
 
-    await transport.on_stage("fork_child_start", {
-        "child_index": 0,
-        "mode_id": "coding",
-        "stage_id": "implement",
-        "query_preview": "write the thing",
-    })
-    await transport.on_stage("fork_child_start", {
-        "child_index": 1,
-        "mode_id": "markdown",
-        "stage_id": "",
-        "query_preview": "doc it",
-    })
+    await transport.on_stage(
+        "fork_child_start",
+        {
+            "child_index": 0,
+            "mode_id": "coding",
+            "stage_id": "implement",
+            "query_preview": "write the thing",
+        },
+    )
+    await transport.on_stage(
+        "fork_child_start",
+        {
+            "child_index": 1,
+            "mode_id": "markdown",
+            "stage_id": "",
+            "query_preview": "doc it",
+        },
+    )
     assert set(transport._fork_children.keys()) == {0, 1}
     assert transport._fork_children[0]["status"] == "running"
     assert transport._fork_children[1]["mode_id"] == "markdown"
 
-    await transport.on_stage("fork_child_complete", {
-        "child_index": 0,
-        "mode_id": "coding",
-        "stage_id": "implement",
-        "status": "ok",
-        "duration_ms": 42,
-    })
+    await transport.on_stage(
+        "fork_child_complete",
+        {
+            "child_index": 0,
+            "mode_id": "coding",
+            "stage_id": "implement",
+            "status": "ok",
+            "duration_ms": 42,
+        },
+    )
     assert transport._fork_children[0]["status"] == "ok"
     assert transport._fork_children[0]["duration_ms"] == 42
 
@@ -170,18 +191,26 @@ async def test_mode_prefix_tracked_from_model_call() -> None:
     # Before any model_call, no mode prefix.
     assert transport._current_mode == ""
 
-    await transport.on_stage("model_call", {
-        "mode_id": "coding",
-        "model_id": "haiku",
-        "provider": "anthropic",
-        "iteration": 1,
-    })
+    await transport.on_stage(
+        "model_call",
+        {
+            "mode_id": "coding",
+            "model_id": "haiku",
+            "provider": "anthropic",
+            "iteration": 1,
+        },
+    )
     assert transport._current_mode == "coding"
 
-    line = transport._render_status_line("model_call", {
-        "mode_id": "coding", "model_id": "haiku", "provider": "anthropic",
-        "iteration": 1,
-    })
+    line = transport._render_status_line(
+        "model_call",
+        {
+            "mode_id": "coding",
+            "model_id": "haiku",
+            "provider": "anthropic",
+            "iteration": 1,
+        },
+    )
     # [coding] prefix present; mode_id no longer appears as a suffix key.
     assert line.startswith("[coding] ")
     assert "mode_id=" not in line
@@ -199,14 +228,17 @@ async def test_mode_prefix_updates_on_mid_turn_handoff() -> None:
     await transport.on_stage("model_call", {"mode_id": "default", "iteration": 1})
     assert transport._current_mode == "default"
 
-    await transport.on_stage("tool_dispatch_complete", {
-        "tool": "transition_stage",
-        "tool_kind": "transition",
-        "transition": "handoff",
-        "handoff_to": "coding",
-        "ok": True,
-        "iteration": 1,
-    })
+    await transport.on_stage(
+        "tool_dispatch_complete",
+        {
+            "tool": "transition_stage",
+            "tool_kind": "transition",
+            "transition": "handoff",
+            "handoff_to": "coding",
+            "ok": True,
+            "iteration": 1,
+        },
+    )
     assert transport._current_mode == "coding"
 
     line = transport._render_status_line("model_call", {"mode_id": "coding"})
@@ -225,31 +257,47 @@ async def test_tool_dispatch_renders_legible_kind_glyphs() -> None:
     await transport.on_stage("model_call", {"mode_id": "coding", "iteration": 1})
 
     # operation
-    line = transport._render_tool_dispatch({
-        "tool": "write_file", "tool_kind": "operation",
-        "iteration": 1, "tool_calls_so_far": 1,
-    })
+    line = transport._render_tool_dispatch(
+        {
+            "tool": "write_file",
+            "tool_kind": "operation",
+            "iteration": 1,
+            "tool_calls_so_far": 1,
+        }
+    )
     assert line == "stage: tool_dispatch → op: write_file (iter=1, calls=1)"
 
     # mcp_tool
-    line = transport._render_tool_dispatch({
-        "tool": "brave_search", "tool_kind": "mcp_tool",
-        "iteration": 2, "tool_calls_so_far": 3,
-    })
+    line = transport._render_tool_dispatch(
+        {
+            "tool": "brave_search",
+            "tool_kind": "mcp_tool",
+            "iteration": 2,
+            "tool_calls_so_far": 3,
+        }
+    )
     assert "→ mcp: brave_search" in line
 
     # transition handoff — shows the target
-    line = transport._render_tool_dispatch({
-        "tool": "transition_stage", "tool_kind": "transition",
-        "transition": "handoff", "handoff_to": "markdown",
-    })
+    line = transport._render_tool_dispatch(
+        {
+            "tool": "transition_stage",
+            "tool_kind": "transition",
+            "transition": "handoff",
+            "handoff_to": "markdown",
+        }
+    )
     assert "↦ transition_stage → markdown" in line
 
     # transition fork — shows child count
-    line = transport._render_tool_dispatch({
-        "tool": "transition_stage", "tool_kind": "transition",
-        "transition": "fork", "fork_children": 3,
-    })
+    line = transport._render_tool_dispatch(
+        {
+            "tool": "transition_stage",
+            "tool_kind": "transition",
+            "transition": "fork",
+            "fork_children": 3,
+        }
+    )
     assert "↦ transition_stage fork (3 children)" in line
 
 
@@ -263,20 +311,40 @@ async def test_fork_complete_keeps_per_child_table() -> None:
     transport.start_thinking("dispatch")
 
     await transport.on_stage("fork_start", {"children": 2})
-    await transport.on_stage("fork_child_start", {
-        "child_index": 0, "mode_id": "coding", "stage_id": "implement",
-        "query_preview": "write",
-    })
-    await transport.on_stage("fork_child_start", {
-        "child_index": 1, "mode_id": "markdown", "stage_id": "",
-        "query_preview": "doc",
-    })
-    await transport.on_stage("fork_child_complete", {
-        "child_index": 0, "status": "ok", "duration_ms": 42,
-    })
-    await transport.on_stage("fork_child_complete", {
-        "child_index": 1, "status": "no_tools", "duration_ms": 30,
-    })
+    await transport.on_stage(
+        "fork_child_start",
+        {
+            "child_index": 0,
+            "mode_id": "coding",
+            "stage_id": "implement",
+            "query_preview": "write",
+        },
+    )
+    await transport.on_stage(
+        "fork_child_start",
+        {
+            "child_index": 1,
+            "mode_id": "markdown",
+            "stage_id": "",
+            "query_preview": "doc",
+        },
+    )
+    await transport.on_stage(
+        "fork_child_complete",
+        {
+            "child_index": 0,
+            "status": "ok",
+            "duration_ms": 42,
+        },
+    )
+    await transport.on_stage(
+        "fork_child_complete",
+        {
+            "child_index": 1,
+            "status": "no_tools",
+            "duration_ms": 30,
+        },
+    )
     await transport.on_stage("fork_complete", {"children": 2, "ok": 1, "failed": 1})
 
     # Table survives fork_complete.

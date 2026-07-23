@@ -149,65 +149,80 @@ def test_mode_bound_operation_ids_handles_none_lists() -> None:
 
 def test_operation_allowed_for_mode_returns_true_when_no_mode_config() -> None:
     """When mode_config is None, all operations are allowed."""
-    assert _operation_allowed_for_mode(
-        operation_id="any_op",
-        definition=SimpleNamespace(mode_allowlist=None),
-        mode_config=None,
-        tools_authoritative=True,
-        mode_bound_ids=set(),
-    ) is True
+    assert (
+        _operation_allowed_for_mode(
+            operation_id="any_op",
+            definition=SimpleNamespace(mode_allowlist=None),
+            mode_config=None,
+            tools_authoritative=True,
+            mode_bound_ids=set(),
+        )
+        is True
+    )
 
 
 def test_operation_allowed_for_mode_mode_allowlist_match() -> None:
     """When the operation's mode_allowlist includes the current mode, it's allowed."""
     definition = SimpleNamespace(mode_allowlist=["learn", "default"])
     mode_config = _make_mode_config(mode_id="learn")
-    assert _operation_allowed_for_mode(
-        operation_id="my_op",
-        definition=definition,
-        mode_config=mode_config,
-        tools_authoritative=True,
-        mode_bound_ids=set(),
-    ) is True
+    assert (
+        _operation_allowed_for_mode(
+            operation_id="my_op",
+            definition=definition,
+            mode_config=mode_config,
+            tools_authoritative=True,
+            mode_bound_ids=set(),
+        )
+        is True
+    )
 
 
 def test_operation_allowed_for_mode_mode_bound_id_match() -> None:
     """When the operation_id is in mode_bound_ids, it's allowed."""
     definition = SimpleNamespace(mode_allowlist=None)
     mode_config = _make_mode_config(mode_id="default")
-    assert _operation_allowed_for_mode(
-        operation_id="bound_op",
-        definition=definition,
-        mode_config=mode_config,
-        tools_authoritative=True,
-        mode_bound_ids={"bound_op"},
-    ) is True
+    assert (
+        _operation_allowed_for_mode(
+            operation_id="bound_op",
+            definition=definition,
+            mode_config=mode_config,
+            tools_authoritative=True,
+            mode_bound_ids={"bound_op"},
+        )
+        is True
+    )
 
 
 def test_operation_allowed_for_mode_authoritative_excludes_unbound() -> None:
     """When tools_authoritative=True and not in allowlist/bound, excluded."""
     definition = SimpleNamespace(mode_allowlist=None)
     mode_config = _make_mode_config(mode_id="default")
-    assert _operation_allowed_for_mode(
-        operation_id="unbound_op",
-        definition=definition,
-        mode_config=mode_config,
-        tools_authoritative=True,
-        mode_bound_ids=set(),
-    ) is False
+    assert (
+        _operation_allowed_for_mode(
+            operation_id="unbound_op",
+            definition=definition,
+            mode_config=mode_config,
+            tools_authoritative=True,
+            mode_bound_ids=set(),
+        )
+        is False
+    )
 
 
 def test_operation_allowed_for_mode_non_authoritative_includes_unbound() -> None:
     """When tools_authoritative=False and no mode_allowlist, unbound ops pass."""
     definition = SimpleNamespace(mode_allowlist=None)
     mode_config = _make_mode_config(mode_id="default")
-    assert _operation_allowed_for_mode(
-        operation_id="unbound_op",
-        definition=definition,
-        mode_config=mode_config,
-        tools_authoritative=False,
-        mode_bound_ids=set(),
-    ) is True
+    assert (
+        _operation_allowed_for_mode(
+            operation_id="unbound_op",
+            definition=definition,
+            mode_config=mode_config,
+            tools_authoritative=False,
+            mode_bound_ids=set(),
+        )
+        is True
+    )
 
 
 def test_operation_allowed_for_mode_non_authoritative_excludes_when_allowlist_present() -> None:
@@ -215,13 +230,16 @@ def test_operation_allowed_for_mode_non_authoritative_excludes_when_allowlist_pr
     doesn't include the current mode, the op is excluded."""
     definition = SimpleNamespace(mode_allowlist=["other_mode"])
     mode_config = _make_mode_config(mode_id="default")
-    assert _operation_allowed_for_mode(
-        operation_id="restricted_op",
-        definition=definition,
-        mode_config=mode_config,
-        tools_authoritative=False,
-        mode_bound_ids=set(),
-    ) is False
+    assert (
+        _operation_allowed_for_mode(
+            operation_id="restricted_op",
+            definition=definition,
+            mode_config=mode_config,
+            tools_authoritative=False,
+            mode_bound_ids=set(),
+        )
+        is False
+    )
 
 
 # ── _prune_model_tool_schemas ─────────────────────────────────────────
@@ -408,7 +426,9 @@ async def test_schema_assembly_excludes_mcp_tools_not_in_allowlist() -> None:
         return _StubCompletion(content="Done.")
 
     class _StubPool:
-        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[MCPToolSpec]:
+        async def list_tools(
+            self, *, allowed_server_ids: set[str] | None = None
+        ) -> list[MCPToolSpec]:
             return [
                 MCPToolSpec(
                     server_id="__synthetic__",
@@ -462,7 +482,9 @@ async def test_schema_assembly_authoritative_empty_allowlist_no_mcp_tools() -> N
         return _StubCompletion(content="Done.")
 
     class _StubPool:
-        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[MCPToolSpec]:
+        async def list_tools(
+            self, *, allowed_server_ids: set[str] | None = None
+        ) -> list[MCPToolSpec]:
             return [
                 MCPToolSpec(
                     server_id="__synthetic__",
@@ -514,7 +536,9 @@ async def test_schema_assembly_deduplicates_before_model_call() -> None:
         return _StubCompletion(content="Done.")
 
     class _StubPool:
-        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[MCPToolSpec]:
+        async def list_tools(
+            self, *, allowed_server_ids: set[str] | None = None
+        ) -> list[MCPToolSpec]:
             return [
                 MCPToolSpec(
                     server_id="__synthetic__",

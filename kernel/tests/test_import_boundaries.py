@@ -55,4 +55,3 @@ def test_kernel_package_imports_no_app_or_sdk_modules() -> None:
             "Forbidden higher-layer imports found in kernel:\n" + "\n".join(lines),
             pytrace=False,
         )
-

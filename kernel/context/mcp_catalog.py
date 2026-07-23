@@ -126,8 +126,7 @@ class MCPModeCatalog:
         raw_json = self._call("list_modes", {})
         raw_catalog = _parse_catalog_response(raw_json, tool="list_modes")
         self._catalog = {
-            mode_id: _deserialize_mode(mode_dict)
-            for mode_id, mode_dict in raw_catalog.items()
+            mode_id: _deserialize_mode(mode_dict) for mode_id, mode_dict in raw_catalog.items()
         }
         return self._catalog
 
@@ -164,8 +163,7 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         for stage_id, stage_dict in (data.get("stages") or {}).items()
     }
     intent_bridges = [
-        DefaultIntentBridge(**bridge)
-        for bridge in (data.get("default_intent_bridges") or [])
+        DefaultIntentBridge(**bridge) for bridge in (data.get("default_intent_bridges") or [])
     ]
 
     return WorkflowModeConfig(
@@ -200,9 +198,7 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         entry_failure_policy=data.get("entry_failure_policy", "abort"),
         default_intent_bridges=intent_bridges,
         mode_provider_id=str(data.get("mode_provider_id", "") or ""),
-        context_evidence_packs=[
-            str(p) for p in (data.get("context_evidence_packs") or [])
-        ],
+        context_evidence_packs=[str(p) for p in (data.get("context_evidence_packs") or [])],
     )
 
 
@@ -274,8 +270,7 @@ class MCPOperationCatalog:
         raw_json = self._call("list_operations", {})
         raw_catalog = _parse_catalog_response(raw_json, tool="list_operations")
         self._catalog = {
-            op_id: _deserialize_operation(op_dict)
-            for op_id, op_dict in raw_catalog.items()
+            op_id: _deserialize_operation(op_dict) for op_id, op_dict in raw_catalog.items()
         }
         return self._catalog
 
@@ -435,8 +430,7 @@ class MCPToolCatalog:
         raw_json = self._call("list_tools", {})
         raw_catalog = _parse_catalog_response(raw_json, tool="list_tools")
         self._catalog = {
-            tool_id: _deserialize_tool(tool_dict)
-            for tool_id, tool_dict in raw_catalog.items()
+            tool_id: _deserialize_tool(tool_dict) for tool_id, tool_dict in raw_catalog.items()
         }
         return self._catalog
 
@@ -464,9 +458,7 @@ def _deserialize_tool(data: dict[str, Any]) -> ToolDefinition:
 
     mode_allowlist_raw = data.get("mode_allowlist")
     mode_allowlist = (
-        None
-        if mode_allowlist_raw is None
-        else [str(mode_id) for mode_id in mode_allowlist_raw]
+        None if mode_allowlist_raw is None else [str(mode_id) for mode_id in mode_allowlist_raw]
     )
 
     return ToolDefinition(

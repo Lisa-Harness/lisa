@@ -85,9 +85,7 @@ def discover_slice_provider_factories(
         try:
             factory = ep.load()
         except Exception:  # pylint: disable=broad-except
-            logger.warning(
-                "Failed to load slice_providers entry-point %r", ep.name, exc_info=True
-            )
+            logger.warning("Failed to load slice_providers entry-point %r", ep.name, exc_info=True)
             continue
         if not callable(factory):
             logger.warning(
@@ -95,7 +93,9 @@ def discover_slice_provider_factories(
                 ep.name,
             )
             continue
-        entries.append(PackSliceProviderEntry(pack_name=_entry_point_pack_name(ep), factory=factory))
+        entries.append(
+            PackSliceProviderEntry(pack_name=_entry_point_pack_name(ep), factory=factory)
+        )
     return entries
 
 

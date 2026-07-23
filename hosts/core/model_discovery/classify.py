@@ -38,9 +38,7 @@ _REASONING_MARKERS = (
 # gpt-5-family markers. "gpt-5+" = the gpt-5 family and above, which is
 # the floor for the cloud default-model pick now that gpt-4 is being
 # deprecated. mini/nano variants count as gpt-5+ (they share the family).
-_GPT_5_FAMILY_MARKERS = (
-    "gpt-5",
-)
+_GPT_5_FAMILY_MARKERS = ("gpt-5",)
 
 #: Providers treated as local (everything else is cloud). Single source of
 #: truth for the local/cloud split — the discovery algorithm and any
@@ -112,7 +110,9 @@ def load_known_models() -> dict[str, dict[str, Any]]:
         return {}
     if not isinstance(payload, dict):
         return {}
-    return {str(key).lower(): dict(value) for key, value in payload.items() if isinstance(value, dict)}
+    return {
+        str(key).lower(): dict(value) for key, value in payload.items() if isinstance(value, dict)
+    }
 
 
 def apply_known_override(

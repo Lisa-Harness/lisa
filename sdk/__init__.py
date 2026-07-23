@@ -26,4 +26,3 @@ def get_content_root() -> Path:
     mode and operation YAML definitions without hard-coded paths.
     """
     return Path(__file__).parent
-

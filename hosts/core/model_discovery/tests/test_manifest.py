@@ -124,9 +124,7 @@ class TestBuildManifestPayload:
         assert payload["roles"]["deep"] == "deepseek-r1:70b"
 
     def test_deep_falls_back_to_default_when_no_reasoning(self) -> None:
-        models = (
-            DiscoveredModel(model_id="gpt-5", provider="openai"),
-        )
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
         payload = build_manifest_payload(models)
         assert payload["roles"]["deep"] == "gpt-5"
 
@@ -328,9 +326,7 @@ class TestRenderManifestYaml:
 class TestWriteManifestYaml:
     def test_atomic_write(self, tmp_path: Path) -> None:
         path = tmp_path / "models.proposed.yaml"
-        payload = build_manifest_payload(
-            (DiscoveredModel(model_id="gpt-4o", provider="openai"),)
-        )
+        payload = build_manifest_payload((DiscoveredModel(model_id="gpt-4o", provider="openai"),))
         write_manifest_yaml(path, payload)
         assert path.exists()
         assert not (tmp_path / "models.proposed.yaml.tmp").exists()
@@ -347,9 +343,7 @@ class TestWriteManifestYaml:
         path.write_text("old", encoding="utf-8")
         write_manifest_yaml(
             path,
-            build_manifest_payload(
-                (DiscoveredModel(model_id="new-model", provider="openai"),)
-            ),
+            build_manifest_payload((DiscoveredModel(model_id="new-model", provider="openai"),)),
         )
         assert "new-model" in path.read_text(encoding="utf-8")
         assert "old" not in path.read_text(encoding="utf-8")

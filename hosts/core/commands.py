@@ -367,9 +367,7 @@ def build_capability_snapshot(runtime: HostRuntime) -> dict[str, Any]:
     operations = get_operation_catalog()
     tools = get_tool_catalog()
     supported_modes = [
-        mode_id
-        for mode_id, mode in sorted(catalog.items())
-        if mode_support_gap(mode) is None
+        mode_id for mode_id, mode in sorted(catalog.items()) if mode_support_gap(mode) is None
     ]
     unsupported_modes = {
         mode_id: (mode_support_gap(mode) or "additional host wiring")
@@ -697,10 +695,7 @@ def handle_debug_command(
     """Handle ``/debug`` subcommands."""
     subcommand = stripped[6:].strip().lower()
     if subcommand in {"", "help"}:
-        response_text = (
-            "Supported debug commands: "
-            "/debug context, /debug capabilities, /debug self"
-        )
+        response_text = "Supported debug commands: /debug context, /debug capabilities, /debug self"
     elif subcommand == "context":
         response_text = render_debug_context(runtime)
     elif subcommand == "capabilities":
@@ -709,8 +704,7 @@ def handle_debug_command(
         response_text = render_debug_self(runtime)
     else:
         response_text = (
-            f"Unknown debug command '{subcommand}'. "
-            "Supported: context, capabilities, self."
+            f"Unknown debug command '{subcommand}'. Supported: context, capabilities, self."
         )
     return handle_simple_command(runtime, message, "debug", response_text)
 
@@ -903,8 +897,7 @@ def _render_models_manifest(runtime: HostRuntime) -> str:
         roles = ", ".join(roles_by_model.get(model.model_id, [])) or "-"
         reasoning = "yes" if model.reasoning_model else "no"
         lines.append(
-            f"- {model.model_id} (provider={model.provider}, "
-            f"reasoning={reasoning}, roles={roles})"
+            f"- {model.model_id} (provider={model.provider}, reasoning={reasoning}, roles={roles})"
         )
     if manifest.mode_models:
         mode_map = ", ".join(
@@ -913,8 +906,7 @@ def _render_models_manifest(runtime: HostRuntime) -> str:
         lines.append(f"- mode_models: {mode_map}")
     if manifest.roles:
         role_map = ", ".join(
-            f"{role_name}->{model_id}"
-            for role_name, model_id in sorted(manifest.roles.items())
+            f"{role_name}->{model_id}" for role_name, model_id in sorted(manifest.roles.items())
         )
         lines.append(f"- roles: {role_map}")
     return "\n".join(lines)
@@ -1054,8 +1046,8 @@ async def _handle_models_update(
     if not instruction:
         return (
             "Usage: /models update <natural language instruction>\n\n"
-            "Example: /models update \"make claude-sonnet-5 the default "
-            "for code reasoning, mark all o-series as premium\""
+            'Example: /models update "make claude-sonnet-5 the default '
+            'for code reasoning, mark all o-series as premium"'
         )
 
     if runtime.mcp_tool_pool is None:
@@ -1102,13 +1094,15 @@ async def _handle_models_update(
     payload = result.output_json or {}
     validated = bool(payload.get("validated")) if isinstance(payload, dict) else False
     if not validated:
-        return summary + "\n\nNot applied: the edited manifest did not validate. Refine the instruction and retry."
+        return (
+            summary
+            + "\n\nNot applied: the edited manifest did not validate. Refine the instruction and retry."
+        )
 
     # Auto-apply: promote the proposal to the active manifest.
     if not proposal_path.exists():
         return (
-            summary
-            + "\n\nProposal not found after update; nothing to apply. "
+            summary + "\n\nProposal not found after update; nothing to apply. "
             "The operation may have failed to write it."
         )
 
@@ -1119,13 +1113,14 @@ async def _handle_models_update(
         runtime.manifest = manifest
     except Exception as exc:  # pylint: disable=broad-except
         return (
-            summary
-            + f"\n\nUpdate edited the proposal but apply failed: {exc}\n"
+            summary + f"\n\nUpdate edited the proposal but apply failed: {exc}\n"
             "Fix the proposal and run /models apply."
         )
 
-    return summary + "\n\nApplied: " + (
-        f"active_manifest={active_path} model_count={len(manifest.models)}"
+    return (
+        summary
+        + "\n\nApplied: "
+        + (f"active_manifest={active_path} model_count={len(manifest.models)}")
     )
 
 
@@ -1193,9 +1188,7 @@ async def handle_models_command(
             f"{provider}:{count}" for provider, count in sorted(provider_summary.items())
         )
         skipped = [
-            result.provider
-            for result in report.results
-            if result.status is ProbeStatus.SKIPPED
+            result.provider for result in report.results if result.status is ProbeStatus.SKIPPED
         ]
         notes_lines = _render_discover_notes(report)
         lines = [
@@ -1214,8 +1207,7 @@ async def handle_models_command(
     if subcommand == "apply":
         if not proposal_path.exists():
             response_text = (
-                f"Proposal manifest not found at {proposal_path}. "
-                "Run /models discover first."
+                f"Proposal manifest not found at {proposal_path}. Run /models discover first."
             )
             return handle_simple_command(runtime, message, "models", response_text)
 
@@ -1578,7 +1570,7 @@ def _extract_package_name_from_spec(spec: str) -> str:
         lowered = raw.lower()
         marker_index = lowered.find(egg_marker)
         if marker_index >= 0:
-            return raw[marker_index + len(egg_marker):].strip()
+            return raw[marker_index + len(egg_marker) :].strip()
         base = raw.split("@", 1)[0].rstrip("/")
         tail = base.rsplit("/", 1)[-1]
         return tail[:-4] if tail.lower().endswith(".git") else tail
@@ -1593,7 +1585,7 @@ def _extract_git_host(spec: str) -> str:
     raw = spec.strip()
     if not raw.lower().startswith("git+https://"):
         return ""
-    remainder = raw[len("git+https://"):]
+    remainder = raw[len("git+https://") :]
     if not remainder:
         return ""
     return remainder.split("/", 1)[0].strip().lower()
@@ -1735,9 +1727,7 @@ async def _ensure_packs_venv(packs_venv: Path) -> tuple[bool, str]:
     if process.returncode != 0:
         output = output_bytes.decode("utf-8", errors="replace") if output_bytes else ""
         preview = "\n".join(output.splitlines()[-12:]).strip()
-        return False, (
-            f"Failed to create packs venv at '{packs_venv}'.\n{preview}"
-        )
+        return False, (f"Failed to create packs venv at '{packs_venv}'.\n{preview}")
     logger.info("Created packs venv at %s", packs_venv)
 
     # Seed the freshly-created venv with framework workspace packages so
@@ -1860,7 +1850,10 @@ async def run_pack_install(
 
     package_name = normalize_pack_name(_extract_package_name_from_spec(normalized_spec))
     if not package_name:
-        return False, f"Install succeeded for '{normalized_spec}' but package name could not be inferred."
+        return (
+            False,
+            f"Install succeeded for '{normalized_spec}' but package name could not be inferred.",
+        )
     source_kind = (
         "local"
         if _is_local_pack_spec(normalized_spec)
@@ -1988,7 +1981,12 @@ def render_modes_list(runtime: HostRuntime) -> str:
     catalog = get_workflow_catalog()
     if not catalog:
         return "No modes discovered yet."
-    lines = ["## Lisa Modes", "", "| Mode | Kind | Command | Description |", "| --- | --- | --- | --- |"]
+    lines = [
+        "## Lisa Modes",
+        "",
+        "| Mode | Kind | Command | Description |",
+        "| --- | --- | --- | --- |",
+    ]
     for mode_id, mode in sorted(catalog.items()):
         gap = mode_support_gap(mode)
         command = escape_markdown_cell(mode.command_pattern or "default route")
@@ -2075,9 +2073,7 @@ def render_pack_list(runtime: HostRuntime) -> str:
     }
 
     all_packages = set(installed_roots) | set(entry_map) | always_on
-    all_packages = {
-        name for name in all_packages if name not in EXCLUDED_PACK_NAMES
-    }
+    all_packages = {name for name in all_packages if name not in EXCLUDED_PACK_NAMES}
     if not all_packages:
         return "No packs discovered yet."
 

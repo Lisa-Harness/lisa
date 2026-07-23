@@ -96,9 +96,7 @@ class VSCodeTransport:
         self.response_data: dict[str, Any] | None = None
 
     async def on_stage(self, label: str, data: dict[str, Any] | None = None) -> None:
-        self._write_output(
-            {"method": "notify", "params": {"stage": label, "data": data}}
-        )
+        self._write_output({"method": "notify", "params": {"stage": label, "data": data}})
 
     async def on_text_chunk(self, text: str) -> None:
         pass
@@ -168,9 +166,7 @@ def _configure_logging(config: HostConfig) -> None:
 
     handler = logging.FileHandler(log_path, encoding="utf-8")
     handler.setLevel(level)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s")
-    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
     root.addHandler(handler)
 
 

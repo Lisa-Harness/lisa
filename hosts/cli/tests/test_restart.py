@@ -46,10 +46,12 @@ def test_restart_current_process_unix_uses_execv(tmp_path: Path) -> None:
         captured["path"] = path
         captured["args"] = args
 
-    with patch.object(cli_main.os, "name", "posix"), \
-         patch.object(cli_main.os, "execv", fake_execv), \
-         patch.object(cli_main.sys, "executable", "/usr/bin/python"), \
-         patch.object(cli_main.sys, "argv", ["lisa", "--debug"]):
+    with (
+        patch.object(cli_main.os, "name", "posix"),
+        patch.object(cli_main.os, "execv", fake_execv),
+        patch.object(cli_main.sys, "executable", "/usr/bin/python"),
+        patch.object(cli_main.sys, "argv", ["lisa", "--debug"]),
+    ):
         cli_main._restart_current_process()
 
     assert captured["path"] == "/usr/bin/python"
@@ -111,9 +113,7 @@ def test_confirm_restart_yes_proceeds(tmp_path: Path, monkeypatch: pytest.Monkey
     runtime.request_restart("pack install: lisa-pack-cloudflare")
     console = Console(quiet=True)
 
-    monkeypatch.setattr(
-        cli_repl.Confirm, "ask", staticmethod(lambda *a, **k: True)
-    )
+    monkeypatch.setattr(cli_repl.Confirm, "ask", staticmethod(lambda *a, **k: True))
 
     assert cli_repl._confirm_restart(runtime, console) is True
 
@@ -128,9 +128,7 @@ def test_confirm_restart_no_defers(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     runtime.request_restart("pack install: lisa-pack-cloudflare")
     console = Console(quiet=True)
 
-    monkeypatch.setattr(
-        cli_repl.Confirm, "ask", staticmethod(lambda *a, **k: False)
-    )
+    monkeypatch.setattr(cli_repl.Confirm, "ask", staticmethod(lambda *a, **k: False))
 
     assert cli_repl._confirm_restart(runtime, console) is False
 

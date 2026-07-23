@@ -176,9 +176,7 @@ def test_raw_evidence_adapter_ignores_broker_scores_and_preserves_identity() -> 
     request = _request(
         (candidate,),
         query="cloudflare worker error",
-    ).model_copy(
-        update={"active_packs": frozenset({"lisa-pack-core", "lisa-pack-cloudflare"})}
-    )
+    ).model_copy(update={"active_packs": frozenset({"lisa-pack-core", "lisa-pack-cloudflare"})})
     result = ContextMapper().map(request)
 
     assert result.selections[0].base_score < 1.0
@@ -230,11 +228,7 @@ def test_unified_state_adapter_normalizes_alerts_domain_and_runtime_summaries() 
 
     candidates = context_candidates_from_unified_state(state)
     by_id = {candidate.candidate_id: candidate for candidate in candidates}
-    alert = next(
-        candidate
-        for candidate in candidates
-        if candidate.source_kind == "alert"
-    )
+    alert = next(candidate for candidate in candidates if candidate.source_kind == "alert")
 
     assert alert.provenance == "system_observed"
     assert alert.salience == 1.0
@@ -245,19 +239,14 @@ def test_unified_state_adapter_normalizes_alerts_domain_and_runtime_summaries() 
     result = ContextMapper().map(_request(candidates, query="cloudflare deployment alert"))
 
     selected_by_lane = {
-        selection.candidate.source_kind: selection.lane_id
-        for selection in result.selections
+        selection.candidate.source_kind: selection.lane_id for selection in result.selections
     }
     assert selected_by_lane["alert"] == "operational"
     assert selected_by_lane["domain_knowledge"] == "general"
 
 
 def test_mapper_rejects_required_candidate_that_cannot_fit_budget() -> None:
-    plan = _plan(
-        lanes=(
-            ContextLanePlan(lane_id="general", max_tokens=2, render_order=0),
-        )
-    )
+    plan = _plan(lanes=(ContextLanePlan(lane_id="general", max_tokens=2, render_order=0),))
     required = _candidate(
         "required",
         "This required context is longer than the lane budget.",
@@ -422,9 +411,7 @@ def test_mapper_satisfies_minimum_lane_coverage_before_mmr_selection() -> None:
         salience=1.0,
     )
 
-    result = ContextMapper().map(
-        _request((general, operational), context_plan=plan)
-    )
+    result = ContextMapper().map(_request((general, operational), context_plan=plan))
 
     assert {selection.lane_id for selection in result.selections} == {
         "operational",
@@ -434,9 +421,7 @@ def test_mapper_satisfies_minimum_lane_coverage_before_mmr_selection() -> None:
 
 def test_mapper_deduplicates_and_uses_mmr_to_diversify_selection() -> None:
     plan = _plan(
-        lanes=(
-            ContextLanePlan(lane_id="general", max_tokens=80, max_items=2, render_order=0),
-        ),
+        lanes=(ContextLanePlan(lane_id="general", max_tokens=80, max_items=2, render_order=0),),
         ranking=ContextRankingPlan(diversity_lambda=0.2),
     )
     first = _candidate(
@@ -476,17 +461,15 @@ def test_mapper_deduplicates_and_uses_mmr_to_diversify_selection() -> None:
     assert "a-first" in selected_ids
     assert "diverse" in selected_ids
     assert "similar" not in selected_ids
-    duplicate_decision = {
-        entry.candidate_id: entry for entry in result.trace.decisions
-    }["z-duplicate"]
+    duplicate_decision = {entry.candidate_id: entry for entry in result.trace.decisions}[
+        "z-duplicate"
+    ]
     assert duplicate_decision.drop_reason == "duplicate_content"
 
 
 def test_mapper_breaks_ties_by_candidate_id_and_keeps_required_duplicate() -> None:
     plan = _plan(
-        lanes=(
-            ContextLanePlan(lane_id="general", max_tokens=80, max_items=3, render_order=0),
-        )
+        lanes=(ContextLanePlan(lane_id="general", max_tokens=80, max_items=3, render_order=0),)
     )
     alpha = _candidate("alpha", "Alpha context.", token_estimate=10)
     beta = _candidate("beta", "Beta context.", token_estimate=10)
@@ -509,9 +492,7 @@ def test_mapper_breaks_ties_by_candidate_id_and_keeps_required_duplicate() -> No
 def test_mapper_reserves_model_budget_before_context_selection() -> None:
     candidate = _candidate("general", "Useful deployment context.", token_estimate=12)
 
-    result = ContextMapper().map(
-        _request((candidate,), model_context_window_tokens=140)
-    )
+    result = ContextMapper().map(_request((candidate,), model_context_window_tokens=140))
 
     budget = result.trace.budget
     assert budget.available_context_tokens == _AVAILABLE_CONTEXT_TOKENS

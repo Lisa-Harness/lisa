@@ -253,9 +253,7 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
                     )
                 else:
                     _render_session_exit_summary(runtime, console)
-                    console.print(
-                        f"[{STYLE_TEXT_MUTED}]Applying restart now...[/]"
-                    )
+                    console.print(f"[{STYLE_TEXT_MUTED}]Applying restart now...[/]")
                     return True
         restart_requested = await _run_repl_loop(runtime, transport, console, prompt_session)
     finally:
@@ -330,11 +328,7 @@ async def _read_repl_input(console: Console, prompt_session: Any) -> str | None:
     try:
         _render_status_line(console)
         if prompt_session is not None:
-            cursor = (
-                ModalCursorShapeConfig()
-                if ModalCursorShapeConfig is not None
-                else None
-            )
+            cursor = ModalCursorShapeConfig() if ModalCursorShapeConfig is not None else None
             return (
                 await prompt_session.prompt_async(
                     [("class:prompt", "❯ ")],
@@ -459,9 +453,7 @@ async def _process_repl_turn(
 # ── Rendering helpers ────────────────────────────────────────────────
 
 
-def _render_turn_footer(
-    console: Console, runtime: HostRuntime, elapsed_ms: float
-) -> None:
+def _render_turn_footer(console: Console, runtime: HostRuntime, elapsed_ms: float) -> None:
     """Render a one-line post-response summary: mode · model · tokens · time.
 
     Draws from ``runtime.last_turn_context`` (the ``completion`` dict
@@ -538,9 +530,7 @@ def _render_turn_context(console: Console, context: Any) -> None:
     )
 
 
-def _render_runtime_error(
-    console: Console, exc: Exception, *, title: str = "Error"
-) -> None:
+def _render_runtime_error(console: Console, exc: Exception, *, title: str = "Error") -> None:
     error_text = f"{type(exc).__name__}: {exc}"
     logger.error("%s: %s: %s", title, type(exc).__name__, exc)
     console.print(
@@ -584,9 +574,7 @@ def _reset_runtime_after_cancelled_turn(runtime: HostRuntime) -> None:
     runtime.next_model_provider = "-"
 
 
-def _render_restart_required_notice_if_needed(
-    runtime: HostRuntime, console: Console
-) -> None:
+def _render_restart_required_notice_if_needed(runtime: HostRuntime, console: Console) -> None:
     """Render a one-shot restart-required notice after pack lifecycle changes."""
     if not runtime.restart_required:
         return
@@ -695,6 +683,7 @@ def _repl_bottom_toolbar() -> Any:
     # the toolbar works regardless of which PromptSession calls it.
     try:
         from prompt_toolkit.application import get_app
+
         buffer = get_app().current_buffer
         text = buffer.text
     except Exception:  # pylint: disable=broad-except
@@ -703,11 +692,19 @@ def _repl_bottom_toolbar() -> Any:
     char_count = len(text)
     line_count = text.count("\n") + 1 if text else 0
 
-    return FormattedText([
-        ("class:bottom-toolbar", " Enter submit · Esc+Enter newline · ↑/↓ history · Tab complete "),
-        ("class:bottom-toolbar.text", "│ "),
-        ("class:bottom-toolbar.metric", f"{line_count} line{'s' if line_count != 1 else ''}, {char_count} char{'s' if char_count != 1 else ''}"),
-    ])
+    return FormattedText(
+        [
+            (
+                "class:bottom-toolbar",
+                " Enter submit · Esc+Enter newline · ↑/↓ history · Tab complete ",
+            ),
+            ("class:bottom-toolbar.text", "│ "),
+            (
+                "class:bottom-toolbar.metric",
+                f"{line_count} line{'s' if line_count != 1 else ''}, {char_count} char{'s' if char_count != 1 else ''}",
+            ),
+        ]
+    )
 
 
 def _build_repl_key_bindings() -> Any:
@@ -876,9 +873,7 @@ def _status_time_badge(console: Console) -> tuple[str, str]:
                 timezone_label = tz_abbrev_raw.upper()
         elif timezone_label == timezone_name:
             tail = timezone_name.rsplit("/", 1)[-1]
-            timezone_label = (
-                "".join(part[:1] for part in tail.split("_") if part).upper() or tail
-            )
+            timezone_label = "".join(part[:1] for part in tail.split("_") if part).upper() or tail
         if " " in timezone_label:
             is_daylight = bool(status_dt.dst())
             us_zone_abbrevs = {

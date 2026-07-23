@@ -11,6 +11,7 @@ from sdk.packs.introspect.operations.self_model.reflect_self import ReflectSelfO
 
 class _StubModelDef(BaseModel):
     """Minimal model definition stub for the declarative runtime."""
+
     model_id: str = "test-model"
     provider: str = "test"
     reasoning_model: bool = False
@@ -50,8 +51,10 @@ class _StubCompletion:
 
 def _build_mock_resolve_model():
     """Build a mock resolve_model_fn."""
+
     def _resolve_model(model_id: str) -> Any:
         return _StubModelDef()
+
     return _resolve_model
 
 

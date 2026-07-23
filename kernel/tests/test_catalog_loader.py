@@ -69,9 +69,13 @@ def _write_mode(
 
     _write_front_matter_file(mode_dir / "_mode.md", front, body=f"# {mode_id}")
 
-    stages = stage_files if stage_files is not None else {
-        start_stage_id: _stage_front_matter(start_stage_id, terminal=True),
-    }
+    stages = (
+        stage_files
+        if stage_files is not None
+        else {
+            start_stage_id: _stage_front_matter(start_stage_id, terminal=True),
+        }
+    )
     for stage_id, stage_front in stages.items():
         _write_front_matter_file(mode_dir / f"{stage_id}.md", stage_front, body=f"# {stage_id}")
 

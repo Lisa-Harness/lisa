@@ -26,14 +26,14 @@ class ProbeStatus(str, Enum):
     raw exception strings.
     """
 
-    OK = "ok"                       # probed, returned >=1 model
-    EMPTY = "empty"                  # 200 but zero models returned
-    SKIPPED = "skipped"              # not configured (no creds/endpoint)
-    NETWORK = "network"              # connection/DNS/TLS failure
-    AUTH = "auth"                    # 401 / 403
-    NOT_FOUND = "not_found"          # 404 — wrong endpoint shape
-    RATE_LIMITED = "rate_limited"    # 429
-    SCHEMA = "schema"                # 200 but unparseable body
+    OK = "ok"  # probed, returned >=1 model
+    EMPTY = "empty"  # 200 but zero models returned
+    SKIPPED = "skipped"  # not configured (no creds/endpoint)
+    NETWORK = "network"  # connection/DNS/TLS failure
+    AUTH = "auth"  # 401 / 403
+    NOT_FOUND = "not_found"  # 404 — wrong endpoint shape
+    RATE_LIMITED = "rate_limited"  # 429
+    SCHEMA = "schema"  # 200 but unparseable body
     UNKNOWN = "unknown"
 
 
@@ -128,9 +128,7 @@ class DiscoveryReport:
     @property
     def notes(self) -> tuple[str, ...]:
         return tuple(
-            line
-            for line in (result.note_line() for result in self.results)
-            if line is not None
+            line for line in (result.note_line() for result in self.results) if line is not None
         )
 
     def results_for(self, provider: str) -> tuple[ProbeResult, ...]:

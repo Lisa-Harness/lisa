@@ -76,9 +76,7 @@ def build_unified_state(
         return UnifiedState(compiled_at=compiled_at, context_routing=context_routing)
 
     state = UnifiedState(
-        compiled_at=str(
-            snapshot.get("compiled_at") or snapshot.get("generated_at") or compiled_at
-        ),
+        compiled_at=str(snapshot.get("compiled_at") or snapshot.get("generated_at") or compiled_at),
         context_routing=context_routing,
     )
 
@@ -160,8 +158,7 @@ def _coerce_alerts(raw_alerts: Any) -> list[AnomalyAlert]:
         return []
     try:
         return [
-            a if isinstance(a, AnomalyAlert) else AnomalyAlert.model_validate(a)
-            for a in raw_alerts
+            a if isinstance(a, AnomalyAlert) else AnomalyAlert.model_validate(a) for a in raw_alerts
         ]
     except (ValidationError, TypeError):
         return []

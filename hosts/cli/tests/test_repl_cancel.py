@@ -69,9 +69,7 @@ def test_process_repl_turn_keyboard_interrupt_returns_prompt(
     # Must not raise.
     import asyncio
 
-    asyncio.run(
-        cli_repl._process_repl_turn(runtime, transport, console, "typo msg")
-    )
+    asyncio.run(cli_repl._process_repl_turn(runtime, transport, console, "typo msg"))
 
     # Spinner was stopped.
     assert transport._status is None
@@ -120,9 +118,7 @@ def test_process_repl_turn_cancelled_error_returns_prompt(
 
     monkeypatch.setattr(cli_repl, "handle_message", _raise_cancelled)
 
-    asyncio.run(
-        cli_repl._process_repl_turn(runtime, transport, console, "typo msg")
-    )
+    asyncio.run(cli_repl._process_repl_turn(runtime, transport, console, "typo msg"))
 
     assert transport._status is None
     assert runtime.tokens.session_cancelled_count == 1
@@ -153,9 +149,7 @@ def test_process_repl_turn_keyboard_interrupt_stops_spinner(
 
     import asyncio
 
-    asyncio.run(
-        cli_repl._process_repl_turn(runtime, transport, console, "x")
-    )
+    asyncio.run(cli_repl._process_repl_turn(runtime, transport, console, "x"))
 
     assert transport._status is None
 
@@ -180,9 +174,7 @@ def test_process_repl_turn_normal_exception_still_errors(
 
     import asyncio
 
-    asyncio.run(
-        cli_repl._process_repl_turn(runtime, transport, console, "x")
-    )
+    asyncio.run(cli_repl._process_repl_turn(runtime, transport, console, "x"))
 
     assert runtime.tokens.session_error_count == 1
     assert runtime.tokens.session_cancelled_count == 0
@@ -192,9 +184,7 @@ def test_process_repl_turn_normal_exception_still_errors(
 # ── _reset_runtime_after_cancelled_turn ──────────────────────────────
 
 
-def test_reset_runtime_after_cancelled_turn_clears_per_turn_state(
-    tmp_path: Path
-) -> None:
+def test_reset_runtime_after_cancelled_turn_clears_per_turn_state(tmp_path: Path) -> None:
     """The reset helper clears per-turn counters, context, and route preview."""
     from hosts.cli import repl as cli_repl
 
@@ -225,9 +215,7 @@ def test_token_counters_has_cancelled_field(tmp_path: Path) -> None:
     assert runtime.tokens.session_cancelled_count == 1
 
 
-def test_session_exit_summary_includes_cancelled_when_present(
-    tmp_path: Path
-) -> None:
+def test_session_exit_summary_includes_cancelled_when_present(tmp_path: Path) -> None:
     """format_session_exit_summary_lines surfaces cancelled count when > 0."""
     from hosts.core.commands import format_token_stats
 

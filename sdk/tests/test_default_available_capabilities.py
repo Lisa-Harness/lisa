@@ -85,9 +85,7 @@ def _write_operation(
     if default_available:
         lines.append("default_available: true")
     lines += ["---", "", f"# {operation_id}", "", "Test operation.", ""]
-    (ops_dir / f"{operation_id}.operation.md").write_text(
-        "\n".join(lines), encoding="utf-8"
-    )
+    (ops_dir / f"{operation_id}.operation.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def _write_tool(

@@ -102,13 +102,15 @@ def test_checkpoint_tuning_defaults() -> None:
 
 def test_checkpoint_tuning_from_mapping() -> None:
     """from_mapping builds tuning from a dict, ignoring unknown keys."""
-    tuning = CheckpointTuning.from_mapping({
-        "enabled": True,
-        "on_stage_transition": False,
-        "every_n_turns": 5,
-        "explicit": False,
-        "unknown_key": "ignored",
-    })
+    tuning = CheckpointTuning.from_mapping(
+        {
+            "enabled": True,
+            "on_stage_transition": False,
+            "every_n_turns": 5,
+            "explicit": False,
+            "unknown_key": "ignored",
+        }
+    )
     assert tuning.enabled is True
     assert tuning.on_stage_transition is False
     assert tuning.every_n_turns == 5
@@ -127,45 +129,57 @@ def test_checkpoint_tuning_from_mapping_none() -> None:
 def test_should_checkpoint_disabled_tuning() -> None:
     """Disabled tuning never checkpoints."""
     hooks = TurnHooks()
-    assert _should_checkpoint(
-        tuning=CheckpointTuning(enabled=False),
-        transitioned_to="next_stage",
-        is_workflow=True,
-        hooks=hooks,
-    ) is False
+    assert (
+        _should_checkpoint(
+            tuning=CheckpointTuning(enabled=False),
+            transitioned_to="next_stage",
+            is_workflow=True,
+            hooks=hooks,
+        )
+        is False
+    )
 
 
 def test_should_checkpoint_none_tuning() -> None:
     """None tuning never checkpoints."""
     hooks = TurnHooks()
-    assert _should_checkpoint(
-        tuning=None,
-        transitioned_to="next_stage",
-        is_workflow=True,
-        hooks=hooks,
-    ) is False
+    assert (
+        _should_checkpoint(
+            tuning=None,
+            transitioned_to="next_stage",
+            is_workflow=True,
+            hooks=hooks,
+        )
+        is False
+    )
 
 
 def test_should_checkpoint_on_transition() -> None:
     """Enabled tuning with stage transition triggers checkpoint."""
     hooks = TurnHooks()
-    assert _should_checkpoint(
-        tuning=CheckpointTuning(enabled=True, on_stage_transition=True),
-        transitioned_to="next_stage",
-        is_workflow=True,
-        hooks=hooks,
-    ) is True
+    assert (
+        _should_checkpoint(
+            tuning=CheckpointTuning(enabled=True, on_stage_transition=True),
+            transitioned_to="next_stage",
+            is_workflow=True,
+            hooks=hooks,
+        )
+        is True
+    )
 
 
 def test_should_checkpoint_transition_disabled() -> None:
     """Enabled tuning with on_stage_transition=False does not fire on transition."""
     hooks = TurnHooks()
-    assert _should_checkpoint(
-        tuning=CheckpointTuning(enabled=True, on_stage_transition=False),
-        transitioned_to="next_stage",
-        is_workflow=True,
-        hooks=hooks,
-    ) is False
+    assert (
+        _should_checkpoint(
+            tuning=CheckpointTuning(enabled=True, on_stage_transition=False),
+            transitioned_to="next_stage",
+            is_workflow=True,
+            hooks=hooks,
+        )
+        is False
+    )
 
 
 # ── _build_checkpoint_bundle ────────────────────────────────────────
@@ -277,6 +291,7 @@ async def test_run_turn_checkpoint_disabled_by_default() -> None:
 @pytest.mark.asyncio
 async def test_run_turn_checkpoint_hook_failure_doesnt_break_turn() -> None:
     """A failing on_checkpoint hook does not break the turn."""
+
     async def on_checkpoint(bundle: CheckpointBundle) -> None:
         raise RuntimeError("checkpoint storage is broken")
 

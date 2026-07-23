@@ -22,7 +22,11 @@ def _handler_from_map(
     def _handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         for prefix, value in routes.items():
-            if path == prefix or path.startswith(prefix.rstrip("/") + "/") or path.startswith(prefix):
+            if (
+                path == prefix
+                or path.startswith(prefix.rstrip("/") + "/")
+                or path.startswith(prefix)
+            ):
                 if callable(value):
                     return value(request)
                 return value

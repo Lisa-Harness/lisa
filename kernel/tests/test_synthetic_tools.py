@@ -109,14 +109,16 @@ async def test_synthetic_tool_listed_and_dispatched(monkeypatch: pytest.MonkeyPa
     async def handler(args: dict[str, Any]) -> str:
         return f"echo:{args.get('x', '')}"
 
-    pool.add_synthetic_tools([
-        SyntheticToolSpec(
-            name="memory.search",
-            description="Search memory.",
-            input_schema={"type": "object", "properties": {"x": {"type": "string"}}},
-            handler=handler,
-        )
-    ])
+    pool.add_synthetic_tools(
+        [
+            SyntheticToolSpec(
+                name="memory.search",
+                description="Search memory.",
+                input_schema={"type": "object", "properties": {"x": {"type": "string"}}},
+                handler=handler,
+            )
+        ]
+    )
 
     tools = await pool.list_tools()
     names = [t.name for t in tools]
@@ -170,9 +172,9 @@ async def test_synthetic_tool_survives_refresh(monkeypatch: pytest.MonkeyPatch) 
     async def handler(args: dict[str, Any]) -> str:
         return "ok"
 
-    pool.add_synthetic_tools([
-        SyntheticToolSpec(name="memory.add", description="d", input_schema={}, handler=handler)
-    ])
+    pool.add_synthetic_tools(
+        [SyntheticToolSpec(name="memory.add", description="d", input_schema={}, handler=handler)]
+    )
     await pool.refresh_tool_index()
 
     tools = await pool.list_tools()
@@ -193,16 +195,18 @@ async def test_synthetic_aclose_clears_handlers(monkeypatch: pytest.MonkeyPatch)
     async def handler(args: dict[str, Any]) -> str:
         return "x"
 
-    pool.add_synthetic_tools([
-        SyntheticToolSpec(name="t", description="d", input_schema={}, handler=handler)
-    ])
+    pool.add_synthetic_tools(
+        [SyntheticToolSpec(name="t", description="d", input_schema={}, handler=handler)]
+    )
     assert len(pool._synthetic_handlers) == 1
     await pool.aclose()
     assert pool._synthetic_handlers == {}
 
 
 @pytest.mark.asyncio
-async def test_synthetic_and_namespaced_server_tool_coexist(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_synthetic_and_namespaced_server_tool_coexist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A synthetic tool with the same bare name as a server tool does NOT
     collide because server tools are namespaced (s.shared) while synthetics
     keep their bare name (shared). Both appear in the catalog."""
@@ -217,9 +221,13 @@ async def test_synthetic_and_namespaced_server_tool_coexist(monkeypatch: pytest.
 
     # The server's tool is indexed as "s.shared"; the synthetic "shared" is
     # a different key — no collision, both coexist.
-    pool.add_synthetic_tools([
-        SyntheticToolSpec(name="shared", description="d", input_schema={}, handler=synthetic_handler)
-    ])
+    pool.add_synthetic_tools(
+        [
+            SyntheticToolSpec(
+                name="shared", description="d", input_schema={}, handler=synthetic_handler
+            )
+        ]
+    )
     assert "shared" in pool._synthetic_handlers
     assert "s.shared" in pool._tool_index
     assert "shared" in pool._tool_index
@@ -277,9 +285,9 @@ async def test_synthetic_tool_handler_error_returns_error_result(
     async def failing_handler(args: dict[str, Any]) -> str:
         raise RuntimeError("boom")
 
-    pool.add_synthetic_tools([
-        SyntheticToolSpec(name="bad", description="d", input_schema={}, handler=failing_handler)
-    ])
+    pool.add_synthetic_tools(
+        [SyntheticToolSpec(name="bad", description="d", input_schema={}, handler=failing_handler)]
+    )
     result = await pool.call_tool("bad", {})
     assert result.is_error is True
     assert "boom" in result.output_text
@@ -381,9 +389,14 @@ async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.Mo
 
         async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> Any:
             from types import SimpleNamespace
-            return SimpleNamespace(tools=[
-                type("T", (), {"name": "add_memory", "description": "cloud", "inputSchema": {}})()
-            ])
+
+            return SimpleNamespace(
+                tools=[
+                    type(
+                        "T", (), {"name": "add_memory", "description": "cloud", "inputSchema": {}}
+                    )()
+                ]
+            )
 
     # A refresh that only indexes CONNECTED servers (mirrors real behavior),
     # so mem0 (not connected at start) has no tools until lazily started.
@@ -431,6 +444,7 @@ async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.Mo
     monkeypatch.setattr(MCPToolPool, "_connect", fake_connect)
 
     pool = MCPToolPool([_config_named("mem0")])
+
     # Override start so it does NOT eagerly connect cold servers — simulate the
     # "mem0 not started at init" reality. Warm path is empty here.
     async def fake_start(self: MCPToolPool) -> None:
@@ -537,12 +551,14 @@ async def test_denied_tool_hidden_from_catalog_but_dispatchable_scoped(
 
     class _FakeSession:
         async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> _FakeResult:
-            return _FakeResult(tools=[
-                _FakeTool("add_memory", "add", {"type": "object"}),
-                _FakeTool("search_memory", "search", {"type": "object"}),
-                _FakeTool("list_memories", "list", {"type": "object"}),
-                _FakeTool("get_surface_context", "surface", {"type": "object"}),
-            ])
+            return _FakeResult(
+                tools=[
+                    _FakeTool("add_memory", "add", {"type": "object"}),
+                    _FakeTool("search_memory", "search", {"type": "object"}),
+                    _FakeTool("list_memories", "list", {"type": "object"}),
+                    _FakeTool("get_surface_context", "surface", {"type": "object"}),
+                ]
+            )
 
         async def call_tool(self, tool_id: str, arguments: dict[str, Any]) -> _FakeResult:
             return _FakeResult(text=f"server:{tool_id}")

@@ -73,14 +73,16 @@ class FakePool:
                 freevars = handler.__code__.co_freevars
                 for var_name, cell in zip(freevars, handler.__closure__):
                     closure_vars[var_name] = cell.cell_contents
-            self.registered.append({
-                "name": name,
-                "target_tool": closure_vars.get("target_tool"),
-                "target_server_id": closure_vars.get("target_server_id"),
-                "arg_map": closure_vars.get("arg_map"),
-                "result_map": closure_vars.get("result_map"),
-                "description": getattr(tool, "description", ""),
-            })
+            self.registered.append(
+                {
+                    "name": name,
+                    "target_tool": closure_vars.get("target_tool"),
+                    "target_server_id": closure_vars.get("target_server_id"),
+                    "arg_map": closure_vars.get("arg_map"),
+                    "result_map": closure_vars.get("result_map"),
+                    "description": getattr(tool, "description", ""),
+                }
+            )
 
 
 def _registered_names(pool: FakePool) -> list[str]:
@@ -173,9 +175,7 @@ class TestMem0AndLisaMemoryDeclared:
         )
         # The generic memory.add targets the mem0 server with the
         # mem0 arg map (content→text).
-        generic_add = next(
-            r for r in pool.registered if r["name"] == "memory.add"
-        )
+        generic_add = next(r for r in pool.registered if r["name"] == "memory.add")
         assert generic_add["target_tool"] == "add_memory"
         assert generic_add["target_server_id"] == "lisa-pack-mem0.mem0"
         assert generic_add["arg_map"] is not None
@@ -194,9 +194,7 @@ class TestMem0AndLisaMemoryDeclared:
             current_mode_id="default",
             app_id="test",
         )
-        generic_add = next(
-            r for r in pool.registered if r["name"] == "memory.add"
-        )
+        generic_add = next(r for r in pool.registered if r["name"] == "memory.add")
         assert generic_add["arg_map"] is None
         assert generic_add["target_server_id"] == "lisa-memory"
 
@@ -222,9 +220,7 @@ class TestMem0ArgMap:
             current_mode_id="default",
             app_id="test",
         )
-        memory_add = next(
-            r for r in pool.registered if r["name"] == "memory.add"
-        )
+        memory_add = next(r for r in pool.registered if r["name"] == "memory.add")
         arg_map = memory_add["arg_map"]
         assert arg_map is not None
         mapped = arg_map({"content": "hello", "user_slug": "bob"})

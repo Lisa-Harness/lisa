@@ -70,9 +70,7 @@ def test_session_pack_selection_overrides_lock_default_without_overriding_host_m
         },
     )
 
-    included, _, required = _plan_with_packs(
-        "    include: [lisa-pack-cloudflare]\n"
-    )
+    included, _, required = _plan_with_packs("    include: [lisa-pack-cloudflare]\n")
     included_roots = content_roots.sdk_content_roots(
         tmp_path,
         session_pack_include=(*included, *required),

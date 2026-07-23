@@ -239,8 +239,7 @@ class SqliteMemoryStore:
         for row in rows:
             record = _row_to_record(row)
             haystack_lower = (
-                f"{record.content} "
-                f"{json.dumps(record.content_json, ensure_ascii=True)}"
+                f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
             ).lower()
             if tokens:
                 haystack_tokens = {tok for tok in haystack_lower.split()}

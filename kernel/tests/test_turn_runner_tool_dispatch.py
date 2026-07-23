@@ -482,6 +482,7 @@ async def test_mcp_tool_dispatch_via_pool_call_tool() -> None:
 @pytest.mark.asyncio
 async def test_mcp_tool_error_continues_turn() -> None:
     """When pool.call_tool raises, the error is caught and the turn continues."""
+
     class _FailingPool:
         async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
             return []
@@ -624,7 +625,9 @@ async def test_thought_signature_preserved_in_tool_result(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_thought_signature_preserved_nested_in_function(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_thought_signature_preserved_nested_in_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The thought_signature nested under 'function' is also preserved."""
     from kernel.tools.mcp_client import MCPToolResult
 
@@ -870,12 +873,14 @@ def test_checkpoint_tuning_from_mapping() -> None:
     """CheckpointTuning.from_mapping builds from a config dict."""
     from kernel.turn_runner import CheckpointTuning
 
-    tuning = CheckpointTuning.from_mapping({
-        "enabled": True,
-        "on_stage_transition": False,
-        "every_n_turns": 5,
-        "explicit": False,
-    })
+    tuning = CheckpointTuning.from_mapping(
+        {
+            "enabled": True,
+            "on_stage_transition": False,
+            "every_n_turns": 5,
+            "explicit": False,
+        }
+    )
     assert tuning.enabled is True
     assert tuning.on_stage_transition is False
     assert tuning.every_n_turns == 5
@@ -906,20 +911,26 @@ def test_should_checkpoint_false_when_disabled() -> None:
     from kernel.turn_runner import CheckpointTuning, TurnHooks, _should_checkpoint
 
     hooks = TurnHooks()
-    assert _should_checkpoint(
-        tuning=None,
-        transitioned_to="reason",
-        is_workflow=True,
-        hooks=hooks,
-    ) is False
+    assert (
+        _should_checkpoint(
+            tuning=None,
+            transitioned_to="reason",
+            is_workflow=True,
+            hooks=hooks,
+        )
+        is False
+    )
 
     tuning = CheckpointTuning(enabled=False)
-    assert _should_checkpoint(
-        tuning=tuning,
-        transitioned_to="reason",
-        is_workflow=True,
-        hooks=hooks,
-    ) is False
+    assert (
+        _should_checkpoint(
+            tuning=tuning,
+            transitioned_to="reason",
+            is_workflow=True,
+            hooks=hooks,
+        )
+        is False
+    )
 
 
 def test_should_checkpoint_true_on_stage_transition() -> None:
@@ -929,12 +940,15 @@ def test_should_checkpoint_true_on_stage_transition() -> None:
 
     hooks = TurnHooks()
     tuning = CheckpointTuning(enabled=True, on_stage_transition=True)
-    assert _should_checkpoint(
-        tuning=tuning,
-        transitioned_to="reason",
-        is_workflow=True,
-        hooks=hooks,
-    ) is True
+    assert (
+        _should_checkpoint(
+            tuning=tuning,
+            transitioned_to="reason",
+            is_workflow=True,
+            hooks=hooks,
+        )
+        is True
+    )
 
 
 def test_should_checkpoint_false_on_transition_when_disabled() -> None:
@@ -943,12 +957,15 @@ def test_should_checkpoint_false_on_transition_when_disabled() -> None:
 
     hooks = TurnHooks()
     tuning = CheckpointTuning(enabled=True, on_stage_transition=False)
-    assert _should_checkpoint(
-        tuning=tuning,
-        transitioned_to="reason",
-        is_workflow=True,
-        hooks=hooks,
-    ) is False
+    assert (
+        _should_checkpoint(
+            tuning=tuning,
+            transitioned_to="reason",
+            is_workflow=True,
+            hooks=hooks,
+        )
+        is False
+    )
 
 
 def test_should_checkpoint_true_on_every_n_turns() -> None:
@@ -966,12 +983,15 @@ def test_should_checkpoint_true_on_every_n_turns() -> None:
     )
     hooks = TurnHooks(workflow_session=lambda: session)
     tuning = CheckpointTuning(enabled=True, every_n_turns=5, on_stage_transition=False)
-    assert _should_checkpoint(
-        tuning=tuning,
-        transitioned_to=None,
-        is_workflow=True,
-        hooks=hooks,
-    ) is True
+    assert (
+        _should_checkpoint(
+            tuning=tuning,
+            transitioned_to=None,
+            is_workflow=True,
+            hooks=hooks,
+        )
+        is True
+    )
 
 
 def test_should_checkpoint_false_when_turn_count_not_multiple() -> None:
@@ -989,12 +1009,15 @@ def test_should_checkpoint_false_when_turn_count_not_multiple() -> None:
     )
     hooks = TurnHooks(workflow_session=lambda: session)
     tuning = CheckpointTuning(enabled=True, every_n_turns=5, on_stage_transition=False)
-    assert _should_checkpoint(
-        tuning=tuning,
-        transitioned_to=None,
-        is_workflow=True,
-        hooks=hooks,
-    ) is False
+    assert (
+        _should_checkpoint(
+            tuning=tuning,
+            transitioned_to=None,
+            is_workflow=True,
+            hooks=hooks,
+        )
+        is False
+    )
 
 
 def test_should_checkpoint_false_when_not_workflow_for_n_turns() -> None:
@@ -1003,9 +1026,12 @@ def test_should_checkpoint_false_when_not_workflow_for_n_turns() -> None:
 
     hooks = TurnHooks()
     tuning = CheckpointTuning(enabled=True, every_n_turns=5, on_stage_transition=False)
-    assert _should_checkpoint(
-        tuning=tuning,
-        transitioned_to=None,
-        is_workflow=False,
-        hooks=hooks,
-    ) is False
+    assert (
+        _should_checkpoint(
+            tuning=tuning,
+            transitioned_to=None,
+            is_workflow=False,
+            hooks=hooks,
+        )
+        is False
+    )

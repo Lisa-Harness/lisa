@@ -1,5 +1,4 @@
-"""Runtime-neutral OpenTelemetry span helpers.
-"""
+"""Runtime-neutral OpenTelemetry span helpers."""
 
 from __future__ import annotations
 

@@ -60,12 +60,7 @@ def bundled_default_session_path() -> Path:
     """Return the mandatory bundled v2 session used when none is selected."""
 
     return (
-        Path(__file__).resolve().parents[2]
-        / "sdk"
-        / "packs"
-        / "core"
-        / "sessions"
-        / "default.md"
+        Path(__file__).resolve().parents[2] / "sdk" / "packs" / "core" / "sessions" / "default.md"
     )
 
 
@@ -131,9 +126,7 @@ def _resolve_explicit_session_context_source(
             path=explicit_path,
         )
 
-    artifact_name = (
-        requested if requested.lower().endswith(".md") else f"{requested}.md"
-    )
+    artifact_name = requested if requested.lower().endswith(".md") else f"{requested}.md"
     artifact_path = data_dir / artifact_name
     if artifact_path.is_file():
         return _read_session_source(

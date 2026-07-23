@@ -784,17 +784,22 @@ class AnomalyAlert(BaseModel):
 ContextEvidenceNamespace = str
 ContextEvidenceSourceType = str
 
+
 class ContextRoutingNamespaceConfig(BaseModel):
     """Routing rules for mapping evidence to a specific namespace."""
+
     match_sources: list[str] = Field(default_factory=list)
     match_types: list[str] = Field(default_factory=list)
     match_tags: list[str] = Field(default_factory=list)
     is_fallback: bool = False
 
+
 class ContextRoutingConfig(BaseModel):
     """User-facing configuration for how evidence is categorized and ordered."""
+
     render_order: list[str] = Field(default_factory=list)
     namespaces: dict[str, ContextRoutingNamespaceConfig] = Field(default_factory=dict)
+
 
 ContextConflictRisk = Literal["low", "medium", "high"]
 
@@ -872,9 +877,7 @@ class ContextBrokerResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-ContextPromptStrategy = Literal[
-    "broker_packet",
-]
+ContextPromptStrategy = Literal["broker_packet",]
 
 
 class LoadedContextPart(BaseModel):

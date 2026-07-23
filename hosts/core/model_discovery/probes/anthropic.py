@@ -143,7 +143,9 @@ def _enrich_anthropic_model(model_id: str, row: dict) -> DiscoveredModel:
         latency_tier = "medium"
 
     if not display_name:
-        display_name = f"Claude {model_id.split('-', 1)[1].title()}" if "-" in model_id else model_id
+        display_name = (
+            f"Claude {model_id.split('-', 1)[1].title()}" if "-" in model_id else model_id
+        )
 
     enrichment = apply_known_override(
         "anthropic",

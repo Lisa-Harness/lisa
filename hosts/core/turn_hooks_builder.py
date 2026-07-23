@@ -57,9 +57,7 @@ def content_loader(runtime: HostRuntime) -> Callable[[str], str]:
     _ = runtime  # runtime is part of the API for future use; registry is module-level
     registry = content_registry()
     if registry is None:
-        raise RuntimeError(
-            "Content registry not set. Call setup_framework(runtime) first."
-        )
+        raise RuntimeError("Content registry not set. Call setup_framework(runtime) first.")
     loader: Callable[[str], str] = registry.read_authored_text
     return loader
 
@@ -244,6 +242,7 @@ def build_turn_hooks(
     streaming_cfg = runtime.config.streaming
     _complete_stream: Callable[..., Any] | None = None
     if streaming_cfg.enabled and streaming_cfg.mode in {"text", "hybrid"}:
+
         async def _complete_stream_fn(**kwargs: Any) -> Any:
             async for chunk in complete_live_stream(
                 runtime=runtime,
@@ -251,6 +250,7 @@ def build_turn_hooks(
                 **kwargs,
             ):
                 yield chunk
+
         _complete_stream = _complete_stream_fn
 
     # ── Content loader (injected into context assembly) ───────────
@@ -359,9 +359,7 @@ def build_turn_hooks(
     ) -> None:
         # Update the mutable turn context dict.
         assistant_message_count = sum(
-            1
-            for msg in messages
-            if str(msg.get("role") or "").strip().lower() == "assistant"
+            1 for msg in messages if str(msg.get("role") or "").strip().lower() == "assistant"
         )
         ctx_dict["completion"] = {
             "mode_id": mode_id,
@@ -540,9 +538,7 @@ def build_turn_hooks(
                     runtime.session_plan,
                 )
         except Exception as exc:  # pylint: disable=broad-except
-            logger.warning(
-                "slice provider %s factory failed: %s", entry.pack_name, exc
-            )
+            logger.warning("slice provider %s factory failed: %s", entry.pack_name, exc)
             continue
         if provider is not None:
             pack_slice_providers.append(provider)

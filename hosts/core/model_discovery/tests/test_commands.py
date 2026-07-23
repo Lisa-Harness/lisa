@@ -53,9 +53,7 @@ class TestRenderDiscoverNotes:
         assert _render_discover_notes(report) == []
 
     def test_skipped_produces_no_note(self) -> None:
-        report = _build_report(
-            ProbeResult(provider="openai", status=ProbeStatus.SKIPPED)
-        )
+        report = _build_report(ProbeResult(provider="openai", status=ProbeStatus.SKIPPED))
         assert _render_discover_notes(report) == []
 
     def test_auth_produces_note(self) -> None:

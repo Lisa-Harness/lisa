@@ -388,7 +388,8 @@ class MCPToolPool:
         for tool in tools:
             if tool.name in self._synthetic_handlers or tool.name in self._tool_index:
                 existing = (
-                    "synthetic" if tool.name in self._synthetic_handlers
+                    "synthetic"
+                    if tool.name in self._synthetic_handlers
                     else self._tool_index[tool.name][0]
                 )
                 logger.warning(
@@ -563,12 +564,13 @@ class MCPToolPool:
         if not ambient:
             return arguments
         resolved = {
-            native_field: self._resolve_ambient(source.value if hasattr(source, "value") else str(source))
+            native_field: self._resolve_ambient(
+                source.value if hasattr(source, "value") else str(source)
+            )
             for native_field, source in ambient.items()
         }
         use_structured = bool(policy.structured_filters) and (
-            input_schema is not None
-            and "filters" in (input_schema.get("properties") or {})
+            input_schema is not None and "filters" in (input_schema.get("properties") or {})
         )
         if use_structured:
             return self._merge_ambient_filters(arguments, resolved)
@@ -590,10 +592,7 @@ class MCPToolPool:
         ambient_keys = set(resolved.keys())
         merged = dict(arguments)
         existing_and = list((arguments.get("filters") or {}).get("AND") or [])
-        non_ambient = [
-            entry for entry in existing_and
-            if not any(k in ambient_keys for k in entry)
-        ]
+        non_ambient = [entry for entry in existing_and if not any(k in ambient_keys for k in entry)]
         ambient_entries = [{k: v} for k, v in resolved.items()]
         merged["filters"] = {"AND": [*ambient_entries, *non_ambient]}
         return merged
@@ -688,17 +687,14 @@ class MCPToolPool:
         for config, result in zip(self._warm_configs, results):
             if isinstance(result, MCPConnectionError) and config.required:
                 raise result
-            if isinstance(result, BaseException) and not isinstance(
-                result, MCPConnectionError
-            ):
+            if isinstance(result, BaseException) and not isinstance(result, MCPConnectionError):
                 if config.required:
                     raise MCPConnectionError(
                         f"Required warm MCP server '{config.server_id}' "
                         f"raised {type(result).__name__}: {result}"
                     ) from result
                 logger.warning(
-                    "Warm MCP server %r raised %s: %s (non-required); "
-                    "proceeding without it.",
+                    "Warm MCP server %r raised %s: %s (non-required); proceeding without it.",
                     config.server_id,
                     type(result).__name__,
                     result,
@@ -731,12 +727,11 @@ class MCPToolPool:
             except Exception as exc:  # pylint: disable=broad-except
                 last_exc = exc
                 if attempt < self._WARM_STARTUP_ATTEMPTS - 1:
-                    delay = self._WARM_BACKOFF_SECONDS[min(
-                        attempt, len(self._WARM_BACKOFF_SECONDS) - 1
-                    )]
+                    delay = self._WARM_BACKOFF_SECONDS[
+                        min(attempt, len(self._WARM_BACKOFF_SECONDS) - 1)
+                    ]
                     logger.warning(
-                        "Warm MCP server %r start attempt %d/%d failed: %s: %s; "
-                        "retrying in %.2fs",
+                        "Warm MCP server %r start attempt %d/%d failed: %s: %s; retrying in %.2fs",
                         config.server_id,
                         attempt + 1,
                         self._WARM_STARTUP_ATTEMPTS,
@@ -1019,9 +1014,7 @@ class MCPToolPool:
         await self._refresh_tool_index()
         return config.server_id in self._sessions
 
-    async def _ensure_all_cold_connected(
-        self, allowed_server_ids: set[str] | None = None
-    ) -> None:
+    async def _ensure_all_cold_connected(self, allowed_server_ids: set[str] | None = None) -> None:
         """Best-effort connect every cold server that is not yet connected.
 
         Used by ``list_tools`` so the initial tool catalog reflects all
@@ -1083,8 +1076,7 @@ class MCPToolPool:
                 await self._connect(config)
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning(
-                    "Cold MCP server %r failed to start during bare-name "
-                    "resolution: %s: %s",
+                    "Cold MCP server %r failed to start during bare-name resolution: %s: %s",
                     config.server_id,
                     type(exc).__name__,
                     exc,
@@ -1122,8 +1114,7 @@ class MCPToolPool:
         # Permanently failed — budget exhausted. No more spawns.
         if server_id in self._permanently_failed:
             logger.warning(
-                "restart_warm: %r is permanently failed (restart budget exhausted); "
-                "not spawning",
+                "restart_warm: %r is permanently failed (restart budget exhausted); not spawning",
                 server_id,
             )
             return False
@@ -1200,9 +1191,7 @@ class MCPToolPool:
                 exc,
             )
 
-    async def list_tools(
-        self, *, allowed_server_ids: set[str] | None = None
-    ) -> list[MCPToolSpec]:
+    async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[MCPToolSpec]:
         """Return the merged tool catalog from all connected servers.
 
         Cold servers that have not yet been connected are lazily started
@@ -1222,8 +1211,7 @@ class MCPToolPool:
         cold_needs_connect = [
             c
             for c in self._cold_configs
-            if c.server_id not in self._sessions
-            and c.server_id not in self._cold_failed
+            if c.server_id not in self._sessions and c.server_id not in self._cold_failed
         ]
         if allowed_server_ids is not None:
             cold_needs_connect = [
@@ -1318,7 +1306,7 @@ class MCPToolPool:
         # ``cloudflare-api.search``).
         bare_name = tool_id
         if server_id and tool_id.startswith(server_id + "."):
-            bare_name = tool_id[len(server_id) + 1:]
+            bare_name = tool_id[len(server_id) + 1 :]
         elif "." in tool_id:
             bare_name = bare_tool_name(tool_id)
         mapped = self._apply_dispatch_arg_map(tool_id, arguments)
@@ -1398,9 +1386,7 @@ class MCPToolPool:
         if tool_id not in server_index:
             return MCPToolResult(
                 tool_id=tool_id,
-                output_text=(
-                    f"Tool '{tool_id}' is not registered on server '{server_id}'."
-                ),
+                output_text=(f"Tool '{tool_id}' is not registered on server '{server_id}'."),
                 is_error=True,
             )
         namespaced = namespaced_tool_name(server_id, tool_id)

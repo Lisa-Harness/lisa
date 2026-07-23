@@ -174,6 +174,8 @@ def test_load_manifest_preserves_shared_provider_fields(tmp_path: Path) -> None:
     assert model.base_url_env == "GROQ_BASE_URL"
     assert model.reasoning_model is True
     assert model.context_window == _CONTEXT_WINDOW_TOKENS
+
+
 def test_load_manifest_rejects_negative_context_window(tmp_path: Path) -> None:
     manifest_file = tmp_path / "models.yaml"
     manifest_file.write_text(

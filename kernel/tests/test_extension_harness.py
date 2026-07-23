@@ -68,9 +68,7 @@ def test_list_extension_entries_reports_signal_collector_metadata(monkeypatch) -
 
     assert [entry.entry_id for entry in entries] == ["hello_world"]
     assert entries[0].kind == "collector"
-    assert (
-        entries[0].import_path == "sdk.packs.hello_world.collector:HelloWorldSignalCollector"
-    )
+    assert entries[0].import_path == "sdk.packs.hello_world.collector:HelloWorldSignalCollector"
 
 
 def test_load_signal_collector_and_build_contract_preview(monkeypatch) -> None:

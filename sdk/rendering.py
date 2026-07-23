@@ -55,4 +55,3 @@ class RichAttachment(BaseModel):
 __all__ = [
     "RichAttachment",
 ]
-

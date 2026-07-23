@@ -1253,9 +1253,7 @@ async def _run_turn_inner(
     # and action modes use the lenient ``get_mode_system_intro`` which
     # returns "" for unknown modes (membership-check contract) so a chat
     # mode with no authored body can still rely on the base system prompt.
-    is_workflow = (
-        mode_config is not None and mode_config.mode_kind == "workflow"
-    )
+    is_workflow = mode_config is not None and mode_config.mode_kind == "workflow"
     if is_workflow:
         mode_instruction = get_required_mode_intro(mode_id)
     else:
@@ -1264,9 +1262,7 @@ async def _run_turn_inner(
     if is_workflow and hooks.workflow_session is not None:
         session = hooks.workflow_session()
         if session is not None and session.stage_id in mode_config.stages:  # type: ignore[union-attr]
-            stage_instruction = get_required_stage_instruction(
-                mode_id, session.stage_id
-            )
+            stage_instruction = get_required_stage_instruction(mode_id, session.stage_id)
     system_prompt = assemble_system(mode_instruction, stage_instruction)
 
     # Build tool schemas for this turn — MCP tools + in-process operations.
@@ -1315,9 +1311,7 @@ async def _run_turn_inner(
     tool_schemas.extend(
         build_operation_tool_schemas(
             mode_id,
-            tools_authoritative=bool(
-                mode_config and mode_config.tools_authoritative
-            ),
+            tools_authoritative=bool(mode_config and mode_config.tools_authoritative),
         )
     )
     # Advertise in-process (pack-contributed) tools alongside MCP tools and
@@ -1365,9 +1359,7 @@ async def _run_turn_inner(
 
     # Compile a deterministic capability manifest from the final tool payload
     # so the model's self-knowledge context matches what it can actually call.
-    capability_manifest = compile_capability_manifest(
-        tool_schemas, mode_config=mode_config
-    )
+    capability_manifest = compile_capability_manifest(tool_schemas, mode_config=mode_config)
 
     # Unified FSM routing: capability-manifest-aware proactive hint injection.
     # Compare the manifest against the user's query — if the current mode
@@ -1382,10 +1374,20 @@ async def _run_turn_inner(
         mode_config=mode_config,
     )
     if routing_hint:
-        _log.info("routing hint injected mode=%s hint_len=%d hint=%s", mode_id, len(routing_hint), routing_hint[:200])
+        _log.info(
+            "routing hint injected mode=%s hint_len=%d hint=%s",
+            mode_id,
+            len(routing_hint),
+            routing_hint[:200],
+        )
         system_prompt = system_prompt + "\n\n" + routing_hint
     else:
-        _log.info("no routing hint mode=%s (satisfies_intents=%s routing_targets=%s)", mode_id, getattr(mode_config, "satisfies_intents", None), get_routing_targets(mode_id) if mode_config else [])
+        _log.info(
+            "no routing hint mode=%s (satisfies_intents=%s routing_targets=%s)",
+            mode_id,
+            getattr(mode_config, "satisfies_intents", None),
+            get_routing_targets(mode_id) if mode_config else [],
+        )
 
     user_context = assemble_user(mode_id, query, pre_briefing, capability_manifest)
     memory_snippet = ""
@@ -1432,9 +1434,7 @@ async def _run_turn_inner(
     last_tool_result_text: str | None = None
     required_capabilities: tuple[str, ...] = ()
     if mode_config is not None:
-        required_capabilities = tuple(
-            getattr(mode_config, "required_capabilities", ()) or ()
-        )
+        required_capabilities = tuple(getattr(mode_config, "required_capabilities", ()) or ())
     roles_needed: tuple[str, ...] = ()
     if isinstance(preferred_model_id, str) and preferred_model_id.strip():
         roles_needed = (preferred_model_id.strip(),)
@@ -1552,12 +1552,15 @@ async def _run_turn_inner(
             wf_session = hooks.workflow_session()
             if wf_session is not None:
                 turns_in_stage = wf_session.turn_count
-                await _emit_stage("workflow_stage", {
-                    "mode_id": mode_id,
-                    "stage_id": wf_session.stage_id,
-                    "turn_count": turns_in_stage,
-                    "iteration": iteration,
-                })
+                await _emit_stage(
+                    "workflow_stage",
+                    {
+                        "mode_id": mode_id,
+                        "stage_id": wf_session.stage_id,
+                        "turn_count": turns_in_stage,
+                        "iteration": iteration,
+                    },
+                )
                 if turns_in_stage >= _STAGE_NUDGE_CAP:
                     _log.warning(
                         "workflow mode=%s stuck in stage=%s for %d turns; forcing final",
@@ -1567,15 +1570,17 @@ async def _run_turn_inner(
                     )
                     budget_exhausted = True
                 elif turns_in_stage >= _STAGE_NUDGE_THRESHOLD:
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            f"You have been in the '{wf_session.stage_id}' stage "
-                            f"for {turns_in_stage} turns. If you have enough evidence, "
-                            f"call transition_stage to advance. Otherwise, ask the user "
-                            f"a clarifying question."
-                        ),
-                    })
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"You have been in the '{wf_session.stage_id}' stage "
+                                f"for {turns_in_stage} turns. If you have enough evidence, "
+                                f"call transition_stage to advance. Otherwise, ask the user "
+                                f"a clarifying question."
+                            ),
+                        }
+                    )
 
         # Budget enforcement: when exhausted, strip tools so the model must
         # produce a final text response. This is the "ratio" stop condition.
@@ -1589,14 +1594,17 @@ async def _run_turn_inner(
                 total_tokens,
             )
         effective_model_def = _resolve_iteration_model(iteration)
-        await _emit_stage("model_call", {
-            "mode_id": mode_id,
-            "model_id": getattr(effective_model_def, "model_id", ""),
-            "provider": getattr(effective_model_def, "provider", ""),
-            "iteration": iteration,
-            "tool_calls_so_far": total_tool_calls,
-            "tools_offered": bool(effective_tools),
-        })
+        await _emit_stage(
+            "model_call",
+            {
+                "mode_id": mode_id,
+                "model_id": getattr(effective_model_def, "model_id", ""),
+                "provider": getattr(effective_model_def, "provider", ""),
+                "iteration": iteration,
+                "tool_calls_so_far": total_tool_calls,
+                "tools_offered": bool(effective_tools),
+            },
+        )
         if hooks.complete_stream is not None:
             # ── Streaming path ──────────────────────────────────────────
             # v1: stream tokens to the host. When the stream indicates
@@ -1650,16 +1658,19 @@ async def _run_turn_inner(
         total_duration_ms += duration_ms
         total_latency_ms += latency_ms
 
-        await _emit_stage("model_call_complete", {
-            "mode_id": mode_id,
-            "model_id": getattr(effective_model_def, "model_id", ""),
-            "iteration": iteration,
-            "tool_calls": len(getattr(completion, "tool_calls", None) or []),
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": completion_total_tokens,
-            "duration_ms": duration_ms,
-        })
+        await _emit_stage(
+            "model_call_complete",
+            {
+                "mode_id": mode_id,
+                "model_id": getattr(effective_model_def, "model_id", ""),
+                "iteration": iteration,
+                "tool_calls": len(getattr(completion, "tool_calls", None) or []),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": completion_total_tokens,
+                "duration_ms": duration_ms,
+            },
+        )
 
         assistant_msg: dict[str, Any] = {"role": "assistant"}
         if getattr(completion, "content", None):
@@ -1668,7 +1679,9 @@ async def _run_turn_inner(
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
         if hasattr(completion, "model"):
-            assistant_msg["extra"] = {"provenance": {"source": "observed", "model": getattr(completion, "model", "")}}
+            assistant_msg["extra"] = {
+                "provenance": {"source": "observed", "model": getattr(completion, "model", "")}
+            }
         messages.append(assistant_msg)
 
         if not tool_calls:
@@ -1729,19 +1742,21 @@ async def _run_turn_inner(
                         _narration_nudge_count,
                         _NARRATION_NUDGE_CAP,
                     )
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "You wrote that you are transitioning, but you "
-                            "did not actually call the `transition_stage` "
-                            "tool. A transition only happens when you call "
-                            "the tool — writing about it does nothing. "
-                            "Call `transition_stage` now with the "
-                            "appropriate `target_stage_id`. If you cannot "
-                            "or should not transition, respond directly to "
-                            "the user without claiming a transition."
-                        ),
-                    })
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "You wrote that you are transitioning, but you "
+                                "did not actually call the `transition_stage` "
+                                "tool. A transition only happens when you call "
+                                "the tool — writing about it does nothing. "
+                                "Call `transition_stage` now with the "
+                                "appropriate `target_stage_id`. If you cannot "
+                                "or should not transition, respond directly to "
+                                "the user without claiming a transition."
+                            ),
+                        }
+                    )
                     continue
 
             break
@@ -1767,15 +1782,16 @@ async def _run_turn_inner(
                 max_calls = getattr(target_def, "max_calls_per_turn", 0)
                 if ledger.is_exhausted(tool_name, max_calls):
                     tool_output = (
-                        f"Tool '{tool_name}' has reached its per-turn call limit "
-                        f"({max_calls})."
+                        f"Tool '{tool_name}' has reached its per-turn call limit ({max_calls})."
                     )
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "name": tool_name,
-                        "content": tool_output,
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "name": tool_name,
+                            "content": tool_output,
+                        }
+                    )
                     continue
 
             tools_dispatched = True
@@ -1793,13 +1809,16 @@ async def _run_turn_inner(
                 _tool_kind = "pack_tool"
             else:
                 _tool_kind = "mcp_tool"
-            await _emit_stage("tool_dispatch", {
-                "tool": tool_name,
-                "tool_kind": _tool_kind,
-                "iteration": iteration,
-                "tool_calls_so_far": total_tool_calls + 1,
-                "mode_id": mode_id,
-            })
+            await _emit_stage(
+                "tool_dispatch",
+                {
+                    "tool": tool_name,
+                    "tool_kind": _tool_kind,
+                    "iteration": iteration,
+                    "tool_calls_so_far": total_tool_calls + 1,
+                    "mode_id": mode_id,
+                },
+            )
             _tool_dispatch_started = time.monotonic()
             try:
                 # Transition interception: the model called transition_stage.
@@ -1820,21 +1839,28 @@ async def _run_turn_inner(
                     missing = tool_arguments.get("required_missing_inputs") or []
                     if not target_stage:
                         tool_output = "transition_stage requires target_stage_id."
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "name": tool_name,
-                            "content": tool_output,
-                        })
-                        await _emit_stage("tool_dispatch_complete", {
-                            "tool": tool_name,
-                            "tool_kind": "transition",
-                            "iteration": iteration,
-                            "tool_calls_so_far": total_tool_calls,
-                            "ok": False,
-                            "transition": "missing_target",
-                            "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
-                        })
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "name": tool_name,
+                                "content": tool_output,
+                            }
+                        )
+                        await _emit_stage(
+                            "tool_dispatch_complete",
+                            {
+                                "tool": tool_name,
+                                "tool_kind": "transition",
+                                "iteration": iteration,
+                                "tool_calls_so_far": total_tool_calls,
+                                "ok": False,
+                                "transition": "missing_target",
+                                "duration_ms": int(
+                                    (time.monotonic() - _tool_dispatch_started) * 1000
+                                ),
+                            },
+                        )
                         continue
 
                     # ── Case A: fork fan-out ──────────────────────────────
@@ -1861,11 +1887,13 @@ async def _run_turn_inner(
                                     if idx < len(queries) and isinstance(queries[idx], str)
                                     else query
                                 )
-                                fork_targets.append(ForkTarget(
-                                    mode_id=f_mode_id,
-                                    stage_id=resolved_stage,
-                                    query=f_query,
-                                ))
+                                fork_targets.append(
+                                    ForkTarget(
+                                        mode_id=f_mode_id,
+                                        stage_id=resolved_stage,
+                                        query=f_query,
+                                    )
+                                )
                             else:
                                 # All targets valid — execute fan-out
                                 fork_results_list = await _execute_fork_fanout(
@@ -1890,9 +1918,7 @@ async def _run_turn_inner(
                                 # turn-by-turn — there is no background
                                 # scheduler, so a failed child's work is lost
                                 # unless the user re-issues the request.
-                                failed_children = [
-                                    r for r in fork_results_list if r.status != "ok"
-                                ]
+                                failed_children = [r for r in fork_results_list if r.status != "ok"]
                                 if failed_children:
                                     failure_parts: list[str] = []
                                     for r in failed_children:
@@ -1933,22 +1959,29 @@ async def _run_turn_inner(
                                         f"succeeded. Results are in "
                                         f"stage_data.fork_results."
                                     )
-                        await _emit_stage("tool_dispatch_complete", {
-                            "tool": tool_name,
-                            "tool_kind": "transition",
-                            "iteration": iteration,
-                            "tool_calls_so_far": total_tool_calls,
-                            "ok": True,
-                            "transition": "fork",
-                            "fork_children": len(fork_results_list) if fork_results_list else 0,
-                            "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
-                        })
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "name": tool_name,
-                            "content": tool_output,
-                        })
+                        await _emit_stage(
+                            "tool_dispatch_complete",
+                            {
+                                "tool": tool_name,
+                                "tool_kind": "transition",
+                                "iteration": iteration,
+                                "tool_calls_so_far": total_tool_calls,
+                                "ok": True,
+                                "transition": "fork",
+                                "fork_children": len(fork_results_list) if fork_results_list else 0,
+                                "duration_ms": int(
+                                    (time.monotonic() - _tool_dispatch_started) * 1000
+                                ),
+                            },
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "name": tool_name,
+                                "content": tool_output,
+                            }
+                        )
                         continue
 
                     # ── Case B: mode handoff (routing FSM) ────────────────
@@ -1969,9 +2002,7 @@ async def _run_turn_inner(
                                 target_mode_instruction = get_mode_system_intro(target_stage)
                                 messages[0] = {
                                     "role": "system",
-                                    "content": assemble_system(
-                                        target_mode_instruction, None
-                                    ),
+                                    "content": assemble_system(target_mode_instruction, None),
                                 }
                                 # Rebuild tool schemas for the new mode
                                 tool_schemas = await _rebuild_tool_schemas_for_mode(
@@ -2001,9 +2032,7 @@ async def _run_turn_inner(
                                 mode_config = target_mode_config
                                 handoff_to = target_stage
                                 try:
-                                    ctx = ctx.model_copy(
-                                        update={"mode_id": target_stage}
-                                    )
+                                    ctx = ctx.model_copy(update={"mode_id": target_stage})
                                 except Exception:  # pylint: disable=broad-except
                                     # Fallback for non-pydantic ctx shapes.
                                     try:
@@ -2015,26 +2044,32 @@ async def _run_turn_inner(
                                             "operations may be mis-authorized.",
                                             target_stage,
                                         )
-                                tool_output = (
-                                    f"Handed off to mode: {target_stage}."
-                                    + (f" Rationale: {rationale}" if rationale else "")
+                                tool_output = f"Handed off to mode: {target_stage}." + (
+                                    f" Rationale: {rationale}" if rationale else ""
                                 )
-                        await _emit_stage("tool_dispatch_complete", {
-                            "tool": tool_name,
-                            "tool_kind": "transition",
-                            "iteration": iteration,
-                            "tool_calls_so_far": total_tool_calls,
-                            "ok": True,
-                            "transition": "handoff",
-                            "handoff_to": target_stage,
-                            "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
-                        })
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "name": tool_name,
-                            "content": tool_output,
-                        })
+                        await _emit_stage(
+                            "tool_dispatch_complete",
+                            {
+                                "tool": tool_name,
+                                "tool_kind": "transition",
+                                "iteration": iteration,
+                                "tool_calls_so_far": total_tool_calls,
+                                "ok": True,
+                                "transition": "handoff",
+                                "handoff_to": target_stage,
+                                "duration_ms": int(
+                                    (time.monotonic() - _tool_dispatch_started) * 1000
+                                ),
+                            },
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "name": tool_name,
+                                "content": tool_output,
+                            }
+                        )
                         continue
 
                     # ── Case C: workflow stage transition (existing path) ──
@@ -2052,9 +2087,7 @@ async def _run_turn_inner(
                                         list(missing) if isinstance(missing, list) else []
                                     ),
                                 )
-                                updated_session = apply_transition(
-                                    current_session, transition_req
-                                )
+                                updated_session = apply_transition(current_session, transition_req)
                                 if hooks.workflow_session_updater is not None:
                                     hooks.workflow_session_updater(updated_session)
                                 transitioned_to = updated_session.stage_id
@@ -2064,30 +2097,34 @@ async def _run_turn_inner(
                                 )
                             except Exception as trans_exc:  # pylint: disable=broad-except
                                 tool_output = (
-                                    f"Transition failed: "
-                                    f"{type(trans_exc).__name__}: {trans_exc}"
+                                    f"Transition failed: {type(trans_exc).__name__}: {trans_exc}"
                                 )
                     else:
                         tool_output = (
                             f"Unknown transition target: '{target_stage}'. "
                             f"It is not a routable mode, a fork target, or a workflow stage."
                         )
-                    await _emit_stage("tool_dispatch_complete", {
-                        "tool": tool_name,
-                        "tool_kind": "transition",
-                        "iteration": iteration,
-                        "tool_calls_so_far": total_tool_calls,
-                        "ok": transitioned_to is not None,
-                        "transition": "workflow_stage" if is_workflow else "unknown",
-                        "transitioned_to": transitioned_to,
-                        "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
-                    })
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "name": tool_name,
-                        "content": tool_output,
-                    })
+                    await _emit_stage(
+                        "tool_dispatch_complete",
+                        {
+                            "tool": tool_name,
+                            "tool_kind": "transition",
+                            "iteration": iteration,
+                            "tool_calls_so_far": total_tool_calls,
+                            "ok": transitioned_to is not None,
+                            "transition": "workflow_stage" if is_workflow else "unknown",
+                            "transitioned_to": transitioned_to,
+                            "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
+                        },
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "name": tool_name,
+                            "content": tool_output,
+                        }
+                    )
                     continue
 
                 if tool_name in operation_catalog:
@@ -2124,14 +2161,17 @@ async def _run_turn_inner(
                 _log.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
                 tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
 
-            await _emit_stage("tool_dispatch_complete", {
-                "tool": tool_name,
-                "tool_kind": _tool_kind,
-                "iteration": iteration,
-                "tool_calls_so_far": total_tool_calls,
-                "ok": not tool_output.startswith("Tool execution failed:"),
-                "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
-            })
+            await _emit_stage(
+                "tool_dispatch_complete",
+                {
+                    "tool": tool_name,
+                    "tool_kind": _tool_kind,
+                    "iteration": iteration,
+                    "tool_calls_so_far": total_tool_calls,
+                    "ok": not tool_output.startswith("Tool execution failed:"),
+                    "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
+                },
+            )
 
             if not tool_output.strip():
                 tool_output = "Done"
@@ -2200,10 +2240,12 @@ async def _run_turn_inner(
                     mode_instruction,
                     terminal_stage_config.instruction_body,
                 )
-                messages.append({
-                    "role": "user",
-                    "content": "Provide a closing summary for this workflow.",
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "Provide a closing summary for this workflow.",
+                    }
+                )
                 messages[0] = {"role": "system", "content": terminal_prompt}
                 try:
                     final_completion = await complete(
@@ -2421,9 +2463,7 @@ def _compute_capability_routing_hint(
     catalog = get_workflow_catalog()
 
     # ── 1. Detect query intents from routing target patterns ──────────
-    detected_intents = _detect_query_intents(
-        query=query, routing_targets=routing_targets
-    )
+    detected_intents = _detect_query_intents(query=query, routing_targets=routing_targets)
 
     # ── 2. Check if the current mode already satisfies detected intents ──
     # Declarative and tag-blind: the kernel works over opaque intent-tag
@@ -2549,11 +2589,17 @@ async def _rebuild_tool_schemas_for_mode(
             for c in getattr(pool, "configs", [])
             if any(t.startswith(c.server_id + ".") for t in allowed_set)
         }
-    elif target_mode_config and target_mode_config.tools_authoritative and not target_mode_config.allowed_tool_ids:
+    elif (
+        target_mode_config
+        and target_mode_config.tools_authoritative
+        and not target_mode_config.allowed_tool_ids
+    ):
         allowed_server_ids = set()
 
     mcp_tools = await pool.list_tools(allowed_server_ids=allowed_server_ids)
-    if target_mode_config and (target_mode_config.allowed_tool_ids or target_mode_config.tools_authoritative):
+    if target_mode_config and (
+        target_mode_config.allowed_tool_ids or target_mode_config.tools_authoritative
+    ):
         allowed = set(target_mode_config.allowed_tool_ids)
         mcp_tools = [t for t in mcp_tools if t.name in allowed]
     new_tool_schemas: list[dict[str, Any]] = [
@@ -2567,9 +2613,7 @@ async def _rebuild_tool_schemas_for_mode(
     new_tool_schemas.extend(
         build_operation_tool_schemas(
             target_mode_id,
-            tools_authoritative=bool(
-                target_mode_config and target_mode_config.tools_authoritative
-            ),
+            tools_authoritative=bool(target_mode_config and target_mode_config.tools_authoritative),
         )
     )
     new_tool_schemas.extend(_build_in_process_tool_schemas(target_mode_config))
@@ -2704,9 +2748,7 @@ async def _run_fork_child_turn(
         )
 
 
-def _fork_child_budget(
-    turn_budget: TurnBudget | None, n: int
-) -> TurnBudget | None:
+def _fork_child_budget(turn_budget: TurnBudget | None, n: int) -> TurnBudget | None:
     """Divide the parent turn budget equally across ``n`` children.
 
     A field set to ``0`` means unlimited and is passed through as ``0``.
@@ -2715,15 +2757,9 @@ def _fork_child_budget(
     if turn_budget is None:
         return None
     return TurnBudget(
-        max_tool_calls=(
-            turn_budget.max_tool_calls // n if turn_budget.max_tool_calls else 0
-        ),
-        max_total_tokens=(
-            turn_budget.max_total_tokens // n if turn_budget.max_total_tokens else 0
-        ),
-        max_wall_ms=(
-            turn_budget.max_wall_ms // n if turn_budget.max_wall_ms else 0
-        ),
+        max_tool_calls=(turn_budget.max_tool_calls // n if turn_budget.max_tool_calls else 0),
+        max_total_tokens=(turn_budget.max_total_tokens // n if turn_budget.max_total_tokens else 0),
+        max_wall_ms=(turn_budget.max_wall_ms // n if turn_budget.max_wall_ms else 0),
     )
 
 
@@ -2749,12 +2785,15 @@ async def _run_fork_child(
     started = _time.monotonic()
     child_budget = _fork_child_budget(turn_budget, n)
     if emit_stage is not None:
-        await emit_stage("fork_child_start", {
-            "child_index": idx,
-            "mode_id": target.mode_id,
-            "stage_id": target.stage_id,
-            "query_preview": (target.query or "")[:80],
-        })
+        await emit_stage(
+            "fork_child_start",
+            {
+                "child_index": idx,
+                "mode_id": target.mode_id,
+                "stage_id": target.stage_id,
+                "query_preview": (target.query or "")[:80],
+            },
+        )
     result, status, elapsed_ms = await _run_fork_child_turn(
         target=target,
         hooks=hooks,
@@ -2764,13 +2803,16 @@ async def _run_fork_child(
     )
     results[idx] = result
     if emit_stage is not None:
-        await emit_stage("fork_child_complete", {
-            "child_index": idx,
-            "mode_id": target.mode_id,
-            "stage_id": target.stage_id,
-            "status": status,
-            "duration_ms": elapsed_ms,
-        })
+        await emit_stage(
+            "fork_child_complete",
+            {
+                "child_index": idx,
+                "mode_id": target.mode_id,
+                "stage_id": target.stage_id,
+                "status": status,
+                "duration_ms": elapsed_ms,
+            },
+        )
 
 
 async def _execute_fork_fanout(
@@ -2811,9 +2853,13 @@ async def _execute_fork_fanout(
         return []
 
     if emit_stage is not None:
-        await emit_stage("fork_start", {"children": n, "targets": [
-            {"mode_id": t.mode_id, "stage_id": t.stage_id} for t in fork_targets
-        ]})
+        await emit_stage(
+            "fork_start",
+            {
+                "children": n,
+                "targets": [{"mode_id": t.mode_id, "stage_id": t.stage_id} for t in fork_targets],
+            },
+        )
 
     results: list[ForkChildResult | None] = [None] * n
 
@@ -2842,17 +2888,22 @@ async def _execute_fork_fanout(
         if r is not None:
             final_results.append(r)
         else:
-            final_results.append(ForkChildResult(
-                target=fork_targets[idx],
-                status="cancelled",
-                error_message="Child turn was cancelled.",
-            ))
+            final_results.append(
+                ForkChildResult(
+                    target=fork_targets[idx],
+                    status="cancelled",
+                    error_message="Child turn was cancelled.",
+                )
+            )
     if emit_stage is not None:
-        await emit_stage("fork_complete", {
-            "children": n,
-            "ok": sum(1 for r in final_results if r.status == "ok"),
-            "failed": sum(1 for r in final_results if r.status != "ok"),
-        })
+        await emit_stage(
+            "fork_complete",
+            {
+                "children": n,
+                "ok": sum(1 for r in final_results if r.status == "ok"),
+                "failed": sum(1 for r in final_results if r.status != "ok"),
+            },
+        )
     return final_results
 
 

@@ -103,8 +103,7 @@ def fetch_session_context_url(
     allowed = session_context_allowed_hosts()
     if host not in allowed:
         raise ValueError(
-            f"Blocked session context from host '{host}'. Allowed hosts are: "
-            f"{', '.join(allowed)}."
+            f"Blocked session context from host '{host}'. Allowed hosts are: {', '.join(allowed)}."
         )
 
     # 3. Path setup
@@ -113,7 +112,7 @@ def fetch_session_context_url(
     cache_md.parent.mkdir(parents=True, exist_ok=True)
 
     have_cache = cache_md.is_file() and cache_meta.is_file()
-    
+
     meta: dict[str, str] = {}
     if have_cache:
         try:
@@ -140,7 +139,7 @@ def fetch_session_context_url(
             headers["If-Modified-Since"] = last_modified
 
     to = timeout if timeout is not None else session_context_fetch_timeout()
-    
+
     with httpx.Client(timeout=to) as client:
         try:
             response = client.get(s, headers=headers, follow_redirects=True)
@@ -153,10 +152,10 @@ def fetch_session_context_url(
 
             response.raise_for_status()
             logger.debug("session_context_fetch: 200 OK %s", s)
-            
+
             # Write body
             cache_md.write_bytes(response.content)
-            
+
             # Write meta
             new_meta = {
                 "source_ref": s,

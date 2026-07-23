@@ -408,9 +408,7 @@ def compile_mcp_configs(
         discovery = discover_framework(runtime, seed_lock=False)
     host_manifest_path = discovery.host_manifest_path
     roots = discovery.roots
-    selected_capability_providers = dict(
-        runtime.session_plan.manifest.providers.capabilities
-    )
+    selected_capability_providers = dict(runtime.session_plan.manifest.providers.capabilities)
 
     # ── Session-plan resource preferences ──────────────────────────
     # The immutable plan can narrow installed resources and select an
@@ -596,7 +594,7 @@ def provider_identifiers_for_pack(*, package_name: str, pack_slug: str) -> set[s
     }
     normalized_package = normalize_pack_name(package_name)
     if normalized_package.startswith("lisa-pack-"):
-        identifiers.add(normalized_package[len("lisa-pack-"):])
+        identifiers.add(normalized_package[len("lisa-pack-") :])
     return {identifier for identifier in identifiers if identifier}
 
 
@@ -631,14 +629,11 @@ def select_capability_provider_owner(
     if len(candidates) == 1:
         return candidates[0]
     raise ValueError(
-        "Multiple active capability providers require an explicit "
-        "providers.capabilities selection."
+        "Multiple active capability providers require an explicit providers.capabilities selection."
     )
 
 
-def pack_server_excluded(
-    pack_slug: str, declared_server_id: str, exclusions: set[str]
-) -> bool:
+def pack_server_excluded(pack_slug: str, declared_server_id: str, exclusions: set[str]) -> bool:
     """Return True when host policy excludes a pack-contributed server."""
     slug = pack_slug.strip().lower()
     server = declared_server_id.strip().lower()

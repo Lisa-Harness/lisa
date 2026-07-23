@@ -132,7 +132,7 @@ def pack_aliases(package_name: str, *, root: Path | None = None) -> set[str]:
     if normalized:
         aliases.add(normalized)
         if normalized.startswith("lisa-pack-"):
-            aliases.add(normalized[len("lisa-pack-"):])
+            aliases.add(normalized[len("lisa-pack-") :])
     if root is not None:
         root_alias = normalize_pack_name(root.name)
         if root_alias:
@@ -140,9 +140,7 @@ def pack_aliases(package_name: str, *, root: Path | None = None) -> set[str]:
     return aliases
 
 
-def load_pack_policy_dict(
-    host_manifest_path: Path, *, warning_subject: str
-) -> dict[str, Any]:
+def load_pack_policy_dict(host_manifest_path: Path, *, warning_subject: str) -> dict[str, Any]:
     """Load and return ``pack_policy`` from the host manifest."""
     if not host_manifest_path.exists():
         return {}
@@ -534,9 +532,7 @@ def _normalize_pack_names(pack_names: Iterable[str]) -> set[str]:
     """Normalize a session selector without accepting blank pack identifiers."""
 
     return {
-        normalized
-        for pack_name in pack_names
-        if (normalized := normalize_pack_name(pack_name))
+        normalized for pack_name in pack_names if (normalized := normalize_pack_name(pack_name))
     }
 
 

@@ -65,11 +65,7 @@ def resolve_operation_definition(
     Returns:
         The matching ``OperationDefinition`` or ``None``.
     """
-    catalog = (
-        operation_catalog
-        if operation_catalog is not None
-        else _default_operation_catalog()
-    )
+    catalog = operation_catalog if operation_catalog is not None else _default_operation_catalog()
     return catalog.get(capability_id)
 
 
@@ -118,9 +114,7 @@ def resolve_capability(
         The matching ``OperationDefinition`` or ``ToolDefinition``, or
         ``None`` when the id is unknown to both catalogs.
     """
-    op = resolve_operation_definition(
-        capability_id, operation_catalog=operation_catalog
-    )
+    op = resolve_operation_definition(capability_id, operation_catalog=operation_catalog)
     if op is not None:
         return op
     return resolve_tool_definition(capability_id, tool_catalog=tool_catalog)

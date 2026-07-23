@@ -153,9 +153,7 @@ def load_model_manifest(
             normalized_role = str(role_name or "").strip().lower()
             normalized_model_ref = str(model_ref or "").strip()
             if not normalized_role or not normalized_model_ref:
-                raise ValueError(
-                    f"roles entry '{role_name}' must have a non-empty key and value."
-                )
+                raise ValueError(f"roles entry '{role_name}' must have a non-empty key and value.")
             roles[normalized_role] = normalized_model_ref
 
     # Merge pack-declared role defaults: packs declare role names + a default
@@ -165,6 +163,7 @@ def load_model_manifest(
     # must pin them explicitly.
     try:
         from kernel.model_roles import discover_pack_roles  # noqa: PLC0415
+
         pack_roles = discover_pack_roles()
     except Exception:  # pylint: disable=broad-except
         pack_roles = {}
@@ -263,8 +262,7 @@ def _parse_router_config(
     # Validate that ``fallback`` and every ``rules[].use`` reference a known model.
     for rule in rules:
         if all(
-            rule.use.lower() not in {model.key.lower(), model.model_id.lower()}
-            for model in models
+            rule.use.lower() not in {model.key.lower(), model.model_id.lower()} for model in models
         ):
             available = ", ".join(sorted(model.model_id for model in models))
             raise ValueError(
@@ -273,8 +271,7 @@ def _parse_router_config(
             )
     if fallback:
         if all(
-            fallback.lower() not in {model.key.lower(), model.model_id.lower()}
-            for model in models
+            fallback.lower() not in {model.key.lower(), model.model_id.lower()} for model in models
         ):
             available = ", ".join(sorted(model.model_id for model in models))
             raise ValueError(

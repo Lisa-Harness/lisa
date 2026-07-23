@@ -84,9 +84,7 @@ async def test_self_model_execute_with_introspect_fn(monkeypatch: pytest.MonkeyP
             process_rss_mb=42.5,
             process_cpu_percent=1.2,
             mcp_pool_health={
-                "test_server": McpServerHealth(
-                    server_id="test_server", status="warm", warm=True
-                ),
+                "test_server": McpServerHealth(server_id="test_server", status="warm", warm=True),
             },
             token_usage_24h=None,
             recent_log_errors=[],

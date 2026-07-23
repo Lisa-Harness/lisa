@@ -66,11 +66,15 @@ def _make_ctx(
     )
 
 
-def _mock_tool_executor(return_text: str, is_error: bool = False) -> Callable[[str, Any], Awaitable[ToolResult]]:
+def _mock_tool_executor(
+    return_text: str, is_error: bool = False
+) -> Callable[[str, Any], Awaitable[ToolResult]]:
     """Build a mock execute_tool_fn that returns the given text."""
 
     async def _executor(tool_id: str, _ctx: Any) -> ToolResult:
-        return ToolResult(tool_id=tool_id, output_text=return_text, error="" if not is_error else return_text)
+        return ToolResult(
+            tool_id=tool_id, output_text=return_text, error="" if not is_error else return_text
+        )
 
     return _executor
 
@@ -139,12 +143,14 @@ async def test_checkpoint_create_with_enrichment() -> None:
     """checkpoint_create calls the model for enrichment and saves to lisa-storage."""
     from sdk.packs.checkpoint.operations.checkpoint_create import execute
 
-    enrichment_json = json.dumps({
-        "overview": "User tested the checkpoint feature",
-        "work_done": "Ran /checkpoint first_try successfully",
-        "important_files": ["hosts/little_lisa/main.py"],
-        "next_steps": ["Try /restore", "Test automatic checkpoints"],
-    })
+    enrichment_json = json.dumps(
+        {
+            "overview": "User tested the checkpoint feature",
+            "work_done": "Ran /checkpoint first_try successfully",
+            "important_files": ["hosts/little_lisa/main.py"],
+            "next_steps": ["Try /restore", "Test automatic checkpoints"],
+        }
+    )
     save_response = json.dumps({"checkpoint_id": "abc123"})
 
     ctx = _make_ctx(
@@ -233,7 +239,9 @@ async def test_checkpoint_create_no_tool_executor() -> None:
     """checkpoint_create returns an error when no tool executor is wired."""
     from sdk.packs.checkpoint.operations.checkpoint_create import execute
 
-    enrichment_json = json.dumps({"overview": "x", "work_done": "y", "important_files": [], "next_steps": []})
+    enrichment_json = json.dumps(
+        {"overview": "x", "work_done": "y", "important_files": [], "next_steps": []}
+    )
     ctx = _make_ctx(
         params={"label": "no-tools", "turn_history": [{"query": "q", "response_text": "a"}]},
         complete_fn=_mock_complete(enrichment_json),
@@ -250,7 +258,9 @@ async def test_checkpoint_create_tool_error() -> None:
     """checkpoint_create surfaces tool errors from lisa-storage."""
     from sdk.packs.checkpoint.operations.checkpoint_create import execute
 
-    enrichment_json = json.dumps({"overview": "x", "work_done": "y", "important_files": [], "next_steps": []})
+    enrichment_json = json.dumps(
+        {"overview": "x", "work_done": "y", "important_files": [], "next_steps": []}
+    )
     ctx = _make_ctx(
         params={"label": "error-test", "turn_history": [{"query": "q", "response_text": "a"}]},
         complete_fn=_mock_complete(enrichment_json),
@@ -267,10 +277,12 @@ async def test_checkpoint_history_summarize_with_model() -> None:
     """checkpoint_history_summarize condenses old turns and keeps recent turns."""
     from sdk.packs.checkpoint.operations.checkpoint_history_summarize import execute
 
-    summary_json = json.dumps({
-        "condensed_narrative": "Earlier turns selected a checkpoint strategy.",
-        "key_points": ["Use checkpoint pack", "Keep recent turns verbatim"],
-    })
+    summary_json = json.dumps(
+        {
+            "condensed_narrative": "Earlier turns selected a checkpoint strategy.",
+            "key_points": ["Use checkpoint pack", "Keep recent turns verbatim"],
+        }
+    )
     turn_history = [
         {"query": "q1", "response_text": "a1"},
         {"query": "q2", "response_text": "a2"},

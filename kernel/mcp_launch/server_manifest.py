@@ -232,7 +232,9 @@ def _parse_memory_backends(raw: Any) -> tuple[MemoryBackendSpec, ...]:
         if not backend_id:
             raise MCPServerManifestError(f"memory.backends[{index}]: 'id' is required")
         if backend_id in seen_ids:
-            raise MCPServerManifestError(f"memory.backends[{index}]: duplicate backend id {backend_id!r}")
+            raise MCPServerManifestError(
+                f"memory.backends[{index}]: duplicate backend id {backend_id!r}"
+            )
         seen_ids.add(backend_id)
         kind = str(entry.get("kind") or "").strip()
         if kind not in {"http", "stdio"}:
@@ -318,9 +320,7 @@ def _parse_server_entries(raw_servers: Any, path: Path) -> list[MCPServerSpec]:
     specs: list[MCPServerSpec] = []
     for index, entry in enumerate(raw_servers):
         if not isinstance(entry, dict):
-            raise MCPServerManifestError(
-                f"servers[{index}] in {path} must be a mapping"
-            )
+            raise MCPServerManifestError(f"servers[{index}] in {path} must be a mapping")
         if entry.get("disabled"):
             continue
         specs.append(_parse_server_entry(entry, index, path))
@@ -339,8 +339,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
     except ValueError as exc:
         valid = ", ".join(kind.value for kind in RuntimeKind)
         raise MCPServerManifestError(
-            f"servers[{index}] '{server_id}': invalid runtime_kind {runtime_raw!r} "
-            f"(valid: {valid})"
+            f"servers[{index}] '{server_id}': invalid runtime_kind {runtime_raw!r} (valid: {valid})"
         ) from exc
 
     env_raw = entry.get("env") or {}
@@ -390,10 +389,16 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         package=entry.get("package"),
         entry_point=entry.get("entry_point"),
         venv_dir=_expand_env_value(entry.get("venv_dir")) if entry.get("venv_dir") else None,
-        command_path=_expand_env_value(entry.get("command_path")) if entry.get("command_path") else None,
-        script_path=_expand_env_value(entry.get("script_path")) if entry.get("script_path") else None,
+        command_path=_expand_env_value(entry.get("command_path"))
+        if entry.get("command_path")
+        else None,
+        script_path=_expand_env_value(entry.get("script_path"))
+        if entry.get("script_path")
+        else None,
         npx_package=entry.get("npx_package"),
-        uv_directory=_expand_env_value(entry.get("uv_directory")) if entry.get("uv_directory") else None,
+        uv_directory=_expand_env_value(entry.get("uv_directory"))
+        if entry.get("uv_directory")
+        else None,
         cli_args=[str(a) for a in cli_args_raw],
         data_dir_arg=data_dir_arg,
         data_dir_subdir=data_dir_subdir,
@@ -412,9 +417,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
     )
 
 
-def _parse_tool_policy(
-    raw: Any, server_id: str, index: int, path: Path
-) -> ToolPolicy:
+def _parse_tool_policy(raw: Any, server_id: str, index: int, path: Path) -> ToolPolicy:
     if raw is None:
         return ToolPolicy()
     if not isinstance(raw, dict):
@@ -437,9 +440,7 @@ def _parse_tool_policy(
     )
 
 
-def _parse_aliases(
-    raw: Any, server_id: str, index: int, path: Path
-) -> tuple[AliasSpec, ...]:
+def _parse_aliases(raw: Any, server_id: str, index: int, path: Path) -> tuple[AliasSpec, ...]:
     """Parse the optional ``aliases`` block on a server entry.
 
     Each entry maps a stable model-facing name to a native tool on the
@@ -493,9 +494,7 @@ def _parse_aliases(
     return tuple(specs)
 
 
-def _parse_proxy_policy(
-    raw: Any, server_id: str, index: int, path: Path
-) -> ProxyPolicy:
+def _parse_proxy_policy(raw: Any, server_id: str, index: int, path: Path) -> ProxyPolicy:
     """Parse the optional ``proxy_policy`` block on a server entry.
 
     Returns a default (empty) :class:`ProxyPolicy` when absent — the proxy
@@ -550,9 +549,7 @@ def _parse_timeouts(raw: Any) -> LaunchTimeouts:
         return LaunchTimeouts()
 
 
-def _parse_cwd_policy(
-    raw: Any, server_id: str, index: int, path: Path
-) -> CwdPolicy:
+def _parse_cwd_policy(raw: Any, server_id: str, index: int, path: Path) -> CwdPolicy:
     if raw is None:
         return CwdPolicy()
     if not isinstance(raw, dict):

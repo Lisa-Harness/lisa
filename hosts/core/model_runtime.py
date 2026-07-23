@@ -131,8 +131,7 @@ def resolve_little_lisa_model(
         known_models = ", ".join(model.model_id for model in manifest.models)
         logger.error("model %r not in manifest (configured: %s)", requested, known_models)
         raise ValueError(
-            f"Model '{requested}' is not in the host's manifest. "
-            f"Configured models: {known_models}"
+            f"Model '{requested}' is not in the host's manifest. Configured models: {known_models}"
         )
     logger.debug("resolved %r -> %s", requested, resolved.model_id)
     return _to_stub_model_definition(resolved)

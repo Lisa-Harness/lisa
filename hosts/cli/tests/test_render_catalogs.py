@@ -106,9 +106,7 @@ def test_render_tools_lists_internal_tool_ids(tmp_path: Path) -> None:
     console = Console(record=True, width=120)
 
     with patch.object(tools_registry, "get_tool_catalog", return_value=fake_tools):
-        table = render_mod.render_tools(
-            _make_runtime(tmp_path), mcp_tools=None, console=console
-        )
+        table = render_mod.render_tools(_make_runtime(tmp_path), mcp_tools=None, console=console)
 
     output = console.export_text()
     assert "memory.add" in output
@@ -126,9 +124,7 @@ def test_render_tools_emits_mcp_section_when_pairs_provided(tmp_path: Path) -> N
     console = Console(record=True, width=120)
 
     with patch.object(tools_registry, "get_tool_catalog", return_value={}):
-        render_mod.render_tools(
-            _make_runtime(tmp_path), mcp_tools=mcp_pairs, console=console
-        )
+        render_mod.render_tools(_make_runtime(tmp_path), mcp_tools=mcp_pairs, console=console)
 
     output = console.export_text()
     assert "MCP Server Tools" in output

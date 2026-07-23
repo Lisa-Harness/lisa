@@ -59,7 +59,5 @@ def discover_pack_host_commands(
 
         if not specs:
             continue
-        entries.append(
-            PackCommandEntry(pack_name=_entry_point_pack_name(ep), specs=specs)
-        )
+        entries.append(PackCommandEntry(pack_name=_entry_point_pack_name(ep), specs=specs))
     return entries

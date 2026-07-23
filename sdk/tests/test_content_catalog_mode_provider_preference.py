@@ -191,4 +191,3 @@ def test_tool_collision_uses_provider_preferences(
 
     assert catalog["web_search"]["description"] == "brave tool"
     assert catalog["web_search"]["tool_provider_id"] == "brave-pack"
-

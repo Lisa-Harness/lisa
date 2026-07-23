@@ -124,4 +124,6 @@ def set_production_extension_evidence_builder(
     """
     from sdk.context.context_broker import set_extension_evidence_builder
 
-    set_extension_evidence_builder(EntryPointExtensionEvidenceBuilder(excluded_packs=excluded_packs))
+    set_extension_evidence_builder(
+        EntryPointExtensionEvidenceBuilder(excluded_packs=excluded_packs)
+    )

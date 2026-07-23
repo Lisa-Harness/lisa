@@ -91,7 +91,9 @@ class RichTransport:
         spinner = "dots2" if is_dispatch else "dots"
         label = self._render_status_line(stage)
         self._status = self.console.status(
-            label, spinner=spinner, spinner_style=STYLE_STAGE,
+            label,
+            spinner=spinner,
+            spinner_style=STYLE_STAGE,
         )
         self._status.start()
 
@@ -146,10 +148,12 @@ class RichTransport:
             idx = int(data.get("child_index", -1))
             if idx >= 0:
                 existing = self._fork_children.get(idx, {})
-                existing.update({
-                    "status": data.get("status", "ok"),
-                    "duration_ms": data.get("duration_ms"),
-                })
+                existing.update(
+                    {
+                        "status": data.get("status", "ok"),
+                        "duration_ms": data.get("duration_ms"),
+                    }
+                )
                 self._fork_children[idx] = existing
             self._update_status(self._render_fork_stage())
             return
@@ -197,9 +201,14 @@ class RichTransport:
         """Compact one-line rendering of stage metadata."""
         parts: list[str] = []
         for key in (
-            "provider", "model_id", "iteration",
-            "tool_calls_so_far", "tool_calls",
-            "duration_ms", "stage_id", "turn_count",
+            "provider",
+            "model_id",
+            "iteration",
+            "tool_calls_so_far",
+            "tool_calls",
+            "duration_ms",
+            "stage_id",
+            "turn_count",
         ):
             value = data.get(key)
             if value in (None, "", 0):
@@ -329,8 +338,9 @@ class RichTransport:
         """Render turn context in a Rich Panel (only when debug is on)."""
         if not self.debug:
             return
-            
+
         from rich.pretty import Pretty
+
         self.console.print(
             Panel(
                 Pretty(context, expand_all=True),

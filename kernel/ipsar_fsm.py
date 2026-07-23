@@ -342,11 +342,7 @@ def _deep_merge_overrides(base: dict[str, Any], overrides: dict[str, Any]) -> di
     """
     merged = dict(base)
     for key, override_value in overrides.items():
-        if (
-            key in merged
-            and isinstance(merged[key], dict)
-            and isinstance(override_value, dict)
-        ):
+        if key in merged and isinstance(merged[key], dict) and isinstance(override_value, dict):
             merged[key] = _deep_merge_overrides(merged[key], override_value)
         else:
             merged[key] = override_value
@@ -395,8 +391,7 @@ def _apply_mode_overrides(
     protected = sorted(set(overrides) & _MODE_OVERRIDES_PROTECTED_KEYS)
     if protected:
         raise WorkflowValidationError(
-            f"Overrides file '{overrides_path}' cannot override kernel-owned keys: "
-            f"{protected}."
+            f"Overrides file '{overrides_path}' cannot override kernel-owned keys: {protected}."
         )
 
     return _deep_merge_overrides(base_front_matter, overrides)
@@ -565,8 +560,7 @@ def load_catalog_from_disk(
             for operation_id in (mode_front_matter.get("allowed_operation_ids") or [])
         ]
         allowed_tool_ids = [
-            str(tool_id)
-            for tool_id in (mode_front_matter.get("allowed_tool_ids") or [])
+            str(tool_id) for tool_id in (mode_front_matter.get("allowed_tool_ids") or [])
         ]
         # The disk path does not run the SDK default-available merge, so the
         # authored and effective allowlists are identical. The SDK MCP path
@@ -579,31 +573,23 @@ def load_catalog_from_disk(
             raise WorkflowValidationError(
                 f"tools_authoritative must be a boolean in {mode_config_path}"
             )
-        accept_default_capabilities = mode_front_matter.get(
-            "accept_default_capabilities", True
-        )
+        accept_default_capabilities = mode_front_matter.get("accept_default_capabilities", True)
         if not isinstance(accept_default_capabilities, bool):
             raise WorkflowValidationError(
                 f"accept_default_capabilities must be a boolean in {mode_config_path}"
             )
         excluded_operation_ids = [
-            str(op_id)
-            for op_id in (mode_front_matter.get("excluded_operation_ids") or [])
+            str(op_id) for op_id in (mode_front_matter.get("excluded_operation_ids") or [])
         ]
         excluded_tool_ids = [
-            str(tool_id)
-            for tool_id in (mode_front_matter.get("excluded_tool_ids") or [])
+            str(tool_id) for tool_id in (mode_front_matter.get("excluded_tool_ids") or [])
         ]
         routable = mode_front_matter.get("routable", False)
         if not isinstance(routable, bool):
-            raise WorkflowValidationError(
-                f"routable must be a boolean in {mode_config_path}"
-            )
+            raise WorkflowValidationError(f"routable must be a boolean in {mode_config_path}")
         priority = mode_front_matter.get("priority", 0)
         if isinstance(priority, bool) or not isinstance(priority, int):
-            raise WorkflowValidationError(
-                f"priority must be an integer in {mode_config_path}"
-            )
+            raise WorkflowValidationError(f"priority must be an integer in {mode_config_path}")
         fast_path_patterns_raw = mode_front_matter.get("fast_path_patterns")
         if fast_path_patterns_raw is None:
             fast_path_patterns_raw = []
@@ -615,21 +601,18 @@ def load_catalog_from_disk(
         for idx, raw_pattern in enumerate(fast_path_patterns_raw):
             if not isinstance(raw_pattern, str):
                 raise WorkflowValidationError(
-                    "fast_path_patterns"
-                    f"[{idx}] must be a string in {mode_config_path}"
+                    f"fast_path_patterns[{idx}] must be a string in {mode_config_path}"
                 )
             pattern = raw_pattern.strip()
             if not pattern:
                 raise WorkflowValidationError(
-                    "fast_path_patterns"
-                    f"[{idx}] cannot be empty in {mode_config_path}"
+                    f"fast_path_patterns[{idx}] cannot be empty in {mode_config_path}"
                 )
             try:
                 re.compile(pattern, re.IGNORECASE)
             except re.error as exc:
                 raise WorkflowValidationError(
-                    "fast_path_patterns"
-                    f"[{idx}] is not a valid regex in {mode_config_path}: {exc}"
+                    f"fast_path_patterns[{idx}] is not a valid regex in {mode_config_path}: {exc}"
                 ) from exc
             fast_path_patterns.append(pattern)
 
@@ -701,15 +684,13 @@ def load_catalog_from_disk(
         # not opted in, e.g. ``default``).
         satisfies_intents_raw = mode_front_matter.get("satisfies_intents") or []
         if not isinstance(satisfies_intents_raw, list):
-            raise WorkflowValidationError(
-                f"satisfies_intents must be a list in {mode_config_path}"
-            )
+            raise WorkflowValidationError(f"satisfies_intents must be a list in {mode_config_path}")
         satisfies_intents: list[str] = []
         for idx, raw_tag in enumerate(satisfies_intents_raw):
             if not isinstance(raw_tag, str):
                 raise WorkflowValidationError(
                     f"satisfies_intents[{idx}] must be a string in {mode_config_path}"
-            )
+                )
             tag = raw_tag.strip().lower()
             if not tag:
                 raise WorkflowValidationError(
@@ -1513,8 +1494,7 @@ def get_required_stage_instruction(
     mode = get_workflow_catalog().get(mode_id)
     if not mode:
         raise MissingModeInstructionError(
-            f"Stage '{stage_id}' lookup failed: mode '{mode_id}' is not in the "
-            "workflow catalog."
+            f"Stage '{stage_id}' lookup failed: mode '{mode_id}' is not in the workflow catalog."
         )
     stage = mode.stages.get(stage_id)
     if stage is None:

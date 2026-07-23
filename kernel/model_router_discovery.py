@@ -86,9 +86,7 @@ def discover_model_router_factories(
         try:
             factory = ep.load()
         except Exception:  # pylint: disable=broad-except
-            logger.warning(
-                "Failed to load model_routers entry-point %r", ep.name, exc_info=True
-            )
+            logger.warning("Failed to load model_routers entry-point %r", ep.name, exc_info=True)
             continue
         if not callable(factory):
             logger.warning(

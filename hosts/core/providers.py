@@ -379,13 +379,11 @@ def openai_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
         return existing_client
 
     api_key = (
-        os.getenv(LISA_OPENAI_API_KEY_ENV, "").strip()
-        or os.getenv("OPENAI_API_KEY", "").strip()
+        os.getenv(LISA_OPENAI_API_KEY_ENV, "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
     )
     if not api_key:
         raise ValueError(
-            f"OpenAI is not configured. Set {LISA_OPENAI_API_KEY_ENV} "
-            "(or OPENAI_API_KEY)."
+            f"OpenAI is not configured. Set {LISA_OPENAI_API_KEY_ENV} (or OPENAI_API_KEY)."
         )
     client = AsyncOpenAI(api_key=api_key)
     runtime.openai_client = client
@@ -399,8 +397,7 @@ def google_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
         return existing_client
 
     api_key = (
-        os.getenv(LISA_GOOGLE_API_KEY_ENV, "").strip()
-        or os.getenv("GOOGLE_API_KEY", "").strip()
+        os.getenv(LISA_GOOGLE_API_KEY_ENV, "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
     )
     endpoint = normalize_google_base_url(
         os.getenv(LISA_GOOGLE_API_BASE_URL_ENV, "").strip()
@@ -408,8 +405,7 @@ def google_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
     )
     if not api_key:
         raise ValueError(
-            f"Google Gemini is not configured. Set {LISA_GOOGLE_API_KEY_ENV} "
-            "(or GOOGLE_API_KEY)."
+            f"Google Gemini is not configured. Set {LISA_GOOGLE_API_KEY_ENV} (or GOOGLE_API_KEY)."
         )
     client = AsyncOpenAI(api_key=api_key, base_url=endpoint)
     runtime.google_client = client
@@ -428,8 +424,7 @@ def ollama_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
     base_url = _normalize_ollama_host_to_base_url(configured_host) or "http://localhost:11434/v1/"
 
     api_key = (
-        os.getenv(LISA_OLLAMA_API_KEY_ENV, "").strip()
-        or os.getenv("OLLAMA_API_KEY", "").strip()
+        os.getenv(LISA_OLLAMA_API_KEY_ENV, "").strip() or os.getenv("OLLAMA_API_KEY", "").strip()
     )
     client = AsyncOpenAI(api_key=api_key or "ollama", base_url=base_url)
     runtime.ollama_client = client
@@ -471,8 +466,7 @@ async def complete_anthropic(
     )
     if not api_key:
         raise ValueError(
-            f"Anthropic is not configured. Set {LISA_ANTHROPIC_API_KEY_ENV} "
-            "(or ANTHROPIC_API_KEY)."
+            f"Anthropic is not configured. Set {LISA_ANTHROPIC_API_KEY_ENV} (or ANTHROPIC_API_KEY)."
         )
 
     system_prompt, anthropic_messages = _to_anthropic_payload_messages(messages)
@@ -496,8 +490,7 @@ async def complete_anthropic(
 
     headers = {
         "x-api-key": api_key,
-        "anthropic-version": os.getenv(LISA_ANTHROPIC_VERSION_ENV, "").strip()
-        or "2023-06-01",
+        "anthropic-version": os.getenv(LISA_ANTHROPIC_VERSION_ENV, "").strip() or "2023-06-01",
     }
     response = await anthropic_http_client_instance(runtime).post(
         "/v1/messages",
@@ -581,10 +574,10 @@ async def complete_live(
     """Execute a live provider completion against configured provider APIs."""
     tport = transport or NullTransport()
 
-    stream_stage = (
-        runtime.config.streaming.enabled
-        and runtime.config.streaming.mode in {"stage", "hybrid"}
-    )
+    stream_stage = runtime.config.streaming.enabled and runtime.config.streaming.mode in {
+        "stage",
+        "hybrid",
+    }
     stage_label = f"{model_def.provider}:{model_def.model_id}"
     started_at = time.perf_counter()
     response_format_name = completion_response_format_name(response_format)
@@ -980,8 +973,7 @@ async def _stream_anthropic_chunks(
     )
     if not api_key:
         raise ValueError(
-            f"Anthropic is not configured. Set {LISA_ANTHROPIC_API_KEY_ENV} "
-            "(or ANTHROPIC_API_KEY)."
+            f"Anthropic is not configured. Set {LISA_ANTHROPIC_API_KEY_ENV} (or ANTHROPIC_API_KEY)."
         )
 
     system_prompt, anthropic_messages = _to_anthropic_payload_messages(messages)
@@ -1001,8 +993,7 @@ async def _stream_anthropic_chunks(
 
     headers = {
         "x-api-key": api_key,
-        "anthropic-version": os.getenv(LISA_ANTHROPIC_VERSION_ENV, "").strip()
-        or "2023-06-01",
+        "anthropic-version": os.getenv(LISA_ANTHROPIC_VERSION_ENV, "").strip() or "2023-06-01",
         "accept": "text/event-stream",
     }
 
@@ -1024,11 +1015,11 @@ async def _stream_anthropic_chunks(
             if not line:
                 continue
             if line.startswith("event:"):
-                current_event = line[len("event:"):].strip()
+                current_event = line[len("event:") :].strip()
                 continue
             if not line.startswith("data:"):
                 continue
-            data_str = line[len("data:"):].strip()
+            data_str = line[len("data:") :].strip()
             if not data_str:
                 continue
             try:

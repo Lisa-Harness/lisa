@@ -333,7 +333,9 @@ def test_validate_pack_spec_for_install_local_folder_rejects_missing_pyproject_n
     assert "missing a valid pyproject.toml project.name" in reason
 
 
-def test_normalize_pack_install_spec_expands_bare_pack_name(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_normalize_pack_install_spec_expands_bare_pack_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Bare ``lisa-pack-*`` names expand to the framework git root template."""
     monkeypatch.delenv("LISA_PACK_GIT_ROOT", raising=False)
 
@@ -370,7 +372,10 @@ def test_normalize_pack_install_spec_bare_name_preserves_version_pin(
     """Specs with version pins or extras are not expanded (not bare names)."""
     monkeypatch.delenv("LISA_PACK_GIT_ROOT", raising=False)
 
-    assert commands._normalize_pack_install_spec("lisa-pack-cloudflare==0.1.0") == "lisa-pack-cloudflare==0.1.0"
+    assert (
+        commands._normalize_pack_install_spec("lisa-pack-cloudflare==0.1.0")
+        == "lisa-pack-cloudflare==0.1.0"
+    )
     assert commands._normalize_pack_install_spec("lisa-pack-core[extra]") == "lisa-pack-core[extra]"
 
 
@@ -539,15 +544,18 @@ def test_compile_mcp_configs_namespaces_pack_server_ids(
     pack_a_root.mkdir(parents=True, exist_ok=True)
     pack_b_root.mkdir(parents=True, exist_ok=True)
 
-    pack_manifest_text = "\n".join(
-        [
-            "version: 1",
-            "servers:",
-            "  - server_id: shared-server",
-            "    runtime_kind: http",
-            "    url: https://example.com/mcp",
-        ]
-    ) + "\n"
+    pack_manifest_text = (
+        "\n".join(
+            [
+                "version: 1",
+                "servers:",
+                "  - server_id: shared-server",
+                "    runtime_kind: http",
+                "    url: https://example.com/mcp",
+            ]
+        )
+        + "\n"
+    )
     (pack_a_root / "mcp_servers.yaml").write_text(pack_manifest_text, encoding="utf-8")
     (pack_b_root / "mcp_servers.yaml").write_text(pack_manifest_text, encoding="utf-8")
 
@@ -571,15 +579,18 @@ def test_compile_mcp_configs_applies_pack_server_exclusions(
     pack_a_root.mkdir(parents=True, exist_ok=True)
     pack_b_root.mkdir(parents=True, exist_ok=True)
 
-    pack_manifest_text = "\n".join(
-        [
-            "version: 1",
-            "servers:",
-            "  - server_id: shared-server",
-            "    runtime_kind: http",
-            "    url: https://example.com/mcp",
-        ]
-    ) + "\n"
+    pack_manifest_text = (
+        "\n".join(
+            [
+                "version: 1",
+                "servers:",
+                "  - server_id: shared-server",
+                "    runtime_kind: http",
+                "    url: https://example.com/mcp",
+            ]
+        )
+        + "\n"
+    )
     (pack_a_root / "mcp_servers.yaml").write_text(pack_manifest_text, encoding="utf-8")
     (pack_b_root / "mcp_servers.yaml").write_text(pack_manifest_text, encoding="utf-8")
 
@@ -605,45 +616,48 @@ def test_compile_mcp_configs_namespaces_pack_memory_servers(
     pack_root = tmp_path / "memory"
     pack_root.mkdir(parents=True, exist_ok=True)
 
-    pack_manifest_text = "\n".join(
-        [
-            "version: 1",
-            "memory:",
-            "  default_backend: lisa_memory",
-            "  backends:",
-            "    - id: lisa_memory",
-            "      kind: stdio",
-            '      command: "${LISA_MCP_COMMAND:lisa-memory}"',
-            "      args:",
-            "        - --data-dir",
-            '        - "${LISA_DATA_DIR}"',
-            "      tool_names:",
-            "        add: add_memory",
-            "        search: search_memory",
-            "        list: list_memories",
-            "    - id: mem0",
-            "      kind: http",
-            "      url: https://mcp.mem0.ai/mcp",
-            "      headers:",
-            '        Authorization: "Bearer ${MEM0_API_KEY}"',
-            "      tool_names:",
-            "        add: add_memory",
-            "        search: search_memories",
-            "        list: get_memories",
-            "servers:",
-            "  - server_id: lisa-memory",
-            "    runtime_kind: venv_bin",
-            "    entry_point: lisa-memory",
-            '    venv_dir: "${FRAMEWORK_ROOT}/.venv"',
-            "    warm: true",
-            "    required: true",
-            "  - server_id: mem0",
-            "    runtime_kind: http",
-            "    url: https://mcp.mem0.ai/mcp",
-            "    headers:",
-            '      Authorization: "Bearer ${MEM0_API_KEY}"',
-        ]
-    ) + "\n"
+    pack_manifest_text = (
+        "\n".join(
+            [
+                "version: 1",
+                "memory:",
+                "  default_backend: lisa_memory",
+                "  backends:",
+                "    - id: lisa_memory",
+                "      kind: stdio",
+                '      command: "${LISA_MCP_COMMAND:lisa-memory}"',
+                "      args:",
+                "        - --data-dir",
+                '        - "${LISA_DATA_DIR}"',
+                "      tool_names:",
+                "        add: add_memory",
+                "        search: search_memory",
+                "        list: list_memories",
+                "    - id: mem0",
+                "      kind: http",
+                "      url: https://mcp.mem0.ai/mcp",
+                "      headers:",
+                '        Authorization: "Bearer ${MEM0_API_KEY}"',
+                "      tool_names:",
+                "        add: add_memory",
+                "        search: search_memories",
+                "        list: get_memories",
+                "servers:",
+                "  - server_id: lisa-memory",
+                "    runtime_kind: venv_bin",
+                "    entry_point: lisa-memory",
+                '    venv_dir: "${FRAMEWORK_ROOT}/.venv"',
+                "    warm: true",
+                "    required: true",
+                "  - server_id: mem0",
+                "    runtime_kind: http",
+                "    url: https://mcp.mem0.ai/mcp",
+                "    headers:",
+                '      Authorization: "Bearer ${MEM0_API_KEY}"',
+            ]
+        )
+        + "\n"
+    )
     (pack_root / "mcp_servers.yaml").write_text(pack_manifest_text, encoding="utf-8")
 
     monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [pack_root])
@@ -662,7 +676,9 @@ def test_set_pack_enabled_rejects_disabling_always_on_pack(
     tmp_path: Path,
 ) -> None:
     runtime = _make_runtime(tmp_path)
-    monkeypatch.setattr(commands, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"})
+    monkeypatch.setattr(
+        commands, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"}
+    )
 
     ok, details = commands.set_pack_enabled(runtime, "core", enabled=False)
 
@@ -680,7 +696,9 @@ def test_set_pack_enabled_for_bundled_pack_records_lock_and_restart(
 
     runtime.restart_required = False
     runtime.restart_reason = ""
-    monkeypatch.setattr(commands, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"})
+    monkeypatch.setattr(
+        commands, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"}
+    )
     monkeypatch.setattr(commands, "discover_installed_content_roots", lambda: [bundled_root])
 
     ok, details = commands.set_pack_enabled(runtime, "cloudflare", enabled=True)
@@ -710,7 +728,9 @@ def test_sdk_content_roots_filters_bundled_activation_state(
     bundled_root.mkdir(parents=True, exist_ok=True)
     configured_root.mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setattr(content_roots, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"})
+    monkeypatch.setattr(
+        content_roots, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"}
+    )
     monkeypatch.setattr(
         content_roots,
         "discover_installed_content_roots",
@@ -821,7 +841,9 @@ async def test_run_pack_install_autoselects_memory_provider_when_unset(
     )
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
     monkeypatch.setattr(commands, "discover_installed_content_roots", lambda: [mem0_root])
-    monkeypatch.setattr(commands, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"})
+    monkeypatch.setattr(
+        commands, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"}
+    )
 
     ok, _details = await commands.run_pack_install(runtime, "lisa-pack-mem0==0.1.0")
 

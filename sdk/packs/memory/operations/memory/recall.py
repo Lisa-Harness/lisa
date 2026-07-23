@@ -51,7 +51,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         return OperationResult()
 
     if not callable(ctx.execute_tool_fn):
-        return OperationResult(output_text="Memory recall unavailable: tool execution not injected.")
+        return OperationResult(
+            output_text="Memory recall unavailable: tool execution not injected."
+        )
 
     default_limit = max(1, ctx.memory_recall_default_limit or settings.memory_recall_final_limit)
     limit = int(ctx.params.get("limit", default_limit) or 1)
@@ -139,4 +141,3 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         output_json=recall.model_dump(mode="json"),
         extra={"confidence": recall.confidence, "auto_deep_used": recall.auto_deep_used},
     )
-

@@ -41,6 +41,7 @@ def _all_ok_transport() -> httpx.MockTransport:
         if path.endswith("/v1beta/models") or path == "/v1beta/models":
             return httpx.Response(200, json={"models": [{"name": "models/gemini-2.5-flash"}]})
         return httpx.Response(404, text=f"no route for {path}")
+
     return httpx.MockTransport(_handler)
 
 
@@ -57,6 +58,7 @@ class TestDiscoverOrchestrator:
         # All probes are SKIPPED unless we set creds; with creds + mocked
         # transport they should mostly return OK.
         import os
+
         os.environ["LISA_OPENAI_API_KEY"] = "sk-test"
         os.environ["LISA_AZURE_OPENAI_ENDPOINT"] = "https://res.openai.azure.com"
         os.environ["LISA_AZURE_OPENAI_API_KEY"] = "az-test"
@@ -95,12 +97,14 @@ class TestDiscoverOrchestrator:
         # No OpenAI key → SKIPPED; Google has key → probes.
         monkeypatch.setenv("LISA_GOOGLE_API_KEY", _FAKE_KEY)
         transport = httpx.MockTransport(
-            lambda req: httpx.Response(
-                200,
-                json={"models": [{"name": "models/gemini-2.5-flash"}]},
+            lambda req: (
+                httpx.Response(
+                    200,
+                    json={"models": [{"name": "models/gemini-2.5-flash"}]},
+                )
+                if "v1beta" in req.url.path
+                else httpx.Response(404)
             )
-            if "v1beta" in req.url.path
-            else httpx.Response(404)
         )
         probes = (
             OpenAIProbe(),
@@ -123,6 +127,7 @@ class TestDiscoverOrchestrator:
         """
 
         import os
+
         os.environ["LISA_GOOGLE_API_KEY"] = _FAKE_KEY
         os.environ["LISA_ANTHROPIC_API_KEY"] = "ant-test"
         try:
@@ -133,6 +138,7 @@ class TestDiscoverOrchestrator:
                 if "anthropic" in str(req.url):
                     return httpx.Response(200, json={"data": [{"id": "claude-sonnet-4-20250514"}]})
                 return httpx.Response(404)
+
             transport = httpx.MockTransport(_handler)
 
             # Build probes that use the mocked transport.

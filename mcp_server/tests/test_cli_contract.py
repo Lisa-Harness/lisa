@@ -109,4 +109,3 @@ def test_no_env_var_path_fallback_in_source() -> None:
                 violations.append(f"{py_file}: contains '{var}'")
 
     assert not violations, "Removed env vars found in server source:\n" + "\n".join(violations)
-

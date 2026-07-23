@@ -112,17 +112,11 @@ def validate_tool_catalog(catalog: dict[str, ToolDefinition]) -> None:
                 f"Tool registry key '{tool_id}' does not match tool_id '{definition.tool_id}'."
             )
         if not definition.description.strip():
-            raise ToolValidationError(
-                f"Tool '{tool_id}' must have a non-empty description."
-            )
+            raise ToolValidationError(f"Tool '{tool_id}' must have a non-empty description.")
         if definition.implementation_module is None:
-            raise ToolValidationError(
-                f"Tool '{tool_id}' has no implementation module."
-            )
+            raise ToolValidationError(f"Tool '{tool_id}' has no implementation module.")
         if getattr(definition.implementation_module, "execute", None) is None:
-            raise ToolValidationError(
-                f"Tool '{tool_id}' implementation is missing execute(ctx)."
-            )
+            raise ToolValidationError(f"Tool '{tool_id}' implementation is missing execute(ctx).")
         if definition.max_calls_per_turn < 0:
             raise ToolValidationError(
                 f"Tool '{tool_id}' has invalid max_calls_per_turn={definition.max_calls_per_turn}."
@@ -147,9 +141,7 @@ async def execute_tool(
     if definition is None:
         raise ToolExecutionError(f"Unknown tool '{tool_id}'.")
     if definition.mode_allowlist is not None and ctx.mode_id not in definition.mode_allowlist:
-        raise ToolExecutionError(
-            f"Tool '{tool_id}' is not allowed for mode '{ctx.mode_id}'."
-        )
+        raise ToolExecutionError(f"Tool '{tool_id}' is not allowed for mode '{ctx.mode_id}'.")
     ctx.tool_id = tool_id
     _resolve_execution_configuration(definition, ctx)
     _validate_parameters(definition, ctx)
@@ -264,9 +256,7 @@ async def _require_approval(
         return
     service = ctx.approval_service
     if service is None:
-        raise ToolExecutionError(
-            f"Tool '{definition.tool_id}' requires an approval service."
-        )
+        raise ToolExecutionError(f"Tool '{definition.tool_id}' requires an approval service.")
     identity = ApprovalIdentity(
         workspace_id=ctx.workspace_id,
         user_id=ctx.user_id,

@@ -676,7 +676,9 @@ async def test_run_turn_fork_marks_no_tools_child_when_action_mode_skipped_tools
         return _StubCompletion(content="Done — wrote it to disk.")
 
     hooks = _build_minimal_hooks(two_step)
-    result = await run_turn(mode_id="default", query="remember this and write a markdown", hooks=hooks)
+    result = await run_turn(
+        mode_id="default", query="remember this and write a markdown", hooks=hooks
+    )
 
     assert result.fork_results is not None
     assert len(result.fork_results) == 2

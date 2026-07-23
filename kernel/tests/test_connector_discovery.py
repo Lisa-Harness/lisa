@@ -31,14 +31,22 @@ def test_discover_installed_signal_collectors_excludes_disabled_packs(
     monkeypatch,
 ) -> None:
     """Entry points whose distribution name is in excluded_packs are skipped."""
-    active_collector = type("ActiveCollector", (), {
-        "collector_id": "active",
-        "display_name": "Active",
-    })
-    disabled_collector = type("DisabledCollector", (), {
-        "collector_id": "disabled",
-        "display_name": "Disabled",
-    })
+    active_collector = type(
+        "ActiveCollector",
+        (),
+        {
+            "collector_id": "active",
+            "display_name": "Active",
+        },
+    )
+    disabled_collector = type(
+        "DisabledCollector",
+        (),
+        {
+            "collector_id": "disabled",
+            "display_name": "Disabled",
+        },
+    )
 
     monkeypatch.setattr(
         importlib.metadata,
@@ -62,14 +70,22 @@ def test_discover_installed_signal_collectors_excludes_disabled_packs(
 
 def test_discover_installed_signal_collectors_none_returns_all(monkeypatch) -> None:
     """excluded_packs=None preserves backward-compatible behavior."""
-    active_collector = type("ActiveCollector", (), {
-        "collector_id": "active",
-        "display_name": "Active",
-    })
-    other_collector = type("OtherCollector", (), {
-        "collector_id": "other",
-        "display_name": "Other",
-    })
+    active_collector = type(
+        "ActiveCollector",
+        (),
+        {
+            "collector_id": "active",
+            "display_name": "Active",
+        },
+    )
+    other_collector = type(
+        "OtherCollector",
+        (),
+        {
+            "collector_id": "other",
+            "display_name": "Other",
+        },
+    )
 
     monkeypatch.setattr(
         importlib.metadata,
@@ -89,10 +105,14 @@ def test_discover_installed_signal_collectors_empty_exclusion_returns_all(
     monkeypatch,
 ) -> None:
     """An empty exclusion set is equivalent to no filtering."""
-    collector = type("TestCollector", (), {
-        "collector_id": "test",
-        "display_name": "Test",
-    })
+    collector = type(
+        "TestCollector",
+        (),
+        {
+            "collector_id": "test",
+            "display_name": "Test",
+        },
+    )
 
     monkeypatch.setattr(
         importlib.metadata,

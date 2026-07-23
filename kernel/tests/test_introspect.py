@@ -52,9 +52,24 @@ async def test_gather_introspection_reads_token_usage_file() -> None:
         token_path = Path(td) / "token-usage.jsonl"
         # Write a few token usage records
         records = [
-            {"model_id": "gpt-4.1-mini", "total_tokens": 500, "cost_usd": 0.01, "emitted_at": "2026-07-09T10:00:00Z"},
-            {"model_id": "gpt-4.1-mini", "total_tokens": 300, "cost_usd": 0.006, "emitted_at": "2026-07-09T11:00:00Z"},
-            {"model_id": "deepseek-chat", "total_tokens": 1000, "cost_usd": 0.003, "emitted_at": "2026-07-09T12:00:00Z"},
+            {
+                "model_id": "gpt-4.1-mini",
+                "total_tokens": 500,
+                "cost_usd": 0.01,
+                "emitted_at": "2026-07-09T10:00:00Z",
+            },
+            {
+                "model_id": "gpt-4.1-mini",
+                "total_tokens": 300,
+                "cost_usd": 0.006,
+                "emitted_at": "2026-07-09T11:00:00Z",
+            },
+            {
+                "model_id": "deepseek-chat",
+                "total_tokens": 1000,
+                "cost_usd": 0.003,
+                "emitted_at": "2026-07-09T12:00:00Z",
+            },
         ]
         with token_path.open("w", encoding="utf-8") as f:
             for record in records:
@@ -86,7 +101,12 @@ async def test_gather_introspection_reads_log_errors() -> None:
         log_path = Path(td) / "turns.jsonl"
         records = [
             {"level": "info", "event": "turn.completed", "message": "ok"},
-            {"level": "warning", "event": "mcp.connect_failed", "message": "mem0 unreachable", "server": "mem0"},
+            {
+                "level": "warning",
+                "event": "mcp.connect_failed",
+                "message": "mem0 unreachable",
+                "server": "mem0",
+            },
             {"level": "error", "event": "operation.timeout", "message": "self_model timed out"},
             {"level": "info", "event": "turn.completed", "message": "ok"},
         ]
@@ -170,4 +190,5 @@ async def test_gather_introspection_psutil_optional() -> None:
 def contextlib_suppress():
     """Local import of contextlib.suppress to avoid top-level import."""
     import contextlib
+
     return contextlib.suppress(asyncio.CancelledError)

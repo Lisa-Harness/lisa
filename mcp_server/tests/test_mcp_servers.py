@@ -184,7 +184,6 @@ async def test_context_broker_context_malformed_state_raises(context_setup: None
         await mcp.call_tool("broker_context", payload)
 
 
-
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 
@@ -193,4 +192,3 @@ def asyncio_get_tools(mcp: Any) -> Any:
     import asyncio
 
     return asyncio.run(mcp.list_tools())
-

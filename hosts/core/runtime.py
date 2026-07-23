@@ -123,8 +123,7 @@ class HostRuntime:
             force_refresh=config.session_context_refresh,
         )
         source_matches_user_slug = (
-            bool(config.session_context)
-            and config.user_slug == config.session_context
+            bool(config.session_context) and config.user_slug == config.session_context
         )
         effective_user_slug = (
             config.user_slug
@@ -203,7 +202,6 @@ class HostRuntime:
 
         # ── Last-turn diagnostics ─────────────────────────────────────
         self.last_turn_context: TurnContext | None = None
-
 
         # ── Restart state ─────────────────────────────────────────────
         self.restart_required: bool = False
@@ -391,9 +389,7 @@ class HostRuntime:
         # See debugging.md (anyio cross-loop/task rule).
         self._mcp_started_event = asyncio.Event()
         self._mcp_close_signal = asyncio.Event()
-        self._mcp_start_task = asyncio.create_task(
-            self._start_pool_impl(deferred=True)
-        )
+        self._mcp_start_task = asyncio.create_task(self._start_pool_impl(deferred=True))
         return self._mcp_start_task
 
     async def ensure_pool_ready(self) -> None:

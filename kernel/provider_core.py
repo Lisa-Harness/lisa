@@ -411,9 +411,6 @@ def extract_openai_embeddings(response: Any) -> list[list[float]]:
     return vectors
 
 
-
-
-
 def extract_openai_completion_usage(response: Any) -> CompletionUsage | None:
     """Extract normalized per-call usage from one OpenAI-style chat response.
 
@@ -1312,9 +1309,8 @@ def _build_gemini_contents(messages: list[dict[str, Any]]) -> list[dict[str, Any
                 # back as a sibling of functionCall in the same part.  The
                 # signature may be stored at the top level (REST gateway flat
                 # shape) or nested under function (OpenAI-compatible shape).
-                thought_sig = (
-                    tc.get("thought_signature")
-                    or function_payload.get("thought_signature")
+                thought_sig = tc.get("thought_signature") or function_payload.get(
+                    "thought_signature"
                 )
                 fc_part: dict[str, Any] = {
                     "functionCall": {
@@ -1827,9 +1823,7 @@ def _build_anthropic_tools_with_name_map(
     for tool in tools:
         anthropic_tool = _openai_tool_to_anthropic_tool(tool)
         sanitized_name = anthropic_tool["name"]
-        function_payload = (
-            tool.get("function") if isinstance(tool.get("function"), dict) else tool
-        )
+        function_payload = tool.get("function") if isinstance(tool.get("function"), dict) else tool
         original_name = str(function_payload.get("name", ""))
         # First-seen-wins so a duplicate sanitized name maps back to the
         # first original; the kernel's catalog is first-registered-wins too.

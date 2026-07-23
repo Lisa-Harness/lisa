@@ -92,8 +92,7 @@ def wrap_section(
     """
     if provenance not in _PROVENANCE_SET:
         raise ValueError(
-            f"Unknown provenance kind {provenance!r}; "
-            f"expected one of {', '.join(PROVENANCE_KINDS)}"
+            f"Unknown provenance kind {provenance!r}; expected one of {', '.join(PROVENANCE_KINDS)}"
         )
     body = content.strip()
     if not body:
@@ -118,10 +117,7 @@ def wrap_sections(sections: list[tuple[str, str, str]]) -> str:
 def _xml_escape_attr(value: str) -> str:
     """Escape a value for use inside an XML attribute."""
     return (
-        value.replace("&", "&amp;")
-        .replace('"', "&quot;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
+        value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
     )
 
 
@@ -151,7 +147,7 @@ def parse_markdown_tagged(text: str) -> list[tuple[str, str, str]]:
     for match in _FENCE_RE.finditer(text):
         # Emit the prose between the last fence and this one as authoritative.
         if match.start() > cursor:
-            prose = text[cursor: match.start()].strip()
+            prose = text[cursor : match.start()].strip()
             if prose:
                 sections.append(("authoritative", "", prose))
         kind = match.group(1)

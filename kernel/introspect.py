@@ -266,7 +266,9 @@ def _tail_log_errors(log_path: Path | None) -> tuple[list[LogErrorEntry], int]:
                 ts=str(record.get("ts") or record.get("timestamp_utc") or ""),
                 level=level,
                 event=str(record.get("event") or ""),
-                message=str(record.get("message") or record.get("payload", {}).get("error_message", "")),
+                message=str(
+                    record.get("message") or record.get("payload", {}).get("error_message", "")
+                ),
                 server=str(record.get("server") or record.get("payload", {}).get("server_id", "")),
             )
         )

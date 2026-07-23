@@ -132,13 +132,17 @@ class TestHostRuntime:
         assert runtime.thread_path == tmp_path / "threads" / "test-user.jsonl"
         assert runtime.token_usage_path == tmp_path / "token-usage.jsonl"
 
-    def test_thread_path_none_when_no_user(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_thread_path_none_when_no_user(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
         assert runtime.thread_path is None
 
-    def test_thread_path_none_when_no_thread(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_thread_path_none_when_no_thread(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         config = HostConfig.from_env(data_dir=str(tmp_path), user_slug="test", no_thread=True)
         runtime = HostRuntime(config)
@@ -171,9 +175,7 @@ class TestHostRuntime:
         assert runtime.mcp_started is False
 
     @pytest.mark.asyncio
-    async def test_deferred_start_then_aclose_owns_cancel_scope(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_deferred_start_then_aclose_owns_cancel_scope(self, tmp_path: Path) -> None:
         """Deferred-start + aclose must not trip anyio's cross-task rule.
 
         Regression for the /quit crash:
@@ -245,9 +247,11 @@ class TestHostRuntime:
 
         # Skip memory/mcp alias registration (no real content roots in this
         # tmp_path). Patch them out so _build_pool only exercises the pool.
-        with patch.object(MCPToolPool, "_connect", new=_fake_connect), patch(
-            "hosts.core.memory_aliases.register_memory_aliases", new=lambda *a, **k: None
-        ), patch("hosts.core.mcp_pool.register_mcp_aliases", new=lambda *a, **k: None):
+        with (
+            patch.object(MCPToolPool, "_connect", new=_fake_connect),
+            patch("hosts.core.memory_aliases.register_memory_aliases", new=lambda *a, **k: None),
+            patch("hosts.core.mcp_pool.register_mcp_aliases", new=lambda *a, **k: None),
+        ):
             task = runtime.start_pool_deferred()
             task.set_name("mcp-deferred-start")
             await runtime.ensure_pool_ready()
@@ -373,25 +377,19 @@ class TestHandleMessage:
         received: list[str] = []
 
         class CapturingTransport:
-            async def on_stage(
-                self, label: str, data: dict[str, object] | None = None
-            ) -> None:
+            async def on_stage(self, label: str, data: dict[str, object] | None = None) -> None:
                 pass
 
             async def on_text_chunk(self, text: str) -> None:
                 pass
 
-            async def on_response(
-                self, text: str, data: dict[str, object] | None = None
-            ) -> None:
+            async def on_response(self, text: str, data: dict[str, object] | None = None) -> None:
                 received.append(text)
 
             async def on_debug_context(self, context: dict[str, object]) -> None:
                 pass
 
-            async def on_error(
-                self, message: str, exc: Exception | None = None
-            ) -> None:
+            async def on_error(self, message: str, exc: Exception | None = None) -> None:
                 pass
 
         result = await handle_message(runtime, "/help", CapturingTransport())
@@ -473,7 +471,9 @@ class TestHandleMessage:
         assert runtime.current_mode_id == "intake"
 
     @pytest.mark.asyncio
-    async def test_intake_command_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_intake_command_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """/intake surfaces failures without crashing the session."""
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)

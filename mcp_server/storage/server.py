@@ -246,12 +246,14 @@ async def stat_file(path: str) -> str:
     if not resolved.exists():
         return json.dumps({"error": f"not found: {path}"})
     stat = resolved.stat()
-    return json.dumps({
-        "path": path,
-        "size": stat.st_size,
-        "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
-        "is_dir": resolved.is_dir(),
-    })
+    return json.dumps(
+        {
+            "path": path,
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+            "is_dir": resolved.is_dir(),
+        }
+    )
 
 
 @mcp.tool()
@@ -344,14 +346,16 @@ async def list_checkpoints(prefix: str = "") -> str:
         label = str(data.get("label") or "")
         if prefix and prefix not in cid and prefix not in label:
             continue
-        summaries.append({
-            "checkpoint_id": cid,
-            "label": label,
-            "created_at": str(data.get("created_at") or ""),
-            "stage_id": str(data.get("stage_id") or ""),
-            "turn_count": int(data.get("turn_count") or 0),
-            "mode_id": str(data.get("mode_id") or ""),
-        })
+        summaries.append(
+            {
+                "checkpoint_id": cid,
+                "label": label,
+                "created_at": str(data.get("created_at") or ""),
+                "stage_id": str(data.get("stage_id") or ""),
+                "turn_count": int(data.get("turn_count") or 0),
+                "mode_id": str(data.get("mode_id") or ""),
+            }
+        )
 
     summaries.sort(key=lambda s: s["created_at"], reverse=True)
     return json.dumps(summaries, default=str)

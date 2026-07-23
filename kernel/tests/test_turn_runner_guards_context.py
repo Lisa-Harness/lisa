@@ -227,6 +227,7 @@ async def test_output_guard_block_skips_post_turn_slice() -> None:
 async def test_output_guard_sanitizes_output() -> None:
     """When the output guard returns sanitized_text, the content is rewritten
     before being returned to the user."""
+
     async def complete(**kwargs: Any) -> _StubCompletion:
         return _StubCompletion(content="The secret code is 1234.")
 
@@ -246,6 +247,7 @@ async def test_output_guard_sanitizes_output() -> None:
 @pytest.mark.asyncio
 async def test_default_output_guard_allows_everything() -> None:
     """The default PassThroughOutputGuard allows all output unchanged."""
+
     async def complete(**kwargs: Any) -> _StubCompletion:
         return _StubCompletion(content="Any content here.")
 
@@ -261,6 +263,7 @@ async def test_default_output_guard_allows_everything() -> None:
 @pytest.mark.asyncio
 async def test_default_input_guard_allows_everything() -> None:
     """The default PassThroughInputGuard allows all input unchanged."""
+
     async def complete(**kwargs: Any) -> _StubCompletion:
         return _StubCompletion(content="Done.")
 
@@ -446,6 +449,7 @@ async def test_fire_slice_calls_slot_when_enabled() -> None:
 @pytest.mark.asyncio
 async def test_fire_slice_catches_exception_and_returns_error_outcome() -> None:
     """When the slice raises, _fire_slice catches it and returns an error outcome."""
+
     async def failing_slice(_policy: SlicePolicy) -> SliceOutcome:
         raise RuntimeError("slice exploded")
 
@@ -468,6 +472,7 @@ async def test_fire_slice_catches_exception_and_returns_error_outcome() -> None:
 @pytest.mark.asyncio
 async def test_fire_slice_coerces_non_slice_outcome() -> None:
     """When the slot returns a non-SliceOutcome, it's coerced to an empty outcome."""
+
     async def bad_slice(_policy: SlicePolicy) -> Any:
         return "not a SliceOutcome"
 
@@ -489,6 +494,7 @@ async def test_fire_slice_coerces_non_slice_outcome() -> None:
 @pytest.mark.asyncio
 async def test_fire_slice_backfills_elapsed_ms() -> None:
     """When the outcome has elapsed_ms=0, _fire_slice backfills it from wall time."""
+
     async def my_slice(_policy: SlicePolicy) -> SliceOutcome:
         await __import__("asyncio").sleep(0.02)
         return SliceOutcome(work_items_completed=1, elapsed_ms=0)
@@ -512,6 +518,7 @@ async def test_fire_slice_backfills_elapsed_ms() -> None:
 @pytest.mark.asyncio
 async def test_fire_slice_returns_none_when_budget_zero() -> None:
     """_fire_slice returns None when the computed budget is 0."""
+
     async def my_slice(_policy: SlicePolicy) -> SliceOutcome:
         return SliceOutcome(work_items_completed=1)
 
@@ -519,7 +526,9 @@ async def test_fire_slice_returns_none_when_budget_zero() -> None:
     # should be short-circuited.
     hooks = TurnHooks(
         pre_turn_slice=my_slice,
-        slice_tuning=SliceTuning(pre_turn_enabled=True, base_budget_ms=0, max_deferred_ms=0, hard_cap_ms=0),
+        slice_tuning=SliceTuning(
+            pre_turn_enabled=True, base_budget_ms=0, max_deferred_ms=0, hard_cap_ms=0
+        ),
         last_slice_finished_at=time.monotonic() - 1,  # some pressure
     )
     outcomes: list[SliceOutcome] = []
@@ -563,6 +572,7 @@ async def test_post_turn_slice_fires_after_response_committed() -> None:
 @pytest.mark.asyncio
 async def test_pre_turn_slice_updates_last_slice_finished_at() -> None:
     """After the pre-turn slice runs, hooks.last_slice_finished_at is updated."""
+
     async def my_pre_slice(_policy: SlicePolicy) -> SliceOutcome:
         return SliceOutcome(work_items_completed=1)
 
@@ -658,6 +668,7 @@ async def test_checkpoint_does_not_fire_when_disabled() -> None:
 @pytest.mark.asyncio
 async def test_checkpoint_failure_does_not_break_turn() -> None:
     """When on_checkpoint raises, the turn completes normally."""
+
     async def failing_checkpoint(bundle: Any) -> None:
         raise RuntimeError("checkpoint storage failed")
 

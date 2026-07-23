@@ -391,6 +391,7 @@ async def test_debug_context_reports_last_turn_sections(tmp_path: Path) -> None:
 
 def test_assemble_system_prompt_orders_harness_session_mode_and_stage() -> None:
     """Session instructions are stable system content ahead of route overlays."""
+
     def _loader(path: str) -> str:
         if path == "prompts/system-prompt.md":
             return "# Harness\nGenerated context precedes ## User Query."
@@ -410,6 +411,7 @@ def test_assemble_system_prompt_orders_harness_session_mode_and_stage() -> None:
 
 def test_load_system_prompt_raises_on_missing_content() -> None:
     """A missing system-prompt file is a hard failure, not an empty string."""
+
     def _missing_loader(path: str) -> str:
         return ""
 
@@ -425,6 +427,7 @@ def test_load_system_prompt_raises_on_unwired_loader() -> None:
 
 def test_load_system_prompt_raises_on_loader_exception() -> None:
     """A loader exception surfaces, not swallowed into an empty prompt."""
+
     def _raising_loader(path: str) -> str:
         raise OSError("disk error")
 
@@ -470,28 +473,32 @@ def test_assemble_dynamic_user_context_skips_user_context_when_absent(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="handle_message token counters now on runtime.tokens; needs deep migration")
+@pytest.mark.xfail(
+    reason="handle_message token counters now on runtime.tokens; needs deep migration"
+)
 async def test_handle_message_updates_runtime_token_counters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pass
 
 
-def test_runtime_compiles_session_plan_surface_and_start_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_compiles_session_plan_surface_and_start_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """HostRuntime compiles the auto-discovered strict v2 session once."""
     monkeypatch.chdir(tmp_path)
     ctx = tmp_path / "session_context.md"
     ctx.write_text(
-        '---\n'
-        'schema_version: 2\n'
+        "---\n"
+        "schema_version: 2\n"
         'name: "my-session"\n'
-        'surface:\n'
-        '  type: team_channel\n'
-        '  id: chan-1\n'
-        '  memory_scope: shared\n'
-        'routing:\n'
-        '  start_mode: research\n'
-        '---\n# body\n',
+        "surface:\n"
+        "  type: team_channel\n"
+        "  id: chan-1\n"
+        "  memory_scope: shared\n"
+        "routing:\n"
+        "  start_mode: research\n"
+        "---\n# body\n",
         encoding="utf-8",
     )
     config = HostConfig.from_env(data_dir=str(tmp_path), no_thread=True)
@@ -504,26 +511,30 @@ def test_runtime_compiles_session_plan_surface_and_start_mode(tmp_path: Path, mo
     assert runtime.session_plan.manifest.name == "my-session"
 
 
-def test_runtime_session_plan_exposes_pack_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_session_plan_exposes_pack_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Session pack selection lives in the compiled plan, not HostConfig."""
     monkeypatch.chdir(tmp_path)
     ctx = tmp_path / "session_context.md"
     ctx.write_text(
-        '---\n'
-        'schema_version: 2\n'
+        "---\n"
+        "schema_version: 2\n"
         'name: "pack-test"\n'
-        'surface: { type: personal_dm, id: host-console, memory_scope: testing }\n'
-        'resources:\n'
-        '  packs:\n'
-        '    include: [lisa-pack-core]\n'
-        '---\n# body\n',
+        "surface: { type: personal_dm, id: host-console, memory_scope: testing }\n"
+        "resources:\n"
+        "  packs:\n"
+        "    include: [lisa-pack-core]\n"
+        "---\n# body\n",
         encoding="utf-8",
     )
     runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path), no_thread=True))
     assert runtime.session_plan.manifest.resources.packs.include == ("lisa-pack-core",)
 
 
-def test_runtime_start_mode_initializes_current_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_start_mode_initializes_current_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """HostRuntime.current_mode_id is seeded from start_mode when set."""
     monkeypatch.chdir(tmp_path)
     ctx = tmp_path / "session_context.md"
@@ -541,7 +552,9 @@ def test_runtime_start_mode_initializes_current_mode(tmp_path: Path, monkeypatch
     assert runtime.current_mode_id == "research"
 
 
-def test_runtime_no_start_mode_defaults_to_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_no_start_mode_defaults_to_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Without start_mode, current_mode_id stays 'default'."""
     monkeypatch.chdir(tmp_path)
     config = HostConfig.from_env(data_dir=str(tmp_path), no_thread=True)
@@ -551,7 +564,8 @@ def test_runtime_no_start_mode_defaults_to_default(tmp_path: Path, monkeypatch: 
 
 @pytest.mark.asyncio
 async def test_start_mode_default_goes_to_current_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """start_mode: default means NL turns go to current_mode_id (default).
 
@@ -576,17 +590,20 @@ async def test_start_mode_default_goes_to_current_mode(
         await handle_message(runtime, "write a markdown document", transport)
 
     assert execute_mock.called, (
-        "_execute_mode_turn must be called for NL turns when "
-        "start_mode == 'default'."
+        "_execute_mode_turn must be called for NL turns when start_mode == 'default'."
     )
     # The mode_id argument should be "default" (current_mode_id).
     call_args = execute_mock.call_args
-    assert call_args.kwargs.get("mode_id", call_args.args[2] if len(call_args.args) > 2 else "") == "default"
+    assert (
+        call_args.kwargs.get("mode_id", call_args.args[2] if len(call_args.args) > 2 else "")
+        == "default"
+    )
 
 
 @pytest.mark.asyncio
 async def test_start_mode_non_default_still_bypasses_to_pinned_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A real owning start_mode (e.g. research) still bypasses to the pinned mode.
 
@@ -610,13 +627,15 @@ async def test_start_mode_non_default_still_bypasses_to_pinned_mode(
         encoding="utf-8",
     )
     (tmp_path / "models.yaml").write_text(
-        "\n".join([
-            "version: 1",
-            "models:",
-            "  - model_id: gemma3:latest",
-            "    provider: ollama",
-            "    designations: [default]",
-        ]),
+        "\n".join(
+            [
+                "version: 1",
+                "models:",
+                "  - model_id: gemma3:latest",
+                "    provider: ollama",
+                "    designations: [default]",
+            ]
+        ),
         encoding="utf-8",
     )
     runtime = HostRuntime(HostConfig.from_env(data_dir=str(tmp_path), no_thread=True))
@@ -628,12 +647,13 @@ async def test_start_mode_non_default_still_bypasses_to_pinned_mode(
     with patch.object(handle_message_mod, "_execute_mode_turn", execute_mock):
         await handle_message(runtime, "some natural language", transport)
 
-    assert execute_mock.called, (
-        "_execute_mode_turn must be called for NL turns."
-    )
+    assert execute_mock.called, "_execute_mode_turn must be called for NL turns."
     # The mode_id argument should be "research" (the pinned start_mode).
     call_args = execute_mock.call_args
-    assert call_args.kwargs.get("mode_id", call_args.args[2] if len(call_args.args) > 2 else "") == "research"
+    assert (
+        call_args.kwargs.get("mode_id", call_args.args[2] if len(call_args.args) > 2 else "")
+        == "research"
+    )
 
 
 def test_file_backed_state_provider_caps_digest_with_lossy_summary(tmp_path: Path) -> None:
@@ -841,13 +861,17 @@ def test_apply_turn_usage_upgrades_old_schema_entries_in_place() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="/tokens now reads runtime.tokens via format_token_stats; needs runtime setup migration")
+@pytest.mark.xfail(
+    reason="/tokens now reads runtime.tokens via format_token_stats; needs runtime setup migration"
+)
 async def test_tokens_command_returns_detailed_stats() -> None:
     pass
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="mode token context now on runtime.last_turn_context; needs deep migration")
+@pytest.mark.xfail(
+    reason="mode token context now on runtime.last_turn_context; needs deep migration"
+)
 async def test_handle_message_surfaces_mode_token_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -871,7 +895,11 @@ def test_normalize_response_format_emits_json_schema_for_pydantic_model() -> Non
     inner = normalized["json_schema"]
     assert inner["name"] == "_RouteSchema"
     assert "properties" in inner["schema"]
-    assert set(inner["schema"]["properties"]) == {"reasoning", "selected_mode_id", "confidence_score"}
+    assert set(inner["schema"]["properties"]) == {
+        "reasoning",
+        "selected_mode_id",
+        "confidence_score",
+    }
     assert "strict" not in inner
 
 
@@ -907,13 +935,9 @@ def test_resolve_model_supports_designations_and_concrete_ids(tmp_path: Path) ->
         encoding="utf-8",
     )
 
-    default_model = resolve_little_lisa_model(
-        "default", runtime_state={}, data_dir=tmp_path
-    )
+    default_model = resolve_little_lisa_model("default", runtime_state={}, data_dir=tmp_path)
     default_model_id = default_model.model_id
-    deep_model_id = resolve_little_lisa_model(
-        "deep", runtime_state={}, data_dir=tmp_path
-    ).model_id
+    deep_model_id = resolve_little_lisa_model("deep", runtime_state={}, data_dir=tmp_path).model_id
 
     assert default_model_id
     assert deep_model_id
@@ -1052,9 +1076,7 @@ def test_extract_anthropic_tool_calls_restores_original_name_via_map() -> None:
 def test_extract_anthropic_tool_calls_falls_back_to_sanitized_name_without_map() -> None:
     from hosts.core.provider_completions import _extract_anthropic_tool_calls
 
-    blocks = [
-        {"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}}
-    ]
+    blocks = [{"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {}}]
     calls = _extract_anthropic_tool_calls(blocks)
     assert calls[0]["function"]["name"] == "get_weather"
 
@@ -1105,17 +1127,23 @@ def test_build_turn_context_marks_default_mode_handoff() -> None:
 # ── Turn log / log event (no-op stubs in core host) ──────────────────
 
 
-@pytest.mark.xfail(reason="turn logging is a no-op stub in the core host; will be wired in a later phase")
+@pytest.mark.xfail(
+    reason="turn logging is a no-op stub in the core host; will be wired in a later phase"
+)
 def test_append_turn_log_writes_jsonl(tmp_path: Path) -> None:
     pass
 
 
-@pytest.mark.xfail(reason="turn logging is a no-op stub in the core host; will be wired in a later phase")
+@pytest.mark.xfail(
+    reason="turn logging is a no-op stub in the core host; will be wired in a later phase"
+)
 def test_append_turn_log_flattens_model_and_token_fields(tmp_path: Path) -> None:
     pass
 
 
-@pytest.mark.xfail(reason="log event is a no-op stub in the core host; will be wired in a later phase")
+@pytest.mark.xfail(
+    reason="log event is a no-op stub in the core host; will be wired in a later phase"
+)
 def test_append_log_event_respects_runtime_log_threshold(tmp_path: Path) -> None:
     pass
 
@@ -1141,7 +1169,9 @@ def test_resolve_log_level_prefers_cli_env_then_debug_default(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="complete_live now takes (runtime, transport, ...); needs provider migration")
+@pytest.mark.xfail(
+    reason="complete_live now takes (runtime, transport, ...); needs provider migration"
+)
 async def test_complete_live_routes_azure_openai_with_completion_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1149,7 +1179,9 @@ async def test_complete_live_routes_azure_openai_with_completion_tokens(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="complete_live now takes (runtime, transport, ...); needs provider migration")
+@pytest.mark.xfail(
+    reason="complete_live now takes (runtime, transport, ...); needs provider migration"
+)
 async def test_complete_live_routes_anthropic_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1165,7 +1197,9 @@ async def test_complete_anthropic_surfaces_model_not_found_detail(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="complete_live now takes (runtime, transport, ...); needs provider migration")
+@pytest.mark.xfail(
+    reason="complete_live now takes (runtime, transport, ...); needs provider migration"
+)
 async def test_complete_live_routes_ollama_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1173,7 +1207,9 @@ async def test_complete_live_routes_ollama_provider(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="complete_live now takes (runtime, transport, ...); needs provider migration")
+@pytest.mark.xfail(
+    reason="complete_live now takes (runtime, transport, ...); needs provider migration"
+)
 async def test_complete_live_routes_google_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1181,7 +1217,9 @@ async def test_complete_live_routes_google_provider(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="complete_live now takes (runtime, transport, ...); needs provider migration")
+@pytest.mark.xfail(
+    reason="complete_live now takes (runtime, transport, ...); needs provider migration"
+)
 async def test_complete_live_normalizes_fenced_json_structured_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1189,7 +1227,9 @@ async def test_complete_live_normalizes_fenced_json_structured_output(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="complete_live now takes (runtime, transport, ...); needs provider migration")
+@pytest.mark.xfail(
+    reason="complete_live now takes (runtime, transport, ...); needs provider migration"
+)
 async def test_complete_live_preserves_non_json_structured_output_for_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1202,9 +1242,7 @@ async def test_complete_live_preserves_non_json_structured_output_for_fallback(
 class _StubStreamEvent:
     """One SSE event from an OpenAI-compatible streaming response."""
 
-    def __init__(
-        self, delta_content: str = "", finish_reason: str | None = None
-    ) -> None:
+    def __init__(self, delta_content: str = "", finish_reason: str | None = None) -> None:
         self.choices = (
             [
                 SimpleNamespace(
@@ -1233,11 +1271,13 @@ class _StubAsyncStream:
 
 async def _stub_dispatch_openai(**kwargs: object) -> _StubAsyncStream:
     """Stub provider dispatch that returns a fixed async stream."""
-    return _StubAsyncStream([
-        _StubStreamEvent(delta_content="Hello"),
-        _StubStreamEvent(delta_content=" world"),
-        _StubStreamEvent(finish_reason="stop"),
-    ])
+    return _StubAsyncStream(
+        [
+            _StubStreamEvent(delta_content="Hello"),
+            _StubStreamEvent(delta_content=" world"),
+            _StubStreamEvent(finish_reason="stop"),
+        ]
+    )
 
 
 class _CapturingTransport:
@@ -1341,7 +1381,9 @@ async def test_complete_live_stream_no_stage_callbacks_for_text_mode(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="handle_message now takes (runtime, msg, transport); needs deep migration")
+@pytest.mark.xfail(
+    reason="handle_message now takes (runtime, msg, transport); needs deep migration"
+)
 async def test_handle_message_deep_route_uses_deep_designation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1349,7 +1391,9 @@ async def test_handle_message_deep_route_uses_deep_designation(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="handle_message now takes (runtime, msg, transport); needs deep migration")
+@pytest.mark.xfail(
+    reason="handle_message now takes (runtime, msg, transport); needs deep migration"
+)
 async def test_handle_message_returns_operation_error_instead_of_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1492,7 +1536,9 @@ def test_initialize_runtime_fails_when_user_context_missing(
 ) -> None:
     monkeypatch.setenv("LISA_DATA_DIR", str(tmp_path))
 
-    config = HostConfig.from_env(debug=False, user_slug="adam", timezone="UTC", data_dir=str(tmp_path))
+    config = HostConfig.from_env(
+        debug=False, user_slug="adam", timezone="UTC", data_dir=str(tmp_path)
+    )
     runtime = HostRuntime(config)
 
     # The new HostConfig does not raise at construction; session context
@@ -1600,7 +1646,11 @@ def test_format_session_exit_summary_lines_includes_useful_stats() -> None:
         "session_total_tokens": 600,
         "model_token_totals": {
             "deepseek-v4": {"prompt_tokens": 300, "completion_tokens": 120, "total_tokens": 420},
-            "claude-haiku-4-5": {"prompt_tokens": 120, "completion_tokens": 60, "total_tokens": 180},
+            "claude-haiku-4-5": {
+                "prompt_tokens": 120,
+                "completion_tokens": 60,
+                "total_tokens": 180,
+            },
         },
         "mode_token_totals": {
             "default": {"prompt_tokens": 280, "completion_tokens": 120, "total_tokens": 400},
@@ -1648,7 +1698,9 @@ async def test_settings_command_reports_effective_runtime_settings(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="handle_message manifest check now reads runtime.manifest; needs deep migration")
+@pytest.mark.xfail(
+    reason="handle_message manifest check now reads runtime.manifest; needs deep migration"
+)
 async def test_handle_message_requires_models_before_running_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1696,7 +1748,9 @@ def test_build_turn_hooks_omits_complete_stream_when_disabled(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="turn hooks execute_operation wiring needs runtime + operation context migration")
+@pytest.mark.xfail(
+    reason="turn hooks execute_operation wiring needs runtime + operation context migration"
+)
 async def test_build_turn_hooks_routes_memory_through_operations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1704,7 +1758,9 @@ async def test_build_turn_hooks_routes_memory_through_operations(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="turn hooks execute_operation wiring needs runtime + operation context migration")
+@pytest.mark.xfail(
+    reason="turn hooks execute_operation wiring needs runtime + operation context migration"
+)
 async def test_turn_hook_execute_operation_injects_memory_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1715,7 +1771,9 @@ async def test_turn_hook_execute_operation_injects_memory_dependencies(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="synthesize_learning test needs OperationExecutionContext + complete_fn migration")
+@pytest.mark.xfail(
+    reason="synthesize_learning test needs OperationExecutionContext + complete_fn migration"
+)
 async def test_synthesize_learning_prompt_mentions_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1725,7 +1783,9 @@ async def test_synthesize_learning_prompt_mentions_json(
 # ── Hello-world pack discovery (subprocess) ───────────────────────────
 
 
-@pytest.mark.xfail(reason="subprocess test invokes little_lisa script; needs hosts/cli/main.py migration")
+@pytest.mark.xfail(
+    reason="subprocess test invokes little_lisa script; needs hosts/cli/main.py migration"
+)
 def test_little_lisa_discovers_and_runs_hello_world_pack_from_sdk_content_roots(
     tmp_path: Path,
 ) -> None:

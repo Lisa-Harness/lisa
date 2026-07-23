@@ -65,4 +65,3 @@ def test_sdk_package_imports_no_app_modules() -> None:
             "Forbidden app-layer imports found in sdk:\n" + "\n".join(lines),
             pytrace=False,
         )
-

@@ -297,7 +297,9 @@ def build_brokered_context_markdown(
             query[:80],
         )
         return ""
-    return render_context_packet_markdown(packet, routing_config=state.context_routing if state else None)
+    return render_context_packet_markdown(
+        packet, routing_config=state.context_routing if state else None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -436,11 +438,13 @@ def assemble_dynamic_user_context(
     if user_context:
         # Normalize authored markdown (which may use provenance fences)
         # into the canonical tagged representation before emission.
-        raw_sections.append((
-            "selected_user_context",
-            "memory",
-            normalize_markdown_to_tagged(user_context),
-        ))
+        raw_sections.append(
+            (
+                "selected_user_context",
+                "memory",
+                normalize_markdown_to_tagged(user_context),
+            )
+        )
 
     thread_digest = replay_policy.thread_digest_text
     if replay_policy.include_prior_conversation_digest and thread_digest:
@@ -601,9 +605,7 @@ def _resolve_replay_policy(
 
     include_prior = True if controls.include_prior_conversation_digest is not False else False
     include_recent = True if controls.include_recent_conversation is not False else False
-    include_diag = (
-        True if controls.include_diagnostic_reflection is not False else False
-    )
+    include_diag = True if controls.include_diagnostic_reflection is not False else False
 
     if trigger_mode == "manual":
         include_prior = False

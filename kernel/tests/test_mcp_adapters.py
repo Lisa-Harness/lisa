@@ -162,4 +162,3 @@ def test_mcp_content_registry_integration(tmp_path: Path) -> None:
     registry = MCPContentRegistry(cfg)
     text = registry.read_authored_text("nonexistent/path.md")
     assert text == ""
-

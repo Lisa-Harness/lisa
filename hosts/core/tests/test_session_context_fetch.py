@@ -66,7 +66,12 @@ def test_fetch_success_caches_body_and_meta(tmp_path, monkeypatch):
     def mock_get(self, url, **kwargs):
         assert url == "https://github.com/foo.md"
         assert kwargs["headers"].get("User-Agent") == "lisa_framework"
-        return httpx.Response(200, request=httpx.Request("GET", url), content=b"Hello World", headers={"etag": "W/123", "last-modified": "Wed, 21 Oct 2015 07:28:00 GMT"})
+        return httpx.Response(
+            200,
+            request=httpx.Request("GET", url),
+            content=b"Hello World",
+            headers={"etag": "W/123", "last-modified": "Wed, 21 Oct 2015 07:28:00 GMT"},
+        )
 
     monkeypatch.setattr(httpx.Client, "get", mock_get)
 
@@ -89,14 +94,19 @@ def test_fetch_304_falls_back_to_cache(tmp_path, monkeypatch):
     cache_md = _cache_path_for(url, tmp_path)
     cache_md.parent.mkdir(parents=True, exist_ok=True)
     cache_md.write_text("Hello Cache", encoding="utf-8")
-    
+
     meta_path = _cache_meta_path(url, tmp_path)
-    meta_path.write_text(json.dumps({
-        "source_ref": url,
-        "etag": "W/123",
-        "last_modified": "Wed, 21 Oct 2015 07:28:00 GMT",
-        "fetched_at": "old"
-    }), encoding="utf-8")
+    meta_path.write_text(
+        json.dumps(
+            {
+                "source_ref": url,
+                "etag": "W/123",
+                "last_modified": "Wed, 21 Oct 2015 07:28:00 GMT",
+                "fetched_at": "old",
+            }
+        ),
+        encoding="utf-8",
+    )
 
     def mock_get(self, req_url, **kwargs):
         headers = kwargs.get("headers", {})
@@ -119,11 +129,16 @@ def test_fetch_force_refresh_skips_conditional_headers(tmp_path, monkeypatch):
     cache_md = _cache_path_for(url, tmp_path)
     cache_md.parent.mkdir(parents=True, exist_ok=True)
     cache_md.write_text("Hello Cache", encoding="utf-8")
-    
+
     meta_path = _cache_meta_path(url, tmp_path)
-    meta_path.write_text(json.dumps({
-        "etag": "W/123",
-    }), encoding="utf-8")
+    meta_path.write_text(
+        json.dumps(
+            {
+                "etag": "W/123",
+            }
+        ),
+        encoding="utf-8",
+    )
 
     def mock_get(self, req_url, **kwargs):
         headers = kwargs.get("headers", {})
@@ -152,7 +167,7 @@ def test_fetch_network_error_returns_stale_cache(tmp_path, monkeypatch, caplog):
 
     with caplog.at_level(logging.WARNING):
         path = fetch_session_context_url(url, data_dir=tmp_path)
-    
+
     assert path == cache_md
     assert path.read_text(encoding="utf-8") == "Stale Cache"
     assert "falling back to stale cache" in caplog.text
@@ -160,6 +175,7 @@ def test_fetch_network_error_returns_stale_cache(tmp_path, monkeypatch, caplog):
 
 def test_fetch_network_error_raises_if_no_cache(tmp_path, monkeypatch):
     url = "https://github.com/foo.md"
+
     def mock_err(self, req_url, **kwargs):
         raise httpx.ConnectError("Connection failed")
 

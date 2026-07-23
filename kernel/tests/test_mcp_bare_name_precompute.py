@@ -42,7 +42,9 @@ class _FakeResult:
 
 
 class _FakeTool:
-    def __init__(self, name: str, description: str = "", schema: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, name: str, description: str = "", schema: dict[str, Any] | None = None
+    ) -> None:
         self.name = name
         self.description = description
         self.inputSchema = schema or {"type": "object", "properties": {}}
@@ -144,6 +146,7 @@ async def test_resolve_server_for_bare_name_returns_none_for_unknown_warm(
     """
     sessions = {"lisa-memory": _FakeSession([_FakeTool("add_memory")])}
     _patch_connect_with_session(monkeypatch, sessions)
+
     # Ensure _connect is never called for the unknown name.
     async def _no_connect(self: MCPToolPool, config: MCPClientConfig) -> None:
         raise AssertionError("_connect must not be called when there are no cold configs.")
@@ -184,6 +187,7 @@ async def test_resolve_server_for_bare_name_lazy_connects_cold_server_once(
         # Only connect the warm server at start; cold stays unconnected.
         self._started = True
         from contextlib import AsyncExitStack
+
         self._exit_stack = AsyncExitStack()
         await self._exit_stack.__aenter__()
         self._sessions["warm"] = warm_session

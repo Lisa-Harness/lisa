@@ -61,12 +61,12 @@ async def test_recall_operation_uses_memory_list_and_returns_ranked_evidence() -
             output_text=json.dumps(
                 [
                     _record(
-                            record_id=10,
+                        record_id=10,
                         content="We decided to use PostgreSQL for the control plane.",
                         salience=0.7,
                     ).model_dump(mode="json"),
                     _record(
-                            record_id=20,
+                        record_id=20,
                         content="We postponed the Redis work.",
                         salience=0.9,
                     ).model_dump(mode="json"),
@@ -116,22 +116,24 @@ async def test_recall_operation_searches_and_unwraps_mem0_envelope() -> None:
         # The defensive unwrap in recall.py should extract .results.
         return ToolResult(
             tool_id=tool_id,
-            output_text=json.dumps({
-                "results": [
-                    {
-                        "id": "uuid-1",
-                        "memory": "We decided to use PostgreSQL for analytics.",
-                        "score": 0.9,
-                        "created_at": "2026-07-10T12:00:00Z",
-                    },
-                    {
-                        "id": "uuid-2",
-                        "memory": "We postponed the Redis work.",
-                        "score": 0.5,
-                        "created_at": "2026-07-11T12:00:00Z",
-                    },
-                ],
-            }),
+            output_text=json.dumps(
+                {
+                    "results": [
+                        {
+                            "id": "uuid-1",
+                            "memory": "We decided to use PostgreSQL for analytics.",
+                            "score": 0.9,
+                            "created_at": "2026-07-10T12:00:00Z",
+                        },
+                        {
+                            "id": "uuid-2",
+                            "memory": "We postponed the Redis work.",
+                            "score": 0.5,
+                            "created_at": "2026-07-11T12:00:00Z",
+                        },
+                    ],
+                }
+            ),
         )
 
     ctx = OperationExecutionContext(
@@ -208,6 +210,7 @@ async def test_recall_operation_deep_returns_results_with_no_lexical_overlap() -
     payload was full of semantically-relevant memories, but the operation
     returned "No memory matches found" because the lexical gate dropped them
     all. With ``deep`` honored, the results surface."""
+
     async def execute_tool(_tool_id: str, _ctx: object) -> ToolResult:
         return ToolResult(
             tool_id="memory.search",

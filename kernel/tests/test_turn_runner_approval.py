@@ -278,8 +278,7 @@ async def test_pre_and_post_lifecycle_tools_rethrow_approval(
 
 
 @pytest.mark.asyncio
-async def test_declarative_operation_rethrows_nested_approval(
-) -> None:
+async def test_declarative_operation_rethrows_nested_approval() -> None:
     """Prompt operations preserve approval interruptions from their declared tools."""
 
     service = InMemoryApprovalService()

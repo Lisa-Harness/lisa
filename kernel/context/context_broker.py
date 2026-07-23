@@ -34,6 +34,7 @@ def resolve_host_name() -> str:
     except OSError:
         return ""
 
+
 from kernel.config import settings
 from kernel.context.context_frames import render_ranked_evidence_namespace_frame
 from kernel.context.extension_evidence import NoOpExtensionEvidenceBuilder
@@ -287,20 +288,24 @@ def _compute_combined_score(evidence: ContextEvidence) -> float:
     return round(min(max(score, 0.0), 1.0), 4)
 
 
-def _classify_evidence_namespace(evidence: ContextEvidence, routing: ContextRoutingConfig | None = None) -> ContextEvidenceNamespace:
+def _classify_evidence_namespace(
+    evidence: ContextEvidence, routing: ContextRoutingConfig | None = None
+) -> ContextEvidenceNamespace:
     source = evidence.source.lower()
     evidence_type = evidence.evidence_type.lower()
     tags = {tag.lower() for tag in evidence.tags}
-    
+
     if routing:
         for ns_id, ns_config in routing.namespaces.items():
             if ns_config.is_fallback:
                 continue
-            if (source in ns_config.match_sources or 
-                evidence_type in ns_config.match_types or 
-                any(t in ns_config.match_tags for t in tags)):
+            if (
+                source in ns_config.match_sources
+                or evidence_type in ns_config.match_types
+                or any(t in ns_config.match_tags for t in tags)
+            ):
                 return ns_id
-                
+
         for ns_id, ns_config in routing.namespaces.items():
             if ns_config.is_fallback:
                 return ns_id
@@ -308,13 +313,17 @@ def _classify_evidence_namespace(evidence: ContextEvidence, routing: ContextRout
     return "general_context"
 
 
-def _classify_evidence_source_type(evidence: ContextEvidence, routing: ContextRoutingConfig | None = None) -> ContextEvidenceSourceType:
+def _classify_evidence_source_type(
+    evidence: ContextEvidence, routing: ContextRoutingConfig | None = None
+) -> ContextEvidenceSourceType:
     if evidence.metadata.get("extension_id") or evidence.metadata.get("extension_name"):
         return "extension"
     return "general"
 
 
-def _apply_evidence_identity(evidence: ContextEvidence, routing: ContextRoutingConfig | None = None) -> ContextEvidence:
+def _apply_evidence_identity(
+    evidence: ContextEvidence, routing: ContextRoutingConfig | None = None
+) -> ContextEvidence:
     if evidence.namespace == "general_context":
         evidence.namespace = _classify_evidence_namespace(evidence, routing)
     if evidence.source_type == "general":
@@ -569,7 +578,9 @@ def _render_evidence_insert(evidence: ContextEvidence) -> str:
     )
 
 
-def render_context_packet_markdown(packet: ContextPacket, routing_config: ContextRoutingConfig | None = None) -> str:
+def render_context_packet_markdown(
+    packet: ContextPacket, routing_config: ContextRoutingConfig | None = None
+) -> str:
     """Render one ContextPacket into prompt-safe markdown."""
     if not packet.selected_evidence:
         return "- No ranked context evidence was selected for this turn."

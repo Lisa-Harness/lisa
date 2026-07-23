@@ -96,9 +96,7 @@ async def test_handle_summarize_history_writes_back_compacted_history(
     """End-to-end: /summarize-history persists the compacted history via the writer seam."""
     thread_path = tmp_path / "thread.jsonl"
     thread_path.write_text(
-        "\n".join(
-            json.dumps({"query": f"q{i}", "response_text": f"r{i}"}) for i in range(8)
-        )
+        "\n".join(json.dumps({"query": f"q{i}", "response_text": f"r{i}"}) for i in range(8))
         + "\n",
         encoding="utf-8",
     )
@@ -118,6 +116,7 @@ async def test_handle_summarize_history_writes_back_compacted_history(
         class _Result:
             output_text = "Condensed 7 turn(s)."
             output_json = {"turn_history": new_history}
+
         return _Result()
 
     monkeypatch.setattr(cp_cmds, "execute_operation", _fake_exec)
@@ -139,6 +138,7 @@ async def test_handle_summarize_history_reports_when_no_write_back_available(
         class _Result:
             output_text = "Condensed 7 turn(s)."
             output_json = {"turn_history": [{"summary": "x"}]}
+
         return _Result()
 
     monkeypatch.setattr(cp_cmds, "execute_operation", _fake_exec)

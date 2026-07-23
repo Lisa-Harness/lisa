@@ -369,9 +369,7 @@ async def test_handoff_updates_ctx_mode_id_for_post_handoff_dispatch() -> None:
     """
     captured_op_ctx_modes: list[str] = []
 
-    async def stub_execute_op(
-        operation_id: str, ctx: OperationExecutionContext
-    ) -> OperationResult:
+    async def stub_execute_op(operation_id: str, ctx: OperationExecutionContext) -> OperationResult:
         captured_op_ctx_modes.append(str(getattr(ctx, "mode_id", "")))
         return OperationResult(output_text=f"ran {operation_id} in {getattr(ctx, 'mode_id', '')}")
 
@@ -536,7 +534,9 @@ async def test_workflow_transition_invalid_target_produces_error_output() -> Non
 
     assert result.response_text == "Recovered."
     # apply_transition should have raised, producing a "Transition failed" output.
-    assert any("failed" in out.lower() or "transition" in out.lower() for out in captured_tool_outputs)
+    assert any(
+        "failed" in out.lower() or "transition" in out.lower() for out in captured_tool_outputs
+    )
 
 
 # ── Transition: missing target_stage_id ──────────────────────────────
@@ -567,7 +567,9 @@ async def test_transition_missing_target_stage_id_returns_error() -> None:
     result = await run_turn(mode_id="default", query="test", hooks=hooks)
 
     assert result.response_text == "Recovered."
-    assert any("requires" in out.lower() and "target_stage_id" in out for out in captured_tool_outputs)
+    assert any(
+        "requires" in out.lower() and "target_stage_id" in out for out in captured_tool_outputs
+    )
 
 
 # ── Transition: unknown target (not fork, not routable, not workflow) ──

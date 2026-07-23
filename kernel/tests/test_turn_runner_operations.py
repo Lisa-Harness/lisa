@@ -117,7 +117,9 @@ async def test_operation_tool_call_dispatches_via_execute_operation() -> None:
 
     hooks = TurnHooks(complete=two_step, execute_operation=stub_execute_op)
 
-    result = await run_turn(mode_id="learn", query="learn that we decided to use PostgreSQL", hooks=hooks)
+    result = await run_turn(
+        mode_id="learn", query="learn that we decided to use PostgreSQL", hooks=hooks
+    )
 
     assert result.response_text == "Memory stored successfully."
     assert result.tool_call_count == 1
@@ -162,9 +164,7 @@ async def test_non_operation_tool_call_dispatches_via_pool() -> None:
             )
         return _StubCompletion(content="Memory saved.")
 
-    async def stub_execute_op(
-        operation_id: str, ctx: OperationExecutionContext
-    ) -> OperationResult:
+    async def stub_execute_op(operation_id: str, ctx: OperationExecutionContext) -> OperationResult:
         return OperationResult(output_text="should not be called")
 
     hooks = TurnHooks(
@@ -196,9 +196,7 @@ async def test_operation_schemas_appear_in_tools_sent_to_model() -> None:
     tool_names = {t["function"]["name"] for t in captured_tools if "function" in t}
     # At least one operation should be in the tool list for learn mode
     operation_ids = set(get_operation_catalog().keys())
-    assert tool_names & operation_ids, (
-        f"Expected operation schemas in tools, got: {tool_names}"
-    )
+    assert tool_names & operation_ids, f"Expected operation schemas in tools, got: {tool_names}"
 
 
 @pytest.mark.asyncio
@@ -276,7 +274,9 @@ async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
     # MCP-discovered tools are namespaced (server_id.tool_name); synthetic
     # aliases keep their bare names (memory.add, etc.).
     class _StubPool:
-        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[MCPToolSpec]:
+        async def list_tools(
+            self, *, allowed_server_ids: set[str] | None = None
+        ) -> list[MCPToolSpec]:
             return [
                 MCPToolSpec(
                     server_id="__synthetic__",
@@ -414,7 +414,9 @@ async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
         return _StubCompletion(content="Done.")
 
     class _StubPool:
-        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[MCPToolSpec]:
+        async def list_tools(
+            self, *, allowed_server_ids: set[str] | None = None
+        ) -> list[MCPToolSpec]:
             return [
                 MCPToolSpec(
                     server_id="__synthetic__",
@@ -505,7 +507,9 @@ async def test_run_turn_prunes_duplicate_tools_before_model_call() -> None:
         return _StubCompletion(content="Done.")
 
     class _StubPool:
-        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[MCPToolSpec]:
+        async def list_tools(
+            self, *, allowed_server_ids: set[str] | None = None
+        ) -> list[MCPToolSpec]:
             return [
                 MCPToolSpec(
                     server_id="__synthetic__",

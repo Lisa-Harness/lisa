@@ -45,11 +45,7 @@ class _BlankLineEmitter(Emitter):
     """
 
     def expect_block_sequence_item(self, first: bool = False) -> None:
-        if (
-            not first
-            and not isinstance(self.event, SequenceEndEvent)
-            and self.indent == 0
-        ):
+        if not first and not isinstance(self.event, SequenceEndEvent) and self.indent == 0:
             # Write an extra line break, then clear ``indention`` so the base
             # ``write_indent`` (called next by ``expect_block_sequence_item``)
             # still emits its own line break. Without this reset, ``write_line_break``
@@ -64,9 +60,7 @@ class ManifestDumper(_BlankLineEmitter, yaml.Dumper):
     """Dumper combining the blank-line emitter with the compact-list representer."""
 
 
-def _represent_compact_list(
-    dumper: yaml.Dumper, data: _CompactList
-) -> yaml.Node:
+def _represent_compact_list(dumper: yaml.Dumper, data: _CompactList) -> yaml.Node:
     """Render a short ``capabilities`` list as a flow sequence; else block style.
 
     Only ``_CompactList`` instances (used for ``capabilities``) are rolled up.
@@ -81,22 +75,14 @@ def _represent_compact_list(
     if data and all(isinstance(item, str) and item for item in data):
         probe = yaml.safe_dump(list(data), default_flow_style=True).rstrip()
         if len(probe) <= _MAX_FLOW_LEN:
-            return dumper.represent_sequence(
-                "tag:yaml.org,2002:seq", data, flow_style=True
-            )
-    return dumper.represent_sequence(
-        "tag:yaml.org,2002:seq", data, flow_style=False
-    )
+            return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=True)
+    return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=False)
 
 
-def _represent_block_list(
-    dumper: yaml.Dumper, data: list[object]
-) -> yaml.Node:
+def _represent_block_list(dumper: yaml.Dumper, data: list[object]) -> yaml.Node:
     """Render a plain list in block style (never rolled up inline)."""
 
-    return dumper.represent_sequence(
-        "tag:yaml.org,2002:seq", data, flow_style=False
-    )
+    return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=False)
 
 
 class _CompactList(list):

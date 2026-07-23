@@ -68,13 +68,11 @@ class CheckpointEnrichment(BaseModel):
 
     overview: str = Field(
         default="",
-        description="2-3 sentence narrative summary of what has happened in "
-        "this session so far.",
+        description="2-3 sentence narrative summary of what has happened in this session so far.",
     )
     work_done: str = Field(
         default="",
-        description="What was accomplished or decided. Focus on outcomes, "
-        "not process.",
+        description="What was accomplished or decided. Focus on outcomes, not process.",
     )
     important_files: list[str] = Field(
         default_factory=list,

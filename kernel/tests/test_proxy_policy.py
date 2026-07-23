@@ -58,6 +58,7 @@ def _config_with_proxy(
 def _patch_connect(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_connect(self: MCPToolPool, config: MCPClientConfig) -> None:
         self._sessions[config.server_id] = object()
+
     monkeypatch.setattr(MCPToolPool, "_connect", fake_connect)
 
 
@@ -115,40 +116,52 @@ _MEM0_PROXY_POLICY = ProxyPolicy(
 
 _MEM0_TOOL_SCHEMAS = {
     "mem0": [
-        ("add_memory", "Add a memory", {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string"},
-                "user_id": {"type": "string"},
-                "agent_id": {"type": "string"},
-                "app_id": {"type": "string"},
+        (
+            "add_memory",
+            "Add a memory",
+            {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "user_id": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "app_id": {"type": "string"},
+                },
+                "required": ["text", "user_id"],
             },
-            "required": ["text", "user_id"],
-        }),
-        ("get_memories", "List memories", {
-            "type": "object",
-            "properties": {
-                "filters": {"type": "object"},
-                "user_id": {"type": "string"},
-                "agent_id": {"type": "string"},
-                "app_id": {"type": "string"},
-                "page": {"type": "integer"},
-                "page_size": {"type": "integer"},
+        ),
+        (
+            "get_memories",
+            "List memories",
+            {
+                "type": "object",
+                "properties": {
+                    "filters": {"type": "object"},
+                    "user_id": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "app_id": {"type": "string"},
+                    "page": {"type": "integer"},
+                    "page_size": {"type": "integer"},
+                },
+                "required": ["user_id"],
             },
-            "required": ["user_id"],
-        }),
-        ("search_memories", "Search memories", {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "filters": {"type": "object"},
-                "user_id": {"type": "string"},
-                "agent_id": {"type": "string"},
-                "app_id": {"type": "string"},
-                "limit": {"type": "integer"},
+        ),
+        (
+            "search_memories",
+            "Search memories",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "filters": {"type": "object"},
+                    "user_id": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "app_id": {"type": "string"},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["query", "user_id"],
             },
-            "required": ["query", "user_id"],
-        }),
+        ),
     ],
 }
 
@@ -169,14 +182,21 @@ class _FakeSession:
 
     async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> Any:
         from types import SimpleNamespace
-        return SimpleNamespace(tools=[
-            type("T", (), {
-                "name": name,
-                "description": desc,
-                "inputSchema": schema,
-            })()
-            for name, desc, schema in _MEM0_TOOL_SCHEMAS["mem0"]
-        ])
+
+        return SimpleNamespace(
+            tools=[
+                type(
+                    "T",
+                    (),
+                    {
+                        "name": name,
+                        "description": desc,
+                        "inputSchema": schema,
+                    },
+                )()
+                for name, desc, schema in _MEM0_TOOL_SCHEMAS["mem0"]
+            ]
+        )
 
 
 # ── Schema projection ──────────────────────────────────────────────────────
@@ -249,7 +269,9 @@ async def test_direct_native_call_gets_ambient_injection(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_direct_native_call_add_memory_gets_top_level_ambient(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_direct_native_call_add_memory_gets_top_level_ambient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """add_memory has no 'filters' param, so ambient fields are top-level."""
     _patch_connect(monkeypatch)
     _patch_refresh_with_proxy(monkeypatch, _MEM0_TOOL_SCHEMAS)
@@ -340,7 +362,11 @@ async def test_idempotent_filters_no_duplicates(monkeypatch: pytest.MonkeyPatch)
 
     # Should have exactly 4 entries: 3 ambient (replaced) + 1 content (preserved)
     assert len(and_list) == 4
-    ambient_entries = {list(e.keys())[0]: list(e.values())[0] for e in and_list if list(e.keys())[0] in ("user_id", "agent_id", "app_id")}
+    ambient_entries = {
+        list(e.keys())[0]: list(e.values())[0]
+        for e in and_list
+        if list(e.keys())[0] in ("user_id", "agent_id", "app_id")
+    }
     assert ambient_entries["user_id"] == "adam"  # replaced, not "old_user"
     assert ambient_entries["agent_id"] == "coach"
     assert ambient_entries["app_id"] == "little-lisa"

@@ -92,7 +92,9 @@ def _pack_host_commands() -> list[Any]:
     _pack_command_cache = discover_pack_host_commands()
     return _pack_command_cache
 
+
 # ── Token-accounting adapter ──────────────────────────────────────────
+
 
 def _token_state_dict(runtime: HostRuntime) -> dict[str, Any]:
     """Build a dict view of the runtime's token counters for apply_turn_usage.
@@ -178,6 +180,7 @@ def _apply_turn_usage(
         stage_id=stage_id,
     )
     _sync_token_state(runtime, state)
+
 
 if TYPE_CHECKING:
     from hosts.core.callbacks import TransportCallbacks
@@ -311,9 +314,13 @@ async def _dispatch_host_command(
     if lowered.startswith("/help") or lowered == "help":
         response_text = await handle_help_command(runtime, stripped, lowered, message)
     elif lowered in {"/tokens", "tokens"}:
-        response_text = handle_simple_command(runtime, message, "tokens", format_token_stats(runtime))
+        response_text = handle_simple_command(
+            runtime, message, "tokens", format_token_stats(runtime)
+        )
     elif lowered in {"/settings", "settings"}:
-        response_text = handle_simple_command(runtime, message, "settings", render_runtime_settings(runtime))
+        response_text = handle_simple_command(
+            runtime, message, "settings", render_runtime_settings(runtime)
+        )
     elif lowered in {"/consolidate", "consolidate", "/slice", "slice"}:
         response_text = await run_explicit_slice_command(runtime, message=message)
     elif lowered in {"/intake", "intake"}:
@@ -323,17 +330,13 @@ async def _dispatch_host_command(
     elif lowered.startswith("/models"):
         response_text = await handle_models_command(runtime, stripped, message)
     elif lowered in {"/modes", "modes"}:
-        response_text = handle_simple_command(
-            runtime, message, "modes", render_modes_list(runtime)
-        )
+        response_text = handle_simple_command(runtime, message, "modes", render_modes_list(runtime))
     elif lowered in {"/operations", "operations"}:
         response_text = handle_simple_command(
             runtime, message, "operations", render_operations_list(runtime)
         )
     elif lowered in {"/tools", "tools"}:
-        response_text = handle_simple_command(
-            runtime, message, "tools", render_tools_list(runtime)
-        )
+        response_text = handle_simple_command(runtime, message, "tools", render_tools_list(runtime))
     elif lowered == "/approve" or lowered.startswith("/approve "):
         response_text = await _handle_approval_command(
             runtime,
@@ -481,16 +484,12 @@ async def _route_model_turn(
         # routing on every turn. Exempt `default` so that
         # start_mode: default means "let the model decide via handoff."
         start_mode = runtime.start_mode_id
-        if (
-            start_mode
-            and start_mode != "default"
-            and runtime.current_mode_id == start_mode
-        ):
+        if start_mode and start_mode != "default" and runtime.current_mode_id == start_mode:
             mode_id = start_mode
             query = message
             logger.debug(
-                "start_mode bypass: routing directly to mode %r "
-                "(handoff skipped)", start_mode,
+                "start_mode bypass: routing directly to mode %r (handoff skipped)",
+                start_mode,
             )
         else:
             # Natural language: go directly to current_mode_id. The model
@@ -526,6 +525,7 @@ async def _execute_mode_turn(
     # Ensure the model manifest is loaded so mode_models overrides are honored.
     if runtime.manifest is None:
         from hosts.core.model_runtime import load_manifest as _load_manifest
+
         runtime.manifest = _load_manifest({}, data_dir=runtime.data_dir)
 
     preferred_model_id = preferred_model_id_for_route(
@@ -563,11 +563,14 @@ async def _execute_mode_turn(
     _set_turn_context(runtime, run_context)
 
     # Emit stage callback.
-    await transport.on_stage("model_call", {
-        "mode_id": mode.mode_id,
-        "model_id": resolved_model.model_id,
-        "provider": resolved_model.provider,
-    })
+    await transport.on_stage(
+        "model_call",
+        {
+            "mode_id": mode.mode_id,
+            "model_id": resolved_model.model_id,
+            "provider": resolved_model.provider,
+        },
+    )
 
     # Build turn hooks and execute.
     hooks = build_turn_hooks(runtime, context=run_context, transport=transport)
@@ -590,7 +593,7 @@ async def _execute_mode_turn(
             mode_id=mode.mode_id,
             query=query or message,
             response_text=response_text,
-            provenance={"source": "system-verified", "finish_reason": "error"}
+            provenance={"source": "system-verified", "finish_reason": "error"},
         )
         await transport.on_error(f"Operation error: {exc}", exc)
         return response_text
@@ -635,7 +638,7 @@ async def _execute_mode_turn(
         "finish_reason": "unknown",
         "model_id": resolved_model.model_id,
     }
-    
+
     append_thread_entry(
         thread_path=runtime.thread_path,
         user_slug=runtime.config.user_slug,
@@ -651,7 +654,9 @@ async def _execute_mode_turn(
     if result.handoff_to and result.handoff_to != mode.mode_id:
         runtime.current_mode_id = result.handoff_to
         logger.debug(
-            "mode handoff: %s -> %s", mode.mode_id, result.handoff_to,
+            "mode handoff: %s -> %s",
+            mode.mode_id,
+            result.handoff_to,
         )
 
     # Emit debug context if debug mode is on.

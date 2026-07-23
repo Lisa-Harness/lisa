@@ -252,9 +252,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         ),
     )
     if getattr(tool_result, "error", None):
-        return OperationResult(
-            output_text=f"⛔ Learning storage failed: {tool_result.error}"
-        )
+        return OperationResult(output_text=f"⛔ Learning storage failed: {tool_result.error}")
 
     preview = distilled_text[:80]
     return OperationResult(

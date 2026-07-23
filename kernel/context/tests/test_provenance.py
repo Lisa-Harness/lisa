@@ -53,19 +53,23 @@ class TestWrapSection:
 
 class TestWrapSections:
     def test_joins_multiple_sections(self) -> None:
-        result = wrap_sections([
-            ("authoritative", "runtime", "fact A"),
-            ("recalled_memory", "mem0", "fact B"),
-        ])
-        assert "<authoritative source=\"runtime\">\nfact A\n</authoritative>" in result
-        assert "<recalled_memory source=\"mem0\">\nfact B\n</recalled_memory>" in result
+        result = wrap_sections(
+            [
+                ("authoritative", "runtime", "fact A"),
+                ("recalled_memory", "mem0", "fact B"),
+            ]
+        )
+        assert '<authoritative source="runtime">\nfact A\n</authoritative>' in result
+        assert '<recalled_memory source="mem0">\nfact B\n</recalled_memory>' in result
         assert result.count("\n\n") == 1  # sections separated by blank line
 
     def test_skips_empty_bodies(self) -> None:
-        result = wrap_sections([
-            ("authoritative", "", "fact"),
-            ("recalled_memory", "", ""),
-        ])
+        result = wrap_sections(
+            [
+                ("authoritative", "", "fact"),
+                ("recalled_memory", "", ""),
+            ]
+        )
         assert "<authoritative>" in result
         assert "<recalled_memory>" not in result
 

@@ -112,7 +112,7 @@ def _gpt5_cost_rank(model: DiscoveredModel) -> tuple[int, float]:
     variant = 5.0
     if raw.startswith("gpt-5."):
         try:
-            suffix = raw[len("gpt-5"):]
+            suffix = raw[len("gpt-5") :]
             variant = float(f"5{suffix.split('-')[0].split(':')[0]}")
         except ValueError:
             variant = 5.0
@@ -219,9 +219,11 @@ def _build_router_block(
             continue  # rule references a model not in the discovered set
         resolved_rules.append({"when": when, "use": resolved_use})
 
-    resolved_fallback = _resolve_router_ref(
-        raw_fallback, model_ids=model_ids, mode_models=mode_models, roles=roles
-    ) if raw_fallback else ""
+    resolved_fallback = (
+        _resolve_router_ref(raw_fallback, model_ids=model_ids, mode_models=mode_models, roles=roles)
+        if raw_fallback
+        else ""
+    )
 
     if not backend and not resolved_rules and not resolved_fallback:
         return None
@@ -313,9 +315,7 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
     # names) are resolved to concrete model ids; rules referencing unknown
     # models are stripped. Returns None when no pack declares a config or
     # no rules survive — in which case no router block is emitted.
-    router_block = _build_router_block(
-        deduped, mode_models=mode_models, roles=roles
-    )
+    router_block = _build_router_block(deduped, mode_models=mode_models, roles=roles)
     if router_block is not None:
         payload["router"] = router_block
 

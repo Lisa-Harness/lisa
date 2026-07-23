@@ -134,14 +134,9 @@ def _write_entry(
 class TestBuildRecentThreadExcerpt:
     def test_returns_empty_when_no_thread(self, tmp_path: Path) -> None:
         assert build_recent_thread_excerpt(thread_path=None, limit=3) == ""
-        assert (
-            build_recent_thread_excerpt(thread_path=tmp_path / "missing.jsonl", limit=3)
-            == ""
-        )
+        assert build_recent_thread_excerpt(thread_path=tmp_path / "missing.jsonl", limit=3) == ""
 
-    def test_returns_empty_when_all_entries_are_host_commands(
-        self, tmp_path: Path
-    ) -> None:
+    def test_returns_empty_when_all_entries_are_host_commands(self, tmp_path: Path) -> None:
         thread_path = tmp_path / "thread.jsonl"
         _write_entry(thread_path, query="/pack list", response_text="packs: ...")
         _write_entry(thread_path, query="/help", response_text="help text")
@@ -177,9 +172,7 @@ class TestBuildRecentThreadExcerpt:
             )
         excerpt = build_recent_thread_excerpt(thread_path=thread_path, limit=3)
         # Header + exactly 3 dialogue lines.
-        body_lines = [
-            line for line in excerpt.splitlines() if line.startswith("- ")
-        ]
+        body_lines = [line for line in excerpt.splitlines() if line.startswith("- ")]
         assert len(body_lines) == 3
         # The 3 most recent dialogue turns should be q2, q3, q4.
         assert "question 4" in excerpt
@@ -188,9 +181,7 @@ class TestBuildRecentThreadExcerpt:
         assert "question 1" not in excerpt
         assert "question 0" not in excerpt
 
-    def test_overread_fills_limit_after_host_command_run(
-        self, tmp_path: Path
-    ) -> None:
+    def test_overread_fills_limit_after_host_command_run(self, tmp_path: Path) -> None:
         """A run of host commands should not starve the excerpt of dialogue."""
         thread_path = tmp_path / "thread.jsonl"
         # Four host commands, then two real questions.
@@ -201,9 +192,7 @@ class TestBuildRecentThreadExcerpt:
         _write_entry(thread_path, query="real question 1", response_text="real answer 1")
         _write_entry(thread_path, query="real question 2", response_text="real answer 2")
         excerpt = build_recent_thread_excerpt(thread_path=thread_path, limit=2)
-        body_lines = [
-            line for line in excerpt.splitlines() if line.startswith("- ")
-        ]
+        body_lines = [line for line in excerpt.splitlines() if line.startswith("- ")]
         assert len(body_lines) == 2
         assert "real question 1" in excerpt
         assert "real question 2" in excerpt

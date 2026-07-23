@@ -240,4 +240,3 @@ def reload_settings() -> Settings:
 
     globals()["settings"] = new_settings
     return new_settings
-

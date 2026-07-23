@@ -241,9 +241,11 @@ class HostConfig:
             resolved_log_level = env_log if env_log else ""
 
         # ── Data dir ──────────────────────────────────────────────────
-        resolved_data_dir = Path(
-            data_dir.strip() or _resolve_env(LISA_DATA_DIR_ENV) or str(default_data_dir())
-        ).expanduser().resolve()
+        resolved_data_dir = (
+            Path(data_dir.strip() or _resolve_env(LISA_DATA_DIR_ENV) or str(default_data_dir()))
+            .expanduser()
+            .resolve()
+        )
 
         # ── Paths ──────────────────────────────────────────────────────
         resolved_thread_dir: Path | None = None
@@ -289,12 +291,8 @@ class HostConfig:
                 pass
 
         # ── Limits ─────────────────────────────────────────────────────
-        thread_max = _resolve_env_int(
-            LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES
-        )
-        memory_max = _resolve_env_int(
-            LISA_MEMORY_MAX_RECORDS_ENV, _DEFAULT_MEMORY_MAX_RECORDS
-        )
+        thread_max = _resolve_env_int(LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES)
+        memory_max = _resolve_env_int(LISA_MEMORY_MAX_RECORDS_ENV, _DEFAULT_MEMORY_MAX_RECORDS)
 
         # ── User / session ─────────────────────────────────────────────
         # Session source compilation is intentionally deferred to HostRuntime

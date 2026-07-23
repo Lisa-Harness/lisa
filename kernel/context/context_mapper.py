@@ -131,9 +131,7 @@ def context_candidates_from_evidence(
             ContextCandidate(
                 candidate_id=candidate_id,
                 source_id=(
-                    evidence.source.strip()
-                    or evidence.collector_id.strip()
-                    or candidate_id
+                    evidence.source.strip() or evidence.collector_id.strip() or candidate_id
                 ),
                 source_ref=f"context_evidence:{candidate_id}",
                 source_kind=(
@@ -233,9 +231,7 @@ def _candidates_from_domain_knowledge(
         body = artifact.prompt_context_markdown.strip()
         if not body:
             body = "\n".join(
-                f"- {bullet.strip()}"
-                for bullet in artifact.summary_bullets
-                if bullet.strip()
+                f"- {bullet.strip()}" for bullet in artifact.summary_bullets if bullet.strip()
             )
         if not body:
             continue
@@ -357,9 +353,7 @@ def _candidates_from_state_summaries(
 def _require_unique_candidate_ids(candidates: list[ContextCandidate]) -> None:
     candidate_ids = [candidate.candidate_id for candidate in candidates]
     duplicates = sorted(
-        candidate_id
-        for candidate_id in set(candidate_ids)
-        if candidate_ids.count(candidate_id) > 1
+        candidate_id for candidate_id in set(candidate_ids) if candidate_ids.count(candidate_id) > 1
     )
     if duplicates:
         values = ", ".join(duplicates)
@@ -468,9 +462,7 @@ class ContextMapper:
         now: datetime,
     ) -> list[_MappedCandidate]:
         mapped: list[_MappedCandidate] = []
-        lane_by_id = {
-            lane.lane_id: lane for lane in request.context_plan.lanes
-        }
+        lane_by_id = {lane.lane_id: lane for lane in request.context_plan.lanes}
         for candidate in sorted(request.candidates, key=lambda item: item.candidate_id):
             state = decisions[candidate.candidate_id]
             gate_reason = _candidate_gate_reason(candidate, request)
@@ -487,9 +479,7 @@ class ContextMapper:
                 state.drop_reason = source_rule_gate_reason
                 continue
             top_priority = max(rule.priority for rule in matching_rules)
-            top_rules = [
-                rule for rule in matching_rules if rule.priority == top_priority
-            ]
+            top_rules = [rule for rule in matching_rules if rule.priority == top_priority]
             lane_ids = {rule.lane_id for rule in top_rules}
             if len(lane_ids) > 1:
                 values = ", ".join(sorted(lane_ids))
@@ -769,9 +759,7 @@ def _resolve_source_rules(
         if not rule.fallback and _rule_source_selectors_match(rule, candidate)
     ]
     normal_matches = [
-        rule
-        for rule in normal_rules
-        if _rule_conditions_match(rule, candidate, request, now)
+        rule for rule in normal_rules if _rule_conditions_match(rule, candidate, request, now)
     ]
     if normal_matches:
         return normal_matches, ""
@@ -867,9 +855,7 @@ def _base_score(
 ) -> float:
     ranking = request.context_plan.ranking
     positive = ranking.normalized_positive_weights
-    weighted = sum(
-        positive[name] * components[name] for name in positive
-    )
+    weighted = sum(positive[name] * components[name] for name in positive)
     penalties = (
         ranking.conflict_penalty * components["conflict"]
         + ranking.token_cost_penalty * components["token_cost"]
@@ -963,12 +949,10 @@ def _mmr_score(
     if not selections:
         return item.base_score
     similarity = max(
-        _candidate_similarity(item.candidate, selection.candidate)
-        for selection in selections
+        _candidate_similarity(item.candidate, selection.candidate) for selection in selections
     )
     return round(
-        (diversity_lambda * item.base_score)
-        - ((1.0 - diversity_lambda) * similarity),
+        (diversity_lambda * item.base_score) - ((1.0 - diversity_lambda) * similarity),
         6,
     )
 

@@ -104,9 +104,11 @@ def test_mcp_client_config_warm_required_set() -> None:
 async def test_start_warm_required_raises_on_connect_failure() -> None:
     pool = MCPToolPool([_warm_config("w", required=True)])
     # Patch sleep to zero so the backoff doesn't slow the test.
-    with patch("kernel.tools.mcp_client.asyncio.sleep", new=AsyncMock()), patch.object(
-        MCPToolPool, "_connect", new=_failing_connect()
-    ), pytest.raises(MCPConnectionError, match="Required warm MCP server 'w'"):
+    with (
+        patch("kernel.tools.mcp_client.asyncio.sleep", new=AsyncMock()),
+        patch.object(MCPToolPool, "_connect", new=_failing_connect()),
+        pytest.raises(MCPConnectionError, match="Required warm MCP server 'w'"),
+    ):
         await pool.start()
     await pool.aclose()
 
@@ -117,8 +119,9 @@ async def test_start_warm_required_raises_on_connect_failure() -> None:
 @pytest.mark.asyncio
 async def test_start_warm_non_required_proceeds_without_server() -> None:
     pool = MCPToolPool([_warm_config("w", required=False)])
-    with patch("kernel.tools.mcp_client.asyncio.sleep", new=AsyncMock()), patch.object(
-        MCPToolPool, "_connect", new=_failing_connect()
+    with (
+        patch("kernel.tools.mcp_client.asyncio.sleep", new=AsyncMock()),
+        patch.object(MCPToolPool, "_connect", new=_failing_connect()),
     ):
         # Should not raise.
         await pool.start()
@@ -226,6 +229,7 @@ async def test_run_turn_uses_host_warm_pool(monkeypatch: MonkeyPatch) -> None:
         class _R:
             content = "ok"
             tool_calls: list[dict[str, Any]] = []
+
         return _R()
 
     # A spy pool that records start/aclose calls but does no real work.

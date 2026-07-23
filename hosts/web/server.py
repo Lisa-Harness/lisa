@@ -373,7 +373,9 @@ def _is_token_valid(request: web.Request, expected_token: str) -> bool:
     return bool(incoming) and secrets.compare_digest(incoming, expected_token)
 
 
-def _unauthorized_response(request: web.Request, endpoint: str, response: web.Response) -> web.Response:
+def _unauthorized_response(
+    request: web.Request, endpoint: str, response: web.Response
+) -> web.Response:
     """Log and return an unauthorized response for a web endpoint."""
 
     logger.warning("web %s unauthorized request from %s", endpoint, request.remote)
@@ -553,7 +555,9 @@ async def _heartbeat_watchdog(app: web.Application) -> None:
         await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
         last = app["last_activity"]
         if loop.time() - last >= _HEARTBEAT_TIMEOUT_SECONDS:
-            logger.info("web watchdog: no heartbeat for %.0fs, shutting down", _HEARTBEAT_TIMEOUT_SECONDS)
+            logger.info(
+                "web watchdog: no heartbeat for %.0fs, shutting down", _HEARTBEAT_TIMEOUT_SECONDS
+            )
             app["watchdog_trigger"].set()
             return
 

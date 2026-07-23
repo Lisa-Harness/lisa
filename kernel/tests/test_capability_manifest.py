@@ -110,9 +110,7 @@ def test_compile_manifest_records_mode_constraints() -> None:
     assert manifest.metadata["allowed_tool_ids"] == ["memory.add", "memory.search"]
     assert manifest.metadata["tools_authoritative"] is False
     # Non-authoritative mode does not add an authoritative constraint
-    assert all(
-        c.value != "tools_authoritative" for c in manifest.entries[0].constraints
-    )
+    assert all(c.value != "tools_authoritative" for c in manifest.entries[0].constraints)
 
 
 def test_compile_manifest_records_authoritative_constraint() -> None:

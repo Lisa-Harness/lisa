@@ -102,9 +102,7 @@ def compile_capability_manifest(
         )
 
     mode_id = getattr(mode_config, "mode_id", "") if mode_config else ""
-    tools_authoritative = bool(
-        mode_config and getattr(mode_config, "tools_authoritative", True)
-    )
+    tools_authoritative = bool(mode_config and getattr(mode_config, "tools_authoritative", True))
     allowed_tool_ids = list(getattr(mode_config, "allowed_tool_ids", [])) if mode_config else []
 
     constraints: list[CapabilityConstraint] = []
@@ -186,12 +184,8 @@ def render_capability_manifest_context(manifest: CapabilityManifest) -> str:
 
     operations = kind_counts.get("operation", 0)
     workflow = kind_counts.get("mode", 0)
-    mcp_count = sum(
-        1 for e in manifest.entries if e.source == "mcp_pool"
-    )
-    pack_tool_count = sum(
-        1 for e in manifest.entries if e.source == "tool_catalog"
-    )
+    mcp_count = sum(1 for e in manifest.entries if e.source == "mcp_pool")
+    pack_tool_count = sum(1 for e in manifest.entries if e.source == "tool_catalog")
 
     lines = [
         "## Capability Context (live this turn)",

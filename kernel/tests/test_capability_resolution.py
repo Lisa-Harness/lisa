@@ -183,9 +183,7 @@ def test_resolve_capability_for_turn_limit_precedence_matches_resolve_capability
     shared = "shared"
     ops = {shared: _operation(shared, max_calls_per_turn=5)}
     tools = {shared: _tool(shared, max_calls_per_turn=9)}
-    result = resolve_capability_for_turn_limit(
-        shared, operation_catalog=ops, tool_catalog=tools
-    )
+    result = resolve_capability_for_turn_limit(shared, operation_catalog=ops, tool_catalog=tools)
     assert isinstance(result, OperationDefinition)
     assert result.max_calls_per_turn == 5  # operation wins, not the tool's 9
 
@@ -203,7 +201,9 @@ def test_resolve_capability_for_turn_limit_none_for_unknown() -> None:
 # ── validate_export_boundaries: empty mode_provider_id loud failure ──────
 
 
-def _patch_workflow_catalog(monkeypatch: pytest.MonkeyPatch, modes: dict[str, WorkflowModeConfig]) -> None:
+def _patch_workflow_catalog(
+    monkeypatch: pytest.MonkeyPatch, modes: dict[str, WorkflowModeConfig]
+) -> None:
     """Patch kernel.ipsar_fsm.get_workflow_catalog to return the given modes."""
     from kernel import ipsar_fsm
 
@@ -266,7 +266,11 @@ def test_validate_export_boundaries_empty_provider_with_no_refs_is_ok(
 
     _patch_workflow_catalog(
         monkeypatch,
-        {"empty": _mode("empty", mode_provider_id="", allowed_operation_ids=[], allowed_tool_ids=[])},
+        {
+            "empty": _mode(
+                "empty", mode_provider_id="", allowed_operation_ids=[], allowed_tool_ids=[]
+            )
+        },
     )
     # Should not raise.
     validate_export_boundaries(operation_catalog={})
@@ -281,7 +285,11 @@ def test_validate_export_boundaries_rejects_cross_pack_non_exported_tool(
 
     _patch_workflow_catalog(
         monkeypatch,
-        {"consumer": _mode("consumer", mode_provider_id="lisa-pack-coding", allowed_tool_ids=["search"])},
+        {
+            "consumer": _mode(
+                "consumer", mode_provider_id="lisa-pack-coding", allowed_tool_ids=["search"]
+            )
+        },
     )
     tools = {"search": _tool("search", provider_id="lisa-pack-search", exportable=False)}
     monkeypatch.setattr(tool_registry, "get_tool_catalog", lambda: tools)
@@ -299,7 +307,11 @@ def test_validate_export_boundaries_allows_cross_pack_exported_tool(
 
     _patch_workflow_catalog(
         monkeypatch,
-        {"consumer": _mode("consumer", mode_provider_id="lisa-pack-coding", allowed_tool_ids=["search"])},
+        {
+            "consumer": _mode(
+                "consumer", mode_provider_id="lisa-pack-coding", allowed_tool_ids=["search"]
+            )
+        },
     )
     tools = {"search": _tool("search", provider_id="lisa-pack-search", exportable=True)}
     monkeypatch.setattr(tool_registry, "get_tool_catalog", lambda: tools)
