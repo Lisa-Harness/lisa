@@ -136,6 +136,26 @@ class MCPModeCatalog:
         self._catalog = None
 
 
+def _require_start_stage_id(data: dict[str, Any]) -> str:
+    """Return the start_stage_id, raising for workflow modes with an empty value.
+
+    Chat/action modes may use ``"none"`` or an empty string (no stages);
+    workflow modes require a non-empty start_stage_id that names a stage
+    present in the stages dict. A malformed catalog response with an empty
+    start_stage_id for a workflow mode is a hard failure, not a silent
+    default to ``""``.
+    """
+    start_stage_id = str(data.get("start_stage_id", "") or "")
+    mode_kind = str(data.get("mode_kind", "workflow") or "workflow")
+    if mode_kind == "workflow" and not start_stage_id:
+        mode_id = data.get("mode_id", "?")
+        raise CatalogResponseError(
+            f"Mode '{mode_id}' from lisa-catalog is a workflow mode with no "
+            "start_stage_id — workflow modes require a start stage."
+        )
+    return start_stage_id
+
+
 def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
     """Deserialize one mode dict from JSON into a ``WorkflowModeConfig``."""
 
@@ -150,7 +170,7 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
 
     return WorkflowModeConfig(
         mode_id=data["mode_id"],
-        start_stage_id=data.get("start_stage_id", ""),
+        start_stage_id=_require_start_stage_id(data),
         stages=stages,
         mode_kind=data.get("mode_kind", "workflow"),
         artifact_type=data.get("artifact_type", "workflow_summary"),

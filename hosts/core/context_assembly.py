@@ -18,6 +18,7 @@ Public API (leading underscores removed)::
 
 from __future__ import annotations
 
+import logging
 import platform
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -54,23 +55,32 @@ from kernel.models import (
 
 from hosts.core.model_runtime import StubModelDefinition
 from hosts.core.session_context import ReplayControls
+from sdk.content import MissingAuthoredContentError, require_authored_text
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Authored-text loaders (formerly lru_cache wrappers around _read_authored_text)
 # ---------------------------------------------------------------------------
+
+#: The base system prompt is required authored content loaded into every
+#: turn. Missing it is a hard failure — partial installs are not supported.
+_SYSTEM_PROMPT_PATH = "prompts/system-prompt.md"
 
 
 def load_system_prompt(content_loader: Callable[[str], str]) -> str:
     """Load the base system prompt from the authored system prompt asset.
 
     The system prompt is always-on authored content loaded into every turn
-    and is not optional session context. If the file is missing, return an
-    empty prompt so partial installs still produce a usable payload.
+    and is not optional session context. If the file is missing, empty, or
+    the loader is unwired, this raises :class:`MissingAuthoredContentError`
+    so the host fails loudly rather than executing with an empty harness.
     """
-    try:
-        return content_loader("prompts/system-prompt.md").strip()
-    except FileNotFoundError:
-        return ""
+    return require_authored_text(
+        content_loader,
+        _SYSTEM_PROMPT_PATH,
+        context="load_system_prompt",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +199,10 @@ def build_session_mapped_context_markdown(
     try:
         candidates = context_candidates_from_unified_state(state)
     except ContextMappingError:
-        return ""
+        # A ContextMappingError means the state/plan is broken — not that
+        # there is nothing to say. Re-raise so the turn fails loudly instead
+        # of silently executing with empty context.
+        raise
     if not candidates:
         return ""
 
@@ -207,7 +220,10 @@ def build_session_mapped_context_markdown(
     try:
         result = ContextMapper().map(request)
     except ContextMappingError:
-        return ""
+        # The mapper raises on a broken plan/budget, not on an empty result.
+        # Re-raise so the turn fails loudly instead of silently degrading to
+        # empty context.
+        raise
     if snapshot_sink is not None:
         try:
             snapshot_sink(result.budget)
@@ -276,6 +292,12 @@ def build_brokered_context_markdown(
         routing_config=state.context_routing if state else None,
     )
     if not packet.selected_evidence:
+        logger.debug(
+            "build_brokered_context_markdown: no evidence selected for "
+            "mode_id=%s query=%r — returning empty context",
+            mode_id,
+            query[:80],
+        )
         return ""
     return render_context_packet_markdown(packet, routing_config=state.context_routing if state else None)
 

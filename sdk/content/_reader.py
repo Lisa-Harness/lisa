@@ -61,8 +61,10 @@ class ContentReader:
         """Return the first matching authored text asset, or empty string.
 
         Traverses roots in discovery order (installed → configured → extra).
-        Caches misses as empty strings so repeated absent-path lookups don't
-        re-scan the filesystem.
+        Caches hits only — misses are NOT cached so that content added
+        mid-session (e.g. a pack installed after startup) is found on the
+        next lookup without requiring an explicit :meth:`invalidate` call.
+        Re-scanning absent paths is cheap relative to a model call.
         """
         normalized = relative_path.strip().strip("/\\")
         if not is_safe_relative_path(normalized):
@@ -81,7 +83,6 @@ class ContentReader:
                     return content
                 except OSError:
                     continue
-        self._read_cache[cache_key] = ""
         return ""
 
     def invalidate(self) -> None:

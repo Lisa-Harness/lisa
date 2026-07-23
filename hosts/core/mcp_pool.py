@@ -308,7 +308,19 @@ def setup_framework(
     from kernel.context.context_frames import set_content_registry  # noqa: PLC0415
     from kernel.context.mcp_content_registry import MCPContentRegistry  # noqa: PLC0415
 
-    set_content_registry(MCPContentRegistry(content_config))
+    registry = MCPContentRegistry(content_config)
+    set_content_registry(registry)
+
+    # Eagerly validate required authored content at startup so a broken
+    # content install fails at boot rather than producing a silently-
+    # degraded first turn with an empty system prompt.
+    from sdk.content import validate_required_content  # noqa: PLC0415
+
+    validate_required_content(
+        registry.read_authored_text,
+        ["prompts/system-prompt.md"],
+        context="setup_framework startup validation",
+    )
 
     # Wire the production extension-evidence builder so the context broker's
     # catalog builder picks up evidence from installed SDK extensions

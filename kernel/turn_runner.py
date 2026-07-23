@@ -40,6 +40,8 @@ from kernel.context.models import ContextBudgetSnapshot
 from kernel.ipsar_fsm import (
     apply_transition,
     get_mode_system_intro,
+    get_required_mode_intro,
+    get_required_stage_instruction,
     get_routing_targets,
     get_transition_tool_schema,
     get_workflow_catalog,
@@ -1236,17 +1238,25 @@ async def _run_turn_inner(
     # ``hooks.workflow_session`` to return the current session; when absent
     # or not a workflow mode, the loop falls back to mode-level only (the
     # historical behavior for chat and action modes).
-    mode_instruction = get_mode_system_intro(mode_id)
+    #
+    # Workflow modes require non-empty mode and stage instruction bodies —
+    # an empty body would silently run the model modeless/stageless. Chat
+    # and action modes use the lenient ``get_mode_system_intro`` which
+    # returns "" for unknown modes (membership-check contract) so a chat
+    # mode with no authored body can still rely on the base system prompt.
+    is_workflow = (
+        mode_config is not None and mode_config.mode_kind == "workflow"
+    )
+    if is_workflow:
+        mode_instruction = get_required_mode_intro(mode_id)
+    else:
+        mode_instruction = get_mode_system_intro(mode_id)
     stage_instruction: str | None = None
-    if (
-        mode_config is not None
-        and mode_config.mode_kind == "workflow"
-        and hooks.workflow_session is not None
-    ):
+    if is_workflow and hooks.workflow_session is not None:
         session = hooks.workflow_session()
-        if session is not None and session.stage_id in mode_config.stages:
-            stage_instruction = (
-                mode_config.stages[session.stage_id].instruction_body or None
+        if session is not None and session.stage_id in mode_config.stages:  # type: ignore[union-attr]
+            stage_instruction = get_required_stage_instruction(
+                mode_id, session.stage_id
             )
     system_prompt = assemble_system(mode_instruction, stage_instruction)
 

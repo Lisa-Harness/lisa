@@ -87,6 +87,17 @@ class WorkflowValidationError(ValueError):
     """
 
 
+class MissingModeInstructionError(WorkflowValidationError):
+    """Raised when a required mode or stage instruction body is missing/empty.
+
+    A workflow mode with no authored ``instruction_body`` in its ``_mode.md``
+    (or a workflow stage with no ``instruction_body``) would silently produce
+    an empty system-prompt section, causing the model to run modeless. This
+    error fails the turn loudly so the missing content is surfaced instead
+    of degraded into an empty prompt.
+    """
+
+
 @dataclass(slots=True)
 class WorkflowToolCall:
     """Normalized tool call payload extracted from model completion metadata.
@@ -398,6 +409,8 @@ def _apply_mode_overrides(
 
 def load_catalog_from_disk(
     instructions_dir: Path | None = None,
+    *,
+    strict: bool = True,
 ) -> dict[str, WorkflowModeConfig]:
     """Discover and load all workflow modes from the instructions directory.
 
@@ -411,6 +424,11 @@ def load_catalog_from_disk(
       {mode_name}/{stage_id}.md  — one file per stage; front-matter must include:
                                     stage_id, terminal, allowed_next_stages,
                                     allow_user_questions, required_connectors.
+
+    When *strict* is ``True`` (the default), a mode folder missing ``_mode.md``
+    raises :class:`WorkflowValidationError` instead of logging a warning and
+    skipping. This catches broken pack installs at startup. Tests that
+    exercise partial installs pass ``strict=False``.
 
     Stage files whose name starts with `_` are skipped (reserved for mode-level
     config files like `_mode.md`).
@@ -445,6 +463,11 @@ def load_catalog_from_disk(
 
         mode_config_path = mode_dir / "_mode.md"
         if not mode_config_path.exists():
+            if strict:
+                raise WorkflowValidationError(
+                    f"Mode folder '{mode_dir.name}' is missing _mode.md — a mode "
+                    "without _mode.md is not a valid pack install."
+                )
             logger.warning("Skipping instructions folder '%s': missing _mode.md", mode_dir.name)
             continue
 
@@ -1429,6 +1452,83 @@ def get_mode_system_intro(mode_id: str) -> str:
     if not mode:
         return ""
     return mode.instruction_body
+
+
+def get_required_mode_intro(mode_id: str) -> str:
+    """Return the mode-level system prompt intro, raising if it is missing.
+
+    Unlike :func:`get_mode_system_intro`, this fails loudly when the mode is
+    unknown or has an empty ``instruction_body``. Use this in the turn runner
+    and any path where the mode instruction is required — not optional.
+
+    Args:
+        mode_id: The route mode string (e.g. 'coach', 'chase').
+
+    Returns:
+        The authored instruction body from the mode's ``_mode.md``.
+
+    Raises:
+        MissingModeInstructionError: If the mode is unknown or its
+            ``instruction_body`` is empty.
+    """
+    mode = get_workflow_catalog().get(mode_id)
+    if not mode:
+        raise MissingModeInstructionError(
+            f"Mode '{mode_id}' is not in the workflow catalog — cannot assemble "
+            "a required mode instruction. Ensure the mode pack is installed and "
+            "the catalog is loaded."
+        )
+    instruction_body = (mode.instruction_body or "").strip()
+    if not instruction_body:
+        raise MissingModeInstructionError(
+            f"Mode '{mode_id}' has an empty instruction_body in its _mode.md — "
+            "workflow modes require authored instructions. A mode with no "
+            "instruction body would run the model modeless."
+        )
+    return instruction_body
+
+
+def get_required_stage_instruction(
+    mode_id: str,
+    stage_id: str,
+) -> str:
+    """Return the stage instruction body, raising if it is missing or empty.
+
+    Workflow stages require authored ``instruction_body`` text; an empty
+    stage body would silently omit the stage instruction from the system
+    prompt, leaving the FSM dead at runtime. Use this for workflow modes
+    where stage injection is mandatory.
+
+    Args:
+        mode_id: The route mode string.
+        stage_id: The current stage id within the mode.
+
+    Returns:
+        The authored stage instruction body.
+
+    Raises:
+        MissingModeInstructionError: If the stage is unknown or its
+            ``instruction_body`` is empty.
+    """
+    mode = get_workflow_catalog().get(mode_id)
+    if not mode:
+        raise MissingModeInstructionError(
+            f"Stage '{stage_id}' lookup failed: mode '{mode_id}' is not in the "
+            "workflow catalog."
+        )
+    stage = mode.stages.get(stage_id)
+    if stage is None:
+        raise MissingModeInstructionError(
+            f"Stage '{stage_id}' is not defined in mode '{mode_id}' — cannot "
+            "assemble required stage instruction."
+        )
+    instruction_body = (stage.instruction_body or "").strip()
+    if not instruction_body:
+        raise MissingModeInstructionError(
+            f"Stage '{stage_id}' in mode '{mode_id}' has an empty "
+            "instruction_body — workflow stages require authored instructions."
+        )
+    return instruction_body
 
 
 async def _execute_mode_target_ids(

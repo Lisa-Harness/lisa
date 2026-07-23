@@ -16,10 +16,22 @@ __all__ = [
     "ContextBudgetAllocator",
     "ContextBudgetRecord",
     "ContextLane",
+    "RequiredContextBudgetError",
     "settings",
 ]
 
 ContextLane = Literal["core", "retrieval", "memory", "reflection", "history", "operational"]
+
+
+class RequiredContextBudgetError(RuntimeError):
+    """Raised when a required context section cannot fit the token budget.
+
+    Required sections must not be silently dropped — that would degrade the
+    model's prompt by omitting mandatory context (e.g. the system prompt or
+    a pinned evidence block). Instead of returning ``""`` and proceeding with
+    an incomplete prompt, the allocator raises so the caller can fail the turn
+    or adjust the budget. Optional sections continue to return ``""`` on drop.
+    """
 
 
 @dataclass
@@ -125,6 +137,12 @@ class ContextBudgetAllocator:
                 required=required,
                 dropped_reason="budget_exhausted",
             )
+            if required:
+                raise RequiredContextBudgetError(
+                    f"Required context section '{key}' (lane={lane}, "
+                    f"{requested_tokens} tokens) was dropped: budget exhausted "
+                    f"(total_remaining={total_remaining}, lane_remaining={lane_remaining})."
+                )
             return ""
 
         rendered = normalized
@@ -139,6 +157,14 @@ class ContextBudgetAllocator:
                     required=required,
                     dropped_reason="required_too_large" if required else "section_too_large",
                 )
+                if required:
+                    raise RequiredContextBudgetError(
+                        f"Required context section '{key}' (lane={lane}, "
+                        f"{requested_tokens} tokens) exceeds the allocated "
+                        f"budget ({allocated_budget} tokens) and truncation "
+                        "is not allowed. Either increase the lane budget or "
+                        "allow truncation for this section."
+                    )
                 return ""
             rendered, truncated = self._truncate_to_budget(normalized, allocated_budget)
             if not rendered:

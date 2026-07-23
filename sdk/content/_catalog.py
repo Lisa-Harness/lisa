@@ -99,12 +99,17 @@ def build_mode_catalog_json(
     *,
     operation_catalog_json: str | None = None,
     tool_catalog_json: str | None = None,
+    strict: bool = False,
 ) -> str:
     """Scan mode roots and return a JSON-serializable mode catalog.
 
     Returns a JSON string encoding ``dict[str, dict]`` where each value is a
     mode config dict with nested ``stages``. The kernel deserializes this into
     ``WorkflowModeConfig`` objects.
+
+    When *strict* is ``True``, malformed mode/stage files raise
+    :class:`CatalogCollisionError` instead of being logged and skipped. Used
+    at host startup so a broken pack install fails fast.
 
     When ``operation_catalog_json`` and/or ``tool_catalog_json`` are provided,
     each mode's ``allowed_operation_ids`` / ``allowed_tool_ids`` are augmented
@@ -128,7 +133,11 @@ def build_mode_catalog_json(
         for mode_dir in sorted(root.iterdir()):
             if not mode_dir.is_dir():
                 continue
-            mode_dict = _load_one_mode(mode_dir, inferred_provider_id=inferred_provider_id)
+            mode_dict = _load_one_mode(
+                mode_dir,
+                inferred_provider_id=inferred_provider_id,
+                strict=strict,
+            )
             if mode_dict is not None:
                 mode_id = str(mode_dict.get("mode_id") or "")
                 candidates_by_id.setdefault(mode_id, []).append(mode_dict)
@@ -219,11 +228,23 @@ def _load_one_mode(
     mode_dir: Path,
     *,
     inferred_provider_id: str,
+    strict: bool = False,
 ) -> dict[str, Any] | None:
-    """Load one mode directory into a JSON-serializable dict."""
+    """Load one mode directory into a JSON-serializable dict.
+
+    When *strict* is ``True`` (host startup), a missing ``_mode.md`` or
+    malformed front-matter raises instead of being logged and skipped.
+    When *strict* is ``False`` (tests, partial installs), the historical
+    warning-and-skip behavior is preserved.
+    """
 
     mode_config_path = mode_dir / _MODE_CONFIG_FILENAME
     if not mode_config_path.is_file():
+        if strict:
+            raise CatalogCollisionError(
+                f"Mode folder '{mode_dir.name}' is missing _mode.md — a mode "
+                "without _mode.md is not a valid pack install."
+            )
         logger.warning("Skipping mode folder '%s': missing _mode.md", mode_dir.name)
         return None
 
@@ -231,18 +252,30 @@ def _load_one_mode(
     try:
         front_matter, body = parse_front_matter(mode_text)
     except FrontMatterError as exc:
+        if strict:
+            raise CatalogCollisionError(
+                f"Mode '{mode_dir.name}' has malformed front-matter: {exc}"
+            ) from exc
         logger.warning("Skipping mode '%s': %s", mode_dir.name, exc)
         return None
 
     mode_id = front_matter.get("mode_id")
     if not mode_id or not isinstance(mode_id, str):
+        if strict:
+            raise CatalogCollisionError(
+                f"Mode '{mode_dir.name}' is missing a valid 'mode_id' in its front-matter."
+            )
         return None
 
     stages: dict[str, dict[str, Any]] = {}
     for stage_path in sorted(mode_dir.glob("*.md")):
         if stage_path.name.startswith("_"):
             continue
-        stage_dict = _load_one_stage(stage_path, mode_kind=front_matter.get("mode_kind", "workflow"))
+        stage_dict = _load_one_stage(
+            stage_path,
+            mode_kind=front_matter.get("mode_kind", "workflow"),
+            strict=strict,
+        )
         if stage_dict is not None:
             stages[stage_dict["stage_id"]] = stage_dict
 
@@ -474,19 +507,23 @@ def _resolve_catalog_candidates(
     )
 
 
-def _load_one_stage(stage_path: Path, *, mode_kind: str) -> dict[str, Any] | None:
+def _load_one_stage(stage_path: Path, *, mode_kind: str, strict: bool = False) -> dict[str, Any] | None:
     """Load one stage markdown file into a JSON-serializable dict.
 
     Returns None if the file has no ``stage_id`` in its front-matter (it's an
     auxiliary asset, not a stage definition). For ``chat``/``action`` modes,
-    missing ``stage_id`` is silently skipped; for workflow modes, we still skip
-    but log it.
+    missing ``stage_id`` is silently skipped; for workflow modes, we skip
+    but log it. When *strict* is ``True``, malformed front-matter raises.
     """
 
     stage_text = stage_path.read_text(encoding="utf-8")
     try:
         front_matter, body = parse_front_matter(stage_text)
     except FrontMatterError as exc:
+        if strict:
+            raise CatalogCollisionError(
+                f"Stage file '{stage_path}' has malformed front-matter: {exc}"
+            ) from exc
         logger.warning("Skipping stage file '%s': %s", stage_path, exc)
         return None
 

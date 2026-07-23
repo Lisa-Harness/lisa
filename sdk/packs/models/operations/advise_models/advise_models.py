@@ -38,6 +38,7 @@ from typing import Any
 import yaml
 
 from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
+from sdk.content import require_authored_text
 
 logger = logging.getLogger(__name__)
 
@@ -77,17 +78,11 @@ def _load_text(ctx: OperationExecutionContext, path: str) -> str:
     inject a fake loader that returns the authored text.
     """
 
-    if not callable(ctx.read_authored_text_fn):
-        raise RuntimeError(
-            f"read_authored_text_fn is not wired; cannot load authored content at {path}"
-        )
-    try:
-        loaded = str(ctx.read_authored_text_fn(path) or "").strip()
-    except Exception as exc:  # pylint: disable=broad-except
-        raise RuntimeError(f"read_authored_text_fn failed for {path}: {exc}") from exc
-    if not loaded:
-        raise RuntimeError(f"Authored text at {path} is empty or missing")
-    return loaded
+    return require_authored_text(
+        ctx.read_authored_text_fn,
+        path,
+        context="advise_models operation",
+    )
 
 
 def _format_template(template: str, **kwargs: Any) -> str:

@@ -36,21 +36,29 @@ from sdk.content._catalog import (
     resolve_tool_roots,
 )
 from sdk.content._diagnostics import build_catalog_diagnostics_json
+from sdk.content._loader_strict import (
+    MissingAuthoredContentError,
+    require_authored_text,
+    validate_required_content,
+)
 from sdk.content._reader import ContentReader, is_safe_relative_path
 from sdk.content._roots import resolve_content_roots, roots_fingerprint
 
 __all__ = [
     "CatalogCollisionError",
     "ContentReader",
+    "MissingAuthoredContentError",
     "build_catalog_diagnostics_json",
     "build_mode_catalog_json",
     "build_operation_catalog_json",
     "build_tool_catalog_json",
     "invalidate_catalog_cache",
     "is_safe_relative_path",
+    "require_authored_text",
     "resolve_content_roots",
     "resolve_mode_roots",
     "resolve_operation_roots",
     "resolve_tool_roots",
     "roots_fingerprint",
+    "validate_required_content",
 ]

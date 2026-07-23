@@ -416,6 +416,30 @@ def test_assemble_system_prompt_orders_harness_session_mode_and_stage() -> None:
     assert system_prompt.index("Mode instruction") < system_prompt.index("Stage instruction")
 
 
+def test_load_system_prompt_raises_on_missing_content() -> None:
+    """A missing system-prompt file is a hard failure, not an empty string."""
+    def _missing_loader(path: str) -> str:
+        return ""
+
+    with pytest.raises(context_assembly.MissingAuthoredContentError, match="system-prompt"):
+        context_assembly.load_system_prompt(_missing_loader)
+
+
+def test_load_system_prompt_raises_on_unwired_loader() -> None:
+    """An unwired loader is a hard failure, not an empty string."""
+    with pytest.raises(context_assembly.MissingAuthoredContentError, match="not wired"):
+        context_assembly.load_system_prompt(None)  # type: ignore[arg-type]
+
+
+def test_load_system_prompt_raises_on_loader_exception() -> None:
+    """A loader exception surfaces, not swallowed into an empty prompt."""
+    def _raising_loader(path: str) -> str:
+        raise OSError("disk error")
+
+    with pytest.raises(context_assembly.MissingAuthoredContentError, match="failed for"):
+        context_assembly.load_system_prompt(_raising_loader)
+
+
 # ── Dynamic user context ──────────────────────────────────────────────
 
 

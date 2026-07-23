@@ -21,6 +21,7 @@ from kernel.operations.structured_output import (
     json_only_retry_messages,
     parse_structured_payload,
 )
+from sdk.content import require_authored_text
 
 logger = logging.getLogger(__name__)
 
@@ -35,17 +36,11 @@ def _load_system_prompt(ctx: OperationExecutionContext) -> str:
     Per the pack-content rule: no fallbacks to missing content.
     """
 
-    if not callable(ctx.read_authored_text_fn):
-        raise RuntimeError(
-            f"read_authored_text_fn is not wired; cannot load authored content at {_SYSTEM_PROMPT_PATH}"
-        )
-    try:
-        loaded = str(ctx.read_authored_text_fn(_SYSTEM_PROMPT_PATH) or "").strip()
-    except Exception as exc:  # pylint: disable=broad-except
-        raise RuntimeError(f"read_authored_text_fn failed for {_SYSTEM_PROMPT_PATH}: {exc}") from exc
-    if not loaded:
-        raise RuntimeError(f"Authored text at {_SYSTEM_PROMPT_PATH} is empty or missing")
-    return loaded
+    return require_authored_text(
+        ctx.read_authored_text_fn,
+        _SYSTEM_PROMPT_PATH,
+        context="synthesize_learning operation",
+    )
 
 
 class Parameters(BaseModel):
