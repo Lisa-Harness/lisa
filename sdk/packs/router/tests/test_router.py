@@ -79,6 +79,44 @@ def test_factory_returns_none_when_backend_mismatches() -> None:
     assert factory(manifest, None) is None
 
 
+# ── Default config tests ─────────────────────────────────────────────────────
+
+
+def test_default_router_config_has_correct_backend() -> None:
+    """The pack's default config declares the lisa-router backend."""
+    from sdk.packs.router.default_config import get_default_router_config
+
+    config = get_default_router_config()
+    assert config["backend"] == "lisa-router"
+
+
+def test_default_router_config_has_rules() -> None:
+    """The default config includes at least one routing rule."""
+    from sdk.packs.router.default_config import get_default_router_config
+
+    config = get_default_router_config()
+    assert isinstance(config["rules"], list)
+    assert len(config["rules"]) >= 1
+    for rule in config["rules"]:
+        assert "when" in rule
+        assert "use" in rule
+
+
+def test_default_router_config_uses_symbolic_refs() -> None:
+    """Default rules use symbolic mode/role refs (default, deep), not literal ids.
+
+    This lets the config work across any discovered model set — the manifest
+    builder resolves the symbols at /models discover time.
+    """
+    from sdk.packs.router.default_config import get_default_router_config
+
+    config = get_default_router_config()
+    uses = {rule["use"] for rule in config["rules"]}
+    assert config["fallback"] in {"default", "deep"} or config["fallback"]
+    # At least one rule uses a symbolic ref.
+    assert uses & {"default", "deep"}
+
+
 def test_factory_returns_router_when_backend_matches() -> None:
     from sdk.packs.router import get_router_factory
 

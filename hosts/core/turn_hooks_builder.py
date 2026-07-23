@@ -186,11 +186,40 @@ def build_turn_hooks(
         session_plan = getattr(runtime, "session_plan", None)
         for entry in discover_model_router_factories():
             try:
-                router = entry.factory(runtime.manifest, session_plan)
-            except Exception:  # pylint: disable=broad-except
+                # Some packs (notably lisa-pack-router) register a
+                # factory-factory that takes 0 args and returns the real
+                # ``(manifest, session_plan) -> ModelRouter | None`` factory.
+                # Detect the arity via inspect.signature and resolve the
+                # double-indirection without relying on TypeError catching
+                # (which can silently swallow TypeErrors raised *inside* the
+                # factory body — see the slice-provider fix for the same
+                # pattern).
+                import inspect as _inspect
+
+                try:
+                    sig = _inspect.signature(entry.factory)
+                    min_params = sum(
+                        1
+                        for p in sig.parameters.values()
+                        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+                        and p.default is p.empty
+                    )
+                except (ValueError, TypeError):
+                    min_params = 2  # assume direct factory if signature fails
+
+                if min_params == 0:
+                    # Factory-factory: call with 0 args to get the real
+                    # ``(manifest, session_plan) -> ModelRouter | None`` factory.
+                    factory = entry.factory()  # type: ignore[call-arg]
+                    router = factory(runtime.manifest, session_plan)  # type: ignore[misc]
+                else:
+                    # Direct factory: call with 2 args.
+                    router = entry.factory(runtime.manifest, session_plan)
+            except Exception as exc:  # pylint: disable=broad-except
                 logger.warning(
                     "model router factory %r failed: %s",
                     entry.pack_name,
+                    exc,
                     exc_info=True,
                 )
                 continue

@@ -12,6 +12,7 @@ dependencies = [
     "lisa-pack-introspect",
     "lisa-pack-models",
     "lisa-pack-checkpoint",
+    "lisa-pack-router",
     "lisa-host-core",
     "lisa-host-cli",
     "lisa-host-web",
@@ -28,6 +29,7 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=6.0.0",
     "pytest-mock>=3.14.0",
+    "import-linter>=2.0",
     "ruff>=0.8.0",
     "types-PyYAML>=6.0",
     "vulture>=2.11",
@@ -46,6 +48,7 @@ members = [
     "sdk/packs/memory",
     "sdk/packs/models",
     "sdk/packs/checkpoint",
+    "sdk/packs/router",
     "hosts/core",
     "hosts/cli",
     "hosts/web",
@@ -66,6 +69,7 @@ lisa-pack-core = { workspace = true }
 lisa-pack-models = { workspace = true }
 lisa-pack-introspect = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
+lisa-pack-router = { workspace = true }
 lisa-pack-mem0 = { path = "../lisa_packs/mem0" }
 lisa-pack-brave-search = { path = "../lisa_packs/brave_search" }
 lisa-pack-gmail = { path = "../lisa_packs/gmail" }
@@ -167,4 +171,92 @@ ignore_decorators = [
     "@property",
     "@router.get",
     "@router.post",
+]
+
+# ---------------------------------------------------------------------------
+# import-linter — enforces the architectural boundaries documented in
+# docs/BOUNDARIES.md.  Run with:  uv run lint-imports
+#
+# The codebase uses root-level import paths (kernel, sdk, hosts.* , mcp_server)
+# rather than installed distribution names, so we use those here.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_packages = [
+    "kernel",
+    "sdk",
+    "mcp_server",
+    "hosts",
+]
+
+# Kernel is runtime-neutral — must never import from hosts, sdk, or mcp_server.
+[[tool.importlinter.contracts]]
+name = "Kernel runtime-neutrality (kernel imports nothing from hosts, sdk, or mcp_server)"
+type = "forbidden"
+source_modules = ["kernel"]
+forbidden_modules = [
+    "hosts",
+    "hosts.core",
+    "hosts.cli",
+    "hosts.web",
+    "hosts.vscode",
+    "sdk",
+    "mcp_server",
+]
+
+# SDK must not import host transport code or mcp_server internals.
+[[tool.importlinter.contracts]]
+name = "SDK does not import hosts or mcp_server"
+type = "forbidden"
+source_modules = ["sdk"]
+forbidden_modules = [
+    "hosts",
+    "hosts.core",
+    "hosts.cli",
+    "hosts.web",
+    "hosts.vscode",
+    "mcp_server",
+]
+
+# Bundled reference packs must not import host transport code.
+[[tool.importlinter.contracts]]
+name = "SDK packs do not import hosts"
+type = "forbidden"
+source_modules = [
+    "sdk.packs.core",
+    "sdk.packs.introspect",
+    "sdk.packs.memory",
+    "sdk.packs.models",
+    "sdk.packs.checkpoint",
+    "sdk.packs.router",
+]
+forbidden_modules = [
+    "hosts",
+    "hosts.core",
+    "hosts.cli",
+    "hosts.web",
+    "hosts.vscode",
+]
+
+# Host layering: cli/web/vscode → core → mcp_server/sdk/kernel
+# The `|` separator means modules in the same layer may import each other.
+[[tool.importlinter.contracts]]
+name = "Host layering (cli/web/vscode → core → mcp_server/sdk/kernel)"
+type = "layers"
+layers = [
+    "hosts.cli | hosts.web | hosts.vscode",
+    "hosts.core",
+    "mcp_server | sdk | kernel",
+]
+
+# mcp_server may use kernel/sdk but must not depend on host transport.
+[[tool.importlinter.contracts]]
+name = "mcp_server does not import hosts"
+type = "forbidden"
+source_modules = ["mcp_server"]
+forbidden_modules = [
+    "hosts",
+    "hosts.core",
+    "hosts.cli",
+    "hosts.web",
+    "hosts.vscode",
 ]

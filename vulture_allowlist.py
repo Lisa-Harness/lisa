@@ -52,6 +52,9 @@ sdk.packs.checkpoint.commands.get_host_commands  # noqa: Vulture
 # reason: lisa.extensions.model_routers entry-point target (sdk.packs.router:get_router_factory)
 sdk.packs.router.get_router_factory  # noqa: Vulture
 
+# reason: lisa.extensions.model_router_configs entry-point target (sdk.packs.router.default_config:get_default_router_config)
+sdk.packs.router.default_config.get_default_router_config  # noqa: Vulture
+
 # ──────────────────────────────────────────────────────────────────────────
 # Operation execute() functions — dispatched via getattr(module, "execute")
 # at kernel/operations/registry.py.

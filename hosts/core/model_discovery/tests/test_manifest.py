@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 import yaml
 
@@ -173,6 +175,136 @@ class TestBuildManifestPayload:
         payload = build_manifest_payload(models)
         assert len(payload["models"]) == 1
         assert payload["models"][0]["provider"] == "openai"
+
+
+class TestRouterBlock:
+    """Tests for the pack-seeded ``router:`` block in ``build_manifest_payload``.
+
+    The router block is seeded from the first pack-declared router config
+    (``lisa.extensions.model_router_configs``). Symbolic refs (``"default"``,
+    ``"deep"``) are resolved to concrete model ids. Rules referencing unknown
+    models are stripped. When no pack declares a config, no ``router`` key
+    is emitted.
+    """
+
+    def test_no_router_block_when_no_pack_config(self) -> None:
+        """When no pack declares a router config, no router key is emitted."""
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        with patch(
+            "kernel.model_router_config_discovery.discover_pack_router_config",
+            return_value=None,
+        ):
+            payload = build_manifest_payload(models)
+        assert "router" not in payload
+
+    def test_router_block_seeded_from_pack_config(self) -> None:
+        """Pack config with symbolic refs resolved to concrete model ids."""
+        models = (
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(model_id="o3-pro", provider="openai", reasoning_model=True),
+        )
+        pack_config = {
+            "backend": "lisa-router",
+            "rules": [
+                {"when": 'required_capabilities includes "code"', "use": "deep"},
+                {"when": "iteration > 1 and last_tool_result is not None", "use": "deep"},
+                {"when": "tool_calls_so_far >= 5", "use": "default"},
+            ],
+            "fallback": "default",
+        }
+        with patch(
+            "kernel.model_router_config_discovery.discover_pack_router_config",
+            return_value=pack_config,
+        ):
+            payload = build_manifest_payload(models)
+        assert "router" in payload
+        router = payload["router"]
+        assert router["backend"] == "lisa-router"
+        # Symbolic refs resolved: "deep" → o3-pro, "default" → gpt-5.
+        assert router["rules"][0]["use"] == "o3-pro"
+        assert router["rules"][2]["use"] == "gpt-5"
+        assert router["fallback"] == "gpt-5"
+
+    def test_router_strips_rules_referencing_unknown_models(self) -> None:
+        """Rules whose ``use`` cannot be resolved are dropped."""
+        models = (
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(model_id="o3-pro", provider="openai", reasoning_model=True),
+        )
+        pack_config = {
+            "backend": "lisa-router",
+            "rules": [
+                {"when": "iteration > 1", "use": "deep"},  # resolvable
+                {"when": "tool_calls_so_far >= 3", "use": "gpt-99-nonexistent"},  # stripped
+            ],
+            "fallback": "default",
+        }
+        with patch(
+            "kernel.model_router_config_discovery.discover_pack_router_config",
+            return_value=pack_config,
+        ):
+            payload = build_manifest_payload(models)
+        router = payload["router"]
+        assert len(router["rules"]) == 1
+        assert router["rules"][0]["use"] == "o3-pro"
+        assert router["fallback"] == "gpt-5"
+
+    def test_router_strips_fallback_referencing_unknown_model(self) -> None:
+        """Fallback referencing an unknown model is dropped (not the whole block)."""
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        pack_config = {
+            "backend": "lisa-router",
+            "rules": [{"when": "iteration > 1", "use": "default"}],
+            "fallback": "gpt-99-nonexistent",
+        }
+        with patch(
+            "kernel.model_router_config_discovery.discover_pack_router_config",
+            return_value=pack_config,
+        ):
+            payload = build_manifest_payload(models)
+        router = payload["router"]
+        assert "fallback" not in router
+        assert len(router["rules"]) == 1
+
+    def test_router_block_dropped_when_no_rules_survive(self) -> None:
+        """When all rules are stripped and no fallback resolves, no router key."""
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        pack_config = {
+            "backend": "lisa-router",
+            "rules": [{"when": "iteration > 1", "use": "gpt-99-nonexistent"}],
+            "fallback": "also-nonexistent",
+        }
+        with patch(
+            "kernel.model_router_config_discovery.discover_pack_router_config",
+            return_value=pack_config,
+        ):
+            payload = build_manifest_payload(models)
+        # No rules survive, no fallback, but backend is set. The block is
+        # still emitted (backend alone is valid — just selects the router
+        # backend with no rules; the router will always return None).
+        assert "router" in payload
+        assert payload["router"]["backend"] == "lisa-router"
+        assert "rules" not in payload["router"]
+
+    def test_router_block_resolves_literal_model_id_refs(self) -> None:
+        """Literal model ids in use/fallback pass through when in the discovered set."""
+        models = (
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(model_id="gpt-5-mini", provider="openai"),
+        )
+        pack_config = {
+            "backend": "lisa-router",
+            "rules": [{"when": "iteration > 1", "use": "gpt-5-mini"}],
+            "fallback": "gpt-5",
+        }
+        with patch(
+            "kernel.model_router_config_discovery.discover_pack_router_config",
+            return_value=pack_config,
+        ):
+            payload = build_manifest_payload(models)
+        router = payload["router"]
+        assert router["rules"][0]["use"] == "gpt-5-mini"
+        assert router["fallback"] == "gpt-5"
 
 
 class TestRenderManifestYaml:

@@ -132,6 +132,110 @@ def _choose_deep_model(
     return default
 
 
+def _resolve_router_ref(
+    ref: str,
+    *,
+    model_ids: set[str],
+    mode_models: dict[str, str],
+    roles: dict[str, str],
+) -> str:
+    """Resolve a symbolic ``use``/``fallback`` ref to a concrete model_id.
+
+    The pack's default router config uses *symbolic* references — mode/role
+    names like ``"default"`` or ``"deep"`` rather than literal model ids. The
+    manifest loader validates that every ``rules[].use`` and ``fallback``
+    references a known model *by model_id*, so we must resolve symbolic refs
+    to concrete model ids before emitting the ``router:`` block.
+
+    Resolution order mirrors ``ModelManifest.resolve()``:
+    1. ``mode_models[ref]`` (mode pins)
+    2. ``roles[ref]`` (cross-cutting roles)
+    3. Literal model id (already in the discovered set)
+
+    Returns the resolved model_id, or an empty string when the ref cannot be
+    resolved (the caller strips the rule / fallback in that case).
+    """
+
+    normalized = ref.strip().lower()
+    if not normalized:
+        return ""
+    # mode_models / roles — symbolic refs.
+    mapped = mode_models.get(normalized) or roles.get(normalized)
+    if mapped:
+        return mapped if mapped.lower() in model_ids else ""
+    # Literal model id.
+    return ref if normalized in model_ids else ""
+
+
+def _build_router_block(
+    models: tuple[DiscoveredModel, ...],
+    *,
+    mode_models: dict[str, str],
+    roles: dict[str, str],
+) -> dict[str, Any] | None:
+    """Build the ``router:`` block from the pack-declared default config.
+
+    Discovers the first pack-declared router config via
+    ``lisa.extensions.model_router_configs`` (parallel to
+    ``lisa.extensions.model_roles`` for roles). Resolves symbolic
+    ``use``/``fallback`` references (mode/role names) to concrete model ids
+    against the discovered set. Strips any rule whose ``use`` cannot be
+    resolved and drops ``fallback`` if it cannot be resolved.
+
+    Returns ``None`` when no pack declares a router config or when no rules
+    survive resolution (so the emitted YAML never carries an empty router
+    block that would fail validation).
+    """
+
+    try:
+        from kernel.model_router_config_discovery import discover_pack_router_config
+    except Exception:  # pylint: disable=broad-except
+        return None
+
+    raw_config = discover_pack_router_config()
+    if not isinstance(raw_config, dict):
+        return None
+
+    backend = str(raw_config.get("backend") or "").strip()
+    raw_fallback = str(raw_config.get("fallback") or "").strip()
+    raw_rules = raw_config.get("rules")
+    if not isinstance(raw_rules, list):
+        raw_rules = []
+
+    model_ids = {model.model_id.strip().lower() for model in models}
+
+    resolved_rules: list[dict[str, str]] = []
+    for raw_rule in raw_rules:
+        if not isinstance(raw_rule, dict):
+            continue
+        when = str(raw_rule.get("when") or "").strip()
+        use = str(raw_rule.get("use") or "").strip()
+        if not when or not use:
+            continue
+        resolved_use = _resolve_router_ref(
+            use, model_ids=model_ids, mode_models=mode_models, roles=roles
+        )
+        if not resolved_use:
+            continue  # rule references a model not in the discovered set
+        resolved_rules.append({"when": when, "use": resolved_use})
+
+    resolved_fallback = _resolve_router_ref(
+        raw_fallback, model_ids=model_ids, mode_models=mode_models, roles=roles
+    ) if raw_fallback else ""
+
+    if not backend and not resolved_rules and not resolved_fallback:
+        return None
+
+    block: dict[str, Any] = {}
+    if backend:
+        block["backend"] = backend
+    if resolved_rules:
+        block["rules"] = resolved_rules
+    if resolved_fallback:
+        block["fallback"] = resolved_fallback
+    return block or None
+
+
 def _model_entry(model: DiscoveredModel) -> dict[str, Any]:
     """Build one manifest row for a discovered model, omitting empty fields."""
 
@@ -166,6 +270,14 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
     tags are not emitted — the manifest schema resolves modes and roles
     through the two top-level maps.
 
+    When a pack declares a default router config via the
+    ``lisa.extensions.model_router_configs`` entry-point group (parallel to
+    ``lisa.extensions.model_roles`` for roles), the config is resolved,
+    symbolic ``use``/``fallback`` refs are mapped to concrete model ids, and
+    a ``router:`` block is emitted. Rules referencing models not in the
+    discovered set are stripped so the proposal always loads cleanly. When
+    no pack declares a router config, no ``router:`` block is emitted.
+
     Enrichment fields (``display_name``, ``capabilities``, ``cost_tier``,
     ``latency_tier``, ``thinking_model``, ``context_window``,
     ``description``) are written when the probe populated them. Fields
@@ -180,19 +292,35 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
     deep_model = _choose_deep_model(deduped, default_model)
     rows = [_model_entry(model) for model in deduped]
 
-    # Ordering matters for readability: the top-level maps (mode_models,
-    # roles) are the user's primary edit surface, so they go first — right
-    # after version — and the long models list goes last. yaml.dump
-    # preserves dict insertion order.
-    return {
-        "version": 1,
-        "mode_models": {"default": default_model.model_id},
-        "roles": {
-            "default": default_model.model_id,
-            "deep": deep_model.model_id,
-        },
-        "models": rows,
+    mode_models = {"default": default_model.model_id}
+    roles = {
+        "default": default_model.model_id,
+        "deep": deep_model.model_id,
     }
+
+    # Ordering matters for readability: the top-level maps (mode_models,
+    # roles, router) are the user's primary edit surface, so they go first
+    # — right after version — and the long models list goes last. yaml.dump
+    # preserves dict insertion order.
+    payload: dict[str, Any] = {
+        "version": 1,
+        "mode_models": mode_models,
+        "roles": roles,
+    }
+
+    # Seed a ``router:`` block from the first pack-declared router config
+    # (lisa.extensions.model_router_configs). Symbolic refs (mode/role
+    # names) are resolved to concrete model ids; rules referencing unknown
+    # models are stripped. Returns None when no pack declares a config or
+    # no rules survive — in which case no router block is emitted.
+    router_block = _build_router_block(
+        deduped, mode_models=mode_models, roles=roles
+    )
+    if router_block is not None:
+        payload["router"] = router_block
+
+    payload["models"] = rows
+    return payload
 
 
 def render_manifest_yaml(payload: dict[str, Any]) -> str:

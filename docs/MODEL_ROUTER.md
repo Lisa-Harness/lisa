@@ -96,6 +96,31 @@ These are **not replaced**. They become the router's input defaults:
 Remove the `router:` block (or set `backend: ""`) and you're back to pure
 static selection — no code path changes.
 
+### Pack-seeded router config
+
+Installing a router pack can also **seed** the `router:` block
+automatically — you don't have to hand-write the YAML. This is the
+router-side parallel of pack-declared model roles
+(`lisa.extensions.model_roles`):
+
+- Packs declare a default router config through the
+  `lisa.extensions.model_router_configs` entry-point group.
+- `/models discover` calls `discover_pack_router_config()` (the first
+  pack-declared config wins) and merges it into the proposed manifest.
+- Symbolic `use`/`fallback` references (mode/role names like `"default"`
+  or `"deep"`) are resolved to concrete model ids against the discovered
+  model set. Rules referencing models not in the discovered set are
+  stripped, so the proposal always loads cleanly.
+- A user-provided `router:` block in `models.yaml` always wins. The pack
+  default is only seeded when the user has not written one.
+
+The built-in `lisa-router` pack ships a default config that routes
+code-capable turns to the deep model, escalates to the deep model after
+the first tool result, and downgrades to the default model when the
+tool-call budget is running low. After `/models discover --force`, the
+generated `models.proposed.yaml` includes a ready-to-use `router:` block
+with resolved model ids — no manual editing required.
+
 ---
 
 ## Supported rule conditions (lisa-router)
@@ -131,12 +156,20 @@ auditable. Complex routing needs should use a vendor backend.
 ### Built-in: `lisa-router`
 
 - **Pack**: `sdk/packs/router/` (dist `lisa-pack-router`)
-- **Entry point**: `lisa.extensions.model_routers` →
-  `sdk.packs.router:get_router_factory`
+- **Entry points**:
+  - `lisa.extensions.model_routers` → `sdk.packs.router:get_router_factory`
+    (runtime factory — the `ModelRouter` instance)
+  - `lisa.extensions.model_router_configs` →
+    `sdk.packs.router.default_config:get_default_router_config`
+    (static config — the default `router:` block for `/models discover`)
 - **Zero model calls**: the engine evaluates rules locally against
   `ManifestModelEntry` metadata (`cost_tier`, `latency_tier`, `capabilities`)
   and `RouterRequest` fields.
 - **Active when**: `router.backend == "lisa-router"` in the manifest.
+- **Default config**: the pack declares a default `router:` block with
+  symbolic refs (`"default"`, `"deep"`) that `/models discover` resolves
+  to concrete model ids from the discovered set. See
+  `sdk/packs/router/default_config.py`.
 
 ### External: `lisa-pack-aoi-router` (deferred)
 
@@ -155,6 +188,9 @@ auditable. Complex routing needs should use a vendor backend.
 ```toml
 [project.entry-points."lisa.extensions.model_routers"]
 my-router = "my_pack.router:get_router_factory"
+
+[project.entry-points."lisa.extensions.model_router_configs"]
+my-router = "my_pack.router.default_config:get_default_router_config"
 ```
 
 2. Implement the factory:
