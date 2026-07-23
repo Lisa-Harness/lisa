@@ -22,6 +22,8 @@ This document summarizes test coverage for runtime pack management, pack-contrib
 - Successful package install records provenance in lock file (source_kind=package) and marks restart required.
 - Successful local-folder install records `source_kind=local` with the folder path as `source_ref`.
 - Successful uninstall removes the lock-file entry, clears any provider selections pointing to the uninstalled pack, and marks restart required.
+- Packs venv is seeded with framework workspace packages (`lisa-kernel`, `lisa-sdk`, `lisa-mcp-servers`) on creation so external packs can resolve their dependencies.
+- Existing valid packs venv (pyvenv.cfg present) skips creation and seeding.
 
 ### 2. Trust Policy Enforcement
 

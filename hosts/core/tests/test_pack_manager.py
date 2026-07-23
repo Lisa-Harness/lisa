@@ -403,6 +403,78 @@ def test_validate_pack_spec_for_install_expanded_bare_name_passes(
     assert reason == ""
 
 
+@pytest.mark.asyncio
+async def test_ensure_packs_venv_seeds_framework_packages_on_creation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A freshly-created packs venv is seeded with framework workspace packages."""
+    packs_venv = tmp_path / "packs-venv"
+    # Simulate that pyvenv.cfg does NOT exist → venv will be created.
+    assert not (packs_venv / "pyvenv.cfg").is_file()
+
+    calls: list[list[str]] = []
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"ok", b"")
+
+    async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> _FakeProc:
+        calls.append([str(a) for a in args])
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    ok, err = await commands._ensure_packs_venv(packs_venv)
+    assert ok is True
+    assert err == ""
+
+    # First call: uv venv <path>
+    assert calls[0][:3] == ["uv", "venv", str(packs_venv)]
+    # Second call: uv pip install --python <path> -e <kernel> -e <sdk> -e <mcp_server>
+    assert calls[1][:5] == ["uv", "pip", "install", "--python", str(packs_venv)]
+    assert "-e" in calls[1]
+    # The -e targets should reference framework member directories.
+    e_indices = [i for i, arg in enumerate(calls[1]) if arg == "-e"]
+    for idx in e_indices:
+        target = calls[1][idx + 1]
+        assert any(member in target for member in ("kernel", "sdk", "mcp_server"))
+
+
+@pytest.mark.asyncio
+async def test_ensure_packs_venv_skips_seeding_when_already_exists(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An existing valid packs venv (pyvenv.cfg present) skips creation and seeding."""
+    packs_venv = tmp_path / "packs-venv"
+    packs_venv.mkdir(parents=True, exist_ok=True)
+    (packs_venv / "pyvenv.cfg").write_text("home = /fake\n", encoding="utf-8")
+
+    call_count = 0
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"ok", b"")
+
+    async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> _FakeProc:
+        nonlocal call_count
+        call_count += 1
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    ok, err = await commands._ensure_packs_venv(packs_venv)
+    assert ok is True
+    assert err == ""
+    # No subprocess calls — venv already exists.
+    assert call_count == 0
+
+
 def test_request_and_consume_restart_resume_message(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

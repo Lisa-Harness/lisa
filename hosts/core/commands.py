@@ -1646,6 +1646,59 @@ def _validate_pack_spec_for_install(spec: str) -> tuple[bool, str]:  # noqa: C90
     return True, ""
 
 
+# Framework workspace member directories whose packages external packs may
+# depend on (e.g. ``lisa-kernel``, ``lisa-sdk``, ``lisa-mcp-servers``). These
+# are not published to PyPI, so the packs venv must be seeded with editable
+# installs of them after creation — otherwise ``uv pip install`` of an
+# external pack that declares ``dependencies = ["lisa-kernel", ...]`` fails
+# dependency resolution. The directories are relative to the framework root.
+_FRAMEWORK_SEED_PACKAGES: tuple[str, ...] = ("kernel", "sdk", "mcp_server")
+
+
+async def _seed_packs_venv_with_framework(packs_venv: Path) -> tuple[bool, str]:
+    """Seed the packs venv with editable installs of framework workspace packages.
+
+    External packs (installed from git or PyPI) declare dependencies on
+    ``lisa-kernel``, ``lisa-sdk``, and ``lisa-mcp-servers`` — all workspace
+    packages that are **not** published to PyPI. Without seeding, ``uv pip
+    install`` fails: *"lisa-kernel was not found in the package registry"*.
+
+    This installs the framework packages as editable ``-e`` installs from
+    their source directories so the packs venv can resolve those dependencies.
+    Seeding is idempotent: ``uv pip install -e`` is a no-op if the package is
+    already present at the same version.
+    """
+    seed_targets: list[str] = []
+    for member in _FRAMEWORK_SEED_PACKAGES:
+        member_path = _FRAMEWORK_ROOT / member
+        if member_path.is_dir():
+            seed_targets.append("-e")
+            seed_targets.append(str(member_path))
+    if not seed_targets:
+        return True, ""
+
+    process = await asyncio.create_subprocess_exec(
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        str(packs_venv),
+        *seed_targets,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=str(_FRAMEWORK_ROOT),
+    )
+    output_bytes, _ = await process.communicate()
+    if process.returncode != 0:
+        output = output_bytes.decode("utf-8", errors="replace") if output_bytes else ""
+        preview = "\n".join(output.splitlines()[-12:]).strip()
+        return False, (
+            f"Failed to seed packs venv with framework packages at '{packs_venv}'.\n{preview}"
+        )
+    logger.info("Seeded packs venv at %s with framework packages", packs_venv)
+    return True, ""
+
+
 async def _ensure_packs_venv(packs_venv: Path) -> tuple[bool, str]:
     """Ensure the packs venv exists as a real virtual environment.
 
@@ -1654,6 +1707,12 @@ async def _ensure_packs_venv(packs_venv: Path) -> tuple[bool, str]:
     venv is missing or is not a valid venv, run ``uv venv`` to create one. The
     packs venv lives inside the data dir, so the parent directory is created
     first.
+
+    After creating the venv, it is seeded with editable installs of the
+    framework workspace packages (``lisa-kernel``, ``lisa-sdk``,
+    ``lisa-mcp-servers``) so that external packs declaring dependencies on
+    them can resolve successfully — these packages are workspace-only and not
+    published to PyPI.
 
     Returns ``(True, "")`` on success (venv exists or was created) or
     ``(False, message)`` if venv creation failed.
@@ -1679,6 +1738,13 @@ async def _ensure_packs_venv(packs_venv: Path) -> tuple[bool, str]:
             f"Failed to create packs venv at '{packs_venv}'.\n{preview}"
         )
     logger.info("Created packs venv at %s", packs_venv)
+
+    # Seed the freshly-created venv with framework workspace packages so
+    # external packs that depend on lisa-kernel / lisa-sdk / lisa-mcp-servers
+    # can resolve their dependencies (these are not on PyPI).
+    seeded, seed_err = await _seed_packs_venv_with_framework(packs_venv)
+    if not seeded:
+        return False, seed_err
     return True, ""
 
 
