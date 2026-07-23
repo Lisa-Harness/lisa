@@ -188,9 +188,11 @@ root_packages = [
     "hosts",
 ]
 
-# Kernel is runtime-neutral — must never import from hosts, sdk, or mcp_server.
+# Kernel is runtime-neutral — must never import from hosts.
+# (kernel → sdk and kernel → mcp_server are allowed; sdk/mcp_server depend on kernel,
+# not the other way around.)
 [[tool.importlinter.contracts]]
-name = "Kernel runtime-neutrality (kernel imports nothing from hosts, sdk, or mcp_server)"
+name = "Kernel runtime-neutrality (kernel imports nothing from hosts)"
 type = "forbidden"
 source_modules = ["kernel"]
 forbidden_modules = [
@@ -199,8 +201,6 @@ forbidden_modules = [
     "hosts.cli",
     "hosts.web",
     "hosts.vscode",
-    "sdk",
-    "mcp_server",
 ]
 
 # SDK must not import host transport code or mcp_server internals.
@@ -237,15 +237,16 @@ forbidden_modules = [
     "hosts.vscode",
 ]
 
-# Host layering: cli/web/vscode → core → mcp_server/sdk/kernel
-# The `|` separator means modules in the same layer may import each other.
+# Host layering: cli/web/vscode → core → mcp_server → sdk → kernel
 [[tool.importlinter.contracts]]
-name = "Host layering (cli/web/vscode → core → mcp_server/sdk/kernel)"
+name = "Host layering (cli/web/vscode → core → mcp_server → sdk → kernel)"
 type = "layers"
 layers = [
     "hosts.cli | hosts.web | hosts.vscode",
     "hosts.core",
-    "mcp_server | sdk | kernel",
+    "mcp_server",
+    "sdk",
+    "kernel",
 ]
 
 # mcp_server may use kernel/sdk but must not depend on host transport.
