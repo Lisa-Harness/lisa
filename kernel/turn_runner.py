@@ -1417,6 +1417,34 @@ async def _run_turn_inner(
     )
     model_def = resolve_model(preferred_model_id)
 
+    # ── Capability gate ────────────────────────────────────────────────
+    # When the mode declares ``required_capabilities`` (pack-authored
+    # ``ModelCapability`` strings) and a model router is wired, validate the
+    # resolved model's declared capabilities before the tool loop starts. If
+    # the model is missing a required capability, return a clear user-facing
+    # block instead of letting a weak model reach for write-effect tools it
+    # cannot use reliably (e.g. gemma4:cloud calling ``coding_create_worktree``
+    # for a "write a roadmap" request it can't actually complete). When no
+    # router is wired, the gate is advisory (no block) — a host without a
+    # router has no escalation path, so blocking would dead-end. The gate is
+    # the safety net behind the router: the router's ``required_capabilities
+    # includes "code"`` rule should have already escalated to a capable model;
+    # the gate catches the cases where the router declined or returned None.
+    _cap_block = _validate_model_capabilities(
+        mode_config=mode_config,
+        model_def=model_def,
+        preferred_model_id=preferred_model_id,
+        router_wired=hooks.context_seams.model_router is not None,
+    )
+    if _cap_block is not None:
+        _log.warning(
+            "capability gate blocked turn mode=%s model=%s missing=%s",
+            mode_id,
+            getattr(model_def, "model_id", preferred_model_id),
+            _cap_block.missing,
+        )
+        return _cap_block.result
+
     content = ""
     transitioned_to: str | None = None
     handoff_to: str | None = None
@@ -1766,6 +1794,56 @@ async def _run_turn_inner(
         for tool_call in tool_calls:
             tool_name, tool_arguments = openai_tool_call_to_mcp(tool_call)
             tool_call_id = str(tool_call.get("id") or "")
+
+            # ── Routing-hint write-tool guard (defense in depth) ───────
+            # When a routing hint was injected this turn (the kernel told the
+            # model to hand off because the current mode lacks the tools the
+            # query needs), a model that ignores the hint and instead calls a
+            # write-effect tool from the current mode is almost always wrong
+            # — e.g. a weak model in ``coding`` mode calling
+            # ``coding_create_worktree`` for a "write a roadmap" request
+            # instead of handing off to ``markdown``. Inject a correction
+            # nudge (mirroring the hallucinated-transition guard) and skip
+            # the dispatch so the model retries with ``transition_stage`` or
+            # a read-only tool. Bounded by ``_NARRATION_NUDGE_CAP`` so a model
+            # that never learns still gets to produce a final response.
+            if (
+                routing_hint
+                and tool_name != _TRANSITION_TOOL_NAME
+                and _narration_nudge_count < _NARRATION_NUDGE_CAP
+            ):
+                _hint_effect = _tool_effect(
+                    tool_name,
+                    operation_catalog=operation_catalog,
+                    tool_catalog=tool_catalog,
+                )
+                if _hint_effect == "write" or _hint_effect == "external_write":
+                    _narration_nudge_count += 1
+                    _log.warning(
+                        "model called write-effect tool %r after a routing "
+                        "hint; injecting correction nudge (mode=%s, "
+                        "iteration=%d, nudge=%d/%d)",
+                        tool_name,
+                        mode_id,
+                        iteration,
+                        _narration_nudge_count,
+                        _NARRATION_NUDGE_CAP,
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"You called the write-effect tool `{tool_name}` "
+                                "but a routing hint told you this mode lacks "
+                                "the tools needed for this request. Do not "
+                                "write from this mode — call `transition_stage` "
+                                "with the suggested `target_stage_id` to hand "
+                                "off, or use a read-only tool and respond "
+                                "directly to the user."
+                            ),
+                        }
+                    )
+                    continue
 
             # Per-target ``max_calls_per_turn`` enforcement (item 2). The
             # ledger is the single enforcement point across operations and
@@ -2361,6 +2439,64 @@ async def _run_turn_inner(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class _CapabilityGateBlock:
+    """Result of a failed capability-gate check."""
+
+    result: TurnResult
+    missing: tuple[str, ...]
+
+
+def _validate_model_capabilities(
+    *,
+    mode_config: Any,
+    model_def: Any,
+    preferred_model_id: str,
+    router_wired: bool,
+) -> _CapabilityGateBlock | None:
+    """Validate the resolved model against the mode's required capabilities.
+
+    Returns ``None`` when the turn may proceed. Returns a
+    ``_CapabilityGateBlock`` (carrying a user-facing ``TurnResult``) when the
+    model is missing a required capability AND a router is wired — the gate
+    hard-blocks so a weak model cannot reach for write-effect tools it cannot
+    use reliably. When no router is wired, the gate is advisory (returns
+    ``None``) because a host without a router has no escalation path.
+
+    Backward compatible: a mode with no ``required_capabilities`` (the default)
+    never blocks. A ``model_def`` that does not carry ``capabilities`` (e.g. a
+    test stub) is treated as having no declared capabilities, which only
+    matters when the mode requires capabilities.
+    """
+    if mode_config is None:
+        return None
+    required = getattr(mode_config, "required_capabilities", None) or ()
+    if not required:
+        return None
+    # The gate only hard-blocks when a router is wired (escalation path exists).
+    if not router_wired:
+        return None
+    model_caps = set(getattr(model_def, "capabilities", ()) or ())
+    missing = tuple(
+        cap for cap in required if cap not in model_caps
+    )
+    if not missing:
+        return None
+    model_id = getattr(model_def, "model_id", preferred_model_id)
+    mode_id = getattr(mode_config, "mode_id", "(unknown)")
+    missing_str = ", ".join(sorted(missing))
+    message = (
+        f"Model '{model_id}' is missing the capability(ies) required by mode "
+        f"'{mode_id}' ({missing_str}). Use a model that declares those "
+        f"capabilities, or switch to a mode that does not require them. No "
+        f"tools were called."
+    )
+    return _CapabilityGateBlock(
+        result=TurnResult(response_text=message, blocked=True),
+        missing=missing,
+    )
+
+
 def _detect_query_intents(
     *,
     query: str,
@@ -2416,6 +2552,30 @@ def _detect_query_intents(
             except re.error:
                 pass
     return detected
+
+
+def _tool_effect(
+    tool_name: str,
+    *,
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
+) -> str:
+    """Return the ``EffectKind`` of a capability id, or ``"read"`` when
+    unknown.
+
+    Resolves against the operation catalog first, then the tool catalog
+    (matching ``resolve_capability`` precedence). MCP-native tools have no
+    catalog definition and default to ``"read"`` — the routing-hint write-tool
+    guard only fires on declared write-effect tools, so MCP tools without a
+    definition are left alone.
+    """
+    op_def = operation_catalog.get(tool_name)
+    if op_def is not None:
+        return str(getattr(op_def, "effect", "read") or "read")
+    tool_def = tool_catalog.get(tool_name)
+    if tool_def is not None:
+        return str(getattr(tool_def, "effect", "read") or "read")
+    return "read"
 
 
 def _compute_capability_routing_hint(

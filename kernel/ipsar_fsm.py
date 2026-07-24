@@ -313,6 +313,7 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "routing_intent_tags",
         "routing_intent_keywords",
         "satisfies_intents",
+        "required_capabilities",
         "default_intent_bridges",
         "artifact_type",
     }
@@ -698,6 +699,30 @@ def load_catalog_from_disk(
                 )
             satisfies_intents.append(tag)
 
+        # Parse required_capabilities: ``ModelCapability`` strings the resolved
+        # model must declare for this mode to run safely. Mirrors
+        # ``satisfies_intents`` parsing. Default empty means no capability gate
+        # (backward compatible). The kernel never hardcodes specific capability
+        # names — they are pack-authored vocabulary matching ``ModelCapability``
+        # (text, tools, code, reasoning, ...).
+        required_capabilities_raw = mode_front_matter.get("required_capabilities") or []
+        if not isinstance(required_capabilities_raw, list):
+            raise WorkflowValidationError(
+                f"required_capabilities must be a list in {mode_config_path}"
+            )
+        required_capabilities: list[str] = []
+        for idx, raw_cap in enumerate(required_capabilities_raw):
+            if not isinstance(raw_cap, str):
+                raise WorkflowValidationError(
+                    f"required_capabilities[{idx}] must be a string in {mode_config_path}"
+                )
+            cap = raw_cap.strip().lower()
+            if not cap:
+                raise WorkflowValidationError(
+                    f"required_capabilities[{idx}] cannot be empty in {mode_config_path}"
+                )
+            required_capabilities.append(cap)
+
         # Parse default_intent_bridges: list of bridge configs from mode front-matter.
         default_intent_bridges = []
         bridges_raw = mode_front_matter.get("default_intent_bridges") or []
@@ -784,6 +809,7 @@ def load_catalog_from_disk(
             routing_intent_tags=routing_intent_tags,
             routing_intent_keywords=routing_intent_keywords,
             satisfies_intents=satisfies_intents,
+            required_capabilities=required_capabilities,
             command_pattern=command_pattern,
             require_query=require_query,
             entry_operation_ids=entry_operation_ids,

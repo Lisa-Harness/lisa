@@ -1257,6 +1257,18 @@ class WorkflowModeConfig(BaseModel):
     # gap → a handoff hint is offered (the safe direction for modes that have
     # not opted in, e.g. ``default``).
     satisfies_intents: list[str] = Field(default_factory=list)
+    # ``ModelCapability`` strings (``tools``, ``code``, ``reasoning``, ...) the
+    # resolved model must declare for this mode to run safely. Authored in
+    # ``_mode.md`` front matter under ``required_capabilities``. The turn
+    # runner validates the resolved model's ``ManifestModelEntry.capabilities``
+    # against this list before the tool loop starts; when a router is wired and
+    # the model is missing a required capability, the turn returns a clear
+    # user-facing block instead of letting a weak model reach for write-effect
+    # tools it cannot use reliably. Default empty means no capability gate
+    # (backward compatible — every model is admitted). The kernel never
+    # hardcodes specific capability names; they are pack-authored vocabulary
+    # matching ``ModelCapability``.
+    required_capabilities: list[str] = Field(default_factory=list)
     # Python regex string used by parse_route() to detect activation.
     # Must include a named group (?P<query>...) for the trailing user text.
     command_pattern: str = ""

@@ -22,6 +22,13 @@ class StubModelDefinition:
     provider: str = "azure_openai"
     reasoning_model: bool = False
     context_window: int = 0
+    capabilities: tuple[str, ...] = ()
+    """``ModelCapability`` strings (``text``, ``tools``, ``code``, ...) the
+    resolved model declares in the manifest. Forwarded from
+    ``ManifestModelEntry.capabilities`` so the kernel's capability gate can
+    validate the resolved model against the mode's ``required_capabilities``
+    without the kernel reaching into the host's manifest directly. Default
+    empty for backward compatibility with stubs that do not carry caps."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,4 +150,5 @@ def _to_stub_model_definition(model: ManifestModelEntry) -> StubModelDefinition:
         provider=model.provider,
         reasoning_model=model.reasoning_model,
         context_window=model.context_window,
+        capabilities=tuple(model.capabilities),
     )

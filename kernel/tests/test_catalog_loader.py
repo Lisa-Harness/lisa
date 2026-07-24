@@ -429,6 +429,92 @@ def test_load_catalog_from_disk_overrides_reject_satisfies_intents(
 
 
 # ---------------------------------------------------------------------------
+# load_catalog_from_disk: required_capabilities
+# ---------------------------------------------------------------------------
+
+
+def test_load_catalog_from_disk_reads_required_capabilities(tmp_path: Path) -> None:
+    """``required_capabilities`` flows from front matter into the typed field.
+
+    Declares the ``ModelCapability`` strings the resolved model must have for
+    the mode to run safely. The turn runner validates the resolved model's
+    ``ManifestModelEntry.capabilities`` against this list before the tool
+    loop starts. Authored by packs; the kernel never hardcodes capability
+    names.
+    """
+    _write_mode(tmp_path, extra_front_matter={"required_capabilities": ["tools", "code"]})
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].required_capabilities == ["tools", "code"]
+
+
+def test_load_catalog_from_disk_required_capabilities_default_empty(tmp_path: Path) -> None:
+    """``required_capabilities`` defaults to empty when absent from front matter.
+
+    Empty means no capability gate — every model is admitted (backward
+    compatible with the pre-field behavior).
+    """
+    _write_mode(tmp_path)
+    catalog = _load(tmp_path)
+
+    assert catalog["demo"].required_capabilities == []
+
+
+def test_load_catalog_from_disk_required_capabilities_not_in_extra_front_matter(
+    tmp_path: Path,
+) -> None:
+    """``required_capabilities`` is kernel-owned: it never leaks into ``extra_front_matter``."""
+    _write_mode(tmp_path, extra_front_matter={"required_capabilities": ["code"]})
+    catalog = _load(tmp_path)
+
+    assert "required_capabilities" not in catalog["demo"].extra_front_matter
+    assert catalog["demo"].required_capabilities == ["code"]
+
+
+def test_load_catalog_from_disk_required_capabilities_rejects_non_list(
+    tmp_path: Path,
+) -> None:
+    """``required_capabilities`` must be a list; any other type is a load error."""
+    _write_mode(tmp_path, extra_front_matter={"required_capabilities": "code"})
+    with pytest.raises(WorkflowValidationError, match="required_capabilities must be a list"):
+        _load(tmp_path)
+
+
+def test_load_catalog_from_disk_required_capabilities_rejects_non_string_element(
+    tmp_path: Path,
+) -> None:
+    """Every ``required_capabilities`` entry must be a string."""
+    _write_mode(tmp_path, extra_front_matter={"required_capabilities": ["code", 7]})
+    with pytest.raises(
+        WorkflowValidationError, match="required_capabilities\\[1\\] must be a string"
+    ):
+        _load(tmp_path)
+
+
+def test_load_catalog_from_disk_required_capabilities_rejects_empty_element(
+    tmp_path: Path,
+) -> None:
+    """Empty/whitespace ``required_capabilities`` entries are rejected."""
+    _write_mode(tmp_path, extra_front_matter={"required_capabilities": ["code", "  "]})
+    with pytest.raises(
+        WorkflowValidationError, match="required_capabilities\\[1\\] cannot be empty"
+    ):
+        _load(tmp_path)
+
+
+def test_load_catalog_from_disk_overrides_reject_required_capabilities(
+    tmp_path: Path,
+) -> None:
+    """``required_capabilities`` is a kernel-owned routing key: overrides may not touch it."""
+    _write_mode(tmp_path)
+    (tmp_path / "demo" / "_overrides.yaml").write_text(
+        "required_capabilities: [code]\n", encoding="utf-8"
+    )
+    with pytest.raises(WorkflowValidationError, match="required_capabilities"):
+        _load(tmp_path)
+
+
+# ---------------------------------------------------------------------------
 # load_catalog_from_disk: tools_authoritative / allowed_tool_ids
 # ---------------------------------------------------------------------------
 

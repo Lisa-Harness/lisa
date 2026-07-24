@@ -1002,6 +1002,7 @@ def _mode_config(
     *,
     mode_id: str = "default",
     satisfies_intents: list[str] | None = None,
+    required_capabilities: list[str] | None = None,
 ) -> WorkflowModeConfig:
     """A minimal WorkflowModeConfig for routing-hint tests.
 
@@ -1009,12 +1010,14 @@ def _mode_config(
     ``satisfies_intents=None`` → empty list (every detected intent is a
     gap), matching the behavior of modes that have not opted in (e.g.
     ``default``) and preserving the pre-field semantics for existing tests.
+    ``required_capabilities=None`` → empty list (no capability gate).
     """
     return WorkflowModeConfig(
         mode_id=mode_id,
         start_stage_id="none",
         mode_kind="chat",
         satisfies_intents=list(satisfies_intents) if satisfies_intents else [],
+        required_capabilities=list(required_capabilities) if required_capabilities else [],
     )
 
 
@@ -1371,4 +1374,198 @@ def _manifest_with_coding_tools() -> CapabilityManifest:
             )
             for tid in coding_tool_ids
         ],
+    )
+
+
+# ── Capability gate tests (required_capabilities) ─────────────────────
+#
+# The gate validates the resolved model's declared capabilities against the
+# mode's required_capabilities before the tool loop starts. When a router is
+# wired and the model is missing a required capability, the turn returns a
+# clear user-facing block instead of letting a weak model reach for
+# write-effect tools it cannot use reliably.
+
+
+def test_capability_gate_blocks_weak_model_when_router_wired() -> None:
+    """A mode requiring ``tools`` with a text-only model + a wired router
+    returns a blocked TurnResult naming the missing capability.
+    """
+    from kernel.turn_runner import _validate_model_capabilities
+
+    mode_config = _mode_config(mode_id="coding", required_capabilities=["tools"])
+    model_def = _StubModel(model_id="gemma4:cloud", capabilities=("text",))
+    block = _validate_model_capabilities(
+        mode_config=mode_config,
+        model_def=model_def,
+        preferred_model_id="gemma4:cloud",
+        router_wired=True,
+    )
+    assert block is not None
+    assert block.missing == ("tools",)
+    assert block.result.blocked is True
+    assert "gemma4:cloud" in block.result.response_text
+    assert "tools" in block.result.response_text
+    assert block.result.tool_call_count == 0
+
+
+def test_capability_gate_passes_when_model_capable() -> None:
+    """A model that declares the required capabilities is admitted."""
+    from kernel.turn_runner import _validate_model_capabilities
+
+    mode_config = _mode_config(mode_id="coding", required_capabilities=["tools", "code"])
+    model_def = _StubModel(model_id="gpt-5.3-codex", capabilities=("text", "tools", "code"))
+    block = _validate_model_capabilities(
+        mode_config=mode_config,
+        model_def=model_def,
+        preferred_model_id="gpt-5.3-codex",
+        router_wired=True,
+    )
+    assert block is None
+
+
+def test_capability_gate_skips_when_no_required_capabilities() -> None:
+    """A mode with no required_capabilities never blocks (backward compat)."""
+    from kernel.turn_runner import _validate_model_capabilities
+
+    mode_config = _mode_config(mode_id="default")  # no required_capabilities
+    model_def = _StubModel(model_id="weak", capabilities=())
+    block = _validate_model_capabilities(
+        mode_config=mode_config,
+        model_def=model_def,
+        preferred_model_id="weak",
+        router_wired=True,
+    )
+    assert block is None
+
+
+def test_capability_gate_advisory_when_no_router_wired() -> None:
+    """When no router is wired, the gate is advisory — no block, even if the
+    model is missing required capabilities. A host without a router has no
+    escalation path, so blocking would dead-end.
+    """
+    from kernel.turn_runner import _validate_model_capabilities
+
+    mode_config = _mode_config(mode_id="coding", required_capabilities=["tools"])
+    model_def = _StubModel(model_id="weak", capabilities=("text",))
+    block = _validate_model_capabilities(
+        mode_config=mode_config,
+        model_def=model_def,
+        preferred_model_id="weak",
+        router_wired=False,
+    )
+    assert block is None
+
+
+def test_capability_gate_skips_when_mode_config_none() -> None:
+    """No mode config → no gate (backward compat for hosts without modes)."""
+    from kernel.turn_runner import _validate_model_capabilities
+
+    model_def = _StubModel(model_id="weak", capabilities=())
+    block = _validate_model_capabilities(
+        mode_config=None,
+        model_def=model_def,
+        preferred_model_id="weak",
+        router_wired=True,
+    )
+    assert block is None
+
+
+def test_capability_gate_treats_missing_capabilities_field_as_empty() -> None:
+    """A model_def without a ``capabilities`` attribute is treated as having
+    no declared capabilities — only matters when the mode requires caps.
+    """
+    from kernel.turn_runner import _validate_model_capabilities
+
+    mode_config = _mode_config(mode_id="coding", required_capabilities=["tools"])
+    # A bare object with only model_id — no capabilities attribute.
+    model_def = type("Bare", (), {"model_id": "stub"})()
+    block = _validate_model_capabilities(
+        mode_config=mode_config,
+        model_def=model_def,
+        preferred_model_id="stub",
+        router_wired=True,
+    )
+    assert block is not None
+    assert "tools" in block.missing
+
+
+@dataclass(frozen=True, slots=True)
+class _StubModel:
+    """Minimal model stand-in carrying capabilities for gate tests."""
+
+    model_id: str
+    capabilities: tuple[str, ...] = ()
+
+
+# ── Routing-hint write-tool guard tests ──────────────────────────────
+
+
+def test_tool_effect_reads_write_effect_from_tool_catalog() -> None:
+    """``_tool_effect`` returns ``write`` for a tool whose catalog definition
+    declares ``effect: write``.
+    """
+    from kernel.turn_runner import _tool_effect
+
+    tool_def = type("Tool", (), {"effect": "write"})()
+    assert (
+        _tool_effect(
+            "coding_create_worktree",
+            operation_catalog={},
+            tool_catalog={"coding_create_worktree": tool_def},
+        )
+        == "write"
+    )
+
+
+def test_tool_effect_reads_write_effect_from_operation_catalog() -> None:
+    """``_tool_effect`` prefers the operation catalog on id collision."""
+    from kernel.turn_runner import _tool_effect
+
+    op_def = type("Op", (), {"effect": "write"})()
+    assert (
+        _tool_effect(
+            "some_op",
+            operation_catalog={"some_op": op_def},
+            tool_catalog={},
+        )
+        == "write"
+    )
+
+
+def test_tool_effect_defaults_read_for_unknown_tool() -> None:
+    """Unknown tools (no catalog entry) default to ``read`` so the
+    routing-hint guard only fires on declared write-effect tools.
+    """
+    from kernel.turn_runner import _tool_effect
+
+    assert _tool_effect("unknown", operation_catalog={}, tool_catalog={}) == "read"
+
+
+def test_tool_effect_defaults_read_when_definition_has_no_effect() -> None:
+    """A definition without an ``effect`` attribute defaults to ``read``."""
+    from kernel.turn_runner import _tool_effect
+
+    bare_def = type("Bare", (), {})()
+    assert (
+        _tool_effect(
+            "x",
+            operation_catalog={"x": bare_def},
+            tool_catalog={},
+        )
+        == "read"
+    )
+
+
+def test_tool_effect_returns_external_write() -> None:
+    """``external_write`` is treated as a write-effect for the guard."""
+    from kernel.turn_runner import _tool_effect
+
+    tool_def = type("Tool", (), {"effect": "external_write"})()
+    assert (
+        _tool_effect(
+            "github_open_pull_request",
+            operation_catalog={},
+            tool_catalog={"github_open_pull_request": tool_def},
+        )
+        == "external_write"
     )

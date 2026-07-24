@@ -253,3 +253,24 @@ chosen `model_id` and `provider`. Router decisions are auditable via the
   pattern as `lisa.extensions.slice_providers`, keeping ordering deterministic.
 - **Graceful failure.** Router exceptions are caught and logged; the loop
   falls back to static resolution. A broken router never breaks the turn.
+
+### Capability gate (router safety net)
+
+When a mode declares `required_capabilities` in its `_mode.md` front matter
+(pack-authored `ModelCapability` strings like `tools`, `code`), the turn
+runner validates the resolved model's `ManifestModelEntry.capabilities`
+**before** the tool loop starts. When a router is wired and the model is
+missing a required capability, the turn returns a clear user-facing block
+instead of letting a weak model reach for write-effect tools it cannot use
+reliably — e.g. `gemma4:cloud` in `coding` mode calling
+`coding_create_worktree` for a "write a roadmap" request it can't complete.
+
+The gate is the safety net **behind** the router: a router rule like
+`required_capabilities includes "code" → gpt-5.3-codex` should escalate to a
+capable model first; the gate catches the cases where the router declined or
+returned `None`. When no router is wired the gate is advisory (no block) — a
+host without a router has no escalation path, so blocking would dead-end.
+
+A mode with no `required_capabilities` (the default) never blocks — every
+model is admitted, preserving the pre-field behavior. See
+`docs/PACK_AUTHORING_GUIDE.md` for authoring.
