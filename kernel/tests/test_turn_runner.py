@@ -1152,6 +1152,166 @@ def test_routing_hint_after_handoff_empty_when_new_mode_satisfies_all() -> None:
     assert hint == ""
 
 
+def test_routing_hint_sequential_query_does_not_fork() -> None:
+    """A sequential multi-intent query ("search ... then code ... then
+    write") must produce a single handoff to the first step's target, NOT
+    a fork. A fork runs children in parallel with the whole query, so none
+    can use another's output — it is the wrong mechanism for a chain.
+
+    Regression for the 2026-07-24 fork-failure incident: the model was told
+    to `fork:ponder,markdown,search`, each child got the whole query and a
+    re-routing hint, the markdown child hit Azure 500 "model produced invalid
+    content", and ponder made 0 tool calls. The fix detects sequential
+    connectors and prefers a single-handoff so the chain proceeds step by
+    step via post-handoff hint recomputation.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    search_cfg = _mode_config(
+        mode_id="search", satisfies_intents=["research"],
+        routing_intent_tags=["research"],
+        routing_intent_keywords={"research": ["search", "latest", "news"]},
+    )
+    coding_cfg = _mode_config(
+        mode_id="coding", satisfies_intents=["coding"],
+        routing_intent_tags=["coding"],
+        routing_intent_keywords={"coding": ["code", "coding", "codebase", "gap analysis"]},
+    )
+    markdown_cfg = _mode_config(
+        mode_id="markdown", satisfies_intents=["write"],
+        routing_intent_tags=["write"],
+        routing_intent_keywords={"write": ["write", "markdown", "document", "report"]},
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {
+        "search": search_cfg, "coding": coding_cfg, "markdown": markdown_cfg,
+        "default": default_cfg,
+    }
+
+    q = ("do a web search for python coding best practices then go into "
+         "coding mode and use it as input for a code-level gap analysis "
+         "then write a markdown of it.")
+    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default", query=q, capability_manifest=_empty_manifest(),
+            routing_targets=["search", "coding", "markdown"],
+            mode_config=default_cfg,
+        )
+
+    assert hint != ""
+    assert "transition_stage" in hint
+    # Sequential: single handoff to the first step (search), NOT a fork.
+    assert "fork:" not in hint
+    assert "search" in hint
+
+
+def test_routing_hint_concurrent_query_still_forks() -> None:
+    """A concurrent multi-intent query ("remember this and write a markdown")
+    has no sequential connectors, so it must still fork — the two intents
+    are independent and can run in parallel.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    learn_cfg = _mode_config(
+        mode_id="learn", satisfies_intents=["learn"],
+        routing_intent_tags=["learn"],
+        routing_intent_keywords={"learn": ["remember", "note", "capture"]},
+    )
+    markdown_cfg = _mode_config(
+        mode_id="markdown", satisfies_intents=["write"],
+        routing_intent_tags=["write"],
+        routing_intent_keywords={"write": ["write", "markdown", "document"]},
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {"learn": learn_cfg, "markdown": markdown_cfg, "default": default_cfg}
+
+    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="remember this and write a markdown of it",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["learn", "markdown"],
+            mode_config=default_cfg,
+        )
+
+    assert hint != ""
+    assert "fork:" in hint
+    assert "learn" in hint and "markdown" in hint
+
+
+def test_query_is_sequential_detects_connectors() -> None:
+    """The sequential connector detector recognizes 'then', 'and then',
+    'after that', 'next', 'followed by'."""
+    from kernel.turn_runner import _query_is_sequential
+
+    assert _query_is_sequential("search for X then write a markdown")
+    assert _query_is_sequential("search for X and then write a markdown")
+    assert _query_is_sequential("search for X after that write a markdown")
+    assert _query_is_sequential("search for X next write a markdown")
+    assert _query_is_sequential("search for X followed by write a markdown")
+    # No connector -> concurrent.
+    assert not _query_is_sequential("remember this and write a markdown")
+    assert not _query_is_sequential("hello world")
+
+
+def test_routing_hint_chain_memory_skips_completed_steps() -> None:
+    """After a sequential chain has handed off through search and coding,
+    the post-handoff hint must name markdown (the remaining step), NOT
+    re-suggest search — even though "search" still appears in the original
+    query and coding's ``satisfies_intents`` is only ["coding"].
+
+    Regression for the 2026-07-24 chain-stall: the post-search hint correctly
+    named coding, but the post-coding hint re-detected "research" from the
+    query text and re-suggested search, creating an infinite loop. The fix
+    passes ``extra_satisfied`` (the cumulative set of intents from all modes
+    entered during the turn) so already-completed steps are not re-suggested.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    search_cfg = _mode_config(
+        mode_id="search", satisfies_intents=["research"],
+        routing_intent_tags=["research"],
+        routing_intent_keywords={"research": ["search", "latest", "news"]},
+    )
+    coding_cfg = _mode_config(
+        mode_id="coding", satisfies_intents=["coding"],
+        routing_intent_tags=["coding"],
+        routing_intent_keywords={"coding": ["coding", "code", "codebase", "gap analysis"]},
+    )
+    markdown_cfg = _mode_config(
+        mode_id="markdown", satisfies_intents=["write"],
+        routing_intent_tags=["write"],
+        routing_intent_keywords={"write": ["write", "markdown", "document", "report"]},
+    )
+    patched_catalog = {
+        "search": search_cfg, "coding": coding_cfg, "markdown": markdown_cfg,
+    }
+    q = ("do a web search for python coding best practices then go into "
+         "coding mode and use it as input for a code-level gap analysis "
+         "then write a markdown of it.")
+
+    # After search + coding: chain_satisfied = {research, coding}.
+    # Gap = {write}. Hint must name markdown, NOT search.
+    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="coding", query=q, capability_manifest=_empty_manifest(),
+            routing_targets=["search", "markdown"],
+            mode_config=coding_cfg,
+            extra_satisfied={"research", "coding"},
+        )
+
+    assert hint != ""
+    assert "markdown" in hint
+    assert "search" not in hint
+    assert "fork:" not in hint
+
+
 # ── Proactive capability routing hint tests ─────────────────────────
 
 

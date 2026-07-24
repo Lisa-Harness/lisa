@@ -823,8 +823,17 @@ async def run_turn(
     preferred_model_id: str | None = None,
     turn_budget: TurnBudget | None = None,
     logger_override: logging.Logger | None = None,
+    suppress_routing_hint: bool = False,
 ) -> TurnResult:
     """Execute one conversational turn with the full model+tool loop.
+
+    ``suppress_routing_hint`` is set by the fork fan-out so child turns do
+    not recompute and inject their own routing hints. A fork child already
+    runs in its target mode by design; a hint telling it to hand off again
+    creates a loop (the child sees the original multi-intent query, detects
+    intents its mode doesn't satisfy, and is told to re-route — which a
+    weak/strict model turns into an invalid-content 500). Fork children
+    must run their mode to completion without re-routing.
 
     This is the single turn loop shared by lightweight hosts and the production app.
     Both call the same function — they differ only in which `TurnHooks` they
@@ -900,6 +909,7 @@ async def run_turn(
             preferred_model_id=preferred_model_id,
             turn_budget=turn_budget,
             logger_override=logger_override,
+            suppress_routing_hint=suppress_routing_hint,
         )
     pool = MCPToolPool(hooks.mcp_tool_servers)
     await pool.start()
@@ -920,6 +930,7 @@ async def run_turn(
             preferred_model_id=preferred_model_id,
             turn_budget=turn_budget,
             logger_override=logger_override,
+            suppress_routing_hint=suppress_routing_hint,
         )
     finally:
         await pool.aclose()
@@ -942,6 +953,7 @@ async def _run_turn_with_approval(
     preferred_model_id: str | None,
     turn_budget: TurnBudget | None,
     logger_override: logging.Logger | None,
+    suppress_routing_hint: bool = False,
 ) -> TurnResult:
     """Convert an approval interruption into a host-renderable turn result."""
 
@@ -962,6 +974,7 @@ async def _run_turn_with_approval(
             preferred_model_id=preferred_model_id,
             turn_budget=turn_budget,
             logger_override=logger_override,
+            suppress_routing_hint=suppress_routing_hint,
         )
     except ApprovalRequired as required:
         return TurnResult(
@@ -1081,6 +1094,7 @@ async def _run_turn_inner(
     preferred_model_id: str | None,
     turn_budget: TurnBudget | None,
     logger_override: logging.Logger | None,
+    suppress_routing_hint: bool = False,
 ) -> TurnResult:
     """Inner turn loop that owns the MCPToolPool lifecycle via the caller."""
 
@@ -1366,13 +1380,21 @@ async def _run_turn_inner(
     # lacks tools the query seems to need, inject a routing hint into the
     # system prompt. This is proactive (zero wasted iterations) and zero-cost
     # when the current mode can handle the request. See docs/ROUTING_RFC_HANDOFF.md.
-    routing_hint = _compute_capability_routing_hint(
-        mode_id=mode_id,
-        query=query,
-        capability_manifest=capability_manifest,
-        routing_targets=get_routing_targets(mode_id) if mode_config else [],
-        mode_config=mode_config,
-    )
+    #
+    # Suppressed for fork children: a fork child already runs in its target
+    # mode by design. A hint telling it to hand off again creates a loop
+    # (the child sees the original multi-intent query, detects intents its
+    # mode doesn't satisfy, and is told to re-route — which a weak/strict
+    # model turns into an invalid-content 500). See _run_fork_child_turn.
+    routing_hint = ""
+    if not suppress_routing_hint:
+        routing_hint = _compute_capability_routing_hint(
+            mode_id=mode_id,
+            query=query,
+            capability_manifest=capability_manifest,
+            routing_targets=get_routing_targets(mode_id) if mode_config else [],
+            mode_config=mode_config,
+        )
     if routing_hint:
         _log.info(
             "routing hint injected mode=%s hint_len=%d hint=%s",
@@ -1451,6 +1473,17 @@ async def _run_turn_inner(
     fork_results: list[ForkChildResult] | None = None
     workflow_terminated = False
     total_tool_calls = 0
+    # Cumulative set of intents satisfied by every mode entered during this
+    # turn (the entry mode + each handoff target). This prevents a sequential
+    # chain from re-suggesting a step that already ran: after default → search
+    # → coding, "research" was satisfied by search even though coding's own
+    # ``satisfies_intents`` is only ["coding"]. Without this accumulator the
+    # post-coding hint would re-detect "research" from the original query text
+    # and re-suggest search — an infinite loop. The accumulator is the turn's
+    # memory of which chain steps have already completed.
+    chain_satisfied: set[str] = set()
+    if mode_config is not None:
+        chain_satisfied.update(mode_config.satisfies_intents)
     iteration = 0
 
     # Mutable turn-state read by ``_resolve_iteration_model`` so the router
@@ -1717,24 +1750,29 @@ async def _run_turn_inner(
             content = content.strip()
 
             # ── Hallucinated-transition guard ──────────────────────────
-            # Weak models (e.g. Gemma/GLM via Ollama) sometimes *narrate* a
-            # stage transition or handoff in their text output ("I have
-            # transitioned to the search stage…") instead of actually
-            # calling the ``transition_stage`` tool. When a routing hint
-            # was injected into the system prompt, detect transition-like
-            # language and inject a correction nudge so the model retries
-            # with the actual tool call. Without this guard the user sees
-            # a false "I transitioned" message and no work is done.
+            # Models sometimes *narrate* a stage transition or handoff in
+            # their text output ("I have transitioned to the search stage…"
+            # / "I would go into coding mode…") instead of actually calling
+            # the ``transition_stage`` tool. When a routing hint is active,
+            # detect transition-like language and inject a correction nudge
+            # so the model retries with the actual tool call.
             #
             # The guard fires when:
-            #   - A routing hint was injected (the model was told to hand off)
+            #   - A routing hint is active (the model was told to hand off)
             #   - The model has NOT yet called transition_stage this turn
-            #     (``transitioned_to`` is still None)
-            #   - The model has NOT yet dispatched any other tool
-            #     (``tools_dispatched_ever`` is False — once the model does
-            #     real work, a narrated transition in a summary is harmless)
+            #     (``transitioned_to`` is still None AND ``handoff_to`` is
+            #     None — either kind of transition counts)
             #   - We haven't exhausted the retry cap (prevents infinite
             #     loops with models that never learn to call the tool)
+            #
+            # NOTE: the ``tools_dispatched_ever`` condition was REMOVED.
+            # In a sequential chain the model does real work in each mode
+            # (e.g. web_search in search mode) and then needs to be told
+            # to call transition_stage to continue. The old condition
+            # suppressed the guard after the model did any tool work,
+            # which meant the chain stalled — the model summarized the
+            # search results, said "I would go into coding mode", and
+            # ended the turn without calling the tool.
             #
             # After the cap, the guard gives up and lets the narrated
             # response through so the user sees something rather than a
@@ -1742,8 +1780,6 @@ async def _run_turn_inner(
             _NARRATION_NUDGE_CAP = 3
             if (
                 routing_hint
-                and transitioned_to is None
-                and not tools_dispatched_ever
                 and _narration_nudge_count < _NARRATION_NUDGE_CAP
             ):
                 lowered = content.lower()
@@ -1758,6 +1794,20 @@ async def _run_turn_inner(
                     "i am now in the",
                     "moving to the",
                     "transitioning to the",
+                    "i would go into",
+                    "i'd go into",
+                    "i would transition",
+                    "i'd transition",
+                    "i would hand off",
+                    "i'd hand off",
+                    "i would move to",
+                    "i'd move to",
+                    "next i would",
+                    "then i would",
+                    "i would then",
+                    "i would proceed",
+                    "i'd proceed",
+                    "i will proceed",
                 )
                 if any(m in lowered for m in transition_markers):
                     _narration_nudge_count += 1
@@ -1774,14 +1824,16 @@ async def _run_turn_inner(
                         {
                             "role": "user",
                             "content": (
-                                "You wrote that you are transitioning, but you "
-                                "did not actually call the `transition_stage` "
-                                "tool. A transition only happens when you call "
-                                "the tool — writing about it does nothing. "
+                                "You wrote that you would transition or go "
+                                "into another mode, but you did not actually "
+                                "call the `transition_stage` tool. A "
+                                "transition only happens when you call the "
+                                "tool — writing about it does nothing. "
                                 "Call `transition_stage` now with the "
-                                "appropriate `target_stage_id`. If you cannot "
-                                "or should not transition, respond directly to "
-                                "the user without claiming a transition."
+                                "appropriate `target_stage_id`. If you "
+                                "cannot or should not transition, respond "
+                                "directly to the user without claiming a "
+                                "transition."
                             ),
                         }
                     )
@@ -2097,6 +2149,42 @@ async def _run_turn_inner(
                                 capability_manifest = compile_capability_manifest(
                                     tool_schemas, mode_config=target_mode_config
                                 )
+                                # Action modes (e.g. search) run entry
+                                # operations (e.g. web_search) that produce
+                                # the mode's output. Without running them the
+                                # model lands in search mode with no web_search
+                                # tool (it's an operation, not a tool) and no
+                                # results — it correctly says "I don't have
+                                # web_search." Run the entry operations and
+                                # inject their output as a tool result so the
+                                # model has the data to work with.
+                                entry_output = ""
+                                if (
+                                    target_mode_config.mode_kind == "action"
+                                    and target_mode_config.entry_operation_ids
+                                ):
+                                    try:
+                                        entry_ctx = ctx.model_copy(
+                                            update={"mode_id": target_stage}
+                                        )
+                                        entry_result = await run_mode_entry_operations(
+                                            target_stage, entry_ctx, ledger=ledger
+                                        )
+                                        entry_output = (
+                                            entry_result.output_text.strip()
+                                            or "Done"
+                                        )
+                                    except Exception as entry_exc:  # pylint: disable=broad-except
+                                        entry_output = (
+                                            f"Entry operation failed: "
+                                            f"{type(entry_exc).__name__}: {entry_exc}"
+                                        )
+                                        _log.warning(
+                                            "entry operation for handoff mode=%s "
+                                            "failed: %s",
+                                            target_stage,
+                                            entry_exc,
+                                        )
                                 # Update runtime state. The ctx built in
                                 # Phase 1 carries the *entry* mode_id, so
                                 # post-handoff operation/tool dispatches
@@ -2139,13 +2227,31 @@ async def _run_turn_inner(
                                 # calls the same opaque-tag set algebra over
                                 # pack-authored vocabulary; it names no intents,
                                 # tool IDs, or routing prose here.
-                                post_handoff_hint = _compute_capability_routing_hint(
-                                    mode_id=target_stage,
-                                    query=query,
-                                    capability_manifest=capability_manifest,
-                                    routing_targets=get_routing_targets(target_stage),
-                                    mode_config=target_mode_config,
-                                )
+                                #
+                                # Suppressed for fork children: a handoff inside
+                                # a fork child is the same re-routing loop the
+                                # Phase-1 suppression prevents. Fork children run
+                                # their target mode to completion without chaining
+                                # further handoffs.
+                                post_handoff_hint = ""
+                                if not suppress_routing_hint:
+                                    # Accumulate the new mode's satisfied
+                                    # intents into the chain memory so the
+                                    # recomputed hint does not re-suggest
+                                    # steps that already ran. The entry
+                                    # mode's intents were added at init; each
+                                    # handoff adds its target's intents here.
+                                    chain_satisfied.update(
+                                        target_mode_config.satisfies_intents
+                                    )
+                                    post_handoff_hint = _compute_capability_routing_hint(
+                                        mode_id=target_stage,
+                                        query=query,
+                                        capability_manifest=capability_manifest,
+                                        routing_targets=get_routing_targets(target_stage),
+                                        mode_config=target_mode_config,
+                                        extra_satisfied=chain_satisfied,
+                                    )
                                 if post_handoff_hint:
                                     _log.info(
                                         "post-handoff routing hint mode=%s "
@@ -2154,15 +2260,14 @@ async def _run_turn_inner(
                                         len(post_handoff_hint),
                                         post_handoff_hint[:200],
                                     )
+                                    # Append to the system prompt so the guards
+                                    # (hallucinated-transition, write-tool) key
+                                    # off the new hint.
                                     messages[0]["content"] = (
                                         str(messages[0].get("content", ""))
                                         + "\n\n"
                                         + post_handoff_hint
                                     )
-                                    # Key the guards off the new hint so a model
-                                    # that narrates or mis-uses a write tool in the
-                                    # new mode is corrected toward the next
-                                    # handoff, not the stale entry-mode hint.
                                     routing_hint = post_handoff_hint
                                 else:
                                     # The new mode satisfies all remaining
@@ -2172,6 +2277,10 @@ async def _run_turn_inner(
                                 tool_output = f"Handed off to mode: {target_stage}." + (
                                     f" Rationale: {rationale}" if rationale else ""
                                 )
+                                if entry_output:
+                                    tool_output += (
+                                        f"\n\nEntry operation results:\n{entry_output}"
+                                    )
                         await _emit_stage(
                             "tool_dispatch_complete",
                             {
@@ -2195,9 +2304,31 @@ async def _run_turn_inner(
                                 "content": tool_output,
                             }
                         )
+                        # When a post-handoff hint exists (the chain is not
+                        # yet complete), inject it as a user-message nudge
+                        # AFTER the tool output so the model treats it as a
+                        # direct instruction to act on now — not background
+                        # system-prompt context it can ignore in favor of the
+                        # mode's own "summarize the results" directive. A
+                        # user message is the strongest signal short of
+                        # calling the tool ourselves; without it the model
+                        # in an action mode (e.g. search) does its one tool
+                        # call, summarizes, and ends the turn — the chain
+                        # stalls even though the hint is in the system prompt.
+                        if post_handoff_hint:
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "You are now in the `" + target_stage
+                                        + "` mode. Complete this mode's work, "
+                                        "then continue the workflow by calling "
+                                        "`transition_stage` with the next "
+                                        "target. " + post_handoff_hint
+                                    ),
+                                }
+                            )
                         continue
-
-                    # ── Case C: workflow stage transition (existing path) ──
                     if is_workflow:
                         wf_session_fn = hooks.workflow_session
                         current_session = wf_session_fn() if wf_session_fn is not None else None
@@ -2625,6 +2756,74 @@ def _tool_effect(
     return "read"
 
 
+# Sequential-connector tokens that signal a request is a *chain* of steps
+# ("search ... then code ... then write") rather than a set of concurrent
+# goals. A language pattern, not an intent tag, so this stays tag-blind.
+_SEQUENTIAL_CONNECTORS: tuple[str, ...] = (
+    " then ",
+    " and then ",
+    " after that ",
+    " next ",
+    " followed by ",
+)
+
+
+def _query_is_sequential(query: str) -> bool:
+    """Return True when the query expresses a sequential chain of steps.
+
+    Detects connectors like "then", "and then", "after that", "next",
+    "followed by". A sequential multi-intent request ("search for X then
+    write a markdown") must NOT fork — a fork runs children in parallel, so
+    none can use another's output. Instead, hand off to the first step's
+    target and let the post-handoff hint recomputation chain the rest.
+    """
+    lowered = f" {query.lower()} "
+    return any(conn in lowered for conn in _SEQUENTIAL_CONNECTORS)
+
+
+def _first_target_for_earliest_intent(
+    *,
+    query: str,
+    routing_targets: list[str],
+    catalog: dict[str, Any],
+    gap_intents: set[str] | None = None,
+) -> str | None:
+    """Return the routing target whose intent keywords appear earliest in
+    the query — the first step in a sequential chain.
+
+    Each target's ``routing_intent_keywords`` are scanned for their earliest
+    position in the (lowercased) query. The target with the smallest
+    non-``-1`` position wins. Returns ``None`` when no target's keywords
+    appear in the query (the detector should have found intents, but a
+    keyword may have matched via a fast_path_pattern instead).
+
+    When ``gap_intents`` is provided, only keywords mapped to a tag in the
+    gap set are considered — already-satisfied intents are skipped so the
+    function picks the *next* step, not a step whose intent the current
+    mode already handled. Without this filter the function would scan all
+    keywords including those for satisfied intents and could pick the wrong
+    next target (e.g. after search satisfies "research", it might re-pick
+    search or skip coding and pick markdown).
+    """
+    query_lower = query.lower()
+    best_target: str | None = None
+    best_pos = -1
+    for target_id in routing_targets:
+        mode_config = catalog.get(target_id)
+        if mode_config is None:
+            continue
+        for tag, keywords in mode_config.routing_intent_keywords.items():
+            # Skip keywords for intents the current mode already satisfies.
+            if gap_intents is not None and tag not in gap_intents:
+                continue
+            for keyword in keywords:
+                pos = query_lower.find(keyword)
+                if pos != -1 and (best_pos == -1 or pos < best_pos):
+                    best_pos = pos
+                    best_target = target_id
+    return best_target
+
+
 def _compute_capability_routing_hint(
     *,
     mode_id: str,
@@ -2632,6 +2831,7 @@ def _compute_capability_routing_hint(
     capability_manifest: CapabilityManifest,  # retained for API stability
     routing_targets: list[str],
     mode_config: WorkflowModeConfig | None = None,
+    extra_satisfied: set[str] | None = None,
 ) -> str:
     """Compute a proactive routing hint when the current mode lacks tools.
 
@@ -2689,6 +2889,14 @@ def _compute_capability_routing_hint(
     current_satisfied: set[str] = set(
         mode_config.satisfies_intents if mode_config is not None else []
     )
+    # Include intents satisfied by prior modes in the chain (the turn's
+    # cumulative memory). Without this a sequential chain re-detects
+    # already-completed steps' intents from the original query text and
+    # re-suggests them — e.g. after default → search → coding, "research"
+    # is still detected and still a gap because coding only satisfies
+    # "coding". The accumulator prevents the infinite re-routing loop.
+    if extra_satisfied is not None:
+        current_satisfied |= extra_satisfied
     gap_intents = detected_intents - current_satisfied
     has_gap = bool(gap_intents)
     if not detected_intents and not has_gap:
@@ -2697,48 +2905,87 @@ def _compute_capability_routing_hint(
         # The current mode already satisfies all detected intents.
         return ""
 
-    # ── 3. Find targets that cover all detected intents (single handoff) ──
+    # ── 3. Find targets that cover all remaining gap intents (single handoff) ──
+    # Use ``gap_intents`` (detected minus already-satisfied), NOT
+    # ``detected_intents``. After a mid-turn handoff the current mode has
+    # already satisfied some intents; the hint must name a target that
+    # covers what is *still* missing, not the full original set. Using
+    # ``detected_intents`` here meant that after search satisfied "research",
+    # no single target covered {research, coding, write} so the single-
+    # handoff branch was skipped and the wrong next step was picked.
     covering_targets: list[str] = []
     for target_id in routing_targets:
         mode_config = catalog.get(target_id)
         if mode_config is None:
             continue
         target_tags = set(mode_config.routing_intent_tags)
-        if detected_intents and detected_intents.issubset(target_tags):
+        if gap_intents and gap_intents.issubset(target_tags):
             covering_targets.append(target_id)
 
     # ── 4. Multi-intent fork detection ─────────────────────────────────
-    # When no single target covers all detected intents but multiple targets
-    # each cover a disjoint subset, suggest a fork fan-out. This is the
-    # generic form of the learn+write case: learn covers "learn", markdown
+    # When no single target covers all remaining gap intents but multiple
+    # targets each cover a disjoint subset, suggest a fork fan-out. This is
+    # the generic form of the learn+write case: learn covers "learn", markdown
     # covers "write", neither covers both → fork:learn,markdown.
-    if not covering_targets and len(detected_intents) >= 2:
-        partial_targets: list[str] = []
-        covered_intents: set[str] = set()
-        for target_id in routing_targets:
-            mode_config = catalog.get(target_id)
-            if mode_config is None:
-                continue
-            target_tags = set(mode_config.routing_intent_tags)
-            overlap = target_tags & detected_intents
-            if overlap:
-                partial_targets.append(target_id)
-                covered_intents.update(overlap)
-        # Only suggest a fork when the partial targets collectively cover
-        # all detected intents and there are at least 2 of them.
-        if len(partial_targets) >= 2 and covered_intents == detected_intents:
-            fork_target = f"fork:{','.join(partial_targets)}"
-            # Purely mechanical: name the tool and the fork target id. The
-            # kernel does not narrate tool-policy semantics ("mode-scoped
-            # tools", "rejected") or the fork's internal mechanics — the
-            # model reads each child mode's own _mode.md body after the
-            # fork. Same prose-blind contract as the single-handoff branch.
-            hint = (
-                "## Routing Hint\n\n"
-                f"Hand off by calling `transition_stage` with "
-                f"target_stage_id `{fork_target}`."
+    #
+    # Sequential requests ("search ... then code ... then write a markdown")
+    # must NOT fork — a fork runs the children in parallel with the whole
+    # query, so none can use another's output. For those, prefer a single
+    # handoff to the first step's target and let the post-handoff hint
+    # recomputation chain the rest one at a time. The kernel detects a
+    # sequence by the presence of sequential connectors ("then", "and then",
+    # "after that", "next", "followed by") — a language pattern, not an
+    # intent tag, so this does not violate tag-blindness.
+    if not covering_targets and len(gap_intents) >= 2:
+        sequential = _query_is_sequential(query)
+        if sequential:
+            # Prefer a single handoff to the first-remaining-gap-intent's
+            # target so the chain can proceed step by step. Pick the target
+            # whose routing_intent_keywords (for a gap intent only) appear
+            # earliest in the query.
+            first_target = _first_target_for_earliest_intent(
+                query=query,
+                routing_targets=routing_targets,
+                catalog=catalog,
+                gap_intents=gap_intents,
             )
-            return hint
+            if first_target:
+                hint = (
+                    "## Routing Hint\n\n"
+                    f"Your current mode may lack the tools needed for this "
+                    f"request. Hand off to `{first_target}` by calling "
+                    f"`transition_stage` with target_stage_id "
+                    f"`{first_target}`."
+                )
+                return hint
+            # No partial target found — fall through to the generic list.
+        else:
+            partial_targets: list[str] = []
+            covered_intents: set[str] = set()
+            for target_id in routing_targets:
+                mode_config = catalog.get(target_id)
+                if mode_config is None:
+                    continue
+                target_tags = set(mode_config.routing_intent_tags)
+                overlap = target_tags & gap_intents
+                if overlap:
+                    partial_targets.append(target_id)
+                    covered_intents.update(overlap)
+            # Only suggest a fork when the partial targets collectively cover
+            # all remaining gap intents and there are at least 2 of them.
+            if len(partial_targets) >= 2 and covered_intents == gap_intents:
+                fork_target = f"fork:{','.join(partial_targets)}"
+                # Purely mechanical: name the tool and the fork target id. The
+                # kernel does not narrate tool-policy semantics ("mode-scoped
+                # tools", "rejected") or the fork's internal mechanics — the
+                # model reads each child mode's own _mode.md body after the
+                # fork. Same prose-blind contract as the single-handoff branch.
+                hint = (
+                    "## Routing Hint\n\n"
+                    f"Hand off by calling `transition_stage` with "
+                    f"target_stage_id `{fork_target}`."
+                )
+                return hint
 
     # ── 5. Single handoff to the covering target ──────────────────────
     if covering_targets:
@@ -2895,6 +3142,13 @@ async def _run_fork_child_turn(
             max_tool_iterations=5,
             turn_budget=child_budget,
             logger_override=_flog,
+            # Fork children must NOT re-route. A hint telling a forked
+            # markdown/search child to hand off again creates a loop and,
+            # with strict tool schemas, invalid-content 500s from the
+            # provider. The child already runs in its target mode; let it
+            # run to completion without re-injecting the original query's
+            # multi-intent routing signal.
+            suppress_routing_hint=True,
         )
         elapsed_ms = int((_time.monotonic() - started) * 1000)
         if child_result.tool_call_count == 0 and _fork_mode_requires_tools(target.mode_id):
