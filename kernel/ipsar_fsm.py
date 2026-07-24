@@ -1387,8 +1387,19 @@ def get_transition_tool_schema() -> list[dict[str, object]]:
         build_strict_openai_function_tool(
             name="transition_stage",
             description=(
-                "Move to the next workflow stage only after enough evidence exists. "
-                "If user input is still missing, ask a question instead of calling this tool."
+                "Switch modes, fan out a parallel sub-workflow, or advance a "
+                "workflow stage. Use `target_stage_id` with one of three forms: "
+                "(1) a mode id like `coding`, `search`, or `markdown` to hand off "
+                "the rest of this turn to that mode (use this when the current "
+                "mode lacks the tools the request needs — e.g. hand off to "
+                "`markdown` to write a document); "
+                "(2) `fork:mode,mode,...` to run each named mode as a parallel "
+                "child with its own tools (use this when the request has "
+                "independent concurrent goals — e.g. `fork:learn,markdown`); "
+                "(3) a workflow stage id to advance the current mode's FSM. "
+                "When a Routing Hint is present in the system prompt, follow it "
+                "by calling this tool with the suggested target. If user input "
+                "is still missing, ask a question instead of calling this tool."
             ),
             parameters_schema=WorkflowTransitionRequest,
         )

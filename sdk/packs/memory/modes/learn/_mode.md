@@ -7,6 +7,7 @@ require_query: true
 routable: true
 priority: 9
 routing_intent_tags: [learn]
+satisfies_intents: [learn]
 routing_intent_keywords:
   learn:
     - remember

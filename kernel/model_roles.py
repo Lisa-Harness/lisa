@@ -18,7 +18,7 @@ The host merges pack-declared roles with the user's manifest at load time:
   a pack being installed.
 
 The kernel itself has zero hardcoded role names; the one built-in role
-(``deep``) is declared by the models pack via this entry point.
+(``deep``) is declared by the router pack via this entry point.
 """
 
 from __future__ import annotations

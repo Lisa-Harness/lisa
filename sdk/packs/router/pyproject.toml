@@ -33,3 +33,6 @@ lisa-router = "sdk.packs.router:get_router_factory"
 
 [project.entry-points."lisa.extensions.model_router_configs"]
 lisa-router = "sdk.packs.router.default_config:get_default_router_config"
+
+[project.entry-points."lisa.extensions.model_roles"]
+deep = "sdk.packs.router:get_declared_roles"

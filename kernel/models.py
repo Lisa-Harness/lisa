@@ -1396,9 +1396,19 @@ class CheckpointBundle(BaseModel):
 class WorkflowTransitionRequest(BaseModel):
     """Structured transition request returned by model tool-calling."""
 
-    target_stage_id: str
-    rationale: str = ""
-    required_missing_inputs: list[str] = Field(default_factory=list)
+    target_stage_id: str = Field(
+        description=(
+            "The target to move to. One of three forms: a mode id "
+            "(e.g. `coding`, `search`, `markdown`) to hand off mid-turn; "
+            "`fork:mode,mode,...` to fan out parallel children; or a "
+            "workflow stage id to advance the current mode's FSM."
+        )
+    )
+    rationale: str = Field(default="", description="Why this transition is needed.")
+    required_missing_inputs: list[str] = Field(
+        default_factory=list,
+        description="Inputs the transition still needs from the user, if any.",
+    )
 
 
 class WorkflowDelegationRequest(BaseModel):

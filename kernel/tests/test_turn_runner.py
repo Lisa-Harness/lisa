@@ -973,6 +973,185 @@ async def test_run_turn_mode_handoff_preserves_chat_history() -> None:
         assert "write a doc" in first_user
 
 
+@pytest.mark.asyncio
+async def test_run_turn_handoff_recomputes_routing_hint_for_next_step() -> None:
+    """After a mid-turn mode handoff, the routing hint is recomputed
+    against the new mode's ``satisfies_intents`` and appended to the
+    swapped system prompt so the model can chain to the next step.
+
+    Regression for the chained-mode-transition gap (2026-07-23): a request
+    like "search for the latest coding practices then write a markdown
+    report" expresses two intents (research + write). A single handoff to
+    ``search`` resolves "research"; the remaining "write" intent is still a
+    gap. Without recomputing the hint after the handoff, the model lands in
+    search, satisfies research, and stops — it never gets the signal to
+    hand off to markdown. With the fix, the recomputed hint names markdown
+    as the next target and is appended to the search-mode system prompt.
+    """
+    call_count = 0
+    captured_system_prompts: list[str] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        msgs = kwargs.get("messages", [])
+        if msgs and msgs[0].get("role") == "system":
+            captured_system_prompts.append(str(msgs[0].get("content", "")))
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "search"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Done after search and markdown.")
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(
+        mode_id="default",
+        query="search for the latest coding practices then write a markdown report",
+        hooks=hooks,
+    )
+
+    assert result.handoff_to == "search"
+    # The model must have been called at least twice (handoff + post-handoff).
+    assert call_count >= 2
+    # The post-handoff system prompt (captured at call_count >= 2) must
+    # contain a fresh routing hint naming markdown as the next target.
+    assert len(captured_system_prompts) >= 2
+    post_handoff_system = captured_system_prompts[-1]
+    assert "Routing Hint" in post_handoff_system
+    assert "transition_stage" in post_handoff_system
+    assert "markdown" in post_handoff_system
+
+
+@pytest.mark.asyncio
+async def test_run_turn_handoff_clears_hint_when_new_mode_satisfies_all() -> None:
+    """When the handoff target satisfies all remaining intents, the stale
+    Phase-1 hint is cleared so the guards do not fire on the old one.
+
+    Symmetric counterpart to the chained-handoff test: a single-intent
+    request handed off to the mode that satisfies that intent must not
+    carry the original hint forward into the new mode's system prompt.
+    """
+    call_count = 0
+    captured_system_prompts: list[str] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        msgs = kwargs.get("messages", [])
+        if msgs and msgs[0].get("role") == "system":
+            captured_system_prompts.append(str(msgs[0].get("content", "")))
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "markdown"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Wrote the markdown doc.")
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(
+        mode_id="default",
+        query="write a markdown report of the findings",
+        hooks=hooks,
+    )
+
+    assert result.handoff_to == "markdown"
+    assert call_count >= 2
+    assert len(captured_system_prompts) >= 2
+    post_handoff_system = captured_system_prompts[-1]
+    # Markdown satisfies the "write" intent, so no routing hint should be
+    # injected post-handoff (the gap is empty).
+    assert "Routing Hint" not in post_handoff_system
+
+
+def test_routing_hint_after_handoff_names_next_target() -> None:
+    """Pure unit test (no live catalog): after a handoff to a mode that
+    satisfies one of two detected intents, the recomputed hint names the
+    mode covering the remaining intent.
+
+    Regression for the chained-mode-transition gap (2026-07-23): the
+    handoff branch in ``_run_turn_inner`` must recompute the hint against
+    the new mode's ``satisfies_intents``. This test pins the function's
+    contract directly — a request with research+write intents, handed off
+    to a mode that satisfies only research, must yield a hint naming the
+    mode that covers write. No live catalog MCP required.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    markdown_cfg = _mode_config(
+        mode_id="markdown",
+        satisfies_intents=["write"],
+        routing_intent_tags=["write"],
+        routing_intent_keywords={"write": ["write", "markdown", "document", "draft"]},
+    )
+    patched_catalog = {"search": search_cfg, "markdown": markdown_cfg}
+
+    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+        # After handing off to search (satisfies "research"), the remaining
+        # "write" intent is still a gap — the hint must name markdown.
+        hint = _compute_capability_routing_hint(
+            mode_id="search",
+            query="search for the latest coding practices then write a markdown report",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["markdown"],
+            mode_config=search_cfg,
+        )
+
+    assert hint != ""
+    assert "Routing Hint" in hint
+    assert "transition_stage" in hint
+    assert "markdown" in hint
+    # No fork — only one intent remains after search satisfied research.
+    assert "fork:" not in hint
+
+
+def test_routing_hint_after_handoff_empty_when_new_mode_satisfies_all() -> None:
+    """Pure unit test: after a handoff to a mode that satisfies all
+    detected intents, the recomputed hint is empty (gap is zero)."""
+    from unittest.mock import patch
+
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    markdown_cfg = _mode_config(mode_id="markdown", satisfies_intents=["write"])
+    search_cfg = _mode_config(
+        mode_id="search",
+        satisfies_intents=["research"],
+        routing_intent_tags=["research"],
+        routing_intent_keywords={"research": ["search", "latest", "news"]},
+    )
+    patched_catalog = {"search": search_cfg, "markdown": markdown_cfg}
+
+    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="markdown",
+            query="write a markdown report of the findings",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["search"],
+            mode_config=markdown_cfg,
+        )
+
+    assert hint == ""
+
+
 # ── Proactive capability routing hint tests ─────────────────────────
 
 
@@ -1003,6 +1182,9 @@ def _mode_config(
     mode_id: str = "default",
     satisfies_intents: list[str] | None = None,
     required_capabilities: list[str] | None = None,
+    routing_intent_tags: list[str] | None = None,
+    routing_intent_keywords: dict[str, list[str]] | None = None,
+    routable: bool = True,
 ) -> WorkflowModeConfig:
     """A minimal WorkflowModeConfig for routing-hint tests.
 
@@ -1011,13 +1193,21 @@ def _mode_config(
     gap), matching the behavior of modes that have not opted in (e.g.
     ``default``) and preserving the pre-field semantics for existing tests.
     ``required_capabilities=None`` → empty list (no capability gate).
+    ``routing_intent_tags``/``routing_intent_keywords`` default to empty —
+    the hint detector attributes intents from a target's patterns/keywords,
+    so tests that need a target to "cover" an intent must populate these.
+    ``routable`` defaults to True so ``get_routing_targets`` returns the
+    target set; pass ``routable=False`` to simulate a non-routable mode.
     """
     return WorkflowModeConfig(
         mode_id=mode_id,
         start_stage_id="none",
         mode_kind="chat",
+        routable=routable,
         satisfies_intents=list(satisfies_intents) if satisfies_intents else [],
         required_capabilities=list(required_capabilities) if required_capabilities else [],
+        routing_intent_tags=list(routing_intent_tags) if routing_intent_tags else [],
+        routing_intent_keywords=dict(routing_intent_keywords) if routing_intent_keywords else {},
     )
 
 

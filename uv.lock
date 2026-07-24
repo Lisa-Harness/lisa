@@ -23,7 +23,6 @@ members = [
     "lisa-pack-core",
     "lisa-pack-introspect",
     "lisa-pack-memory",
-    "lisa-pack-models",
     "lisa-pack-router",
     "lisa-sdk",
 ]
@@ -988,7 +987,6 @@ dependencies = [
     { name = "lisa-pack-core" },
     { name = "lisa-pack-introspect" },
     { name = "lisa-pack-memory" },
-    { name = "lisa-pack-models" },
     { name = "lisa-pack-router" },
     { name = "lisa-sdk" },
     { name = "rich" },
@@ -1022,7 +1020,6 @@ requires-dist = [
     { name = "lisa-pack-core", editable = "sdk/packs/core" },
     { name = "lisa-pack-introspect", editable = "sdk/packs/introspect" },
     { name = "lisa-pack-memory", editable = "sdk/packs/memory" },
-    { name = "lisa-pack-models", editable = "sdk/packs/models" },
     { name = "lisa-pack-router", editable = "sdk/packs/router" },
     { name = "lisa-sdk", editable = "sdk" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
@@ -1414,26 +1411,6 @@ provides-extras = ["dev"]
 name = "lisa-pack-memory"
 version = "0.1.0"
 source = { editable = "sdk/packs/memory" }
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-mock" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "lisa-pack-models"
-version = "0.1.0"
-source = { editable = "sdk/packs/models" }
 
 [package.optional-dependencies]
 dev = [

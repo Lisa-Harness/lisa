@@ -10,7 +10,6 @@ dependencies = [
     "lisa-pack-memory",
     "lisa-pack-core",
     "lisa-pack-introspect",
-    "lisa-pack-models",
     "lisa-pack-checkpoint",
     "lisa-pack-router",
     "lisa-host-core",
@@ -46,7 +45,6 @@ members = [
     "sdk/packs/core",
     "sdk/packs/introspect",
     "sdk/packs/memory",
-    "sdk/packs/models",
     "sdk/packs/checkpoint",
     "sdk/packs/router",
     "hosts/core",
@@ -66,7 +64,6 @@ lisa-pack-cloudflare = { path = "../lisa_packs/cloudflare" }
 lisa-pack-github = { path = "../lisa_packs/github" }
 lisa-pack-stripe = { path = "../lisa_packs/stripe" }
 lisa-pack-core = { workspace = true }
-lisa-pack-models = { workspace = true }
 lisa-pack-introspect = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
 lisa-pack-router = { workspace = true }
@@ -225,7 +222,6 @@ source_modules = [
     "sdk.packs.core",
     "sdk.packs.introspect",
     "sdk.packs.memory",
-    "sdk.packs.models",
     "sdk.packs.checkpoint",
     "sdk.packs.router",
 ]

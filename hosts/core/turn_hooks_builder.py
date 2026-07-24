@@ -66,12 +66,11 @@ def content_registry() -> ContentRegistry | None:
     """Return the module-level content registry, or ``None`` when unset.
 
     The registry is set by ``setup_framework(runtime)`` at host startup.
-    Operations that need authored text (e.g. ``synthesize_and_store_learning``,
-    ``advise_models``) reach it via ``TurnHooks.context_seams.content_registry``
-    so the turn runner's ``_build_minimal_context`` can resolve
-    ``read_authored_text_fn``. When ``None``, those operations fail at call time
-    with their authored-text error (graceful failure); non-authored operations
-    still run normally.
+    Operations that need authored text (e.g. ``synthesize_and_store_learning``)
+    reach it via ``TurnHooks.context_seams.content_registry`` so the turn
+    runner's ``_build_minimal_context`` can resolve ``read_authored_text_fn``.
+    When ``None``, those operations fail at call time with their authored-text
+    error (graceful failure); non-authored operations still run normally.
     """
     from kernel.context.context_frames import _content_registry
 
@@ -651,8 +650,8 @@ def build_turn_hooks(
         ),
         # Wire the content registry into context_seams so the turn runner's
         # _build_minimal_context can resolve read_authored_text_fn for
-        # operations that load authored prompts (e.g. synthesize_and_store_learning,
-        # advise_models). The registry is the same module-level singleton that
+        # operations that load authored prompts (e.g. synthesize_and_store_learning).
+        # The registry is the same module-level singleton that
         # content_loader() reads; setup_framework(runtime) populates it at host
         # startup. When unset, content_registry stays None and operations fail at
         # call time with their authored-text error (preserving graceful failure).

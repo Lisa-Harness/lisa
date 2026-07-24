@@ -2122,6 +2122,53 @@ async def _run_turn_inner(
                                             "operations may be mis-authorized.",
                                             target_stage,
                                         )
+                                # ── Chained-handoff hint recomputation ──
+                                # The proactive routing hint was computed in
+                                # Phase 1 against the *entry* mode. After a
+                                # mid-turn handoff the new mode may still leave
+                                # some of the original query's intents unsatisfied
+                                # (e.g. default → search resolves "research" but
+                                # "write" remains a gap → the next hint should
+                                # name markdown). Without recomputing, the model
+                                # lands in the first handoff mode, satisfies that
+                                # one intent, and stops — it gets no signal that
+                                # the ad-hoc workflow is incomplete. Recompute the
+                                # hint against the new mode's ``satisfies_intents``
+                                # so the model can chain one handoff per remaining
+                                # intent. The kernel remains a pure mapper: it
+                                # calls the same opaque-tag set algebra over
+                                # pack-authored vocabulary; it names no intents,
+                                # tool IDs, or routing prose here.
+                                post_handoff_hint = _compute_capability_routing_hint(
+                                    mode_id=target_stage,
+                                    query=query,
+                                    capability_manifest=capability_manifest,
+                                    routing_targets=get_routing_targets(target_stage),
+                                    mode_config=target_mode_config,
+                                )
+                                if post_handoff_hint:
+                                    _log.info(
+                                        "post-handoff routing hint mode=%s "
+                                        "hint_len=%d hint=%s",
+                                        target_stage,
+                                        len(post_handoff_hint),
+                                        post_handoff_hint[:200],
+                                    )
+                                    messages[0]["content"] = (
+                                        str(messages[0].get("content", ""))
+                                        + "\n\n"
+                                        + post_handoff_hint
+                                    )
+                                    # Key the guards off the new hint so a model
+                                    # that narrates or mis-uses a write tool in the
+                                    # new mode is corrected toward the next
+                                    # handoff, not the stale entry-mode hint.
+                                    routing_hint = post_handoff_hint
+                                else:
+                                    # The new mode satisfies all remaining
+                                    # intents; clear the stale hint so the
+                                    # guards don't fire on the old one.
+                                    routing_hint = ""
                                 tool_output = f"Handed off to mode: {target_stage}." + (
                                     f" Rationale: {rationale}" if rationale else ""
                                 )

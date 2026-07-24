@@ -9,7 +9,6 @@ This directory stages the public Lisa framework packages before they are moved t
 - `sdk/packs/core/`: baseline public modes (`default`, `workshop`) and shared prompt assets.
 - `sdk/packs/memory/`: memory-backed learning behaviors (`learn`, memory ops, and default override candidate).
 - `sdk/packs/introspect/`: operational self-model and reflective self-assessment operations.
-- `sdk/packs/models/`: natural-language model manifest assignment editing (`/models update`).
 - `sdk/packs/checkpoint/`: LLM-enriched checkpoint/restore operations.
 - `hosts/little_lisa/`: a local non-production terminal host that loads public packs with manifest-driven model routing and OpenAI-compatible provider calls.
 - `mcp_server/`: an MCP (Model Context Protocol) memory server that exposes Lisa's surface-scoped memory tools over stdio.
