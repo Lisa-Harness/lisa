@@ -11,7 +11,6 @@ dependencies = [
     "lisa-pack-core",
     "lisa-pack-introspect",
     "lisa-pack-checkpoint",
-    "lisa-pack-router",
     "lisa-host-core",
     "lisa-host-cli",
     "lisa-host-web",
@@ -46,7 +45,6 @@ members = [
     "sdk/packs/introspect",
     "sdk/packs/memory",
     "sdk/packs/checkpoint",
-    "sdk/packs/router",
     "hosts/core",
     "hosts/cli",
     "hosts/web",
@@ -66,7 +64,6 @@ lisa-pack-stripe = { path = "../lisa_packs/stripe" }
 lisa-pack-core = { workspace = true }
 lisa-pack-introspect = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
-lisa-pack-router = { workspace = true }
 lisa-pack-mem0 = { path = "../lisa_packs/mem0" }
 lisa-pack-brave-search = { path = "../lisa_packs/brave_search" }
 lisa-pack-gmail = { path = "../lisa_packs/gmail" }
@@ -223,7 +220,6 @@ source_modules = [
     "sdk.packs.introspect",
     "sdk.packs.memory",
     "sdk.packs.checkpoint",
-    "sdk.packs.router",
 ]
 forbidden_modules = [
     "hosts",

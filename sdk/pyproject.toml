@@ -42,3 +42,14 @@ markers = [
 [project.entry-points."lisa.extensions.content_roots"]
 sdk = "sdk:get_content_root"
 
+# Built-in lisa-router backend — a runtime ModelRouter, not a pack.
+# See sdk/router/ and docs/MODEL_ROUTER.md.
+[project.entry-points."lisa.extensions.model_routers"]
+lisa-router = "sdk.router:get_router_factory"
+
+[project.entry-points."lisa.extensions.model_router_configs"]
+lisa-router = "sdk.router.default_config:get_default_router_config"
+
+[project.entry-points."lisa.extensions.model_roles"]
+deep = "sdk.router:get_declared_roles"
+

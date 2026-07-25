@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from kernel.model_manifest import ManifestModelEntry, ModelManifest, RouterConfig, RouterRule
 from kernel.seams.protocols import RouterRequest
-from sdk.packs.router.router import LisaRouter
+from sdk.router.router import LisaRouter
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ def _req(**kwargs: object) -> RouterRequest:
 
 
 def test_factory_returns_none_when_no_router_block() -> None:
-    from sdk.packs.router import get_router_factory
+    from sdk.router import get_router_factory
 
     factory = get_router_factory()
     manifest = ModelManifest(models=_MODELS)
@@ -69,7 +69,7 @@ def test_factory_returns_none_when_no_router_block() -> None:
 
 
 def test_factory_returns_none_when_backend_mismatches() -> None:
-    from sdk.packs.router import get_router_factory
+    from sdk.router import get_router_factory
 
     factory = get_router_factory()
     manifest = ModelManifest(
@@ -83,8 +83,8 @@ def test_factory_returns_none_when_backend_mismatches() -> None:
 
 
 def test_default_router_config_has_correct_backend() -> None:
-    """The pack's default config declares the lisa-router backend."""
-    from sdk.packs.router.default_config import get_default_router_config
+    """The backend's default config declares the lisa-router backend."""
+    from sdk.router.default_config import get_default_router_config
 
     config = get_default_router_config()
     assert config["backend"] == "lisa-router"
@@ -92,7 +92,7 @@ def test_default_router_config_has_correct_backend() -> None:
 
 def test_default_router_config_has_rules() -> None:
     """The default config includes at least one routing rule."""
-    from sdk.packs.router.default_config import get_default_router_config
+    from sdk.router.default_config import get_default_router_config
 
     config = get_default_router_config()
     assert isinstance(config["rules"], list)
@@ -108,7 +108,7 @@ def test_default_router_config_uses_symbolic_refs() -> None:
     This lets the config work across any discovered model set — the manifest
     builder resolves the symbols at /models discover time.
     """
-    from sdk.packs.router.default_config import get_default_router_config
+    from sdk.router.default_config import get_default_router_config
 
     config = get_default_router_config()
     uses = {rule["use"] for rule in config["rules"]}
@@ -118,7 +118,7 @@ def test_default_router_config_uses_symbolic_refs() -> None:
 
 
 def test_factory_returns_router_when_backend_matches() -> None:
-    from sdk.packs.router import get_router_factory
+    from sdk.router import get_router_factory
 
     factory = get_router_factory()
     manifest = _manifest(rules=(), fallback="gemma4:cloud")

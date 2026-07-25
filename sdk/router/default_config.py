@@ -1,6 +1,6 @@
-"""Default router configuration for the lisa-router pack.
+"""Default router configuration for the lisa-router backend.
 
-Declares the pack's default ``router:`` block that :func:`build_manifest_payload`
+Declares the backend's default ``router:`` block that :func:`build_manifest_payload`
 seeds into ``models.proposed.yaml`` when no user ``router:`` block is present.
 This lets ``/models discover --force`` produce an immediately usable
 routing config without the user hand-writing YAML.

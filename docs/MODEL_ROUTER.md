@@ -155,21 +155,28 @@ auditable. Complex routing needs should use a vendor backend.
 
 ### Built-in: `lisa-router`
 
-- **Pack**: `sdk/packs/router/` (dist `lisa-pack-router`)
-- **Entry points**:
-  - `lisa.extensions.model_routers` → `sdk.packs.router:get_router_factory`
+- **Module**: `sdk/router/` (part of the `lisa-sdk` distribution)
+- **Entry points** (declared in `sdk/pyproject.toml`):
+  - `lisa.extensions.model_routers` → `sdk.router:get_router_factory`
     (runtime factory — the `ModelRouter` instance)
   - `lisa.extensions.model_router_configs` →
-    `sdk.packs.router.default_config:get_default_router_config`
+    `sdk.router.default_config:get_default_router_config`
     (static config — the default `router:` block for `/models discover`)
 - **Zero model calls**: the engine evaluates rules locally against
   `ManifestModelEntry` metadata (`cost_tier`, `latency_tier`, `capabilities`)
   and `RouterRequest` fields.
 - **Active when**: `router.backend == "lisa-router"` in the manifest.
-- **Default config**: the pack declares a default `router:` block with
+- **Default config**: the backend declares a default `router:` block with
   symbolic refs (`"default"`, `"deep"`) that `/models discover` resolves
   to concrete model ids from the discovered set. See
-  `sdk/packs/router/default_config.py`.
+  `sdk/router/default_config.py`.
+
+> The `lisa-router` engine is **not a pack** — it ships no modes,
+> operations, or authored content. It is a runtime `ModelRouter` backend
+> bundled with the SDK, kin to `kernel.model_router_discovery` (which owns
+> the discovery contract). External router backends (e.g. `lisa-pack-aoi-router`)
+> still register under the same `lisa.extensions.model_routers` group from
+> a real pack.
 
 ### External: `lisa-pack-aoi-router` (deferred)
 

@@ -1,4 +1,4 @@
-"""Router pack — built-in rules-based model router.
+"""Built-in rules-based model router — a framework runtime backend.
 
 Provides the ``lisa-router`` backend, a pure-Python rules engine that selects
 a model per turn-loop iteration based on the manifest's ``router.rules``
@@ -12,27 +12,24 @@ factory returns ``None`` when the manifest's ``router.backend`` is not
 ``"lisa-router"`` (or when no ``router`` block exists), so the host skips
 wiring and falls back to static model resolution.
 
-Lives in the framework tree at ``sdk/packs/router`` (import path
-``sdk.packs.router``).
+This is **not** a pack — it ships no modes, operations, or authored content.
+It is a pluggable runtime backend for the kernel's model-selection seam,
+kin to ``kernel.model_router_discovery`` (which owns the discovery contract).
+It lives in the SDK tree at ``sdk/router`` (import path ``sdk.router``) and
+is wired into ``lisa-sdk``'s entry points.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from pathlib import Path
+from collections.abc import Callable, Mapping
 from typing import Any
 
-from kernel.model_manifest import ModelManifest, RouterConfig
+from kernel.model_manifest import ModelManifest
 from kernel.seams.protocols import ModelRouter
 
 
-def get_content_root() -> Path:
-    """Return the content root directory for this pack."""
-    return Path(__file__).parent
-
-
 def get_declared_roles() -> Mapping[str, str]:
-    """Declare the built-in model roles contributed by this pack.
+    """Declare the built-in model roles contributed by this backend.
 
     Returns ``role_name -> default_model_id``. An empty default model id
     means "declare the role name exists; the user must pin it." For ``deep``
@@ -45,7 +42,7 @@ def get_declared_roles() -> Mapping[str, str]:
     return {"deep": ""}
 
 
-def get_router_factory():
+def get_router_factory() -> Callable[[ModelManifest | None, Any], ModelRouter | None]:
     """Return the factory callable for ``lisa.extensions.model_routers``.
 
     The factory takes ``(manifest, session_plan)`` and returns a
@@ -64,7 +61,7 @@ def _factory(
         return None
     if manifest.router.backend != "lisa-router":
         return None
-    from sdk.packs.router.router import LisaRouter
+    from sdk.router.router import LisaRouter
 
     return LisaRouter(manifest)
 

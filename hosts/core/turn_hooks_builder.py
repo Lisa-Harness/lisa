@@ -183,14 +183,14 @@ def build_turn_hooks(
         session_plan = getattr(runtime, "session_plan", None)
         for entry in discover_model_router_factories():
             try:
-                # Some packs (notably lisa-pack-router) register a
-                # factory-factory that takes 0 args and returns the real
-                # ``(manifest, session_plan) -> ModelRouter | None`` factory.
-                # Detect the arity via inspect.signature and resolve the
-                # double-indirection without relying on TypeError catching
-                # (which can silently swallow TypeErrors raised *inside* the
-                # factory body — see the slice-provider fix for the same
-                # pattern).
+                # Some backends (notably the built-in lisa-router in
+                # sdk/router) register a factory-factory that takes 0 args
+                # and returns the real ``(manifest, session_plan) ->
+                # ModelRouter | None`` factory. Detect the arity via
+                # inspect.signature and resolve the double-indirection
+                # without relying on TypeError catching (which can silently
+                # swallow TypeErrors raised *inside* the factory body — see
+                # the slice-provider fix for the same pattern).
                 import inspect as _inspect
 
                 try:

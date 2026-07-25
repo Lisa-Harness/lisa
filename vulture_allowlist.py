@@ -49,11 +49,11 @@ sdk.packs.core.get_content_root  # noqa: Vulture
 # reason: lisa.extensions.host_commands entry-point target (sdk.packs.checkpoint.commands:get_host_commands)
 sdk.packs.checkpoint.commands.get_host_commands  # noqa: Vulture
 
-# reason: lisa.extensions.model_routers entry-point target (sdk.packs.router:get_router_factory)
-sdk.packs.router.get_router_factory  # noqa: Vulture
+# reason: lisa.extensions.model_routers entry-point target (sdk.router:get_router_factory)
+sdk.router.get_router_factory  # noqa: Vulture
 
-# reason: lisa.extensions.model_router_configs entry-point target (sdk.packs.router.default_config:get_default_router_config)
-sdk.packs.router.default_config.get_default_router_config  # noqa: Vulture
+# reason: lisa.extensions.model_router_configs entry-point target (sdk.router.default_config:get_default_router_config)
+sdk.router.default_config.get_default_router_config  # noqa: Vulture
 
 # ──────────────────────────────────────────────────────────────────────────
 # Operation execute() functions — dispatched via getattr(module, "execute")
