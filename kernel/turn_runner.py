@@ -1849,6 +1849,48 @@ async def _run_turn_inner(
                     )
                     continue
 
+                # ── Chain-incomplete guard (silent stop) ────────────────
+                # After a handoff to an action mode, the mode naturally
+                # "summarize and stop" once its entry work is done. When a
+                # post-handoff hint is still active (the workflow is not
+                # finished) but the model produced a final text response
+                # WITHOUT calling ``transition_stage`` and WITHOUT narrating
+                # a transition, the chain stalls. Inject a correction nudge
+                # so the model calls ``transition_stage`` to continue.
+                #
+                # Detection: routing hint active, no transition markers in
+                # the text, no transition occurred this turn, and we haven't
+                # exhausted the retry cap. Mirrors the hallucinated-
+                # transition guard's bounds so the model still gets to
+                # produce a final response after the cap.
+                if (
+                    transitioned_to is None
+                    and handoff_to is None
+                ):
+                    _narration_nudge_count += 1
+                    _log.warning(
+                        "model ended the turn without calling "
+                        "transition_stage while a routing hint is active; "
+                        "injecting chain-incomplete nudge (mode=%s, "
+                        "iteration=%d, nudge=%d/%d)",
+                        mode_id,
+                        iteration,
+                        _narration_nudge_count,
+                        _NARRATION_NUDGE_CAP,
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "You completed this mode's work but the "
+                                "workflow is not finished. Call "
+                                "`transition_stage` to continue to the "
+                                "next step. Do not end the turn here."
+                            ),
+                        }
+                    )
+                    continue
+
             break
 
         # Dispatch tool calls — MCP tools via pool, operations in-process.
@@ -2144,6 +2186,60 @@ async def _run_turn_inner(
                                     "role": "system",
                                     "content": assemble_system(target_mode_instruction, None),
                                 }
+                                # ── Structured handoff context ───────────────
+                                # Give the receiving mode awareness of its
+                                # position in the chain so it knows it is not
+                                # the final step and should hand off when done.
+                                # ``from_mode`` is the source mode_id (still
+                                # the pre-handoff value here); ``chain_position``
+                                # is the 1-based position of this handoff target
+                                # in the turn's chain; ``remaining_steps`` are
+                                # the routing targets whose intent tags still
+                                # cover a gap intent after this handoff (i.e.
+                                # the steps still to run). Tag-blind: the kernel
+                                # only manipulates opaque intent-tag sets and
+                                # routing target ids; it names no intents.
+                                try:
+                                    post_handoff_satisfied = set(chain_satisfied) | set(
+                                        target_mode_config.satisfies_intents
+                                    )
+                                    remaining_gap = _detect_query_intents(
+                                        query=query,
+                                        routing_targets=get_routing_targets(target_stage),
+                                    ) - post_handoff_satisfied
+                                    remaining_steps: list[str] = []
+                                    if remaining_gap:
+                                        for rid in get_routing_targets(target_stage):
+                                            rmode = get_workflow_catalog().get(rid)
+                                            if rmode is None or rid == target_stage:
+                                                continue
+                                            if (
+                                                set(rmode.routing_intent_tags) & remaining_gap
+                                                and rid not in remaining_steps
+                                            ):
+                                                remaining_steps.append(rid)
+                                    chain_position = len(chain_satisfied) + 1
+                                    handoff_context = (
+                                        "\n\n## Handoff Context\n"
+                                        f"- You were handed off from: `{mode_id}`\n"
+                                        f"- Chain position: {chain_position} of "
+                                        f"{chain_position + len(remaining_steps)}\n"
+                                        f"- Remaining steps after this one: "
+                                        f"{_format_remaining_steps(remaining_steps)}\n"
+                                        "- After you complete your work, hand off to "
+                                        "the next step by calling "
+                                        "`transition_stage`.\n"
+                                    )
+                                    messages[0]["content"] = str(
+                                        messages[0].get("content", "")
+                                    ) + handoff_context
+                                except Exception as ctx_exc:  # pylint: disable=broad-except
+                                    _log.warning(
+                                        "failed to build handoff context for "
+                                        "mode=%s: %s",
+                                        target_stage,
+                                        ctx_exc,
+                                    )
                                 # Rebuild tool schemas for the new mode
                                 tool_schemas = await _rebuild_tool_schemas_for_mode(
                                     target_stage,
@@ -2330,11 +2426,15 @@ async def _run_turn_inner(
                                 {
                                     "role": "user",
                                     "content": (
-                                        "You are now in the `" + target_stage
+                                        "CRITICAL: You are in a multi-step "
+                                        "workflow. You are now in the `"
+                                        + target_stage
                                         + "` mode. Complete this mode's work, "
-                                        "then continue the workflow by calling "
-                                        "`transition_stage` with the next "
-                                        "target. " + post_handoff_hint
+                                        "then you MUST call "
+                                        "`transition_stage` to continue to the "
+                                        "next step. Do NOT end the turn "
+                                        "without calling `transition_stage`. "
+                                        + post_handoff_hint
                                     ),
                                 }
                             )
@@ -2834,6 +2934,17 @@ def _first_target_for_earliest_intent(
     return best_target
 
 
+def _format_remaining_steps(remaining_steps: list[str]) -> str:
+    """Render the remaining chain steps for the handoff context block.
+
+    Returns a comma-joined list, or a sentinel when this is the final step
+    so the receiving mode knows it does not need to hand off.
+    """
+    if remaining_steps:
+        return ", ".join(remaining_steps)
+    return "(none — this is the final step)"
+
+
 def _compute_capability_routing_hint(
     *,
     mode_id: str,
@@ -2931,6 +3042,36 @@ def _compute_capability_routing_hint(
         target_tags = set(mode_config.routing_intent_tags)
         if gap_intents and gap_intents.issubset(target_tags):
             covering_targets.append(target_id)
+
+    # ── 3b. Plan-mode escalation for complex multi-step queries ───────
+    # When the request is complex (3+ remaining gap intents, or 2+ gap
+    # intents in a sequential chain), hand off to the ``plan`` action mode
+    # first instead of routing directly to the first target or forking.
+    # ``plan`` runs ``plan_workflow`` (one cheap model call) to
+    # disambiguate the routing target, then the model calls
+    # ``transition_stage`` with the returned target. Simple queries (1-2
+    # intents, non-sequential) still get direct hints below — zero extra
+    # model calls for the common case. This separates planning from
+    # execution without a separate mechanism.
+    # Tag-blind: the kernel only checks whether ``plan`` is among the
+    # routable targets and whether the gap is large/sequential; it does not
+    # name any intent vocabulary. This runs BEFORE the sequential/fork
+    # branches so a complex sequential chain escalates to the planner
+    # rather than hand-rolling the first step.
+    if (
+        "plan" in routing_targets
+        and (
+            len(gap_intents) >= 3
+            or (len(gap_intents) >= 2 and _query_is_sequential(query))
+        )
+    ):
+        return (
+            "## Routing Hint\n\n"
+            "This is a complex multi-step request. Hand off to `plan` by "
+            "calling `transition_stage` with target_stage_id `plan`. "
+            "The plan mode will analyze the query and determine the best "
+            "routing target."
+        )
 
     # ── 4. Multi-intent fork detection ─────────────────────────────────
     # When no single target covers all remaining gap intents but multiple
