@@ -1,0 +1,4 @@
+operation_id: dispute_memory
+description: Correct or supersede an existing memory record. Use when recall surfaces something wrong, outdated, or inaccurate — provide the correction and the old record will be superseded with boosted salience.
+exportable: true
+default_available: true

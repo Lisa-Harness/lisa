@@ -350,6 +350,89 @@ def build_turn_hooks(
         return ToolResult(tool_id=tool_id, error="No MCP tool pool available")
 
     # ── Turn-complete hook ─────────────────────────────────────────
+
+    # ── Auto-capture trigger detection ────────────────────────────
+    # Deterministic triggers (no LLM call) that signal a turn produced
+    # durable learning worth persisting to memory. Returns (should_capture,
+    # salience) where salience is the trigger's confidence level.
+    _COMMITMENT_PATTERNS = [
+        (r"\bremember\s+that\b", 0.7),
+        (r"\bfrom\s+now\s+on\b", 0.7),
+        (r"\blet'?s\s+go\s+with\b", 0.7),
+        (r"\b(?:I\s+)?decided\b", 0.7),
+        (r"\bI\s+prefer\b", 0.6),
+        (r"\b(?:my|our)\s+default\b", 0.6),
+        (r"\balways\b.{0,30}\b(?:use|do|run|call|check|set)\b", 0.6),
+        (r"\bnever\b.{0,30}\b(?:use|do|run|call|check|set)\b", 0.6),
+    ]
+
+    _WRITE_EFFECT_TOOL_PREFIXES = (
+        "coding_", "memory.add", "memory.dispute",
+        "file_write", "storage_", "checkpoint_",
+    )
+
+    _WRITE_EFFECT_TOOL_SUFFIXES = ("_create", "_update", "_delete", "_write", "_save")
+
+    def _should_auto_capture(
+        query: str,
+        response_text: str,
+        messages: list[dict[str, Any]],
+    ) -> tuple[bool, float]:
+        """Return (should_capture, salience) for deterministic trigger detection."""
+        import re as _re
+
+        # Skip if synthesize_and_store_learning or dispute_memory was already
+        # called during this turn — the model already persisted its learning.
+        for msg in messages:
+            role = str(msg.get("role") or "").strip().lower()
+            if role != "assistant":
+                continue
+            tool_calls = msg.get("tool_calls") or []
+            for tc in tool_calls:
+                fn_name = str(
+                    (tc.get("function") or {}).get("name", "")
+                ).strip()
+                if fn_name in ("synthesize_and_store_learning", "dispute_memory"):
+                    return False, 0.0
+
+        max_salience = 0.0
+
+        # 1. Commitment language in the user query
+        query_lower = query.lower()
+        for pattern, salience in _COMMITMENT_PATTERNS:
+            if _re.search(pattern, query_lower):
+                max_salience = max(max_salience, salience)
+
+        # 2. Write-effect tool calls
+        for msg in messages:
+            role = str(msg.get("role") or "").strip().lower()
+            if role != "assistant":
+                continue
+            tool_calls = msg.get("tool_calls") or []
+            for tc in tool_calls:
+                fn_name = str(
+                    (tc.get("function") or {}).get("name", "")
+                ).strip()
+                if not fn_name:
+                    continue
+                if fn_name.startswith(_WRITE_EFFECT_TOOL_PREFIXES) or fn_name.endswith(
+                    _WRITE_EFFECT_TOOL_SUFFIXES
+                ):
+                    max_salience = max(max_salience, 0.6)
+
+        # 3. Approval granted
+        for msg in messages:
+            role = str(msg.get("role") or "").strip().lower()
+            if role != "tool":
+                continue
+            content = str(msg.get("content") or "")
+            if "approved" in content.lower():
+                max_salience = max(max_salience, 0.8)
+
+        if max_salience <= 0.0:
+            return False, 0.0
+        return True, max_salience
+
     async def _on_turn_complete(
         mode_id: str,
         query: str,
@@ -368,6 +451,61 @@ def build_turn_hooks(
             "message_count": len(messages),
             "assistant_message_count": assistant_message_count,
         }
+
+        # ── Opportunistic post-turn learning capture ──────────────
+        # When auto-capture is enabled and a deterministic trigger fires,
+        # distill the turn's query+response into durable facts and persist
+        # to memory. A down memory backend or failed distillation is logged
+        # and swallowed — it never blocks turn completion.
+        if runtime.config.memory_auto_capture_enabled:
+            should_capture, trigger_salience = _should_auto_capture(
+                query, response_text, messages
+            )
+            if (
+                should_capture
+                and trigger_salience >= runtime.config.memory_auto_capture_min_salience
+            ):
+                try:
+                    capture_ctx = OperationExecutionContext(
+                        workspace_id=runtime.session_plan.manifest.name,
+                        user_id=runtime.config.user_slug,
+                        user_slug=runtime.config.user_slug,
+                        user_name=runtime.config.user_slug,
+                        principal_key=runtime.config.user_slug,
+                        conversation_id=runtime.config.surface_id,
+                        surface_type=runtime.config.surface_type,
+                        surface_id=runtime.config.surface_id,
+                        memory_scope=runtime.config.memory_scope,
+                        mode_id=mode_id,
+                        query=query,
+                        response=response_text,
+                        complete_fn=_complete,
+                        resolve_model_fn=_resolve_model,
+                        read_authored_text_fn=getattr(
+                            content_registry() if content_registry else None,
+                            "read_authored_text",
+                            None,
+                        ),
+                        execute_tool_fn=_execute_tool,
+                        execute_operation_fn=_execute_operation,
+                        params={
+                            "content": (
+                                f"User asked:\n{query}\n\nLisa answered:\n{response_text}"
+                            ),
+                            "salience": trigger_salience,
+                            "memory_tier": "long_term",
+                        },
+                    )
+                    await _execute_operation(
+                        "synthesize_and_store_learning", capture_ctx
+                    )
+                    logger.debug(
+                        "auto-capture stored learning salience=%.1f mode=%s",
+                        trigger_salience,
+                        mode_id,
+                    )
+                except Exception as exc:  # pylint: disable=broad-except
+                    logger.warning("auto-capture failed: %s", exc)
 
     # ── UnifiedState provider callable ─────────────────────────────
     def _state_provider() -> Any:
@@ -636,6 +774,9 @@ def build_turn_hooks(
         surface_id=runtime.config.surface_id,
         memory_scope=runtime.config.memory_scope,
         session_plan_digest=runtime.session_plan.plan_digest,
+        memory_recall_enabled=runtime.config.memory_recall_enabled,
+        memory_recall_pre_turn_limit=runtime.config.memory_recall_pre_turn_limit,
+        memory_recall_min_query_chars=runtime.config.memory_recall_min_query_chars,
         # Stash the latest ContextBudgetSnapshot here each turn via the
         # _snapshot_sink wired into _assemble_user_context. Utilization-
         # aware slice providers read this via hooks.last_context_snapshot.

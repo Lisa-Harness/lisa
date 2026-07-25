@@ -500,6 +500,20 @@ class TurnHooks:
     memory_scope: str = "personal"
     session_plan_digest: str = ""
 
+    # ── Memory recall (pre-turn injection) ────────────────────────────────
+    memory_recall_enabled: bool = True
+    """When True, the turn loop calls ``recall_memory`` during Phase 1 and
+    injects the result into the user message as a ``## Memory Recall`` block.
+    Gated independently of ``memory_enabled`` so hosts can opt out of the
+    per-turn recall cost while keeping the memory backend active."""
+
+    memory_recall_pre_turn_limit: int = 3
+    """Maximum number of recall results to inject into the user message."""
+
+    memory_recall_min_query_chars: int = 3
+    """Skip pre-turn recall when the query is shorter than this many
+    characters (e.g. ``"ok"``, ``"thanks"``)."""
+
     # ── Live introspection ─────────────────────────────────────────────────
     introspect: Any | None = None
     """Async callable returning an ``IntrospectSnapshot`` from the host's
@@ -1432,7 +1446,62 @@ async def _run_turn_inner(
         )
 
     user_context = assemble_user(mode_id, query, pre_briefing, capability_manifest)
+
+    # ── Pre-turn memory recall ────────────────────────────────────────
+    # Opportunistic: fires recall_memory before the model call so Lisa
+    # surfaces relevant memories in the user message. Gated on
+    # memory_recall_enabled and a minimum query length so trivial queries
+    # ("ok", "thanks") don't waste a backend round-trip. A down memory
+    # backend is logged and swallowed — it never blocks the turn.
     memory_snippet = ""
+    if (
+        hooks.memory_recall_enabled
+        and query
+        and len(query) >= hooks.memory_recall_min_query_chars
+    ):
+        try:
+            recall_ctx = _build_minimal_context(
+                mode_id=mode_id,
+                query=query,
+                resolve_model_fn=resolve_model,
+                complete_fn=complete,
+                read_authored_text_fn=getattr(
+                    hooks.context_seams.content_registry,
+                    "read_authored_text",
+                    None,
+                ),
+                execute_tool_fn=_mcp_tool_executor,
+                execute_operation_fn=exec_op,
+                state_provider=hooks.state_provider,
+                pack_configuration_resolver=hooks.pack_configuration_resolver,
+                approval_service=hooks.approval_service,
+                code_change_artifact_store=hooks.code_change_artifact_store,
+                workspace_id=hooks.workspace_id,
+                user_id=hooks.user_id,
+                user_slug=hooks.user_slug,
+                user_name=hooks.user_name,
+                principal_key=hooks.principal_key,
+                conversation_id=hooks.conversation_id,
+                surface_type=hooks.surface_type,
+                surface_id=hooks.surface_id,
+                memory_scope=hooks.memory_scope,
+                session_plan_digest=hooks.session_plan_digest,
+            )
+            recall_ctx.params = {
+                "query": query,
+                "limit": hooks.memory_recall_pre_turn_limit,
+                "deep": False,
+            }
+            recall_result = await exec_op("recall_memory", recall_ctx)
+            if recall_result.output_text:
+                memory_snippet = recall_result.output_text
+                _log.debug(
+                    "pre-turn recall mode=%s chars=%d",
+                    mode_id,
+                    len(memory_snippet),
+                )
+        except Exception as exc:  # pylint: disable=broad-except
+            _log.warning("pre-turn memory recall failed: %s", exc)
 
     # ── Phase 2: Tool loop ────────────────────────────────────────────
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]

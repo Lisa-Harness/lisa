@@ -157,6 +157,15 @@ class Settings(BaseSettings):
     memory_eviction_max_active_per_scope: int = 500
     memory_eviction_max_kind_per_user: dict[str, int] = {}
 
+    # ── Memory recall (pre-turn injection) ─────────────────────────────
+    memory_recall_enabled: bool = True
+    memory_recall_pre_turn_limit: int = 3
+    memory_recall_min_query_chars: int = 3
+
+    # ── Memory auto-capture (post-turn learning) ───────────────────────
+    memory_auto_capture_enabled: bool = True
+    memory_auto_capture_min_salience: float = 0.5
+
     # ── Passive intelligence ────────────────────────────────────────────
     passive_intelligence_enabled: bool = True
     passive_intelligence_default_chat_enabled: bool = True
