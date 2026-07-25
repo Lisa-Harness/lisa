@@ -96,7 +96,7 @@ def test_default_router_config_has_rules() -> None:
 
     config = get_default_router_config()
     assert isinstance(config["rules"], list)
-    assert len(config["rules"]) >= 1
+    assert len(config["rules"]) == 5
     for rule in config["rules"]:
         assert "when" in rule
         assert "use" in rule
@@ -113,8 +113,39 @@ def test_default_router_config_uses_symbolic_refs() -> None:
     config = get_default_router_config()
     uses = {rule["use"] for rule in config["rules"]}
     assert config["fallback"] in {"default", "deep"} or config["fallback"]
-    # At least one rule uses a symbolic ref.
-    assert uses & {"default", "deep"}
+    # All rules use symbolic refs.
+    assert uses == {"default", "deep"}
+
+
+def test_default_router_config_capability_rules_first() -> None:
+    """Capability-gate rules (code, reasoning, vision) precede budget/phase rules."""
+    from sdk.router.default_config import get_default_router_config
+
+    config = get_default_router_config()
+    rules = config["rules"]
+    # Rules 0-2 are capability gates.
+    assert "required_capabilities" in rules[0]["when"]
+    assert "required_capabilities" in rules[1]["when"]
+    assert "required_capabilities" in rules[2]["when"]
+    # Rule 3 is the budget gate.
+    assert "tool_calls_so_far" in rules[3]["when"]
+    # Rule 4 is the phase gate.
+    assert "iteration > 1" in rules[4]["when"]
+
+
+def test_default_router_config_budget_before_phase() -> None:
+    """The budget gate (tool_calls_so_far) precedes the phase gate (iteration > 1).
+
+    This ensures long tool-heavy turns downgrade before paying for frontier
+    synthesis on the phase gate.
+    """
+    from sdk.router.default_config import get_default_router_config
+
+    config = get_default_router_config()
+    rules = config["rules"]
+    budget_idx = next(i for i, r in enumerate(rules) if "tool_calls_so_far" in r["when"])
+    phase_idx = next(i for i, r in enumerate(rules) if "iteration > 1" in r["when"])
+    assert budget_idx < phase_idx
 
 
 def test_factory_returns_router_when_backend_matches() -> None:

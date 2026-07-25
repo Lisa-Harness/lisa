@@ -264,6 +264,91 @@ def _model_entry(model: DiscoveredModel) -> dict[str, Any]:
     return entry
 
 
+def _pick_code_model(
+    models: tuple[DiscoveredModel, ...],
+    deep_model_id: str,
+) -> str:
+    """Pick a code-capable model for the coding-focused preset annotation.
+
+    Scans discovered models for one with ``"code"`` in its capabilities.
+    Falls back to ``deep_model_id`` when no code-capable model is found.
+    """
+    for model in models:
+        if model.capabilities and "code" in model.capabilities:
+            return model.model_id
+    return deep_model_id
+
+
+def _router_preset_annotations(
+    mode_models: dict[str, str],
+    roles: dict[str, str],
+    models: tuple[DiscoveredModel, ...],
+) -> str:
+    """Build a YAML comment block with alternative router presets.
+
+    Uses resolved concrete model ids from *mode_models* and *roles* so the
+    presets are uncomment-and-go. The three presets cover the main
+    market-validated routing strategies:
+
+    - **cost-conscious**: cheap default, escalate to deep only on code or
+      iteration ≥ 2, downgrade to default at 3+ tool calls.
+    - **quality-first**: deep as fallback, downgrade to default only at
+      8+ tool calls.
+    - **coding-focused**: code model for code turns, deep for synthesis,
+      code model as fallback.
+
+    Returns an empty string when the router block would not be emitted
+    (no pack-declared config or no rules survive resolution).
+    """
+    default_id = mode_models.get("default", "")
+    deep_id = roles.get("deep", "")
+    if not default_id or not deep_id:
+        return ""
+
+    code_id = _pick_code_model(models, deep_id)
+
+    lines = [
+        "",
+        "# ── Alternative router presets ───────────────────────────────────────────",
+        "# Uncomment one block below and comment out the active ``router:`` block",
+        "# above, then run /models apply.",
+        "#",
+        "# Preset: cost-conscious",
+        "#   Cheap default, escalate to deep only on code or when the turn drags,",
+        "#   downgrade to default early on tool-heavy turns.",
+        f"# router:",
+        f"#   backend: lisa-router",
+        f"#   rules:",
+        f'#   - {{when: required_capabilities includes "code", use: {code_id}}}',
+        f"#   - {{when: iteration >= 2, use: {deep_id}}}",
+        f"#   - {{when: tool_calls_so_far >= 3, use: {default_id}}}",
+        f"#   fallback: {default_id}",
+        "#",
+        "# Preset: quality-first",
+        "#   Frontier everywhere, downgrade only on very long tool-heavy turns.",
+        f"# router:",
+        f"#   backend: lisa-router",
+        f"#   rules:",
+        f'#   - {{when: required_capabilities includes "code", use: {code_id}}}',
+        f'#   - {{when: required_capabilities includes "reasoning", use: {deep_id}}}',
+        f"#   - {{when: iteration > 1 and last_tool_result is not None, use: {deep_id}}}",
+        f"#   - {{when: tool_calls_so_far >= 8, use: {default_id}}}",
+        f"#   fallback: {deep_id}",
+        "#",
+        "# Preset: coding-focused",
+        "#   Code model for code turns, deep for synthesis, code model as fallback.",
+        f"# router:",
+        f"#   backend: lisa-router",
+        f"#   rules:",
+        f'#   - {{when: required_capabilities includes "code", use: {code_id}}}',
+        f"#   - {{when: tool_calls_so_far >= 4 and last_tool_result is not None, use: {code_id}}}",
+        f"#   - {{when: iteration > 1 and last_tool_result is not None, use: {deep_id}}}",
+        f"#   fallback: {code_id}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any]:
     """Build a minimal manifest payload from discovered models.
 
@@ -323,11 +408,26 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
     return payload
 
 
-def render_manifest_yaml(payload: dict[str, Any]) -> str:
-    return _HEADER + dump_manifest(payload)
+def render_manifest_yaml(payload: dict[str, Any], *, annotations: str | None = None) -> str:
+    """Serialize *payload* to YAML, optionally injecting *annotations*.
+
+    When *annotations* is non-empty, it is appended after the ``router:``
+    block (or after ``roles:`` when no router block is present). This lets
+    ``/models discover`` emit human-readable preset comments that
+    ``/models apply`` strips (because ``yaml.safe_load`` discards them).
+    """
+    rendered = _HEADER + dump_manifest(payload)
+    if annotations:
+        rendered += annotations
+    return rendered
 
 
-def write_manifest_yaml(path: Path, payload: dict[str, Any]) -> None:
+def write_manifest_yaml(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    annotations: str | None = None,
+) -> None:
     """Atomically write ``payload`` to ``path`` as YAML.
 
     Uses a temp file + ``os.replace`` so a crash mid-write never leaves a
@@ -337,7 +437,7 @@ def write_manifest_yaml(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        tmp.write_text(render_manifest_yaml(payload), encoding="utf-8")
+        tmp.write_text(render_manifest_yaml(payload, annotations=annotations), encoding="utf-8")
         tmp.replace(path)
     except Exception:
         # Ensure no stale .tmp lingers on failure.

@@ -62,6 +62,7 @@ import os
 import re
 import time as _time
 import tomllib
+import yaml
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -99,8 +100,10 @@ from hosts.core.model_discovery import (
     ProbeStatus,
     build_manifest_payload,
     discover_models,
+    render_manifest_yaml,
     write_manifest_yaml,
 )
+from hosts.core.model_discovery.manifest import _router_preset_annotations
 from hosts.core.model_manifest import load_model_manifest
 from hosts.core.model_runtime import (
     StubModelDefinition,
@@ -1013,7 +1016,12 @@ async def handle_models_command(
             )
             return handle_simple_command(runtime, message, "models", response_text)
 
-        write_manifest_yaml(proposal_path, payload)
+        annotations = _router_preset_annotations(
+            payload.get("mode_models", {}),
+            payload.get("roles", {}),
+            report.models,
+        )
+        write_manifest_yaml(proposal_path, payload, annotations=annotations)
         provider_summary: dict[str, int] = {}
         for item in report.models:
             provider_summary[item.provider] = provider_summary.get(item.provider, 0) + 1
@@ -1047,7 +1055,12 @@ async def handle_models_command(
         try:
             manifest = load_model_manifest(proposal_path)
             active_path.parent.mkdir(parents=True, exist_ok=True)
-            active_path.write_text(proposal_path.read_text(encoding="utf-8"), encoding="utf-8")
+            # Re-emit via yaml.safe_load + render_manifest_yaml to strip
+            # YAML comments (preset annotations, hand-edits) from the
+            # active manifest. The proposal retains comments for reference.
+            raw = proposal_path.read_text(encoding="utf-8")
+            parsed = yaml.safe_load(raw)
+            active_path.write_text(render_manifest_yaml(parsed), encoding="utf-8")
             runtime.manifest = manifest
             response_text = "\n".join(
                 [

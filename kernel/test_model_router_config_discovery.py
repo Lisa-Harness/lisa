@@ -61,8 +61,14 @@ def test_discover_returns_first_dict_config() -> None:
     """First entry point returning a dict wins."""
     config: dict[str, Any] = {
         "backend": "lisa-router",
-        "rules": [{"when": "iteration > 1", "use": "gpt-5"}],
-        "fallback": "gpt-5-mini",
+        "rules": [
+            {"when": 'required_capabilities includes "code"', "use": "deep"},
+            {"when": 'required_capabilities includes "reasoning"', "use": "deep"},
+            {"when": 'required_capabilities includes "vision"', "use": "deep"},
+            {"when": "tool_calls_so_far >= 5", "use": "default"},
+            {"when": "iteration > 1 and last_tool_result is not None", "use": "deep"},
+        ],
+        "fallback": "default",
     }
     eps = [_StubEntryPoint("lisa-router", lambda: config)]
     with patch.object(importlib.metadata, "entry_points", return_value=eps):

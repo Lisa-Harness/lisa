@@ -528,6 +528,14 @@ class TestHandleMessage:
         assert "proposal_written" in discover_result.text
         assert runtime.models_proposal_path.exists()
 
+        # Proposal should contain preset annotation comments.
+        proposal_content = runtime.models_proposal_path.read_text(encoding="utf-8")
+        assert "cost-conscious" in proposal_content
+
         apply_result = await handle_message(runtime, "/models apply")
         assert "Applied models proposal." in apply_result.text
         assert runtime.models_path.exists()
+
+        # Active manifest should be comment-free (yaml.safe_load strips them).
+        active_content = runtime.models_path.read_text(encoding="utf-8")
+        assert "cost-conscious" not in active_content

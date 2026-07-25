@@ -65,12 +65,21 @@ roles: {default: 'gemma4:cloud', deep: 'gpt-5.4'}
 router:
   backend: lisa-router          # or "aoi-router" (external pack)
   rules:
+    # Capability gates — fire first, capture the whole turn.
     - when: required_capabilities includes "code"
-      use: gpt-5.2-codex
-    - when: iteration > 1 and last_tool_result is not None
-      use: gpt-5.4              # synthesize on the frontier model
+      use: gpt-5.3-codex
+    - when: required_capabilities includes "reasoning"
+      use: gpt-5.4
+    - when: required_capabilities includes "vision"
+      use: gpt-5.4
+    # Budget gate — downgrade long tool-heavy turns before paying for synthesis.
     - when: tool_calls_so_far >= 5
-      use: gpt-5.4-mini         # downgrade when budget is running low
+      use: gemma4:cloud
+    # Phase gate — synthesize on the deep model after the first tool result.
+    # Only reached on plain (non-capability) modes because the capability
+    # gates above already captured code/reasoning/vision turns.
+    - when: iteration > 1 and last_tool_result is not None
+      use: gpt-5.4
   fallback: gemma4:cloud        # if no rule matches, stay on the default
 ```
 
@@ -82,6 +91,37 @@ router:
 - **`fallback`** — the model used when no rule matches. If empty, the router
   returns `None` and the loop falls back to the statically-resolved
   `preferred_model_id`.
+
+### Rule ordering matters
+
+The default config is ordered so rules never shadow each other:
+
+1. **Capability gates** (rules 1-3): a mode that needs `code`, `reasoning`,
+   or `vision` gets the deep model for the whole turn. These fire first so
+   capability-needing modes never hit the budget or phase gates below.
+2. **Budget gate** (rule 4): a long, tool-heavy turn on a plain mode
+   downgrades to the default model before we pay for frontier synthesis.
+3. **Phase gate** (rule 5): after the first tool returns, synthesize on the
+   deep model. Only reached on plain (non-capability) modes because rules
+   1-3 already captured code/reasoning/vision turns.
+
+### Presets
+
+`/models discover` writes the active `router:` block plus three commented
+alternative presets to `models.proposed.yaml`. Each preset uses resolved
+concrete model ids so they're uncomment-and-go:
+
+- **cost-conscious**: cheap default, escalate to deep only on code or when
+  the turn drags, downgrade to default early on tool-heavy turns.
+- **quality-first**: frontier everywhere, downgrade to default only on very
+  long tool-heavy turns.
+- **coding-focused**: code model for code turns, deep for synthesis, code
+  model as fallback.
+
+To switch presets, uncomment the desired block in `models.proposed.yaml`,
+comment out the active `router:` block, and run `/models apply`. The apply
+step strips all YAML comments (including the preset annotations) so the
+active `models.yaml` stays machine-clean.
 
 ### Relationship to `mode_models` / `roles`
 

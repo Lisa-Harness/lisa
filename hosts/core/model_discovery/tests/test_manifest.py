@@ -204,8 +204,10 @@ class TestRouterBlock:
             "backend": "lisa-router",
             "rules": [
                 {"when": 'required_capabilities includes "code"', "use": "deep"},
-                {"when": "iteration > 1 and last_tool_result is not None", "use": "deep"},
+                {"when": 'required_capabilities includes "reasoning"', "use": "deep"},
+                {"when": 'required_capabilities includes "vision"', "use": "deep"},
                 {"when": "tool_calls_so_far >= 5", "use": "default"},
+                {"when": "iteration > 1 and last_tool_result is not None", "use": "deep"},
             ],
             "fallback": "default",
         }
@@ -219,7 +221,7 @@ class TestRouterBlock:
         assert router["backend"] == "lisa-router"
         # Symbolic refs resolved: "deep" → o3-pro, "default" → gpt-5.
         assert router["rules"][0]["use"] == "o3-pro"
-        assert router["rules"][2]["use"] == "gpt-5"
+        assert router["rules"][3]["use"] == "gpt-5"
         assert router["fallback"] == "gpt-5"
 
     def test_router_strips_rules_referencing_unknown_models(self) -> None:
@@ -302,6 +304,91 @@ class TestRouterBlock:
         router = payload["router"]
         assert router["rules"][0]["use"] == "gpt-5-mini"
         assert router["fallback"] == "gpt-5"
+
+
+class TestRouterPresetAnnotations:
+    """Tests for ``_router_preset_annotations`` and annotation injection."""
+
+    def test_includes_three_presets(self) -> None:
+        """The annotation string names all three presets."""
+        from hosts.core.model_discovery.manifest import _router_preset_annotations
+
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        annotations = _router_preset_annotations(
+            mode_models={"default": "gpt-5"},
+            roles={"default": "gpt-5", "deep": "gpt-5"},
+            models=models,
+        )
+        assert "cost-conscious" in annotations
+        assert "quality-first" in annotations
+        assert "coding-focused" in annotations
+
+    def test_uses_resolved_model_ids(self) -> None:
+        """Annotation text contains the concrete model ids from mode_models/roles."""
+        from hosts.core.model_discovery.manifest import _router_preset_annotations
+
+        models = (
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(model_id="o3-pro", provider="openai", reasoning_model=True),
+        )
+        annotations = _router_preset_annotations(
+            mode_models={"default": "gpt-5"},
+            roles={"default": "gpt-5", "deep": "o3-pro"},
+            models=models,
+        )
+        assert "gpt-5" in annotations
+        assert "o3-pro" in annotations
+
+    def test_picks_code_model_from_capabilities(self) -> None:
+        """When a model has ``code`` capability, it is used for the coding preset."""
+        from hosts.core.model_discovery.manifest import _router_preset_annotations
+
+        models = (
+            DiscoveredModel(model_id="gpt-5", provider="openai"),
+            DiscoveredModel(
+                model_id="gpt-5.2-codex",
+                provider="openai",
+                capabilities=("code", "text"),
+            ),
+        )
+        annotations = _router_preset_annotations(
+            mode_models={"default": "gpt-5"},
+            roles={"default": "gpt-5", "deep": "gpt-5"},
+            models=models,
+        )
+        assert "gpt-5.2-codex" in annotations
+
+    def test_returns_empty_when_no_mode_models(self) -> None:
+        """Empty string when mode_models or roles are missing."""
+        from hosts.core.model_discovery.manifest import _router_preset_annotations
+
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        assert _router_preset_annotations({}, {"deep": "gpt-5"}, models) == ""
+        assert _router_preset_annotations({"default": "gpt-5"}, {}, models) == ""
+
+    def test_render_manifest_yaml_injects_annotations(self) -> None:
+        """Annotation text appears in the rendered output."""
+        payload = {"version": 1, "models": []}
+        annotations = "# test annotation\n"
+        rendered = render_manifest_yaml(payload, annotations=annotations)
+        assert rendered.endswith(annotations)
+
+    def test_render_manifest_yaml_no_annotations_when_none(self) -> None:
+        """No annotation text when annotations is None."""
+        payload = {"version": 1, "models": []}
+        rendered = render_manifest_yaml(payload)
+        assert "# test annotation" not in rendered
+
+    def test_write_manifest_yaml_with_annotations(self, tmp_path: Path) -> None:
+        """Annotations are written to the proposal file."""
+        path = tmp_path / "models.proposed.yaml"
+        payload = build_manifest_payload(
+            (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        )
+        annotations = "# preset annotations\n"
+        write_manifest_yaml(path, payload, annotations=annotations)
+        content = path.read_text(encoding="utf-8")
+        assert "preset annotations" in content
 
 
 class TestRenderManifestYaml:
