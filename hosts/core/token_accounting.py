@@ -143,8 +143,16 @@ def apply_turn_usage(
     model_id: str = "",
     mode_id: str = "",
     stage_id: str = "",
+    per_model_usage: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Persist turn and session token counters from one completed turn result."""
+    """Persist turn and session token counters from one completed turn result.
+
+    ``per_model_usage`` (when provided and non-empty) drives the per-model
+    breakdown so ``model_token_totals`` reflects every model actually called
+    during the turn rather than the single resolved default model. When it
+    is None/empty the legacy single-``model_id`` path is preserved for hosts
+    and tests that do not populate it.
+    """
     main_tokens = _extract_main_tokens(result)
 
     turn_tokens = _combine_turn_tokens(main_tokens)
@@ -154,7 +162,47 @@ def apply_turn_usage(
     ledger: list[dict[str, Any]] = state.setdefault("session_token_ledger", [])
     turn_index = len(ledger) + 1
 
-    _record_main_ledger(state, ledger, turn_index, main_tokens, model_id, mode_id, stage_id)
+    _record_main_ledger(
+        state,
+        ledger,
+        turn_index,
+        main_tokens,
+        model_id,
+        mode_id,
+        stage_id,
+        skip_model_breakdown=bool(per_model_usage),
+    )
+
+    # Per-model breakdown. When the turn runner supplies a per-model list,
+    # accumulate each entry into model_token_totals so /tokens reports
+    # every model that was actually called (router picks, forced-final,
+    # terminal-stage) rather than attributing the whole turn to the
+    # resolved default model_id. When absent, _record_main_ledger already
+    # attributed the whole turn to ``model_id`` so no further action is
+    # needed (legacy single-model behavior).
+    if per_model_usage:
+        _accumulate_per_model_breakdown(state, per_model_usage)
+
+
+def _accumulate_per_model_breakdown(
+    state: dict[str, Any],
+    per_model_usage: list[dict[str, Any]],
+) -> None:
+    """Merge each per-model entry into ``model_token_totals``."""
+    for entry in per_model_usage:
+        mid = str(entry.get("model_id", "") or "-").strip()
+        _accumulate_breakdown(
+            state,
+            "model_token_totals",
+            mid,
+            prompt=coerce_non_negative_int(entry.get("prompt_tokens", 0)),
+            completion=coerce_non_negative_int(entry.get("completion_tokens", 0)),
+            total=coerce_non_negative_int(entry.get("total_tokens", 0)),
+            cached=coerce_non_negative_int(entry.get("cached_tokens", 0)),
+            reasoning=coerce_non_negative_int(entry.get("reasoning_tokens", 0)),
+            duration_ms=coerce_non_negative_float(entry.get("duration_ms", 0.0)),
+            latency_ms=coerce_non_negative_int(entry.get("latency_ms", 0)),
+        )
 
 
 def _extract_main_tokens(result: Any) -> dict[str, Any]:
@@ -232,8 +280,17 @@ def _record_main_ledger(
     model_id: str,
     mode_id: str,
     stage_id: str,
+    *,
+    skip_model_breakdown: bool = False,
 ) -> None:
-    """Record the main execution ledger entry and per-model/mode/stage breakdowns."""
+    """Record the main execution ledger entry and per-model/mode/stage breakdowns.
+
+    When ``skip_model_breakdown`` is True the per-model row in
+    ``model_token_totals`` is NOT accumulated here — the caller owns it (used
+    by ``apply_turn_usage`` when a per-model list is supplied so the
+    breakdown reflects every model called, not just the resolved default).
+    Mode and stage breakdowns are always accumulated.
+    """
     clean_model = (model_id or "-").strip()
     clean_mode = (mode_id or "-").strip()
     clean_stage = (stage_id or "-").strip()
@@ -260,7 +317,8 @@ def _record_main_ledger(
         }
     )
     main_kwargs = _main_breakdown_kwargs(main)
-    _accumulate_breakdown(state, "model_token_totals", clean_model, **main_kwargs)
+    if not skip_model_breakdown:
+        _accumulate_breakdown(state, "model_token_totals", clean_model, **main_kwargs)
     _accumulate_breakdown(state, "mode_token_totals", clean_mode, **main_kwargs)
     _accumulate_breakdown(state, "stage_token_totals", clean_stage, **main_kwargs)
 

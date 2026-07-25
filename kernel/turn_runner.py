@@ -171,6 +171,16 @@ class TurnResult:
     instruction as the system prompt so the model produces a closing summary."""
     pending_approval: ApprovalInvocation | None = None
     """The exact action that paused this turn, when an approval is required."""
+    per_model_usage: list[dict[str, Any]] = field(default_factory=list)
+    """Per-model token breakdown for every model that was actually called
+    during this turn. Each entry is keyed by the model's ``model_id`` and
+    carries ``prompt_tokens`` / ``completion_tokens`` / ``total_tokens`` /
+    ``cached_tokens`` / ``reasoning_tokens`` / ``duration_ms`` / ``latency_ms``.
+    Entries for the same model_id across iterations are merged into one row.
+    The host's token accounting reads this to populate ``model_token_totals``
+    so ``/tokens`` reports per-model usage rather than attributing the whole
+    turn to the default mode's resolved model. Empty when no model was
+    called (e.g. input-guard block, pure operation mode)."""
 
 
 def _lazy_model_policy() -> ModelPolicy:
@@ -1516,6 +1526,33 @@ async def _run_turn_inner(
     total_reasoning_tokens = 0
     total_duration_ms = 0.0
     total_latency_ms = 0
+    # Per-model usage accumulator. Keyed by model_id so multiple iterations
+    # against the same model collapse into one breakdown row. Populated at
+    # every iteration, the forced-final completion, and the terminal-stage
+    # forced completion. Converted to a list at TurnResult construction.
+    per_model_usage: dict[str, dict[str, Any]] = {}
+
+    def _record_model_usage(
+        model_def: Any,
+        *,
+        p: int,
+        c: int,
+        t: int,
+        ct: int,
+        rt: int,
+        d: float,
+        lat: int,
+    ) -> None:
+        """Merge one completion's counters into the per-model accumulator."""
+        mid = (getattr(model_def, "model_id", "") or "-").strip()
+        entry = per_model_usage.setdefault(mid, {"model_id": mid})
+        entry["prompt_tokens"] = entry.get("prompt_tokens", 0) + p
+        entry["completion_tokens"] = entry.get("completion_tokens", 0) + c
+        entry["total_tokens"] = entry.get("total_tokens", 0) + t
+        entry["cached_tokens"] = entry.get("cached_tokens", 0) + ct
+        entry["reasoning_tokens"] = entry.get("reasoning_tokens", 0) + rt
+        entry["duration_ms"] = entry.get("duration_ms", 0.0) + d
+        entry["latency_ms"] = entry.get("latency_ms", 0) + lat
 
     def _budget_forces_final() -> bool:
         """Return True when the turn budget is exhausted and the loop must
@@ -1728,6 +1765,16 @@ async def _run_turn_inner(
         total_reasoning_tokens += reasoning_tokens
         total_duration_ms += duration_ms
         total_latency_ms += latency_ms
+        _record_model_usage(
+            effective_model_def,
+            p=prompt_tokens,
+            c=completion_tokens,
+            t=completion_total_tokens,
+            ct=cached_tokens,
+            rt=reasoning_tokens,
+            d=duration_ms,
+            lat=latency_ms,
+        )
 
         await _emit_stage(
             "model_call_complete",
@@ -2590,6 +2637,16 @@ async def _run_turn_inner(
                 total_completion_tokens += final_usage[1]
                 total_tokens += final_usage[2]
                 total_duration_ms += final_usage[5]
+                _record_model_usage(
+                    effective_model_def,
+                    p=final_usage[0],
+                    c=final_usage[1],
+                    t=final_usage[2],
+                    ct=final_usage[3],
+                    rt=final_usage[4],
+                    d=final_usage[5],
+                    lat=final_usage[6],
+                )
         except Exception as exc:  # pylint: disable=broad-except
             _log.warning("iteration-cap final completion failed: %s", exc)
         content = content or "The model did not produce a final response."
@@ -2624,6 +2681,21 @@ async def _run_turn_inner(
                     final_content = getattr(final_completion, "content", "") or ""
                     if final_content.strip():
                         content = final_content.strip()
+                        terminal_usage = _extract_completion_usage(final_completion)
+                        total_prompt_tokens += terminal_usage[0]
+                        total_completion_tokens += terminal_usage[1]
+                        total_tokens += terminal_usage[2]
+                        total_duration_ms += terminal_usage[5]
+                        _record_model_usage(
+                            effective_model_def,
+                            p=terminal_usage[0],
+                            c=terminal_usage[1],
+                            t=terminal_usage[2],
+                            ct=terminal_usage[3],
+                            rt=terminal_usage[4],
+                            d=terminal_usage[5],
+                            lat=terminal_usage[6],
+                        )
                 except Exception as exc:  # pylint: disable=broad-except
                     _log.warning("terminal-stage summary failed: %s", exc)
             workflow_terminated = True
@@ -2719,6 +2791,7 @@ async def _run_turn_inner(
         handoff_to=handoff_to,
         fork_results=fork_results,
         workflow_terminated=workflow_terminated,
+        per_model_usage=list(per_model_usage.values()),
     )
 
 

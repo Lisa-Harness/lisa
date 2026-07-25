@@ -172,12 +172,14 @@ def _apply_turn_usage(
 ) -> None:
     """Apply turn usage via the dict-based token_accounting module."""
     state = _token_state_dict(runtime)
+    per_model = getattr(result, "per_model_usage", None)
     apply_turn_usage(
         state,
         result,
         model_id=model_id,
         mode_id=mode_id,
         stage_id=stage_id,
+        per_model_usage=per_model if isinstance(per_model, list) else None,
     )
     _sync_token_state(runtime, state)
 

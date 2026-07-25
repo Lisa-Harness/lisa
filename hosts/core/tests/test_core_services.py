@@ -768,6 +768,96 @@ def test_apply_turn_usage_accumulates_model_mode_stage_breakdowns() -> None:
     assert state["session_total_tokens"] == 250
 
 
+def test_apply_turn_usage_per_model_overrides_single_model_id() -> None:
+    """When per_model_usage is supplied, model_token_totals reflects every
+    model actually called rather than the single resolved model_id kwarg."""
+    state: dict[str, object] = {
+        "session_token_ledger": [],
+        "model_token_totals": {},
+        "mode_token_totals": {},
+        "stage_token_totals": {},
+        "session_prompt_tokens": 0,
+        "session_completion_tokens": 0,
+        "session_total_tokens": 0,
+    }
+
+    result = TurnResult(
+        response_text="ok",
+        prompt_tokens=120,  # sum of the two per-model prompts below
+        completion_tokens=70,
+        total_tokens=190,
+    )
+    apply_turn_usage(
+        state,
+        result,
+        model_id="gpt-4o",  # resolved default; should NOT own the breakdown
+        mode_id="default",
+        stage_id="default",
+        per_model_usage=[
+            {
+                "model_id": "gpt-4o",
+                "prompt_tokens": 80,
+                "completion_tokens": 40,
+                "total_tokens": 120,
+                "cached_tokens": 0,
+                "reasoning_tokens": 0,
+                "duration_ms": 500.0,
+                "latency_ms": 0,
+            },
+            {
+                "model_id": "o4-mini",
+                "prompt_tokens": 40,
+                "completion_tokens": 30,
+                "total_tokens": 70,
+                "cached_tokens": 0,
+                "reasoning_tokens": 0,
+                "duration_ms": 300.0,
+                "latency_ms": 0,
+            },
+        ],
+    )
+
+    model_totals = state["model_token_totals"]
+    assert isinstance(model_totals, dict)
+    # Both models appear with their own counts, not collapsed onto gpt-4o.
+    assert model_totals["gpt-4o"]["total_tokens"] == 120
+    assert model_totals["o4-mini"]["total_tokens"] == 70
+    # The resolved default model_id is NOT double-counted as the whole turn.
+    assert model_totals["gpt-4o"]["total_tokens"] != 190
+
+
+def test_apply_turn_usage_falls_back_to_single_model_id_when_per_model_empty() -> None:
+    """When per_model_usage is None/empty, the single model_id kwarg owns
+    the breakdown (legacy behavior preserved)."""
+    state: dict[str, object] = {
+        "session_token_ledger": [],
+        "model_token_totals": {},
+        "mode_token_totals": {},
+        "stage_token_totals": {},
+        "session_prompt_tokens": 0,
+        "session_completion_tokens": 0,
+        "session_total_tokens": 0,
+    }
+
+    result = TurnResult(
+        response_text="ok",
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+    )
+    apply_turn_usage(
+        state,
+        result,
+        model_id="gpt-4o",
+        mode_id="default",
+        stage_id="default",
+        per_model_usage=None,
+    )
+
+    model_totals = state["model_token_totals"]
+    assert model_totals["gpt-4o"]["total_tokens"] == 150
+
+
 def test_apply_turn_usage_threads_cached_reasoning_duration_latency() -> None:
     state: dict[str, object] = {
         "session_token_ledger": [],
