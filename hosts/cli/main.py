@@ -899,8 +899,28 @@ def _modes_command(
 # ---------------------------------------------------------------------------
 
 
-@app.command("models", help="List configured models with designations and aliases.")
+@app.command(
+    "models",
+    help=(
+        "Manage the model manifest. ACTION defaults to 'show'. "
+        "Subcommands: show, discover, apply, help. "
+        "(reload and edit are REPL-only; they have no durable effect as a "
+        "one-shot CLI invocation.)"
+    ),
+)
 def _models_command(
+    action: str = typer.Argument(
+        "show",
+        help=(
+            "Action: show (default), discover, apply, help. "
+            "'discover' writes a proposal manifest; 'apply' promotes it to active."
+        ),
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="With 'discover', overwrite an existing proposal manifest.",
+    ),
     debug: DebugOption = False,
     log_level: LogLevelOption = "",
     log: LogOption = "",
@@ -932,7 +952,49 @@ def _models_command(
     )
     if runtime is None:
         return
-    render_models(runtime, console=console)
+
+    normalized = action.strip().lower()
+
+    # 'show' uses the Rich table renderer; on failure (e.g. no active
+    # manifest yet) it falls back to the core text renderer so the user
+    # gets the same friendly "run discover first" guidance as the REPL.
+    if normalized in {"", "show"}:
+        try:
+            render_models(runtime, console=console)
+            return
+        except Exception:  # pylint: disable=broad-except
+            normalized = "show"
+
+    # 'reload' and 'edit' only mutate transient in-process state or print
+    # guidance — both pointless for a one-shot CLI process whose runtime
+    # is discarded on exit. Surface that clearly instead of pretending
+    # to do work; the durable CLI workflow is discover -> (edit file) ->
+    # apply. Both remain available in the persistent REPL.
+    if normalized in {"reload", "edit"}:
+        console.print(
+            "[yellow]'models " + normalized + "' has no durable effect as a one-shot "
+            "CLI command: it only refreshes in-process state or prints guidance, and "
+            "the CLI runtime is discarded on exit.[/yellow]\n"
+            "Edit models.proposed.yaml by hand, then run 'lisa models apply'.\n"
+            "Use 'lisa' (REPL) for /models " + normalized + "."
+        )
+        return
+
+    # show (fallback), discover, apply, help delegate to the
+    # transport-neutral core handler (the same one the REPL /models
+    # command uses), so behavior stays identical across hosts. We
+    # synthesize the equivalent '/models <sub> [--force]' slash string
+    # and print the returned Markdown text in a Rich panel.
+    from hosts.core.commands import handle_models_command  # noqa: PLC0415
+    from rich.markdown import Markdown  # noqa: PLC0415
+
+    if normalized == "discover" and force:
+        stripped = "/models discover --force"
+    else:
+        stripped = f"/models {normalized}".strip()
+
+    response_text = asyncio.run(handle_models_command(runtime, stripped, stripped))
+    console.print(Panel(Markdown(response_text), title="Models", border_style="cyan"))
 
 
 # ---------------------------------------------------------------------------
