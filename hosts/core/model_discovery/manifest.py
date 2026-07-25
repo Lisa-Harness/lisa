@@ -279,23 +279,113 @@ def _pick_code_model(
     return deep_model_id
 
 
+# Per-predicate human-readable explanations, keyed by a substring of the
+# ``when`` condition. The first matching key wins; unknown predicates get a
+# generic "matches when the condition is true" fallback.
+_PREDICATE_EXPLANATIONS: tuple[tuple[str, str], ...] = (
+    ('required_capabilities includes "code"', "the mode's tool surface needs code"),
+    ('required_capabilities includes "reasoning"', "the mode declares a reasoning requirement"),
+    ('required_capabilities includes "vision"', "the turn needs vision/multimodal input"),
+    ("tool_calls_so_far >= 5", "the turn has made 5+ tool calls (budget pressure)"),
+    ("tool_calls_so_far >= 8", "the turn is very long (8+ tool calls)"),
+    ("tool_calls_so_far >= 3", "the turn has made 3+ tool calls"),
+    ("tool_calls_so_far >= 4", "the turn has made 4+ tool calls"),
+    ("iteration > 1 and last_tool_result is not None", "a tool just returned a result (synthesis phase)"),
+    ("iteration >= 2", "the turn is on its second iteration or later"),
+    ("iteration > 1", "the turn is past the first iteration"),
+)
+
+
+def _explain_predicate(when: str) -> str:
+    """Return a short human-readable explanation for one ``when`` clause."""
+    for needle, explanation in _PREDICATE_EXPLANATIONS:
+        if needle in when:
+            return explanation
+    return "the condition is true"
+
+
+def _rule_yaml_line(rule: dict[str, str]) -> str:
+    """Render one rule as a flow-style YAML ``{when: ..., use: ...}`` line.
+
+    Matches the style the active ``router:`` block uses: bare ``when`` value
+    when it contains no YAML-special chars (so ``required_capabilities
+    includes "code"`` stays unquoted), and a bare ``use`` value when it is a
+    simple model id. ``use`` values containing ``:`` (e.g. ``glm-5.2:cloud``)
+    are single-quoted so PyYAML parses them as strings, not mappings.
+    """
+    when = rule["when"]
+    use = rule["use"]
+    # ``when`` values from the default config never need quoting (they
+    # contain no ``: `` or leading special chars). Keep them bare for
+    # readability and to match the active block.
+    when_repr = when
+    # ``use`` values may contain ``:`` (model ids like ``glm-5.2:cloud``);
+    # quote those so the line is valid YAML.
+    use_repr = use if ":" not in use else f"'{use}'"
+    return f"{{when: {when_repr}, use: {use_repr}}}"
+
+
+def _annotated_rule_lines(
+    rules: list[dict[str, str]],
+    *,
+    indent: str = "# ",
+    comment_each: bool = True,
+) -> list[str]:
+    """Render ``rules`` as YAML lines, optionally with a per-rule comment.
+
+    Each rule is emitted as a flow-style ``{when: ..., use: ...}`` line. When
+    *comment_each* is set, a trailing ``# → <model> when <reason>`` is appended
+    so the reader sees *why* each rule exists without flipping to the docs.
+    """
+    out: list[str] = []
+    for rule in rules:
+        line = f"{indent}- {_rule_yaml_line(rule)}"
+        if comment_each:
+            line = f"{line}  # → {rule['use']} when {_explain_predicate(rule['when'])}"
+        out.append(line)
+    return out
+
+
+def _preset_block(
+    name: str,
+    blurb: str,
+    best_for: str,
+    rules: list[dict[str, str]],
+    fallback: str,
+) -> list[str]:
+    """Render one preset as a fully-annotated commented YAML block."""
+    lines = [
+        f"# Preset: {name}",
+        f"#   {blurb}",
+        f"#   Best for: {best_for}",
+        "# router:",
+        "#   backend: lisa-router",
+        "#   rules:",
+    ]
+    lines.extend(_annotated_rule_lines(rules, indent="#   ", comment_each=True))
+    lines.append(f"#   fallback: {fallback}  # if no rule matches")
+    return lines
+
+
 def _router_preset_annotations(
     mode_models: dict[str, str],
     roles: dict[str, str],
     models: tuple[DiscoveredModel, ...],
+    *,
+    router_block: dict[str, Any] | None = None,
 ) -> str:
-    """Build a YAML comment block with alternative router presets.
+    """Build a YAML comment block annotating the active config + presets.
 
-    Uses resolved concrete model ids from *mode_models* and *roles* so the
-    presets are uncomment-and-go. The three presets cover the main
-    market-validated routing strategies:
+    Emits two sections:
 
-    - **cost-conscious**: cheap default, escalate to deep only on code or
-      iteration ≥ 2, downgrade to default at 3+ tool calls.
-    - **quality-first**: deep as fallback, downgrade to default only at
-      8+ tool calls.
-    - **coding-focused**: code model for code turns, deep for synthesis,
-      code model as fallback.
+    1. **Active config explained** — a commented mirror of the resolved
+       ``router:`` block with a per-rule ``# → <model> when <reason>`` trailer
+       so the reader understands *why* each rule exists without reading the
+       docs. Only emitted when *router_block* is non-None.
+    2. **Alternative presets** — three fully-annotated commented blocks
+       (cost-conscious, quality-first, coding-focused) using resolved
+       concrete model ids so they're uncomment-and-go. Each preset carries
+       a blurb, a "Best for" line, and per-rule explanations.
 
     Returns an empty string when the router block would not be emitted
     (no pack-declared config or no rules survive resolution).
@@ -307,45 +397,83 @@ def _router_preset_annotations(
 
     code_id = _pick_code_model(models, deep_id)
 
-    lines = [
+    lines: list[str] = [
         "",
-        "# ── Alternative router presets ───────────────────────────────────────────",
-        "# Uncomment one block below and comment out the active ``router:`` block",
-        "# above, then run /models apply.",
-        "#",
-        "# Preset: cost-conscious",
-        "#   Cheap default, escalate to deep only on code or when the turn drags,",
-        "#   downgrade to default early on tool-heavy turns.",
-        f"# router:",
-        f"#   backend: lisa-router",
-        f"#   rules:",
-        f'#   - {{when: required_capabilities includes "code", use: {code_id}}}',
-        f"#   - {{when: iteration >= 2, use: {deep_id}}}",
-        f"#   - {{when: tool_calls_so_far >= 3, use: {default_id}}}",
-        f"#   fallback: {default_id}",
-        "#",
-        "# Preset: quality-first",
-        "#   Frontier everywhere, downgrade only on very long tool-heavy turns.",
-        f"# router:",
-        f"#   backend: lisa-router",
-        f"#   rules:",
-        f'#   - {{when: required_capabilities includes "code", use: {code_id}}}',
-        f'#   - {{when: required_capabilities includes "reasoning", use: {deep_id}}}',
-        f"#   - {{when: iteration > 1 and last_tool_result is not None, use: {deep_id}}}",
-        f"#   - {{when: tool_calls_so_far >= 8, use: {default_id}}}",
-        f"#   fallback: {deep_id}",
-        "#",
-        "# Preset: coding-focused",
-        "#   Code model for code turns, deep for synthesis, code model as fallback.",
-        f"# router:",
-        f"#   backend: lisa-router",
-        f"#   rules:",
-        f'#   - {{when: required_capabilities includes "code", use: {code_id}}}',
-        f"#   - {{when: tool_calls_so_far >= 4 and last_tool_result is not None, use: {code_id}}}",
-        f"#   - {{when: iteration > 1 and last_tool_result is not None, use: {deep_id}}}",
-        f"#   fallback: {code_id}",
-        "",
+        "# ── Router config ────────────────────────────────────────────────────────",
+        "# The active ``router:`` block above is generated by /models discover.",
+        "# Rules are evaluated first-match-wins per turn-loop iteration. Edit",
+        "# the block above, or swap in one of the presets below, then /models apply.",
     ]
+
+    # Active config explained — mirror the resolved rules with explanations.
+    if router_block and router_block.get("rules"):
+        lines.append("#")
+        lines.append("# Active config (rule-by-rule):")
+        active_rules = list(router_block["rules"])
+        lines.extend(_annotated_rule_lines(active_rules, comment_each=True))
+        fb = router_block.get("fallback", "")
+        if fb:
+            lines.append(f"# fallback: {fb}  # if no rule matches")
+
+    lines.extend(
+        [
+            "#",
+            "# ── Alternative router presets ───────────────────────────────────────────",
+            "# Uncomment one block below and comment out the active ``router:`` block",
+            "# above, then run /models apply. Each preset is ready to use — model ids",
+            "# are already resolved to your discovered set.",
+            "#",
+        ]
+    )
+
+    # Cost-conscious preset.
+    lines.extend(
+        _preset_block(
+            "cost-conscious",
+            "Cheap default, escalate to deep only on code or when the turn drags, downgrade to default early on tool-heavy turns.",
+            "tight token budgets, dev/test, high-volume simple turns.",
+            [
+                {"when": 'required_capabilities includes "code"', "use": code_id},
+                {"when": "iteration >= 2", "use": deep_id},
+                {"when": "tool_calls_so_far >= 3", "use": default_id},
+            ],
+            default_id,
+        )
+    )
+    lines.append("#")
+
+    # Quality-first preset.
+    lines.extend(
+        _preset_block(
+            "quality-first",
+            "Frontier everywhere, downgrade only on very long tool-heavy turns.",
+            "production quality, complex multi-step tasks, cost-insensitive.",
+            [
+                {"when": 'required_capabilities includes "code"', "use": code_id},
+                {"when": 'required_capabilities includes "reasoning"', "use": deep_id},
+                {"when": "iteration > 1 and last_tool_result is not None", "use": deep_id},
+                {"when": "tool_calls_so_far >= 8", "use": default_id},
+            ],
+            deep_id,
+        )
+    )
+    lines.append("#")
+
+    # Coding-focused preset.
+    lines.extend(
+        _preset_block(
+            "coding-focused",
+            "Code model for code turns, deep for synthesis, code model as fallback.",
+            "software engineering work, agentic coding, repo Q&A.",
+            [
+                {"when": 'required_capabilities includes "code"', "use": code_id},
+                {"when": "tool_calls_so_far >= 4 and last_tool_result is not None", "use": code_id},
+                {"when": "iteration > 1 and last_tool_result is not None", "use": deep_id},
+            ],
+            code_id,
+        )
+    )
+    lines.append("")
     return "\n".join(lines)
 
 

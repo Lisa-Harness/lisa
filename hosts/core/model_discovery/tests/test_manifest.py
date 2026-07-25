@@ -309,6 +309,18 @@ class TestRouterBlock:
 class TestRouterPresetAnnotations:
     """Tests for ``_router_preset_annotations`` and annotation injection."""
 
+    def _resolved_router_block(self) -> dict:
+        """A representative resolved router block for annotation tests."""
+        return {
+            "backend": "lisa-router",
+            "rules": [
+                {"when": 'required_capabilities includes "code"', "use": "o3-pro"},
+                {"when": "tool_calls_so_far >= 5", "use": "gpt-5"},
+                {"when": "iteration > 1 and last_tool_result is not None", "use": "o3-pro"},
+            ],
+            "fallback": "gpt-5",
+        }
+
     def test_includes_three_presets(self) -> None:
         """The annotation string names all three presets."""
         from hosts.core.model_discovery.manifest import _router_preset_annotations
@@ -318,10 +330,40 @@ class TestRouterPresetAnnotations:
             mode_models={"default": "gpt-5"},
             roles={"default": "gpt-5", "deep": "gpt-5"},
             models=models,
+            router_block=self._resolved_router_block(),
         )
         assert "cost-conscious" in annotations
         assert "quality-first" in annotations
         assert "coding-focused" in annotations
+
+    def test_includes_active_config_explanation(self) -> None:
+        """The annotation mirrors the active config with per-rule explanations."""
+        from hosts.core.model_discovery.manifest import _router_preset_annotations
+
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        annotations = _router_preset_annotations(
+            mode_models={"default": "gpt-5"},
+            roles={"default": "gpt-5", "deep": "o3-pro"},
+            models=models,
+            router_block=self._resolved_router_block(),
+        )
+        assert "Active config" in annotations
+        # Per-rule explanation trailers are present.
+        assert "→ o3-pro when" in annotations
+        assert "→ gpt-5 when" in annotations
+
+    def test_includes_best_for_lines(self) -> None:
+        """Each preset carries a 'Best for:' guidance line."""
+        from hosts.core.model_discovery.manifest import _router_preset_annotations
+
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        annotations = _router_preset_annotations(
+            mode_models={"default": "gpt-5"},
+            roles={"default": "gpt-5", "deep": "gpt-5"},
+            models=models,
+            router_block=self._resolved_router_block(),
+        )
+        assert "Best for:" in annotations
 
     def test_uses_resolved_model_ids(self) -> None:
         """Annotation text contains the concrete model ids from mode_models/roles."""
@@ -335,6 +377,7 @@ class TestRouterPresetAnnotations:
             mode_models={"default": "gpt-5"},
             roles={"default": "gpt-5", "deep": "o3-pro"},
             models=models,
+            router_block=self._resolved_router_block(),
         )
         assert "gpt-5" in annotations
         assert "o3-pro" in annotations
@@ -355,6 +398,7 @@ class TestRouterPresetAnnotations:
             mode_models={"default": "gpt-5"},
             roles={"default": "gpt-5", "deep": "gpt-5"},
             models=models,
+            router_block=self._resolved_router_block(),
         )
         assert "gpt-5.2-codex" in annotations
 
@@ -363,8 +407,33 @@ class TestRouterPresetAnnotations:
         from hosts.core.model_discovery.manifest import _router_preset_annotations
 
         models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
-        assert _router_preset_annotations({}, {"deep": "gpt-5"}, models) == ""
-        assert _router_preset_annotations({"default": "gpt-5"}, {}, models) == ""
+        assert (
+            _router_preset_annotations(
+                {}, {"deep": "gpt-5"}, models, router_block=self._resolved_router_block()
+            )
+            == ""
+        )
+        assert (
+            _router_preset_annotations(
+                {"default": "gpt-5"}, {}, models, router_block=self._resolved_router_block()
+            )
+            == ""
+        )
+
+    def test_no_active_config_section_when_router_block_none(self) -> None:
+        """No 'Active config' section when router_block is None."""
+        from hosts.core.model_discovery.manifest import _router_preset_annotations
+
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        annotations = _router_preset_annotations(
+            mode_models={"default": "gpt-5"},
+            roles={"default": "gpt-5", "deep": "gpt-5"},
+            models=models,
+            router_block=None,
+        )
+        assert "Active config" not in annotations
+        # Presets are still present.
+        assert "cost-conscious" in annotations
 
     def test_render_manifest_yaml_injects_annotations(self) -> None:
         """Annotation text appears in the rendered output."""

@@ -1020,6 +1020,7 @@ async def handle_models_command(
             payload.get("mode_models", {}),
             payload.get("roles", {}),
             report.models,
+            router_block=payload.get("router"),
         )
         write_manifest_yaml(proposal_path, payload, annotations=annotations)
         provider_summary: dict[str, int] = {}
