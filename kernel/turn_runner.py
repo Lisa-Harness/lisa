@@ -2182,11 +2182,16 @@ async def _run_turn_inner(
                                         f"you cannot. Report the failure and suggest re-issuing."
                                     )
                                 else:
+                                    child_parts: list[str] = []
+                                    for r in fork_results_list:
+                                        child_parts.append(
+                                            f"### {r.target.mode_id}\n{r.output_text}"
+                                        )
                                     tool_output = (
                                         f"Fork fan-out completed: "
                                         f"{succeeded}/{len(fork_targets)} children "
-                                        f"succeeded. Results are in "
-                                        f"stage_data.fork_results."
+                                        f"succeeded.\n\n"
+                                        f"{chr(10).join(child_parts)}"
                                     )
                         await _emit_stage(
                             "tool_dispatch_complete",

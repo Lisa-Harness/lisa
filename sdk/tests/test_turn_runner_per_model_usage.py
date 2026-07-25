@@ -153,3 +153,127 @@ def test_turn_result_per_model_usage_defaults_empty() -> None:
     """TurnResult.per_model_usage defaults to an empty list."""
     result = TurnResult(response_text="ok")
     assert result.per_model_usage == []
+
+
+# ── Fork output_text visibility tests ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fork_parent_sees_child_output() -> None:
+    """The parent model's post-fork tool message includes each child's
+    output_text so the parent can produce an accurate summary.
+
+    Regression: the success-case tool_output previously said only
+    "Results are in stage_data.fork_results", giving the parent model
+    zero visibility into what the children actually produced. The parent
+    would hallucinate filenames — often the same wrong name for both.
+    """
+    call_count = 0
+    parent_messages: list[list[dict[str, Any]]] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                model_id="parent-model",
+                prompt=10,
+                completion=0,
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "fork:default,default"}',
+                        },
+                    }
+                ],
+            )
+        # Capture the messages the parent model sees on its second call
+        # (after the fork tool result is appended).
+        parent_messages.append(list(kwargs.get("messages", [])))
+        return _StubCompletion(
+            content="Synthesized from fork results.",
+            model_id="parent-model",
+            prompt=20,
+            completion=10,
+        )
+
+    hooks = TurnHooks(
+        complete=two_step,
+        resolve_model=lambda mid: _StubModelDef("parent-model"),
+    )
+
+    with _patched_catalog():
+        result = await run_turn(mode_id="default", query="research and write", hooks=hooks)
+
+    assert result.response_text == "Synthesized from fork results."
+    assert result.fork_results is not None
+    assert len(result.fork_results) == 2
+
+    # The parent model's second call must include a tool message
+    # containing each child's output_text.  Note: fork children also
+    # call complete (they run run_turn with the same hooks), so
+    # parent_messages has entries for children + the parent's final
+    # call.  The last entry is the parent's post-fork call.
+    assert len(parent_messages) >= 1
+    final_messages = parent_messages[-1]
+    tool_msgs = [m for m in final_messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    tool_content = tool_msgs[0]["content"]
+    assert isinstance(tool_content, str)
+    # Must contain each child's mode_id and output_text
+    for child in result.fork_results:
+        if child.status == "ok":
+            assert child.target.mode_id in tool_content
+            assert child.output_text in tool_content
+    # Must NOT contain the old opaque message
+    assert "stage_data.fork_results" not in tool_content
+
+
+@pytest.mark.asyncio
+async def test_fork_child_output_text_populated() -> None:
+    """Fork children that complete ok have non-empty output_text."""
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                model_id="parent-model",
+                prompt=10,
+                completion=0,
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "fork:default,default"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(
+            content="Synthesized from fork results.",
+            model_id="parent-model",
+            prompt=20,
+            completion=10,
+        )
+
+    hooks = TurnHooks(
+        complete=two_step,
+        resolve_model=lambda mid: _StubModelDef("parent-model"),
+    )
+
+    with _patched_catalog():
+        result = await run_turn(mode_id="default", query="research and write", hooks=hooks)
+
+    assert result.fork_results is not None
+    assert len(result.fork_results) == 2
+    for child in result.fork_results:
+        assert child.status in ("ok", "error", "timeout", "cancelled", "no_tools")
+        if child.status == "ok":
+            assert child.output_text != ""
