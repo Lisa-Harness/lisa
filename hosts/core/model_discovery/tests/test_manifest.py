@@ -336,21 +336,20 @@ class TestRouterPresetAnnotations:
         assert "quality-first" in annotations
         assert "coding-focused" in annotations
 
-    def test_includes_active_config_explanation(self) -> None:
-        """The annotation mirrors the active config with per-rule explanations."""
-        from hosts.core.model_discovery.manifest import _router_preset_annotations
-
-        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
-        annotations = _router_preset_annotations(
-            mode_models={"default": "gpt-5"},
-            roles={"default": "gpt-5", "deep": "o3-pro"},
-            models=models,
-            router_block=self._resolved_router_block(),
+    def test_render_annotates_active_router_inline(self) -> None:
+        """The active router block is rendered with per-rule inline explanations."""
+        payload = build_manifest_payload(
+            (
+                DiscoveredModel(model_id="gpt-5", provider="openai"),
+                DiscoveredModel(model_id="o3-pro", provider="openai", reasoning_model=True),
+            )
         )
-        assert "Active config" in annotations
-        # Per-rule explanation trailers are present.
-        assert "→ o3-pro when" in annotations
-        assert "→ gpt-5 when" in annotations
+        router_block = payload.get("router")
+        assert router_block is not None
+        rendered = render_manifest_yaml(payload, router_block=router_block)
+        # Per-rule explanation trailers are present on the active block.
+        assert "→ o3-pro when" in rendered
+        assert "→ gpt-5 when" in rendered
 
     def test_includes_best_for_lines(self) -> None:
         """Each preset carries a 'Best for:' guidance line."""
@@ -420,8 +419,13 @@ class TestRouterPresetAnnotations:
             == ""
         )
 
-    def test_no_active_config_section_when_router_block_none(self) -> None:
-        """No 'Active config' section when router_block is None."""
+    def test_no_active_config_section_in_annotations(self) -> None:
+        """The annotation string only carries presets, not the active mirror.
+
+        The active ``router:`` block is annotated inline by
+        ``_annotated_router_block`` via ``render_manifest_yaml``; the
+        ``_router_preset_annotations`` helper only emits the alternatives.
+        """
         from hosts.core.model_discovery.manifest import _router_preset_annotations
 
         models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
@@ -440,7 +444,51 @@ class TestRouterPresetAnnotations:
         payload = {"version": 1, "models": []}
         annotations = "# test annotation\n"
         rendered = render_manifest_yaml(payload, annotations=annotations)
-        assert rendered.endswith(annotations)
+        assert "# test annotation" in rendered
+
+    def test_render_manifest_yaml_injects_before_models(self) -> None:
+        """Annotations are injected before the ``models:`` list, not at the end."""
+        payload = build_manifest_payload(
+            (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        )
+        annotations = "# MARKER\n"
+        rendered = render_manifest_yaml(payload, annotations=annotations)
+        marker_idx = rendered.index("# MARKER")
+        # Find the top-level ``models:`` line (not the substring inside
+        # ``mode_models:``).
+        models_line_idx = next(
+            i for i, ln in enumerate(rendered.split("\n")) if ln.rstrip() == "models:"
+        )
+        models_char_idx = sum(len(ln) + 1 for ln in rendered.split("\n")[:models_line_idx])
+        assert marker_idx < models_char_idx, "annotations must appear before the models: list"
+
+    def test_render_manifest_yaml_annotates_router_inline(self) -> None:
+        """The active router block is rendered with per-rule inline comments."""
+        payload = build_manifest_payload(
+            (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        )
+        router_block = payload.get("router")
+        assert router_block is not None
+        rendered = render_manifest_yaml(payload, router_block=router_block)
+        # The active block appears at the top, with inline trailers.
+        assert "router:" in rendered
+        assert "→" in rendered  # inline comment marker
+        # The annotated block sits before the models list. Match the whole
+        # ``models:`` line so we don't hit the substring in ``mode_models:``.
+        lines = rendered.split("\n")
+        router_line_idx = next(i for i, ln in enumerate(lines) if ln.rstrip() == "router:")
+        models_line_idx = next(i for i, ln in enumerate(lines) if ln.rstrip() == "models:")
+        assert router_line_idx < models_line_idx
+
+    def test_render_manifest_yaml_no_duplicate_router_block(self) -> None:
+        """When router_block is passed, the dumper's plain block is replaced."""
+        payload = build_manifest_payload(
+            (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        )
+        router_block = payload.get("router")
+        rendered = render_manifest_yaml(payload, router_block=router_block)
+        # Exactly one ``router:`` top-level key (the annotated one).
+        assert rendered.count("\nrouter:\n") == 1
 
     def test_render_manifest_yaml_no_annotations_when_none(self) -> None:
         """No annotation text when annotations is None."""

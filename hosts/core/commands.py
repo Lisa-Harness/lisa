@@ -1022,7 +1022,12 @@ async def handle_models_command(
             report.models,
             router_block=payload.get("router"),
         )
-        write_manifest_yaml(proposal_path, payload, annotations=annotations)
+        write_manifest_yaml(
+            proposal_path,
+            payload,
+            annotations=annotations,
+            router_block=payload.get("router"),
+        )
         provider_summary: dict[str, int] = {}
         for item in report.models:
             provider_summary[item.provider] = provider_summary.get(item.provider, 0) + 1
