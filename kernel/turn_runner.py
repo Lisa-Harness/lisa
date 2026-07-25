@@ -106,6 +106,16 @@ logger = logging.getLogger(__name__)
 # Intercepted by the turn loop before the operation/tool/MCP dispatch branches.
 _TRANSITION_TOOL_NAME = "transition_stage"
 
+# Cap for narration/chain-incomplete correction nudges. After this many
+# nudges the guards give up and let the model's response through so the
+# user sees something rather than a silent hang. Defined at module scope
+# because the routing-hint write-tool guard runs in iterations that have
+# tool calls (and therefore skip the ``if not tool_calls`` block where the
+# constant was previously defined inline), which caused
+# ``UnboundLocalError`` when a routing hint was active and the model called
+# a write-effect tool.
+_NARRATION_NUDGE_CAP = 3
+
 # Stuck-session guard: after this many turns in the same stage without a
 # transition, the loop injects a nudge message prompting the model to
 # transition or ask the user. After the cap, the loop forces a final
@@ -1776,8 +1786,8 @@ async def _run_turn_inner(
             #
             # After the cap, the guard gives up and lets the narrated
             # response through so the user sees something rather than a
-            # silent hang.
-            _NARRATION_NUDGE_CAP = 3
+            # silent hang. The cap (``_NARRATION_NUDGE_CAP``) is defined at
+            # module scope so the write-tool guard below can share it.
             if (
                 routing_hint
                 and _narration_nudge_count < _NARRATION_NUDGE_CAP
