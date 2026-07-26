@@ -36,8 +36,15 @@ logger = logging.getLogger(__name__)
 
 
 def escape_markdown_cell(value: str) -> str:
-    """Escape a string for safe use inside a Markdown pipe-table cell."""
-    return value.replace("|", "\\|").replace("\n", " ")
+    """Escape a string for safe use inside a Markdown pipe-table cell.
+
+    Backslashes are escaped first because Markdown treats ``\\`` as a
+    literal backslash. Without this, Windows drive-letter paths like
+    ``C:\\Code\\lisa\\.venv`` lose their trailing backslash when rendered
+    (``\\.venv`` collapses to ``.venv``), producing misleading paths such
+    as ``C:\\Code\\lisa.venv`` instead of ``C:\\Code\\lisa\\.venv``.
+    """
+    return value.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
 
 
 def resolve_pack_source_kind(
