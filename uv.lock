@@ -995,7 +995,6 @@ dependencies = [
     { name = "lisa-pack-core" },
     { name = "lisa-pack-introspect" },
     { name = "lisa-pack-memory" },
-    { name = "lisa-pack-okf" },
     { name = "lisa-sdk" },
     { name = "rich" },
     { name = "typer" },
@@ -1013,6 +1012,22 @@ dev = [
     { name = "types-pyyaml" },
     { name = "vulture" },
 ]
+ext = [
+    { name = "lisa-pack-brave-search" },
+    { name = "lisa-pack-compaction" },
+    { name = "lisa-pack-letta" },
+    { name = "lisa-pack-markdown" },
+    { name = "lisa-pack-mem0" },
+    { name = "lisa-pack-okf" },
+    { name = "lisa-pack-search" },
+]
+wip = [
+    { name = "lisa-pack-cloudflare" },
+    { name = "lisa-pack-coding" },
+    { name = "lisa-pack-github" },
+    { name = "lisa-pack-gmail" },
+    { name = "lisa-pack-stripe" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1024,11 +1039,22 @@ requires-dist = [
     { name = "lisa-host-web", editable = "hosts/web" },
     { name = "lisa-kernel", editable = "kernel" },
     { name = "lisa-mcp-servers", editable = "mcp_server" },
+    { name = "lisa-pack-brave-search", marker = "extra == 'ext'", directory = "../lisa-packs/brave_search" },
     { name = "lisa-pack-checkpoint", editable = "sdk/packs/checkpoint" },
+    { name = "lisa-pack-cloudflare", marker = "extra == 'wip'", directory = "../lisa-packs-wip/cloudflare" },
+    { name = "lisa-pack-coding", marker = "extra == 'wip'", directory = "../lisa-packs-wip/coding" },
+    { name = "lisa-pack-compaction", marker = "extra == 'ext'", directory = "../lisa-packs/compaction" },
     { name = "lisa-pack-core", editable = "sdk/packs/core" },
+    { name = "lisa-pack-github", marker = "extra == 'wip'", directory = "../lisa-packs-wip/github" },
+    { name = "lisa-pack-gmail", marker = "extra == 'wip'", directory = "../lisa-packs-wip/gmail" },
     { name = "lisa-pack-introspect", editable = "sdk/packs/introspect" },
+    { name = "lisa-pack-letta", marker = "extra == 'ext'", directory = "../lisa-packs/letta" },
+    { name = "lisa-pack-markdown", marker = "extra == 'ext'", directory = "../lisa-packs/markdown" },
+    { name = "lisa-pack-mem0", marker = "extra == 'ext'", directory = "../lisa-packs/mem0" },
     { name = "lisa-pack-memory", editable = "sdk/packs/memory" },
-    { name = "lisa-pack-okf", directory = "../lisa-packs/okf" },
+    { name = "lisa-pack-okf", marker = "extra == 'ext'", directory = "../lisa-packs/okf" },
+    { name = "lisa-pack-search", marker = "extra == 'ext'", directory = "../lisa-packs/search" },
+    { name = "lisa-pack-stripe", marker = "extra == 'wip'", directory = "../lisa-packs-wip/stripe" },
     { name = "lisa-sdk", editable = "sdk" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
@@ -1041,7 +1067,7 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "vulture", marker = "extra == 'dev'", specifier = ">=2.11" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "ext", "wip"]
 
 [[package]]
 name = "lisa-host"
@@ -1344,6 +1370,23 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
+name = "lisa-pack-brave-search"
+version = "0.1.0"
+source = { directory = "../lisa-packs/brave_search" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "lisa-pack-checkpoint"
 version = "0.1.0"
 source = { editable = "sdk/packs/checkpoint" }
@@ -1368,6 +1411,63 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
+name = "lisa-pack-cloudflare"
+version = "0.1.0"
+source = { directory = "../lisa-packs-wip/cloudflare" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-coding"
+version = "0.1.0"
+source = { directory = "../lisa-packs-wip/coding" }
+dependencies = [
+    { name = "lisa-kernel" },
+    { name = "lisa-sdk" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lisa-kernel" },
+    { name = "lisa-sdk" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-compaction"
+version = "0.1.0"
+source = { directory = "../lisa-packs/compaction" }
+dependencies = [
+    { name = "lisa-kernel" },
+    { name = "lisa-pack-checkpoint" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lisa-kernel" },
+    { name = "lisa-pack-checkpoint" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "lisa-pack-core"
 version = "0.1.0"
 source = { editable = "sdk/packs/core" }
@@ -1382,6 +1482,42 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-github"
+version = "0.1.0"
+source = { directory = "../lisa-packs-wip/github" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-gmail"
+version = "0.1.0"
+source = { directory = "../lisa-packs-wip/gmail" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
@@ -1412,6 +1548,53 @@ requires-dist = [
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-letta"
+version = "0.1.0"
+source = { directory = "../lisa-packs/letta" }
+dependencies = [
+    { name = "httpx" },
+    { name = "lisa-kernel" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "lisa-kernel" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-markdown"
+version = "0.1.0"
+source = { directory = "../lisa-packs/markdown" }
+dependencies = [
+    { name = "lisa-kernel" },
+    { name = "lisa-sdk" },
+    { name = "markdown-it-py" },
+    { name = "mdformat" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lisa-kernel" },
+    { name = "lisa-sdk" },
+    { name = "markdown-it-py", specifier = ">=3.0.0" },
+    { name = "mdformat", specifier = ">=0.7.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-mem0"
+version = "0.1.0"
+source = { directory = "../lisa-packs/mem0" }
 
 [[package]]
 name = "lisa-pack-memory"
@@ -1447,6 +1630,37 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-search"
+version = "0.1.0"
+source = { directory = "../lisa-packs/search" }
+
+[package.metadata]
+requires-dist = [
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-stripe"
+version = "0.1.0"
+source = { directory = "../lisa-packs-wip/stripe" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
 ]
 provides-extras = ["dev"]
 
@@ -1531,6 +1745,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c1/ee/94c6c50ffc5b5cf4737052275d11b57367f32d1a8516e31dcd60591b3916/mcp-1.28.0.tar.gz", hash = "sha256:559d3f9943674cafbe5744c5d3794f3237e8b47f9bbc58e20c0fad680d8487c2", size = 636040, upload-time = "2026-06-16T21:37:17.996Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2e/e1/4c1dc1fbb688641a712d34650c3d58bbbdcb314ddb75bc5817bbf33515a4/mcp-1.28.0-py3-none-any.whl", hash = "sha256:9c1e7cf3a9125557e418ecd4fed8e9adddce81b0dfdae4d6601d700f5beb71a4", size = 221959, upload-time = "2026-06-16T21:37:16.579Z" },
+]
+
+[[package]]
+name = "mdformat"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markdown-it-py" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3f/05/32b5e14b192b0a8a309f32232c580aefedd9d06017cb8fe8fce34bec654c/mdformat-1.0.0.tar.gz", hash = "sha256:4954045fcae797c29f86d4ad879e43bb151fa55dbaf74ac6eaeacf1d45bb3928", size = 56953, upload-time = "2025-10-16T12:05:03.695Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/9a/8fe71b95985ca7a4001effbcc58e5a07a1f2a2884203f74dcf48a3b08315/mdformat-1.0.0-py3-none-any.whl", hash = "sha256:bca015d65a1d063a02e885a91daee303057bc7829c2cd37b2075a50dbb65944b", size = 53288, upload-time = "2025-10-16T12:05:02.607Z" },
 ]
 
 [[package]]
