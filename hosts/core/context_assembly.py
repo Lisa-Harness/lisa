@@ -92,13 +92,16 @@ def assemble_system_prompt(
     content_loader: Callable[[str], str],
     *,
     session_instruction: str,
+    copilot_customizations: str = "",
 ) -> str:
     """Assemble the stable harness, session, mode, and stage instructions."""
     parts = [
         load_system_prompt(content_loader),
         session_instruction,
-        mode_instruction,
     ]
+    if copilot_customizations.strip():
+        parts.append(copilot_customizations.strip())
+    parts.append(mode_instruction)
     if stage_instruction:
         parts.append(stage_instruction)
     return "\n\n".join(part for part in parts if part.strip())

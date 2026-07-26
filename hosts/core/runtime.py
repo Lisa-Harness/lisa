@@ -211,6 +211,13 @@ class HostRuntime:
         # it. ``None`` means no resume pending.
         self.pending_resume_message: str | None = None
 
+        # ── Copilot customizations cache ──────────────────────────────
+        # Lazily discovered always-on + applyTo-scoped instructions +
+        # skills from .github/{instructions,skills} and .claude/ equivalents.
+        # None means "not yet discovered"; "" means "discovered, nothing
+        # found or discovery failed gracefully."
+        self._copilot_customizations_text: str | None = None
+
         # ── Approval persistence ──────────────────────────────────────
         from hosts.core.approvals import FileApprovalService
         from hosts.core.code_artifacts import FileCodeChangeArtifactStore
@@ -241,6 +248,76 @@ class HostRuntime:
         """Return the plan-selected initial route mode."""
 
         return self.session_plan.manifest.routing.start_mode
+
+    @property
+    def copilot_customizations_text(self) -> str:
+        """Lazily-discovered Copilot customizations for system-prompt injection.
+
+        Discovers always-on files (``copilot-instructions.md``,
+        ``AGENTS.md``, ``CLAUDE.md``), ``applyTo``-scoped instructions,
+        and skills from the coding workspace. Agents and prompts are
+        excluded — they are invocation-based and handled by host commands.
+
+        Returns the formatted Markdown block, or ``""`` if discovery
+        fails or no customizations are found (graceful degradation).
+        Cached after first access — files don't change mid-session.
+        """
+        if self._copilot_customizations_text is not None:
+            return self._copilot_customizations_text
+
+        try:
+            from sdk.content import discover_copilot_customizations
+
+            workspace_root = self._resolve_copilot_workspace_root()
+            bundle = discover_copilot_customizations(workspace_root)
+
+            parts: list[str] = []
+
+            # Always-on files (copilot-instructions.md, AGENTS.md, CLAUDE.md).
+            for f in bundle.always_on:
+                if f.body.strip():
+                    parts.append(f"## Project Instructions\n\n{f.body.strip()}")
+
+            # applyTo-scoped instructions.
+            for inst in bundle.instructions:
+                if inst.body.strip():
+                    apply_label = ", ".join(inst.apply_to) if inst.apply_to else "all files"
+                    parts.append(
+                        f"## Instruction: {inst.name} (applies to: {apply_label})\n\n{inst.body.strip()}"
+                    )
+
+            # Skills.
+            for skill in bundle.skills:
+                if skill.body.strip():
+                    parts.append(f"## Skill: {skill.name}\n\n{skill.body.strip()}")
+
+            self._copilot_customizations_text = "\n\n".join(parts)
+        except Exception:
+            logger.warning(
+                "Failed to discover Copilot customizations; continuing without them.",
+                exc_info=True,
+            )
+            self._copilot_customizations_text = ""
+
+        return self._copilot_customizations_text
+
+    def _resolve_copilot_workspace_root(self) -> Path:
+        """Resolve the workspace root for Copilot customization discovery.
+
+        Uses the coding pack's configured ``workspace_root`` if available;
+        otherwise falls back to the current working directory.
+        """
+        try:
+            pack_config = (
+                self.session_plan.manifest.resources.packs.configuration
+            )
+            coding_config = pack_config.get("lisa-pack-coding", {})
+            raw = coding_config.get("workspace_root")
+            if raw:
+                return Path(raw).expanduser().resolve()
+        except Exception:
+            pass
+        return Path.cwd()
 
     # ── Path accessors ────────────────────────────────────────────────
 

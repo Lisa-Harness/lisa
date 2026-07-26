@@ -257,11 +257,18 @@ def build_turn_hooks(
 
     # ── System prompt assembly ────────────────────────────────────
     def _assemble_system_prompt(mode_instruction: str, stage_instruction: str | None) -> str:
+        # Skip Copilot customizations in the VS Code host — Copilot
+        # already loads and injects them.  Double-injection would
+        # bloat the context window with duplicate rules.
+        copilot_text = ""
+        if runtime.config.surface_type != "vscode":
+            copilot_text = runtime.copilot_customizations_text
         return assemble_system_prompt(
             mode_instruction,
             stage_instruction,
             loader,
             session_instruction=runtime.session_plan.instructions.primary_body,
+            copilot_customizations=copilot_text,
         )
 
     # ── Dynamic user context assembly ─────────────────────────────
