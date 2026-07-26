@@ -1,0 +1,4 @@
+tool_id: fetch_page
+description: "Fetch an http(s) URL and extract its main visible text for grounded synthesis."
+exportable: true
+default_available: true

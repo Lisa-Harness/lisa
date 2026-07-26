@@ -7,7 +7,7 @@ where = ["../.."]
 include = ["sdk.packs.core*"]
 
 [tool.setuptools.package-data]
-"sdk.packs.core" = ["content/**/*.md", "content/**/*.yml", "content/**/*.yaml", "content/**/*.txt", "modes/**/*.md", "operations/**/*.md", "operations/**/*.yml"]
+"sdk.packs.core" = ["content/**/*.md", "content/**/*.yml", "content/**/*.yaml", "content/**/*.txt", "modes/**/*.md", "operations/**/*.md", "operations/**/*.yml", "tools/**/*.yml", "tools/**/*.md", "tools/**/*.txt"]
 
 [project]
 name = "lisa-pack-core"

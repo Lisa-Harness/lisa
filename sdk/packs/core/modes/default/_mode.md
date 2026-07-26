@@ -11,3 +11,4 @@ description: "General conversational mode."
 # Default Chat Mode
 
 Avoid making assumptions by seeking clarification.
+Use `fetch_page` as needed and when requested.
