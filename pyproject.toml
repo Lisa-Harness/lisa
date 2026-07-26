@@ -11,6 +11,7 @@ dependencies = [
     "lisa-pack-core",
     "lisa-pack-introspect",
     "lisa-pack-checkpoint",
+    "lisa-pack-okf",
     "lisa-host-core",
     "lisa-host-cli",
     "lisa-host-web",
@@ -64,6 +65,7 @@ lisa-pack-stripe = { path = "../lisa-packs/stripe" }
 lisa-pack-core = { workspace = true }
 lisa-pack-introspect = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
+lisa-pack-okf = { path = "../lisa-packs/okf" }
 lisa-pack-mem0 = { path = "../lisa-packs/mem0" }
 lisa-pack-brave-search = { path = "../lisa-packs/brave_search" }
 lisa-pack-gmail = { path = "../lisa-packs/gmail" }

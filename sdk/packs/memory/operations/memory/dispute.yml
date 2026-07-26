@@ -1,4 +1,9 @@
-operation_id: dispute_memory
+type: Lisa Operation
+title: Dispute Memory
 description: Correct or supersede an existing memory record. Use when recall surfaces something wrong, outdated, or inaccurate — provide the correction and the old record will be superseded with boosted salience.
+tags: [memory, correction, audit]
+status: stable
+generated: { by: human:adam, at: 2026-07-25T00:00:00Z }
+operation_id: dispute_memory
 exportable: true
 default_available: true

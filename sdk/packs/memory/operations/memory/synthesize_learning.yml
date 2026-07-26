@@ -1,4 +1,9 @@
-operation_id: synthesize_and_store_learning
+type: Lisa Operation
+title: Synthesize and Store Learning
 description: Distill raw conversation content into 1-3 durable facts and persist them to long-term memory for future reference. Call whenever a durable conclusion, strategic decision, or incident root-cause is reached.
+tags: [memory, learning, distillation]
+status: stable
+generated: { by: human:adam, at: 2026-07-25T00:00:00Z }
+operation_id: synthesize_and_store_learning
 exportable: true
 default_available: true
