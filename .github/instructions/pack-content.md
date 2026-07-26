@@ -1,6 +1,6 @@
 ---
 name: Pack Content Authoring
-description: "Use when writing or reviewing pack operation/mode Python handlers. Enforces that prompts and user-facing text live in authored Markdown loaded via the SDK content registry — never embedded in .py and never silently fall back to missing content. Applies to all pack Python handlers (sdk/packs/** and ../lisa_packs/**/lisa_packs/**)."
+description: "Use when writing or reviewing pack operation/mode Python handlers. Enforces that prompts and user-facing text live in authored Markdown loaded via the SDK content registry — never embedded in .py and never silently fall back to missing content. Applies to all pack Python handlers (sdk/packs/** and ../lisa-packs/**/lisa_packs/** and ../lisa-packs-wip/**/lisa_packs/**)."
 applyTo: "**/operations/**/*.py,**/modes/**/*.py,**/tools/**/*.py"
 ---
 

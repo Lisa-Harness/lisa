@@ -9,7 +9,7 @@ one model for the entire turn. This is layered on top of the existing static
 > `lisa.extensions.model_routers` entry-point group let packs contribute
 > router backends. The built-in `lisa-router` pack ships a rules-based engine
 > that makes zero extra model calls. External packs (e.g. `lisa-pack-aoi-router`
-> in `../lisa_packs/`) can register vendor-backed routers under the same group.
+> in `../lisa-packs/`) can register vendor-backed routers under the same group.
 
 ---
 
@@ -220,7 +220,7 @@ auditable. Complex routing needs should use a vendor backend.
 
 ### External: `lisa-pack-aoi-router` (deferred)
 
-- **Pack**: `../lisa_packs/aoi-router/` (independent repo)
+- **Pack**: `../lisa-packs-wip/aoi-router/` (independent repo)
 - **Entry point**: same `lisa.extensions.model_routers` group
 - **Model call**: the vendor router is itself a completion call (using
   `kernel.provider_core.AzureOpenAIGateway` with `response_format` for
