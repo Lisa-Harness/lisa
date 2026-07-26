@@ -37,6 +37,7 @@ Before touching code, read:
 2. `.github/instructions/commit-workflow.md` — verification loop and commit hygiene.
 3. `.github/instructions/code-quality.md` — non-Python quality gates.
 4. The package-local `.instructions.md` for the target's package, if it exists.
+5. `.github/instructions/pack-content.md` — the fail-loudly contract that pack/mode-handler refactors must preserve.
 
 These define the standard you are refactoring toward. If any instruction file
 is missing, list it in the refactor report under a "Missing Rules" section and
@@ -54,6 +55,11 @@ uv run mypy <target>
 
 Capture the current error count and categories. You will compare against this
 after the refactor to prove improvement.
+
+If either tool exits with a non-diagnostic error (e.g. tool not found, fatal
+import error, missing stubs that prevent mypy from running at all), stop and
+report the error verbatim under a "Baseline Failure" section. Do not proceed
+with the refactor until the baseline can be captured.
 
 ## Step 4 — Plan the decomposition
 
@@ -73,11 +79,19 @@ Apply the plan in small, testable steps. Derive `<package>` as the nearest
 ancestor directory of the target containing a `pyproject.toml` or
 `__init__.py`; use it for every package-scoped command below. After each step:
 
-1. Run `ruff check <target>` — must be clean or improved.
-2. Run `mypy <target>` — must be clean or improved.
-3. Run `pytest <package>/tests` — must be green (no regressions).
+1. Run `ruff check <target>` — must have the same number of errors or fewer
+   in every category (ruff and mypy independently). A decrease in one tool
+   does not offset an increase in another.
+2. Run `mypy <target>` — same standard as above: same number of errors or
+   fewer, independently of ruff.
+3. Run `pytest <package>/tests` — must be green (no regressions). If
+   `<package>/tests` does not exist or contains no tests, report this under
+   Follow-ups as "No test coverage found" and do not assert the green status.
+   Do not fabricate test results.
 
-Rules during refactoring:
+Rules during refactoring — when rules conflict, apply them in this priority
+order: (1) Preserve observable behavior / Stop on behavior conflict, (2)
+Preserve test seams, (3) No compat shims, (4) all remaining structural rules.
 
 - **Preserve observable behavior.** The refactored code must produce the same
   outputs for the same inputs. If you discover a behavior change, stop and
