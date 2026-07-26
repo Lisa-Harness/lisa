@@ -57,7 +57,7 @@ def discover_installed_content_roots(
         try:
             root_loader = ep.load()
             candidate = Path(root_loader())
-        except Exception:  # pylint: disable=broad-except
+        except (ImportError, AttributeError, OSError, ValueError):
             logger.warning("Failed to load content root entry-point %r", ep.name, exc_info=True)
             continue
         if candidate.is_dir():
@@ -124,7 +124,7 @@ def discover_packs_venv_content_roots(  # noqa: C901,PLR0912
 
     try:
         venv_path = venv_path_resolver(data_dir)
-    except Exception:  # pylint: disable=broad-except
+    except (OSError, ValueError, RuntimeError):
         return []
 
     site_packages = site_packages_resolver(venv_path)
@@ -169,7 +169,7 @@ def discover_configured_content_roots() -> list[Path]:
 
     try:
         raw = settings.sdk_content_roots
-    except Exception:  # pylint: disable=broad-except
+    except (AttributeError, OSError):
         return []
 
     roots: list[Path] = []

@@ -114,7 +114,7 @@ def _compute_uptime(process_start_time: datetime | None) -> float:
     try:
         delta = datetime.now(UTC) - process_start_time
         return max(0.0, delta.total_seconds())
-    except Exception:
+    except (TypeError, OverflowError):
         return 0.0
 
 
@@ -126,7 +126,7 @@ def _count_asyncio_tasks() -> int:
         return 0
     try:
         return len(asyncio.all_tasks(loop))
-    except Exception:
+    except RuntimeError:
         return 0
 
 
@@ -136,7 +136,7 @@ def _gather_process_info() -> tuple[float, float]:
         import psutil  # type: ignore[import-untyped]
     except ImportError:
         return 0.0, 0.0
-    except Exception:
+    except (OSError, AttributeError):
         return 0.0, 0.0
     try:
         proc = psutil.Process()
@@ -144,7 +144,7 @@ def _gather_process_info() -> tuple[float, float]:
         rss_mb = mem_info.rss / (1024.0 * 1024.0) if mem_info else 0.0
         cpu_percent = proc.cpu_percent(interval=0.0)
         return round(rss_mb, 1), round(cpu_percent, 1)
-    except Exception:
+    except (OSError, AttributeError, PermissionError):
         return 0.0, 0.0
 
 
@@ -156,7 +156,7 @@ def _gather_mcp_pool_health(mcp_pool: MCPToolPool | None) -> dict[str, McpServer
     try:
         warm_ids = set(mcp_pool.warm_server_ids())
         failed_ids = set(mcp_pool.warm_failed_ids())
-    except Exception:
+    except (AttributeError, RuntimeError):
         return health
 
     for config in mcp_pool.configs:
@@ -184,7 +184,7 @@ def _summarize_token_usage(token_usage_path: Path | None) -> TokenUsageSummary |
         return None
     try:
         lines = token_usage_path.read_text(encoding="utf-8").splitlines()
-    except Exception:
+    except OSError:
         return None
     if not lines:
         return None
@@ -242,7 +242,7 @@ def _tail_log_errors(log_path: Path | None) -> tuple[list[LogErrorEntry], int]:
         return [], 0
     try:
         lines = log_path.read_text(encoding="utf-8").splitlines()
-    except Exception:
+    except OSError:
         return [], 0
     if not lines:
         return [], 0
