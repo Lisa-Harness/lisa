@@ -146,6 +146,46 @@ class ApprovalService(Protocol):
     async def get(self, request_id: str) -> ApprovalRecord | None:
         """Return the persisted request state without changing it."""
 
+    async def list_pending(self, identity: ApprovalIdentity) -> list[ApprovalRecord]:
+        """Return non-expired pending records owned by ``identity``.
+
+        Hosts use this to detect affirmative-resume conditions (e.g. the
+        user typing "proceed" while a paused action awaits approval) and
+        to surface pending approvals in UIs. The identity match is exact.
+        """
+
+
+def _find_pending_for_action(
+    records: Mapping[str, ApprovalRecord],
+    invocation: ApprovalInvocation,
+    *,
+    now: datetime,
+) -> ApprovalRecord | None:
+    """Return a non-expired pending record matching action_digest + identity.
+
+    The exact-action contract approves one canonical invocation once. When
+    a caller re-issues the same effectful action (same target, parameters,
+    pack config fingerprint, and owner identity) before the user has
+    decided, the service must not mint a fresh ``request_id`` — that would
+    strand the original pending request and force the user to re-approve a
+    new id on every retry. Returning the existing pending record preserves
+    the id the user already saw so a prior or future ``/approve <id>`` still
+    satisfies it. Only the ``pending`` state is idempotent; once approved or
+    consumed, a genuinely new request mints a new id.
+    """
+
+    for record in records.values():
+        if record.state != "pending":
+            continue
+        if is_expired(record.invocation, now=now):
+            continue
+        if (
+            record.invocation.action_digest == invocation.action_digest
+            and _identity_matches(record.invocation.identity, invocation.identity)
+        ):
+            return record
+    return None
+
 
 def _canonicalize(value: Any) -> Any:
     """Normalize supported JSON-like values into stable, safe digest input."""
@@ -257,7 +297,14 @@ class InMemoryApprovalService:
 
     async def request(self, invocation: ApprovalInvocation) -> ApprovalInvocation:
         async with self._lock:
-            self._records.setdefault(invocation.request_id, ApprovalRecord(invocation=invocation))
+            existing = _find_pending_for_action(
+                self._records, invocation, now=datetime.now(UTC)
+            )
+            if existing is not None:
+                return existing.invocation
+            self._records.setdefault(
+                invocation.request_id, ApprovalRecord(invocation=invocation)
+            )
             return self._records[invocation.request_id].invocation
 
     async def approve(
@@ -346,3 +393,14 @@ class InMemoryApprovalService:
     async def get(self, request_id: str) -> ApprovalRecord | None:
         async with self._lock:
             return self._records.get(request_id)
+
+    async def list_pending(self, identity: ApprovalIdentity) -> list[ApprovalRecord]:
+        async with self._lock:
+            now = datetime.now(UTC)
+            return [
+                record
+                for record in self._records.values()
+                if record.state == "pending"
+                and not is_expired(record.invocation, now=now)
+                and _identity_matches(record.invocation.identity, identity)
+            ]

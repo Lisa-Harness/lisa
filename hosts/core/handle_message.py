@@ -223,6 +223,22 @@ async def handle_message(
     if cmd_result is not None:
         return cmd_result
 
+    # ── Affirmative-resume of a paused approval ─────────────────────
+    # When the user replies with a short affirmative ("proceed", "continue",
+    # "approved", "ok", "yes", …) while exactly one approval is pending for
+    # this session, treat it as an implicit ``/approve <id>`` rather than
+    # routing a fresh model turn. Without this, the model re-issues the same
+    # effectful tool, the registry mints a new ``request_id``, and the user
+    # is asked to approve a different id on every retry — the approval loop.
+    # The kernel-side idempotency (``_find_pending_for_action``) prevents the
+    # duplicate mint even if this check is bypassed; this host check keeps
+    # the user-facing experience stable for conversational resumes.
+    resume_result = await _try_affirmative_approval_resume(
+        runtime, stripped, lowered, tport
+    )
+    if resume_result is not None:
+        return resume_result
+
     # ── Model turn (mode dispatch + run_turn) ────────────────────────
     try:
         response_text = await _route_model_turn(runtime, message, tport)
@@ -392,6 +408,86 @@ def _approval_identity(runtime: HostRuntime) -> ApprovalIdentity:
         mode_id=runtime.current_mode_id,
         session_plan_digest=runtime.session_plan.plan_digest,
     )
+
+
+# Short affirmative phrases that, when a single approval is pending, are
+# treated as an implicit ``/approve <id>`` rather than a fresh model turn. Kept
+# deliberately small and unambiguous — anything longer or question-like is
+# routed to the model so the user can still hold a normal conversation
+# while an approval is pending.
+_AFFIRMATIVE_RESUME_PHRASES = frozenset(
+    {
+        "proceed",
+        "continue",
+        "approved",
+        "approve",
+        "approve it",
+        "go ahead",
+        "go for it",
+        "do it",
+        "ok",
+        "okay",
+        "yes",
+        "y",
+        "yep",
+        "yeah",
+        "sure",
+        "confirm",
+        "confirmed",
+        "continue anyway",
+        "proceed anyway",
+    }
+)
+
+
+def _is_affirmative_resume(lowered: str) -> bool:
+    """Return True when ``lowered`` is a short affirmative resume phrase."""
+
+    return lowered in _AFFIRMATIVE_RESUME_PHRASES
+
+
+async def _try_affirmative_approval_resume(
+    runtime: HostRuntime,
+    stripped: str,
+    lowered: str,
+    transport: TransportCallbacks,
+) -> HostCommandResult | None:
+    """Treat a short affirmative as ``/approve <single-pending-id>``.
+
+    Returns a ``HostCommandResult`` when the message was consumed as a
+    resume, or ``None`` to let normal model-turn routing proceed. Only fires
+    when the message is an affirmative phrase AND exactly one non-expired
+    approval is pending for the current session identity. When multiple
+    approvals are pending the user must disambiguate with an explicit
+    ``/approve <id>`` — guessing would silently execute the wrong action.
+    """
+
+    if not _is_affirmative_resume(lowered):
+        return None
+    service = runtime.approval_service
+    if service is None or not hasattr(service, "list_pending"):
+        return None
+    try:
+        pending = await service.list_pending(_approval_identity(runtime))
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.debug("affirmative-resume list_pending failed: %s", exc)
+        return None
+    if len(pending) != 1:
+        return None
+    request_id = pending[0].invocation.request_id
+    logger.info(
+        "affirmative-resume: treating %r as /approve %s",
+        stripped,
+        request_id,
+    )
+    result_text = await _handle_approval_command(
+        runtime,
+        f"/approve {request_id}",
+        approve=True,
+        transport=transport,
+    )
+    await transport.on_response(result_text)
+    return HostCommandResult(text=result_text)
 
 
 def _approval_result_text(result: Any) -> str:

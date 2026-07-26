@@ -40,6 +40,42 @@ def _identity(runtime: HostRuntime) -> ApprovalIdentity:
     )
 
 
+def _make_runtime(tmp_path: Path, **config_kwargs: str) -> HostRuntime:
+    """Build a HostRuntime whose data_dir is tmp_path with a minimal models.yaml.
+
+    Seeds a minimal models.yaml so manifest-dependent code paths (capability
+    snapshot, model resolution) have at least one model. Mirrors the helper
+    in test_core_services.py.
+    """
+
+    (tmp_path / "models.yaml").write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "mode_models: {default: gemma3:latest, deep: deepseek-r1:latest}",
+                "roles: {default: gemma3:latest, deep: deepseek-r1:latest}",
+                "models:",
+                "  - model_id: gemma3:latest",
+                "    provider: ollama",
+                "    designations: [default]",
+                "  - model_id: deepseek-r1:latest",
+                "    provider: ollama",
+                "    reasoning_model: true",
+                "    designations: [deep, reasoning]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = HostConfig.from_env(
+        data_dir=str(tmp_path),
+        user_slug="user",
+        surface_type="personal_dm",
+        surface_id="surface",
+        **config_kwargs,
+    )
+    return HostRuntime(config)
+
+
 @pytest.mark.asyncio
 async def test_approve_dispatches_only_the_saved_invocation(
     tmp_path: Path,
@@ -190,3 +226,182 @@ async def test_deny_marks_the_saved_invocation_unusable(tmp_path: Path) -> None:
     persisted = await runtime.approval_service.get(invocation.request_id)
     assert persisted is not None
     assert persisted.state == "denied"
+
+
+@pytest.mark.asyncio
+async def test_affirmative_resume_approves_the_single_pending_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Typing "proceed" with one pending approval resumes it via /approve.
+
+    Reproduces the user-side of the approval loop: the user typed ``proceed``
+    instead of ``/approve <id>`` and the host routed a fresh model turn,
+    which re-issued the effectful tool and minted a new request_id. The host
+    now treats a short affirmative as an implicit ``/approve`` when exactly
+    one approval is pending.
+    """
+
+    runtime = _make_runtime(tmp_path)
+    identity = _identity(runtime)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_apply_patch",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={"patch": "diff --git a/a b/a"},
+        identity=identity,
+        pack_config={"workspace_root": "."},
+        safe_preview="apply the patch",
+    )
+    await runtime.approval_service.request(invocation)
+    executed: list[str] = []
+
+    async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
+        _ = hooks
+        executed.append(invocation.request_id)
+        return ToolResult(output_text="patch applied")
+
+    handle_message_module = importlib.import_module("hosts.core.handle_message")
+    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+
+    result = await handle_message(runtime, "proceed", NullTransport())
+
+    assert result.text == "patch applied"
+    assert executed == [invocation.request_id]
+    persisted = await runtime.approval_service.get(invocation.request_id)
+    assert persisted is not None
+    assert persisted.state == "approved"
+
+
+@pytest.mark.asyncio
+async def test_affirmative_resume_is_case_insensitive_and_phrase_scoped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Short affirmative variants resume; longer messages do not."""
+
+    runtime = _make_runtime(tmp_path)
+    identity = _identity(runtime)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_apply_patch",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={"patch": "diff --git a/a b/a"},
+        identity=identity,
+        pack_config={"workspace_root": "."},
+        safe_preview="apply the patch",
+    )
+    await runtime.approval_service.request(invocation)
+    executed: list[str] = []
+
+    async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
+        _ = hooks
+        executed.append(invocation.request_id)
+        return ToolResult(output_text="patch applied")
+
+    handle_message_module = importlib.import_module("hosts.core.handle_message")
+    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+
+    result = await handle_message(runtime, "OK", NullTransport())
+    assert result.text == "patch applied"
+    assert executed == [invocation.request_id]
+
+
+@pytest.mark.asyncio
+async def test_affirmative_resume_does_not_fire_with_multiple_pending(
+    tmp_path: Path,
+) -> None:
+    """With more than one pending approval the user must disambiguate.
+
+    Guessing would silently execute the wrong action, so the affirmative is
+    ignored and the message falls through to normal routing.
+    """
+
+    runtime = _make_runtime(tmp_path)
+    identity = _identity(runtime)
+    first = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_apply_patch",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={"patch": "diff --git a/a b/a"},
+        identity=identity,
+        pack_config={"workspace_root": "."},
+        safe_preview="apply the patch",
+    )
+    second = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_cleanup_worktree",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={"artifact_id": "artifact"},
+        identity=identity,
+        pack_config={"workspace_root": "."},
+        safe_preview="clean up the worktree",
+    )
+    await runtime.approval_service.request(first)
+    await runtime.approval_service.request(second)
+
+    pending = await runtime.approval_service.list_pending(identity)
+    assert len(pending) == 2
+
+    # The affirmative resume must not consume either; both stay pending.
+    # handle_message would route a model turn, but we only assert that the
+    # approval state is untouched (the model-turn path is exercised by the
+    # turn-runner tests and is blocked here by the catalog collision in
+    # the test environment).
+    from hosts.core.handle_message import _try_affirmative_approval_resume
+
+    resume_result = await _try_affirmative_approval_resume(
+        runtime, "proceed", "proceed", NullTransport()
+    )
+    assert resume_result is None
+    assert (await runtime.approval_service.get(first.request_id)).state == "pending"
+    assert (await runtime.approval_service.get(second.request_id)).state == "pending"
+
+
+@pytest.mark.asyncio
+async def test_affirmative_resume_does_not_fire_without_pending(
+    tmp_path: Path,
+) -> None:
+    """An affirmative with nothing pending is not consumed as a resume."""
+
+    runtime = _make_runtime(tmp_path)
+
+    from hosts.core.handle_message import _try_affirmative_approval_resume
+
+    resume_result = await _try_affirmative_approval_resume(
+        runtime, "proceed", "proceed", NullTransport()
+    )
+    assert resume_result is None
+
+
+@pytest.mark.asyncio
+async def test_non_affirmative_message_is_not_consumed_as_resume(
+    tmp_path: Path,
+) -> None:
+    """A question or long message is never treated as an approval resume."""
+
+    runtime = _make_runtime(tmp_path)
+    identity = _identity(runtime)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_apply_patch",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={"patch": "diff --git a/a b/a"},
+        identity=identity,
+        pack_config={"workspace_root": "."},
+        safe_preview="apply the patch",
+    )
+    await runtime.approval_service.request(invocation)
+
+    from hosts.core.handle_message import _try_affirmative_approval_resume
+
+    resume_result = await _try_affirmative_approval_resume(
+        runtime, "can you explain what this will do?", "can you explain what this will do?", NullTransport()
+    )
+    assert resume_result is None
+    assert (await runtime.approval_service.get(invocation.request_id)).state == "pending"

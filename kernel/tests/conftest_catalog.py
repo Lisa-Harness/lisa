@@ -59,7 +59,10 @@ def _make_catalog_mcp_config() -> MCPClientConfig:
         ],
         env={
             "SDK_CONTENT_ROOTS": ";".join(str(r) for r in content_roots),
-            "LISA_SESSION_PROVIDER_SELECTIONS": '{"modes":{"default":"lisa-pack-core"}}',
+            "LISA_SESSION_PROVIDER_SELECTIONS": (
+                '{"modes":{"default":"lisa-pack-core"},'
+                '"tools":{"web_search":"lisa-pack-brave-search"}}'
+            ),
         },
     )
 

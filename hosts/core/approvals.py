@@ -14,6 +14,7 @@ from kernel.approval import (
     ApprovalInvocation,
     ApprovalReceipt,
     ApprovalRecord,
+    _find_pending_for_action,
     is_expired,
 )
 
@@ -30,6 +31,9 @@ class FileApprovalService:
     async def request(self, invocation: ApprovalInvocation) -> ApprovalInvocation:
         async with self._lock:
             records = self._load_records()
+            existing = _find_pending_for_action(records, invocation, now=datetime.now(UTC))
+            if existing is not None:
+                return existing.invocation
             records.setdefault(invocation.request_id, ApprovalRecord(invocation=invocation))
             self._store_records(records)
             return records[invocation.request_id].invocation
@@ -133,6 +137,17 @@ class FileApprovalService:
     async def get(self, request_id: str) -> ApprovalRecord | None:
         async with self._lock:
             return self._load_records().get(request_id)
+
+    async def list_pending(self, identity: ApprovalIdentity) -> list[ApprovalRecord]:
+        async with self._lock:
+            now = datetime.now(UTC)
+            return [
+                record
+                for record in self._load_records().values()
+                if record.state == "pending"
+                and not is_expired(record.invocation, now=now)
+                and record.invocation.identity == identity
+            ]
 
     def _load_records(self) -> dict[str, ApprovalRecord]:
         if not self._path.is_file():
