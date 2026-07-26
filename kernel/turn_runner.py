@@ -1136,45 +1136,27 @@ async def _run_turn_inner(
     # check measures from the same origin.
     turn_start_mono = time.monotonic()
 
-    # ── Stage telemetry helper ──────────────────────────────────────────
-    # Wraps the optional ``hooks.on_stage`` callback so the loop can fire
-    # fine-grained stage events without each call site repeating the
-    # None-check and the try/except. Failures are logged and swallowed — a
-    # transport error never breaks the turn.
+    # ── Mutable turn state (extracted to _TurnState) ───────────────────
+    # Promoted from nested closures to a dataclass + module-level functions
+    # in kernel.turn_phases._turn_state.  The state object is threaded
+    # through every helper call instead of being captured by closures.
+    from kernel.turn_phases._turn_state import (
+        _TurnState,
+        budget_forces_final as _budget_forces_final_fn,
+        emit_stage as _emit_stage_fn,
+        mcp_tool_executor as _mcp_tool_executor_fn,
+        record_model_usage as _record_model_usage_fn,
+        resolve_iteration_model as _resolve_iteration_model_fn,
+    )
+
+    _state = _TurnState()
     _on_stage_hook = hooks.on_stage
 
     async def _emit_stage(label: str, data: dict[str, Any] | None = None) -> None:
-        if _on_stage_hook is None:
-            return
-        try:
-            await _on_stage_hook(label, data or {})
-        except Exception as stage_exc:  # pylint: disable=broad-except
-            _log.debug("on_stage(%s) hook failed: %s", label, stage_exc)
+        await _emit_stage_fn(_state, _on_stage_hook, _log, label, data)
 
     async def _mcp_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
-        """Bridge OperationExecutionContext.execute_tool_fn to in-process tools.
-
-        Catalog-driven: if the tool_id is in the internal tool catalog
-        (discovered from packs), dispatch in-process via
-        ``tools.registry.execute_tool``. Otherwise fall through to the MCP
-        pool. Declarative operations that need to call tools route through
-        here.
-        """
-        from kernel.tools.registry import get_tool_catalog as _get_tools
-
-        tool_catalog = _get_tools()
-        definition = tool_catalog.get(tool_id)
-        if definition is not None and definition.implementation_module is not None:
-            tool_ctx = _to_tool_context(tool_id, _ctx)
-            return await execute_tool(tool_id, tool_ctx)
-
-        params = getattr(_ctx, "parameters", {}) or {}
-        mcp_result = await pool.call_tool(tool_id, params)
-        return ToolResult(
-            tool_id=tool_id,
-            output_text=mcp_result.output_text,
-            error=mcp_result.output_text if mcp_result.is_error else "",
-        )
+        return await _mcp_tool_executor_fn(tool_id, _ctx, pool)
 
     # ── Phase 1: Pre-turn ─────────────────────────────────────────────
     pre_briefing = ""
@@ -1550,7 +1532,8 @@ async def _run_turn_inner(
     handoff_to: str | None = None
     fork_results: list[ForkChildResult] | None = None
     workflow_terminated = False
-    total_tool_calls = 0
+    # total_tool_calls, iteration, and per-model usage live on _state
+    # (initialized to 0/empty by _TurnState).
     # Cumulative set of intents satisfied by every mode entered during this
     # turn (the entry mode + each handoff target). This prevents a sequential
     # chain from re-suggesting a step that already ran: after default → search
@@ -1559,36 +1542,23 @@ async def _run_turn_inner(
     # post-coding hint would re-detect "research" from the original query text
     # and re-suggest search — an infinite loop. The accumulator is the turn's
     # memory of which chain steps have already completed.
-    chain_satisfied: set[str] = set()
+    _state.chain_satisfied = set()
     if mode_config is not None:
-        chain_satisfied.update(mode_config.satisfies_intents)
-    iteration = 0
+        _state.chain_satisfied.update(mode_config.satisfies_intents)
 
-    # Mutable turn-state read by ``_resolve_iteration_model`` so the router
-    # can see what has happened so far this turn. ``last_tool_result_text``
-    # is updated after each tool dispatch; ``required_capabilities`` and
-    # ``roles_needed`` are derived once from the mode config and the
-    # preferred-model resolution. They default to empty — a router that does
-    # not need them ignores them.
-    last_tool_result_text: str | None = None
+    # required_capabilities and roles_needed are derived once from the mode
+    # config and the preferred-model resolution. They default to empty — a
+    # router that does not need them ignores them.
     required_capabilities: tuple[str, ...] = ()
     if mode_config is not None:
         required_capabilities = tuple(getattr(mode_config, "required_capabilities", ()) or ())
     roles_needed: tuple[str, ...] = ()
     if isinstance(preferred_model_id, str) and preferred_model_id.strip():
         roles_needed = (preferred_model_id.strip(),)
-    total_prompt_tokens = 0
-    total_completion_tokens = 0
-    total_tokens = 0
-    total_cached_tokens = 0
-    total_reasoning_tokens = 0
-    total_duration_ms = 0.0
-    total_latency_ms = 0
-    # Per-model usage accumulator. Keyed by model_id so multiple iterations
-    # against the same model collapse into one breakdown row. Populated at
-    # every iteration, the forced-final completion, and the terminal-stage
-    # forced completion. Converted to a list at TurnResult construction.
-    per_model_usage: dict[str, dict[str, Any]] = {}
+    # Mutable turn-state fields now live on _state (_TurnState).
+    # Initialize the router-relevant fields from the mode config.
+    _state.required_capabilities = required_capabilities
+    _state.roles_needed = roles_needed
 
     def _record_model_usage(
         model_def: Any,
@@ -1602,114 +1572,31 @@ async def _run_turn_inner(
         lat: int,
     ) -> None:
         """Merge one completion's counters into the per-model accumulator."""
-        mid = (getattr(model_def, "model_id", "") or "-").strip()
-        entry = per_model_usage.setdefault(mid, {"model_id": mid})
-        entry["prompt_tokens"] = entry.get("prompt_tokens", 0) + p
-        entry["completion_tokens"] = entry.get("completion_tokens", 0) + c
-        entry["total_tokens"] = entry.get("total_tokens", 0) + t
-        entry["cached_tokens"] = entry.get("cached_tokens", 0) + ct
-        entry["reasoning_tokens"] = entry.get("reasoning_tokens", 0) + rt
-        entry["duration_ms"] = entry.get("duration_ms", 0.0) + d
-        entry["latency_ms"] = entry.get("latency_ms", 0) + lat
+        _record_model_usage_fn(_state, model_def, p=p, c=c, t=t, ct=ct, rt=rt, d=d, lat=lat)
 
     def _budget_forces_final() -> bool:
-        """Return True when the turn budget is exhausted and the loop must
-        force a final no-tools completion.
+        """Return True when the turn budget is exhausted."""
+        return _budget_forces_final_fn(_state, turn_budget, turn_start_mono)
 
-        A budget field set to 0 means unlimited and never forces. When any
-        nonzero field is exhausted, the model gets one more call — but with
-        no tools advertised so it must produce a final text response.
-        """
-        if turn_budget is None:
-            return False
-        if turn_budget.max_tool_calls and total_tool_calls >= turn_budget.max_tool_calls:
-            return True
-        if turn_budget.max_total_tokens and total_tokens >= turn_budget.max_total_tokens:
-            return True
-        if turn_budget.max_wall_ms:
-            elapsed_ms = int((time.monotonic() - turn_start_mono) * 1000)
-            if elapsed_ms >= turn_budget.max_wall_ms:
-                return True
-        return False
-
-    # Per-iteration model selection. Three-tier fallback:
-    #   1. ``ContextSeams.model_router`` — the formal ``ModelRouter`` Protocol
-    #      with a widened ``RouterRequest`` carrying query, last_tool_result,
-    #      required_capabilities, mode_id, and roles_needed. This is the
-    #      pluggable router path (``lisa.extensions.model_routers``).
-    #   2. ``ModelPolicy.choose`` — the legacy duck-typed optional method with
-    #      the narrow ``(default_model_id, iteration, tool_calls_so_far,
-    #      budget_remaining)`` signature. Preserved for backward compatibility.
-    #   3. Static ``model_def`` — the once-resolved ``preferred_model_id``.
-    #      This is today's default behavior when no router and no ``choose``
-    #      are wired.
     def _resolve_iteration_model(iteration_num: int) -> Any:
-        router = hooks.context_seams.model_router
-        if router is not None:
-            req = RouterRequest(
-                default_model_id=preferred_model_id,
-                iteration=iteration_num,
-                tool_calls_so_far=total_tool_calls,
-                budget_remaining=(
-                    None
-                    if turn_budget is None
-                    else max(0, turn_budget.max_tool_calls - total_tool_calls)
-                    if turn_budget.max_tool_calls
-                    else None
-                ),
-                query=query,
-                last_tool_result=last_tool_result_text,
-                required_capabilities=required_capabilities,
-                mode_id=mode_id,
-                roles_needed=roles_needed,
-            )
-            try:
-                decision = router.choose(req)
-            except Exception:  # pylint: disable=broad-except
-                _log.warning(
-                    "model_router.choose failed (iteration=%d): %s",
-                    iteration_num,
-                    exc_info=True,
-                )
-                decision = None
-            if isinstance(decision, RouterDecision) and decision.model_id.strip():
-                resolved = resolve_model(decision.model_id.strip())
-                if resolved is not None:
-                    return resolved
-                _log.warning(
-                    "model_router returned unknown model_id %r; falling back",
-                    decision.model_id,
-                )
-            elif isinstance(decision, str) and decision.strip():
-                # Tolerate routers that return a bare model_id string.
-                resolved = resolve_model(decision.strip())
-                if resolved is not None:
-                    return resolved
-        # Legacy duck-typed ``choose`` on ModelPolicy.
-        policy = hooks.context_seams.model_policy
-        choose_fn = getattr(policy, "choose", None)
-        if callable(choose_fn):
-            chosen_id = policy.choose(  # type: ignore[attr-defined]
-                default_model_id=preferred_model_id,
-                iteration=iteration_num,
-                tool_calls_so_far=total_tool_calls,
-                budget_remaining=(
-                    None
-                    if turn_budget is None
-                    else max(0, turn_budget.max_tool_calls - total_tool_calls)
-                    if turn_budget.max_tool_calls
-                    else None
-                ),
-            )
-            if isinstance(chosen_id, str) and chosen_id.strip():
-                return resolve_model(chosen_id.strip())
-        return model_def
+        return _resolve_iteration_model_fn(
+            _state,
+            iteration_num,
+            hooks,
+            preferred_model_id,
+            resolve_model,
+            model_def,
+            query,
+            mode_id,
+            turn_budget,
+            _log,
+        )
 
     tools_dispatched_ever = False  # tracks if *any* tool was called this turn
     _narration_nudge_count = 0  # guards against infinite narration retries
 
-    while iteration < max_tool_iterations:
-        iteration += 1
+    while _state.iteration < max_tool_iterations:
+        _state.iteration += 1
 
         # Stuck-session guard: if the session has been in the same stage
         # for too many turns, inject a nudge. After the cap, strip tools to
@@ -1724,7 +1611,7 @@ async def _run_turn_inner(
                         "mode_id": mode_id,
                         "stage_id": wf_session.stage_id,
                         "turn_count": turns_in_stage,
-                        "iteration": iteration,
+                        "_state.iteration": _state.iteration,
                     },
                 )
                 if turns_in_stage >= _STAGE_NUDGE_CAP:
@@ -1756,18 +1643,18 @@ async def _run_turn_inner(
             _log.debug(
                 "turn budget exhausted (mode=%s, tool_calls=%d, tokens=%d); forcing final",
                 mode_id,
-                total_tool_calls,
-                total_tokens,
+                _state.total_tool_calls,
+                _state.total_tokens,
             )
-        effective_model_def = _resolve_iteration_model(iteration)
+        effective_model_def = _resolve_iteration_model(_state.iteration)
         await _emit_stage(
             "model_call",
             {
                 "mode_id": mode_id,
                 "model_id": getattr(effective_model_def, "model_id", ""),
                 "provider": getattr(effective_model_def, "provider", ""),
-                "iteration": iteration,
-                "tool_calls_so_far": total_tool_calls,
+                "_state.iteration": _state.iteration,
+                "tool_calls_so_far": _state.total_tool_calls,
                 "tools_offered": bool(effective_tools),
             },
         )
@@ -1816,13 +1703,13 @@ async def _run_turn_inner(
             duration_ms,
             latency_ms,
         ) = _extract_completion_usage(completion)
-        total_prompt_tokens += prompt_tokens
-        total_completion_tokens += completion_tokens
-        total_tokens += completion_total_tokens
-        total_cached_tokens += cached_tokens
-        total_reasoning_tokens += reasoning_tokens
-        total_duration_ms += duration_ms
-        total_latency_ms += latency_ms
+        _state.total_prompt_tokens += prompt_tokens
+        _state.total_completion_tokens += completion_tokens
+        _state.total_tokens += completion_total_tokens
+        _state.total_cached_tokens += cached_tokens
+        _state.total_reasoning_tokens += reasoning_tokens
+        _state.total_duration_ms += duration_ms
+        _state.total_latency_ms += latency_ms
         _record_model_usage(
             effective_model_def,
             p=prompt_tokens,
@@ -1839,11 +1726,11 @@ async def _run_turn_inner(
             {
                 "mode_id": mode_id,
                 "model_id": getattr(effective_model_def, "model_id", ""),
-                "iteration": iteration,
+                "_state.iteration": _state.iteration,
                 "tool_calls": len(getattr(completion, "tool_calls", None) or []),
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
-                "total_tokens": completion_total_tokens,
+                "_state.total_tokens": completion_total_tokens,
                 "duration_ms": duration_ms,
             },
         )
@@ -1928,7 +1815,7 @@ async def _run_turn_inner(
                         "transition_stage; injecting correction nudge "
                         "(mode=%s, iteration=%d, nudge=%d/%d)",
                         mode_id,
-                        iteration,
+                        _state.iteration,
                         _narration_nudge_count,
                         _NARRATION_NUDGE_CAP,
                     )
@@ -1973,7 +1860,7 @@ async def _run_turn_inner(
                         "injecting chain-incomplete nudge (mode=%s, "
                         "iteration=%d, nudge=%d/%d)",
                         mode_id,
-                        iteration,
+                        _state.iteration,
                         _narration_nudge_count,
                         _NARRATION_NUDGE_CAP,
                     )
@@ -2028,7 +1915,7 @@ async def _run_turn_inner(
                         "iteration=%d, nudge=%d/%d)",
                         tool_name,
                         mode_id,
-                        iteration,
+                        _state.iteration,
                         _narration_nudge_count,
                         _NARRATION_NUDGE_CAP,
                     )
@@ -2095,8 +1982,8 @@ async def _run_turn_inner(
                 {
                     "tool": tool_name,
                     "tool_kind": _tool_kind,
-                    "iteration": iteration,
-                    "tool_calls_so_far": total_tool_calls + 1,
+                    "_state.iteration": _state.iteration,
+                    "tool_calls_so_far": _state.total_tool_calls + 1,
                     "mode_id": mode_id,
                 },
             )
@@ -2133,8 +2020,8 @@ async def _run_turn_inner(
                             {
                                 "tool": tool_name,
                                 "tool_kind": "transition",
-                                "iteration": iteration,
-                                "tool_calls_so_far": total_tool_calls,
+                                "_state.iteration": _state.iteration,
+                                "tool_calls_so_far": _state.total_tool_calls,
                                 "ok": False,
                                 "transition": "missing_target",
                                 "duration_ms": int(
@@ -2250,8 +2137,8 @@ async def _run_turn_inner(
                             {
                                 "tool": tool_name,
                                 "tool_kind": "transition",
-                                "iteration": iteration,
-                                "tool_calls_so_far": total_tool_calls,
+                                "_state.iteration": _state.iteration,
+                                "tool_calls_so_far": _state.total_tool_calls,
                                 "ok": True,
                                 "transition": "fork",
                                 "fork_children": len(fork_results_list) if fork_results_list else 0,
@@ -2304,7 +2191,7 @@ async def _run_turn_inner(
                                 # only manipulates opaque intent-tag sets and
                                 # routing target ids; it names no intents.
                                 try:
-                                    post_handoff_satisfied = set(chain_satisfied) | set(
+                                    post_handoff_satisfied = set(_state.chain_satisfied) | set(
                                         target_mode_config.satisfies_intents
                                     )
                                     remaining_gap = (
@@ -2325,7 +2212,7 @@ async def _run_turn_inner(
                                                 and rid not in remaining_steps
                                             ):
                                                 remaining_steps.append(rid)
-                                    chain_position = len(chain_satisfied) + 1
+                                    chain_position = len(_state.chain_satisfied) + 1
                                     handoff_context = (
                                         "\n\n## Handoff Context\n"
                                         f"- You were handed off from: `{mode_id}`\n"
@@ -2447,14 +2334,14 @@ async def _run_turn_inner(
                                     # steps that already ran. The entry
                                     # mode's intents were added at init; each
                                     # handoff adds its target's intents here.
-                                    chain_satisfied.update(target_mode_config.satisfies_intents)
+                                    _state.chain_satisfied.update(target_mode_config.satisfies_intents)
                                     post_handoff_hint = _compute_capability_routing_hint(
                                         mode_id=target_stage,
                                         query=query,
                                         capability_manifest=capability_manifest,
                                         routing_targets=get_routing_targets(target_stage),
                                         mode_config=target_mode_config,
-                                        extra_satisfied=chain_satisfied,
+                                        extra_satisfied=_state.chain_satisfied,
                                     )
                                 if post_handoff_hint:
                                     _log.info(
@@ -2487,8 +2374,8 @@ async def _run_turn_inner(
                             {
                                 "tool": tool_name,
                                 "tool_kind": "transition",
-                                "iteration": iteration,
-                                "tool_calls_so_far": total_tool_calls,
+                                "_state.iteration": _state.iteration,
+                                "tool_calls_so_far": _state.total_tool_calls,
                                 "ok": True,
                                 "transition": "handoff",
                                 "handoff_to": target_stage,
@@ -2569,8 +2456,8 @@ async def _run_turn_inner(
                         {
                             "tool": tool_name,
                             "tool_kind": "transition",
-                            "iteration": iteration,
-                            "tool_calls_so_far": total_tool_calls,
+                            "_state.iteration": _state.iteration,
+                            "tool_calls_so_far": _state.total_tool_calls,
                             "ok": transitioned_to is not None,
                             "transition": "workflow_stage" if is_workflow else "unknown",
                             "transitioned_to": transitioned_to,
@@ -2613,7 +2500,7 @@ async def _run_turn_inner(
                 else:
                     mcp_result = await pool.call_tool(tool_name, tool_arguments)
                     tool_output = mcp_result.output_text or "Done"
-                total_tool_calls += 1
+                _state.total_tool_calls += 1
                 ledger.record(tool_name)
             except ApprovalRequired:
                 raise
@@ -2626,8 +2513,8 @@ async def _run_turn_inner(
                 {
                     "tool": tool_name,
                     "tool_kind": _tool_kind,
-                    "iteration": iteration,
-                    "tool_calls_so_far": total_tool_calls,
+                    "_state.iteration": _state.iteration,
+                    "tool_calls_so_far": _state.total_tool_calls,
                     "ok": not tool_output.startswith("Tool execution failed:"),
                     "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
                 },
@@ -2637,7 +2524,7 @@ async def _run_turn_inner(
                 tool_output = "Done"
 
             # Track the latest tool result for the model router.
-            last_tool_result_text = str(tool_output)
+            _state.last_tool_result_text = str(tool_output)
 
             tool_result_msg: dict[str, Any] = {
                 "role": "tool",
@@ -2680,10 +2567,10 @@ async def _run_turn_inner(
             if final_content.strip():
                 content = final_content.strip()
                 final_usage = _extract_completion_usage(final_completion)
-                total_prompt_tokens += final_usage[0]
-                total_completion_tokens += final_usage[1]
-                total_tokens += final_usage[2]
-                total_duration_ms += final_usage[5]
+                _state.total_prompt_tokens += final_usage[0]
+                _state.total_completion_tokens += final_usage[1]
+                _state.total_tokens += final_usage[2]
+                _state.total_duration_ms += final_usage[5]
                 _record_model_usage(
                     effective_model_def,
                     p=final_usage[0],
@@ -2695,7 +2582,7 @@ async def _run_turn_inner(
                     lat=final_usage[6],
                 )
         except Exception as exc:  # pylint: disable=broad-except
-            _log.warning("iteration-cap final completion failed: %s", exc)
+            _log.warning("_state.iteration-cap final completion failed: %s", exc)
         content = content or "The model did not produce a final response."
 
     # Terminal-stage handling: if the model transitioned to a terminal
@@ -2729,10 +2616,10 @@ async def _run_turn_inner(
                     if final_content.strip():
                         content = final_content.strip()
                         terminal_usage = _extract_completion_usage(final_completion)
-                        total_prompt_tokens += terminal_usage[0]
-                        total_completion_tokens += terminal_usage[1]
-                        total_tokens += terminal_usage[2]
-                        total_duration_ms += terminal_usage[5]
+                        _state.total_prompt_tokens += terminal_usage[0]
+                        _state.total_completion_tokens += terminal_usage[1]
+                        _state.total_tokens += terminal_usage[2]
+                        _state.total_duration_ms += terminal_usage[5]
                         _record_model_usage(
                             effective_model_def,
                             p=terminal_usage[0],
@@ -2823,22 +2710,22 @@ async def _run_turn_inner(
 
     return TurnResult(
         response_text=content,
-        tool_call_count=total_tool_calls,
-        iteration_count=iteration,
-        prompt_tokens=total_prompt_tokens,
-        completion_tokens=total_completion_tokens,
-        total_tokens=total_tokens,
-        cached_tokens=total_cached_tokens,
-        reasoning_tokens=total_reasoning_tokens,
-        duration_ms=total_duration_ms,
-        latency_ms=total_latency_ms,
+        tool_call_count=_state.total_tool_calls,
+        iteration_count=_state.iteration,
+        prompt_tokens=_state.total_prompt_tokens,
+        completion_tokens=_state.total_completion_tokens,
+        total_tokens=_state.total_tokens,
+        cached_tokens=_state.total_cached_tokens,
+        reasoning_tokens=_state.total_reasoning_tokens,
+        duration_ms=_state.total_duration_ms,
+        latency_ms=_state.total_latency_ms,
         slice_outcomes=slice_outcomes,
         blocked=turn_blocked,
         transitioned_to=transitioned_to,
         handoff_to=handoff_to,
         fork_results=fork_results,
         workflow_terminated=workflow_terminated,
-        per_model_usage=list(per_model_usage.values()),
+        per_model_usage=list(_state.per_model_usage.values()),
     )
 
 # ---------------------------------------------------------------------------
