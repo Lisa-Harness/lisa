@@ -55,7 +55,14 @@ grouping governs only your **processing order** — you may evaluate all four
 dimensions for one group before moving to the next — but the final review
 output must follow the flat template in Step 5 (one section per dimension
 across all files, not repeated dimension headers per group). When grouping,
-note each file's group inline within the dimension sections if helpful.
+prefix each finding bullet with the group label in brackets, e.g.
+`[src/] foo.py line 42: ...`, so file-to-group attribution is preserved
+without repeating dimension headers per group.
+
+If a single top-level directory group itself exceeds 1,000 lines of diff,
+process it file-by-file. If a single file's diff exceeds 1,000 lines, review
+only the changed hunks and note in the findings: "File <name> is large; only
+changed hunks were reviewed."
 
 ## Step 3 — Read workspace instructions
 
@@ -86,12 +93,15 @@ the next file.
   that explicitly.
 - Are edge cases, failure modes, and boundary conditions handled?
 - Does every new public function/method, or any public function/method where
-  the diff modifies its signature, return value, raised exceptions, or more than
-  3 lines of its body, have a docstring (module summary, `Args:`, `Returns:`,
-  `Raises:` as applicable)?
+  the diff modifies its signature, return value, raised exceptions, or where
+  the diff adds or removes more than 3 lines within its body (counting only
+  `+` and `-` lines in the diff hunk), have a docstring (module summary,
+  `Args:`, `Returns:`, `Raises:` as applicable)?
 - Does every new callable, or any callable where the diff modifies its
-  signature, return value, raised exceptions, or more than 3 lines of its body,
-  have a corresponding test (happy path + each documented `Raises:` mode)?
+  signature, return value, raised exceptions, or where the diff adds or
+  removes more than 3 lines within its body (counting only `+` and `-` lines
+  in the diff hunk), have a corresponding test (happy path + each documented
+  `Raises:` mode)?
 - Before rendering findings, check: does the diff contain changes to any public
   API, CLI argument, config key, or output format? If yes, flag missing
   `CHANGELOG.md` entry as a Completeness finding. If no, skip this check.
@@ -217,4 +227,7 @@ with caveats, say so. If it is not, say that too.>
 - Do not re-raise issues that are already flagged in a prior `fixup!` commit
   within the reviewed range.
 - Do not suggest stylistic rewrites that are not required by the repo linter.
-  Focus on correctness, privacy, and security.
+  Focus on correctness, privacy, and security, plus Minor findings explicitly
+  defined in Step 5 (linter-required style inconsistencies and project
+  convention violations). Optional, non-linter style preferences are out of
+  scope.
