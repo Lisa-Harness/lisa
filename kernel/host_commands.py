@@ -14,10 +14,7 @@ the operations they call.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
-
-if TYPE_CHECKING:
-    from hosts.core.runtime import HostRuntime
+from typing import Any, Protocol, runtime_checkable
 
 __all__ = ["HostCommandHandler", "HostCommandSpec", "PackCommandEntry"]
 
@@ -26,14 +23,15 @@ __all__ = ["HostCommandHandler", "HostCommandSpec", "PackCommandEntry"]
 class HostCommandHandler(Protocol):
     """Async callable that handles one slash command for a host.
 
-    The handler receives the live ``HostRuntime``, the stripped command
-    text (without the leading prefix), and the original message. It
-    returns a plain-text response string.
+    The handler receives the live host runtime (typed as ``Any`` to keep the
+    kernel free of host-layer imports), the stripped command text (without
+    the leading prefix), and the original message. It returns a plain-text
+    response string.
     """
 
     async def __call__(
         self,
-        runtime: HostRuntime,
+        runtime: Any,
         stripped: str,
         message: str,
     ) -> str: ...

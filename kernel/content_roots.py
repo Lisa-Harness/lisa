@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from kernel.config import settings
@@ -65,10 +65,12 @@ def discover_installed_content_roots(
     return _dedupe_paths(roots)
 
 
-def discover_packs_venv_content_roots(
+def discover_packs_venv_content_roots(  # noqa: C901,PLR0912
     data_dir: Path | None = None,
     *,
     excluded_packs: set[str] | None = None,
+    venv_path_resolver: Callable[[Path | None], Path] | None = None,
+    site_packages_resolver: Callable[[Path], Path] | None = None,
 ) -> list[Path]:
     """Discover content roots from packs installed in the packs venv.
 
@@ -88,29 +90,44 @@ def discover_packs_venv_content_roots(
 
     Args:
         data_dir: Host data directory used to resolve the packs venv path.
-            When ``None``, falls back to ``default_packs_venv()``.
+            Passed to ``venv_path_resolver`` when provided.
         excluded_packs: Normalized pack names to exclude from discovery.
+        venv_path_resolver: Callable that resolves ``data_dir`` (or ``None``)
+            to the packs venv ``Path``. Injected by the host to avoid a
+            kernel→hosts import. When ``None``, falls back to a lazy import
+            of ``hosts.core.paths`` (preserving behavior for callers that
+            have not been updated).
+        site_packages_resolver: Callable that maps a venv ``Path`` to its
+            ``site-packages`` directory. Injected by the host. When ``None``,
+            falls back to the same lazy import.
 
     Returns:
         Content root paths (the ``lisa_packs/<pack_name>/`` directory),
         deduped and filtered. Returns an empty list when the packs venv
         does not exist or contains no ``lisa_packs/`` directory.
     """
-    from hosts.core.paths import (  # noqa: PLC0415
-        default_packs_venv,
-        packs_venv_for,
-        packs_venv_site_packages,
-    )  # type: ignore[import-not-found]
+    if venv_path_resolver is None or site_packages_resolver is None:
+        from hosts.core.paths import (  # noqa: PLC0415
+            default_packs_venv,
+            packs_venv_for,
+            packs_venv_site_packages,
+        )  # type: ignore[import-not-found]
+
+        if venv_path_resolver is None:
+            def venv_path_resolver(data_dir: Path | None) -> Path:
+                if data_dir is not None:
+                    return packs_venv_for(Path(data_dir))
+                return default_packs_venv()
+        if site_packages_resolver is None:
+            def site_packages_resolver(venv_path: Path) -> Path:
+                return packs_venv_site_packages(venv_path)
 
     try:
-        if data_dir is not None:
-            venv_path = packs_venv_for(Path(data_dir))
-        else:
-            venv_path = default_packs_venv()
+        venv_path = venv_path_resolver(data_dir)
     except Exception:  # pylint: disable=broad-except
         return []
 
-    site_packages = packs_venv_site_packages(venv_path)
+    site_packages = site_packages_resolver(venv_path)
     lisa_packs_dir = site_packages / _LISA_PACKS_DIR_NAME
     if not lisa_packs_dir.is_dir():
         return []

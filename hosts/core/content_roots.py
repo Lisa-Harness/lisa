@@ -412,6 +412,11 @@ def active_installed_pack_roots(
     # installed in the separate packs venv). Entry-point discovery cannot
     # find packs venv packages because ``importlib.metadata`` does not
     # re-scan after ``sys.path`` is modified at startup.
+    from hosts.core.paths import (  # noqa: PLC0415
+        default_packs_venv,
+        packs_venv_for,
+        packs_venv_site_packages,
+    )
     from kernel.content_roots import (  # noqa: PLC0415
         discover_installed_content_roots as _discover_entry_point_roots,
     )  # type: ignore[import-not-found]
@@ -419,7 +424,19 @@ def active_installed_pack_roots(
         discover_packs_venv_content_roots as _discover_packs_venv_roots,
     )
 
-    all_roots = [*_discover_entry_point_roots(), *_discover_packs_venv_roots(data_dir)]
+    def _venv_resolver(data_dir: Path | None) -> Path:
+        if data_dir is not None:
+            return packs_venv_for(Path(data_dir))
+        return default_packs_venv()
+
+    all_roots = [
+        *_discover_entry_point_roots(),
+        *_discover_packs_venv_roots(
+            data_dir,
+            venv_path_resolver=_venv_resolver,
+            site_packages_resolver=packs_venv_site_packages,
+        ),
+    ]
     for root in all_roots:
         package_name = infer_pack_package_name(root)
         if not package_name:

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from kernel.host_commands import HostCommandSpec
 from kernel.models import (
@@ -23,8 +23,12 @@ from kernel.models import (
 )
 from kernel.operations.registry import execute_operation
 
-if TYPE_CHECKING:
-    from hosts.core.runtime import HostRuntime
+# HostRuntime is intentionally typed as ``Any`` here. The checkpoint pack
+# command handlers need host-layer services (thread loading, model resolution,
+# state provider, content loader) that are only available at runtime via lazy
+# imports. A Protocol would not capture the full HostRuntime surface these
+# handlers use. This is a known sdk->hosts coupling exception for pack command
+# handlers — see docs/PACK_AUTHORING_GUIDE.md.
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +41,7 @@ __all__ = [
 ]
 
 
-def _load_turn_history(runtime: HostRuntime, limit: int = 50) -> list[dict[str, Any]]:
+def _load_turn_history(runtime: Any, limit: int = 50) -> list[dict[str, Any]]:
     """Load recent thread entries and normalize for checkpoint operations."""
     from hosts.core.thread import load_recent_thread_entries
 
@@ -56,7 +60,7 @@ def _load_turn_history(runtime: HostRuntime, limit: int = 50) -> list[dict[str, 
     ]
 
 
-def _resolve_model(runtime: HostRuntime, model_id: str) -> Any:
+def _resolve_model(runtime: Any, model_id: str) -> Any:
     from hosts.core.model_runtime import resolve_little_lisa_model
 
     return resolve_little_lisa_model(
@@ -66,7 +70,7 @@ def _resolve_model(runtime: HostRuntime, model_id: str) -> Any:
     )
 
 
-def _content_loader(runtime: HostRuntime) -> Any:
+def _content_loader(runtime: Any) -> Any:
     """Return the authored-text reader, or None when the registry is not set."""
     try:
         from hosts.core.turn_hooks_builder import content_loader  # noqa: PLC0415
@@ -77,7 +81,7 @@ def _content_loader(runtime: HostRuntime) -> Any:
 
 
 def _build_context(
-    runtime: HostRuntime,
+    runtime: Any,
     message: str,
     *,
     params: dict[str, Any],
@@ -102,13 +106,13 @@ def _build_context(
     )
 
 
-def _build_unified_state(runtime: HostRuntime) -> Any:
+def _build_unified_state(runtime: Any) -> Any:
     from hosts.core.state_provider import build_unified_state
 
     return build_unified_state(state_snapshot=runtime.state_snapshot)
 
 
-def _checkpoint_tool_executor(runtime: HostRuntime) -> Any:
+def _checkpoint_tool_executor(runtime: Any) -> Any:
     """Build a tool executor that routes checkpoint tools to lisa-storage."""
     pool = runtime.mcp_tool_pool
 
@@ -128,7 +132,7 @@ def _checkpoint_tool_executor(runtime: HostRuntime) -> Any:
 
 
 async def handle_checkpoint(
-    runtime: HostRuntime,
+    runtime: Any,
     stripped: str,
     message: str,
 ) -> str:
@@ -158,7 +162,7 @@ async def handle_checkpoint(
 
 
 async def handle_restore(
-    runtime: HostRuntime,
+    runtime: Any,
     stripped: str,
     message: str,
 ) -> str:
@@ -212,7 +216,7 @@ async def handle_restore(
 
 
 async def handle_list_checkpoints(
-    runtime: HostRuntime,
+    runtime: Any,
     stripped: str,
     message: str,
 ) -> str:
@@ -251,7 +255,7 @@ async def handle_list_checkpoints(
 # ── /summarize-history ───────────────────────────────────────────────
 
 
-def _persist_compacted_history(runtime: HostRuntime, new_history: list[dict[str, Any]]) -> bool:
+def _persist_compacted_history(runtime: Any, new_history: list[dict[str, Any]]) -> bool:
     """Write the compacted turn-history list back to the live thread JSONL.
 
     Prefers the host's ``write_turn_history_fn`` seam (wired on ``TurnHooks``
@@ -286,7 +290,7 @@ def _persist_compacted_history(runtime: HostRuntime, new_history: list[dict[str,
 
 
 async def handle_summarize_history(
-    runtime: HostRuntime,
+    runtime: Any,
     stripped: str,
     message: str,
 ) -> str:
