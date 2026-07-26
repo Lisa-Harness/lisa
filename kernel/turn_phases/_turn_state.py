@@ -190,7 +190,7 @@ def resolve_iteration_model(
     2. ``ModelPolicy.choose`` — the legacy duck-typed optional method.
     3. Static ``model_def`` — the once-resolved ``preferred_model_id``.
     """
-    from kernel.context import RouterDecision, RouterRequest  # noqa: PLC0415
+    from kernel.seams.protocols import RouterDecision, RouterRequest  # noqa: PLC0415
 
     router = hooks.context_seams.model_router
     if router is not None:
