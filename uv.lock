@@ -995,6 +995,7 @@ dependencies = [
     { name = "lisa-pack-core" },
     { name = "lisa-pack-introspect" },
     { name = "lisa-pack-memory" },
+    { name = "lisa-pack-okf" },
     { name = "lisa-sdk" },
     { name = "rich" },
     { name = "typer" },
@@ -1027,6 +1028,7 @@ requires-dist = [
     { name = "lisa-pack-core", editable = "sdk/packs/core" },
     { name = "lisa-pack-introspect", editable = "sdk/packs/introspect" },
     { name = "lisa-pack-memory", editable = "sdk/packs/memory" },
+    { name = "lisa-pack-okf", directory = "../lisa-packs/okf" },
     { name = "lisa-sdk", editable = "sdk" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
@@ -1428,6 +1430,23 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-okf"
+version = "0.1.0"
+source = { directory = "../lisa-packs/okf" }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 provides-extras = ["dev"]
 
