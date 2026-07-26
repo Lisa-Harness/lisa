@@ -154,6 +154,10 @@ class HostConfig:
     memory_recall_pre_turn_limit: int = 3
     memory_recall_min_query_chars: int = 3
 
+    # ── Memory auto-capture (post-turn learning) ───────────────────────
+    memory_auto_capture_enabled: bool = True
+    memory_auto_capture_min_salience: float = 0.5
+
     # ── Surface identity ───────────────────────────────────────────────
     surface_type: str = ""
     surface_id: str = ""
