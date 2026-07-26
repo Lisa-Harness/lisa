@@ -83,8 +83,6 @@ from kernel.seams.protocols import (
     ModelRouter,
     OutputGuard,
     ProviderGatewayProvider,
-    RouterDecision,
-    RouterRequest,
 )
 from kernel.slice import (
     SliceMode,
