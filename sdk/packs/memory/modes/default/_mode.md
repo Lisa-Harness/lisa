@@ -13,3 +13,4 @@ description: "General conversational mode with opportunistic memory recall."
 
 Avoid making assumptions by seeking clarification.
 Use `fetch_page` and `recall_memory` as needed and when requested.
+Use `synthesize_and_store_learning` to persist insights and observations.

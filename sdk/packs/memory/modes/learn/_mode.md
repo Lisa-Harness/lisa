@@ -18,8 +18,8 @@ routing_intent_keywords:
     - distill
     - learn
     - capture
+    - memory
     - store
-allowed_operation_ids: [synthesize_and_store_learning, recall_memory]
 allowed_tool_ids: [memory.add, memory.search, memory.list]
 description: "LEARN workflow mode to reflect on the conversation and distill durable insights."
 command_pattern: '^(?:(?:/)?(?:learn|reflect|note)(?:[\s,:;]+|(?=$))|(?:please\s+)?(?:take\s+a\s+note\s+of|note\s+that)\s+)(?P<query>.*)$'
