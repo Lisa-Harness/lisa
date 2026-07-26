@@ -358,87 +358,11 @@ def build_turn_hooks(
 
     # ── Turn-complete hook ─────────────────────────────────────────
 
-    # ── Auto-capture trigger detection ────────────────────────────
-    # Deterministic triggers (no LLM call) that signal a turn produced
-    # durable learning worth persisting to memory. Returns (should_capture,
-    # salience) where salience is the trigger's confidence level.
-    _COMMITMENT_PATTERNS = [
-        (r"\bremember\s+that\b", 0.7),
-        (r"\bfrom\s+now\s+on\b", 0.7),
-        (r"\blet'?s\s+go\s+with\b", 0.7),
-        (r"\b(?:I\s+)?decided\b", 0.7),
-        (r"\bI\s+prefer\b", 0.6),
-        (r"\b(?:my|our)\s+default\b", 0.6),
-        (r"\balways\b.{0,30}\b(?:use|do|run|call|check|set)\b", 0.6),
-        (r"\bnever\b.{0,30}\b(?:use|do|run|call|check|set)\b", 0.6),
-    ]
-
-    _WRITE_EFFECT_TOOL_PREFIXES = (
-        "coding_", "memory.add", "memory.dispute",
-        "file_write", "storage_", "checkpoint_",
-    )
-
-    _WRITE_EFFECT_TOOL_SUFFIXES = ("_create", "_update", "_delete", "_write", "_save")
-
-    def _should_auto_capture(
-        query: str,
-        response_text: str,
-        messages: list[dict[str, Any]],
-    ) -> tuple[bool, float]:
-        """Return (should_capture, salience) for deterministic trigger detection."""
-        import re as _re
-
-        # Skip if synthesize_and_store_learning or dispute_memory was already
-        # called during this turn — the model already persisted its learning.
-        for msg in messages:
-            role = str(msg.get("role") or "").strip().lower()
-            if role != "assistant":
-                continue
-            tool_calls = msg.get("tool_calls") or []
-            for tc in tool_calls:
-                fn_name = str(
-                    (tc.get("function") or {}).get("name", "")
-                ).strip()
-                if fn_name in ("synthesize_and_store_learning", "dispute_memory"):
-                    return False, 0.0
-
-        max_salience = 0.0
-
-        # 1. Commitment language in the user query
-        query_lower = query.lower()
-        for pattern, salience in _COMMITMENT_PATTERNS:
-            if _re.search(pattern, query_lower):
-                max_salience = max(max_salience, salience)
-
-        # 2. Write-effect tool calls
-        for msg in messages:
-            role = str(msg.get("role") or "").strip().lower()
-            if role != "assistant":
-                continue
-            tool_calls = msg.get("tool_calls") or []
-            for tc in tool_calls:
-                fn_name = str(
-                    (tc.get("function") or {}).get("name", "")
-                ).strip()
-                if not fn_name:
-                    continue
-                if fn_name.startswith(_WRITE_EFFECT_TOOL_PREFIXES) or fn_name.endswith(
-                    _WRITE_EFFECT_TOOL_SUFFIXES
-                ):
-                    max_salience = max(max_salience, 0.6)
-
-        # 3. Approval granted
-        for msg in messages:
-            role = str(msg.get("role") or "").strip().lower()
-            if role != "tool":
-                continue
-            content = str(msg.get("content") or "")
-            if "approved" in content.lower():
-                max_salience = max(max_salience, 0.8)
-
-        if max_salience <= 0.0:
-            return False, 0.0
-        return True, max_salience
+    # ── Auto-capture trigger detection (extracted to turn_hooks._auto_capture) ─
+    # The trigger policy (commitment patterns, write-effect prefixes/suffixes,
+    # and the detection function) now lives in hosts.core.turn_hooks._auto_capture
+    # so it is independently testable without constructing a HostRuntime.
+    from hosts.core.turn_hooks._auto_capture import should_auto_capture as _should_auto_capture
 
     async def _on_turn_complete(
         mode_id: str,
