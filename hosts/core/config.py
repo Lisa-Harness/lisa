@@ -149,6 +149,11 @@ class HostConfig:
     thread_max_entries: int = _DEFAULT_THREAD_MAX_ENTRIES
     memory_max_records: int = _DEFAULT_MEMORY_MAX_RECORDS
 
+    # ── Memory recall (pre-turn injection) ─────────────────────────────
+    memory_recall_enabled: bool = True
+    memory_recall_pre_turn_limit: int = 3
+    memory_recall_min_query_chars: int = 3
+
     # ── Surface identity ───────────────────────────────────────────────
     surface_type: str = ""
     surface_id: str = ""
