@@ -79,6 +79,36 @@ class _TurnState:
     # ── Chain routing accumulator ────────────────────────────────────
     chain_satisfied: set[str] = field(default_factory=set)
 
+    # ── Hard-failure / loop-guard state ───────────────────────────────
+    entry_failed: bool = False
+    """True when an entry operation for a handoff target failed this turn
+    (e.g. ``web_search`` returned no content). Once set, the turn must not
+    continue in the data-less target mode — the model would drift into an
+    action mode and hallucinate a solution (the 2026-07-25 ``crew/``
+    incident). The handoff handler sets this and breaks the loop with a
+    deterministic user-facing failure instead of ``continue``-ing."""
+    entry_failed_mode: str = ""
+    """The mode_id whose entry operation failed, for the user-facing
+    failure message (e.g. ``"search"``)."""
+    entry_failed_reason: str = ""
+    """Short human-readable failure reason from the caught exception,
+    surfaced to the user alongside the mode name."""
+    handoff_count: int = 0
+    """Number of mid-turn mode handoffs executed this turn. Bounded by
+    ``_MAX_HANDOFFS_PER_TURN`` as a hard backstop against routing-hint
+    loops that the ``chain_satisfied`` accumulator fails to break (e.g.
+    when a pack omits ``routing_intent_tags`` or ``_detect_query_intents``
+    over-detects)."""
+    last_hint_text: str = ""
+    """The most recently injected routing-hint text. Used by the
+    duplicate-hint dedup guard: when the recomputed post-handoff hint is
+    byte-identical to the previous one for >=2 consecutive handoffs, the
+    injection is suppressed and the max-hops guard takes over."""
+    duplicate_hint_count: int = 0
+    """Consecutive count of identical routing hints. Resets to 0 on a
+    distinct hint; when it reaches ``_DUPLICATE_HINT_LIMIT`` the hint is
+    suppressed."""
+
 
 # ── Closure-free helper functions ──────────────────────────────────────────
 

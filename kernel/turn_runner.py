@@ -114,6 +114,23 @@ _NARRATION_NUDGE_CAP = 3
 _STAGE_NUDGE_THRESHOLD = 4
 _STAGE_NUDGE_CAP = 6
 
+# Hard backstop against routing-hint loops. The ``chain_satisfied``
+# accumulator is the primary loop-breaker, but it depends on every pack
+# declaring accurate ``routing_intent_tags`` and ``_detect_query_intents``
+# not over-detecting. When either assumption fails (a pack omits tags, a
+# query re-detects satisfied intents), the hint re-fires on every handoff
+# with no termination. This counter caps the total handoffs per turn and
+# forces a final completion. Per the user manual's "all on by default,
+# externalize later": ship as a module constant, externalize only if a
+# real workload needs more.
+_MAX_HANDOFFS_PER_TURN = 6
+# Consecutive identical routing hints before the duplicate-hint dedup
+# suppresses injection. Pairs with ``_MAX_HANDOFFS_PER_TURN`` as a
+# belt-and-suspenders guard: even before hitting the hop cap, repeating
+# the exact same hint is a strong signal the accumulator failed to
+# advance and the model is in a routing loop.
+_DUPLICATE_HINT_LIMIT = 2
+
 # ── Public types ───────────────────────────────────────────────────────────
 
 
@@ -2077,11 +2094,46 @@ async def _run_turn_inner(
                                 "_state.iteration": _state.iteration,
                                 "tool_calls_so_far": _state.total_tool_calls,
                                 "ok": False,
-                                "transition": "missing_target",
+                                "transition": "invalid",
                                 "duration_ms": int(
                                     (time.monotonic() - _tool_dispatch_started) * 1000
                                 ),
                             },
+                        )
+                        continue
+                    # ── Guard: don't route a research/review intent into an
+                    # action mode after a search entry op failed this turn.
+                    # Once ``_state.entry_failed`` is set, the research
+                    # backend is known dead. Letting the model hand off to
+                    # ``coding`` lets it author a tangible-but-wrong artifact
+                    # (the 2026-07-25 ``crew/`` directory) as the "answer" to
+                    # a research question. Reject the handoff and force the
+                    # model to surface the failure instead.
+                    if (
+                        _state.entry_failed
+                        and target_stage == "coding"
+                        and not target_stage.startswith("fork:")
+                    ):
+                        tool_output = (
+                            "Cannot route to `coding` mode: the search/research "
+                            f"backend failed this turn ({_state.entry_failed_mode}: "
+                            f"{_state.entry_failed_reason}). A research/review "
+                            "request must not be answered by authoring artifacts. "
+                            "Report the search failure to the user and suggest "
+                            "re-issuing once the provider is reconfigured."
+                        )
+                        _log.warning(
+                            "rejected coding handoff after entry failure "
+                            "(failed_mode=%s)",
+                            _state.entry_failed_mode,
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "name": tool_name,
+                                "content": tool_output,
+                            }
                         )
                         continue
 
@@ -2132,6 +2184,12 @@ async def _run_turn_inner(
                                 )
                                 fork_results = fork_results_list
                                 succeeded = sum(1 for r in fork_results_list if r.status == "ok")
+                                # Mirror to ``_state`` so the post-loop
+                                # terminal-failure check can detect a
+                                # ``no_tools`` child and break the ``while``
+                                # loop (the ``for``-loop ``break`` inside the
+                                # fork block only exits the inner tool loop).
+                                _state.fork_results = fork_results_list
                                 # Surface failed children (timeout, error,
                                 # no_tools, cancelled) explicitly so the
                                 # parent model does not claim false success or
@@ -2141,6 +2199,22 @@ async def _run_turn_inner(
                                 # scheduler, so a failed child's work is lost
                                 # unless the user re-issues the request.
                                 failed_children = [r for r in fork_results_list if r.status != "ok"]
+                                # A ``no_tools`` child is a hallucinated
+                                # success: its mode declares action tools
+                                # but it made zero tool calls, so nothing
+                                # landed on disk/memory. The 2026-07-18 fix
+                                # labelled it; the remaining gap (2026-07-25
+                                # incident) was that the parent still handed
+                                # the label to the model as advisory prose,
+                                # which the model could paraphrase into a
+                                # false "completed". When any child is
+                                # ``no_tools``, abort the user-facing turn
+                                # with a deterministic failure instead of
+                                # ``continue``-ing. The model cannot be
+                                # trusted to surface it honestly.
+                                has_no_tools = any(
+                                    r.status == "no_tools" for r in failed_children
+                                )
                                 if failed_children:
                                     failure_parts: list[str] = []
                                     for r in failed_children:
@@ -2232,10 +2306,60 @@ async def _run_turn_inner(
                                 "content": tool_output,
                             }
                         )
+                        # If any fork child is ``no_tools`` (hallucinated
+                        # success), abort the user-facing turn with a
+                        # deterministic failure. Do NOT ``continue`` and hand
+                        # the failure to the model as advice — the model can
+                        # paraphrase it into a false "completed" (the
+                        # 2026-07-25 incident). Surface the failure directly.
+                        if has_no_tools:
+                            no_tools_modes = [
+                                r.target.mode_id
+                                for r in fork_results_list
+                                if r.status == "no_tools"
+                            ]
+                            content = (
+                                "Fork fan-out failed: the following children made "
+                                "zero tool calls despite their mode declaring action "
+                                f"tools ({', '.join(no_tools_modes)}), so their reported "
+                                "success is unverified — nothing was written to disk or "
+                                "memory. Re-issue the request."
+                            )
+                            break
                         continue
 
                     # ── Case B: mode handoff (routing FSM) ────────────────
                     if is_routable_mode(target_stage):
+                        # Hard backstop against routing-hint loops. The
+                        # ``chain_satisfied`` accumulator is the primary
+                        # breaker, but it depends on accurate pack-authored
+                        # ``routing_intent_tags``. When attribution fails,
+                        # the hint re-fires on every handoff with no end.
+                        # Cap total handoffs and force a final completion.
+                        _state.handoff_count += 1
+                        if _state.handoff_count > _MAX_HANDOFFS_PER_TURN:
+                            _log.warning(
+                                "routing hint loop guard: %d handoffs in turn "
+                                "(cap=%d); forcing final completion",
+                                _state.handoff_count,
+                                _MAX_HANDOFFS_PER_TURN,
+                            )
+                            tool_output = (
+                                f"Routing loop guard: reached "
+                                f"{_MAX_HANDOFFS_PER_TURN} mode handoffs in "
+                                f"this turn without completing the chain. "
+                                f"Forcing a final response."
+                            )
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call_id,
+                                    "name": tool_name,
+                                    "content": tool_output,
+                                }
+                            )
+                            content = tool_output
+                            break
                         routing_targets = get_routing_targets(mode_id)
                         if target_stage not in routing_targets and target_stage != "default":
                             tool_output = (
@@ -2355,6 +2479,25 @@ async def _run_turn_inner(
                                             target_stage,
                                             entry_exc,
                                         )
+                                        # Mark the turn as hard-failed. An
+                                        # action mode (e.g. ``search``) whose
+                                        # entry operation produced no data
+                                        # has nothing for the model to work
+                                        # on. Continuing in that mode lets the
+                                        # model drift into an unrelated action
+                                        # mode (e.g. ``coding``) and author a
+                                        # tangible-but-wrong artifact as the
+                                        # "answer" — the 2026-07-25 ``crew/``
+                                        # incident. Break the loop with a
+                                        # deterministic user-facing failure
+                                        # so the user reconfigures the failed
+                                        # provider and re-issues, instead of
+                                        # the model hallucinating a solution.
+                                        _state.entry_failed = True
+                                        _state.entry_failed_mode = target_stage
+                                        _state.entry_failed_reason = (
+                                            f"{type(entry_exc).__name__}: {entry_exc}"
+                                        )
                                 # Update runtime state. The ctx built in
                                 # Phase 1 carries the *entry* mode_id, so
                                 # post-handoff operation/tool dispatches
@@ -2421,26 +2564,51 @@ async def _run_turn_inner(
                                         extra_satisfied=_state.chain_satisfied,
                                     )
                                 if post_handoff_hint:
-                                    _log.info(
-                                        "post-handoff routing hint mode=%s hint_len=%d hint=%s",
-                                        target_stage,
-                                        len(post_handoff_hint),
-                                        post_handoff_hint[:200],
-                                    )
-                                    # Append to the system prompt so the guards
-                                    # (hallucinated-transition, write-tool) key
-                                    # off the new hint.
-                                    messages[0]["content"] = (
-                                        str(messages[0].get("content", ""))
-                                        + "\n\n"
-                                        + post_handoff_hint
-                                    )
-                                    routing_hint = post_handoff_hint
+                                    # Duplicate-hint dedup: when the
+                                    # recomputed hint is byte-identical to the
+                                    # previous one, the accumulator failed to
+                                    # advance and the model is in a routing
+                                    # loop. Suppress injection after
+                                    # ``_DUPLICATE_HINT_LIMIT`` repeats so the
+                                    # max-hops guard can take over instead of
+                                    # re-injecting the same prose forever.
+                                    if post_handoff_hint == _state.last_hint_text:
+                                        _state.duplicate_hint_count += 1
+                                    else:
+                                        _state.duplicate_hint_count = 0
+                                    _state.last_hint_text = post_handoff_hint
+                                    if _state.duplicate_hint_count >= _DUPLICATE_HINT_LIMIT:
+                                        _log.warning(
+                                            "suppressing duplicate routing hint "
+                                            "(mode=%s, repeats=%d)",
+                                            target_stage,
+                                            _state.duplicate_hint_count,
+                                        )
+                                        post_handoff_hint = ""
+                                        routing_hint = ""
+                                    else:
+                                        _log.info(
+                                            "post-handoff routing hint mode=%s hint_len=%d hint=%s",
+                                            target_stage,
+                                            len(post_handoff_hint),
+                                            post_handoff_hint[:200],
+                                        )
+                                        # Append to the system prompt so the guards
+                                        # (hallucinated-transition, write-tool) key
+                                        # off the new hint.
+                                        messages[0]["content"] = (
+                                            str(messages[0].get("content", ""))
+                                            + "\n\n"
+                                            + post_handoff_hint
+                                        )
+                                        routing_hint = post_handoff_hint
                                 else:
                                     # The new mode satisfies all remaining
                                     # intents; clear the stale hint so the
                                     # guards don't fire on the old one.
                                     routing_hint = ""
+                                    _state.duplicate_hint_count = 0
+                                    _state.last_hint_text = ""
                                 tool_output = f"Handed off to mode: {target_stage}." + (
                                     f" Rationale: {rationale}" if rationale else ""
                                 )
@@ -2496,6 +2664,20 @@ async def _run_turn_inner(
                                     ),
                                 }
                             )
+                        # If the entry operation for this handoff target
+                        # failed, do NOT ``continue`` into the data-less
+                        # mode. The model would have nothing to work on and
+                        # would drift into an unrelated action mode. Break
+                        # the loop with a deterministic failure so the user
+                        # sees the provider failure and re-issues.
+                        if _state.entry_failed:
+                            content = (
+                                f"The `{_state.entry_failed_mode}` mode's entry "
+                                f"operation failed ({_state.entry_failed_reason}). "
+                                f"Reconfigure the failed provider and re-issue the "
+                                f"request."
+                            )
+                            break
                         continue
                     if is_workflow:
                         wf_session_fn = hooks.workflow_session
@@ -2621,6 +2803,21 @@ async def _run_turn_inner(
                 tool_result_msg["thought_signature"] = thought_sig
             messages.append(tool_result_msg)
 
+        # ── Hard-failure / loop-guard while-break ──────────────────────
+        # The handoff, fork, and max-hops guards above set ``content`` and
+        # ``break`` out of the inner ``for tool_call in tool_calls:`` loop.
+        # But ``tools_dispatched`` is True (a tool was dispatched), so the
+        # ``if not tools_dispatched: break`` below would NOT break the
+        # outer ``while`` loop — the model would get another completion and
+        # could drift / hallucinate. These guards set a terminal-failure
+        # flag on ``_state``; honor it here by breaking the ``while`` so
+        # the deterministic failure ``content`` reaches the output guard.
+        if _state.entry_failed or _state.handoff_count > _MAX_HANDOFFS_PER_TURN or (
+            _state.fork_results is not None
+            and any(r.status == "no_tools" for r in _state.fork_results)
+        ):
+            break
+
         if not tools_dispatched:
             # No tool calls were dispatched — model returned text
             content = getattr(completion, "content", "") or ""
@@ -2717,7 +2914,17 @@ async def _run_turn_inner(
     # outputs emit a guardrail.audit event and skip the post-turn slice.
     output_guard_result = await hooks.context_seams.output_guard.validate(content, guard_surface)
     turn_blocked = False
-    if not output_guard_result.allowed:
+    if _state.entry_failed or _state.fork_results and any(
+        r.status == "no_tools" for r in (_state.fork_results or [])
+    ):
+        # A handoff entry operation failed, or a fork child was marked
+        # ``no_tools`` (hallucinated success). Either way the turn broke
+        # with a deterministic failure message. Mark blocked so the host
+        # skips opportunistic post-turn house-keeping (same contract as
+        # an output guard block) and the user sees a hard failure rather
+        # than a hallucinated success.
+        turn_blocked = True
+    elif not output_guard_result.allowed:
         original_len = len(content)
         safe_fallback = "I'm unable to provide that response. Please rephrase your request."
         _log.warning(
@@ -2816,17 +3023,8 @@ async def _run_turn_inner(
 # ---------------------------------------------------------------------------
 
 # Routing-hint cluster (extracted in Phase 1)
-from kernel.turn_phases._routing_hint import (  # noqa: E402,F401
-    _compute_capability_routing_hint,
-    _detect_query_intents,
-    _first_target_for_earliest_intent,
-    _format_remaining_steps,
-    _query_is_sequential,
-    _tool_effect,
-)
-
 # Fork fan-out cluster (extracted in Phase 2)
-from kernel.turn_phases._fork import (  # noqa: E402,F401
+from kernel.turn_phases._fork import (  # noqa: F401, F403
     _build_minimal_context,
     _execute_fork_fanout,
     _fork_child_budget,
@@ -2835,19 +3033,8 @@ from kernel.turn_phases._fork import (  # noqa: E402,F401
     _run_fork_child_turn,
 )
 
-# Tool-schema cluster (extracted in Phase 3)
-from kernel.turn_phases._tool_schemas import (  # noqa: E402,F401
-    _TRANSITION_TOOL_NAME,
-    _build_in_process_tool_schemas,
-    _mode_bound_operation_ids,
-    _operation_allowed_for_mode,
-    _prune_model_tool_schemas,
-    _rebuild_tool_schemas_for_mode,
-    _tool_schema_name,
-)
-
 # Post-turn / capability-gate / serialization cluster (extracted in Phase 4)
-from kernel.turn_phases._post_turn import (  # noqa: E402,F401
+from kernel.turn_phases._post_turn import (  # noqa: F401, F403
     _CapabilityGateBlock,
     _coerce_non_negative_float,
     _coerce_non_negative_int,
@@ -2858,4 +3045,22 @@ from kernel.turn_phases._post_turn import (  # noqa: E402,F401
     _to_tool_context,
     _validate_model_capabilities,
 )
+from kernel.turn_phases._routing_hint import (  # noqa: F401, F403
+    _compute_capability_routing_hint,
+    _detect_query_intents,
+    _first_target_for_earliest_intent,
+    _format_remaining_steps,
+    _query_is_sequential,
+    _tool_effect,
+)
 
+# Tool-schema cluster (extracted in Phase 3)
+from kernel.turn_phases._tool_schemas import (  # noqa: F401, F403
+    _TRANSITION_TOOL_NAME,
+    _build_in_process_tool_schemas,
+    _mode_bound_operation_ids,
+    _operation_allowed_for_mode,
+    _prune_model_tool_schemas,
+    _rebuild_tool_schemas_for_mode,
+    _tool_schema_name,
+)

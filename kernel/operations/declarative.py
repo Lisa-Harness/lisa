@@ -23,6 +23,7 @@ from kernel.models import (
     ToolExecutionContext,
     ToolResult,
 )
+from kernel.operations.registry import OperationExecutionError
 from kernel.operations.structured_output import (
     is_structured_output_unsupported,
     json_only_instruction,
@@ -263,10 +264,25 @@ async def execute_declarative_operation(
                 temperature=completion_temperature,
                 tools=ctx.tool_schemas or None,
             )
-            parsed_payload = _parse_structured_payload(
-                response_format_model,
-                completion.content,
-            )
+            # Guard empty retry content the same way the first attempt does
+            # (line ~246: ``if response_format_model is not None and
+            # completion.content:``). Without this, a JSON-only retry that
+            # returns no text (e.g. a tool-call-only turn or a provider that
+            # drops ``response_format``) feeds ``model_validate_json("")``
+            # and leaks an opaque Pydantic "Invalid JSON: EOF" ValidationError
+            # to callers — the 2026-07-25 ``web_search`` incident. Surface a
+            # typed ``OperationExecutionError`` instead so the turn runner can
+            # treat an empty upstream result as a hard failure.
+            if response_format_model is not None and completion.content:
+                parsed_payload = _parse_structured_payload(
+                    response_format_model,
+                    completion.content,
+                )
+            else:
+                raise OperationExecutionError(
+                    f"Declarative operation '{operation_id}' returned no content "
+                    f"after JSON-only retry; cannot parse structured output."
+                )
         else:
             parsed_payload = parsed_payload if response_format_model is not None else None
 

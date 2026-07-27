@@ -64,6 +64,16 @@ def extract_json_object(text: str) -> str:
     return normalized
 
 
+class EmptyStructuredOutputError(ValueError):
+    """Raised when a structured-output completion returned no text at all.
+
+    Distinct from ``ValidationError``: the provider emitted nothing parseable
+    (empty string or whitespace only), so there is no JSON to validate.
+    Callers should treat this as a hard upstream failure (the model returned
+    no content on a JSON-only retry) rather than a malformed-JSON retry case.
+    """
+
+
 def parse_structured_payload(
     response_format_model: type[BaseModel],
     content: str,
@@ -71,9 +81,17 @@ def parse_structured_payload(
     """Parse structured output, tolerating fenced JSON and wrapper prose.
 
     Tries a direct ``model_validate_json`` first, then falls back to
-    extracting the first ``{...}`` block. Raises ``ValidationError`` if
-    neither attempt yields a valid payload.
+    extracting the first ``{...}`` block. Raises ``EmptyStructuredOutputError``
+    (a ``ValueError`` subclass) when ``content`` is empty/whitespace, so
+    callers can distinguish "provider returned nothing" from "provider
+    returned malformed JSON". Raises ``ValidationError`` when the content
+    is non-empty but neither attempt yields a valid payload.
     """
+
+    if not str(content or "").strip():
+        raise EmptyStructuredOutputError(
+            "Empty structured-output content; provider returned no text"
+        )
 
     try:
         return response_format_model.model_validate_json(content)
