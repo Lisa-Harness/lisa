@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 import os
+import re
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -129,9 +130,27 @@ def discover_packs_venv_content_roots(  # noqa: C901,PLR0912
 
     site_packages = site_packages_resolver(venv_path)
     lisa_packs_dir = site_packages / _LISA_PACKS_DIR_NAME
-    if not lisa_packs_dir.is_dir():
-        return []
 
+    roots: list[Path] = []
+    # Non-editable installs: lisa_packs/<pack_name>/ directories copied
+    # into the packs venv site-packages.
+    if lisa_packs_dir.is_dir():
+        roots.extend(_scan_lisa_packs_dir(lisa_packs_dir, excluded_packs))
+    # Editable installs: uv pip install -e creates __editable___<name>_finder.py
+    # files whose MAPPING dict points back to the source lisa_packs/ directory.
+    # Entry-point discovery misses these because importlib.metadata caches at
+    # startup; the filesystem scan misses them because nothing is copied into
+    # site-packages/lisa_packs/. Parse the finder files to recover the source
+    # lisa_packs/ dir and scan it the same way as the non-editable path.
+    roots.extend(_scan_editable_packs(site_packages, excluded_packs))
+    return _dedupe_paths(roots)
+
+
+def _scan_lisa_packs_dir(
+    lisa_packs_dir: Path,
+    excluded_packs: set[str] | None,
+) -> list[Path]:
+    """Scan a ``lisa_packs/`` directory for pack content roots."""
     import tomllib  # noqa: PLC0415
 
     roots: list[Path] = []
@@ -140,7 +159,6 @@ def discover_packs_venv_content_roots(  # noqa: C901,PLR0912
             continue
         if pack_dir.name.startswith("_") or pack_dir.name.startswith("."):
             continue
-        # Infer the package name from pyproject.toml.
         pyproject = pack_dir / "pyproject.toml"
         if pyproject.is_file():
             try:
@@ -152,13 +170,52 @@ def discover_packs_venv_content_roots(  # noqa: C901,PLR0912
         else:
             name = None
         if not name:
-            # Fallback: infer from the directory name.
             name = f"lisa-pack-{pack_dir.name}"
         normalized = normalize_pack_name(str(name))
         if excluded_packs and normalized in excluded_packs:
             continue
         roots.append(pack_dir)
-    return _dedupe_paths(roots)
+    return roots
+
+
+_EDITABLE_FINDER_PREFIX = "__editable___lisa_pack_"
+_EDITABLE_FINDER_SUFFIX = "_finder.py"
+# Match: MAPPING: dict[str, str] = {'lisa_packs': '<path>'}
+_EDITABLE_MAPPING_RE = re.compile(
+    r"MAPPING\s*:\s*dict\[str,\s*str\]\s*=\s*\{\s*'lisa_packs'\s*:\s*'([^']+)'\s*\}"
+)
+
+
+def _scan_editable_packs(
+    site_packages: Path,
+    excluded_packs: set[str] | None,
+) -> list[Path]:
+    """Scan editable-install finder files for pack content roots.
+
+    ``uv pip install -e`` writes ``__editable___lisa_pack_<name>_finder.py``
+    into site-packages. Each finder's ``MAPPING`` dict maps
+    ``'lisa_packs'`` to the source ``lisa_packs/`` directory. This scans
+    those source directories for ``<pack_name>/`` content roots the same
+    way the non-editable path scans ``site-packages/lisa_packs/``.
+    """
+    roots: list[Path] = []
+    for entry in sorted(site_packages.iterdir()):
+        if not entry.is_file() or not entry.name.startswith(_EDITABLE_FINDER_PREFIX):
+            continue
+        if not entry.name.endswith(_EDITABLE_FINDER_SUFFIX):
+            continue
+        try:
+            text = entry.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        match = _EDITABLE_MAPPING_RE.search(text)
+        if not match:
+            continue
+        source_lisa_packs = Path(match.group(1).encode("utf-8").decode("unicode_escape"))
+        if not source_lisa_packs.is_dir():
+            continue
+        roots.extend(_scan_lisa_packs_dir(source_lisa_packs, excluded_packs))
+    return roots
 
 
 def discover_configured_content_roots() -> list[Path]:
