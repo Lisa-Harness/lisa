@@ -19,20 +19,40 @@ from kernel.models import (
 
 
 @dataclass(frozen=True, slots=True)
+class RouterModelRef:
+    """A snapshot of one model's manifest metadata for router conditions.
+
+    Routers receive the *effective* model — the model actually selected for
+    the preceding iteration (or the statically-resolved preferred model on
+    iteration 1) — so conditions can inspect ``model.cost_tier``,
+    ``model.capabilities``, etc. without coupling to the manifest.
+    """
+
+    model_id: str = ""
+    provider: str = ""
+    cost_tier: str = ""
+    latency_tier: str = ""
+    capabilities: tuple[str, ...] = ()
+    reasoning_model: bool = False
+    thinking_model: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class RouterRequest:
     """Inputs to one model-router ``choose`` call.
 
     The turn loop constructs one ``RouterRequest`` per iteration and passes
     it to the active ``ModelRouter`` (if wired). The router inspects these
-    fields and returns a ``RouterDecision`` naming the model to use for that
-    iteration.
+    fields and returns a ``RouterDecision`` — either a model selection or a
+    terminal action (``finish`` / ``transition_to``).
 
     Fields mirror the information already available inside the turn loop:
     the statically-resolved default model, the iteration number, how many
     tool calls have fired, how much tool-call budget remains, the user query,
     the last tool result text (if any), the capabilities the current mode's
-    tool surface requires, the active mode id, and the cross-cutting roles
-    the turn requested (e.g. ``("deep",)`` for ``/deep``).
+    tool surface requires, the active mode id, the cross-cutting roles the
+    turn requested (e.g. ``("deep",)`` for ``/deep``), and the metadata of the
+    model effective in the preceding iteration (``effective_model``).
     """
 
     default_model_id: str
@@ -44,19 +64,31 @@ class RouterRequest:
     required_capabilities: tuple[str, ...] = ()
     mode_id: str = ""
     roles_needed: tuple[str, ...] = ()
+    effective_model: RouterModelRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class RouterDecision:
     """The output of one model-router ``choose`` call.
 
-    ``model_id`` references a model in the manifest — the turn loop feeds it
-    back through ``resolve_model()`` and the existing provider-gateway path.
+    Exactly one action is set:
+
+    - ``model_id`` — select a model for this iteration. The turn loop feeds
+      it back through ``resolve_model()`` and the existing provider-gateway
+      path.
+    - ``finish`` — stop the tool loop and force one final no-tools
+      completion. The value is a short reason slug for telemetry/audit
+      (e.g. ``"tool_budget_exhausted"``).
+    - ``transition_to`` — move the active workflow to a named terminal stage,
+      then produce its closing summary. The value is the target stage id.
+
     ``reason`` is a human-readable string for telemetry/audit. ``routed_by``
     identifies which router made the decision (e.g. ``"lisa-router"``).
     """
 
-    model_id: str
+    model_id: str = ""
+    finish: str = ""
+    transition_to: str = ""
     reason: str = ""
     routed_by: str = ""
 

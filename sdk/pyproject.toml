@@ -23,6 +23,10 @@ dependencies = [
     # Copilot customization file globbing (applyTo / paths). Supports **,
     # brace alternation, and comma-lists the way Copilot's matcher does.
     "wcmatch>=8.5",
+    # CEL expression engine for the built-in lisa-router backend.
+    # Rules are compiled eagerly at router construction and evaluated
+    # per iteration against the turn/router/model activation context.
+    "cel-python>=0.5.0",
 ]
 
 [project.optional-dependencies]

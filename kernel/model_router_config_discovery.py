@@ -11,9 +11,9 @@ shape of the ``router:`` block in ``models.yaml``:
         return {
             "backend": "lisa-router",
             "rules": [
-                {"when": "required_capabilities includes \"code\"", "use": "gpt-5.2-codex"},
-                {"when": "iteration > 1 and last_tool_result is not None", "use": "gpt-5.4"},
-                {"when": "tool_calls_so_far >= 5", "use": "gpt-5.4-mini"},
+                {"when": '"code" in route.required_capabilities', "use": "gpt-5.2-codex"},
+                {"when": "turn.iteration > 1 && turn.has_tool_result", "use": "gpt-5.4"},
+                {"when": "turn.tool_calls_so_far >= 5", "use": "gpt-5.4-mini"},
             ],
             "fallback": "gemma4:cloud",
         }

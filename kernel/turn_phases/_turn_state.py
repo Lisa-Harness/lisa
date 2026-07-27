@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from kernel.models import ToolResult
+from kernel.seams.protocols import RouterModelRef
 from kernel.tools.registry import execute_tool
 
 if TYPE_CHECKING:
@@ -57,6 +58,15 @@ class _TurnState:
     last_tool_result_text: str | None = None
     required_capabilities: tuple[str, ...] = ()
     roles_needed: tuple[str, ...] = ()
+    # Metadata of the model effective in the preceding iteration. Set after
+    # the first completion; on iteration 1 the router receives the static
+    # preferred model via RouterRequest.effective_model.
+    effective_model: Any = None
+    # When the router returns a terminal action (finish / transition_to),
+    # resolve_iteration_model stores it here so the turn loop can act on
+    # it after the model-selection path. Cleared at the start of each
+    # iteration.
+    pending_router_decision: Any = None
 
     # ── Content / outcome accumulators ───────────────────────────────
     content: str = ""
@@ -186,14 +196,26 @@ def resolve_iteration_model(
     """Three-tier per-iteration model selection.
 
     1. ``ContextSeams.model_router`` — the formal ``ModelRouter`` Protocol
-       with a widened ``RouterRequest``.
+       with a widened ``RouterRequest`` (now including ``effective_model``).
     2. ``ModelPolicy.choose`` — the legacy duck-typed optional method.
     3. Static ``model_def`` — the once-resolved ``preferred_model_id``.
+
+    When the router returns a terminal action (``finish`` or
+    ``transition_to``), the decision is stored on
+    ``state.pending_router_decision`` and the static ``model_def`` is
+    returned — the turn loop inspects the pending decision after this call
+    and forces a final completion or a workflow transition accordingly.
     """
-    from kernel.seams.protocols import RouterDecision, RouterRequest  # noqa: PLC0415
+    from kernel.seams.protocols import (  # noqa: PLC0415
+        RouterDecision,
+        RouterRequest,
+    )
+
+    state.pending_router_decision = None
 
     router = hooks.context_seams.model_router
     if router is not None:
+        effective_ref = _effective_model_ref(state, model_def, preferred_model_id)
         req = RouterRequest(
             default_model_id=preferred_model_id,
             iteration=iteration_num,
@@ -210,6 +232,7 @@ def resolve_iteration_model(
             required_capabilities=state.required_capabilities,
             mode_id=mode_id,
             roles_needed=state.roles_needed,
+            effective_model=effective_ref,
         )
         try:
             decision = router.choose(req)
@@ -220,18 +243,27 @@ def resolve_iteration_model(
                 exc_info=True,
             )
             decision = None
-        if isinstance(decision, RouterDecision) and decision.model_id.strip():
-            resolved = resolve_model(decision.model_id.strip())
-            if resolved is not None:
-                return resolved
-            log.warning(
-                "model_router returned unknown model_id %r; falling back",
-                decision.model_id,
-            )
+        if isinstance(decision, RouterDecision):
+            if decision.finish.strip():
+                state.pending_router_decision = decision
+                return model_def
+            if decision.transition_to.strip():
+                state.pending_router_decision = decision
+                return model_def
+            if decision.model_id.strip():
+                resolved = resolve_model(decision.model_id.strip())
+                if resolved is not None:
+                    state.effective_model = resolved
+                    return resolved
+                log.warning(
+                    "model_router returned unknown model_id %r; falling back",
+                    decision.model_id,
+                )
         elif isinstance(decision, str) and decision.strip():
             # Tolerate routers that return a bare model_id string.
             resolved = resolve_model(decision.strip())
             if resolved is not None:
+                state.effective_model = resolved
                 return resolved
     # Legacy duck-typed ``choose`` on ModelPolicy.
     policy = hooks.context_seams.model_policy
@@ -250,5 +282,35 @@ def resolve_iteration_model(
             ),
         )
         if isinstance(chosen_id, str) and chosen_id.strip():
-            return resolve_model(chosen_id.strip())
+            resolved = resolve_model(chosen_id.strip())
+            if resolved is not None:
+                state.effective_model = resolved
+                return resolved
+    state.effective_model = model_def
     return model_def
+
+
+def _effective_model_ref(
+    state: _TurnState,
+    model_def: Any,
+    preferred_model_id: str,
+) -> RouterModelRef:
+    """Build a RouterModelRef from the effective/preceding model.
+
+    On iteration 1, ``state.effective_model`` is None (nothing has run yet),
+    so we use ``model_def`` — the statically-resolved preferred model. On
+    later iterations, ``state.effective_model`` carries the model actually
+    selected in the preceding iteration.
+    """
+    source = state.effective_model if state.effective_model is not None else model_def
+    if source is None:
+        return RouterModelRef(model_id=preferred_model_id)
+    return RouterModelRef(
+        model_id=getattr(source, "model_id", "") or preferred_model_id,
+        provider=getattr(source, "provider", "") or "",
+        cost_tier=getattr(source, "cost_tier", "") or "",
+        latency_tier=getattr(source, "latency_tier", "") or "",
+        capabilities=tuple(getattr(source, "capabilities", ()) or ()),
+        reasoning_model=bool(getattr(source, "reasoning_model", False)),
+        thinking_model=bool(getattr(source, "thinking_model", False)),
+    )

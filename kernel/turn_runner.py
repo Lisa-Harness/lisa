@@ -1645,6 +1645,62 @@ async def _run_turn_inner(
                 _state.total_tokens,
             )
         effective_model_def = _resolve_iteration_model(_state.iteration)
+        # ── Router terminal actions ──────────────────────────────────
+        # When the model router returns a ``finish`` or ``transition_to``
+        # action, the turn loop forces a final no-tools completion instead
+        # of continuing the tool loop. ``finish`` strips tools immediately;
+        # ``transition_to`` first moves the active workflow to the named
+        # terminal stage (validated against the workflow's allowed
+        # transitions), then strips tools so the model produces the stage's
+        # closing summary. Both reuse the existing budget-finalization path
+        # (tools=None → model must respond with text).
+        _router_decision = _state.pending_router_decision
+        if _router_decision is not None:
+            if _router_decision.finish.strip():
+                _log.info(
+                    "router finish action (iteration=%d, reason=%s); forcing final",
+                    _state.iteration,
+                    _router_decision.finish,
+                )
+                effective_tools = None
+            elif _router_decision.transition_to.strip():
+                _target_stage = _router_decision.transition_to.strip()
+                if is_workflow and hooks.workflow_session is not None:
+                    _wf_session = hooks.workflow_session()
+                    if _wf_session is not None:
+                        try:
+                            _transition_req = WorkflowTransitionRequest(
+                                target_stage_id=_target_stage,
+                                rationale=f"router transition_to: {_router_decision.reason}",
+                            )
+                            _updated_session = apply_transition(_wf_session, _transition_req)
+                            if hooks.workflow_session_updater is not None:
+                                hooks.workflow_session_updater(_updated_session)
+                            transitioned_to = _updated_session.stage_id
+                            _log.info(
+                                "router transition_to action (iteration=%d, "
+                                "stage=%s); forcing final summary",
+                                _state.iteration,
+                                _target_stage,
+                            )
+                        except Exception as trans_exc:  # pylint: disable=broad-except
+                            _log.warning(
+                                "router transition_to to stage %r failed: %s; "
+                                "falling back to normal completion",
+                                _target_stage,
+                                trans_exc,
+                            )
+                    else:
+                        _log.warning(
+                            "router transition_to action but no active workflow "
+                            "session; ignoring"
+                        )
+                else:
+                    _log.warning(
+                        "router transition_to action but not in a workflow "
+                        "mode; ignoring"
+                    )
+                effective_tools = None
         await _emit_stage(
             "model_call",
             {

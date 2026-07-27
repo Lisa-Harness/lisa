@@ -42,12 +42,32 @@ class RouterRule:
     """One conditional routing rule from the ``router.rules`` manifest block.
 
     ``when`` is a free-form condition string interpreted by the active router
-    backend (e.g. ``required_capabilities includes "code"``).
-    ``use`` is the model_id to route to when the condition matches.
+    backend. For the built-in ``lisa-router`` backend it is a CEL expression
+    (see ``sdk/router/router.py`` and ``docs/MODEL_ROUTER.md``).
+
+    Exactly one action field is set:
+
+    - ``use`` — route to this model_id for the matching iteration.
+    - ``finish`` — stop the tool loop after one final no-tools completion.
+      The value is a short reason slug for telemetry/audit.
+    - ``transition_to`` — move the active workflow to this named terminal
+      stage, then produce its closing summary.
+
+    A rule with zero or more than one action set is rejected at load time.
     """
 
     when: str
-    use: str
+    use: str = ""
+    finish: str = ""
+    transition_to: str = ""
+
+    def action_kind(self) -> str:
+        """Return ``"use"``, ``"finish"``, or ``"transition_to"`` for this rule."""
+        if self.use:
+            return "use"
+        if self.finish:
+            return "finish"
+        return "transition_to"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +76,8 @@ class RouterConfig:
 
     ``backend`` names the active router backend (e.g. ``"lisa-router"``).
     ``rules`` is an ordered list of ``RouterRule`` entries evaluated
-    first-match-wins. ``fallback`` is the model_id used when no rule matches.
+    first-match-wins. ``fallback`` is the model_id used when no rule matches;
+    it is model-selection-only — terminal actions cannot be fallbacks.
     When ``backend`` is empty, no router is active — the manifest's
     ``mode_models``/``roles`` static resolution is the only path.
     """
@@ -253,15 +274,26 @@ def _parse_router_config(
             raise ValueError(f"router.rules entry #{index} must be an object.")
         condition = str(raw_rule.get("when") or "").strip()
         use = str(raw_rule.get("use") or "").strip()
+        finish = str(raw_rule.get("finish") or "").strip()
+        transition_to = str(raw_rule.get("transition_to") or "").strip()
         if not condition:
             raise ValueError(f"router.rules entry #{index} must include a non-empty 'when'.")
-        if not use:
-            raise ValueError(f"router.rules entry #{index} must include a non-empty 'use'.")
-        rules.append(RouterRule(when=condition, use=use))
+        actions = [a for a in (use, finish, transition_to) if a]
+        if not actions:
+            raise ValueError(
+                f"router.rules entry #{index} must include one of "
+                f"'use', 'finish', or 'transition_to'."
+            )
+        if len(actions) > 1:
+            raise ValueError(
+                f"router.rules entry #{index} must set exactly one of "
+                f"'use', 'finish', or 'transition_to' (got {len(actions)})."
+            )
+        rules.append(RouterRule(when=condition, use=use, finish=finish, transition_to=transition_to))
 
     # Validate that ``fallback`` and every ``rules[].use`` reference a known model.
     for rule in rules:
-        if all(
+        if rule.use and all(
             rule.use.lower() not in {model.key.lower(), model.model_id.lower()} for model in models
         ):
             available = ", ".join(sorted(model.model_id for model in models))

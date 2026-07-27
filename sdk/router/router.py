@@ -1,73 +1,128 @@
-"""Rules-based model router engine.
+"""CEL-based model router engine.
 
 Evaluates the ``router.rules`` block from the manifest against the turn
-state in ``RouterRequest``. Each rule's ``when`` condition is a simple
-expression evaluated against the request fields and the candidate model's
-metadata. The first matching rule wins (first-match-wins); if no rule
-matches, the ``router.fallback`` model is used; if no fallback is configured,
-the router returns ``None`` so the turn loop falls back to the statically
-resolved ``preferred_model_id``.
+state in ``RouterRequest``. Each rule's ``when`` condition is a
+`CEL <https://github.com/google/cel-spec>`_ expression compiled eagerly at
+router construction time. The first matching rule wins (first-match-wins).
 
-Supported condition syntax (case-insensitive keywords):
+A rule selects one action:
 
-- ``required_capabilities includes "code"``
-    True when every capability in the quoted list is present in
-    ``RouterRequest.required_capabilities``.
+- ``use: <model_id>`` — route this iteration to the named model.
+- ``finish: <reason>`` — stop the tool loop and force one final no-tools
+  completion.
+- ``transition_to: <stage_id>`` — move the active workflow to a named
+  terminal stage, then produce its closing summary.
 
-- ``iteration > 1``
-    True when the iteration number exceeds the integer on the right.
+If no rule matches, the ``router.fallback`` model is used; if no fallback
+is configured, the router returns ``None`` so the turn loop falls back to
+the statically-resolved ``preferred_model_id``.
 
-- ``iteration > 1 and last_tool_result is not None``
-    Compound with ``and`` / ``or``. ``last_tool_result is not None`` is true
-    when at least one tool has returned a result this turn.
+Supported CEL bindings (see ``docs/MODEL_ROUTER.md`` for the full guide):
 
-- ``cost_tier == "frontier"``
-    True when the *target* model (``rule.use``) has the given ``cost_tier``.
+- ``turn.iteration`` — the 1-based iteration number.
+- ``turn.tool_calls_so_far`` — tool calls dispatched so far this turn.
+- ``turn.budget_remaining`` — remaining tool-call budget, or ``-1`` when
+  unlimited/unknown (CEL has no nullable int; ``-1`` is the sentinel).
+- ``turn.last_tool_result`` — the last tool result text, or ``""`` when
+  none. Use ``turn.has_tool_result`` for a boolean.
+- ``route.query`` — the user query text.
+- ``route.mode_id`` — the active mode id.
+- ``route.roles_needed`` — a list of role names (e.g. ``["deep"]``).
+- ``route.required_capabilities`` — a list of required capability names.
+- ``model.model_id`` / ``model.provider`` / ``model.cost_tier`` /
+  ``model.latency_tier`` / ``model.capabilities`` /
+  ``model.reasoning_model`` / ``model.thinking_model`` — the metadata of
+  the model effective in the preceding iteration (or the static preferred
+  model on iteration 1).
 
-- ``tool_calls_so_far >= 3``
-    True when the number of tool calls so far meets or exceeds the threshold.
+Example rules::
 
-Conditions are intentionally simple — single predicates joined by ``and`` /
-``or``. This keeps the engine dependency-free (no eval, no AST parser) and
-auditable. Complex routing needs should use a vendor backend (e.g.
-``lisa-pack-aoi-router``).
+    rules:
+      - when: '"code" in route.required_capabilities'
+        use: gpt-5.2-codex
+      - when: '"deep" in route.roles_needed && turn.iteration >= 3'
+        use: default
+      - when: turn.tool_calls_so_far >= 8
+        finish: tool_budget_exhausted
+      - when: turn.iteration >= 10
+        transition_to: summary
+
+Conditions are standard CEL — boolean expressions with ``&&``, ``||``,
+``!``, comparisons, ``in`` (list/map membership), and function calls. This
+keeps the engine free of custom parsing while remaining safe (CEL has no
+side effects, no I/O, no arbitrary code execution). Complex routing needs
+can still use a vendor backend (e.g. ``lisa-pack-aoi-router``).
 """
 
 from __future__ import annotations
 
 import logging
-import re
+from typing import Any
+
+import celpy
 
 from kernel.model_manifest import ModelManifest, RouterRule
-from kernel.seams.protocols import ModelRouter, RouterDecision, RouterRequest
+from kernel.seams.protocols import (
+    ModelRouter,
+    RouterDecision,
+    RouterModelRef,
+    RouterRequest,
+)
 
 logger = logging.getLogger(__name__)
 
 _ROUTE_REASON_PREFIX = "lisa-router: "
 
+# Sentinel for "no budget information" in CEL, which lacks nullable ints.
+_BUDGET_UNKNOWN = -1
+
 
 class LisaRouter(ModelRouter):
-    """Built-in rules-based model router.
+    """Built-in CEL-based model router.
 
     Constructed with a loaded ``ModelManifest`` whose ``router`` block is
-    active (``backend == "lisa-router"``). The ``choose`` method evaluates
-    each rule in order; the first match returns a ``RouterDecision`` naming
-    the rule's ``use`` model.
+    active (``backend == "lisa-router"``). Every rule's ``when`` expression
+    is compiled to a CEL program at construction time; a parse error is
+    raised immediately so an invalid manifest fails at startup rather than
+    silently mis-routing turns. The ``choose`` method evaluates each compiled
+    rule in order; the first match returns a ``RouterDecision`` carrying the
+    rule's action.
     """
 
     def __init__(self, manifest: ModelManifest) -> None:
         self._manifest = manifest
-        self._rules: tuple[RouterRule, ...] = manifest.router.rules if manifest.router else ()
+        self._rules: tuple[tuple[RouterRule, celpy.Runner], ...] = ()
+        if manifest.router is not None:
+            env = celpy.Environment()
+            compiled: list[tuple[RouterRule, celpy.Runner]] = []
+            for rule in manifest.router.rules:
+                try:
+                    ast = env.compile(rule.when)
+                    program = env.program(ast)
+                except Exception as exc:  # pylint: disable=broad-except
+                    raise ValueError(
+                        f"lisa-router: failed to compile CEL expression "
+                        f"{rule.when!r}: {exc}"
+                    ) from exc
+                compiled.append((rule, program))
+            self._rules = tuple(compiled)
         self._fallback: str = manifest.router.fallback if manifest.router else ""
 
     def choose(self, req: RouterRequest) -> RouterDecision | None:
-        for rule in self._rules:
-            if self._evaluate(rule.when, req):
-                return RouterDecision(
-                    model_id=rule.use,
-                    reason=f"{_ROUTE_REASON_PREFIX}rule '{rule.when}' matched at iteration {req.iteration}",
-                    routed_by="lisa-router",
+        activation = _build_activation(req)
+        for rule, program in self._rules:
+            try:
+                result = program.evaluate(activation)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning(
+                    "lisa-router: CEL evaluation failed for %r: %s",
+                    rule.when,
+                    exc,
                 )
+                continue
+            if not _truthy(result):
+                continue
+            return _decision_for_rule(rule, req)
         if self._fallback:
             return RouterDecision(
                 model_id=self._fallback,
@@ -78,94 +133,86 @@ class LisaRouter(ModelRouter):
         # falls back to the statically-resolved preferred_model_id.
         return None
 
-    def _evaluate(self, condition: str, req: RouterRequest) -> bool:
-        """Evaluate one ``when`` condition string against the request."""
 
-        normalized = condition.strip()
-        if not normalized:
-            return False
-
-        # Split on top-level ``or`` (lowest precedence).
-        or_parts = _split_top_level(normalized, " or ")
-        if len(or_parts) > 1:
-            return any(self._evaluate(part, req) for part in or_parts)
-
-        # Split on top-level ``and``.
-        and_parts = _split_top_level(normalized, " and ")
-        if len(and_parts) > 1:
-            return all(self._evaluate(part, req) for part in and_parts)
-
-        # Single predicate.
-        return self._evaluate_predicate(normalized, req)
-
-    def _evaluate_predicate(self, predicate: str, req: RouterRequest) -> bool:
-        """Evaluate one atomic predicate."""
-
-        pred = predicate.strip().lower()
-
-        # required_capabilities includes "code"
-        m = re.match(
-            r'required_capabilities\s+includes\s+"([^"]+)"',
-            pred,
-        )
-        if m:
-            caps = m.group(1)
-            required = {c.lower() for c in req.required_capabilities}
-            return all(c.strip().lower() in required for c in caps.split(","))
-
-        # last_tool_result is not None / is None
-        if pred == "last_tool_result is not none":
-            return req.last_tool_result is not None
-        if pred == "last_tool_result is none":
-            return req.last_tool_result is None
-
-        # iteration > N  /  iteration >= N
-        m = re.match(r"iteration\s*([><]=?|==)\s*(\d+)", pred)
-        if m:
-            op, val = m.group(1), int(m.group(2))
-            return _compare(req.iteration, op, val)
-
-        # tool_calls_so_far > N  /  >= N
-        m = re.match(r"tool_calls_so_far\s*([><]=?|==)\s*(\d+)", pred)
-        if m:
-            op, val = m.group(1), int(m.group(2))
-            return _compare(req.tool_calls_so_far, op, val)
-
-        # cost_tier == "frontier"  (checks the *target* model from rule.use —
-        # but we don't know the target here; this predicate is evaluated
-        # against the request, not the candidate. We skip it.)
-        # NOTE: cost_tier conditions require knowing the candidate model,
-        # which is the rule's ``use`` field — not available in the request.
-        # A future extension could pass the candidate model to the predicate.
-
-        logger.debug("lisa-router: unrecognized predicate %r; treating as false", predicate)
+def _truthy(value: Any) -> bool:
+    """Coerce a CEL result to a Python bool, tolerating celpy's bool types."""
+    if isinstance(value, bool):
+        return value
+    # celpy returns BoolType, a bool subclass, but be defensive.
+    try:
+        return bool(value)
+    except Exception:  # pylint: disable=broad-except
         return False
 
 
-def _split_top_level(text: str, separator: str) -> list[str]:
-    """Split ``text`` on ``separator`` at the top level (not inside quotes).
-
-    A simple split is safe because conditions don't nest parentheses —
-    ``and`` / ``or`` are the only composition operators and they don't appear
-    inside quoted strings.
-    """
-    if separator not in text:
-        return [text]
-    return [part.strip() for part in text.split(separator) if part.strip()]
-
-
-def _compare(left: int, op: str, right: int) -> bool:
-    if op == ">":
-        return left > right
-    if op == "<":
-        return left < right
-    if op == ">=":
-        return left >= right
-    if op == "<=":
-        return left <= right
-    if op == "==":
-        return left == right
-    return False
+def _decision_for_rule(rule: RouterRule, req: RouterRequest) -> RouterDecision:
+    """Build the RouterDecision for one matching rule."""
+    reason = f"{_ROUTE_REASON_PREFIX}rule '{rule.when}' matched at iteration {req.iteration}"
+    kind = rule.action_kind()
+    if kind == "use":
+        return RouterDecision(model_id=rule.use, reason=reason, routed_by="lisa-router")
+    if kind == "finish":
+        return RouterDecision(
+            finish=rule.finish,
+            reason=f"{reason} (finish: {rule.finish})",
+            routed_by="lisa-router",
+        )
+    return RouterDecision(
+        transition_to=rule.transition_to,
+        reason=f"{reason} (transition_to: {rule.transition_to})",
+        routed_by="lisa-router",
+    )
 
 
-__all__ = ["LisaRouter"]
+def _build_activation(req: RouterRequest) -> dict[str, Any]:
+    """Build the CEL activation context from a RouterRequest."""
+
+    budget = req.budget_remaining
+    budget_val = budget if budget is not None else _BUDGET_UNKNOWN
+
+    last_result = req.last_tool_result or ""
+
+    turn_ctx: dict[str, Any] = {
+        "iteration": req.iteration,
+        "tool_calls_so_far": req.tool_calls_so_far,
+        "budget_remaining": budget_val,
+        "last_tool_result": last_result,
+        "has_tool_result": last_result != "",
+    }
+    route_ctx: dict[str, Any] = {
+        "query": req.query,
+        "mode_id": req.mode_id,
+        "roles_needed": list(req.roles_needed),
+        "required_capabilities": list(req.required_capabilities),
+    }
+
+    if req.effective_model is not None:
+        m = req.effective_model
+        model_ctx: dict[str, Any] = {
+            "model_id": m.model_id,
+            "provider": m.provider,
+            "cost_tier": m.cost_tier,
+            "latency_tier": m.latency_tier,
+            "capabilities": list(m.capabilities),
+            "reasoning_model": m.reasoning_model,
+            "thinking_model": m.thinking_model,
+        }
+    else:
+        model_ctx = {
+            "model_id": req.default_model_id,
+            "provider": "",
+            "cost_tier": "",
+            "latency_tier": "",
+            "capabilities": [],
+            "reasoning_model": False,
+            "thinking_model": False,
+        }
+
+    return {
+        "turn": celpy.json_to_cel(turn_ctx),
+        "route": celpy.json_to_cel(route_ctx),
+        "model": celpy.json_to_cel(model_ctx),
+    }
+
+
+__all__ = ["LisaRouter", "RouterModelRef"]

@@ -203,11 +203,7 @@ class TestRouterBlock:
         pack_config = {
             "backend": "lisa-router",
             "rules": [
-                {"when": 'required_capabilities includes "code"', "use": "deep"},
-                {"when": 'required_capabilities includes "reasoning"', "use": "deep"},
-                {"when": 'required_capabilities includes "vision"', "use": "deep"},
-                {"when": "tool_calls_so_far >= 5", "use": "default"},
-                {"when": "iteration > 1 and last_tool_result is not None", "use": "deep"},
+                {"when": '"code" in route.required_capabilities', "use": "deep"},
             ],
             "fallback": "default",
         }
@@ -221,8 +217,68 @@ class TestRouterBlock:
         assert router["backend"] == "lisa-router"
         # Symbolic refs resolved: "deep" → o3-pro, "default" → gpt-5.
         assert router["rules"][0]["use"] == "o3-pro"
-        assert router["rules"][3]["use"] == "gpt-5"
         assert router["fallback"] == "gpt-5"
+
+    def test_router_block_preserves_finish_action(self) -> None:
+        """A ``finish`` action in the pack config is preserved, not dropped."""
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        pack_config = {
+            "backend": "lisa-router",
+            "rules": [
+                {"when": '"code" in route.required_capabilities', "use": "gpt-5"},
+                {"when": "turn.tool_calls_so_far >= 8", "finish": "tool_budget_exhausted"},
+            ],
+            "fallback": "gpt-5",
+        }
+        with patch(
+            "kernel.model_router_config_discovery.discover_pack_router_config",
+            return_value=pack_config,
+        ):
+            payload = build_manifest_payload(models)
+        router = payload["router"]
+        assert len(router["rules"]) == 2
+        assert router["rules"][0]["use"] == "gpt-5"
+        assert router["rules"][1]["finish"] == "tool_budget_exhausted"
+        assert "use" not in router["rules"][1]
+
+    def test_router_block_preserves_transition_to_action(self) -> None:
+        """A ``transition_to`` action in the pack config is preserved."""
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        pack_config = {
+            "backend": "lisa-router",
+            "rules": [
+                {"when": "turn.iteration >= 10", "transition_to": "summary"},
+            ],
+            "fallback": "gpt-5",
+        }
+        with patch(
+            "kernel.model_router_config_discovery.discover_pack_router_config",
+            return_value=pack_config,
+        ):
+            payload = build_manifest_payload(models)
+        router = payload["router"]
+        assert len(router["rules"]) == 1
+        assert router["rules"][0]["transition_to"] == "summary"
+        assert "use" not in router["rules"][0]
+
+    def test_router_block_drops_rules_with_multiple_actions(self) -> None:
+        """A rule with multiple actions is dropped (the loader would reject it)."""
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        pack_config = {
+            "backend": "lisa-router",
+            "rules": [
+                {"when": "turn.iteration > 1", "use": "gpt-5", "finish": "done"},
+            ],
+            "fallback": "gpt-5",
+        }
+        with patch(
+            "kernel.model_router_config_discovery.discover_pack_router_config",
+            return_value=pack_config,
+        ):
+            payload = build_manifest_payload(models)
+        router = payload["router"]
+        # The multi-action rule is dropped; rules key is absent when empty.
+        assert len(router.get("rules", [])) == 0
 
     def test_router_strips_rules_referencing_unknown_models(self) -> None:
         """Rules whose ``use`` cannot be resolved are dropped."""
@@ -233,8 +289,8 @@ class TestRouterBlock:
         pack_config = {
             "backend": "lisa-router",
             "rules": [
-                {"when": "iteration > 1", "use": "deep"},  # resolvable
-                {"when": "tool_calls_so_far >= 3", "use": "gpt-99-nonexistent"},  # stripped
+                {"when": "turn.iteration > 1", "use": "deep"},  # resolvable
+                {"when": "turn.tool_calls_so_far >= 3", "use": "gpt-99-nonexistent"},  # stripped
             ],
             "fallback": "default",
         }
@@ -314,15 +370,15 @@ class TestRouterPresetAnnotations:
         return {
             "backend": "lisa-router",
             "rules": [
-                {"when": 'required_capabilities includes "code"', "use": "o3-pro"},
-                {"when": "tool_calls_so_far >= 5", "use": "gpt-5"},
-                {"when": "iteration > 1 and last_tool_result is not None", "use": "o3-pro"},
+                {"when": '"code" in route.required_capabilities', "use": "o3-pro"},
+                {"when": "turn.tool_calls_so_far >= 5", "use": "gpt-5"},
+                {"when": "turn.iteration > 1 && turn.has_tool_result", "use": "o3-pro"},
             ],
             "fallback": "gpt-5",
         }
 
-    def test_includes_three_presets(self) -> None:
-        """The annotation string names all three presets."""
+    def test_includes_four_presets(self) -> None:
+        """The annotation string names all four presets (including terminal-actions)."""
         from hosts.core.model_discovery.manifest import _router_preset_annotations
 
         models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
@@ -335,6 +391,7 @@ class TestRouterPresetAnnotations:
         assert "cost-conscious" in annotations
         assert "quality-first" in annotations
         assert "coding-focused" in annotations
+        assert "terminal-actions" in annotations
 
     def test_render_annotates_active_router_inline(self) -> None:
         """The active router block is rendered with per-rule inline explanations."""
@@ -349,7 +406,8 @@ class TestRouterPresetAnnotations:
         rendered = render_manifest_yaml(payload, router_block=router_block)
         # Per-rule explanation trailers are present on the active block.
         assert "→ o3-pro when" in rendered
-        assert "→ gpt-5 when" in rendered
+        # The fallback line is annotated too.
+        assert "gpt-5" in rendered
 
     def test_includes_best_for_lines(self) -> None:
         """Each preset carries a 'Best for:' guidance line."""

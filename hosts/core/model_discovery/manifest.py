@@ -167,6 +167,43 @@ def _resolve_router_ref(
     return ref if normalized in model_ids else ""
 
 
+def _resolve_router_rule(
+    raw_rule: Any,
+    *,
+    model_ids: set[str],
+    mode_models: dict[str, str],
+    roles: dict[str, str],
+) -> dict[str, str] | None:
+    """Resolve one raw rule dict to a concrete rule dict, or None to drop it.
+
+    Handles all three action types (``use``, ``finish``, ``transition_to``).
+    Rules with zero or more than one action are dropped. ``use`` refs are
+    resolved to concrete model ids; unresolvable refs drop the rule.
+    """
+
+    if not isinstance(raw_rule, dict):
+        return None
+    when = str(raw_rule.get("when") or "").strip()
+    if not when:
+        return None
+    use = str(raw_rule.get("use") or "").strip()
+    finish = str(raw_rule.get("finish") or "").strip()
+    transition_to = str(raw_rule.get("transition_to") or "").strip()
+    actions = [a for a in (use, finish, transition_to) if a]
+    if not actions or len(actions) > 1:
+        return None
+    if use:
+        resolved_use = _resolve_router_ref(
+            use, model_ids=model_ids, mode_models=mode_models, roles=roles
+        )
+        if not resolved_use:
+            return None
+        return {"when": when, "use": resolved_use}
+    action_key = "finish" if finish else "transition_to"
+    action_val = finish or transition_to
+    return {"when": when, action_key: action_val}
+
+
 def _build_router_block(
     models: tuple[DiscoveredModel, ...],
     *,
@@ -206,18 +243,11 @@ def _build_router_block(
 
     resolved_rules: list[dict[str, str]] = []
     for raw_rule in raw_rules:
-        if not isinstance(raw_rule, dict):
-            continue
-        when = str(raw_rule.get("when") or "").strip()
-        use = str(raw_rule.get("use") or "").strip()
-        if not when or not use:
-            continue
-        resolved_use = _resolve_router_ref(
-            use, model_ids=model_ids, mode_models=mode_models, roles=roles
+        resolved = _resolve_router_rule(
+            raw_rule, model_ids=model_ids, mode_models=mode_models, roles=roles
         )
-        if not resolved_use:
-            continue  # rule references a model not in the discovered set
-        resolved_rules.append({"when": when, "use": resolved_use})
+        if resolved is not None:
+            resolved_rules.append(resolved)
 
     resolved_fallback = (
         _resolve_router_ref(raw_fallback, model_ids=model_ids, mode_models=mode_models, roles=roles)
@@ -280,19 +310,26 @@ def _pick_code_model(
 
 
 # Per-predicate human-readable explanations, keyed by a substring of the
-# ``when`` condition. The first matching key wins; unknown predicates get a
-# generic "matches when the condition is true" fallback.
+# ``when`` CEL expression. The first matching key wins; unknown predicates
+# get a generic "the condition is true" fallback.
 _PREDICATE_EXPLANATIONS: tuple[tuple[str, str], ...] = (
-    ('required_capabilities includes "code"', "the mode's tool surface needs code"),
-    ('required_capabilities includes "reasoning"', "the mode declares a reasoning requirement"),
-    ('required_capabilities includes "vision"', "the turn needs vision/multimodal input"),
-    ("tool_calls_so_far >= 5", "the turn has made 5+ tool calls (budget pressure)"),
-    ("tool_calls_so_far >= 8", "the turn is very long (8+ tool calls)"),
-    ("tool_calls_so_far >= 3", "the turn has made 3+ tool calls"),
-    ("tool_calls_so_far >= 4", "the turn has made 4+ tool calls"),
-    ("iteration > 1 and last_tool_result is not None", "a tool just returned a result (synthesis phase)"),
-    ("iteration >= 2", "the turn is on its second iteration or later"),
-    ("iteration > 1", "the turn is past the first iteration"),
+    ('"code" in route.required_capabilities', "the mode's tool surface needs code"),
+    ('"reasoning" in route.required_capabilities', "the mode declares a reasoning requirement"),
+    ('"vision" in route.required_capabilities', "the turn needs vision/multimodal input"),
+    ("turn.tool_calls_so_far >= 5", "the turn has made 5+ tool calls (budget pressure)"),
+    ("turn.tool_calls_so_far >= 8", "the turn is very long (8+ tool calls)"),
+    ("turn.tool_calls_so_far >= 3", "the turn has made 3+ tool calls"),
+    ("turn.tool_calls_so_far >= 4", "the turn has made 4+ tool calls"),
+    (
+        "turn.iteration > 1 && turn.has_tool_result",
+        "a tool just returned a result (synthesis phase)",
+    ),
+    ("turn.iteration >= 2", "the turn is on its second iteration or later"),
+    ("turn.iteration > 1", "the turn is past the first iteration"),
+    ("turn.iteration >= 10", "the turn has run for 10+ iterations"),
+    ('"deep" in route.roles_needed', "the user invoked /deep (deep model role)"),
+    ('model.cost_tier == "standard"', "the effective model is cheap (standard tier)"),
+    ("model.reasoning_model", "the effective model is a reasoning model"),
 )
 
 
@@ -305,24 +342,31 @@ def _explain_predicate(when: str) -> str:
 
 
 def _rule_yaml_line(rule: dict[str, str]) -> str:
-    """Render one rule as a flow-style YAML ``{when: ..., use: ...}`` line.
+    """Render one rule as a flow-style YAML ``{when: ..., <action>: ...}`` line.
 
-    Matches the style the active ``router:`` block uses: bare ``when`` value
-    when it contains no YAML-special chars (so ``required_capabilities
-    includes "code"`` stays unquoted), and a bare ``use`` value when it is a
-    simple model id. ``use`` values containing ``:`` (e.g. ``glm-5.2:cloud``)
-    are single-quoted so PyYAML parses them as strings, not mappings.
+    CEL ``when`` expressions contain double-quotes (e.g.
+    ``"code" in route.required_capabilities``), so the whole ``when`` value
+    is single-quoted for YAML safety. ``use`` values containing ``:``
+    (e.g. ``glm-5.2:cloud``) are single-quoted so PyYAML parses them as
+    strings, not mappings. ``finish`` and ``transition_to`` actions are
+    rendered with their own key.
     """
     when = rule["when"]
-    use = rule["use"]
-    # ``when`` values from the default config never need quoting (they
-    # contain no ``: `` or leading special chars). Keep them bare for
-    # readability and to match the active block.
-    when_repr = when
-    # ``use`` values may contain ``:`` (model ids like ``glm-5.2:cloud``);
-    # quote those so the line is valid YAML.
-    use_repr = use if ":" not in use else f"'{use}'"
-    return f"{{when: {when_repr}, use: {use_repr}}}"
+    # Always single-quote the CEL expression — it routinely contains
+    # double-quotes (e.g. '"code" in route.required_capabilities') which
+    # YAML flow mappings interpret as string delimiters, breaking parsing.
+    # Single-quoting is safe because CEL expressions never contain
+    # single-quotes.
+    when_repr = f"'{when}'"
+    use = rule.get("use", "")
+    finish = rule.get("finish", "")
+    transition_to = rule.get("transition_to", "")
+    if use:
+        use_repr = use if ":" not in use else f"'{use}'"
+        return f"{{when: {when_repr}, use: {use_repr}}}"
+    if finish:
+        return f"{{when: {when_repr}, finish: {finish}}}"
+    return f"{{when: {when_repr}, transition_to: {transition_to}}}"
 
 
 def _annotated_rule_lines(
@@ -341,7 +385,8 @@ def _annotated_rule_lines(
     for rule in rules:
         line = f"{indent}- {_rule_yaml_line(rule)}"
         if comment_each:
-            line = f"{line}  # → {rule['use']} when {_explain_predicate(rule['when'])}"
+            action_target = rule.get("use") or rule.get("finish") or rule.get("transition_to") or ""
+            line = f"{line}  # → {action_target} when {_explain_predicate(rule['when'])}"
         out.append(line)
     return out
 
@@ -384,9 +429,11 @@ def _annotated_router_block(router_block: dict[str, Any]) -> str:
     if rules:
         out.append("  rules:")
         for rule in rules:
-            out.append(
-                f"  - {_rule_yaml_line(rule)}  # → {rule['use']} when {_explain_predicate(rule['when'])}"
+            action_target = (
+                rule.get("use") or rule.get("finish") or rule.get("transition_to") or ""
             )
+            reason = _explain_predicate(rule["when"])
+            out.append(f"  - {_rule_yaml_line(rule)}  # → {action_target} when {reason}")
     if fallback:
         out.append(f"  fallback: {fallback}  # if no rule matches")
     return "\n".join(out)
@@ -435,9 +482,9 @@ def _router_preset_annotations(
             "Cheap default, escalate to deep only on code or when the turn drags, downgrade to default early on tool-heavy turns.",
             "tight token budgets, dev/test, high-volume simple turns.",
             [
-                {"when": 'required_capabilities includes "code"', "use": code_id},
-                {"when": "iteration >= 2", "use": deep_id},
-                {"when": "tool_calls_so_far >= 3", "use": default_id},
+                {"when": '"code" in route.required_capabilities', "use": code_id},
+                {"when": "turn.iteration >= 2", "use": deep_id},
+                {"when": "turn.tool_calls_so_far >= 3", "use": default_id},
             ],
             default_id,
         )
@@ -451,10 +498,10 @@ def _router_preset_annotations(
             "Frontier everywhere, downgrade only on very long tool-heavy turns.",
             "production quality, complex multi-step tasks, cost-insensitive.",
             [
-                {"when": 'required_capabilities includes "code"', "use": code_id},
-                {"when": 'required_capabilities includes "reasoning"', "use": deep_id},
-                {"when": "iteration > 1 and last_tool_result is not None", "use": deep_id},
-                {"when": "tool_calls_so_far >= 8", "use": default_id},
+                {"when": '"code" in route.required_capabilities', "use": code_id},
+                {"when": '"reasoning" in route.required_capabilities', "use": deep_id},
+                {"when": "turn.iteration > 1 && turn.has_tool_result", "use": deep_id},
+                {"when": "turn.tool_calls_so_far >= 8", "use": default_id},
             ],
             deep_id,
         )
@@ -468,11 +515,28 @@ def _router_preset_annotations(
             "Code model for code turns, deep for synthesis, code model as fallback.",
             "software engineering work, agentic coding, repo Q&A.",
             [
-                {"when": 'required_capabilities includes "code"', "use": code_id},
-                {"when": "tool_calls_so_far >= 4 and last_tool_result is not None", "use": code_id},
-                {"when": "iteration > 1 and last_tool_result is not None", "use": deep_id},
+                {"when": '"code" in route.required_capabilities', "use": code_id},
+                {"when": "turn.tool_calls_so_far >= 4 && turn.has_tool_result", "use": code_id},
+                {"when": "turn.iteration > 1 && turn.has_tool_result", "use": deep_id},
             ],
             code_id,
+        )
+    )
+    lines.append("#")
+
+    # Terminal-actions preset — demonstrates finish and transition_to.
+    lines.extend(
+        _preset_block(
+            "terminal-actions",
+            "Model selection plus finish/transition_to to stop runaway turns.",
+            "long agentic turns, workflow modes with a summary stage.",
+            [
+                {"when": '"code" in route.required_capabilities', "use": code_id},
+                {"when": "turn.iteration > 1 && turn.has_tool_result", "use": deep_id},
+                {"when": "turn.tool_calls_so_far >= 8", "finish": "tool_budget_exhausted"},
+                {"when": "turn.iteration >= 10", "transition_to": "summary"},
+            ],
+            default_id,
         )
     )
     lines.append("")

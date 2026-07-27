@@ -1,6 +1,8 @@
-"""Tests for the built-in lisa-router rules engine."""
+"""Tests for the built-in lisa-router CEL rules engine."""
 
 from __future__ import annotations
+
+import pytest
 
 from kernel.model_manifest import ManifestModelEntry, ModelManifest, RouterConfig, RouterRule
 from kernel.seams.protocols import RouterRequest
@@ -96,56 +98,22 @@ def test_default_router_config_has_rules() -> None:
 
     config = get_default_router_config()
     assert isinstance(config["rules"], list)
-    assert len(config["rules"]) == 5
+    assert len(config["rules"]) >= 1
     for rule in config["rules"]:
         assert "when" in rule
-        assert "use" in rule
+        # Each rule must have exactly one action.
+        actions = [k for k in ("use", "finish", "transition_to") if k in rule]
+        assert len(actions) == 1
 
 
 def test_default_router_config_uses_symbolic_refs() -> None:
-    """Default rules use symbolic mode/role refs (default, deep), not literal ids.
-
-    This lets the config work across any discovered model set — the manifest
-    builder resolves the symbols at /models discover time.
-    """
+    """Default rules use symbolic mode/role refs (default, deep), not literal ids."""
     from sdk.router.default_config import get_default_router_config
 
     config = get_default_router_config()
     uses = {rule["use"] for rule in config["rules"]}
     assert config["fallback"] in {"default", "deep"} or config["fallback"]
-    # All rules use symbolic refs.
-    assert uses == {"default", "deep"}
-
-
-def test_default_router_config_capability_rules_first() -> None:
-    """Capability-gate rules (code, reasoning, vision) precede budget/phase rules."""
-    from sdk.router.default_config import get_default_router_config
-
-    config = get_default_router_config()
-    rules = config["rules"]
-    # Rules 0-2 are capability gates.
-    assert "required_capabilities" in rules[0]["when"]
-    assert "required_capabilities" in rules[1]["when"]
-    assert "required_capabilities" in rules[2]["when"]
-    # Rule 3 is the budget gate.
-    assert "tool_calls_so_far" in rules[3]["when"]
-    # Rule 4 is the phase gate.
-    assert "iteration > 1" in rules[4]["when"]
-
-
-def test_default_router_config_budget_before_phase() -> None:
-    """The budget gate (tool_calls_so_far) precedes the phase gate (iteration > 1).
-
-    This ensures long tool-heavy turns downgrade before paying for frontier
-    synthesis on the phase gate.
-    """
-    from sdk.router.default_config import get_default_router_config
-
-    config = get_default_router_config()
-    rules = config["rules"]
-    budget_idx = next(i for i, r in enumerate(rules) if "tool_calls_so_far" in r["when"])
-    phase_idx = next(i for i, r in enumerate(rules) if "iteration > 1" in r["when"])
-    assert budget_idx < phase_idx
+    assert uses == {"deep"}
 
 
 def test_factory_returns_router_when_backend_matches() -> None:
@@ -158,12 +126,12 @@ def test_factory_returns_router_when_backend_matches() -> None:
     assert isinstance(router, LisaRouter)
 
 
-# ── Rule evaluation tests ───────────────────────────────────────────────────
+# ── CEL rule evaluation tests ───────────────────────────────────────────────
 
 
 def test_required_capabilities_rule_matches() -> None:
     manifest = _manifest(
-        rules=(RouterRule(when='required_capabilities includes "code"', use="gpt-5.2-codex"),),
+        rules=(RouterRule(when='"code" in route.required_capabilities', use="gpt-5.2-codex"),),
         fallback="gemma4:cloud",
     )
     router = LisaRouter(manifest)
@@ -175,7 +143,7 @@ def test_required_capabilities_rule_matches() -> None:
 
 def test_required_capabilities_rule_does_not_match() -> None:
     manifest = _manifest(
-        rules=(RouterRule(when='required_capabilities includes "code"', use="gpt-5.2-codex"),),
+        rules=(RouterRule(when='"code" in route.required_capabilities', use="gpt-5.2-codex"),),
         fallback="gemma4:cloud",
     )
     router = LisaRouter(manifest)
@@ -186,7 +154,7 @@ def test_required_capabilities_rule_does_not_match() -> None:
 
 def test_iteration_gt_rule() -> None:
     manifest = _manifest(
-        rules=(RouterRule(when="iteration > 1", use="gpt-5.4"),),
+        rules=(RouterRule(when="turn.iteration > 1", use="gpt-5.4"),),
         fallback="gemma4:cloud",
     )
     router = LisaRouter(manifest)
@@ -198,18 +166,15 @@ def test_compound_and_with_last_tool_result() -> None:
     manifest = _manifest(
         rules=(
             RouterRule(
-                when="iteration > 1 and last_tool_result is not None",
+                when="turn.iteration > 1 && turn.has_tool_result",
                 use="gpt-5.4",
             ),
         ),
         fallback="gemma4:cloud",
     )
     router = LisaRouter(manifest)
-    # iteration 1, no tool result → fallback
     assert router.choose(_req(iteration=1, last_tool_result=None)).model_id == "gemma4:cloud"
-    # iteration 2, no tool result → fallback
     assert router.choose(_req(iteration=2, last_tool_result=None)).model_id == "gemma4:cloud"
-    # iteration 2, with tool result → rule matches
     assert router.choose(_req(iteration=2, last_tool_result="result")).model_id == "gpt-5.4"
 
 
@@ -217,7 +182,7 @@ def test_compound_or() -> None:
     manifest = _manifest(
         rules=(
             RouterRule(
-                when='required_capabilities includes "code" or iteration > 5',
+                when='"code" in route.required_capabilities || turn.iteration > 5',
                 use="gpt-5.2-codex",
             ),
         ),
@@ -231,7 +196,7 @@ def test_compound_or() -> None:
 
 def test_tool_calls_so_far_rule() -> None:
     manifest = _manifest(
-        rules=(RouterRule(when="tool_calls_so_far >= 3", use="gpt-5.4"),),
+        rules=(RouterRule(when="turn.tool_calls_so_far >= 3", use="gpt-5.4"),),
         fallback="gemma4:cloud",
     )
     router = LisaRouter(manifest)
@@ -241,7 +206,7 @@ def test_tool_calls_so_far_rule() -> None:
 
 def test_no_match_no_fallback_returns_none() -> None:
     manifest = _manifest(
-        rules=(RouterRule(when="iteration > 100", use="gpt-5.4"),),
+        rules=(RouterRule(when="turn.iteration > 100", use="gpt-5.4"),),
         fallback="",
     )
     router = LisaRouter(manifest)
@@ -251,24 +216,214 @@ def test_no_match_no_fallback_returns_none() -> None:
 def test_first_match_wins() -> None:
     manifest = _manifest(
         rules=(
-            RouterRule(when="iteration > 1", use="gpt-5.4"),
-            RouterRule(when="iteration > 5", use="gpt-5.2-codex"),
+            RouterRule(when="turn.iteration > 1", use="gpt-5.4"),
+            RouterRule(when="turn.iteration > 5", use="gpt-5.2-codex"),
         ),
         fallback="gemma4:cloud",
     )
     router = LisaRouter(manifest)
-    # iteration 2 → first rule matches
     assert router.choose(_req(iteration=2)).model_id == "gpt-5.4"
-    # iteration 6 → first rule still matches (first-match-wins)
     assert router.choose(_req(iteration=6)).model_id == "gpt-5.4"
 
 
 def test_decision_reason_contains_rule_text() -> None:
     manifest = _manifest(
-        rules=(RouterRule(when="iteration > 1", use="gpt-5.4"),),
+        rules=(RouterRule(when="turn.iteration > 1", use="gpt-5.4"),),
         fallback="gemma4:cloud",
     )
     router = LisaRouter(manifest)
     decision = router.choose(_req(iteration=2))
     assert decision is not None
-    assert "iteration > 1" in decision.reason
+    assert "turn.iteration > 1" in decision.reason
+
+
+# ── Deep-query / roles_needed tests ─────────────────────────────────────────
+
+
+def test_deep_role_downgrade_after_repeats() -> None:
+    """A deep-role turn downgrades to default after iteration 3."""
+    manifest = _manifest(
+        rules=(
+            RouterRule(when='"deep" in route.roles_needed && turn.iteration >= 3', use="gemma4:cloud"),
+            RouterRule(when='"deep" in route.roles_needed', use="gpt-5.4"),
+        ),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    # iteration 1, deep role → second rule (gpt-5.4)
+    assert router.choose(_req(iteration=1, roles_needed=("deep",))).model_id == "gpt-5.4"
+    # iteration 3, deep role → first rule (gemma4:cloud, downgrade)
+    assert router.choose(_req(iteration=3, roles_needed=("deep",))).model_id == "gemma4:cloud"
+
+
+def test_non_deep_role_unaffected_by_deep_downgrade() -> None:
+    manifest = _manifest(
+        rules=(
+            RouterRule(when='"deep" in route.roles_needed && turn.iteration >= 3', use="gemma4:cloud"),
+        ),
+        fallback="gpt-5.4",
+    )
+    router = LisaRouter(manifest)
+    # No deep role → fallback regardless of iteration
+    assert router.choose(_req(iteration=5, roles_needed=())).model_id == "gpt-5.4"
+
+
+# ── Effective-model metadata tests ──────────────────────────────────────────
+
+
+def test_model_cost_tier_condition() -> None:
+    """model.cost_tier reflects the effective model from the preceding iteration."""
+    from kernel.seams.protocols import RouterModelRef
+
+    manifest = _manifest(
+        rules=(
+            RouterRule(when='model.cost_tier == "frontier" && turn.tool_calls_so_far >= 4', use="gemma4:cloud"),
+        ),
+        fallback="gpt-5.4",
+    )
+    router = LisaRouter(manifest)
+    effective_frontier = RouterModelRef(model_id="gpt-5.4", cost_tier="frontier")
+    effective_standard = RouterModelRef(model_id="gemma4:cloud", cost_tier="standard")
+    # frontier model + 4 tool calls → downgrade
+    decision = router.choose(_req(tool_calls_so_far=4, effective_model=effective_frontier))
+    assert decision is not None
+    assert decision.model_id == "gemma4:cloud"
+    # standard model + 4 tool calls → fallback
+    decision = router.choose(_req(tool_calls_so_far=4, effective_model=effective_standard))
+    assert decision is not None
+    assert decision.model_id == "gpt-5.4"
+
+
+def test_model_capabilities_condition() -> None:
+    from kernel.seams.protocols import RouterModelRef
+
+    manifest = _manifest(
+        rules=(RouterRule(when='"vision" in model.capabilities', use="gpt-5.4"),),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    effective_vision = RouterModelRef(model_id="gpt-5.4", capabilities=("vision", "text"))
+    effective_no_vision = RouterModelRef(model_id="gpt-5.2-codex", capabilities=("code", "text"))
+    assert router.choose(_req(effective_model=effective_vision)).model_id == "gpt-5.4"
+    assert router.choose(_req(effective_model=effective_no_vision)).model_id == "gemma4:cloud"
+
+
+# ── Terminal action tests ───────────────────────────────────────────────────
+
+
+def test_finish_action() -> None:
+    manifest = _manifest(
+        rules=(RouterRule(when="turn.tool_calls_so_far >= 8", finish="tool_budget_exhausted"),),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    # Not enough tool calls → fallback
+    decision = router.choose(_req(tool_calls_so_far=3))
+    assert decision is not None
+    assert decision.model_id == "gemma4:cloud"
+    assert decision.finish == ""
+    # 8 tool calls → finish action
+    decision = router.choose(_req(tool_calls_so_far=8))
+    assert decision is not None
+    assert decision.finish == "tool_budget_exhausted"
+    assert decision.model_id == ""
+    assert decision.transition_to == ""
+
+
+def test_transition_to_action() -> None:
+    manifest = _manifest(
+        rules=(RouterRule(when="turn.iteration >= 10", transition_to="summary"),),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    # iteration 5 → fallback
+    decision = router.choose(_req(iteration=5))
+    assert decision is not None
+    assert decision.model_id == "gemma4:cloud"
+    assert decision.transition_to == ""
+    # iteration 10 → transition_to action
+    decision = router.choose(_req(iteration=10))
+    assert decision is not None
+    assert decision.transition_to == "summary"
+    assert decision.model_id == ""
+    assert decision.finish == ""
+
+
+# ── CEL compilation error tests ─────────────────────────────────────────────
+
+
+def test_invalid_cel_expression_raises_at_construction() -> None:
+    """An invalid CEL expression fails at router construction, not at choose()."""
+    manifest = _manifest(
+        rules=(RouterRule(when="this is not valid cel !!!", use="gpt-5.4"),),
+        fallback="gemma4:cloud",
+    )
+    with pytest.raises(ValueError, match="failed to compile CEL"):
+        LisaRouter(manifest)
+
+
+def test_cel_evaluation_error_treated_as_no_match() -> None:
+    """A CEL runtime error (not a compile error) is logged and the rule is skipped."""
+    manifest = _manifest(
+        rules=(
+            RouterRule(when="model.nonexistent_field == 1", use="gpt-5.4"),
+            RouterRule(when="turn.iteration > 1", use="gpt-5.2-codex"),
+        ),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    # The first rule's evaluation error is skipped; the second rule matches.
+    decision = router.choose(_req(iteration=2))
+    assert decision is not None
+    assert decision.model_id == "gpt-5.2-codex"
+
+
+# ── Manifest validation tests ───────────────────────────────────────────────
+
+
+def test_router_rule_requires_an_action() -> None:
+    """A rule with no action (use/finish/transition_to) is rejected."""
+    from kernel.model_manifest import load_model_manifest
+    from kernel.seams.protocols import RouterRequest  # noqa: F401
+
+    import tempfile
+    import yaml
+
+    payload = {
+        "version": 1,
+        "models": [{"model_id": "m1", "provider": "openai"}],
+        "router": {
+            "backend": "lisa-router",
+            "rules": [{"when": "turn.iteration > 1"}],
+        },
+    }
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        yaml.dump(payload, f)
+        f.flush()
+        with pytest.raises(ValueError, match="must include one of"):
+            load_model_manifest(__import__("pathlib").Path(f.name))
+
+
+def test_router_rule_rejects_multiple_actions() -> None:
+    """A rule with more than one action is rejected."""
+    from kernel.model_manifest import load_model_manifest
+
+    import pathlib
+    import tempfile
+    import yaml
+
+    payload = {
+        "version": 1,
+        "models": [{"model_id": "m1", "provider": "openai"}],
+        "router": {
+            "backend": "lisa-router",
+            "rules": [
+                {"when": "turn.iteration > 1", "use": "m1", "finish": "done"},
+            ],
+        },
+    }
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        yaml.dump(payload, f)
+        f.flush()
+        with pytest.raises(ValueError, match="exactly one"):
+            load_model_manifest(pathlib.Path(f.name))

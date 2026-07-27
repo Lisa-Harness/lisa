@@ -526,11 +526,14 @@ class TestHandleMessage:
 
         discover_result = await handle_message(runtime, "/models discover")
         assert "proposal_written" in discover_result.text
+        assert "presets" in discover_result.text
         assert runtime.models_proposal_path.exists()
 
-        # Proposal should contain preset annotation comments.
+        # Proposal should be minimal — no preset annotation comments.
+        # Presets live in docs/MODEL_ROUTER.md, not the generated file.
         proposal_content = runtime.models_proposal_path.read_text(encoding="utf-8")
-        assert "cost-conscious" in proposal_content
+        assert "cost-conscious" not in proposal_content
+        assert "preset" not in proposal_content.lower()
 
         apply_result = await handle_message(runtime, "/models apply")
         assert "Applied models proposal." in apply_result.text

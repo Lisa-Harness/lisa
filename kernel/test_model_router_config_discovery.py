@@ -62,11 +62,11 @@ def test_discover_returns_first_dict_config() -> None:
     config: dict[str, Any] = {
         "backend": "lisa-router",
         "rules": [
-            {"when": 'required_capabilities includes "code"', "use": "deep"},
-            {"when": 'required_capabilities includes "reasoning"', "use": "deep"},
-            {"when": 'required_capabilities includes "vision"', "use": "deep"},
-            {"when": "tool_calls_so_far >= 5", "use": "default"},
-            {"when": "iteration > 1 and last_tool_result is not None", "use": "deep"},
+            {"when": '"code" in route.required_capabilities', "use": "deep"},
+            {"when": '"reasoning" in route.required_capabilities', "use": "deep"},
+            {"when": '"vision" in route.required_capabilities', "use": "deep"},
+            {"when": "turn.tool_calls_so_far >= 5", "use": "default"},
+            {"when": "turn.iteration > 1 && turn.has_tool_result", "use": "deep"},
         ],
         "fallback": "default",
     }
