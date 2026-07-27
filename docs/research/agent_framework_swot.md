@@ -1,5 +1,13 @@
 # AI Agent & Harness Frameworks — GAP/SWOT Analysis
 
+> **Point-in-time market snapshot (2026-07-25).** The competitive framing
+> (LangChain/AutoGen/CrewAI/smolagents) and the Lisa-specific SWOT here are
+> partly speculative ("likely lacks...", "may lack...") — this doc was
+> written without repo access. It overlaps substantially with
+> `agent_framework_analysis.md`. Retained as a historical snapshot; for
+> verified current capabilities see `docs/KERNEL_ARCHITECTURE.md` and
+> `docs/research/architecture_gap_swot.md` (the latter is itself superseded).
+
 ## Executive Summary
 
 The AI agent and harness framework landscape is experiencing rapid proliferation, with frameworks like LangChain, AutoGen, and Smol-Devin competing to become the default orchestration layer for LLM-powered autonomous systems. This document analyzes the current state of the market, forms a product-level opinion on where value is accruing and where gaps remain, and then applies a SWOT analysis to the **lisa_framework** at the architecture level.

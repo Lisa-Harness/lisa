@@ -8,7 +8,7 @@ Each collector:
 - Provides error recovery paths for misconfiguration or collection failures
 
 Signal collectors are invoked by a one-shot bottom-half process
-(``little-lisa bottom --tick``) triggered by a systemd timer or cron.
+(``lisa intake``) triggered by a systemd timer or cron.
 
 TypeVar SnapshotT is the Pydantic model returned by each collector's collect() method.
 """

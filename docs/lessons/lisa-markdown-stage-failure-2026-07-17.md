@@ -1,6 +1,11 @@
 # Lisa — Markdown Stage Failure Record
 
-> Captured verbatim from a Lisa framework session on 2026-07-17.
+> **Historical incident record (2026-07-17).** Resolved. The default-mode
+> variant of the fork failure described here was the prerequisite incident
+> for the coding-mode follow-on. The fork path is now fixed and regression
+> tests are checked in. Kept as a postmortem and verbatim transcript salvage.
+
+Captured verbatim from a Lisa framework session on 2026-07-17.
 > The user asked Lisa to "remember that pretty much verbatim and also write a markdown of it."
 > This file is that markdown. The exchange below is preserved character-for-character.
 

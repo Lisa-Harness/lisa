@@ -1,6 +1,12 @@
 # Lisa — Fork Children Reported Success, Wrote Nothing (2026-07-18)
 
-> Follow-on to `lisa-fork-empty-distillation-2026-07-17.md`. The routing fork
+> **Historical incident record (2026-07-18).** Resolved and shipped. The
+> `no_tools` `ForkChildStatus` and `_fork_mode_requires_tools` fixes
+> described here are confirmed in current code (`kernel/models.py`,
+> `kernel/turn_phases/_fork.py`). Regression tests
+> (`test_run_turn_fork_no_tools*`) are checked in. Kept as a postmortem.
+
+Follow-on to `lisa-fork-empty-distillation-2026-07-17.md`. The routing fork
 > now fires, but both children reported "completed successfully" while neither
 > the memory record nor the markdown document landed on disk. Two independent
 > bugs: a broken distillation retry and a false-success fork child status.

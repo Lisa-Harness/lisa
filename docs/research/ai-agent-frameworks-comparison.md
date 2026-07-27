@@ -1,5 +1,11 @@
 # AI Agent Frameworks Comparable to LangChain
 
+> **Reference catalog (undated snapshot).** A descriptive survey of the
+> agent-framework landscape (LangChain, LangGraph, LlamaIndex, CrewAI,
+> AutoGen, Semantic Kernel, Haystack, DSPy, OpenAI Agents SDK, PydanticAI).
+> Framework versions and the competitive set age over time; refresh before
+> relying on it for positioning. Contains no Lisa-internal references.
+
 ## Overview
 
 LangChain is one of the most widely recognized frameworks for building applications powered by large language models (LLMs). It provides abstractions for prompts, memory, retrieval, tool usage, workflows, and agent orchestration. However, a growing ecosystem of alternative frameworks exists, each emphasizing different design philosophies such as production readiness, lightweight orchestration, graph-based execution, multi-agent collaboration, or language-specific integrations.

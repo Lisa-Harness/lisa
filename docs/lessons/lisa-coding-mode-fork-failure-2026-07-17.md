@@ -1,6 +1,12 @@
 # Lisa — Coding-Mode Fork Failure Record
 
-> Captured 2026-07-17. The user asked Lisa to "remember the entire thing and
+> **Historical incident record (2026-07-17).** Resolved. The routing-FSM gap
+> described here was closed by `synthesize_routing_transitions` building a
+> full routable mesh (see `kernel/ipsar_fsm.py` and `docs/ROUTER_DESIGN.md`
+> §4). Regression tests are checked in. Kept as a postmortem; for current
+> behavior see the routing docs.
+
+Captured 2026-07-17. The user asked Lisa to "remember the entire thing and
 > write a markdown document of it" while the session was in `coding` mode.
 > Lisa stayed in `coding` mode and asked the user to approve a worktree —
 > twice — instead of forking to `learn` + `markdown`. This file documents

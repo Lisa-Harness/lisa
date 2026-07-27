@@ -169,6 +169,12 @@ def build_evidence() -> ContextEvidence:
         tags=["billing", "mrr"],   # -> Caught by match_tags
         title="Customer Billing Status",
         body="MRR: $450 | Status: Past Due",
-        salience_score=0.85        # High salience (past due) guarantees inclusion
+        salience_score=0.85        # Ranking feature (0.0–1.0). Does NOT
+                                  # guarantee inclusion — admission is
+                                  # governed by source-rule priority /
+                                  # required / pinned in the session plan.
+                                  # The mapper recomputes relevance,
+                                  # freshness, and recency each turn; only
+                                  # salience_score is carried over.
     )
 ```

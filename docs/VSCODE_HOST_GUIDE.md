@@ -122,9 +122,11 @@ extension spawns the bridge with `python -m hosts.vscode.bridge --data-dir
 
 ```json
 {
-  "lisa.pythonPath": "C:\\Code\\lisa_framework\\.venv\\Scripts\\python.exe"
+  "lisa.pythonPath": "C:\\Code\\lisa\\.venv\\Scripts\\python.exe"
 }
 ```
+
+(Replace `C:\\Code\\lisa` with your clone path.)
 
 The `.env` file at the project root is loaded automatically. If your `.env`
 is elsewhere, set the env vars in VS Code's `settings.json` or in your terminal
@@ -233,8 +235,10 @@ The extension also contributes a Chat participant:
 ## MCP Integration
 
 The VS Code host can also expose the framework's MCP servers (`lisa-context`,
-`lisa-content`, `lisa-guard`, `lisa-memory`) to VS Code's built-in MCP client.
-Add them to `.vscode/mcp.json` in your workspace:
+`lisa-content`, `lisa-catalog`, `lisa-memory`, `lisa-guard`, `lisa-storage`)
+to VS Code's built-in MCP client. Add them to `.vscode/mcp.json` in your
+workspace (the CLI, web, and VS Code hosts all share the same six MCP
+servers; add only the ones you want surfaced to Copilot Chat):
 
 ```json
 {

@@ -156,6 +156,17 @@ debugging or building a custom UI.
 Returns `200 OK` with no body. Use this for health checks or container
 orchestration.
 
+### `POST /api/heartbeat` — Watchdog keepalive
+
+The chat page pings this endpoint every ~5 s. The server resets a ~15 s
+watchdog timer on each ping; if no heartbeat arrives in time, the server
+shuts down (see the "Heartbeat watchdog" section). Returns `200 OK`.
+
+### `POST /api/quit` — Shutdown beacon
+
+Sent by the chat page on `pagehide` / `beforeunload` so closing the browser
+tab exits `lisa desktop` cleanly without a stray process. Returns `200 OK`.
+
 ## System Tray (Optional)
 
 The web host ships with an optional system tray launcher that manages the web

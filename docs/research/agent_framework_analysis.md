@@ -1,5 +1,13 @@
 # Agent Framework Landscape & lisa_framework: Comprehensive Analysis Report
 
+> **Point-in-time research deliverable (2026-07-25).** The Lisa-specific
+> sections here are framed as "design hypotheses to be validated" and list
+> capabilities as "Assumed" (including multi-agent coordination and memory,
+> which are now verified shipped). This doc overlaps with
+> `agent_framework_swot.md` and `architecture_gap_swot.md`. Retained as a
+> historical research record; for verified current capabilities see
+> `docs/KERNEL_ARCHITECTURE.md`.
+
 ## Executive Summary
 
 This report synthesizes current research, market opinion, and a structured GAP/SWOT analysis of the AI agent framework landscape, with a focused evaluation of the **lisa_framework**. The agent framework ecosystem has matured rapidly, driven by the proliferation of large language models (LLMs) and the demand for autonomous, multi-step reasoning systems. The lisa_framework is positioned within this competitive space, and this report assesses its strategic fit, strengths, gaps, and opportunities relative to established and emerging alternatives.

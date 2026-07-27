@@ -1,5 +1,15 @@
 # Architecture-Level Code Review: `lisa_framework` — GAP/SWOT Analysis
 
+> **Superseded point-in-time snapshot (2026-07-25).** This review describes a
+> pre-fork, pre-MCP, pre-telemetry version of the framework. Capabilities it
+> lists as missing — fan-out (`ForkChildResult`, `transition_stage fork:`),
+> streaming, MCP integration (`mcp_server/`), telemetry (`kernel/telemetry.py`),
+> token tracking (`kernel/token_usage.py`), approvals (`kernel/approval.py`),
+> and structured output (`kernel/operations/structured_output.py`) — are all
+> shipped in the current codebase. Retained as a historical snapshot; do not
+> treat the GAP/Weakness rows as current. For the living architecture see
+> `docs/KERNEL_ARCHITECTURE.md`.
+>
 > **Scope:** This document presents an architecture-level review of the `lisa_framework`, structured as a combined GAP and SWOT analysis. It draws on the existing code review of `turn_runner` and the BCP (Business Continuity / Best Current Practices) document as inputs, and benchmarks the framework against the current landscape of agent and harness frameworks including LangChain, smolagents, CrewAI, AutoGen, and others.
 
 ______________________________________________________________________

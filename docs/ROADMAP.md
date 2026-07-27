@@ -29,11 +29,10 @@ addressed before any new feature work.
 
 ### 0.2 Fork fan-out reliability
 
-- **Status:** Recurring failure across 4 incident records (2026-07-17 to
-  2026-07-18).
-- **Symptoms:** Fork children report "completed successfully" but write nothing
-  to disk; distillation produces empty output on Ollama; markdown child never
-  calls its write tool; fork reports false success.
+- **Status:** ✅ Fixed across 2026-07-17 to 2026-07-18 (see `docs/lessons/`).
+- **Symptoms:** Fork children reported "completed successfully" but wrote nothing
+  to disk; distillation produced empty output on Ollama; markdown child never
+  called its write tool; fork reported false success.
 - **Root causes (documented in incident files):**
   - Empty distillation output from Ollama (HTTP 200, empty body) — no
     structured retry.
@@ -42,16 +41,17 @@ addressed before any new feature work.
     assistant messages have tool_calls but no content.
   - Fork child status not validated against actual side-effects (writes,
     memory records).
-- **Action items:**
-  1. Add structured-output retry with increased `max_tokens` on empty or
-     truncated distillation.
-  2. Normalize assistant messages: set `content: ""` (not omit) when
-     tool_calls present, for Ollama compatibility.
-  3. Add fork-child result validation: a child that claims success must
-     produce a non-empty `ToolResult` or `OperationResult` — otherwise
-     mark the child as failed.
-  4. Add a fork-level integration test that verifies both children produce
-     observable side-effects.
+- **What shipped (all four action items applied):**
+  1. Structured-output retry with increased `max_tokens` (300→512) and
+     `response_format=None` on retry — `kernel/operations/declarative.py`
+     and `kernel/operations/structured_output.py`.
+  2. `normalize_openai_messages` sets assistant `content` to `""` (not
+     omit) when tool_calls present — `kernel/provider_core.py`.
+  3. Fork-child result validation: `ForkChildStatus` now includes `"no_tools"`;
+     `_fork_mode_requires_tools` rejects a child that lacks its required
+     tools — `kernel/turn_phases/_fork.py`, `kernel/models.py`.
+  4. Fork regression tests added — see `test_run_turn_fork_no_tools*`,
+     `test_distill_retry.py`, `test_normalize_*`.
 
 ### 0.3 Pre-existing test environment issues
 
@@ -85,29 +85,31 @@ addressed before any new feature work.
 
 ### 1.2 Fork child observability
 
-- Add structured fork-child status tracking: each child must report a
-  `ForkChildResult` with `succeeded: bool`, `side_effects: list[str]`, and
-  `error: str | None`.
-- The parent turn should not report aggregate success unless all children
-  report `succeeded=True` with non-empty side-effects.
+- **Status:** ✅ Shipped. `ForkChildResult` exists in `kernel/models.py` with
+  `status: ForkChildStatus` (where `ForkChildStatus = Literal["ok",
+  "timeout", "cancelled", "error", "no_tools"]`), `output_text: str`, and
+  `duration_ms: int`. The parent aggregates child results into
+  `TurnResult.fork_results`; `_fork_mode_requires_tools` rejects children
+  that lack their required tools (status `"no_tools"`).
+- **Note on shape:** The shipped fields differ from the original proposal
+  (`succeeded`/`side_effects`/`error`). The `status` enum captures the same
+  intent more precisely (the `"no_tools"` case was the 2026-07-18 false-success
+  root cause). A future enhancement could add an explicit `side_effects` list
+  if richer attribution is needed.
 
 ### 1.3 Ollama provider compatibility
 
-- The Ollama OpenAI-compatible endpoint has known quirks:
-  - Rejects `content: null` on assistant messages with tool_calls.
-  - May return HTTP 200 with empty body.
-  - Truncates `max_tokens` without warning.
-- Add provider-specific message normalization in `kernel/provider_core.py`
-  or `hosts/core/model_runtime.py` that detects `ollama` provider and
-  patches message content before sending.
+- **Status:** ✅ Shipped. `normalize_openai_messages` in
+  `kernel/provider_core.py` sets assistant `content` to `""` when tool_calls
+  are present, for Ollama compatibility. Distillation retry handles the
+  empty-body / truncated-JSON cases (see 0.2).
 
 ### 1.4 Consolidate incident learnings into regression tests
 
-- Each of the 4 incident docs (`lisa-coding-mode-fork-failure`,
-  `lisa-fork-empty-distillation`, `lisa-fork-false-success`,
-  `lisa-markdown-stage-failure`) documents a specific failure mode. Convert
-  each into a deterministic regression test (no model calls) that asserts the
-  fixed behavior.
+- **Status:** ✅ Shipped. Regression tests added for each incident mode:
+  `test_run_turn_fork_no_tools*` (false-success / `no_tools` status),
+  `test_distill_retry.py` (empty distillation retry), `test_normalize_*`
+  (message normalization). See `docs/lessons/` for the incident records.
 
 ---
 
@@ -115,13 +117,13 @@ addressed before any new feature work.
 
 ### 2.1 Capability-manifest-aware proactive routing hints
 
-- **From `docs/ROUTING_RFC_HANDOFF.md` §enhancement 1.**
-- Before the model call, compare the compiled `CapabilityManifest` against the
-  user's query. If the current mode lacks tools the query needs, inject a
-  routing hint into the system prompt ("You don't have file-writing tools;
-  call `transition_stage` to switch to `markdown`").
-- This is **proactive** (zero wasted iterations) and costs no model calls.
-- **Prerequisite:** A keyword-to-capability-gap lookup table.
+- **Status:** ✅ Shipped as `kernel/turn_phases/_routing_hint.py` and
+  `kernel/turn_runner.py::_compute_capability_routing_hint`. Before the model
+  call, the compiled `CapabilityManifest` is compared against the user's
+  query; if the current mode lacks tools the query needs, a routing hint is
+  injected. This is proactive (zero wasted iterations) and costs no model
+  calls. The hint also escalates complex multi-step queries (3+ gap intents or
+  2+ sequential) to a `plan` action mode that runs `plan_workflow`.
 
 ### 2.2 Slice-driven pre-computed routing context
 
@@ -134,12 +136,14 @@ addressed before any new feature work.
 
 ### 2.3 Mode-to-mode direct handoff
 
-- **From `docs/ROUTING_RFC_HANDOFF.md` (future).**
-- Currently the synthesized routing FSM allows `default → any mode` and
-  `any mode → default`. Direct mode-to-mode transitions (e.g. `coding →
-  markdown` for documentation) require authored opt-in.
-- Add a `can_handoff_to: [markdown]` front-matter key on `_mode.md` and wire
-  it into the routing FSM's `allowed_next_stages` computation.
+- **Status:** ✅ Shipped as a full routable mesh — see `kernel/ipsar_fsm.py`'s
+  `synthesize_routing_transitions` and `docs/ROUTER_DESIGN.md` §4.
+- **Note on shape:** The original proposal was an authored `can_handoff_to:`
+  front-matter key with per-mode opt-in. The shipped implementation is instead a
+  **permissive default**: every routable mode can hand off to every other
+  routable mode. Per-edge restrictions (e.g. forbidding `search` → `coding`)
+  remain a future, smaller, authored opt-in. A `can_handoff_to` key is therefore
+  not needed today.
 
 ### 2.4 Model router expansion
 
@@ -163,19 +167,19 @@ addressed before any new feature work.
 
 ### 3.1 Containerization
 
-- **From `docs/wish_list.md` item 1.**
+- (Backlog item — also tracked in `docs/SPEC/todo.md`.)
 - Containerize MCP servers first, then the REPL. This enables reproducible
   deployments and isolates pack dependencies.
 
 ### 3.2 Systemd / init for data-gathering extensions
 
-- **From `docs/wish_list.md` item 2.**
+- (Backlog item — also tracked in `docs/SPEC/todo.md`.)
 - The `intake/` subpackage is designed for a one-shot process triggered by a
   systemd timer or cron. Provide systemd unit templates and an init wrapper.
 
 ### 3.3 Additional transport hosts
 
-- **From `docs/wish_list.md` item 3.**
+- (Backlog item — also tracked in `docs/SPEC/todo.md`.)
 - WhatsApp / Telegram / Signal hosts. Each is a thin transport adapter over
   `hosts/core`, implementing `TransportCallbacks`. The architecture is ready
   (see `docs/HOSTS_GUIDE.md`) — only the transport adapter needs writing.
@@ -199,18 +203,18 @@ addressed before any new feature work.
 ## Summary Table
 
 | ID | Item | Horizon | Priority |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 0.1 | Model-router factory-factory crash | Stabilization | ✅ Done |
-| 0.2 | Fork fan-out reliability | Stabilization | 🔴 Critical |
+| 0.2 | Fork fan-out reliability | Stabilization | ✅ Done |
 | 0.3 | Test env import breakage | Stabilization | 🟡 High |
 | 0.4 | Stale Pyright/lint issues | Stabilization | 🟡 Medium |
 | 1.1 | Generalize factory-factory resolution | Hardening | 🟡 High |
-| 1.2 | Fork child observability | Hardening | 🟡 High |
-| 1.3 | Ollama provider compatibility | Hardening | 🟡 High |
-| 1.4 | Incident regression tests | Hardening | 🟡 Medium |
-| 2.1 | Proactive routing hints | Completion | 🟢 Medium |
+| 1.2 | Fork child observability | Hardening | ✅ Done |
+| 1.3 | Ollama provider compatibility | Hardening | ✅ Done |
+| 1.4 | Incident regression tests | Hardening | ✅ Done |
+| 2.1 | Proactive routing hints | Completion | ✅ Done |
 | 2.2 | Slice-driven routing context | Completion | 🟢 Medium |
-| 2.3 | Mode-to-mode direct handoff | Completion | 🟢 Medium |
+| 2.3 | Mode-to-mode direct handoff | Completion | ✅ Done (full mesh) |
 | 2.4 | Model router expansion | Completion | 🟢 Low |
 | 2.5 | External pack dependency boundary | Completion | 🟡 Medium |
 | 3.1 | Containerization | Future | 🔵 Backlog |

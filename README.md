@@ -1,21 +1,24 @@
 # Lisa Framework
 
-This directory stages the public Lisa framework packages before they are moved to a separate repository. It is intentionally separate from the private production Lisa Teams bot app in the repository root.
+The public Lisa framework packages: runtime-neutral kernel contracts, an author-facing SDK, a set of public packs, three transport hosts (CLI, web, VS Code), and the MCP servers. This workspace is intentionally separate from the private production Lisa Teams bot app.
 
 ## What Is Included
 
-- `kernel/`: runtime-neutral contracts, mode routing, workflow state, operation registry, tool protocols, and testing helpers.
-- `sdk/`: author-facing helper contracts for packs, workshop execution, rendering, and integration contracts.
+- `kernel/`: runtime-neutral contracts — mode routing, workflow state (`ipsar`/`ipsar_fsm`), the operation registry, tool protocols, per-iteration model router discovery, the slice (pressure-driven housekeeping) contract, approval/capability seams, and testing helpers.
+- `sdk/`: author-facing helper contracts for packs, rendering, the CEL-based model router, and integration contracts.
 - `sdk/packs/core/`: baseline public modes (`default`, `workshop`) and shared prompt assets.
-- `sdk/packs/memory/`: memory-backed learning behaviors (`learn`, memory ops, and default override candidate).
+- `sdk/packs/memory/`: memory-backed learning behaviors (`learn`, memory ops, default override candidate).
 - `sdk/packs/introspect/`: operational self-model and reflective self-assessment operations.
 - `sdk/packs/checkpoint/`: LLM-enriched checkpoint/restore operations.
-- `hosts/little_lisa/`: a local non-production terminal host that loads public packs with manifest-driven model routing and OpenAI-compatible provider calls.
-- `mcp_server/`: an MCP (Model Context Protocol) memory server that exposes Lisa's surface-scoped memory tools over stdio.
+- `hosts/core/`: the shared transport-neutral runtime (`HostConfig`, `HostRuntime`, `TransportCallbacks`, provider gateways) used by all three transport hosts.
+- `hosts/cli/`: the terminal host. Entry point: `lisa`. Provides the REPL, `once`, `verify`, `modes`, `models`, `operations`, `tools`, `mcp`, `pack`, `desktop`, and `intake` commands.
+- `hosts/web/`: the localhost web host with a desktop chat UI, system tray, and a heartbeat watchdog. Entry point: `lisa-web` (also reachable as `lisa desktop`).
+- `hosts/vscode/`: the VS Code extension bridge (paired with the sibling TS extension repo). Entry point: `lisa-vscode`.
+- `mcp_server/`: MCP (Model Context Protocol) servers that expose Lisa's surface-scoped tools over stdio — `lisa-context`, `lisa-content`, `lisa-catalog`, `lisa-memory`, `lisa-guard`, `lisa-storage`.
 
 ## What Is Excluded
 
-The production Lisa app layer is not part of this staged framework. The private app owns the Teams adapter, production model routing, Azure deployment, proprietary memory and proactive loops, CloudServers-specific extensions and packs, and market-intel surfaces.
+The production Lisa app layer is not part of this framework. The private app owns the Teams adapter, production model routing, Azure deployment, proprietary memory and proactive loops, CloudServers-specific extensions and packs, and market-intel surfaces.
 
 Market intelligence and CloudServers operations logic stay private. Public packages may expose generic extension and evidence contracts, but they do not include CloudServers-specific collectors, private prompt assets, or product data.
 
@@ -25,24 +28,24 @@ From this directory:
 
 ```powershell
 uv sync --extra dev
-uv run little-lisa verify
-uv run little-lisa modes
-uv run little-lisa models
-uv run little-lisa once "/search public sdk design"
-uv run little-lisa once "/markdown Draft a short extension checklist"
-uv run little-lisa once "/deep Evaluate migration risks"
-uv run little-lisa once "/discuss capability tradeoffs"
-uv run little-lisa cli
-uv run little-lisa desktop
-uv run little-lisa
+uv run lisa verify
+uv run lisa modes
+uv run lisa models
+uv run lisa once "/search public sdk design"
+uv run lisa once "/markdown Draft a short extension checklist"
+uv run lisa once "/deep Evaluate migration risks"
+uv run lisa once "/discuss capability tradeoffs"
+uv run lisa cli
+uv run lisa desktop
+uv run lisa
 ```
 
-Little Lisa uses a generated model manifest in `artifacts/models.yaml` (or your configured data-dir) with `default`, `deep`, and `reasoning` designations. Use `/models discover` then `/models apply` to generate and activate it. It supports live completion through `azure_openai`, `openai`, `anthropic`, and local `ollama` providers, plus local action/chat packs discovered through `SDK_CONTENT_ROOTS`; heavier workflow modes still report the missing host wiring they require.
+Lisa uses a generated model manifest in `artifacts/models.yaml` (or your configured data-dir) with `default`, `deep`, and `reasoning` designations. Use `/models discover` then `/models apply` to generate and activate it. It supports live completion through `azure_openai`, `openai`, `anthropic`, `google`, and local `ollama` providers, plus local action/chat packs discovered through `SDK_CONTENT_ROOTS`; heavier workflow modes still report the missing host wiring they require.
 
-`lisa-pack-memory` is now an opt-in pack in this workspace. Install it through the host pack manager when you want memory-backed learning behavior:
+`lisa-pack-memory` is an opt-in pack in this workspace. Install it through the host pack manager when you want memory-backed learning behavior:
 
 ```powershell
-uv run little-lisa pack install "C:\Code\lisa-pack-memory" --no-log
+uv run lisa pack install "C:\Code\lisa-pack-memory" --no-log
 ```
 
 Key CLI options:
@@ -58,31 +61,37 @@ Key CLI options:
 - `--no-thread` disables thread persistence.
 - `--session-context <slug>` sets the session context slug.
 - `--state-snapshot <file.json>` injects compact local snapshot context into prompt assembly.
-- `--version` prints the Little Lisa version and exits.
+- `--version` prints the lisa version and exits.
 
 On Windows, you can package a standalone executable:
 
 ```powershell
 uv sync --extra dev
-uv run pyinstaller --name little_lisa --onefile hosts/little_lisa/main.py
+uv run pyinstaller --name lisa --onefile hosts/cli/main.py
 ```
 
 For a first custom pack, follow `docs/PACK_AUTHORING_GUIDE.md` and point `SDK_CONTENT_ROOTS` at your pack folder. The same guide covers signal connectors, processing loops, and host commands — validate connectors through `kernel.testing.extension_harness`.
 
 ## Package Layout
 
-The root `pyproject.toml` defines a public-only `uv` workspace. The memory pack is part of the public framework set but not included in the default dependency graph during the split-repo transition:
+The root `pyproject.toml` defines a public-only `uv` workspace. The workspace members are:
 
-- `lisa-kernel`
-- `lisa-sdk`
-- `lisa-pack-coding`
-- `lisa-pack-cloudflare`
-- `lisa-pack-github`
-- `lisa-pack-stripe`
-- `lisa-pack-core`
-- `little-lisa`
+- `lisa-kernel` (`kernel/`)
+- `lisa-sdk` (`sdk/`)
+- `lisa-mcp-servers` (`mcp_server/`)
+- `lisa-pack-core` (`sdk/packs/core/`)
+- `lisa-pack-introspect` (`sdk/packs/introspect/`)
+- `lisa-pack-memory` (`sdk/packs/memory/`)
+- `lisa-pack-checkpoint` (`sdk/packs/checkpoint/`)
+- `lisa-host-core` (`hosts/core/`)
+- `lisa-host-cli` (`hosts/cli/`) — entry point `lisa`
+- `lisa-host-web` (`hosts/web/`) — entry point `lisa-web`
+- `lisa-host-vscode` (`hosts/vscode/`) — entry point `lisa-vscode`
+- `lisa-host` (`packaging/lisa-host/`)
 
-Install `lisa-pack-memory` through the pack manager when you want memory-backed learning workflows.
+External public packs resolve from the sibling `../lisa-packs/` checkout and are pulled in with `uv sync --extra ext`: `lisa-pack-brave-search`, `lisa-pack-compaction`, `lisa-pack-letta`, `lisa-pack-markdown`, `lisa-pack-mem0`, `lisa-pack-okf`, `lisa-pack-search`.
+
+WIP packs resolve from `../lisa-packs-wip/` and are pulled in with `uv sync --extra wip`: `lisa-pack-cloudflare`, `lisa-pack-coding`, `lisa-pack-github`, `lisa-pack-gmail`, `lisa-pack-stripe`.
 
 Private packages such as CloudServers operations, CloudServers packs, and market-intel collectors are intentionally absent.
 
@@ -92,11 +101,11 @@ Useful focused checks:
 
 ```powershell
 uv run python -c "import kernel, sdk; print(kernel.__file__); print(sdk.__file__)"
-uv run little-lisa verify
-uv run little-lisa modes
-uv run little-lisa models
-uv run pytest --import-mode=importlib hosts/little_lisa/test_little_lisa.py kernel/tests sdk/tests -m "not live" -v --tb=short
+uv run lisa verify
+uv run lisa modes
+uv run lisa models
+uv run pytest --import-mode=importlib kernel/tests sdk/tests hosts -m "not live" -v --tb=short
 uv run --extra dev ruff check --select F,I kernel sdk mcp_server hosts
 ```
 
-See `docs/BOUNDARIES.md`, `docs/CODING_WORKFLOW.md`, `docs/PACK_AUTHORING_GUIDE.md`, `docs/OPERATIONS.md`, `docs/OPERATION_AUTHORING_GUIDE.md`, `docs/SESSION_CONTEXT_AUTHORING_GUIDE.md`, `docs/LITTLE_LISA_GUIDE.md`, and `docs/KERNEL_ARCHITECTURE.md` for authoring, host-boundary, and architecture details.
+See `docs/BOUNDARIES.md`, `docs/CODING_WORKFLOW.md`, `docs/PACK_AUTHORING_GUIDE.md`, `docs/OPERATIONS.md`, `docs/OPERATION_AUTHORING_GUIDE.md`, `docs/SESSION_CONTEXT_AUTHORING_GUIDE.md`, `docs/HOSTS_GUIDE.md`, and `docs/KERNEL_ARCHITECTURE.md` for authoring, host-boundary, and architecture details.

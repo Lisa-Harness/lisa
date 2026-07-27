@@ -13,7 +13,7 @@ fork fan-out pattern.
 > `default`), and the model hands off between modes mid-turn by calling
 > `transition_stage` — the same mechanism already used for workflow stage
 > advancement. One mechanism, one interception point, zero extra model calls.
-> See `docs/ROUTING_RFC_HANDOFF.md` for the full design rationale.
+> See `docs/SPEC/ROUTING_RFC_HANDOFF.md` for the full design rationale (now implemented; the RFC is retained as a historical record).
 
 ---
 
@@ -175,27 +175,32 @@ The next NL turn starts in the new mode. The model can hand off back to
 
 The routing FSM is a **meta-FSM** that sits above the per-mode workflow FSM.
 It is synthesized from the mode catalog at startup by
-`kernel/ipsar_fsm.py:synthesize_routing_transitions()`:
+`kernel/ipsar_fsm.py:synthesize_routing_transitions()`. The current
+implementation builds a **full routable mesh**: every routable mode
+(including `default`) can hand off to every other routable mode. This unblocks
+the proactive fork routing hint from every entry mode — e.g. a
+remember+write request issued from `coding` can fork to `learn` + `markdown`
+instead of falling back to the current mode's approval-gated write tool.
 
-- **`default`** can hand off to every routable mode.
-- **Every routable mode** can hand off back to `default`.
-- **Mode-to-mode transitions** (e.g. `coding → markdown`) are a future
-  authored opt-in. The initial FSM is conservative: `default ↔ all`.
+Per-edge restrictions (e.g. forbidding `search` → `coding`) are a future,
+smaller, authored opt-in; the default is permissive.
 
 ```python
 # kernel/ipsar_fsm.py
 def synthesize_routing_transitions(catalog) -> dict[str, list[str]]:
     routable_ids = get_routable_mode_ids(catalog)
-    transitions = {}
+    transitions: dict[str, list[str]] = {}
     for mode_id, mode_config in catalog.items():
-        if mode_id == "default":
-            transitions[mode_id] = [m for m in routable_ids if m != "default"]
-        elif mode_config.routable:
-            transitions[mode_id] = ["default"]
+        if mode_config.routable:
+            # Every routable mode can hand off to every other routable mode.
+            transitions[mode_id] = [m for m in routable_ids if m != mode_id]
         else:
             transitions[mode_id] = []
     return transitions
 ```
+
+`default` is the routing hub (it is not an owning mode) but is otherwise a
+normal participant in the mesh.
 
 ### How `transition_stage` handles three target kinds
 
@@ -362,6 +367,11 @@ tools_authoritative: true
 | `accept_default_capabilities` | When `true` (default), inherit `default_available` ops/tools | No (default `true`) |
 | `excluded_operation_ids` | Ops to subtract from the default-available merge | No (default `[]`) |
 | `excluded_tool_ids` | Tools to subtract from the default-available merge | No (default `[]`) |
+| `routing_intent_tags` | Tag vocabulary advertising what intents this mode satisfies (used by the proactive hint) | No (default `[]`) |
+| `routing_intent_keywords` | Lexical keywords that signal this mode's intents | No (default `[]`) |
+| `satisfies_intents` | Intents this mode can satisfy (matched against a query's required intents) | No (default `[]`) |
+| `required_capabilities` | Capabilities a query needs that this mode provides (matched by the capability gate) | No (default `[]`) |
+| `default_intent_bridges` | Bridges from `default` to this mode on intent match | No (default `[]`) |
 
 ### Fast-path patterns (kept as a zero-cost hint)
 

@@ -1,6 +1,6 @@
 # Hosts Guide
 
-The Lisa framework ships four host packages that all share a single transport-neutral runtime (`hosts/core`). Each host is a thin transport adapter — terminal, web, VS Code — that wires the same `HostRuntime` and calls the same `handle_message` dispatcher. The runtime never imports Rich, Typer, aiohttp, or any transport-specific code.
+The Lisa framework ships **three transport hosts** — CLI, web, and VS Code — that all share a single transport-neutral runtime (`hosts/core`). Each host is a thin transport adapter that wires the same `HostRuntime` and calls the same `handle_message` dispatcher. The runtime never imports Rich, Typer, aiohttp, or any transport-specific code.
 
 ## Architecture
 
@@ -18,13 +18,15 @@ flowchart TD
 
   subgraph Kernel
     TR[turn_runner.py<br/>run_turn + TurnHooks]
-    FD[router.py<br/>IPSAR + FSM]
+    FD[ipsar.py + ipsar_fsm.py<br/>mode routing + workflow FSM]
     TOOLS[MCP Tool Pool]
   end
 
   subgraph MCP
     Context[lisa-context MCP<br/>SQLite memory + context broker]
     Content[lisa-content MCP<br/>Pack catalog + authored text]
+    Catalog[lisa-catalog MCP<br/>mode/operation/tool listings]
+    Memory[lisa-memory MCP<br/>surface-scoped memory]
     Guard[lisa-guard MCP<br/>Input/output guardrails]
     Storage[lisa-storage MCP<br/>Checkpoint persistence]
   end
@@ -40,6 +42,8 @@ flowchart TD
   TR --> TOOLS
   TOOLS --> Context
   TOOLS --> Content
+  TOOLS --> Catalog
+  TOOLS --> Memory
   TOOLS --> Guard
   TOOLS --> Storage
 ```
@@ -81,22 +85,28 @@ uv run lisa once "/discuss capability tradeoffs" --session-context system
 uv run lisa verify
 uv run lisa modes
 uv run lisa models
+uv run lisa operations      # list internal operations (for allowlist authoring)
+uv run lisa tools          # list tools (for tool_policy authoring)
+uv run lisa mcp            # list MCP server tools
+
+# Signal collection (bottom half — run on a timer or cron)
+uv run lisa intake
 ```
 
 ### Web (localhost browser)
 
 ```powershell
 # Start the web server (opens a browser tab automatically)
-uv run lisa-web desktop
+uv run lisa desktop
 
 # Custom host/port
-uv run lisa-web desktop --host 0.0.0.0 --port 9000
+uv run lisa desktop --host 0.0.0.0 --port 9000
 
 # Without auto-opening a browser
-uv run lisa-web desktop --no-open-browser
+uv run lisa desktop --no-open-browser
 ```
 
-The server prints a URL with an auth token: `http://127.0.0.1:8765/?token=<generated-token>`. See `docs/WEB_HOST_GUIDE.md` for the full API reference.
+The standalone `lisa-web desktop` entry point runs the same code. The server prints a URL with an auth token: `http://127.0.0.1:8765/?token=<generated-token>`. See `docs/WEB_HOST_GUIDE.md` for the full API reference.
 
 ### VS Code (Chat participant)
 
@@ -196,7 +206,7 @@ models:
 
 ## Provider Configuration
 
-Set credentials in PowerShell before running live completions:
+Set credentials in PowerShell before running live completions. All provider env vars use the `LISA_*` prefix; the bare names (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_OPENAI_*`, `GOOGLE_API_KEY`, `OLLAMA_HOST`) are accepted as fallbacks.
 
 ```powershell
 $env:LISA_AZURE_OPENAI_ENDPOINT = "https://<resource>.openai.azure.com/"
@@ -204,12 +214,16 @@ $env:LISA_AZURE_OPENAI_API_KEY = "<azure-openai-key>"
 $env:LISA_AZURE_OPENAI_API_VERSION = "2024-10-21"
 $env:LISA_OPENAI_API_KEY = "<openai-key>"           # only needed for provider: openai
 $env:LISA_ANTHROPIC_API_KEY = "<anthropic-key>"     # only needed for provider: anthropic
+$env:LISA_ANTHROPIC_BASE_URL = "https://api.anthropic.com"   # optional override
+$env:LISA_ANTHROPIC_VERSION = "2023-06-01"                  # optional override
+$env:LISA_GOOGLE_API_KEY = "<google-key>"           # only needed for provider: google
+$env:LISA_GOOGLE_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"  # optional override
 $env:LISA_OLLAMA_HOST = "127.0.0.1:11434"          # only needed for provider: ollama
 $env:LISA_TIMEZONE = "America/New_York"             # optional: IANA timezone
 $env:LISA_LOG_LEVEL = "info"                        # optional: debug|info|warning|error
 ```
 
-Fallback env vars are also supported: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `OLLAMA_HOST`.
+Fallback env vars are also supported: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, and `OLLAMA_HOST`.
 
 > **Azure AI Foundry / AI Services endpoint:** Use the **resource root** URL (e.g. `https://<resource>.services.ai.azure.com`), **not** the Foundry project path (`/api/projects/<project>`). The OpenAI SDK appends `/openai/deployments/<model>/chat/completions?api-version=...` to the endpoint — including the project path causes `API version not supported` errors.
 

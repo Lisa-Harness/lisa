@@ -32,15 +32,20 @@ model for each iteration with this precedence:
 1. **`ContextSeams.model_router`** — the formal `ModelRouter` Protocol with
    a widened `RouterRequest` carrying `query`, `last_tool_result`,
    `required_capabilities`, `mode_id`, `roles_needed`, `budget_remaining`,
-   and an `effective_model` snapshot of the model used in the preceding
+   `default_model_id`, `iteration`, `tool_calls_so_far`, and an
+   `effective_model` snapshot of the model used in the preceding
    iteration. This is the pluggable router path.
-2. **`ModelPolicy.choose`** — the legacy duck-typed optional method with the
-   narrow `(default_model_id, iteration, tool_calls_so_far, budget_remaining)`
-   signature. Preserved for backward compatibility.
+2. **`ModelPolicy.choose`** — an **opt-in, host-wired** duck-typed method
+   with the narrow `(default_model_id, iteration, tool_calls_so_far,
+   budget_remaining)` keyword signature. The shipped default
+   (`ManifestModelPolicy`) does **not** implement `choose`, so this tier is
+   only reached when a host installs a custom `ModelPolicy` that does. The
+   turn loop probes for it with `getattr(policy, "choose", None)`.
 3. **Static `model_def`** — the once-resolved `preferred_model_id`. This is
    the default behavior when no router and no `choose` are wired.
 
-When no router is wired (the default), the loop behaves exactly as before.
+When no router is wired and the default `ManifestModelPolicy` is in place
+(the common case), the loop behaves exactly as before — tier 2 is inert.
 
 ### Data flow
 

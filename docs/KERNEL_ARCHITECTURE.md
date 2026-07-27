@@ -18,10 +18,12 @@ Key principles:
 
 | Module | Responsibility |
 | --- | --- |
-| `turn_runner.py` | The single model+tool loop shared by all hosts. Executes pre-turn → tool loop → post-turn phases. Hosts wire behavior through `TurnHooks` and `ContextSeams`. |
-| `router.py` | Shared routing engine. Chooses which mode owns a natural-language turn using fast-path regex → verifier model → model-bounded routing fallback. |
-| `ipsar.py` | IPSAR route resolution. Detects which user-facing mode a slash-command or pattern-matched message targets. |
-| `ipsar_fsm.py` | Workflow FSM loader and runtime. Loads mode definitions from the `lisa-catalog` MCP server (never touches the filesystem directly). Validates stage transitions, provides operation lifecycle hooks, and parses front-matter from instruction markdown. |
+| `turn_runner.py` | The single model+tool loop shared by all hosts. Executes pre-turn → tool loop → post-turn phases. Hosts wire behavior through `TurnHooks` and `ContextSeams`. The phase implementations live in the `turn_phases/` subpackage. |
+| `ipsar.py` | IPSAR mode routing. `parse_route` matches a user message against each mode's `command_pattern` regex and returns `(mode_id, query)`; falls back to `"default"` when no pattern matches. Regex-only — no model calls. |
+| `ipsar_fsm.py` | Workflow FSM loader and runtime. Loads mode definitions from the `lisa-catalog` MCP server (never touches the filesystem directly). Validates stage transitions, synthesizes the routing-transition table (`synthesize_routing_transitions` — full routable mesh), provides operation lifecycle hooks, and parses front-matter from instruction markdown. |
+| `model_router_discovery.py` | Discovers per-iteration model routers via the `lisa.extensions.model_routers` entry-point group. Each router applies CEL rules to pick a model for a single iteration. |
+| `model_router_config_discovery.py` | Discovers pack-seeded router config via `lisa.extensions.model_router_configs`. First-pack-wins merge. |
+| `slice_provider_discovery.py` | Discovers slice providers via the `lisa.extensions.slice_providers` entry-point group. |
 | `slice.py` | Opportunistic house-keeping system. Budget is `base + max_deferred * (1 - 0.5^(gap/half_life))`, clamped to `hard_cap_ms`. |
 
 ### Contracts & Models
@@ -68,9 +70,10 @@ Key principles:
 | --- | --- |
 | `operations/` | Operation registry for discovering and executing operations from packs via the `lisa-catalog` MCP server. Includes `registry.py` (discovery, execution, tool-schema building), `declarative.py` (prompt-authored operations runtime), and `structured_output.py` (JSON parsing with retry). |
 | `intake/` | External data collection contracts: `SignalCollector` (stateless, repeatable monitors), `ProcessingLoop` (background processing chains triggered after collection), and `connector_discovery.py` (entry-point discovery). The bottom half is a one-shot process triggered by a systemd timer or cron. |
-| `seams/` | Host-injection protocols: `StateProvider`, `InputGuard`, `OutputGuard`, `ContentRegistry`, `ModelPolicy`, `ProviderGatewayProvider`, `EventBus`, `DataSanitizer`, `ExtensionEvidenceBuilder`, plus `CompleteFn`, `ResolveModelFn`, `ExecuteToolFn`, and `ExecuteOperationFn` callable protocols. |
-| `context/` | Public default implementations of kernel context seams and in-process context assembly: `MCPContentRegistry`, `MCPModeCatalog`/`MCPOperationCatalog`/`MCPToolCatalog`, `MCPInputGuard`/`MCPOutputGuard`, `ManifestModelPolicy`, `KernelProviderGatewayProvider`, `InProcessEventBus`, `PassThroughSanitizer`, `NoOpExtensionEvidenceBuilder`, `PassThroughInputGuard`/`PassThroughOutputGuard`, plus `context_broker.py` (query-aware brokerage over `UnifiedState`), `context_budget.py` (token budget allocation), `context_frames.py` (authored context-frame helpers), `context_mapper.py` (deterministic candidate mapping and selection), `context_models.py` (immutable mapper contracts), and `provenance.py` (XML-tagged context envelopes). |
+| `seams/` | Host-injection protocols: `StateProvider`, `InputGuard`, `OutputGuard`, `ContentRegistry`, `ModelPolicy`, `ModelRouter`, `ProviderGatewayProvider`, `EventBus`, `DataSanitizer`, `ExtensionEvidenceBuilder`, plus `CompleteFn`, `ResolveModelFn`, `ExecuteToolFn`, and `ExecuteOperationFn` callable protocols. |
+| `context/` | Public default implementations of kernel context seams and in-process context assembly: `MCPContentRegistry`, `MCPModeCatalog`/`MCPOperationCatalog`/`MCPToolCatalog`, `MCPInputGuard`/`MCPOutputGuard`, `ManifestModelPolicy`, `KernelProviderGatewayProvider`, `InProcessEventBus`, `PassThroughSanitizer`, `NoOpExtensionEvidenceBuilder`, `PassThroughInputGuard`/`PassThroughOutputGuard`, plus `context_broker.py` (query-aware brokerage over `UnifiedState`), `context_budget.py` (token budget allocation), `context_frames.py` (authored context-frame helpers), `context_mapper.py` (deterministic candidate mapping and selection), `models.py` (immutable mapper contracts including `ContextBudgetSnapshot`), `context_keys.py` (turn-local context key constants), and `provenance.py` (XML-tagged context envelopes). |
 | `mcp_launch/` | MCP launch contract: `policy.py` (approved server specs, `EnvPolicy`, `CwdPolicy`, `ToolPolicy`, `ProxyPolicy`, `MCPServerRegistry`), `compiler.py` (runtime adapter compiling specs into `MCPClientConfig`), `tool_filter.py` (allow/deny filtering), and `server_manifest.py` (declarative YAML manifest loader for external MCP servers and memory backends). |
+| `turn_phases/` | The extracted turn-pipeline implementation, split out of `turn_runner.py`: `_fork.py` (fork fan-out + budget division), `_post_turn.py`, `_routing_hint.py` (capability-manifest-aware proactive routing hint + `plan` action escalation), `_tool_schemas.py`, `_turn_state.py` (per-iteration model resolution: router → `ModelPolicy.choose` duck-type → static model). |
 | `testing/` | `extension_harness.py` for validating signal collectors without a host app, `endpoint_registry.py`, `import_boundaries.py`, and `stubs.py`. |
 
 ## Turn Execution Flow
@@ -322,24 +325,20 @@ Synthetic tools (host-owned aliases like `memory.search`) are registered on the 
 
 ## Route Resolution
 
-For natural-language turns (non-slash-commands), the host first resolves the mode through the router:
+For natural-language turns (non-slash-commands), the host resolves the mode through `ipsar.parse_route` — a pure-regex matcher. It iterates each mode's `command_pattern` and returns the first match as `(mode_id, query)`; when no pattern matches it falls back unconditionally to `("default", text)`. There is no verifier model and no model-bounded routing retry here.
+
+Per-iteration model selection (a separate concern from mode routing) is handled by the CEL-based model router discovered via `lisa.extensions.model_routers`; see `docs/MODEL_ROUTER.md` and `docs/ROUTER_DESIGN.md`.
 
 ```mermaid
 flowchart TD
-    A[User message] --> B{Slash command?}
-    B -->|Yes| C[IPSAR parse_route]
-    C --> D[Direct mode dispatch]
-    B -->|No| E{Fast-path regex match?}
-    E -->|Yes| F[Verifier model confirm]
-    F -->|Confirmed| D
-    F -->|Rejected| G[Model-bounded routing]
-    E -->|No| G
-    G -->|Success| D
-    G -->|Structured output fails| H[Retry without response_format]
-    H -->|Success| D
-    H -->|Fails| I[Fallback to default mode]
-    I --> D
+    A[User message] --> B{Slash command or command_pattern match?}
+    B -->|Yes| C[parse_route: return matched mode_id, query]
+    B -->|No| D[Fallback to default mode]
+    C --> E[Direct mode dispatch]
+    D --> E
 ```
+
+The proactive routing hint (`turn_phases/_routing_hint.py`) runs after a turn and may fork to another routable mode or escalate to a `plan` action mode based on capability/ intent tags — see `docs/ROUTER_DESIGN.md` §5.
 
 ## The Slice System
 
@@ -380,15 +379,19 @@ flowchart LR
 
 Extensions are discovered through their own entry-point groups:
 
+- `lisa.extensions.content_roots` — pack and extension content roots
 - `lisa.extensions.signal_connectors` — signal collectors for the bottom half
 - `lisa.extensions.processing_loops` — background processing chains
 - `lisa.extensions.host_commands` — pack-registered slash commands
+- `lisa.extensions.model_routers` — per-iteration CEL model routers
+- `lisa.extensions.model_router_configs` — pack-seeded router config
+- `lisa.extensions.slice_providers` — opportunistic house-keeping slice providers
 
 All discovery mechanisms respect the disabled-pack exclusion set from `pack_activation.py`.
 
 ## Bottom Half: Intake & Processing
 
-The bottom half is a one-shot process (`little-lisa bottom --tick`) triggered by a systemd timer or cron — no long-running threads.
+The bottom half is a one-shot process (`lisa intake`) triggered by a systemd timer or cron — no long-running threads.
 
 1. **Signal Collectors** (`intake/connectors.py`): Stateless, repeatable monitors for external systems (Cloudflare, GitHub, Stripe, etc.). Each returns a typed Pydantic snapshot.
 2. **Processing Loops** (`intake/contracts.py`): Background processing chains triggered after collection. Produce `ProcessedState` that gets merged into `UnifiedState`.

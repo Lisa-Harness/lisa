@@ -291,7 +291,7 @@ A signal connector is a stateless, repeatable monitor for an external system. Ea
 - Returns a typed Pydantic snapshot
 - Provides fallback snapshots for misconfiguration or errors
 
-Signal connectors are invoked by the bottom-half process (`little-lisa bottom --tick`), not by the turn loop. The top half reads the resulting `UnifiedState` via the host's state provider.
+Signal connectors are invoked by the bottom-half process (`lisa intake`), not by the turn loop. The top half reads the resulting `UnifiedState` via the host's state provider.
 
 ### Hello World Signal Connector
 
@@ -468,12 +468,12 @@ uv run lisa once "/hello framework"  # after setting SDK_CONTENT_ROOTS
 uv run ruff check sdk mcp_server hosts
 ```
 
-Run extension tests without live API calls by default:
+Run extension tests without live API calls by default. External packs live in sibling checkouts (`../lisa-packs/` and `../lisa-packs-wip/`), not under `sdk/packs/`:
 
 ```powershell
-uv run pytest sdk/packs/github/tests -m "not live"
-uv run pytest sdk/packs/cloudflare/tests -m "not live"
-uv run pytest sdk/packs/stripe/tests -m "not live"
+uv run pytest ../lisa-packs-wip/github/tests -m "not live"
+uv run pytest ../lisa-packs-wip/cloudflare/tests -m "not live"
+uv run pytest ../lisa-packs-wip/stripe/tests -m "not live"
 ```
 
 Live tests must be explicit, opt-in, and secret-safe. Do not make live tests part of default local or CI validation.

@@ -54,7 +54,7 @@ operation_id: my_operation
 description: One clear sentence describing what this operation does.
 mode_allowlist: [my_mode]
 tool_ids: []           # list tools this operation may call; empty is fine
-timeout_seconds: 30    # default 60; 0 disables timeout
+timeout_seconds: 30    # default 30; 0 disables timeout
 max_calls_per_turn: 1  # default 3
 preferred_model_id: default   # optional; omit to inherit mode default
 ```

@@ -15,7 +15,7 @@ Three contracts only:
   The top half reads from here.
 
 No long-running threads. The bottom-half process is triggered by a systemd
-timer, cron, or ``little-lisa bottom --tick`` and exits when done.
+timer, cron, or ``lisa intake`` and exits when done.
 """
 
 from __future__ import annotations

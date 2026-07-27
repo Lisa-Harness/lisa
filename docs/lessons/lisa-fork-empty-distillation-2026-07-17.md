@@ -1,6 +1,13 @@
 # Lisa — Fork Reached, Both Halves Silently Failed (Empty Distillation + Nil Content)
 
-> Captured 2026-07-17. Follow-on to `lisa-coding-mode-fork-failure-2026-07-17.md`.
+> **Historical incident record (2026-07-17).** Resolved. The distillation
+> retry and `normalize_openai_messages` (`content: ""` for assistant messages
+> with tool_calls) fixes described here are shipped in
+> `kernel/operations/declarative.py` / `kernel/provider_core.py`. Regression
+> tests are checked in. Note: the retry as originally applied had bugs that
+> were re-fixed in the 2026-07-18 follow-on. Kept as a postmortem.
+
+Captured 2026-07-17. Follow-on to `lisa-coding-mode-fork-failure-2026-07-17.md`.
 > The earlier FSM fix worked: Lisa now forks `learn` + `markdown` correctly.
 > But both fork halves silently produced nothing — "The model did not produce
 > a final response." and no memory records in `memory.db`. This file documents

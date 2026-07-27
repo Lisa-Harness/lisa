@@ -10,10 +10,10 @@ acquisition:
   processing chains that run after collection and write results back
   into ``UnifiedState``.
 
-The bottom half is driven by a one-shot process (``little-lisa bottom
---tick``) triggered by a systemd timer or cron — no long-running threads.
-The top half (turn loop) reads the resulting ``UnifiedState`` via the
-host's ``_state_provider()``.
+The bottom half is driven by a one-shot process (``lisa intake``) triggered
+by a systemd timer or cron — no long-running threads. The top half (turn
+loop) reads the resulting ``UnifiedState`` via the host's
+``_state_provider()``.
 """
 
 from kernel.intake.connectors import SignalCollector, SignalRunMode

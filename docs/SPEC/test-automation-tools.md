@@ -1,5 +1,11 @@
 # Test Automation Tools for `lisa_framework`
 
+> **Recommendation memo — not yet adopted (2026-07-26).** This memo surveys
+> DeepEval, Promptfoo, and Langfuse as candidate test/eval/observability
+> tools. As of this date none is adopted in the repo dependency manifests.
+> Treat as a pending decision; record the adopted tool (or "Deferred") here
+> when the call is made, or fold into `docs/ROADMAP.md` as a backlog item.
+
 ## Ranked Recommendations
 
 | Rank | Tool | Role | Rationale |
