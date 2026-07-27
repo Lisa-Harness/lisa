@@ -22,6 +22,8 @@ import json
 import logging
 from pathlib import Path
 
+import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
+
 from mcp.server.fastmcp import FastMCP
 
 from sdk.content import ContentReader

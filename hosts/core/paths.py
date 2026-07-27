@@ -172,11 +172,25 @@ def inject_packs_venv_site_packages() -> Path | None:
     call so that packs installed into the packs venv are discoverable via
     entry points. Returns the injected path, or ``None`` if the packs venv
     does not exist yet (first launch — no packs installed).
+
+    Uses ``site.addsitedir()`` (not just ``sys.path.insert``) so that
+    ``.pth`` files in the packs venv site-packages are processed. This is
+    critical for editable installs (``uv pip install -e``): they write
+    ``__editable__.*.pth`` files whose ``import`` lines register meta-path
+    finders mapping ``lisa_packs.<name>`` to source directories. Without
+    ``addsitedir``, those ``import`` lines never execute and
+    ``import lisa_packs.<name>`` fails with ``ModuleNotFoundError``.
     """
+    import site as _site
+
     venv = default_packs_venv()
     site_packages = packs_venv_site_packages(venv)
     if site_packages.is_dir():
         site_str = str(site_packages)
+        # site.addsitedir processes .pth files (including the import lines
+        # that register editable-install meta-path finders) and appends to
+        # sys.path. Safe to call even if already on sys.path.
+        _site.addsitedir(site_str)
         if site_str not in sys.path:
             sys.path.insert(0, site_str)
             logger.debug("Injected packs venv site-packages: %s", site_str)

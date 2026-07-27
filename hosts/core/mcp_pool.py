@@ -68,9 +68,34 @@ _LISA_DISABLED_PACKS_ENV = "LISA_DISABLED_PACKS"
 # mode this is sys.prefix. Exported as the FRAMEWORK_ROOT env var so that
 # mcp_servers.yaml's ``venv_dir: "${FRAMEWORK_ROOT}"`` resolves to the
 # directory whose Scripts/ (Windows) or bin/ (POSIX) holds the executables.
+from hosts.core.paths import packs_venv_for as _packs_venv_for  # noqa: E402
+from hosts.core.paths import packs_venv_site_packages as _packs_venv_site_packages  # noqa: E402
 from hosts.core.paths import venv_root as _venv_root  # noqa: E402
 
 FRAMEWORK_ROOT = _venv_root()
+
+
+def _inject_packs_venv_pythonpath(data_dir: Path, env: dict[str, str]) -> None:
+    """Add the packs venv site-packages to the child MCP server env.
+
+    Sets ``LISA_PACKS_VENV_SITE_PACKAGES`` so the child's
+    ``mcp_server._packs_venv_site`` module can call ``site.addsitedir()``
+    on it, activating the editable-install ``__editable__.*.pth`` files
+    that register meta-path finders for ``lisa_packs.<name>`` → source
+    directory mappings.
+
+    The host process calls ``inject_packs_venv_site_packages()`` at
+    startup to put the packs venv on ``sys.path``, but child processes
+    (``lisa-content``, ``lisa-catalog``) are fresh interpreters that only
+    inherit env vars. Without this, operation modules like
+    ``lisa_packs.markdown.operations.forge.forge_document`` raise
+    ``ModuleNotFoundError: No module named 'lisa_packs'`` in the child.
+    """
+    packs_venv = _packs_venv_for(data_dir)
+    site_packages = _packs_venv_site_packages(packs_venv)
+    if not site_packages.is_dir():
+        return
+    env["LISA_PACKS_VENV_SITE_PACKAGES"] = str(site_packages)
 
 
 # ── Shared discovery cache ─────────────────────────────────────────
@@ -210,6 +235,15 @@ def build_content_mcp_config(
             ensure_ascii=True,
             sort_keys=True,
         )
+    # Inject the packs venv site-packages into the child's PYTHONPATH so
+    # editable-installed packs (lisa_packs.<name>) are importable in the
+    # lisa-content / lisa-catalog subprocesses. The host calls
+    # inject_packs_venv_site_packages() at CLI startup, but the child
+    # processes are fresh Python interpreters that don't inherit sys.path
+    # modifications — only env vars. Without this, operation modules like
+    # ``lisa_packs.markdown.operations.forge.forge_document`` raise
+    # ``ModuleNotFoundError: No module named 'lisa_packs'`` in the child.
+    _inject_packs_venv_pythonpath(data_dir, env)
     return MCPClientConfig(
         server_id="lisa-content",
         command=sys.executable,
