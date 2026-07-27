@@ -586,18 +586,32 @@ class StreamedCompletionAdapter:
     path produces a ``StreamedCompletion`` (no tool calls in v1), this adapter
     bridges the two shapes without forcing the streaming code to construct a
     full ``CompletionResult``.
+
+    For gpt-5.x reasoning models the visible ``content`` can be empty while
+    the model's substantive answer lives in ``reasoning_content``. We fold
+    reasoning into ``content`` here (when content is empty) so the rest of
+    the turn runner — which reads ``completion.content`` — sees the model's
+    actual answer instead of falling through to "did not produce a final
+    response." The raw reasoning is still available via
+    ``self.reasoning_content`` for callers that want to distinguish the two.
     """
 
-    __slots__ = ("_aggregated", "content", "tool_calls", "usage")
+    __slots__ = ("_aggregated", "content", "reasoning_content", "tool_calls", "usage")
 
     def __init__(self, aggregated: StreamedCompletion) -> None:
         self._aggregated = aggregated
-        self.content = aggregated.content
+        self.reasoning_content = aggregated.reasoning_content
+        # Fold reasoning into content when the visible answer is empty.
+        self.content = aggregated.content or aggregated.reasoning_content
         self.tool_calls = aggregated.tool_calls
         self.usage = aggregated.usage
 
     def __repr__(self) -> str:
-        return f"StreamedCompletionAdapter(content={self.content!r}, finish_reason={self._aggregated.finish_reason!r})"
+        return (
+            f"StreamedCompletionAdapter(content={self.content!r}, "
+            f"reasoning_content={self.reasoning_content!r}, "
+            f"finish_reason={self._aggregated.finish_reason!r})"
+        )
 
 
 # ── Default hook implementations ───────────────────────────────────────────
@@ -2825,10 +2839,31 @@ async def _run_turn_inner(
             break
 
     if not content:
+        # Diagnostic: log why the loop exited with no usable content so this
+        # class of failure is diagnosable without re-reading the full log.
+        # Common exit causes: max_tool_iterations reached, a hard-failure
+        # guard (entry_failed / handoff cap / fork no_tools) set ``content``,
+        # or the model returned an empty/whitespace completion (often a
+        # reasoning model whose visible answer landed in reasoning_content).
+        _log.warning(
+            "turn loop exited with empty content mode=%s iteration=%d/%d "
+            "tool_calls_total=%d handoffs=%d entry_failed=%s fork_no_tools=%s "
+            "transitioned_to=%s routing_hint=%s",
+            mode_id,
+            _state.iteration,
+            max_tool_iterations,
+            _state.total_tool_calls,
+            _state.handoff_count,
+            _state.entry_failed,
+            bool(_state.fork_results is not None and any(r.status == "no_tools" for r in _state.fork_results)),
+            transitioned_to,
+            bool(routing_hint),
+        )
         # The loop exited due to max_tool_iterations while the model was
         # still calling tools. Force one final no-tools completion so the
         # model synthesizes its findings into a coherent response instead
         # of the generic "did not produce a final response" fallback.
+        final_reasoning_tokens = 0
         try:
             final_completion = await complete(
                 messages=messages,
@@ -2841,6 +2876,7 @@ async def _run_turn_inner(
             if final_content.strip():
                 content = final_content.strip()
                 final_usage = _extract_completion_usage(final_completion)
+                final_reasoning_tokens = final_usage[4]
                 _state.total_prompt_tokens += final_usage[0]
                 _state.total_completion_tokens += final_usage[1]
                 _state.total_tokens += final_usage[2]
@@ -2854,6 +2890,15 @@ async def _run_turn_inner(
                     rt=final_usage[4],
                     d=final_usage[5],
                     lat=final_usage[6],
+                )
+            else:
+                _log.warning(
+                    "iteration-cap final completion also returned empty "
+                    "content (mode=%s, finish_reason=%s, reasoning_tokens=%d); "
+                    "falling back to generic message",
+                    mode_id,
+                    getattr(final_completion, "finish_reason", "unknown"),
+                    final_reasoning_tokens,
                 )
         except Exception as exc:  # pylint: disable=broad-except
             _log.warning("_state.iteration-cap final completion failed: %s", exc)

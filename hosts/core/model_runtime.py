@@ -57,6 +57,13 @@ class StubCompletion:
     reasoning_tokens: int = 0
     duration_ms: float = 0.0
     finish_reason: str | None = None
+    reasoning_content: str = ""
+    """Reasoning-model "thinking" text (gpt-5.x ``message.reasoning_content``).
+
+    Surfaced as a fallback when ``content`` is empty for reasoning models —
+    the turn runner decides whether to fold it into the visible response.
+    Empty for non-reasoning backends (back-compat default).
+    """
 
 
 def active_manifest_path(*, data_dir: Path) -> Path:

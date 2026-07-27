@@ -939,6 +939,7 @@ async def _stream_openai_compatible_chunks(
     )
     async for event in stream:
         delta_content = ""
+        delta_reasoning = ""
         finish_reason = None
         choices = getattr(event, "choices", None) or []
         if choices:
@@ -946,10 +947,17 @@ async def _stream_openai_compatible_chunks(
             delta = getattr(choice, "delta", None)
             if delta is not None:
                 delta_content = getattr(delta, "content", None) or ""
+                # gpt-5.x reasoning models emit "thinking" as
+                # ``delta.reasoning_content`` (separate from
+                # ``delta.content``). Capture it so the aggregated
+                # completion can surface it as a fallback when the
+                # visible answer is empty.
+                delta_reasoning = getattr(delta, "reasoning_content", None) or ""
             finish_reason = getattr(choice, "finish_reason", None)
         usage = extract_openai_completion_usage(event)
         yield StreamedChunk(
             content=delta_content,
+            reasoning_content=delta_reasoning,
             finish_reason=finish_reason,
             usage=usage,
         )

@@ -361,9 +361,25 @@ def _extract_anthropic_tool_calls(
 
 
 def _first_message_content(message: Any) -> str:
-    """Extract text content from an OpenAI chat completion message."""
+    """Extract text content from an OpenAI chat completion message.
+
+    For gpt-5.x reasoning models the model's substantive output can land in
+    ``message.reasoning_content`` while ``message.content`` is empty or
+    terse. Fall back to ``reasoning_content`` when the visible ``content``
+    is empty so the turn runner sees the model's actual answer instead of a
+    generic "did not produce a final response" fallback. Callers that need
+    to distinguish the two fields (e.g. to label reasoning distinctly) read
+    ``message.reasoning_content`` directly; this helper is for the common
+    "give me the answer" case.
+    """
     content = getattr(message, "content", "")
     if isinstance(content, str):
+        if content.strip():
+            return content
+        # Visible answer empty — fall back to reasoning content if present.
+        reasoning = getattr(message, "reasoning_content", None)
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning
         return content
     if isinstance(content, list):
         text_parts: list[str] = []
@@ -371,7 +387,14 @@ def _first_message_content(message: Any) -> str:
             item_text = getattr(item, "text", "")
             if item_text:
                 text_parts.append(str(item_text))
-        return "\n".join(text_parts).strip()
+        joined = "\n".join(text_parts).strip()
+        if joined:
+            return joined
+        # List-form content was empty/whitespace — fall back to reasoning.
+        reasoning = getattr(message, "reasoning_content", None)
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning
+        return ""
     return str(content or "")
 
 

@@ -86,7 +86,18 @@ class StreamedChunk:
     """
 
     content: str = ""
-    """Delta text for this chunk."""
+    """Delta visible-answer text for this chunk."""
+
+    reasoning_content: str = ""
+    """Delta reasoning text for this chunk (gpt-5.x ``reasoning_content``).
+
+    OpenAI reasoning models emit the model's "thinking" as
+    ``delta.reasoning_content`` separately from ``delta.content``. When the
+    model spends its budget reasoning and produces a terse/empty visible
+    answer, ``content`` is empty but ``reasoning_content`` carries the
+    substance. Aggregated reasoning content is surfaced as a fallback when
+    the visible answer is empty (see ``_aggregate_streamed_chunks``).
+    """
 
     finish_reason: str | None = None
     """``'stop'``, ``'length'``, ``'tool_calls'``, or ``None`` (mid-stream)."""
@@ -101,6 +112,7 @@ class StreamedCompletion:
     """Aggregated result of a streaming completion."""
 
     content: str = ""
+    reasoning_content: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     usage: CompletionUsage | None = None
     finish_reason: str = "stop"
@@ -317,7 +329,14 @@ def extract_request_id(value: Any) -> str:
 
 
 def extract_openai_content(response: Any) -> str:
-    """Extract text or parsed JSON content from one OpenAI-compatible response."""
+    """Extract text or parsed JSON content from one OpenAI-compatible response.
+
+    For gpt-5.x reasoning models the model's substantive output can land in
+    ``message.reasoning_content`` while ``message.content`` is empty or
+    terse. Fall back to ``reasoning_content`` so the caller sees the model's
+    actual answer instead of an empty string (which the turn runner would
+    otherwise turn into "The model did not produce a final response.").
+    """
 
     choices = getattr(response, "choices", [])
     if not choices:
@@ -334,6 +353,11 @@ def extract_openai_content(response: Any) -> str:
             return json.dumps(parsed)
         except Exception:  # pylint: disable=broad-except
             return str(parsed)
+    # Visible answer empty — fall back to reasoning content for reasoning
+    # models. Empty string if neither is present.
+    reasoning = getattr(message, "reasoning_content", None)
+    if isinstance(reasoning, str) and reasoning.strip():
+        return reasoning
     return ""
 
 
@@ -578,20 +602,30 @@ def _aggregate_streamed_chunks(chunks: list[StreamedChunk]) -> StreamedCompletio
     v1 streams tokens only — tool-call streaming is deferred to v2, so this
     helper does not attempt to reconstruct tool calls from deltas. The last
     non-``None`` ``finish_reason`` wins. The last non-``None`` ``usage`` wins.
+
+    ``reasoning_content`` (gpt-5.x reasoning models) is aggregated separately
+    and kept on the ``StreamedCompletion`` so callers can surface it as a
+    fallback when the visible ``content`` is empty. We do NOT fold reasoning
+    into ``content`` here — that decision belongs to the caller (the turn
+    runner), which knows whether to expose reasoning to the user.
     """
 
     parts: list[str] = []
+    reasoning_parts: list[str] = []
     finish_reason = "stop"
     usage: CompletionUsage | None = None
     for chunk in chunks:
         if chunk.content:
             parts.append(chunk.content)
+        if chunk.reasoning_content:
+            reasoning_parts.append(chunk.reasoning_content)
         if chunk.finish_reason is not None:
             finish_reason = chunk.finish_reason
         if chunk.usage is not None:
             usage = chunk.usage
     return StreamedCompletion(
         content="".join(parts),
+        reasoning_content="".join(reasoning_parts),
         tool_calls=[],
         usage=usage,
         finish_reason=finish_reason,
@@ -899,6 +933,7 @@ class OpenAICompatibleGateway:
             raise provider_gateway_error_from_exception(request, exc) from exc
         async for event in stream:
             delta_content = ""
+            delta_reasoning = ""
             finish_reason = None
             choices = getattr(event, "choices", None) or []
             if choices:
@@ -906,10 +941,17 @@ class OpenAICompatibleGateway:
                 delta = getattr(choice, "delta", None)
                 if delta is not None:
                     delta_content = getattr(delta, "content", None) or ""
+                    # gpt-5.x reasoning models emit "thinking" as
+                    # ``delta.reasoning_content`` (separate from
+                    # ``delta.content``). Capture it so the aggregated
+                    # completion can surface it as a fallback when the
+                    # visible answer is empty.
+                    delta_reasoning = getattr(delta, "reasoning_content", None) or ""
                 finish_reason = getattr(choice, "finish_reason", None)
             usage = extract_openai_completion_usage(event)
             yield StreamedChunk(
                 content=delta_content,
+                reasoning_content=delta_reasoning,
                 finish_reason=finish_reason,
                 usage=usage,
             )
