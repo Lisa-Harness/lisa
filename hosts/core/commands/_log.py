@@ -91,7 +91,9 @@ def _resolve_int_env(env_var: str, default: int) -> int:
 def _resolve_model(runtime: HostRuntime, model_id: str) -> StubModelDefinition:
     """Resolve one model identifier against the runtime's manifest cache."""
     if runtime.manifest is None:
-        runtime.manifest = load_manifest({}, data_dir=runtime.data_dir)
+        runtime.manifest = load_manifest(
+            {}, data_dir=runtime.data_dir, path=runtime.models_path
+        )
     return resolve_little_lisa_model(
         model_id,
         runtime_state={"manifest": runtime.manifest},

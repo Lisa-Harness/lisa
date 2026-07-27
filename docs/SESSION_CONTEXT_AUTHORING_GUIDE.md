@@ -172,8 +172,31 @@ Each sub-key is a `ResourceSelection` with `include`, `exclude`, and `required` 
 
 | Key | Type | Description |
 | --- | --- | --- |
-| `packs` | `PackSelection` | Pack selection plus pack-owned configuration. Also accepts a `configuration` map. |
+| `packs` | `PackSelection` | Pack selection plus pack-owned configuration. Also accepts a `configuration` map and an `auto_install` map. |
 | `servers` | `ResourceSelection` | MCP server include/exclude (session-level). |
+
+#### `resources.packs.auto_install`
+
+Declares install sources for packs listed in `required` so the host can auto-install them at startup when they are not yet importable. Every `auto_install` key **must** also appear in `required` — the compiler rejects keys not in `required` with `SessionPlanError`.
+
+| Key | Type | Required | Description |
+| --- | --- | --- | --- |
+| `source` | `string` | Yes | Bare pack name (expanded via `LISA_PACK_GIT_ROOT`), `git+https://...@ref`, or a local path. |
+| `pin` | `string` | No | Explicit pin label (e.g. `v0.2.0`) for logging and provenance. |
+
+Git refs **must** pin `@tag/@branch/@sha`. The host treats pinning as mandatory for auto-install regardless of `LISA_PACK_REQUIRE_GIT_REF`; an unpinned `git+` source raises a startup error. Trust policy env vars (`LISA_PACK_ALLOWED_PREFIXES`, `LISA_PACK_GIT_ALLOW_HOSTS`, `LISA_PACK_GIT_ROOT`) are honored — a session context cannot override them.
+
+Auto-install applies **only** to `required` packs. Failure of any required pack is a hard startup error; the runtime does not start in a degraded state. When at least one pack is installed, the host requests a restart so `importlib.metadata` entry-point discovery sees the new packs on the next boot pass.
+
+```yaml
+resources:
+  packs:
+    required: [lisa-pack-core, lisa-pack-cloudflare]
+    auto_install:
+      lisa-pack-cloudflare:
+        source: git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0
+        pin: v0.2.0
+```
 
 ### `providers`
 
@@ -217,6 +240,24 @@ The Markdown body is the **primary instruction body** — it is always included.
 ### `context`
 
 The session-owned context mapper policy. This replaces the legacy `context_routing` block.
+
+#### `context.models`
+
+A reference to the model manifest file this session should load instead of the default `data_dir/models.yaml`. When omitted, the host loads `data_dir/models.yaml` as before.
+
+| Key | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `string` | Yes | Session-relative or absolute path to a `.yaml`/`.yml`/`.json` model manifest. |
+
+The path is resolved relative to the session-context file's directory (for session-relative paths) or as an absolute path. The host validates existence and extension at boot; a missing file or wrong type raises a startup error. The compiler validates non-emptiness only — it has no filesystem access by design.
+
+Remote URLs are not supported; manifest loading is local-only. The resolved path is logged at startup for operator audit.
+
+```yaml
+context:
+  models:
+    path: ./roster.yaml
+```
 
 #### `context.lanes`
 

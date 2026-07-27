@@ -4,6 +4,32 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### Session context auto-install of required packs
+
+A session plan can now declare install sources for required packs via
+`resources.packs.auto_install`. At host boot, any required pack that is not
+yet importable is installed from its declared source before content-root
+discovery runs.
+
+- Auto-install applies **only** to `resources.packs.required` (never `include`).
+- Git refs **must** pin `@tag/@branch/@sha` — mandatory for auto-install
+  regardless of `LISA_PACK_REQUIRE_GIT_REF`.
+- Trust policy env vars (`LISA_PACK_ALLOWED_PREFIXES`,
+  `LISA_PACK_GIT_ALLOW_HOSTS`, `LISA_PACK_GIT_ROOT`) are honored; a session
+  context cannot override them.
+- Failure of any required pack is a hard startup error.
+- When at least one pack is installed, the host requests a restart so
+  entry-point discovery sees the new packs on the next boot pass.
+
+#### Per-session model manifest path
+
+A session plan can now point at a custom `models.yaml` via
+`context.models.path`. The path is resolved relative to the session-context
+file's directory or as an absolute path. When omitted, the host loads
+`data_dir/models.yaml` as before.
+
 ### Changed
 
 #### CLI status line reflects mid-turn transitions (not routing)

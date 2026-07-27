@@ -160,7 +160,10 @@ def compile_selected_session_plan(
         data_dir=data_dir,
         force_refresh=force_refresh,
     )
-    return compile_session_plan(text=source.text, source_uri=source.source_uri)
+    plan = compile_session_plan(text=source.text, source_uri=source.source_uri)
+    return plan.model_copy(
+        update={"source_dir": str(source.cached_path.parent.resolve())}
+    )
 
 
 def _read_session_source(*, source_uri: str, path: Path) -> SessionContextSource:

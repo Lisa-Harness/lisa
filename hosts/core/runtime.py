@@ -149,6 +149,11 @@ class HostRuntime:
 
         # ── Manifest cache ────────────────────────────────────────────
         self._manifest: Any = None
+        # Resolved model-manifest path. When the session plan declares
+        # ``context.models.path``, this is the resolved absolute path;
+        # otherwise it falls back to ``config.resolved_models_path``
+        # (``data_dir / models.yaml``). All manifest loaders read this.
+        self._models_path_override: Path | None = self._resolve_models_path()
 
         # ── MCP pool ──────────────────────────────────────────────────
         self._mcp_tool_pool: Any = None
@@ -319,6 +324,26 @@ class HostRuntime:
             pass
         return Path.cwd()
 
+    def _resolve_models_path(self) -> Path | None:
+        """Resolve the model-manifest path override from the session plan.
+
+        Returns the resolved absolute path when ``context.models.path`` is
+        set on the session plan, or ``None`` to fall back to
+        ``config.resolved_models_path``. A session-relative path requires
+        ``session_plan.source_dir``; a missing file or wrong type raises a
+        startup ``ValueError``.
+        """
+        from hosts.core.model_runtime import resolve_session_manifest_path
+
+        session_source_dir: Path | None = None
+        if self.session_plan.source_dir:
+            session_source_dir = Path(self.session_plan.source_dir)
+        return resolve_session_manifest_path(
+            session_plan=self.session_plan,
+            session_source_dir=session_source_dir,
+            data_dir=self.config.data_dir,
+        )
+
     # ── Path accessors ────────────────────────────────────────────────
 
     @property
@@ -352,7 +377,7 @@ class HostRuntime:
 
     @property
     def models_path(self) -> Path:
-        return self.config.resolved_models_path
+        return self._models_path_override or self.config.resolved_models_path
 
     @property
     def models_proposal_path(self) -> Path:

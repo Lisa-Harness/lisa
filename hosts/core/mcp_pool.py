@@ -120,6 +120,16 @@ def discover_framework(
     # preserve its original standalone behavior (no side effects).
     if seed_lock:
         seed_bundled_packs_lock(runtime.data_dir)
+    # Auto-install any session-required packs that are not yet importable,
+    # before content-root discovery runs. When at least one pack is installed,
+    # request a restart: importlib.metadata entry points are cached per-
+    # process and may not see the newly installed pack without a relaunch.
+    # On the second boot pass this is a no-op and discovery proceeds.
+    from hosts.core.pack_autoinstall import auto_install_required_packs
+
+    installed_packs = auto_install_required_packs(runtime)
+    if installed_packs:
+        runtime.request_restart(reason=f"auto-install: {', '.join(installed_packs)}")
     plan_packs = runtime.session_plan.manifest.resources.packs
     session_pack_include = (*plan_packs.include, *plan_packs.required)
     session_pack_exclude = plan_packs.exclude

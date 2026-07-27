@@ -65,6 +65,60 @@ def active_manifest_path(*, data_dir: Path) -> Path:
     return data_dir / "models.yaml"
 
 
+def resolve_session_manifest_path(
+    *,
+    session_plan: Any,
+    session_source_dir: Path | None,
+    data_dir: Path,
+) -> Path:
+    """Resolve the active model-manifest path for one session.
+
+    When the session plan declares ``context.models.path``, it is resolved
+    relative to the session-context file's directory (``session_source_dir``)
+    or as an absolute path, and returned. When the plan omits
+    ``context.models`` — or ``session_plan`` is ``None`` — this falls back to
+    ``active_manifest_path(data_dir=data_dir)`` so legacy behavior is
+    preserved.
+
+    The host boot path validates that a session-declared path exists and is a
+    ``.yaml``/``.yml``/``.json`` file; a missing or wrong-type path raises a
+    startup ``ValueError``. The compiler (``kernel.session_plan``) only
+    validates non-emptiness — it has no filesystem access by design.
+    """
+    fallback = active_manifest_path(data_dir=data_dir)
+    if session_plan is None:
+        return fallback
+    try:
+        models_ref = session_plan.manifest.context.models
+    except AttributeError:
+        return fallback
+    if models_ref is None:
+        return fallback
+    raw = models_ref.path.strip()
+    if not raw:
+        return fallback
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        if session_source_dir is None:
+            raise ValueError(
+                f"context.models.path {raw!r} is relative but the session "
+                f"source directory is unknown; pass an absolute path instead."
+            )
+        candidate = (session_source_dir / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+    if not candidate.is_file():
+        raise ValueError(
+            f"context.models.path {raw!r} resolved to {candidate}, which is "
+            f"not a file."
+        )
+    if candidate.suffix.lower() not in {".yaml", ".yml", ".json"}:
+        raise ValueError(
+            f"context.models.path {raw!r} must be a .yaml, .yml, or .json file."
+        )
+    return candidate
+
+
 def proposal_manifest_path(*, data_dir: Path) -> Path:
     """Return the canonical proposal model-manifest path under one data directory."""
 
@@ -75,13 +129,21 @@ def load_manifest(
     runtime_state: dict[str, Any],
     *,
     data_dir: Path,
+    path: Path | None = None,
 ) -> ModelManifest:
-    """Return the cached manifest snapshot, loading it from disk on first use."""
+    """Return the cached manifest snapshot, loading it from disk on first use.
+
+    When ``path`` is provided it overrides ``data_dir``'s default
+    ``models.yaml`` location; this is how a session plan's
+    ``context.models.path`` reaches the loader. Callers without a session
+    override omit ``path`` and get ``active_manifest_path(data_dir)``.
+    """
 
     manifest = runtime_state.get(_MANIFEST_CACHE_KEY)
     if manifest is None:
         logger.debug("manifest cache miss; loading from disk")
-        manifest = load_model_manifest(active_manifest_path(data_dir=data_dir))
+        resolved = path if path is not None else active_manifest_path(data_dir=data_dir)
+        manifest = load_model_manifest(resolved)
         runtime_state[_MANIFEST_CACHE_KEY] = manifest
     return manifest
 
@@ -90,11 +152,13 @@ def reload_manifest(
     runtime_state: dict[str, Any],
     *,
     data_dir: Path,
+    path: Path | None = None,
 ) -> ModelManifest:
     """Reload the manifest from disk and return the new snapshot."""
 
     logger.debug("reloading model manifest from disk")
-    manifest = load_model_manifest(active_manifest_path(data_dir=data_dir))
+    resolved = path if path is not None else active_manifest_path(data_dir=data_dir)
+    manifest = load_model_manifest(resolved)
     runtime_state[_MANIFEST_CACHE_KEY] = manifest
     return manifest
 
@@ -103,10 +167,11 @@ def require_models_present(
     runtime_state: dict[str, Any],
     *,
     data_dir: Path,
+    path: Path | None = None,
 ) -> None:
     """Assert that the active host manifest contains at least one model."""
 
-    manifest = load_manifest(runtime_state, data_dir=data_dir)
+    manifest = load_manifest(runtime_state, data_dir=data_dir, path=path)
     if not manifest.models:
         logger.error("manifest has no models configured")
         raise ValueError("The host requires at least one model in models.yaml.")
@@ -117,6 +182,7 @@ def resolve_little_lisa_model(
     *,
     runtime_state: dict[str, Any],
     data_dir: Path,
+    path: Path | None = None,
 ) -> StubModelDefinition:
     """Resolve one model id, mode, or role against the host's manifest.
 
@@ -131,7 +197,7 @@ def resolve_little_lisa_model(
     that pass through a bare alias resolve against the default mode.
     """
 
-    manifest = load_manifest(runtime_state, data_dir=data_dir)
+    manifest = load_manifest(runtime_state, data_dir=data_dir, path=path)
     requested = (model_id or "default").strip()
     resolved = manifest.resolve(requested)
     if resolved is None:

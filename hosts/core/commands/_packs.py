@@ -512,34 +512,39 @@ async def _seed_packs_venv_with_framework(packs_venv: Path) -> tuple[bool, str]:
     already present at the same version, so this is safe to call on every
     install (existing venvs are retro-seeded without side effects).
     """
+    return await asyncio.to_thread(_seed_packs_venv_with_framework_sync, packs_venv)
+
+
+def _seed_packs_venv_with_framework_sync(packs_venv: Path) -> tuple[bool, str]:
+    """Synchronous variant of :func:`_seed_packs_venv_with_framework`.
+
+    Used by the startup auto-install path (which runs in the synchronous
+    ``_initialize_runtime`` of every host) and wrapped in
+    :func:`asyncio.to_thread` by the async variant above.
+    """
+    import subprocess
+
     seed_targets: list[str] = []
     for member in _FRAMEWORK_SEED_PACKAGES:
         member_path = _FRAMEWORK_ROOT / member
         if member_path.is_dir():
             seed_targets.append("-e")
             seed_targets.append(str(member_path))
-    # Also seed bundled packs under sdk/packs/ so external packs that
-    # cross-depend on a bundled pack (e.g. compaction → checkpoint) resolve.
     for bundled in _bundled_pack_dirs():
         seed_targets.append("-e")
         seed_targets.append(str(bundled))
     if not seed_targets:
         return True, ""
 
-    process = await asyncio.create_subprocess_exec(
-        "uv",
-        "pip",
-        "install",
-        "--python",
-        str(packs_venv),
-        *seed_targets,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
+    completed = subprocess.run(
+        ["uv", "pip", "install", "--python", str(packs_venv), *seed_targets],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         cwd=str(_FRAMEWORK_ROOT),
+        check=False,
     )
-    output_bytes, _ = await process.communicate()
-    if process.returncode != 0:
-        output = output_bytes.decode("utf-8", errors="replace") if output_bytes else ""
+    if completed.returncode != 0:
+        output = completed.stdout.decode("utf-8", errors="replace") if completed.stdout else ""
         preview = "\n".join(output.splitlines()[-12:]).strip()
         return False, (
             f"Failed to seed packs venv with framework packages at '{packs_venv}'.\n{preview}"
@@ -567,22 +572,31 @@ async def _ensure_packs_venv(packs_venv: Path) -> tuple[bool, str]:
     Returns ``(True, "")`` on success (venv exists or was created) or
     ``(False, message)`` if venv creation failed.
     """
+    return await asyncio.to_thread(_ensure_packs_venv_sync, packs_venv)
+
+
+def _ensure_packs_venv_sync(packs_venv: Path) -> tuple[bool, str]:
+    """Synchronous variant of :func:`_ensure_packs_venv`.
+
+    Used by the startup auto-install path and wrapped in
+    :func:`asyncio.to_thread` by the async variant above.
+    """
+    import subprocess
+
     # A valid venv has pyvenv.cfg at its root. If present, assume usable.
     if (packs_venv / "pyvenv.cfg").is_file():
         return True, ""
 
     packs_venv.parent.mkdir(parents=True, exist_ok=True)
-    process = await asyncio.create_subprocess_exec(
-        "uv",
-        "venv",
-        str(packs_venv),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
+    completed = subprocess.run(
+        ["uv", "venv", str(packs_venv)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         cwd=str(_FRAMEWORK_ROOT),
+        check=False,
     )
-    output_bytes, _ = await process.communicate()
-    if process.returncode != 0:
-        output = output_bytes.decode("utf-8", errors="replace") if output_bytes else ""
+    if completed.returncode != 0:
+        output = completed.stdout.decode("utf-8", errors="replace") if completed.stdout else ""
         preview = "\n".join(output.splitlines()[-12:]).strip()
         return False, (f"Failed to create packs venv at '{packs_venv}'.\n{preview}")
     logger.info("Created packs venv at %s", packs_venv)
@@ -665,6 +679,30 @@ async def run_pack_install(
     spec: str,
 ) -> tuple[bool, str]:
     """Install one pack ref using uv pip and persist provenance metadata."""
+    return await asyncio.to_thread(
+        run_pack_install_sync, runtime, spec, request_restart=True
+    )
+
+
+def run_pack_install_sync(
+    runtime: HostRuntime,
+    spec: str,
+    *,
+    request_restart: bool = True,
+) -> tuple[bool, str]:
+    """Synchronous pack-install core shared by the REPL command and boot auto-install.
+
+    Validates the spec against the host trust policy, ensures + seeds the
+    packs venv, runs ``uv pip install``, and persists the install lock. When
+    ``request_restart`` is ``True`` (the REPL/``/pack install`` path), the
+    runtime is flagged for restart so the user is prompted to relaunch. When
+    ``False`` (the boot auto-install path), the caller manages restart
+    semantics itself — it may batch multiple installs and request one restart
+    after the loop, or none if entry-point discovery sees the new packs
+    in-process.
+    """
+    import subprocess
+
     normalized_spec = _normalize_pack_install_spec(spec)
     is_allowed, reason = _validate_pack_spec_for_install(normalized_spec)
     if not is_allowed:
@@ -675,35 +713,22 @@ async def run_pack_install(
         if _is_local_pack_spec(normalized_spec)
         else normalized_spec
     )
-    # Install into the dedicated packs venv (<data_dir>/packs-venv) so that
-    # the tool venv stays immutable and the packs venv site-packages is
-    # already on sys.path at the next launch for entry-point discovery.
     packs_venv = _packs_venv_for(runtime.data_dir)
-    ensured, ensure_err = await _ensure_packs_venv(packs_venv)
+    ensured, ensure_err = _ensure_packs_venv_sync(packs_venv)
     if not ensured:
         return False, f"Install failed for '{normalized_spec}'.\n{ensure_err}"
-    # Seed on every install (not only on venv creation) so existing venvs that
-    # predate a bundled pack are retro-seeded. Seeding is idempotent. Without
-    # this, an external pack that cross-depends on a bundled pack (e.g.
-    # lisa-pack-compaction → lisa-pack-checkpoint) cannot resolve because the
-    # bundled pack is workspace-only and not on PyPI.
-    seeded, seed_err = await _seed_packs_venv_with_framework(packs_venv)
+    seeded, seed_err = _seed_packs_venv_with_framework_sync(packs_venv)
     if not seeded:
         return False, f"Install failed for '{normalized_spec}'.\n{seed_err}"
-    process = await asyncio.create_subprocess_exec(
-        "uv",
-        "pip",
-        "install",
-        "--python",
-        str(packs_venv),
-        install_target,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
+    completed = subprocess.run(
+        ["uv", "pip", "install", "--python", str(packs_venv), install_target],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         cwd=str(_FRAMEWORK_ROOT),
+        check=False,
     )
-    output_bytes, _ = await process.communicate()
-    output = output_bytes.decode("utf-8", errors="replace") if output_bytes else ""
-    if process.returncode != 0:
+    if completed.returncode != 0:
+        output = completed.stdout.decode("utf-8", errors="replace") if completed.stdout else ""
         preview = "\n".join(output.splitlines()[-12:]).strip()
         return False, f"Install failed for '{normalized_spec}'.\n{preview}"
 
@@ -740,7 +765,8 @@ async def run_pack_install(
     _auto_select_capability_provider_on_install(lock, package_name)
     _write_installed_packs_lock(runtime, lock)
 
-    runtime.request_restart(reason=f"pack install: {package_name}")
+    if request_restart:
+        runtime.request_restart(reason=f"pack install: {package_name}")
     return True, (
         f"Installed '{package_name}' from {source_kind} source. "
         "Restart required to reload entry points, pack catalogs, and MCP manifests."

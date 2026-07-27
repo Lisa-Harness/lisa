@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from kernel.session_plan import (
     CompactionTuning,
     ContextHistoryPlan,
+    PackInstallSpec,
     SessionPlanError,
     compile_session_plan,
 )
@@ -283,3 +284,131 @@ def test_compile_session_plan_preserves_default_compaction_when_omitted() -> Non
     """Existing plans that omit the compaction block still compile and default to disabled."""
     plan = compile_session_plan(text=_manifest(), source_uri="workspace:session_context.md")
     assert plan.manifest.context.history.compaction.enabled is False
+
+
+# ── PackSelection.auto_install ────────────────────────────────────────
+
+
+def test_pack_install_spec_requires_nonempty_source() -> None:
+    """PackInstallSpec.source must be a non-empty string."""
+    with pytest.raises(ValidationError):
+        PackInstallSpec.model_validate({"source": ""})
+
+
+def test_compile_session_plan_accepts_auto_install_for_required_pack() -> None:
+    """auto_install entries that match a required pack compile cleanly."""
+    text = _manifest(
+        extra=(
+            "resources:\n"
+            "  packs:\n"
+            "    required: [lisa-pack-core, lisa-pack-cloudflare]\n"
+            "    auto_install:\n"
+            "      lisa-pack-cloudflare:\n"
+            "        source: git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0\n"
+            "        pin: v0.2.0\n"
+        )
+    )
+    plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
+    auto = plan.manifest.resources.packs.auto_install
+    assert "lisa-pack-cloudflare" in auto
+    assert auto["lisa-pack-cloudflare"].source.startswith("git+https://")
+    assert auto["lisa-pack-cloudflare"].pin == "v0.2.0"
+
+
+def test_compile_session_plan_rejects_auto_install_key_not_in_required() -> None:
+    """auto_install keys must be a subset of required."""
+    text = _manifest(
+        extra=(
+            "resources:\n"
+            "  packs:\n"
+            "    required: [lisa-pack-core]\n"
+            "    auto_install:\n"
+            "      lisa-pack-cloudflare:\n"
+            "        source: git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0\n"
+        )
+    )
+    with pytest.raises(SessionPlanError, match="auto_install keys must also appear in required"):
+        compile_session_plan(text=text, source_uri="workspace:session_context.md")
+
+
+def test_compile_session_plan_rejects_empty_auto_install_source() -> None:
+    """auto_install entries require a non-empty source string."""
+    text = _manifest(
+        extra=(
+            "resources:\n"
+            "  packs:\n"
+            "    required: [lisa-pack-core, lisa-pack-cloudflare]\n"
+            "    auto_install:\n"
+            "      lisa-pack-cloudflare:\n"
+            "        source: \"\"\n"
+        )
+    )
+    with pytest.raises(SessionPlanError):
+        compile_session_plan(text=text, source_uri="workspace:session_context.md")
+
+
+def test_compile_session_plan_rejects_unknown_auto_install_key() -> None:
+    """Strict extra=forbid applies inside auto_install entries."""
+    text = _manifest(
+        extra=(
+            "resources:\n"
+            "  packs:\n"
+            "    required: [lisa-pack-core, lisa-pack-cloudflare]\n"
+            "    auto_install:\n"
+            "      lisa-pack-cloudflare:\n"
+            "        source: lisa-pack-cloudflare\n"
+            "        bogus: true\n"
+        )
+    )
+    with pytest.raises(SessionPlanError, match="Extra inputs are not permitted"):
+        compile_session_plan(text=text, source_uri="workspace:session_context.md")
+
+
+# ── ContextPlan.models (per-session model manifest path) ─────────────
+
+
+def test_compile_session_plan_accepts_context_models_path() -> None:
+    """context.models.path compiles when set to a non-empty string."""
+    text = _manifest(
+        extra=(
+            "context:\n"
+            "  models:\n"
+            "    path: ./roster.yaml\n"
+        )
+    )
+    plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
+    assert plan.manifest.context.models is not None
+    assert plan.manifest.context.models.path == "./roster.yaml"
+
+
+def test_compile_session_plan_defaults_context_models_to_none() -> None:
+    """Omitting context.models leaves it None (host falls back to data_dir/models.yaml)."""
+    plan = compile_session_plan(text=_manifest(), source_uri="workspace:session_context.md")
+    assert plan.manifest.context.models is None
+
+
+def test_compile_session_plan_rejects_empty_context_models_path() -> None:
+    """context.models.path must be non-empty."""
+    text = _manifest(
+        extra=(
+            "context:\n"
+            "  models:\n"
+            "    path: \"\"\n"
+        )
+    )
+    with pytest.raises(SessionPlanError):
+        compile_session_plan(text=text, source_uri="workspace:session_context.md")
+
+
+def test_compile_session_plan_rejects_unknown_context_models_key() -> None:
+    """Strict extra=forbid applies inside context.models."""
+    text = _manifest(
+        extra=(
+            "context:\n"
+            "  models:\n"
+            "    path: ./roster.yaml\n"
+            "    bogus: true\n"
+        )
+    )
+    with pytest.raises(SessionPlanError, match="Extra inputs are not permitted"):
+        compile_session_plan(text=text, source_uri="workspace:session_context.md")

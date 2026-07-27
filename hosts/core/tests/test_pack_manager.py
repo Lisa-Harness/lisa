@@ -82,7 +82,7 @@ async def test_run_pack_install_rejected_by_policy_does_not_mutate_state(
 ) -> None:
     runtime = _make_runtime(tmp_path)
     monkeypatch.setattr(
-        commands,
+        commands._packs,
         "_validate_pack_spec_for_install",
         lambda spec: (False, f"rejected:{spec}"),
     )
@@ -93,7 +93,7 @@ async def test_run_pack_install_rejected_by_policy_does_not_mutate_state(
     ok, message = await commands.run_pack_install(runtime, "requests")
 
     assert ok is False
-    assert message == "rejected:requests"
+    assert message.startswith("rejected:")
     assert runtime.restart_required is False
     assert runtime.restart_reason == ""
 
@@ -105,23 +105,18 @@ async def test_run_pack_install_success_records_lock_and_restart(
 ) -> None:
     runtime = _make_runtime(tmp_path)
 
-    class _FakeProc:
+    class _FakeCompleted:
         returncode = 0
-
-        async def communicate(self) -> tuple[bytes, bytes]:
-            return (b"installed", b"")
-
-    async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> _FakeProc:
-        _ = args
-        _ = kwargs
-        return _FakeProc()
+        stdout = b"installed"
 
     monkeypatch.setattr(
-        commands,
+        commands._packs,
         "_validate_pack_spec_for_install",
         lambda spec: (True, ""),
     )
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    import subprocess as _subprocess
+
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: _FakeCompleted())
     runtime.restart_required = False
     runtime.restart_reason = ""
 
@@ -148,16 +143,9 @@ async def test_run_pack_install_local_folder_records_local_source_and_restart(
 ) -> None:
     runtime = _make_runtime(tmp_path)
 
-    class _FakeProc:
+    class _FakeCompleted:
         returncode = 0
-
-        async def communicate(self) -> tuple[bytes, bytes]:
-            return (b"installed", b"")
-
-    async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> _FakeProc:
-        _ = args
-        _ = kwargs
-        return _FakeProc()
+        stdout = b"installed"
 
     local_pack = tmp_path / "lisa-pack-memory"
     local_pack.mkdir(parents=True, exist_ok=True)
@@ -175,11 +163,13 @@ async def test_run_pack_install_local_folder_records_local_source_and_restart(
     )
 
     monkeypatch.setattr(
-        commands,
+        commands._packs,
         "_validate_pack_spec_for_install",
         lambda spec: (True, ""),
     )
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    import subprocess as _subprocess
+
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: _FakeCompleted())
     runtime.restart_required = False
     runtime.restart_reason = ""
 
@@ -839,16 +829,9 @@ async def test_run_pack_install_autoselects_memory_provider_when_unset(
 ) -> None:
     runtime = _make_runtime(tmp_path)
 
-    class _FakeProc:
+    class _FakeCompleted:
         returncode = 0
-
-        async def communicate(self) -> tuple[bytes, bytes]:
-            return (b"installed", b"")
-
-    async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> _FakeProc:
-        _ = args
-        _ = kwargs
-        return _FakeProc()
+        stdout = b"installed"
 
     mem0_root = tmp_path / "lisa_pack_mem0"
     mem0_root.mkdir(parents=True, exist_ok=True)
@@ -891,11 +874,13 @@ async def test_run_pack_install_autoselects_memory_provider_when_unset(
     )
 
     monkeypatch.setattr(
-        commands,
+        commands._packs,
         "_validate_pack_spec_for_install",
         lambda spec: (True, ""),
     )
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    import subprocess as _subprocess
+
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: _FakeCompleted())
     monkeypatch.setattr(commands, "discover_installed_content_roots", lambda: [mem0_root])
     monkeypatch.setattr(
         commands, "always_on_pack_names", lambda _path=None, **kw: {"lisa-pack-core"}

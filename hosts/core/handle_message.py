@@ -624,7 +624,9 @@ async def _execute_mode_turn(
     if runtime.manifest is None:
         from hosts.core.model_runtime import load_manifest as _load_manifest
 
-        runtime.manifest = _load_manifest({}, data_dir=runtime.data_dir)
+        runtime.manifest = _load_manifest(
+            {}, data_dir=runtime.data_dir, path=runtime.models_path
+        )
 
     preferred_model_id = preferred_model_id_for_route(
         raw_message=message,

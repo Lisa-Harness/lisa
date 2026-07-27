@@ -164,11 +164,14 @@ def build_turn_hooks(
     # ── Model resolution ──────────────────────────────────────────
     def _resolve_model(model_id: str) -> StubModelDefinition:
         if runtime.manifest is None:
-            runtime.manifest = load_manifest({}, data_dir=runtime.data_dir)
+            runtime.manifest = load_manifest(
+                {}, data_dir=runtime.data_dir, path=runtime.models_path
+            )
         return resolve_little_lisa_model(
             model_id,
             runtime_state={"manifest": runtime.manifest},
             data_dir=runtime.data_dir,
+            path=runtime.models_path,
         )
 
     # ── Model router discovery ────────────────────────────────────
@@ -179,7 +182,9 @@ def build_turn_hooks(
     # back to static resolution.
     def _discover_active_router() -> Any:
         if runtime.manifest is None:
-            runtime.manifest = load_manifest({}, data_dir=runtime.data_dir)
+            runtime.manifest = load_manifest(
+                {}, data_dir=runtime.data_dir, path=runtime.models_path
+            )
         session_plan = getattr(runtime, "session_plan", None)
         for entry in discover_model_router_factories():
             try:

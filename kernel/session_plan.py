@@ -25,6 +25,8 @@ __all__ = [
     "ContextRankingPlan",
     "ContextSourceRule",
     "InstructionFragment",
+    "ModelManifestRef",
+    "PackInstallSpec",
     "PackSelection",
     "ProviderSelections",
     "ResourceSelection",
@@ -88,10 +90,42 @@ class ResourceSelection(_StrictSessionModel):
         return self
 
 
+class PackInstallSpec(_StrictSessionModel):
+    """A declared install source for one required pack.
+
+    The compiler validates shape only — it never reads the filesystem or
+    network. The host boot path resolves ``source`` against the trust policy
+    (``LISA_PACK_ALLOWED_PREFIXES``, ``LISA_PACK_GIT_ALLOW_HOSTS``) and
+    performs the actual install. Git refs must pin ``@tag/@branch/@sha``; the
+    host treats pinning as mandatory for auto-install regardless of
+    ``LISA_PACK_REQUIRE_GIT_REF``.
+    """
+
+    source: str = Field(min_length=1)
+    pin: str = ""
+
+
 class PackSelection(ResourceSelection):
-    """Pack selection plus pack-owned configuration validated after discovery."""
+    """Pack selection plus pack-owned configuration validated after discovery.
+
+    ``auto_install`` declares install sources for packs listed in ``required``.
+    The compiler enforces that every ``auto_install`` key is also in
+    ``required``; the host boot path performs the actual install.
+    """
 
     configuration: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    auto_install: dict[str, PackInstallSpec] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_auto_install_subset_of_required(self) -> PackSelection:
+        required = set(self.required)
+        extras = set(self.auto_install) - required
+        if extras:
+            extras_sorted = ", ".join(sorted(extras))
+            raise ValueError(
+                f"auto_install keys must also appear in required: {extras_sorted}"
+            )
+        return self
 
 
 class SessionResources(_StrictSessionModel):
@@ -311,6 +345,19 @@ def _default_context_lanes() -> tuple[ContextLanePlan, ...]:
     )
 
 
+class ModelManifestRef(_StrictSessionModel):
+    """A reference to a model manifest file (``models.yaml``).
+
+    The path may be session-relative (resolved against the resolved session
+    context file's directory by the host boot path) or absolute. The compiler
+    validates non-emptiness only; the host boot path resolves the path and
+    checks existence. When absent, the host falls back to
+    ``data_dir / models.yaml``.
+    """
+
+    path: str = Field(min_length=1)
+
+
 class ContextPlan(_StrictSessionModel):
     """The session-owned context mapper policy."""
 
@@ -319,6 +366,7 @@ class ContextPlan(_StrictSessionModel):
     ranking: ContextRankingPlan = Field(default_factory=ContextRankingPlan)
     budget: ContextBudgetPlan = Field(default_factory=ContextBudgetPlan)
     history: ContextHistoryPlan = Field(default_factory=ContextHistoryPlan)
+    models: ModelManifestRef | None = None
     conflict_policy: Literal["prefer_authority", "surface_conflict", "drop_lower_authority"] = (
         "prefer_authority"
     )
@@ -371,6 +419,12 @@ class SessionPlan(_StrictSessionModel):
     instructions: SessionInstructionPlan
     source_uri: str = Field(min_length=1)
     plan_digest: str = Field(min_length=64, max_length=64)
+    source_dir: str | None = None
+    """Directory of the resolved session-context file, as an absolute path
+    string. Set by the host boot path (``compile_selected_session_plan``)
+    so session-relative references like ``context.models.path`` can be
+    resolved. ``None`` when the plan was compiled without a source
+    directory (e.g. tests passing raw text)."""
 
 
 def compile_session_plan(*, text: str, source_uri: str) -> SessionPlan:

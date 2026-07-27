@@ -27,7 +27,6 @@ from hosts.core.model_discovery import (
     render_manifest_yaml,
     write_manifest_yaml,
 )
-from hosts.core.model_discovery.manifest import _router_preset_annotations
 from hosts.core.model_manifest import load_model_manifest
 from hosts.core.model_runtime import (
     active_manifest_path,
@@ -168,16 +167,9 @@ async def _handle_models_discover(
         )
         return handle_simple_command(runtime, message, "models", response_text)
 
-    annotations = _router_preset_annotations(
-        payload.get("mode_models", {}),
-        payload.get("roles", {}),
-        report.models,
-        router_block=payload.get("router"),
-    )
     write_manifest_yaml(
         proposal_path,
         payload,
-        annotations=annotations,
         router_block=payload.get("router"),
     )
     provider_summary: dict[str, int] = {}
@@ -193,6 +185,7 @@ async def _handle_models_discover(
         f"- discovered_models: {len(report.models)} ({provider_text})",
         f"- proposal_written: {proposal_path}",
         "- next_step: edit proposal as needed, then run /models apply",
+        "- presets: see docs/MODEL_ROUTER.md for copy-paste router presets",
     ]
     if skipped:
         lines.append(f"- skipped (not configured): {', '.join(skipped)}")
@@ -219,8 +212,9 @@ def _handle_models_apply(
         manifest = load_model_manifest(proposal_path)
         active_path.parent.mkdir(parents=True, exist_ok=True)
         # Re-emit via yaml.safe_load + render_manifest_yaml to strip
-        # YAML comments (preset annotations, hand-edits) from the
-        # active manifest. The proposal retains comments for reference.
+        # YAML comments (hand-edits) from the active manifest. The
+        # proposal is already minimal — no preset annotations are
+        # injected during discover.
         raw = proposal_path.read_text(encoding="utf-8")
         parsed = yaml.safe_load(raw)
         active_path.write_text(render_manifest_yaml(parsed), encoding="utf-8")
@@ -264,7 +258,9 @@ async def handle_models_command(
 
     if subcommand == "reload":
         try:
-            runtime.manifest = reload_manifest({}, data_dir=runtime.data_dir)
+            runtime.manifest = reload_manifest(
+                {}, data_dir=runtime.data_dir, path=runtime.models_path
+            )
             response_text = _render_models_manifest(runtime)
         except Exception as exc:  # pylint: disable=broad-except
             response_text = (
