@@ -13,7 +13,6 @@ This staged tree is the intended public framework boundary. It contains reusable
 | `hosts/core` | Transport-neutral runtime: typed config (`HostConfig`), mutable state (`HostRuntime`), provider dispatch, MCP pool compilation, command dispatch, context assembly, thread persistence. No Rich, Typer, aiohttp, or transport imports. | Production chat transport, durable memory, production-grade model policy/fallback |
 | `hosts/cli` | Terminal CLI host (Typer + Rich + prompt_toolkit). Wraps `hosts/core` with console rendering and REPL loop. Entry point: `lisa`. | Production transport, multi-user routing |
 | `hosts/web` | Localhost web host (aiohttp + browser UI + optional tray). Wraps `hosts/core` with HTTP transport. Entry point: `lisa-web`. | Production deployment, multi-tenant auth |
-| `hosts/vscode` | VS Code extension host (stdio JSON-RPC bridge + TS extension shell). Wraps `hosts/core` with Chat participant transport. Entry point: `lisa-vscode`. | Production extension marketplace distribution |
 
 ## Host Responsibilities
 
@@ -29,7 +28,7 @@ A real host must inject concrete implementations for runtime seams:
 
 The framework keeps these as protocols and callbacks so package authors can build reusable behavior without depending on the production Lisa app.
 
-The shared host runtime (`hosts/core`) wires a starter subset: `/search`, `/markdown`, `/discuss`, `/help`, `/deep`, default chat parsing, and locally added action/chat modes discovered through `SDK_CONTENT_ROOTS` when they only need the shipped callbacks. It supports live OpenAI-compatible completions through a small manifest contract. Transport hosts (`hosts/cli`, `hosts/web`, `hosts/vscode`) implement `TransportCallbacks` to render turns in their native surface — the runtime never imports Rich, Typer, aiohttp, or any transport-specific package. See `docs/HOSTS_GUIDE.md` for the full architecture.
+The shared host runtime (`hosts/core`) wires a starter subset: `/search`, `/markdown`, `/discuss`, `/help`, `/deep`, default chat parsing, and locally added action/chat modes discovered through `SDK_CONTENT_ROOTS` when they only need the shipped callbacks. It supports live OpenAI-compatible completions through a small manifest contract. Transport hosts (`hosts/cli`, `hosts/web`) implement `TransportCallbacks` to render turns in their native surface — the runtime never imports Rich, Typer, aiohttp, or any transport-specific package. See `docs/HOSTS_GUIDE.md` for the full architecture.
 
 ## Privacy Boundary
 

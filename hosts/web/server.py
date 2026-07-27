@@ -223,10 +223,10 @@ class SSETransport:
     an ``asyncio.Queue``. The SSE endpoint reads from the queue and writes
     ``text/event-stream`` frames to the client.
 
-    This mirrors the VS Code bridge's ``VSCodeTransport`` pattern
-    (``hosts/vscode/bridge.py``) — forward every kernel event to the
-    transport surface — but uses SSE frames instead of JSON-RPC
-    notifications.
+    This mirrors the VS Code host's ``VSCodeTransport`` pattern (the
+    ``lisa_vscode.host.bridge`` module in the sibling ``lisa_vscode``
+    repo) — forward every kernel event to the transport surface — but
+    uses SSE frames instead of JSON-RPC notifications.
     """
 
     def __init__(self, queue: asyncio.Queue[dict[str, Any]], *, debug: bool = False) -> None:

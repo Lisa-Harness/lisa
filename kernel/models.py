@@ -539,7 +539,7 @@ class LisaReflectionArtifact(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Dev-state outbox (pushed from VS Code extension)
+# Dev-state outbox (pushed from the host surface)
 # ---------------------------------------------------------------------------
 
 

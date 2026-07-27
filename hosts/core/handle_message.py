@@ -1,7 +1,7 @@
 """Transport-neutral message dispatcher for Lisa framework hosts.
 
 This is the core ``handle_message`` entry point that all transport hosts
-(cli, web, vscode) call to execute one user turn. It:
+(cli, web) call to execute one user turn. It:
 
 1. **Host command dispatch** — delegates to ``hosts.core.commands`` for
    ``/help``, ``/settings``, ``/tokens``, ``/debug``, ``/consolidate``,

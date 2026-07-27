@@ -50,7 +50,7 @@ class HostCommandResult:
 
     ``handle_message`` returns this for every turn. Transport hosts render
     ``text`` to the user; ``data`` is available for richer UI rendering
-    (e.g. VS Code webview panels, web SSE payloads).
+    (e.g. web SSE payloads).
     """
 
     text: str

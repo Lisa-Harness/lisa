@@ -231,7 +231,7 @@ When compaction does not fire, the slice returns a no-work outcome with a note e
 
 **`/compact-now` reports "write-back unavailable".**
 
-- The host has not wired `write_turn_history_fn`. This should not happen for the standard CLI/web/VS Code hosts (they wire it in `hosts/core/turn_hooks_builder.py`), but a custom host may need to add it. The compaction slice and `/summarize-history` both degrade to a no-op with a warning in this case.
+- The host has not wired `write_turn_history_fn`. This should not happen for the standard CLI/web hosts (they wire it in `hosts/core/turn_hooks_builder.py`), but a custom host may need to add it. The compaction slice and `/summarize-history` both degrade to a no-op with a warning in this case.
 
 **The summary is low quality.**
 

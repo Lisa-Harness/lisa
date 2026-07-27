@@ -1,6 +1,6 @@
 # Hosts Guide
 
-The Lisa framework ships **three transport hosts** — CLI, web, and VS Code — that all share a single transport-neutral runtime (`hosts/core`). Each host is a thin transport adapter that wires the same `HostRuntime` and calls the same `handle_message` dispatcher. The runtime never imports Rich, Typer, aiohttp, or any transport-specific code.
+The Lisa framework ships **two transport hosts** — CLI and web — that all share a single transport-neutral runtime (`hosts/core`). Each host is a thin transport adapter that wires the same `HostRuntime` and calls the same `handle_message` dispatcher. The runtime never imports Rich, Typer, aiohttp, or any transport-specific code.
 
 ## Architecture
 
@@ -9,7 +9,6 @@ flowchart TD
   subgraph TransportHosts
     CLI[hosts/cli<br/>Typer + Rich REPL<br/>Entry point: lisa]
     Web[hosts/web<br/>aiohttp + tray<br/>Entry point: lisa-web]
-    VSCode[hosts/vscode<br/>stdio bridge + TS extension<br/>Entry point: lisa-vscode]
   end
 
   subgraph SharedRuntime
@@ -33,7 +32,6 @@ flowchart TD
 
   CLI --> Core
   Web --> Core
-  VSCode --> Core
 
   Core --> TR
   Core --> FD
@@ -57,7 +55,6 @@ All three transport hosts import only from `hosts.core`. The kernel and SDK neve
 | `hosts/core` | Transport-neutral runtime: config, runtime state, provider dispatch, MCP pool, command dispatch, context assembly | — (library) | None |
 | `hosts/cli` | Terminal REPL with Rich rendering | `lisa` | Rich + prompt_toolkit + Typer |
 | `hosts/web` | Localhost web server with browser UI + system tray | `lisa-web` | aiohttp |
-| `hosts/vscode` | VS Code Chat participant via stdio JSON-RPC bridge | `lisa-vscode` | VS Code extension API |
 
 ## Quick Start
 
@@ -107,10 +104,6 @@ uv run lisa desktop --no-open-browser
 ```
 
 The standalone `lisa-web desktop` entry point runs the same code. The server prints a URL with an auth token: `http://127.0.0.1:8765/?token=<generated-token>`. See `docs/WEB_HOST_GUIDE.md` for the full API reference.
-
-### VS Code (Chat participant)
-
-See `docs/VSCODE_HOST_GUIDE.md` for extension build and installation instructions. Once installed, type `@lisa` in the VS Code Chat view to start a turn.
 
 ## Core Runtime
 

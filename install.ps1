@@ -175,7 +175,7 @@ function New-GenerateEnvFile {
     )
 
     # .env and .env.example live at the repo root (not hosts/little_lisa/,
-    # which no longer exists). hosts/cli, hosts/web, hosts/vscode load .env
+    # which no longer exists). hosts/cli, hosts/web load .env
     # from the working directory / data dir.
     $envFile = Join-Path $Dir ".env"
     $envExample = Join-Path $Dir ".env.example"

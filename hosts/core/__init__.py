@@ -1,7 +1,7 @@
 """hosts.core — transport-neutral host runtime for Lisa framework hosts.
 
-This package owns the shared runtime that ``hosts/cli``, ``hosts/web``, and
-``hosts/vscode`` all build on. It wires the kernel's ``TurnHooks`` with
+This package owns the shared runtime that ``hosts/cli`` and ``hosts/web``
+build on. It wires the kernel's ``TurnHooks`` with
 manifest-driven model resolution, MCP pool compilation, provider completion,
 context assembly, thread persistence, and host-command dispatch — all without
 importing Rich, Typer, aiohttp, or any transport-specific code.

@@ -1,7 +1,7 @@
 """Tests for Copilot customization auto-injection into the system prompt.
 
 Verifies that always-on files, applyTo-scoped instructions, and skills
-are injected for CLI/web hosts and skipped for the VS Code host.
+are injected for CLI/web hosts.
 """
 
 from __future__ import annotations
@@ -159,28 +159,3 @@ class TestHostRuntimeCopilotCache:
 
         text = runtime.copilot_customizations_text
         assert text == ""
-
-
-class TestVSCodeHostSkipGuard:
-    def test_vscode_host_passes_empty_copilot_customizations(self) -> None:
-        """When surface_type is 'vscode', copilot_customizations is empty."""
-        # This is tested at the turn_hooks_builder level — the guard is:
-        #   if runtime.config.surface_type != "vscode":
-        #       copilot_text = runtime.copilot_customizations_text
-        # We verify the assemble_system_prompt call with empty string
-        # produces no Copilot content.
-        result = assemble_system_prompt(
-            mode_instruction="MODE INSTRUCTION",
-            stage_instruction=None,
-            content_loader=_fake_content_loader,
-            session_instruction="SESSION INSTRUCTION",
-            copilot_customizations="",  # what the VS Code guard passes
-        )
-
-        assert "## Project Instructions" not in result
-        assert "## Instruction:" not in result
-        assert "## Skill:" not in result
-        # But the rest of the prompt is intact.
-        assert "BASE SYSTEM PROMPT" in result
-        assert "SESSION INSTRUCTION" in result
-        assert "MODE INSTRUCTION" in result

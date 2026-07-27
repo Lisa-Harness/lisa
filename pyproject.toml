@@ -14,7 +14,6 @@ dependencies = [
     "lisa-host-core",
     "lisa-host-cli",
     "lisa-host-web",
-    "lisa-host-vscode",
     "lisa-host",
     "rich>=13.7.0",
     "typer>=0.12.3",
@@ -68,7 +67,6 @@ members = [
     "hosts/core",
     "hosts/cli",
     "hosts/web",
-    "hosts/vscode",
     "packaging/lisa-host",
 ]
 
@@ -95,7 +93,6 @@ lisa-pack-letta = { path = "../lisa-packs/letta" }
 lisa-host-core = { workspace = true }
 lisa-host-cli = { workspace = true }
 lisa-host-web = { workspace = true }
-lisa-host-vscode = { workspace = true }
 lisa-host = { workspace = true }
 
 [tool.pytest.ini_options]
@@ -215,7 +212,6 @@ forbidden_modules = [
     "hosts.core",
     "hosts.cli",
     "hosts.web",
-    "hosts.vscode",
 ]
 
 # SDK must not import host transport code or mcp_server internals.
@@ -228,7 +224,6 @@ forbidden_modules = [
     "hosts.core",
     "hosts.cli",
     "hosts.web",
-    "hosts.vscode",
     "mcp_server",
 ]
 
@@ -247,15 +242,14 @@ forbidden_modules = [
     "hosts.core",
     "hosts.cli",
     "hosts.web",
-    "hosts.vscode",
 ]
 
-# Host layering: cli/web/vscode → core → mcp_server → sdk → kernel
+# Host layering: cli/web → core → mcp_server → sdk → kernel
 [[tool.importlinter.contracts]]
-name = "Host layering (cli/web/vscode → core → mcp_server → sdk → kernel)"
+name = "Host layering (cli/web → core → mcp_server → sdk → kernel)"
 type = "layers"
 layers = [
-    "hosts.cli | hosts.web | hosts.vscode",
+    "hosts.cli | hosts.web",
     "hosts.core",
     "mcp_server",
     "sdk",
@@ -272,5 +266,4 @@ forbidden_modules = [
     "hosts.core",
     "hosts.cli",
     "hosts.web",
-    "hosts.vscode",
 ]

@@ -1,7 +1,7 @@
 """Transport callback protocol — the Option B seam.
 
 ``TransportCallbacks`` is the interface that ``hosts.core`` uses to deliver
-turn events to a transport host (CLI console, web SSE, VS Code Chat). The
+turn events to a transport host (CLI console, web SSE). The
 runtime calls these methods during turn execution; the transport host
 implements them to render output in its native surface.
 
@@ -30,10 +30,10 @@ class TransportCallbacks(Protocol):
 
     Design principles:
     - **Structured payloads, not prose**: ``on_debug_context`` and
-      ``on_stage`` receive structured dicts so VS Code/web can render rich
+      ``on_stage`` receive structured dicts so transport hosts can render rich
       UI without parsing console text.
     - **No transport imports in core**: the runtime calls these methods;
-      it never imports Rich, aiohttp, or VS Code APIs.
+      it never imports Rich or aiohttp.
     - **Streaming is opt-in**: ``on_text_chunk`` fires only when the
       runtime has streaming enabled. Non-streaming transports ignore it.
     - **Errors are delivered, not raised**: ``on_error`` receives the
@@ -75,7 +75,7 @@ class TransportCallbacks(Protocol):
         Called when debug mode is active. The ``context`` dict mirrors the
         ``_build_turn_context`` shape (timestamp, mode_id, query, resolved
         model, handoff note, etc.). Transports render this as they see fit
-        (Rich panel, web JSON view, VS Code debug panel).
+        (Rich panel, web JSON view).
         """
         ...
 

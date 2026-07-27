@@ -14,7 +14,7 @@ This module consolidates the pure, stateless logic for:
 
 All functions are transport-neutral: they take explicit ``data_dir`` and
 ``host_manifest_path`` parameters rather than reading global runtime state.
-A transport host (Little Lisa, web host, VS Code host) wires its own
+A transport host (Little Lisa, web host) wires its own
 ``HostConfig``-derived paths into these functions at startup.
 """
 

@@ -667,15 +667,12 @@ class HostRuntime:
         # the alias handlers forward to live server sessions and the
         # proxy's ambient resolvers are in place before the first turn.
         # Without this, transport hosts that call ``runtime.start()``
-        # directly (cli, web, vscode) would never register
+        # directly (cli, web) would never register
         # ``memory.add`` / ``memory.search`` / ``memory.list`` — the
         # learning-pack operations (recall_memory,
         # synthesize_and_store_learning) reach them via
         # ``ctx.execute_tool_fn`` and fail with "Tool 'memory.list' is not
-        # registered on any MCP server". The ``hosts/little_lisa`` host
-        # has its own ``astart_warm_mcp_pool`` that calls this too; the
-        # registration is idempotent at the pool level (synthetic tools
-        # replace by name), so double registration is harmless.
+        # registered on any MCP server".
         from hosts.core.memory_aliases import register_memory_aliases  # noqa: PLC0415
 
         register_memory_aliases(

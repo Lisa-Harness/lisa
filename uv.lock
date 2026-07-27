@@ -17,7 +17,6 @@ members = [
     "lisa-host",
     "lisa-host-cli",
     "lisa-host-core",
-    "lisa-host-vscode",
     "lisa-host-web",
     "lisa-kernel",
     "lisa-mcp-servers",
@@ -1075,7 +1074,6 @@ dependencies = [
     { name = "lisa-host" },
     { name = "lisa-host-cli" },
     { name = "lisa-host-core" },
-    { name = "lisa-host-vscode" },
     { name = "lisa-host-web" },
     { name = "lisa-kernel" },
     { name = "lisa-mcp-servers" },
@@ -1123,7 +1121,6 @@ requires-dist = [
     { name = "lisa-host", editable = "packaging/lisa-host" },
     { name = "lisa-host-cli", editable = "hosts/cli" },
     { name = "lisa-host-core", editable = "hosts/core" },
-    { name = "lisa-host-vscode", editable = "hosts/vscode" },
     { name = "lisa-host-web", editable = "hosts/web" },
     { name = "lisa-kernel", editable = "kernel" },
     { name = "lisa-mcp-servers", editable = "mcp_server" },
@@ -1281,41 +1278,6 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
 provides-extras = ["dev"]
-
-[[package]]
-name = "lisa-host-vscode"
-version = "0.1.0"
-source = { editable = "hosts/vscode" }
-dependencies = [
-    { name = "httpx" },
-    { name = "lisa-host-core" },
-    { name = "lisa-kernel" },
-    { name = "lisa-mcp-servers" },
-    { name = "lisa-pack-checkpoint" },
-    { name = "lisa-pack-core" },
-    { name = "lisa-pack-introspect" },
-    { name = "lisa-pack-memory" },
-    { name = "lisa-sdk" },
-    { name = "openai" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "lisa-host-core" },
-    { name = "lisa-kernel" },
-    { name = "lisa-mcp-servers" },
-    { name = "lisa-pack-checkpoint" },
-    { name = "lisa-pack-core" },
-    { name = "lisa-pack-introspect" },
-    { name = "lisa-pack-memory" },
-    { name = "lisa-sdk" },
-    { name = "openai", specifier = ">=1.30.0" },
-    { name = "pydantic", specifier = ">=2.7.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-]
 
 [[package]]
 name = "lisa-host-web"

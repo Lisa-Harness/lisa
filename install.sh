@@ -141,7 +141,7 @@ generate_env_file() {
     local install_dir=$1; shift
     local providers=("$@")
     # .env and .env.example live at the repo root (not hosts/little_lisa/,
-    # which no longer exists). hosts/cli, hosts/web, hosts/vscode load .env
+    # which no longer exists). hosts/cli, hosts/web load .env
     # from the working directory / data dir.
     local env_file="$install_dir/.env"
     local env_example="$install_dir/.env.example"

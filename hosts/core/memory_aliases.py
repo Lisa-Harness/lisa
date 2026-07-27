@@ -1,6 +1,6 @@
 """Register the generic ``memory.*`` synthetic aliases on a started MCP pool.
 
-Transport hosts (cli, web, vscode) all need the same wiring after
+Transport hosts (cli, web) both need the same wiring after
 ``MCPToolPool.start()`` succeeds:
 
 1. Set ambient resolvers on the pool so the proxy layer can inject

@@ -1,6 +1,6 @@
 # Lisa Framework
 
-The public Lisa framework packages: runtime-neutral kernel contracts, an author-facing SDK, a set of public packs, three transport hosts (CLI, web, VS Code), and the MCP servers. This workspace is intentionally separate from the private production Lisa Teams bot app.
+The public Lisa framework packages: runtime-neutral kernel contracts, an author-facing SDK, a set of public packs, two transport hosts (CLI, web), and the MCP servers. This workspace is intentionally separate from the private production Lisa Teams bot app.
 
 ## What Is Included
 
@@ -13,7 +13,6 @@ The public Lisa framework packages: runtime-neutral kernel contracts, an author-
 - `hosts/core/`: the shared transport-neutral runtime (`HostConfig`, `HostRuntime`, `TransportCallbacks`, provider gateways) used by all three transport hosts.
 - `hosts/cli/`: the terminal host. Entry point: `lisa`. Provides the REPL, `once`, `verify`, `modes`, `models`, `operations`, `tools`, `mcp`, `pack`, `desktop`, and `intake` commands.
 - `hosts/web/`: the localhost web host with a desktop chat UI, system tray, and a heartbeat watchdog. Entry point: `lisa-web` (also reachable as `lisa desktop`).
-- `hosts/vscode/`: the VS Code extension bridge (paired with the sibling TS extension repo). Entry point: `lisa-vscode`.
 - `mcp_server/`: MCP (Model Context Protocol) servers that expose Lisa's surface-scoped tools over stdio — `lisa-context`, `lisa-content`, `lisa-catalog`, `lisa-memory`, `lisa-guard`, `lisa-storage`.
 
 ## What Is Excluded
@@ -86,7 +85,6 @@ The root `pyproject.toml` defines a public-only `uv` workspace. The workspace me
 - `lisa-host-core` (`hosts/core/`)
 - `lisa-host-cli` (`hosts/cli/`) — entry point `lisa`
 - `lisa-host-web` (`hosts/web/`) — entry point `lisa-web`
-- `lisa-host-vscode` (`hosts/vscode/`) — entry point `lisa-vscode`
 - `lisa-host` (`packaging/lisa-host/`)
 
 External public packs resolve from the sibling `../lisa-packs/` checkout and are pulled in with `uv sync --extra ext`: `lisa-pack-brave-search`, `lisa-pack-compaction`, `lisa-pack-letta`, `lisa-pack-markdown`, `lisa-pack-mem0`, `lisa-pack-okf`, `lisa-pack-search`.
