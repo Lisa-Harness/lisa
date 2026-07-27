@@ -74,7 +74,15 @@ class PlanWorkflowOutput(BaseModel):
         )
     )
     rationale: str = Field(
-        description="Brief explanation of why this target was chosen.",
+        description=(
+            "Explanation of the routing decision. When target_stage_id is "
+            "empty, this MUST name the specific capability the request needs "
+            "that no installed mode provides (quote the unmatched intent or "
+            "verb from the user's query), NOT a generic 'no intent keywords' "
+            "excuse. Example: 'No installed mode provides a write/markdown "
+            "capability; the user asked to draft a document.' This rationale "
+            "is shown to the user when no handoff occurs."
+        ),
     )
 
 
@@ -117,11 +125,22 @@ tags and keyword patterns that signal when it should be used.
 
 5. Provide a brief rationale explaining your choice.
 
+   - **No match**: If NO installed mode covers the request's main intent
+     (the user asks for a capability no available mode's keywords match),
+     return `target_stage_id: ""` (empty). The rationale MUST then name the
+     specific capability that is missing, quoted from the user's own
+     words — e.g. "No installed mode provides a write/markdown capability;
+     the user asked to draft a document." Do NOT return a generic
+     "no intent keywords detected" excuse; do NOT route to `default` for a
+     capability request. The empty target tells the framework to surface
+     your rationale to the user so they can install the missing pack.
+
 ## Output Contract
 
 Return one JSON object matching the declared schema. The
 `target_stage_id` must be a single routable mode_id, a `fork:...`
-fan-out string, or the first mode_id of a sequential chain. Do not
+fan-out string, the first mode_id of a sequential chain, OR an empty
+string when no installed mode covers the request. Do not
 include any other text outside the JSON object.
 """
 
