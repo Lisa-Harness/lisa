@@ -199,6 +199,9 @@ def _scan_editable_packs(
     way the non-editable path scans ``site-packages/lisa_packs/``.
     """
     roots: list[Path] = []
+    # Guard: packs venv may not exist yet
+    if not site_packages.is_dir():
+        return roots
     for entry in sorted(site_packages.iterdir()):
         if not entry.is_file() or not entry.name.startswith(_EDITABLE_FINDER_PREFIX):
             continue

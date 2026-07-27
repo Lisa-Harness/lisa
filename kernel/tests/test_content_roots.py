@@ -119,3 +119,54 @@ def test_discover_installed_content_roots_excluded_packs_none_returns_all(
 
     result = content_roots.discover_installed_content_roots(excluded_packs=None)
     assert result == [first_root, second_root]
+
+
+def test_discover_packs_venv_content_roots_missing_venv_returns_empty(
+    tmp_path: Path,
+) -> None:
+    """Regression: first launch with no packs venv must not crash boot.
+
+    On Linux with no ``.env``, the packs venv does not exist yet. The
+    site-packages path computed by ``packs_venv_site_packages`` points at
+    a non-existent ``lib/pythonX.Y/site-packages``. ``_scan_editable_packs``
+    previously called ``site_packages.iterdir()`` unguarded, raising
+    ``FileNotFoundError`` that propagated up through
+    ``discover_packs_venv_content_roots`` and crashed boot.
+    """
+    nonexistent_venv = tmp_path / "packs-venv"  # deliberately not created
+
+    def venv_resolver(_data_dir: Path | None) -> Path:
+        return nonexistent_venv
+
+    def site_packages_resolver(venv_path: Path) -> Path:
+        # Mirror the real resolver: a path that does not exist on disk.
+        return venv_path / "lib" / "python3.13" / "site-packages"
+
+    result = content_roots.discover_packs_venv_content_roots(
+        data_dir=tmp_path,
+        venv_path_resolver=venv_resolver,
+        site_packages_resolver=site_packages_resolver,
+    )
+    assert result == []
+
+
+def test_discover_packs_venv_content_roots_venv_exists_no_packs_returns_empty(
+    tmp_path: Path,
+) -> None:
+    """Empty packs venv (no lisa_packs/, no editable finders) returns empty."""
+    venv = tmp_path / "packs-venv"
+    site = venv / "lib" / "python3.11" / "site-packages"
+    site.mkdir(parents=True)
+
+    def venv_resolver(_data_dir: Path | None) -> Path:
+        return venv
+
+    def site_packages_resolver(venv_path: Path) -> Path:
+        return venv_path / "lib" / "python3.11" / "site-packages"
+
+    result = content_roots.discover_packs_venv_content_roots(
+        data_dir=tmp_path,
+        venv_path_resolver=venv_resolver,
+        site_packages_resolver=site_packages_resolver,
+    )
+    assert result == []

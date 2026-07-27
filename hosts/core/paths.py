@@ -153,16 +153,56 @@ def default_packs_venv() -> Path:
     return default_data_dir() / _PACKS_VENV_DIR_NAME
 
 
+def _venv_python_dir(venv_path: Path) -> str:
+    """Return the ``python<major>.<minor>`` dir name for a venv.
+
+    The packs venv is created by ``uv venv`` and may target a different
+    Python than the host interpreter (e.g. host runs 3.13 but ``uv`` resolved
+    3.11 from ``requires-python``). Using ``sys.version_info`` here would
+    compute ``python3.13/...`` while the actual layout is
+    ``python3.11/...`` and produce ``FileNotFoundError`` on first launch.
+
+    Resolution order:
+      1. ``pyvenv.cfg`` ``version_info`` (Python 3.13+) or ``version``
+         field — the authoritative venv Python version.
+      2. Scan ``<venv>/lib/`` for a ``python<major>.<minor>`` directory.
+      3. Fall back to the running interpreter's version.
+    """
+    cfg = venv_path / "pyvenv.cfg"
+    if cfg.is_file():
+        try:
+            for line in cfg.read_text(encoding="utf-8").splitlines():
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if key in ("version_info", "version") and value:
+                    parts = value.split(".")
+                    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                        return f"python{parts[0]}.{parts[1]}"
+        except OSError:
+            pass
+    lib_dir = venv_path / "lib"
+    if lib_dir.is_dir():
+        for child in sorted(lib_dir.iterdir()):
+            if child.is_dir() and child.name.startswith("python"):
+                # python3.11, python3.13, etc. — first match wins.
+                if child.name[6:].replace(".", "").isdigit():
+                    return child.name
+    return f"python{sys.version_info.major}.{sys.version_info.minor}"
+
+
 def packs_venv_site_packages(venv_path: Path) -> Path:
     """Return the site-packages directory inside a venv.
 
     On Windows this is ``<venv>/Lib/site-packages``; on POSIX it is
-    ``<venv>/lib/python<major>.<minor>/site-packages``.
+    ``<venv>/lib/python<major>.<minor>/site-packages``. The ``pythonX.Y``
+    segment is read from the venv's own ``pyvenv.cfg`` (or scanned from
+    ``lib/``) rather than ``sys.version_info``, because the packs venv
+    may target a different Python than the host interpreter.
     """
     if os.name == "nt":
         return venv_path / "Lib" / "site-packages"
-    py_dir = f"python{sys.version_info.major}.{sys.version_info.minor}"
-    return venv_path / "lib" / py_dir / "site-packages"
+    return venv_path / "lib" / _venv_python_dir(venv_path) / "site-packages"
 
 
 def inject_packs_venv_site_packages() -> Path | None:
