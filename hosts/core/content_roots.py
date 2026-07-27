@@ -570,6 +570,60 @@ def _configured_root_is_active(
     return not session_included_packs or package_name in session_included_packs
 
 
+def resolve_pack_session_path(
+    *,
+    pack: str,
+    session: str,
+    pack_roots: Iterable[Path],
+) -> Path:
+    """Resolve ``<pack_root>/sessions/<session>.md`` for one installed pack.
+
+    Walks ``pack_roots`` (the output of :func:`active_installed_pack_roots`)
+    and returns the first ``sessions/<session>.md`` file inside a pack whose
+    inferred package name aliases the requested ``pack`` (so both
+    ``lisa-pack-core`` and the bare slug ``core`` match the same install).
+
+    Raises:
+        SessionPlanError: if the pack is not present in ``pack_roots`` or the
+            pack does not ship a ``sessions/<session>.md`` file.
+
+    The lookup is pure: callers pass the discovered roots so this function
+    avoids touching the filesystem for discovery and stays unit-testable
+    without an installed pack environment.
+    """
+
+    from kernel.session_plan import SessionPlanError  # noqa: PLC0415
+
+    requested = normalize_pack_name(pack)
+    if not requested:
+        raise SessionPlanError("from: directive has an empty pack identifier")
+    session_name = session.strip()
+    if not session_name:
+        raise SessionPlanError("from: directive has an empty session identifier")
+    session_file_name = session_name if session_name.lower().endswith(".md") else f"{session_name}.md"
+
+    matched_root: Path | None = None
+    for root in pack_roots:
+        package_name = infer_pack_package_name(root)
+        if not package_name:
+            continue
+        if requested in pack_aliases(package_name, root=root):
+            matched_root = root
+            break
+
+    if matched_root is None:
+        raise SessionPlanError(
+            f"from: pack '{pack}' is not installed; cannot resolve session '{session}'"
+        )
+
+    session_path = matched_root / "sessions" / session_file_name
+    if not session_path.is_file():
+        raise SessionPlanError(
+            f"from: pack '{pack}' has no session '{session}' at {session_path}"
+        )
+    return session_path
+
+
 __all__ = [
     "active_installed_pack_roots",
     "always_on_pack_names",
@@ -590,4 +644,5 @@ __all__ = [
     "sdk_operation_roots",
     "seed_bundled_packs_lock",
     "unique_paths",
+    "resolve_pack_session_path",
 ]

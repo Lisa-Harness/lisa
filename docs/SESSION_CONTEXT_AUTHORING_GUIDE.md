@@ -413,6 +413,71 @@ For private contexts, pass auth via `LISA_SESSION_CONTEXT_TOKEN` or `LISA_SESSIO
 
 ---
 
+## Inheritance via `from:` and `body:`
+
+A user session can pull whole blocks from a pack's bundled session file (`<pack_root>/sessions/<name>.md`) instead of redeclaring them. Two host-layer directives do this, resolved **before** the strict kernel compiler runs:
+
+### `from:` (block inheritance)
+
+Usable under any of `resources`, `providers`, `routing`, or `context`. The block is the **unit of inheritance** — there is no per-field merge. The named block is pulled wholesale from the referenced pack session.
+
+```yaml
+routing:
+  from:
+    pack: lisa-pack-core
+    session: default
+```
+
+Rules:
+
+- **Mutually exclusive.** A block that uses `from:` may not declare any other key. `routing: { from: {...}, start_mode: x }` is a startup error.
+- **Missing block errors.** If the referenced pack session omits the block, resolution fails with a `SessionPlanError` naming the pack, session, and block.
+- **Identity stays local.** `schema_version`, `name`, `surface` are never pulled — there is no top-level `from:`. Every session declares its own identity.
+- **Packs are leaves.** Pack session files cannot themselves use `from:` or `body:`. The strict v2 schema (`extra="forbid"`) rejects them, so a pack that tries to inherit fails at load.
+- **Pack aliasing.** `pack` accepts the full ID (`lisa-pack-core`) or the bare slug (`core`). The pack must be installed (discoverable via content roots); it need not be in `resources.packs.required`.
+
+Cherry-pick example — pull three blocks, author `context` locally:
+
+```yaml
+resources:
+  from: { pack: lisa-pack-core, session: default }
+providers:
+  from: { pack: lisa-pack-core, session: default }
+routing:
+  from: { pack: lisa-pack-core, session: default }
+context:
+  sources:
+    - rule_id: mine
+      lane_id: operational
+      fallback: true
+```
+
+Here `context` is authored locally and wins wholesale — no merge, no override semantics.
+
+### `body:` (instruction body inheritance)
+
+A top-level directive that controls the Markdown body. Three modes:
+
+```yaml
+body:
+  from: { pack: lisa-pack-core, session: default }
+  mode: pull          # pull | write | context (default: write)
+```
+
+| Mode | Behavior |
+| --- | --- |
+| `write` | Default when `body:` is omitted. The user's body is primary; the non-empty-body rule applies to it. |
+| `pull` | The user's body is ignored (may be empty); the pack session's body becomes primary. |
+| `context` | The pack session's body is prepended, wrapped in `<pack_session_body>` … `</pack_session_body>`, followed by the user's body. Both must be non-empty. |
+
+`body:` is stripped from the front matter before the kernel schema sees it, so it does not violate `extra="forbid"`.
+
+### Resolution order
+
+`from:`/`body:` are resolved by `hosts.core.session_from_resolver.resolve_session_from_directives` after source resolution and before `compile_session_plan`. Pack discovery runs lazily — only when a directive is actually present — so sessions without directives pay zero discovery cost. When no directive is present, the resolver is a passthrough and existing sessions behave identically.
+
+---
+
 ## Validation Rules
 
 The compiler (`compile_session_plan`) enforces:

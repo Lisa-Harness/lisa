@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 import os
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,6 +44,7 @@ from kernel.ipsar_fsm import parse_front_matter
 from kernel.session_plan import SessionPlan, compile_session_plan
 
 from hosts.core.session_context_fetch import fetch_session_context_url
+from hosts.core.session_from_resolver import resolve_session_from_directives
 
 logger = logging.getLogger(__name__)
 
@@ -153,17 +155,49 @@ def compile_selected_session_plan(
     data_dir: Path,
     force_refresh: bool = False,
 ) -> SessionPlan:
-    """Resolve and strictly compile the one session plan for a host runtime."""
+    """Resolve and strictly compile the one session plan for a host runtime.
+
+    Host-layer ``from:`` and ``body:`` directives (see
+    :mod:`hosts.core.session_from_resolver`) are resolved before the strict
+    kernel compiler runs. Pack discovery is only paid when a directive is
+    actually present in the resolved source — otherwise this is a straight
+    passthrough to :func:`compile_session_plan`.
+    """
 
     source = resolve_session_context_source(
         session_context=session_context,
         data_dir=data_dir,
         force_refresh=force_refresh,
     )
-    plan = compile_session_plan(text=source.text, source_uri=source.source_uri)
+    resolved_text = resolve_session_from_directives(
+        text=source.text,
+        source_uri=source.source_uri,
+        pack_session_lookup=_make_pack_session_lookup(data_dir=data_dir),
+    )
+    plan = compile_session_plan(text=resolved_text, source_uri=source.source_uri)
     return plan.model_copy(
         update={"source_dir": str(source.cached_path.parent.resolve())}
     )
+
+
+def _make_pack_session_lookup(*, data_dir: Path) -> Callable[..., Path]:
+    """Build a ``pack_session_lookup`` closure for ``from:`` resolution.
+
+    Pack discovery (:func:`hosts.core.content_roots.active_installed_pack_roots`)
+    runs lazily — only when a ``from:`` directive actually triggers a lookup
+    — so sessions without directives pay zero discovery cost.
+    """
+
+    from hosts.core.content_roots import (  # noqa: PLC0415
+        active_installed_pack_roots,
+        resolve_pack_session_path,
+    )
+
+    def _lookup(*, pack: str, session: str) -> Path:
+        pack_roots = active_installed_pack_roots(data_dir)
+        return resolve_pack_session_path(pack=pack, session=session, pack_roots=pack_roots)
+
+    return _lookup
 
 
 def _read_session_source(*, source_uri: str, path: Path) -> SessionContextSource:

@@ -177,6 +177,23 @@ Packs can provide customized reference contexts via `content/user_contexts/<pack
 
 By including a curated context, pack authors can natively inject "Instructions", "You (Lisa)", and role configuration that best utilize their tools! Pack-supplied session contexts are resolved as explicit local files via `--session-context <path>`. The session context front matter must conform to the v2 strict schema (see the [Session Context Authoring Guide](SESSION_CONTEXT_AUTHORING_GUIDE.md)).
 
+### Inheritable Pack Sessions (`sessions/`)
+
+A pack can ship session files that user sessions inherit block-by-block via the `from:` and `body:` directives (see the [Session Context Authoring Guide](SESSION_CONTEXT_AUTHORING_GUIDE.md#inheritance-via-from-and-body)). Place these under `<pack_root>/sessions/<name>.md`. For example, `lisa-pack-core` ships `sessions/default.md`, which a user session can pull from:
+
+```yaml
+# user's session_context.md
+routing:
+  from: { pack: lisa-pack-core, session: default }
+```
+
+Convention rules:
+
+- A pack session file is a strict v2 session manifest (`schema_version: 2`) with a non-empty Markdown body. It is compiled through the same strict `SessionManifestV2` schema as a user session.
+- **Pack sessions are leaves.** They cannot themselves use `from:` or `body:` — the strict schema's `extra="forbid"` rejects them. Inheritance is one level: user → pack, never pack → pack.
+- A pack session does **not** need to declare `resources.packs.required` (it is not a runnable session on its own); it only needs to carry the blocks a user session might want to inherit.
+- The `pack` reference in a user's `from:` accepts the full distribution ID (`lisa-pack-core`) or the bare slug (`core`). The pack must be installed (discoverable via content roots) at the time the user session is compiled.
+
 ## Hello World Pack
 
 The fastest end-to-end path is a local external pack folder. The CLI host discovers these packs from `SDK_CONTENT_ROOTS`, so you do not need a private app or a published wheel just to prove the pack shape.
