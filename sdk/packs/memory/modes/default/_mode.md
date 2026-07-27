@@ -11,7 +11,6 @@ start_stage_id: none
 mode_kind: chat
 routable: true
 priority: 10
-allowed_operation_ids: [recall_memory]
 ---
 
 # Default Chat Mode
