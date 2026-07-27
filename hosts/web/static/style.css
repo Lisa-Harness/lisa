@@ -1,0 +1,234 @@
+/* Lisa Web — localhost chat UI styles */
+
+:root {
+  color-scheme: light;
+  --bg: #f4f6f8;
+  --card: #ffffff;
+  --text: #1f2933;
+  --muted: #67788a;
+  --accent: #1f6feb;
+  --border: #dce3ea;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(140deg, #edf2f7 0%, #f8fafc 60%, #ebf5ff 100%);
+  color: var(--text);
+  font-family: "Segoe UI", "Aptos", "Calibri", sans-serif;
+}
+
+.shell {
+  max-width: 980px;
+  margin: 16px auto;
+  padding: 0 16px 24px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.title {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.3px;
+}
+
+.subtitle {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.badge {
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── Stage bar ─────────────────────────────────────────────── */
+
+.stage-bar {
+  margin-top: 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  font-family: "Consolas", "Cascadia Mono", monospace;
+  font-size: 12px;
+  color: var(--muted);
+  min-height: 18px;
+  transition: opacity 0.3s;
+}
+
+.stage-bar.ready {
+  opacity: 0.6;
+}
+
+/* ── Messages panel ─────────────────────────────────────────── */
+
+.panel {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.messages {
+  min-height: 360px;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 12px;
+}
+
+.msg {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.msg .meta {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: #f8fafc;
+  border-bottom: 1px solid var(--border);
+}
+
+.msg pre {
+  margin: 0;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Consolas", "Cascadia Mono", monospace;
+  font-size: 13px;
+}
+
+.msg-body {
+  padding: 10px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.msg-body pre {
+  background: #f6f8fa;
+  padding: 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: "Consolas", "Cascadia Mono", monospace;
+  font-size: 13px;
+}
+
+.msg-body code {
+  font-family: "Consolas", "Cascadia Mono", monospace;
+  font-size: 0.9em;
+  background: #f0f2f5;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.msg-body pre code {
+  background: none;
+  padding: 0;
+}
+
+.msg-body table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.msg-body th,
+.msg-body td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.msg-body th {
+  background: #f8fafc;
+  font-weight: 600;
+}
+
+/* ── Composer ───────────────────────────────────────────────── */
+
+.composer {
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+
+textarea {
+  width: 100%;
+  min-height: 86px;
+  resize: vertical;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  padding: 10px;
+  box-sizing: border-box;
+  font-family: "Segoe UI", "Aptos", "Calibri", sans-serif;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  gap: 10px;
+}
+
+button {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  border-radius: 10px;
+  padding: 9px 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Context panel ──────────────────────────────────────────── */
+
+details {
+  margin-top: 14px;
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.context {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.context pre {
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+/* ── Token HUD ──────────────────────────────────────────────── */
+
+.token-hud {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+}

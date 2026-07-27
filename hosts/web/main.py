@@ -284,7 +284,7 @@ def _desktop_command(
     session_context_refresh: SessionContextRefreshOption = False,
     timezone: TimezoneOption = "",
     state_snapshot: StateSnapshotOption = "",
-    streaming: StreamingOption = "none",
+    streaming: StreamingOption = "text",
     host_log: HostLogOption = "",
 ) -> None:
     """Run the localhost web server until interrupted."""

@@ -41,13 +41,17 @@ def test_build_web_index_html_embeds_api_token() -> None:
 
     assert "Lisa Web" in html
     assert "token-xyz" in html
-    assert "/api/turn" in html
+    # The HTML is now a shell; the JS lives in /static/app.js.
+    # The token is injected as window.LISA_TOKEN.
+    assert 'window.LISA_TOKEN = "token-xyz"' in html
+    assert 'src="/static/app.js"' in html
 
 
 def test_build_web_index_html_escapes_token() -> None:
     html = web_server.build_web_index_html(token='token"<&')
 
-    assert 'token: "token&quot;&lt;&amp;"' in html
+    # The token is injected as window.LISA_TOKEN, HTML-escaped.
+    assert 'window.LISA_TOKEN = "token&quot;&lt;&amp;"' in html
 
 
 async def _make_client(
@@ -263,11 +267,12 @@ async def test_quit_endpoint_triggers_shutdown_signal(tmp_path) -> None:
 def test_build_web_index_html_includes_heartbeat_and_quit_script() -> None:
     html = web_server.build_web_index_html(token="secret")
 
-    assert "/api/heartbeat" in html
-    assert "/api/quit" in html
-    assert "sendQuitBeacon" in html
-    assert "pingHeartbeat" in html
-    assert "pagehide" in html
+    # The HTML shell loads app.js which contains the heartbeat/quit logic.
+    assert 'src="/static/app.js"' in html
+    assert "window.LISA_TOKEN" in html
+    # The stage bar and token HUD are new structural elements.
+    assert 'id="stage-bar"' in html
+    assert 'id="token-hud"' in html
 
 
 def test_cli_desktop_command_is_registered() -> None:
