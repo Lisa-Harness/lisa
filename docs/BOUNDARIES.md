@@ -28,7 +28,7 @@ A real host must inject concrete implementations for runtime seams:
 
 The framework keeps these as protocols and callbacks so package authors can build reusable behavior without depending on the production Lisa app.
 
-The shared host runtime (`hosts/core`) wires a starter subset: `/search`, `/markdown`, `/discuss`, `/help`, `/deep`, default chat parsing, and locally added action/chat modes discovered through `SDK_CONTENT_ROOTS` when they only need the shipped callbacks. It supports live OpenAI-compatible completions through a small manifest contract. Transport hosts (`hosts/cli`, `hosts/web`) implement `TransportCallbacks` to render turns in their native surface — the runtime never imports Rich, Typer, aiohttp, or any transport-specific package. See `docs/HOSTS_GUIDE.md` for the full architecture.
+The shared host runtime (`hosts/core`) wires a starter subset: `/search`, `/markdown`, `/discuss`, `/help`, `/deep`, default chat parsing, and locally added action/chat modes discovered through `SDK_CONTENT_ROOTS` when they only need the shipped callbacks. It supports live OpenAI-compatible completions through a small manifest contract. Transport hosts (`hosts/cli`, `hosts/web`) implement `TransportCallbacks` to render turns in their native surface — the runtime never imports Rich, Typer, aiohttp, or any transport-specific package. See `../hosts/README.md` for the full architecture.
 
 ## Privacy Boundary
 

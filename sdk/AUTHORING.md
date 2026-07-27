@@ -1,7 +1,7 @@
 # Operation Authoring Guide
 
 This guide walks through creating operations for the Lisa framework. For the conceptual
-overview and lifecycle details see [OPERATIONS.md](OPERATIONS.md).
+overview and lifecycle details see the Operations section in [`../kernel/README.md`](../kernel/README.md#operations).
 
 ## Choose your operation kind
 

@@ -6,7 +6,7 @@
 > which are now verified shipped). This doc overlaps with
 > `agent_framework_swot.md` and `architecture_gap_swot.md`. Retained as a
 > historical research record; for verified current capabilities see
-> `docs/KERNEL_ARCHITECTURE.md`.
+`../../kernel/README.md`.
 
 ## Executive Summary
 

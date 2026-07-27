@@ -5,7 +5,7 @@ Declares a **minimalist** default ``router:`` block that
 user ``router:`` block is present. The goal is a small, immediately
 understandable config — one capability escalation rule and a fallback.
 Richer examples (budget gates, phase gates, deep-repeat downgrade,
-``finish``, ``transition_to``) live in ``docs/MODEL_ROUTER.md`` as
+``finish``, ``transition_to``) live in ``router/README.md`` as
 copy-paste recipes rather than cluttering every generated manifest.
 
 Model ids are *symbolic* — they reference role names that the discovered

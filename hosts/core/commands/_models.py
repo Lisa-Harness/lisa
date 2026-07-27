@@ -185,7 +185,7 @@ async def _handle_models_discover(
         f"- discovered_models: {len(report.models)} ({provider_text})",
         f"- proposal_written: {proposal_path}",
         "- next_step: edit proposal as needed, then run /models apply",
-        "- presets: see docs/MODEL_ROUTER.md for copy-paste router presets",
+        "- presets: see sdk/router/README.md for copy-paste router presets",
     ]
     if skipped:
         lines.append(f"- skipped (not configured): {', '.join(skipped)}")

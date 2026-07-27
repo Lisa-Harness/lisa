@@ -43,7 +43,7 @@ class RouterRule:
 
     ``when`` is a free-form condition string interpreted by the active router
     backend. For the built-in ``lisa-router`` backend it is a CEL expression
-    (see ``sdk/router/router.py`` and ``docs/MODEL_ROUTER.md``).
+    (see ``sdk/router/router.py`` and ``../sdk/router/README.md``).
 
     Exactly one action field is set:
 

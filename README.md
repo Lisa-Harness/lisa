@@ -69,7 +69,7 @@ uv sync --extra dev
 uv run pyinstaller --name lisa --onefile hosts/cli/main.py
 ```
 
-For a first custom pack, follow `docs/PACK_AUTHORING_GUIDE.md` and point `SDK_CONTENT_ROOTS` at your pack folder. The same guide covers signal connectors, processing loops, and host commands — validate connectors through `kernel.testing.extension_harness`.
+For a first custom pack, follow `sdk/README.md` and point `SDK_CONTENT_ROOTS` at your pack folder. The same guide covers signal connectors, processing loops, and host commands — validate connectors through `kernel.testing.extension_harness`.
 
 ## Package Layout
 
@@ -106,4 +106,4 @@ uv run pytest --import-mode=importlib kernel/tests sdk/tests hosts -m "not live"
 uv run --extra dev ruff check --select F,I kernel sdk mcp_server hosts
 ```
 
-See `docs/BOUNDARIES.md`, `docs/CODING_WORKFLOW.md`, `docs/PACK_AUTHORING_GUIDE.md`, `docs/OPERATIONS.md`, `docs/OPERATION_AUTHORING_GUIDE.md`, `docs/SESSION_CONTEXT_AUTHORING_GUIDE.md`, `docs/HOSTS_GUIDE.md`, and `docs/KERNEL_ARCHITECTURE.md` for authoring, host-boundary, and architecture details.
+See `docs/BOUNDARIES.md`, `docs/CODING_WORKFLOW.md`, `sdk/README.md`, the Operations section in `kernel/README.md`, `sdk/AUTHORING.md`, `docs/SESSION_CONTEXT_AUTHORING_GUIDE.md`, `hosts/README.md`, and `kernel/README.md` for authoring, host-boundary, and architecture details.

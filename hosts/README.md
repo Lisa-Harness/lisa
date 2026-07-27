@@ -103,7 +103,7 @@ uv run lisa desktop --host 0.0.0.0 --port 9000
 uv run lisa desktop --no-open-browser
 ```
 
-The standalone `lisa-web desktop` entry point runs the same code. The server prints a URL with an auth token: `http://127.0.0.1:8765/?token=<generated-token>`. See `docs/WEB_HOST_GUIDE.md` for the full API reference.
+The standalone `lisa-web desktop` entry point runs the same code. The server prints a URL with an auth token: `http://127.0.0.1:8765/?token=<generated-token>`. See `web/README.md` for the full API reference.
 
 ## Core Runtime
 

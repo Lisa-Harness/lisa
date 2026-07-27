@@ -17,7 +17,7 @@ If no rule matches, the ``router.fallback`` model is used; if no fallback
 is configured, the router returns ``None`` so the turn loop falls back to
 the statically-resolved ``preferred_model_id``.
 
-Supported CEL bindings (see ``docs/MODEL_ROUTER.md`` for the full guide):
+Supported CEL bindings (see ``router/README.md`` for the full guide):
 
 - ``turn.iteration`` — the 1-based iteration number.
 - ``turn.tool_calls_so_far`` — tool calls dispatched so far this turn.

@@ -530,7 +530,7 @@ class TestHandleMessage:
         assert runtime.models_proposal_path.exists()
 
         # Proposal should be minimal — no preset annotation comments.
-        # Presets live in docs/MODEL_ROUTER.md, not the generated file.
+        # Presets live in sdk/router/README.md, not the generated file.
         proposal_content = runtime.models_proposal_path.read_text(encoding="utf-8")
         assert "cost-conscious" not in proposal_content
         assert "preset" not in proposal_content.lower()

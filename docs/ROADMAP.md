@@ -147,7 +147,7 @@ addressed before any new feature work.
 
 ### 2.4 Model router expansion
 
-- **From `docs/MODEL_ROUTER.md`.**
+- **From `sdk/router/README.md`.**
 - The external `lisa-pack-aoi-router` (vendor-backed, ML-based routing) is
   deferred. When ready, it registers under the same
   `lisa.extensions.model_routers` group and activates when
@@ -182,7 +182,7 @@ addressed before any new feature work.
 - (Backlog item — also tracked in `docs/SPEC/todo.md`.)
 - WhatsApp / Telegram / Signal hosts. Each is a thin transport adapter over
   `hosts/core`, implementing `TransportCallbacks`. The architecture is ready
-  (see `docs/HOSTS_GUIDE.md`) — only the transport adapter needs writing.
+  (see `../hosts/README.md`) — only the transport adapter needs writing.
 
 ### 3.4 Stuck-session detection improvements
 

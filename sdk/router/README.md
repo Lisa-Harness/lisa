@@ -529,4 +529,4 @@ host without a router has no escalation path, so blocking would dead-end.
 
 A mode with no `required_capabilities` (the default) never blocks — every
 model is admitted, preserving the pre-field behavior. See
-`docs/PACK_AUTHORING_GUIDE.md` for authoring.
+`../README.md` for authoring.

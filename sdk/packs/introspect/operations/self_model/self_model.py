@@ -401,7 +401,7 @@ def _build_architecture_entries(now_iso: str) -> list[SelfKnowledgeEntry]:
                 "Packs ship modes, operations, and content."
             ),
             confidence=0.9,
-            source_refs=["docs/KERNEL_ARCHITECTURE.md"],
+            source_refs=["kernel/README.md"],
             tags=["layer_model"],
             updated_at=now_iso,
         ),

@@ -28,7 +28,7 @@ from kernel.operations.registry import execute_operation
 # state provider, content loader) that are only available at runtime via lazy
 # imports. A Protocol would not capture the full HostRuntime surface these
 # handlers use. This is a known sdk->hosts coupling exception for pack command
-# handlers — see docs/PACK_AUTHORING_GUIDE.md.
+# handlers — see ../README.md.
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,7 @@
 > partly speculative ("likely lacks...", "may lack...") — this doc was
 > written without repo access. It overlaps substantially with
 > `agent_framework_analysis.md`. Retained as a historical snapshot; for
-> verified current capabilities see `docs/KERNEL_ARCHITECTURE.md` and
+verified current capabilities see `../../kernel/README.md` and
 > `docs/research/architecture_gap_swot.md` (the latter is itself superseded).
 
 ## Executive Summary

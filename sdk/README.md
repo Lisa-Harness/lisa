@@ -163,9 +163,9 @@ files (declarative). The Hello World example below shows the minimal shape; the 
 front matter decides when operations are invoked.
 
 - For the conceptual model, lifecycle hooks, and the operation-vs-tool distinction
-  see [OPERATIONS.md](OPERATIONS.md).
+  see the Operations section in [`../kernel/README.md`](../kernel/README.md#operations).
 - For the full metadata reference, examples with tool calls, response models, and the
-  testing checklist see [OPERATION_AUTHORING_GUIDE.md](OPERATION_AUTHORING_GUIDE.md).
+  testing checklist see [`AUTHORING.md`](AUTHORING.md).
 
 ## Content Rules
 

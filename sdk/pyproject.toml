@@ -50,7 +50,7 @@ markers = [
 sdk = "sdk:get_content_root"
 
 # Built-in lisa-router backend — a runtime ModelRouter, not a pack.
-# See sdk/router/ and docs/MODEL_ROUTER.md.
+# See sdk/router/ and router/README.md.
 [project.entry-points."lisa.extensions.model_routers"]
 lisa-router = "sdk.router:get_router_factory"
 

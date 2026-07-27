@@ -478,7 +478,7 @@ def _bundled_pack_dirs() -> list[Path]:
     Bundled packs ship with the framework tree (``<framework_root>/sdk/packs/
     <name>``) and are **not** published to PyPI. External packs may declare
     cross-pack dependencies on them (e.g. ``lisa-pack-compaction`` depends on
-    ``lisa-pack-checkpoint`` — see ``docs/PACK_AUTHORING_GUIDE.md``). Without
+    ``lisa-pack-checkpoint`` — see ``sdk/README.md``). Without
     seeding the packs venv with editable installs of these directories, ``uv
     pip install`` of the depending external pack fails dependency resolution:
     *"lisa-pack-checkpoint was not found in the package registry"*.

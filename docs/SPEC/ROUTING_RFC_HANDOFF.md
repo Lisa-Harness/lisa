@@ -7,7 +7,7 @@
 > `synthesize_routing_transitions`, and the capability-manifest proactive
 > hint (`_compute_capability_routing_hint`) are all shipped. This file is
 > retained as a historical design record. For the current living description
-> see `docs/ROUTER_DESIGN.md` and `docs/KERNEL_ARCHITECTURE.md`.
+> see `docs/ROUTER_DESIGN.md` and `../kernel/README.md`.
 
 Status: Draft
 Date: 2026-07-16
