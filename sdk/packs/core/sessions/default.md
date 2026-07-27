@@ -13,6 +13,18 @@ providers:
     default: lisa-pack-core
 routing:
   start_mode: default
+  # Sequential-connector vocabulary shared by the routing-hint generator
+  # and the plan-mode planner. A query containing any of these phrases is
+  # treated as a sequential chain (single handoff, step-by-step) instead of
+  # a parallel fork fan-out.
+  sequential_connectors:
+    - then
+    - and then
+    - after that
+    - next
+    - followed by
+    - based on
+    - once
 context:
   sources:
     - rule_id: default
