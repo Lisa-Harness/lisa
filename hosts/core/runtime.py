@@ -140,6 +140,18 @@ class HostRuntime:
             memory_scope=config.memory_scope or surface.memory_scope,
         )
 
+        # ── Session routing vocabulary ────────────────────────────────
+        # Inject the session-authored sequential-connector list into the
+        # kernel registry so the routing-hint generator and the plan-mode
+        # planner share one vocabulary source. Empty list (the default)
+        # resets to the historical built-in set; sessions opt into richer
+        # coverage via ``routing.sequential_connectors`` front matter.
+        from kernel.routing_vocabulary import register_routing_vocabulary  # noqa: PLC0415
+
+        register_routing_vocabulary(
+            sequential_connectors=self.session_plan.manifest.routing.sequential_connectors,
+        )
+
         # ── Cached provider clients ───────────────────────────────────
         self._azure_client: Any = None
         self._openai_client: Any = None

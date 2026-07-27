@@ -7,29 +7,19 @@ surface:
   memory_scope: personal
 resources:
   packs:
+    include:
+      - lisa-pack-memory
     required:
       - lisa-pack-brave-search
-      - lisa-pack-coding
-      - lisa-pack-github
       - lisa-pack-markdown
-      - lisa-pack-memory
       - lisa-pack-search
     auto_install:
       lisa-pack-brave-search:
         source: ../lisa-packs/brave_search
-      lisa-pack-coding:
-        source: ../lisa-packs-wip/coding
-      lisa-pack-github:
-        source: ../lisa-packs-wip/github
       lisa-pack-markdown:
         source: ../lisa-packs/markdown
-      lisa-pack-memory:
-        source: ../lisa-packs/memory
       lisa-pack-search:
         source: ../lisa-packs/search
-    configuration:
-      lisa-pack-coding:
-        workspace_root: "."
 providers:
   capabilities:
     memory: lisa-pack-memory
@@ -39,6 +29,20 @@ providers:
     web_search: lisa-pack-brave-search
 routing:
   start_mode: default
+  # Sequential-connector vocabulary shared by the routing-hint generator
+  # and the plan-mode planner. A query containing any of these phrases is
+  # treated as a sequential chain (single handoff, step-by-step) instead of
+  # a parallel fork fan-out. Add conservative entries here; the fallback
+  # list (then / and then / after that / next / followed by) is used when
+  # this list is empty, so existing sessions behave unchanged.
+  sequential_connectors:
+    - then
+    - and then
+    - after that
+    - next
+    - followed by
+    - based on
+    - once
 context:
   lanes:
     - {lane_id: operational, max_tokens: 1200, render_order: 0}

@@ -114,7 +114,14 @@ def _tool_effect(
 # Sequential-connector tokens that signal a request is a *chain* of steps
 # ("search ... then code ... then write") rather than a set of concurrent
 # goals. A language pattern, not an intent tag, so this stays tag-blind.
-_SEQUENTIAL_CONNECTORS: tuple[str, ...] = (
+#
+# This is the **fallback** list. The active list is supplied per-session
+# via ``routing.sequential_connectors`` in ``session_context.md`` and
+# injected at boot through ``kernel.routing_vocabulary``; when no session
+# vocabulary is wired (tests, standalone use), this historical set keeps
+# behavior unchanged. Sessions add entries like "based on" or "once" to
+# catch dependency phrasings the fallback deliberately omits.
+_FALLBACK_SEQUENTIAL_CONNECTORS: tuple[str, ...] = (
     " then ",
     " and then ",
     " after that ",
@@ -127,13 +134,23 @@ def _query_is_sequential(query: str) -> bool:
     """Return True when the query expresses a sequential chain of steps.
 
     Detects connectors like "then", "and then", "after that", "next",
-    "followed by". A sequential multi-intent request ("search for X then
+    "followed by" (plus any session-supplied additions such as "based on"
+    or "once"). A sequential multi-intent request ("search for X then
     write a markdown") must NOT fork — a fork runs children in parallel, so
     none can use another's output. Instead, hand off to the first step's
     target and let the post-handoff hint recomputation chain the rest.
+
+    The connector vocabulary is read from
+    :func:`kernel.routing_vocabulary.get_sequential_connectors`, which the
+    host boot path populates from the session plan's
+    ``routing.sequential_connectors`` list. When no session vocabulary is
+    registered, the historical fallback list above is used so existing
+    behavior is preserved.
     """
+    from kernel.routing_vocabulary import get_sequential_connectors
+
     lowered = f" {query.lower()} "
-    return any(conn in lowered for conn in _SEQUENTIAL_CONNECTORS)
+    return any(conn in lowered for conn in get_sequential_connectors())
 
 
 def _first_target_for_earliest_intent(

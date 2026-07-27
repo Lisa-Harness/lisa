@@ -120,6 +120,29 @@ def test_compile_session_plan_rejects_conflicting_resource_selection() -> None:
         compile_session_plan(text=text, source_uri="workspace:session_context.md")
 
 
+def test_compile_session_plan_accepts_sequential_connectors() -> None:
+    """The ``routing.sequential_connectors`` list compiles into the plan."""
+    text = _manifest(
+        extra=(
+            "routing:\n"
+            "  start_mode: default\n"
+            "  sequential_connectors: [then, based on, once]\n"
+        )
+    )
+
+    plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
+
+    assert plan.manifest.routing.sequential_connectors == ("then", "based on", "once")
+
+
+def test_compile_session_plan_defaults_sequential_connectors_empty() -> None:
+    """Omitting ``routing.sequential_connectors`` yields an empty tuple
+    (the kernel falls back to its built-in list at runtime)."""
+    plan = compile_session_plan(text=_manifest(), source_uri="workspace:session_context.md")
+
+    assert plan.manifest.routing.sequential_connectors == ()
+
+
 def test_compile_session_plan_rejects_context_rules_for_unknown_lanes() -> None:
     text = _manifest(
         extra=(

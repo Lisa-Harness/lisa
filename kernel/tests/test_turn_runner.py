@@ -1244,8 +1244,9 @@ def test_routing_hint_concurrent_query_still_forks() -> None:
 
 
 def test_query_is_sequential_detects_connectors() -> None:
-    """The sequential connector detector recognizes 'then', 'and then',
-    'after that', 'next', 'followed by'."""
+    """The sequential connector detector recognizes the built-in fallback
+    connectors ('then', 'and then', 'after that', 'next', 'followed by').
+    """
     from kernel.turn_runner import _query_is_sequential
 
     assert _query_is_sequential("search for X then write a markdown")
@@ -1256,6 +1257,77 @@ def test_query_is_sequential_detects_connectors() -> None:
     # No connector -> concurrent.
     assert not _query_is_sequential("remember this and write a markdown")
     assert not _query_is_sequential("hello world")
+
+
+def test_query_is_sequential_uses_session_vocabulary() -> None:
+    """A session-injected connector ('based on') is detected as sequential
+    even though the fallback list does not include it. Regression for the
+    2026-07-26 'markdown based on the results' false-fork incident: the
+    query expressed a data dependency the fallback vocabulary missed, so
+    the routing hint forked search+markdown in parallel and the markdown
+    child had no access to the search child's output.
+    """
+    from kernel.routing_vocabulary import register_routing_vocabulary
+    from kernel.turn_runner import _query_is_sequential
+
+    # Without the session vocabulary, 'based on' is NOT sequential — the
+    # fallback list does not include it.
+    assert not _query_is_sequential("search for X based on the results write a markdown")
+
+    register_routing_vocabulary(
+        sequential_connectors=["then", "and then", "after that", "next", "followed by", "based on"]
+    )
+    try:
+        assert _query_is_sequential("search for X based on the results write a markdown")
+        # Common-word false-positive guard: 'after' alone is not in the
+        # session list, so a query using it as a noun is not sequential.
+        assert not _query_is_sequential("search for after-school programs and write a markdown")
+    finally:
+        register_routing_vocabulary(sequential_connectors=None)
+
+
+def test_routing_hint_sequential_via_session_vocabulary_does_not_fork() -> None:
+    """A 'based on the results' query with the session vocabulary wired
+    produces a single handoff to the first step, NOT a fork — the
+    end-to-end regression for the 2026-07-26 false-fork incident.
+    """
+    from unittest.mock import patch
+
+    from kernel.routing_vocabulary import register_routing_vocabulary
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    search_cfg = _mode_config(
+        mode_id="search", satisfies_intents=["research"],
+        routing_intent_tags=["research"],
+        routing_intent_keywords={"research": ["search", "latest", "news"]},
+    )
+    markdown_cfg = _mode_config(
+        mode_id="markdown", satisfies_intents=["write"],
+        routing_intent_tags=["write"],
+        routing_intent_keywords={"write": ["write", "markdown", "document", "report"]},
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {
+        "search": search_cfg, "markdown": markdown_cfg, "default": default_cfg,
+    }
+
+    register_routing_vocabulary(
+        sequential_connectors=["then", "and then", "after that", "next", "followed by", "based on"]
+    )
+    try:
+        q = "search for python news and write a markdown based on the results"
+        with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+            hint = _compute_capability_routing_hint(
+                mode_id="default", query=q, capability_manifest=_empty_manifest(),
+                routing_targets=["search", "markdown"],
+                mode_config=default_cfg,
+            )
+        assert hint != ""
+        assert "transition_stage" in hint
+        assert "fork:" not in hint
+        assert "search" in hint
+    finally:
+        register_routing_vocabulary(sequential_connectors=None)
 
 
 def test_routing_hint_chain_memory_skips_completed_steps() -> None:

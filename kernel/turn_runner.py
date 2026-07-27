@@ -2145,6 +2145,29 @@ async def _run_turn_inner(
                                 ),
                             },
                         )
+                        # ── Mark fork children's intents as satisfied ──
+                        # Without this, the post-fork routing-hint recomputation
+                        # runs against the entry mode's ``satisfies_intents``
+                        # (typically empty for ``default``), re-detects the
+                        # original query's intents as a gap, and re-emits the
+                        # exact ``fork:...`` hint. The model obligingly calls
+                        # ``transition_stage`` again → another fan-out → more
+                        # duplicate artifacts. Mirrors the handoff branch's
+                        # ``_state.chain_satisfied.update(...)`` so the next
+                        # hint is computed against the union of every mode the
+                        # turn has already run (entry + fork children). Only
+                        # ``ok`` children contribute their intents — a
+                        # failed/``no_tools`` child satisfied nothing. Tag-
+                        # blind: the kernel only unions opaque pack-authored
+                        # intent-tag sets.
+                        if fork_results_list:
+                            for r in fork_results_list:
+                                if r.status != "ok":
+                                    continue
+                                child_mode = catalog.get(r.target.mode_id)
+                                if child_mode is None:
+                                    continue
+                                _state.chain_satisfied.update(child_mode.satisfies_intents)
                         messages.append(
                             {
                                 "role": "tool",

@@ -179,6 +179,22 @@ class SessionRouting(_StrictSessionModel):
     aliases: dict[str, str] = Field(default_factory=dict)
     priority_adjustments: dict[str, int] = Field(default_factory=dict)
     hints: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    sequential_connectors: tuple[str, ...] = ()
+    """Whitespace-padded substrings that mark a query as a sequential chain
+    of dependent steps (e.g. ``"then"``, ``"based on"``, ``"once"``). The
+    kernel's proactive routing-hint generator and the ``plan`` action
+    mode's planner consult this list to choose a single-step handoff over
+    a parallel ``fork:`` fan-out: a fork runs children concurrently with
+    the whole query, so no child can consume another's output. When a
+    connector matches, the chain runs step by step instead.
+
+    The list is **session-authored vocabulary** — opaque to the kernel,
+    which only does case-insensitive substring matching. Empty (the
+    default) preserves the historical built-in connector set so existing
+    sessions behave unchanged. Add conservative entries here (e.g.
+    ``"based on"``, ``"once"``) for surfaces that need richer sequential
+    detection; avoid common words like ``"after"`` or ``"from"`` which
+    produce false positives on concurrent requests."""
 
 
 class InstructionFragment(_StrictSessionModel):

@@ -10,6 +10,12 @@ simple single/double-intent requests with zero model calls; this operation
 runs one cheap model call to disambiguate complex or ambiguous requests
 and return a structured routing target.
 
+The sequential-connector vocabulary is shared with the kernel's routing-hint
+generator via :mod:`kernel.routing_vocabulary`. The host boot path injects
+the session plan's ``routing.sequential_connectors`` list once at startup;
+both this planner and ``kernel.turn_phases._routing_hint`` read from the
+same registry so they cannot drift.
+
 The mode catalog summary is built in-process from
 ``kernel.ipsar_fsm.get_workflow_catalog`` so the planner always sees the
 live routable mode set. The model never sees stale or hardcoded mode lists.
@@ -93,8 +99,11 @@ tags and keyword patterns that signal when it should be used.
 1. Read the user's query carefully.
 2. Identify which intents the query expresses by matching against each
    mode's routing_intent_keywords.
-3. Check for sequential connectors: "then", "and then", "after that",
-   "next", "followed by". If present, the query is a sequential chain.
+3. Check for sequential connectors. A query containing any of these
+   tokens (matched case-insensitively as whole phrases) is a sequential
+   chain:
+{connectors_block}
+   If present, the query is a sequential chain.
 4. Determine the target:
 
    - **Single handoff**: If one mode covers all detected intents, return
@@ -148,6 +157,28 @@ def _build_mode_catalog_summary() -> str:
     return "\n".join(lines) if lines else "(no routable modes available)"
 
 
+def _build_sequential_connectors_block() -> str:
+    """Render the active sequential-connector vocabulary as a bullet list.
+
+    The list comes from :func:`kernel.routing_vocabulary.get_sequential_connectors`,
+    which the host boot path populates from the session plan's
+    ``routing.sequential_connectors`` (falling back to the historical
+    built-in set when no session vocabulary is wired). Rendering the live
+    list here keeps the planner's instruction in sync with the kernel's
+    routing-hint generator — the two sites share one vocabulary source.
+    """
+    from kernel.routing_vocabulary import get_sequential_connectors
+
+    connectors = get_sequential_connectors()
+    if not connectors:
+        return "   (none — sequential detection disabled)"
+    # Strip the surrounding padding the registry normalizes onto each token
+    # so the model sees clean phrases ("then", "based on") rather than
+    # the padded internal form (" then ").
+    items = [f"   - ``{token.strip()}``" for token in connectors]
+    return "\n".join(items)
+
+
 async def execute(ctx: OperationExecutionContext) -> OperationResult:
     """Run the workflow planner and return the routing target.
 
@@ -176,7 +207,11 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         )
 
     catalog_summary = _build_mode_catalog_summary()
-    system_prompt = _PLANNING_INSTRUCTION.format(catalog_summary=catalog_summary)
+    connectors_block = _build_sequential_connectors_block()
+    system_prompt = _PLANNING_INSTRUCTION.format(
+        catalog_summary=catalog_summary,
+        connectors_block=connectors_block,
+    )
 
     preferred_model_id = ctx.preferred_model_id or ctx.model_id or "default"
     model_def = ctx.resolve_model_fn(preferred_model_id)
