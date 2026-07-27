@@ -8,11 +8,12 @@ surface:
 resources:
   packs:
     include:
-      - lisa-pack-core
       - lisa-pack-memory
-      - lisa-pack-letta
     required:
-      - lisa-pack-core
+      - lisa-pack-letta
+    auto_install:
+      lisa-pack-letta:
+        source: ../lisa-packs/letta
 providers:
   capabilities:
     memory: lisa-pack-letta

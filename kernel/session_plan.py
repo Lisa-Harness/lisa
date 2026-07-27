@@ -96,13 +96,20 @@ class PackInstallSpec(_StrictSessionModel):
     The compiler validates shape only — it never reads the filesystem or
     network. The host boot path resolves ``source`` against the trust policy
     (``LISA_PACK_ALLOWED_PREFIXES``, ``LISA_PACK_GIT_ALLOW_HOSTS``) and
-    performs the actual install. Git refs must pin ``@tag/@branch/@sha``; the
-    host treats pinning as mandatory for auto-install regardless of
+    performs the actual install. Git refs must pin ``@tag/@branch/@sha``;
+    the host treats pinning as mandatory for auto-install regardless of
     ``LISA_PACK_REQUIRE_GIT_REF``.
+
+    When ``source`` is a local directory and ``editable`` is ``True`` (the
+    default), the host installs it with ``uv pip install -e`` so edits to the
+    pack source are picked up without reinstall. Set ``editable: false`` to
+    force a non-editable install (rarely needed — use it only when the pack
+    source is a throwaway snapshot).
     """
 
     source: str = Field(min_length=1)
     pin: str = ""
+    editable: bool = True
 
 
 class PackSelection(ResourceSelection):

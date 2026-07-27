@@ -689,6 +689,7 @@ def run_pack_install_sync(
     spec: str,
     *,
     request_restart: bool = True,
+    editable: bool = False,
 ) -> tuple[bool, str]:
     """Synchronous pack-install core shared by the REPL command and boot auto-install.
 
@@ -700,6 +701,12 @@ def run_pack_install_sync(
     semantics itself — it may batch multiple installs and request one restart
     after the loop, or none if entry-point discovery sees the new packs
     in-process.
+
+    When ``editable`` is ``True`` and the resolved install target is a local
+    directory, ``-e`` is prepended to the ``uv pip install`` args so the pack
+    is installed as an editable install. Non-local targets (git refs, PyPI
+    package names) ignore ``editable`` — ``uv`` rejects ``-e`` for non-local
+    specs, so it is only added for local directory sources.
     """
     import subprocess
 
@@ -708,9 +715,10 @@ def run_pack_install_sync(
     if not is_allowed:
         return False, reason
 
+    is_local = _is_local_pack_spec(normalized_spec)
     install_target = (
         normalized_spec.strip().strip('"')
-        if _is_local_pack_spec(normalized_spec)
+        if is_local
         else normalized_spec
     )
     packs_venv = _packs_venv_for(runtime.data_dir)
@@ -720,8 +728,12 @@ def run_pack_install_sync(
     seeded, seed_err = _seed_packs_venv_with_framework_sync(packs_venv)
     if not seeded:
         return False, f"Install failed for '{normalized_spec}'.\n{seed_err}"
+    install_args = ["uv", "pip", "install", "--python", str(packs_venv)]
+    if editable and is_local:
+        install_args.append("-e")
+    install_args.append(install_target)
     completed = subprocess.run(
-        ["uv", "pip", "install", "--python", str(packs_venv), install_target],
+        install_args,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         cwd=str(_FRAMEWORK_ROOT),
@@ -740,7 +752,7 @@ def run_pack_install_sync(
         )
     source_kind = (
         "local"
-        if _is_local_pack_spec(normalized_spec)
+        if is_local
         else ("git" if _is_git_pack_spec(normalized_spec) else "package")
     )
     lock = _load_installed_packs_lock(runtime)
@@ -751,24 +763,26 @@ def run_pack_install_sync(
         for entry in entries
         if normalize_pack_name(str(entry.get("package_name") or "")) != package_name
     ]
-    filtered.append(
-        {
-            "package_name": package_name,
-            "installed_at": now_iso,
-            "source_kind": source_kind,
-            "source_ref": install_target,
-            "enabled": True,
-            "updated_at": now_iso,
-        }
-    )
+    entry_payload: dict[str, Any] = {
+        "package_name": package_name,
+        "installed_at": now_iso,
+        "source_kind": source_kind,
+        "source_ref": install_target,
+        "enabled": True,
+        "updated_at": now_iso,
+    }
+    if is_local and editable:
+        entry_payload["editable"] = True
+    filtered.append(entry_payload)
     lock["packs"] = filtered
     _auto_select_capability_provider_on_install(lock, package_name)
     _write_installed_packs_lock(runtime, lock)
 
     if request_restart:
         runtime.request_restart(reason=f"pack install: {package_name}")
+    editable_label = " (editable)" if is_local and editable else ""
     return True, (
-        f"Installed '{package_name}' from {source_kind} source. "
+        f"Installed '{package_name}' from {source_kind} source{editable_label}. "
         "Restart required to reload entry points, pack catalogs, and MCP manifests."
     )
 

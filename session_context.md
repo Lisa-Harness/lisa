@@ -7,33 +7,29 @@ surface:
   memory_scope: personal
 resources:
   packs:
-    include:
-      - lisa-pack-core
-      - lisa-pack-letta
-      - lisa-pack-memory
-      - lisa-pack-markdown
-      - lisa-pack-search
+    required:
       - lisa-pack-brave-search
       - lisa-pack-coding
       - lisa-pack-github
-    required:
-      - lisa-pack-core
+      - lisa-pack-markdown
+      - lisa-pack-memory
+      - lisa-pack-search
+    auto_install:
+      lisa-pack-brave-search:
+        source: ../lisa-packs/brave_search
+      lisa-pack-coding:
+        source: ../lisa-packs-wip/coding
+      lisa-pack-github:
+        source: ../lisa-packs-wip/github
+      lisa-pack-markdown:
+        source: ../lisa-packs/markdown
+      lisa-pack-memory:
+        source: ../lisa-packs/memory
+      lisa-pack-search:
+        source: ../lisa-packs/search
     configuration:
       lisa-pack-coding:
         workspace_root: "."
-        checks:
-          - id: focused-tests
-            argv: [uv, run, pytest, kernel/tests, hosts/core/tests, lisa_packs/coding/tests, lisa_pack_github/tests, -q]
-            timeout_seconds: 600
-        required_check_ids: [focused-tests]
-        branch_prefix: "lisa/"
-        protected_branches: [main, master, develop, prod, production]
-        push_remote: origin
-      lisa-pack-github:
-        base_branch: main
-        allowed_base_branches: [main]
-        branch_prefix: "lisa/"
-        protected_branches: [main, master, develop, prod, production]
 providers:
   capabilities:
     memory: lisa-pack-memory

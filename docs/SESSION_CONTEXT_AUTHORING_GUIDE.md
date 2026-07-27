@@ -183,19 +183,25 @@ Declares install sources for packs listed in `required` so the host can auto-ins
 | --- | --- | --- | --- |
 | `source` | `string` | Yes | Bare pack name (expanded via `LISA_PACK_GIT_ROOT`), `git+https://...@ref`, or a local path. |
 | `pin` | `string` | No | Explicit pin label (e.g. `v0.2.0`) for logging and provenance. |
+| `editable` | `bool` | No | When `source` is a local directory, install with `uv pip install -e` so edits to the pack source are picked up without reinstall. Defaults to `True`. Ignored for git/PyPI sources. |
 
 Git refs **must** pin `@tag/@branch/@sha`. The host treats pinning as mandatory for auto-install regardless of `LISA_PACK_REQUIRE_GIT_REF`; an unpinned `git+` source raises a startup error. Trust policy env vars (`LISA_PACK_ALLOWED_PREFIXES`, `LISA_PACK_GIT_ALLOW_HOSTS`, `LISA_PACK_GIT_ROOT`) are honored — a session context cannot override them.
+
+Local paths are resolved relative to the session-context file's directory, so a session can reference packs checked out alongside it (e.g. `source: ../lisa-packs/brave_search`). Absolute paths are passed through unchanged.
 
 Auto-install applies **only** to `required` packs. Failure of any required pack is a hard startup error; the runtime does not start in a degraded state. When at least one pack is installed, the host requests a restart so `importlib.metadata` entry-point discovery sees the new packs on the next boot pass.
 
 ```yaml
 resources:
   packs:
-    required: [lisa-pack-core, lisa-pack-cloudflare]
+    required: [lisa-pack-core, lisa-pack-cloudflare, lisa-pack-brave-search]
     auto_install:
       lisa-pack-cloudflare:
         source: git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0
         pin: v0.2.0
+      lisa-pack-brave-search:
+        source: ../lisa-packs/brave_search
+        editable: true
 ```
 
 ### `providers`
