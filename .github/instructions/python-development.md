@@ -6,6 +6,8 @@ applyTo: "**/*.py"
 
 # Python Development
 
+Adhere to the Best Current Practices (BCP) in `docs/python-BCP.md`.
+
 ## Docstrings — required on every public surface
 
 Every **module**, **class**, and **public function/method** gets a docstring before a change is considered done. No exceptions for "it's obvious."

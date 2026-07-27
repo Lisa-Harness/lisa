@@ -13,9 +13,9 @@ PEP 8 is the official style guide for Python code. Adherence is strongly recomme
 - **Indentation:** Use 4 spaces per indentation level.
 - **Line Length:** Limit lines to a maximum of 79-99 characters. Tools often default to 88 (`black`) or 99.
 - **Naming Conventions:**
-    - `snake_case` for functions and variables.
-    - `PascalCase` for classes.
-    - `UPPERCASE_SNAKE_CASE` for constants.
+  - `snake_case` for functions and variables.
+  - `PascalCase` for classes.
+  - `UPPERCASE_SNAKE_CASE` for constants.
 - **Whitespace:** Use it thoughtfully around operators and after commas to improve clarity.
 
 ### Automation: Linters and Formatters
@@ -40,14 +40,14 @@ Isolate project dependencies to prevent conflicts. *Always* use a virtual enviro
 
 - **`pyproject.toml` (PEP 518/621):** The modern, standardized file for defining project metadata, build requirements, and dependencies.
 - **Tools:**
-    - **`pip` with `requirements.txt`:** The traditional method.
-    - **`poetry` / `pdm`:** Modern tools that manage dependencies, virtual environments, and packaging from `pyproject.toml`, providing lock files for reproducible builds.
+  - **`pip` with `requirements.txt`:** The traditional method.
+  - **`poetry` / `pdm`:** Modern tools that manage dependencies, virtual environments, and packaging from `pyproject.toml`, providing lock files for reproducible builds.
 
 ### Directory Structure
 
 The "src layout" is highly recommended to prevent common import problems.
 
-```
+```text
 project_root/
 ├── pyproject.toml
 ├── README.md
