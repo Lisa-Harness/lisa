@@ -219,35 +219,11 @@ All IDs must be non-empty strings.
 
 ### `routing`
 
-Session-level routing is currently a single seed: the initial mode the runtime pins at startup. Per-mode routing priority is authored in each mode's `_mode.md` front matter (`priority`), not in the session plan. The `sequential_connectors` list is the one piece of cross-mode routing vocabulary the session owns — see below.
+Session-level routing is currently a single seed: the initial mode the runtime pins at startup. Per-mode routing priority is authored in each mode's `_mode.md` front matter (`priority`), not in the session plan.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `start_mode` | `string` | `default` | Initial mode seed. Does not bypass the router — it sets the router's starting point. |
-| `sequential_connectors` | `list[string]` | (built-in fallback) | Whitespace-padded substrings that mark a query as a sequential chain of dependent steps. The kernel's proactive routing-hint generator and the `plan` action mode's planner both consult this list to choose a single-step handoff over a parallel `fork:` fan-out. |
-
-#### `routing.sequential_connectors`
-
-A query containing any of these phrases (matched case-insensitively as whole words) is treated as a **sequential chain** — the kernel hands off to the first step's mode and lets post-handoff hint recomputation chain the rest, one step at a time. A `fork:` fan-out runs children concurrently with the whole query, so no child can consume another's output; sequential detection prevents that mismatch.
-
-The list is **session-authored vocabulary** — opaque to the kernel, which only does substring matching. When the list is empty (the default), the kernel falls back to the built-in set: `then`, `and then`, `after that`, `next`, `followed by`. Existing sessions behave unchanged.
-
-Add conservative entries here for surfaces that need richer sequential detection. `based on` and `once` are high-precision additions that catch dependency phrasings the fallback omits. Avoid common words like `after` or `from`, which produce false positives on concurrent requests ("search for after-school programs and write a markdown" would be misread as sequential).
-
-```yaml
-routing:
-  start_mode: discuss
-  sequential_connectors:
-    - then
-    - and then
-    - after that
-    - next
-    - followed by
-    - based on
-    - once
-```
-
-The host boot path injects this list into the kernel's routing-vocabulary registry once at startup; both the routing-hint generator (`kernel/turn_phases/_routing_hint.py`) and the `plan_workflow` operation (`sdk/packs/core/operations/planning/plan_workflow.py`) read from that registry, so the two sites cannot drift.
 
 ### `instructions`
 
