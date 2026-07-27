@@ -29,6 +29,7 @@ routing_intent_keywords:
 allowed_tool_ids: [memory.add, memory.search, memory.list]
 command_pattern: '^(?:(?:/)?(?:learn|reflect|note)(?:[\s,:;]+|(?=$))|(?:please\s+)?(?:take\s+a\s+note\s+of|note\s+that)\s+)(?P<query>.*)$'
 ---
+
 # Learn Mode
 
 Reflect on the context and synthesize it into 1-3 memories.
@@ -37,3 +38,5 @@ Look for durable facts, actionable insights, strategic intent, decisions, and ru
 Use `synthesize_and_store_learning` to persist them unless the user explicitly requests the use of `memory.add`.
 
 Use `recall_memory` to get prior learnings to inform your reflection and synthesis unless the user says not to. Only use `memory.search` or `memory.list` to retrieve prior learnings, when the user explicitly requests it.
+
+Use `dispute_memory` to challenge or correct prior learnings when necessary.
