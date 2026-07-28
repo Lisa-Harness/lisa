@@ -214,22 +214,24 @@ forbidden_modules = [
     "hosts.web",
 ]
 
-# SDK must not import host transport code or mcp_server internals.
+# SDK must not import host transports (cli/web) or mcp_server internals.
+# SDK and packs may import hosts.core (transport-neutral runtime services:
+# thread, model_runtime, state_provider, turn_hooks_builder). See
+# docs/BOUNDARIES.md "Packs have host bindings".
 [[tool.importlinter.contracts]]
-name = "SDK does not import hosts or mcp_server"
+name = "SDK does not import host transports or mcp_server"
 type = "forbidden"
 source_modules = ["sdk"]
 forbidden_modules = [
-    "hosts",
-    "hosts.core",
     "hosts.cli",
     "hosts.web",
     "mcp_server",
 ]
 
-# Bundled reference packs must not import host transport code.
+# Bundled reference packs may import hosts.core (transport-neutral runtime
+# services) but must not import host transports (cli/web).
 [[tool.importlinter.contracts]]
-name = "SDK packs do not import hosts"
+name = "SDK packs do not import host transports (cli/web)"
 type = "forbidden"
 source_modules = [
     "sdk.packs.core",
@@ -238,32 +240,32 @@ source_modules = [
     "sdk.packs.checkpoint",
 ]
 forbidden_modules = [
-    "hosts",
-    "hosts.core",
     "hosts.cli",
     "hosts.web",
 ]
 
-# Host layering: cli/web → core → mcp_server → sdk → kernel
+# Host layering: cli → web → core. CLI is the top-level orchestrator that
+# can launch any host (it imports hosts.web.server for the `desktop`
+# subcommand); web wraps core; core must not import either transport.
+# The sdk/mcp_server/kernel dependency direction is enforced by the
+# forbidden contracts above (kernel forbids hosts; sdk and mcp_server
+# forbid host transports). Packs importing hosts.core is a deliberate,
+# constrained exception documented in docs/BOUNDARIES.md.
 [[tool.importlinter.contracts]]
-name = "Host layering (cli/web → core → mcp_server → sdk → kernel)"
+name = "Host layering (cli → web → core)"
 type = "layers"
 layers = [
-    "hosts.cli | hosts.web",
+    "hosts.cli",
+    "hosts.web",
     "hosts.core",
-    "mcp_server",
-    "sdk",
-    "kernel",
 ]
 
 # mcp_server may use kernel/sdk but must not depend on host transport.
 [[tool.importlinter.contracts]]
-name = "mcp_server does not import hosts"
+name = "mcp_server does not import host transports"
 type = "forbidden"
 source_modules = ["mcp_server"]
 forbidden_modules = [
-    "hosts",
-    "hosts.core",
     "hosts.cli",
     "hosts.web",
 ]

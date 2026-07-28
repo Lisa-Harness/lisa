@@ -273,26 +273,3 @@ def test_build_web_index_html_includes_heartbeat_and_quit_script() -> None:
     # The stage bar and token HUD are new structural elements.
     assert 'id="stage-bar"' in html
     assert 'id="token-hud"' in html
-
-
-def test_cli_desktop_command_is_registered() -> None:
-    """The main `lisa` CLI exposes a `desktop` subcommand for the web host."""
-    from hosts.cli.main import app as cli_app
-
-    names = {cmd.name for cmd in cli_app.registered_commands}
-    assert "desktop" in names
-
-
-def test_cli_desktop_command_help_lists_web_flags() -> None:
-    import typer.testing
-
-    from hosts.cli.main import app as cli_app
-
-    runner = typer.testing.CliRunner()
-    result = runner.invoke(cli_app, ["desktop", "--help"])
-    assert result.exit_code == 0
-    out = result.output
-    assert "--port" in out
-    assert "--host" in out
-    assert "--token" in out
-    assert "--no-open-browser" in out

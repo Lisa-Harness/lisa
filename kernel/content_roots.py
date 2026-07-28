@@ -70,8 +70,8 @@ def discover_packs_venv_content_roots(  # noqa: C901,PLR0912
     data_dir: Path | None = None,
     *,
     excluded_packs: set[str] | None = None,
-    venv_path_resolver: Callable[[Path | None], Path] | None = None,
-    site_packages_resolver: Callable[[Path], Path] | None = None,
+    venv_path_resolver: Callable[[Path | None], Path],
+    site_packages_resolver: Callable[[Path], Path],
 ) -> list[Path]:
     """Discover content roots from packs installed in the packs venv.
 
@@ -94,35 +94,16 @@ def discover_packs_venv_content_roots(  # noqa: C901,PLR0912
             Passed to ``venv_path_resolver`` when provided.
         excluded_packs: Normalized pack names to exclude from discovery.
         venv_path_resolver: Callable that resolves ``data_dir`` (or ``None``)
-            to the packs venv ``Path``. Injected by the host to avoid a
-            kernel→hosts import. When ``None``, falls back to a lazy import
-            of ``hosts.core.paths`` (preserving behavior for callers that
-            have not been updated).
+            to the packs venv ``Path``. Injected by the host so the kernel
+            never imports ``hosts.*``.
         site_packages_resolver: Callable that maps a venv ``Path`` to its
-            ``site-packages`` directory. Injected by the host. When ``None``,
-            falls back to the same lazy import.
+            ``site-packages`` directory. Injected by the host.
 
     Returns:
         Content root paths (the ``lisa_packs/<pack_name>/`` directory),
         deduped and filtered. Returns an empty list when the packs venv
         does not exist or contains no ``lisa_packs/`` directory.
     """
-    if venv_path_resolver is None or site_packages_resolver is None:
-        from hosts.core.paths import (  # noqa: PLC0415
-            default_packs_venv,
-            packs_venv_for,
-            packs_venv_site_packages,
-        )  # type: ignore[import-not-found]
-
-        if venv_path_resolver is None:
-            def venv_path_resolver(data_dir: Path | None) -> Path:
-                if data_dir is not None:
-                    return packs_venv_for(Path(data_dir))
-                return default_packs_venv()
-        if site_packages_resolver is None:
-            def site_packages_resolver(venv_path: Path) -> Path:
-                return packs_venv_site_packages(venv_path)
-
     try:
         venv_path = venv_path_resolver(data_dir)
     except (OSError, ValueError, RuntimeError):
