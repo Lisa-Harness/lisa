@@ -25,7 +25,25 @@ from __future__ import annotations
 
 import json
 import logging
+import warnings
 from pathlib import Path
+
+# Suppress a benign runpy RuntimeWarning emitted by the console-script
+# launcher. ``lisa-catalog`` is entered via ``runpy.run_module``, which
+# imports ``mcp_server.catalog`` (the package) to locate ``server`` and
+# then execs ``server`` as ``__main__``. The side-effect import of
+# ``mcp_server._packs_venv_site`` below re-enters the package path, and
+# runpy warns that the package is in ``sys.modules`` before ``server``
+# finished executing. The "unpredictable behaviour" it warns about only
+# occurs if ``server`` re-imports itself as ``__main__`` mid-execution —
+# it does not — so the warning is a false alarm for this entry-point
+# pattern. Suppressed narrowly (one message, one category) so real
+# RuntimeWarnings still surface.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*found in sys.modules after import of package.*",
+    category=RuntimeWarning,
+)
 
 import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
 

@@ -20,7 +20,17 @@ from __future__ import annotations
 
 import json
 import logging
+import warnings
 from pathlib import Path
+
+# Suppress a benign runpy RuntimeWarning emitted by the console-script
+# launcher. See ``mcp_server/catalog/server.py`` for the full rationale;
+# ``lisa-content`` has the same side-effect import + entry-point pattern.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*found in sys.modules after import of package.*",
+    category=RuntimeWarning,
+)
 
 import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
 
