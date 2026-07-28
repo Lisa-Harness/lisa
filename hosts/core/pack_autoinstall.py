@@ -28,7 +28,11 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kernel.content_roots import CONTENT_ROOT_ENTRY_POINT_GROUP, discover_installed_content_roots
+from kernel.content_roots import (
+    CONTENT_ROOT_ENTRY_POINT_GROUP,
+    discover_installed_content_roots,
+    discover_packs_venv_content_roots,
+)
 from kernel.pack_activation import normalize_pack_name
 from kernel.session_plan import PackInstallSpec
 
@@ -38,30 +42,71 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _installed_pack_names() -> set[str]:
-    """Return normalized pack names currently importable via entry points."""
+def _installed_pack_names(runtime: HostRuntime) -> set[str]:
+    """Return normalized pack names currently importable by the host.
+
+    Combines two discovery surfaces because external packs live in the
+    separate packs venv, whose site-packages are not visible to
+    ``importlib.metadata`` in the host process:
+
+    1. Main-venv entry points (``importlib.metadata.entry_points``) —
+       bundled packs (core/checkpoint/introspect/memory) and any external
+       pack the user also installed into the main venv (e.g. via
+       ``uv sync --extra ext``).
+    2. Packs-venv content roots (``discover_packs_venv_content_roots``) —
+       external packs installed via ``uv pip install -e`` into the packs
+       venv. This is the authoritative home for external packs; without it,
+       auto-install re-runs every boot because it never sees them as
+       installed.
+    """
+    names: set[str] = set()
     try:
         discover_installed_content_roots()
+        import importlib.metadata
+
+        eps = importlib.metadata.entry_points(group=CONTENT_ROOT_ENTRY_POINT_GROUP)
+        for ep in eps:
+            dist_name = getattr(ep, "dist", None)
+            if dist_name is not None:
+                names.add(normalize_pack_name(dist_name.name))
+            # Also cover the case where the entry-point name itself is the pack id.
+            names.add(normalize_pack_name(ep.name))
     except Exception:  # pragma: no cover - defensive; fail-open discovery
         logger.warning(
             "auto-install: entry-point discovery raised; assuming no packs installed",
             exc_info=True,
         )
-        return set()
-    # Re-read the entry points to map dist names → normalized pack names.
-    import importlib.metadata
 
-    names: set[str] = set()
+    # External packs installed in the packs venv are invisible to
+    # importlib.metadata; recover them from the packs-venv content-root
+    # filesystem scan so auto-install does not re-install packs the user
+    # already installed there.
     try:
-        eps = importlib.metadata.entry_points(group=CONTENT_ROOT_ENTRY_POINT_GROUP)
-    except Exception:  # pragma: no cover - defensive
-        return set()
-    for ep in eps:
-        dist_name = getattr(ep, "dist", None)
-        if dist_name is not None:
-            names.add(normalize_pack_name(dist_name.name))
-        # Also cover the case where the entry-point name itself is the pack id.
-        names.add(normalize_pack_name(ep.name))
+        from hosts.core.content_roots import infer_pack_package_name
+        from hosts.core.paths import (
+            default_packs_venv,
+            packs_venv_for,
+            packs_venv_site_packages,
+        )
+
+        def _venv_resolver(data_dir: Path | None) -> Path:
+            if data_dir is not None:
+                return packs_venv_for(Path(data_dir))
+            return default_packs_venv()
+
+        for root in discover_packs_venv_content_roots(
+            runtime.data_dir,
+            venv_path_resolver=_venv_resolver,
+            site_packages_resolver=packs_venv_site_packages,
+        ):
+            package_name = infer_pack_package_name(root)
+            if package_name:
+                names.add(normalize_pack_name(package_name))
+    except Exception:  # pragma: no cover - defensive; fail-open discovery
+        logger.warning(
+            "auto-install: packs-venv discovery raised; only main-venv packs counted",
+            exc_info=True,
+        )
     return names
 
 
@@ -162,7 +207,7 @@ def auto_install_required_packs(runtime: HostRuntime) -> list[str]:
     if not required:
         return []
 
-    installed = _installed_pack_names()
+    installed = _installed_pack_names(runtime)
     missing = [name for name in required if name not in installed]
     if not missing:
         return []

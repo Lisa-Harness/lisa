@@ -49,11 +49,24 @@ def discover_installed_content_roots(
             When ``None`` (default), no filtering is applied — all installed
             packs are returned. When non-empty, entry points whose distribution
             package name is in the set are skipped.
+
+    The same pack may be installed in more than one venv visible to
+    ``importlib.metadata`` (e.g. the framework venv and the packs venv when
+    ``mcp_server._packs_venv_site`` adds the packs-venv site-packages to
+    ``sys.path`` in the catalog/content subprocess). Two distinct paths for
+    one pack produce duplicate catalog entries → ``CatalogCollisionError``
+    at boot. Dedupe by normalized pack name (first wins) so each pack
+    contributes at most one content root regardless of how many venvs
+    expose it.
     """
 
     roots: list[Path] = []
+    seen_packs: set[str] = set()
     for ep in importlib.metadata.entry_points(group=CONTENT_ROOT_ENTRY_POINT_GROUP):
-        if excluded_packs and _entry_point_pack_name(ep) in excluded_packs:
+        pack_name = _entry_point_pack_name(ep)
+        if excluded_packs and pack_name in excluded_packs:
+            continue
+        if pack_name and pack_name in seen_packs:
             continue
         try:
             root_loader = ep.load()
@@ -63,6 +76,8 @@ def discover_installed_content_roots(
             continue
         if candidate.is_dir():
             roots.append(candidate)
+            if pack_name:
+                seen_packs.add(pack_name)
     return _dedupe_paths(roots)
 
 

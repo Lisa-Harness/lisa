@@ -1,5 +1,5 @@
 """Lisa Catalog MCP server — mode/operation/tool catalog and diagnostics."""
 
-from mcp_server.catalog.server import init_catalog, main, mcp
+from __future__ import annotations
 
 __all__ = ["init_catalog", "main", "mcp"]

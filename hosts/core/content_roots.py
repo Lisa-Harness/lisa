@@ -406,7 +406,6 @@ def active_installed_pack_roots(
     session_included = _normalize_pack_names(session_pack_include)
     session_excluded = _normalize_pack_names(session_pack_exclude)
 
-    active: list[Path] = []
     # Combine entry-point-discovered roots (bundled packs installed in the
     # framework venv) with packs-venv-discovered roots (external packs
     # installed in the separate packs venv). Entry-point discovery cannot
@@ -419,8 +418,6 @@ def active_installed_pack_roots(
     )
     from kernel.content_roots import (  # noqa: PLC0415
         discover_installed_content_roots as _discover_entry_point_roots,
-    )  # type: ignore[import-not-found]
-    from kernel.content_roots import (
         discover_packs_venv_content_roots as _discover_packs_venv_roots,
     )
 
@@ -429,19 +426,29 @@ def active_installed_pack_roots(
             return packs_venv_for(Path(data_dir))
         return default_packs_venv()
 
-    all_roots = [
-        *_discover_entry_point_roots(),
-        *_discover_packs_venv_roots(
-            data_dir,
-            venv_path_resolver=_venv_resolver,
-            site_packages_resolver=packs_venv_site_packages,
-        ),
-    ]
-    for root in all_roots:
+    entry_point_roots = _discover_entry_point_roots()
+    packs_venv_roots = _discover_packs_venv_roots(
+        data_dir,
+        venv_path_resolver=_venv_resolver,
+        site_packages_resolver=packs_venv_site_packages,
+    )
+    entry_point_root_count = len(entry_point_roots)
+    all_roots = [*entry_point_roots, *packs_venv_roots]
+    # The same pack may be discovered from both surfaces when an external
+    # pack is also installed into the main venv (e.g. via
+    # ``uv sync --extra ext``): entry-point discovery returns the main-venv
+    # ``lisa_packs/<name>`` root and the packs-venv scan returns the source
+    # ``lisa_packs/<name>`` root. Two distinct paths for one pack produce
+    # duplicate catalog entries → ``CatalogCollisionError`` at boot. Dedupe
+    # by package name, preferring the packs-venv root (the authoritative
+    # home for external packs); bundled packs only appear via entry points.
+    selected_by_name: dict[str, Path] = {}
+    root_from_packs_venv: dict[str, bool] = {}
+    for index, root in enumerate(all_roots):
         package_name = infer_pack_package_name(root)
         if not package_name:
             continue
-        if pack_is_active(
+        if not pack_is_active(
             package_name,
             always_on_packs=always_on,
             runtime_installed=runtime_installed,
@@ -449,8 +456,19 @@ def active_installed_pack_roots(
             session_included_packs=session_included,
             session_excluded_packs=session_excluded,
         ):
-            active.append(root)
-    return active
+            continue
+        from_packs_venv = index >= entry_point_root_count
+        existing = selected_by_name.get(package_name)
+        if existing is None:
+            selected_by_name[package_name] = root
+            root_from_packs_venv[package_name] = from_packs_venv
+            continue
+        # Prefer the packs-venv-discovered root for external packs so the
+        # authoritative install wins over an accidental main-venv copy.
+        if from_packs_venv and not root_from_packs_venv[package_name]:
+            selected_by_name[package_name] = root
+            root_from_packs_venv[package_name] = True
+    return list(selected_by_name.values())
 
 
 def sdk_content_roots(

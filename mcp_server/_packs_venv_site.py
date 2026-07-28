@@ -26,6 +26,7 @@ no-op — bundled packs and non-editable installs don't need it.
 
 from __future__ import annotations
 
+import importlib
 import os
 import site
 import sys
@@ -59,6 +60,15 @@ def activate_packs_venv_site() -> Path | None:
     site.addsitedir(site_str)
     if site_str not in sys.path:
         sys.path.insert(0, site_str)
+    # importlib.metadata caches the distribution list at first access;
+    # after addsitedir exposes new dist-info dirs (editable installs in
+    # the packs venv), invalidate the import cache so the next
+    # entry_points() call re-scans and discovers the packs-venv
+    # distributions. Without this, the catalog subprocess could miss the
+    # packs-venv entry points (or pick them up inconsistently), which
+    # contributes to Duplicate operation ID collisions when the same pack
+    # is visible from more than one site-packages.
+    importlib.invalidate_caches()
     return site_packages
 
 

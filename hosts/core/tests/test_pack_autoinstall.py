@@ -135,7 +135,7 @@ def test_auto_install_noop_when_all_required_importable(
     runtime = _make_runtime(tmp_path, required=["lisa-pack-core"])
     monkeypatch.setattr(
         "hosts.core.pack_autoinstall._installed_pack_names",
-        lambda: {"lisa-pack-core"},
+        lambda runtime: {"lisa-pack-core"},
     )
     installed = auto_install_required_packs(runtime)
     assert installed == []
@@ -159,7 +159,7 @@ def test_auto_install_installs_missing_required_pack(
     )
     monkeypatch.setattr(
         "hosts.core.pack_autoinstall._installed_pack_names",
-        lambda: set(),
+        lambda runtime: set(),
     )
 
     call_log: list[str] = []
@@ -197,7 +197,7 @@ def test_auto_install_raises_on_install_failure(
     )
     monkeypatch.setattr(
         "hosts.core.pack_autoinstall._installed_pack_names",
-        lambda: set(),
+        lambda runtime: set(),
     )
 
     def _fake_install_sync(
@@ -227,7 +227,7 @@ def test_auto_install_raises_on_unpinned_git_ref(
     )
     monkeypatch.setattr(
         "hosts.core.pack_autoinstall._installed_pack_names",
-        lambda: set(),
+        lambda runtime: set(),
     )
 
     with pytest.raises(RuntimeError, match="unpinned"):

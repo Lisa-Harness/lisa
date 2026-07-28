@@ -7,25 +7,12 @@ surface:
   memory_scope: personal
 resources:
   packs:
-    auto_install:
-      lisa-pack-brave-search:
-        source: ../lisa-packs/brave_search
-      lisa-pack-cloudflare:
-        source: ../lisa-packs-wip/cloudflare
-      lisa-pack-coding:
-        source: ../lisa-packs-wip/coding
-      lisa-pack-github:
-        source: ../lisa-packs-wip/github
-      lisa-pack-markdown:
-        source: ../lisa-packs/markdown
-      lisa-pack-search:
-        source: ../lisa-packs/search
     configuration:
       lisa-pack-coding:
         workspace_root: "."
       lisa-pack-github:
         base_branch: main
-    required:
+    include:
       - lisa-pack-brave-search
       - lisa-pack-markdown
       - lisa-pack-memory
@@ -33,6 +20,25 @@ resources:
       - lisa-pack-coding
       - lisa-pack-github
       - lisa-pack-cloudflare
+    # auto_install:
+    #   lisa-pack-brave-search:
+    #     source: "C:/Code/lisa-packs/brave_search"
+    #     editable: true
+    #   lisa-pack-markdown:
+    #     source: "C:/Code/lisa-packs/markdown"
+    #     editable: true
+    #   lisa-pack-search:
+    #     source: "C:/Code/lisa-packs/search"
+    #     editable: true
+    #   lisa-pack-coding:
+    #     source: "C:/Code/lisa-packs-wip/coding"
+    #     editable: true
+    #   lisa-pack-github:
+    #     source: "C:/Code/lisa-packs-wip/github"
+    #     editable: true
+    #   lisa-pack-cloudflare:
+    #     source: "C:/Code/lisa-packs-wip/cloudflare"
+    #     editable: true
 providers:
   capabilities:
     memory: lisa-pack-memory

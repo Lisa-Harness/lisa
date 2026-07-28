@@ -172,12 +172,12 @@ Each sub-key is a `ResourceSelection` with `include`, `exclude`, and `required` 
 
 | Key | Type | Description |
 | --- | --- | --- |
-| `packs` | `PackSelection` | Pack selection plus pack-owned configuration. Also accepts a `configuration` map and an `auto_install` map. |
+| `packs` | `PackSelection` | Pack selection plus pack-owned configuration. `required` drives auto-install; `include`/`exclude` filter catalog activation. Also accepts a `configuration` map and an `auto_install` map. |
 | `servers` | `ResourceSelection` | MCP server include/exclude (session-level). |
 
 #### `resources.packs.auto_install`
 
-Declares install sources for packs listed in `required` so the host can auto-install them at startup when they are not yet importable. Every `auto_install` key **must** also appear in `required` — the compiler rejects keys not in `required` with `SessionPlanError`.
+Customizes the install source/method for packs listed in `required`. The host auto-installs **every missing `required` pack** at boot; `auto_install` overrides the default git-root source for the named pack. Every `auto_install` key **must** also appear in `required` — the compiler rejects keys not in `required` with `SessionPlanError`.
 
 | Key | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -203,6 +203,40 @@ resources:
         source: ../lisa-packs/brave_search
         editable: true
 ```
+
+#### `required` vs `include` vs `auto_install`
+
+These three fields have distinct responsibilities; they are not interchangeable:
+
+| Field | Controls installation? | Controls catalog activation? | Default source when missing? |
+| --- | --- | --- | --- |
+| `required` | **Yes** — every missing `required` pack is auto-installed at boot. | No (but required packs that become importable are activated by default). | Git-root fallback (`git+https://...@main` via `LISA_PACK_GIT_ROOT`). |
+| `include` | No. | **Yes** — restricts catalog activation to the listed packs (no include = all installed/enabled packs active). | N/A. |
+| `auto_install` | No — does not decide *whether* a pack is installed, only *how*. | No. | Overrides the git-root fallback for the named pack with an explicit source/editable flag. |
+
+The host installs **every missing `required` pack** regardless of whether it has an `auto_install` entry. `auto_install` only customizes the source and method (local path vs git ref, editable vs not). A `required` pack with no `auto_install` key falls back to the git-root template (`git+https://github.com/lisa-framework/lisa-pack-<name>@main`), which may fail if the pack is private or depends on unpublished packages.
+
+#### Suppressing auto-install (operator-managed installs)
+
+To stop the host from installing a pack, **remove it from `required`**. A pack listed only in `include` (or in neither field) is never auto-installed — it must already be importable or it will not appear in the catalog.
+
+Use `include` (not `required`) when you manage the packs-venv yourself (`uv pip install -e <pack dir>` into the packs venv) and want the host to activate the pack without trying to install it:
+
+```yaml
+# Operator manages the packs venv; host activates but does not install.
+resources:
+  packs:
+    required: [lisa-pack-core]           # only the always-needed bundled pack
+    include: [lisa-pack-cloudflare, lisa-pack-brave-search]  # operator-installed
+```
+
+If a pack is in `include` but not installed, it is silently absent from the catalog — the host does not raise a startup error. This is the intended behavior: `include` is a *catalog filter*, not an *install trigger*.
+
+#### Where external packs must live
+
+External (non-bundled) packs belong **only in the packs venv**, not the main framework `.venv`. The catalog and content MCP subprocesses activate the packs-venv site-packages via `site.addsitedir`; if the same external pack is installed in both the main `.venv` and the packs venv, `importlib.metadata.entry_points()` sees two distinct content-root paths for one pack and the catalog raises a `Duplicate operation ID` collision that crashes boot.
+
+Do **not** install external packs into the main `.venv` via `uv sync --extra ext --extra wip` (the root `pyproject.toml` `ext`/`wip` optional extras). Those extras exist only as a dev/IDE convenience for import resolution during editing; installing them into the live venv recreates the duplicate. Uninstall any stray external packs from the main `.venv` with `uv pip uninstall --python .venv lisa-pack-<name>` (leaving the bundled packs: core, checkpoint, introspect, memory).
 
 ### `providers`
 
@@ -571,6 +605,7 @@ Host-mandatory packs (declared in `mcp_servers.yaml` `pack_policy.always_on_pack
 - **Source rule referencing undeclared lane**: every `lane_id` in `context.sources` must exist in `context.lanes`.
 - **Multiple fallback rules**: at most one `fallback: true` source rule is allowed.
 - **Source rule with no selector and no fallback**: a rule needs at least one matching selector or `fallback: true`.
+- **External packs installed in the main `.venv`**: an external pack present in both the main framework `.venv` and the packs venv produces a `Duplicate operation ID`/`Duplicate tool ID` collision at boot because the catalog subprocess sees two content-root paths for one pack. Keep external packs in the packs venv only; uninstall them from the main `.venv`. (Bundled packs are fine in the main `.venv` — they are not installed into the packs venv.)
 
 ---
 
