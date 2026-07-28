@@ -75,6 +75,7 @@ from kernel.operations.registry import (
     get_operation_catalog,
 )
 from kernel.provider_core import StreamedChunk, StreamedCompletion, _aggregate_streamed_chunks
+from kernel.recovery import RecoveryIdentity, RecoveryRecord
 from kernel.seams.protocols import (
     ContentRegistry,
     CoordinatorRouteDecision,
@@ -503,6 +504,9 @@ class TurnHooks:
     approval_service: Any | None = None
     """Host-owned persistence and receipt service for exact-action approval."""
 
+    recovery_service: Any | None = None
+    """Host-owned durable service for interrupted dispatch work items."""
+
     code_change_artifact_store: Any | None = None
     """Host-owned store for pack-neutral local coding workflow artifacts."""
 
@@ -729,7 +733,7 @@ def _coordinator_routing_hint(
     try:
         decision = hooks.route_coordinator.load(request)
     except Exception as exc:  # pylint: disable=broad-except
-        _log.warning("route_coordinator.load failed: %s", exc)
+        logger.warning("route_coordinator.load failed: %s", exc)
         return ""
     target = (getattr(decision, "next_target", "") or "").strip()
     if not target:
@@ -795,7 +799,7 @@ def _build_checkpoint_bundle(
             try:
                 unified_state_dict = state.model_dump(mode="json")
             except Exception as exc:  # pylint: disable=broad-except
-                _log.warning("checkpoint: state_provider dump failed: %s", exc)
+                logger.warning("checkpoint: state_provider dump failed: %s", exc)
 
     workflow_session_dict: dict[str, Any] = {}
     stage_id = ""
@@ -806,7 +810,7 @@ def _build_checkpoint_bundle(
             try:
                 workflow_session_dict = session.model_dump(mode="json")
             except Exception as exc:  # pylint: disable=broad-except
-                _log.warning("checkpoint: workflow_session dump failed: %s", exc)
+                logger.warning("checkpoint: workflow_session dump failed: %s", exc)
             stage_id = str(getattr(session, "stage_id", "") or "")
             turn_count = int(getattr(session, "turn_count", 0) or 0)
 
@@ -822,6 +826,34 @@ def _build_checkpoint_bundle(
         unified_state=unified_state_dict,
         workflow_session_state=workflow_session_dict,
     )
+
+
+def _build_recovery_identity(hooks: TurnHooks) -> RecoveryIdentity:
+    """Build the exact identity scope for recovery records."""
+
+    return RecoveryIdentity(
+        workspace_id=hooks.workspace_id,
+        user_id=hooks.user_id,
+        user_slug=hooks.user_slug,
+        surface_type=cast(ConversationSurface, hooks.surface_type),
+        surface_id=hooks.surface_id,
+        memory_scope=cast(MemoryScope, hooks.memory_scope),
+        session_plan_digest=hooks.session_plan_digest,
+    )
+
+
+def _current_recovery_stage_id(*, hooks: TurnHooks, is_workflow: bool) -> str:
+    """Return current workflow stage id when available, else empty."""
+
+    if not is_workflow or hooks.workflow_session is None:
+        return ""
+    try:
+        session = hooks.workflow_session()
+    except Exception:  # pylint: disable=broad-except
+        return ""
+    if session is None:
+        return ""
+    return str(getattr(session, "stage_id", "") or "")
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────
@@ -1019,6 +1051,14 @@ async def run_turn(
             )
 
     mode_config = get_workflow_catalog().get(mode_id)
+
+    if hooks.recovery_service is not None:
+        try:
+            await hooks.recovery_service.mark_running_indeterminate(
+                _build_recovery_identity(hooks)
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            _log.warning("recovery startup reconciliation failed: %s", exc)
 
     # Resolve hook callables with defaults
     resolve_model = hooks.resolve_model or _default_resolve_model
@@ -2368,6 +2408,37 @@ async def _run_turn_inner(
                 },
             )
             _tool_dispatch_started = time.monotonic()
+            recovery_item_id = ""
+            recovery_retry_policy = "safe"
+            if hooks.recovery_service is not None and _tool_kind != "transition":
+                try:
+                    effect = "read"
+                    if tool_name in operation_catalog:
+                        effect = str(getattr(operation_catalog[tool_name], "effect", "read") or "read")
+                    elif tool_name in tool_catalog:
+                        effect = str(getattr(tool_catalog[tool_name], "effect", "read") or "read")
+                    elif _tool_kind == "mcp_tool":
+                        effect = "execute"
+                    recovery_retry_policy = "safe" if effect == "read" else "confirm"
+                    started_record = await hooks.recovery_service.begin(
+                        RecoveryRecord(
+                            identity=_build_recovery_identity(hooks),
+                            conversation_id=hooks.conversation_id,
+                            mode_id=mode_id,
+                            stage_id=_current_recovery_stage_id(
+                                hooks=hooks,
+                                is_workflow=is_workflow,
+                            ),
+                            target_kind=cast(Any, _tool_kind),
+                            target_id=tool_name,
+                            effect=cast(Any, effect),
+                            parameters=(tool_arguments if isinstance(tool_arguments, dict) else {}),
+                            retry_policy=cast(Any, recovery_retry_policy),
+                        )
+                    )
+                    recovery_item_id = started_record.work_item_id
+                except Exception as recovery_exc:  # pylint: disable=broad-except
+                    _log.warning("recovery begin failed for %s: %s", tool_name, recovery_exc)
             try:
                 # Transition interception: the model called transition_stage.
                 # This is handled in-loop, not through the operation/tool/MCP
@@ -3127,11 +3198,59 @@ async def _run_turn_inner(
                 _state.total_tool_calls += 1
                 _state.called_tool_names.add(tool_name)
                 ledger.record(tool_name)
+                if recovery_item_id and hooks.recovery_service is not None:
+                    try:
+                        await hooks.recovery_service.settle(
+                            recovery_item_id,
+                            _build_recovery_identity(hooks),
+                            state="succeeded",
+                            result_preview=str(tool_output)[:240],
+                        )
+                    except Exception as recovery_exc:  # pylint: disable=broad-except
+                        _log.warning(
+                            "recovery settle success failed for %s: %s",
+                            tool_name,
+                            recovery_exc,
+                        )
             except ApprovalRequired:
+                if recovery_item_id and hooks.recovery_service is not None:
+                    try:
+                        await hooks.recovery_service.settle(
+                            recovery_item_id,
+                            _build_recovery_identity(hooks),
+                            state="stalled",
+                            last_error="approval required",
+                            failure_scope="workflow",
+                            retry_policy="confirm",
+                            blocks_workflow=True,
+                        )
+                    except Exception as recovery_exc:  # pylint: disable=broad-except
+                        _log.warning(
+                            "recovery settle approval failed for %s: %s",
+                            tool_name,
+                            recovery_exc,
+                        )
                 raise
             except Exception as exc:  # pylint: disable=broad-except
                 _log.warning("Tool '%s' failed in turn runner: %s", tool_name, exc)
                 tool_output = f"Tool execution failed: {type(exc).__name__}: {exc}"
+                if recovery_item_id and hooks.recovery_service is not None:
+                    try:
+                        await hooks.recovery_service.settle(
+                            recovery_item_id,
+                            _build_recovery_identity(hooks),
+                            state="stalled",
+                            last_error=str(exc),
+                            failure_scope="item",
+                            retry_policy=cast(Any, recovery_retry_policy),
+                            blocks_workflow=False,
+                        )
+                    except Exception as recovery_exc:  # pylint: disable=broad-except
+                        _log.warning(
+                            "recovery settle failure failed for %s: %s",
+                            tool_name,
+                            recovery_exc,
+                        )
 
             await _emit_stage(
                 "tool_dispatch_complete",

@@ -242,8 +242,10 @@ class HostRuntime:
         # ── Approval persistence ──────────────────────────────────────
         from hosts.core.approvals import FileApprovalService
         from hosts.core.code_artifacts import FileCodeChangeArtifactStore
+        from hosts.core.recovery import FileRecoveryService
 
         self.approval_service = FileApprovalService(self.data_dir / "approvals.json")
+        self.recovery_service = FileRecoveryService(self.data_dir / "recovery-items.json")
         self.code_change_artifact_store = FileCodeChangeArtifactStore(
             self.data_dir / "code-change-artifacts.json"
         )

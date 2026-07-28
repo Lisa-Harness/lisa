@@ -693,6 +693,7 @@ def build_turn_hooks(
         state_provider=_state_provider,
         pack_configuration_resolver=pack_configuration_resolver,
         approval_service=approval_service,
+        recovery_service=getattr(runtime, "recovery_service", None),
         code_change_artifact_store=runtime.code_change_artifact_store,
         workspace_id=runtime.session_plan.manifest.name,
         user_id=runtime.config.user_slug,

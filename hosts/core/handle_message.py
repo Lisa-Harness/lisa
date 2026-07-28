@@ -33,12 +33,14 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from kernel.approval import ApprovalIdentity, ApprovalRequired, render_approval_request
 from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
+from kernel.models import ConversationSurface, MemoryScope
 from kernel.operations.registry import OperationExecutionError
+from kernel.recovery import RecoveryIdentity
 from kernel.turn_runner import TurnResult, execute_approved_invocation, run_turn
 
 from hosts.core.commands import (
@@ -282,6 +284,7 @@ register_host_command_prefixes(
         "/modes",
         "/operations",
         "/tools",
+        "/stalls",
         "/approve",
         "/deny",
         "/debug",
@@ -297,6 +300,7 @@ register_host_command_exacts(
         "modes",
         "operations",
         "tools",
+        "stalls",
     )
 )
 
@@ -354,6 +358,8 @@ async def _dispatch_host_command(
         )
     elif lowered in {"/tools", "tools"}:
         response_text = handle_simple_command(runtime, message, "tools", render_tools_list(runtime))
+    elif lowered in {"/stalls", "stalls"}:
+        response_text = await _handle_stalls_command(runtime)
     elif lowered == "/approve" or lowered.startswith("/approve "):
         response_text = await _handle_approval_command(
             runtime,
@@ -407,6 +413,57 @@ def _approval_identity(runtime: HostRuntime) -> ApprovalIdentity:
         mode_id=runtime.current_mode_id,
         session_plan_digest=runtime.session_plan.plan_digest,
     )
+
+
+def _recovery_identity(runtime: HostRuntime) -> RecoveryIdentity:
+    """Build the current host identity used to validate recovery ownership."""
+
+    return RecoveryIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id=runtime.config.user_slug,
+        user_slug=runtime.config.user_slug,
+        surface_type=cast(ConversationSurface, runtime.config.surface_type),
+        surface_id=runtime.config.surface_id,
+        memory_scope=cast(MemoryScope, runtime.config.memory_scope),
+        session_plan_digest=runtime.session_plan.plan_digest,
+    )
+
+
+async def _handle_stalls_command(runtime: HostRuntime) -> str:
+    """List unresolved recovery work items for this session identity."""
+
+    service = getattr(runtime, "recovery_service", None)
+    if service is None or not hasattr(service, "list_open"):
+        return "Recovery service is not available in this host runtime."
+    try:
+        records = await service.list_open(_recovery_identity(runtime))
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("stalls list failed: %s", exc)
+        return f"Failed to list stalled work: {type(exc).__name__}: {exc}"
+
+    if not records:
+        return "No stalled or indeterminate work items."
+
+    lines = ["Open recovery work items:"]
+    for record in records:
+        item_id = str(getattr(record, "work_item_id", "") or "")
+        state = str(getattr(record, "state", "unknown") or "unknown")
+        target_kind = str(getattr(record, "target_kind", "") or "")
+        target_id = str(getattr(record, "target_id", "") or "")
+        mode_id = str(getattr(record, "mode_id", "") or "")
+        stage_id = str(getattr(record, "stage_id", "") or "")
+        retry_policy = str(getattr(record, "retry_policy", "") or "")
+        blocks = bool(getattr(record, "blocks_workflow", False))
+        last_error = str(getattr(record, "last_error", "") or "")
+        lines.append(
+            "- "
+            f"{item_id} state={state} target={target_kind}:{target_id} "
+            f"mode={mode_id} stage={stage_id or '-'} retry={retry_policy} "
+            f"blocks_workflow={str(blocks).lower()}"
+        )
+        if last_error:
+            lines.append(f"  error: {last_error}")
+    return "\n".join(lines)
 
 
 # Short affirmative phrases that, when a single approval is pending, are
