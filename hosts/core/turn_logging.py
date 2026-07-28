@@ -1,12 +1,14 @@
-"""Structured JSONL logging and turn-log assembly for the host.
+"""Structured log-record assembly for the host.
 
 This module centralises the *record assembly* logic for the JSONL turn log
 and runtime event log.  It accepts a small ``LogContext`` dict of resolved
 runtime values (log level, timezone, mode id, etc.) so the module is pure
 and testable without importing the full host.
 
-The actual file I/O (``write_log_record``) is also here but called from
-``main.py`` via a thin wrapper that supplies the runtime log-path accessor.
+Assembled records are emitted through stdlib logging via
+:func:`emit_log_record`; the shared :class:`sdk.logging_setup.JSONFormatter`
+owns serialization and the file destination. The previous bespoke
+file-append writer has been retired.
 
 Dependency direction
 --------------------
@@ -19,12 +21,12 @@ Public surface (re-exported by ``main.py`` for backward test compatibility)
 - :func:`build_log_record`
 - :func:`build_turn_log_record`
 - :func:`build_turn_log_debug_payload`
-- :func:`write_log_record`
+- :func:`emit_log_record`
+- :func:`write_log_record` (deprecated wrapper around :func:`emit_log_record`)
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -242,17 +244,44 @@ def build_turn_log_debug_payload(
     }
 
 
-def write_log_record(record: dict[str, Any], log_path: Path | None) -> None:
-    """Write one JSON record as a single line to *log_path*.
+def emit_log_record(record: dict[str, Any], *, target: logging.Logger) -> None:
+    """Emit one assembled record through *target* via stdlib ``extra=``.
 
-    Does nothing if *log_path* is ``None``.  Parent directories are
-    created lazily on first write.
+    Replaces the previous bespoke file-append writer. The record dict
+    (produced by :func:`build_log_record` or :func:`build_turn_log_record`)
+    is split into the stdlib ``message`` + ``extra`` fields so the shared
+    :class:`sdk.logging_setup.JSONFormatter` serialises it.
+
+    The ``level`` key in *record* selects the stdlib level; ``event`` (when
+    present) becomes the structured ``event`` field. The nested
+    ``runtime`` block is preserved as a top-level ``runtime`` extra key so
+    existing JSONL consumers keep the same field shape.
     """
-    if log_path is None:
-        return
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=True) + "\n")
-    except OSError as exc:
-        logger.error("failed to write log record to %s: %s: %s", log_path, type(exc).__name__, exc)
+    level_name = str(record.get("level", "info")).upper()
+    if level_name == "WARN":
+        level_name = "WARNING"
+    level = getattr(logging, level_name, logging.INFO)
+    event = record.get("event")
+    message = record.get("type") or event or "turn_logging.event"
+    extra: dict[str, Any] = {}
+    for key, value in record.items():
+        if key in {"level", "event", "type"}:
+            continue
+        extra[key] = value
+    if event:
+        extra["event"] = event
+    target.log(level, message, extra=extra)
+
+
+# Retained for backward test compatibility — now a thin wrapper around
+# :func:`emit_log_record`. New call sites should call ``emit_log_record``
+# directly with a stdlib logger.
+def write_log_record(record: dict[str, Any], log_path: Path | None) -> None:
+    """Deprecated: route *record* through stdlib logging.
+
+    The *log_path* argument is ignored — the shared handler in
+    :mod:`sdk.logging_setup` owns the file destination. Kept only so
+    existing tests/importers do not break during the cutover.
+    """
+    del log_path  # unused under the unified logging stack
+    emit_log_record(record, target=logger)

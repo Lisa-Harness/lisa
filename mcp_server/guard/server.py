@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 
 from mcp.server.fastmcp import FastMCP
 
@@ -47,16 +46,28 @@ def _log_blocked(
     blocked_reason: str,
     text_len: int,
 ) -> None:
-    """Log a structured audit record for a blocked guard check."""
+    """Log a structured audit record for a blocked guard check.
+
+    Emits through the stdlib ``logger.warning`` so the record lands in the
+    same JSON stream as every other host/server event (the shared
+    :class:`sdk.logging_setup.JSONFormatter` serializes the ``extra``
+    fields). Gated by ``LISA_GUARD_LOG_BLOCKED`` (default on).
+    """
     if os.getenv("LISA_GUARD_LOG_BLOCKED", "1") != "0":
-        record = {
-            "event": "guard.blocked",
-            "direction": direction,
-            "surface_id": surface_id,
-            "blocked_reason": blocked_reason,
-            "text_len": text_len,
-        }
-        print(json.dumps(record), file=sys.stderr, flush=True)
+        logger.warning(
+            "guard.blocked: direction=%s surface=%s reason=%s len=%d",
+            direction,
+            surface_id,
+            blocked_reason,
+            text_len,
+            extra={
+                "event": "guard.blocked",
+                "direction": direction,
+                "surface_id": surface_id,
+                "blocked_reason": blocked_reason,
+                "text_len": text_len,
+            },
+        )
 
 
 @mcp.tool()

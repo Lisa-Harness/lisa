@@ -12,8 +12,8 @@ Migration notes:
 - ``little_lisa._function_name(...)`` → ``from hosts.core.module import function_name; ...``
 - CLI-only render functions (``format_modes``, ``format_models``, ``_status_segments``)
   now live in ``hosts/cli/render.py`` and are skipped here.
-- Turn-log / log-event functions are no-op stubs in the core host; tests
-  that assert file writes are marked ``xfail`` until logging is wired.
+- Turn-log / log-event functions emit through stdlib logging; tests use
+  ``caplog`` to assert on the structured ``event`` extra field.
 """
 
 from __future__ import annotations
@@ -1214,28 +1214,57 @@ def test_build_turn_context_marks_default_mode_handoff() -> None:
     assert "default" in str(context["handoff"])
 
 
-# ── Turn log / log event (no-op stubs in core host) ──────────────────
+# ── Turn log / log event (now wired through stdlib) ──────────────────
 
 
-@pytest.mark.xfail(
-    reason="turn logging is a no-op stub in the core host; will be wired in a later phase"
-)
-def test_append_turn_log_writes_jsonl(tmp_path: Path) -> None:
-    pass
+def test_append_turn_log_emits_structured_event(caplog: pytest.LogCaptureFixture) -> None:
+    """``_append_turn_log`` emits a ``cmd.turn`` event with mode/handoff fields."""
+    import logging as _logging
+
+    from hosts.core.commands._log import _append_turn_log
+
+    with caplog.at_level(_logging.INFO, logger="hosts.core.commands._log"):
+        _append_turn_log(
+            context={"mode_id": "help", "handoff": "help shortcut"},
+            response_text="hi",
+        )
+    assert any(r.event == "cmd.turn" for r in caplog.records)
+    record = next(r for r in caplog.records if r.event == "cmd.turn")
+    assert record.mode_id == "help"
+    assert record.handoff == "help shortcut"
+    assert record.response_chars == 2
 
 
-@pytest.mark.xfail(
-    reason="turn logging is a no-op stub in the core host; will be wired in a later phase"
-)
-def test_append_turn_log_flattens_model_and_token_fields(tmp_path: Path) -> None:
-    pass
+def test_append_turn_log_includes_context_fields(caplog: pytest.LogCaptureFixture) -> None:
+    """``_append_turn_log`` surfaces arbitrary context keys as extra fields."""
+    import logging as _logging
+
+    from hosts.core.commands._log import _append_turn_log
+
+    with caplog.at_level(_logging.INFO, logger="hosts.core.commands._log"):
+        _append_turn_log(
+            context={"mode_id": "intake", "intake": {"signal_count": 3}},
+            response_text="",
+        )
+    record = next(r for r in caplog.records if r.event == "cmd.turn")
+    assert record.context["intake"]["signal_count"] == 3
 
 
-@pytest.mark.xfail(
-    reason="log event is a no-op stub in the core host; will be wired in a later phase"
-)
-def test_append_log_event_respects_runtime_log_threshold(tmp_path: Path) -> None:
-    pass
+def test_append_log_event_respects_level(caplog: pytest.LogCaptureFixture) -> None:
+    """``_append_log_event`` routes the supplied level to stdlib."""
+    import logging as _logging
+
+    from hosts.core.commands._log import _append_log_event
+
+    with caplog.at_level(_logging.DEBUG, logger="hosts.core.commands._log"):
+        _append_log_event(
+            level="warning",
+            event="cmd.test",
+            payload={"request_id": "r-1"},
+        )
+    record = next(r for r in caplog.records if r.event == "cmd.test")
+    assert record.levelno == _logging.WARNING
+    assert record.request_id == "r-1"
 
 
 # ── Log level resolution ──────────────────────────────────────────────

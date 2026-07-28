@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 LISA_TIMEZONE_ENV = "LISA_TIMEZONE"
 LISA_LOG_LEVEL_ENV = "LISA_LOG_LEVEL"
+LISA_LOG_DEBUG_ENV = "LISA_LOG_DEBUG"
 LISA_DATA_DIR_ENV = "LISA_DATA_DIR"
 LISA_THREAD_DIR_ENV = "LISA_THREAD_DIR"
 LISA_SLICE_PRE_TURN_ENV = "LISA_SLICE_PRE_TURN"
@@ -132,6 +133,11 @@ class HostConfig:
     log_level: str = "info"
     log_path: Path | None = None
     host_log_path: Path | None = None
+    # ``"cli"``, ``"web"``, or ``None`` (MCP servers). Controls the
+    # stderr-log default — see ``sdk.logging_setup.configure_logging``.
+    host_kind: str | None = None
+    # Logger names forced to DEBUG via ``LISA_LOG_DEBUG`` (comma-separated).
+    debug_log_modules: tuple[str, ...] = ()
     timezone: str = "UTC"
     timezone_source: str = "default"
     user_slug: str = ""
@@ -272,6 +278,13 @@ class HostConfig:
         if raw_host_log:
             resolved_host_log_path = Path(raw_host_log).expanduser().resolve()
 
+        # ── Debug-module overrides (LISA_LOG_DEBUG) ────────────────────
+        from sdk.logging_setup import _parse_debug_modules
+
+        resolved_debug_modules = tuple(
+            _parse_debug_modules(_resolve_env(LISA_LOG_DEBUG_ENV))
+        )
+
         resolved_mcp_manifest: Path | None = None
         raw_mcp = mcp_manifest_path.strip()
         if raw_mcp:
@@ -326,6 +339,7 @@ class HostConfig:
             log_level=resolved_log_level,
             log_path=resolved_log_path,
             host_log_path=resolved_host_log_path,
+            debug_log_modules=resolved_debug_modules,
             timezone=resolved_tz,
             timezone_source=tz_source,
             user_slug=resolved_user_slug,

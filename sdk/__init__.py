@@ -4,6 +4,8 @@ This package provides optional extension content for Lisa framework hosts:
 - Product- and domain-specific extension surfaces that build on the core pack
 - Extension operations used by those surfaces
 - Signal connector and data-source base contracts
+- Shared runtime infrastructure (logging configuration, cross-layer settings)
+  consumed by hosts and first-party MCP servers alike
 
 Design contract:
 - A host app remains a useful standalone foundation (chat, memory, search, markdown).

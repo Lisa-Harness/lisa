@@ -1,11 +1,16 @@
-"""Logging stubs and runtime-accessor helpers for host command handlers.
+"""Logging helpers for host command handlers.
 
 These are the low-level helpers that every command cluster reaches for:
-no-op structured-logging stubs (wired in a later phase), thread/turn-context
-recorders, env-var parsing, model resolution, and runtime-state accessors.
+structured event emission, thread/turn-context recorders, env-var parsing,
+model resolution, and runtime-state accessors. The previous no-op stubs
+have been replaced with real emission through
+:func:`sdk.logging_setup.emit_structured_event`; the shared
+:class:`sdk.logging_setup.JSONFormatter` owns serialization and the
+file destination.
 
-Dependency direction: ``_log`` → ``hosts.core.runtime``, ``hosts.core.thread``,
-``hosts.core.model_runtime``. No imports from sibling ``commands._*`` modules.
+Dependency direction: ``_log`` → ``sdk.logging_setup``,
+``hosts.core.runtime``, ``hosts.core.thread``, ``hosts.core.model_runtime``.
+No imports from sibling ``commands._*`` modules.
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ import logging
 import os
 from typing import Any
 
+from sdk.logging_setup import emit_structured_event
 from kernel.models import CapabilityManifest
 
 from hosts.core.model_runtime import (
@@ -30,7 +36,7 @@ logger = logging.getLogger(__name__)
 _MIN_RESTORE_ARGS = 2
 
 
-# ── Private no-op stubs (logging wired later) ────────────────────────
+# ── Structured event emission ────────────────────────────────────────
 
 
 def _append_log_event(
@@ -40,13 +46,52 @@ def _append_log_event(
     payload: dict[str, Any],
     debug_payload: dict[str, Any] | None = None,
 ) -> None:
-    """No-op stub — structured logging will be wired in a later phase."""
-    del level, event, payload, debug_payload
+    """Emit a structured event through stdlib logging.
+
+    *level* is a stdlib level name (``"info"``, ``"warning"``, ...).
+    *event* is the namespaced junction name (e.g. ``"cmd.tokens"``).
+    *payload* fields become top-level JSON keys via ``extra=``.
+    *debug_payload* is merged into the emission when the runtime log level
+    is ``debug`` (callers gate this themselves today; the field is preserved
+    for forward compatibility).
+    """
+    level_name = level.strip().upper()
+    if level_name == "WARN":
+        level_name = "WARNING"
+    level_value = getattr(logging, level_name, logging.INFO)
+    message = payload.pop("message", None) or event
+    fields = dict(payload)
+    if debug_payload:
+        fields["debug"] = debug_payload
+    emit_structured_event(
+        logger,
+        level=level_value,
+        event=event,
+        message=str(message),
+        **fields,
+    )
 
 
 def _append_turn_log(*, context: dict[str, Any], response_text: str) -> None:
-    """No-op stub — turn logging will be wired in a later phase."""
-    del context, response_text
+    """Emit a ``cmd.turn`` structured event for a host-command turn.
+
+    Host commands (``/help``, ``/consolidate``, ``/intake``, ...) do not
+    run the kernel turn loop, but they still produce a thread entry and a
+    turn-context. This emits the equivalent of the kernel
+    ``turn.completed`` event so the JSONL stream stays uniform.
+    """
+    mode_id = str(context.get("mode_id") or "cmd")
+    handoff = str(context.get("handoff") or "")
+    emit_structured_event(
+        logger,
+        level=logging.INFO,
+        event="cmd.turn",
+        message="cmd.turn: mode=%s handoff=%s",
+        mode_id=mode_id,
+        handoff=handoff,
+        context=context,
+        response_chars=len(response_text),
+    )
 
 
 # ── Private helpers ──────────────────────────────────────────────────

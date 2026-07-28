@@ -352,44 +352,9 @@ def _resolve_windows_tz_display_name(local_name: str) -> str | None:
 
 
 # ── Log-level resolution ──────────────────────────────────────────────
-
-
-def _normalize_log_level(value: str) -> str | None:
-    """Normalise a log-level string to a canonical name.
-
-    Returns one of ``"debug"``, ``"info"``, ``"warning"``, ``"error"`` or
-    ``None`` if *value* is not recognised.  ``"warn"`` is accepted as an
-    alias for ``"warning"``.
-    """
-    normalized = value.strip().lower()
-    if normalized == "warn":
-        normalized = "warning"
-    if normalized in _LOG_LEVEL_ORDER:
-        return normalized
-    logger.debug("unrecognised log-level value %r", value)
-    return None
-
-
-def _resolve_log_level(cli_log_level: str, *, debug_enabled: bool) -> str:
-    """Resolve the effective log level with CLI > env > default precedence.
-
-    If ``--debug`` is set and no explicit level is chosen, defaults to
-    ``"debug"``; otherwise defaults to ``"info"``.
-    """
-    cli_value = _normalize_log_level(cli_log_level)
-    if cli_value is not None:
-        logger.debug("log level resolved from CLI: %s", cli_value)
-        return cli_value
-
-    env_value = _normalize_log_level(os.getenv(LISA_LOG_LEVEL_ENV, ""))
-    if env_value is not None:
-        logger.debug("log level resolved from %s: %s", LISA_LOG_LEVEL_ENV, env_value)
-        return env_value
-
-    if debug_enabled:
-        logger.debug("log level defaulting to debug because --debug is set")
-        return "debug"
-    return "info"
+# Log-level resolution now lives in ``hosts/core/config_resolver.py``
+# (``normalize_log_level`` / ``resolve_log_level``) and is consumed via
+# ``HostConfig.effective_log_level``. The duplicates below were removed.
 
 
 # ── Streaming-mode resolution ──────────────────────────────────────────

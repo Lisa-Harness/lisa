@@ -15,6 +15,7 @@ Key differences from Little Lisa:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import sys
 from typing import Annotated, Any
@@ -199,6 +200,8 @@ def _initialize_runtime(
         state_snapshot=state_snapshot_path,
         streaming=streaming,
     )
+    # Web host defaults stderr logging on (useful for `docker logs`).
+    config = dataclasses.replace(config, host_kind="web")
 
     _configure_root_logging(config)
 
@@ -216,22 +219,19 @@ def _initialize_runtime(
 
 
 def _configure_root_logging(config: HostConfig) -> None:
-    """Configure stdlib root logging to the host-log file at the resolved level."""
+    """Configure stdlib root logging via the shared ``sdk.logging_setup``.
 
-    import logging as _logging
+    The web host defaults the stderr mirror on (overridable via
+    ``LISA_LOG_STDERR=0``).
+    """
+    from sdk.logging_setup import configure_logging  # noqa: PLC0415
 
-    level_name = config.effective_log_level.upper()
-    level = getattr(_logging, level_name, _logging.INFO)
-    root = _logging.getLogger()
-    root.setLevel(level)
-    for handler in list(root.handlers):
-        root.removeHandler(handler)
-    host_log = config.resolved_host_log_path
-    host_log.parent.mkdir(parents=True, exist_ok=True)
-    handler = _logging.FileHandler(host_log, encoding="utf-8")
-    handler.setLevel(level)
-    handler.setFormatter(_logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
-    root.addHandler(handler)
+    configure_logging(
+        log_path=config.resolved_host_log_path,
+        level=config.effective_log_level,
+        debug_modules=list(config.debug_log_modules),
+        host_kind=config.host_kind,
+    )
 
 
 def _initialize_runtime_or_exit(**kwargs: Any) -> HostRuntime | None:

@@ -95,9 +95,33 @@ def resolve_data_dir(cli_value: str) -> Path:
 
 
 def configure_logging(level: str, *, server_name: str) -> logging.Logger:
-    """Configure standard logging for one MCP server."""
-    logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    """Configure standard logging for one MCP server.
+
+    Routes through the shared :func:`sdk.logging_setup.configure_logging`
+    so MCP servers emit the same JSON format as the hosts. MCP servers run
+    as separate stdio subprocesses; their log file lives under the
+    server's ``--data-dir`` (via ``LISA_MCP_LOG_PATH``) and stderr mirroring
+    follows the ``LISA_LOG_STDERR`` env var (default off for subprocesses).
+    """
+    from sdk.logging_setup import (  # noqa: PLC0415
+        LISA_LOG_DEBUG_ENV,
+        _parse_debug_modules,
+        configure_logging as _configure_shared,
     )
+
+    log_path = os.getenv("LISA_MCP_LOG_PATH", "")
+    if log_path:
+        _configure_shared(
+            log_path=Path(log_path),
+            level=level,
+            debug_modules=_parse_debug_modules(os.getenv(LISA_LOG_DEBUG_ENV, "")),
+            host_kind=None,
+        )
+    else:
+        # No file path supplied — keep the legacy basicConfig behaviour so
+        # servers without a data-dir still get readable stderr logs.
+        logging.basicConfig(
+            level=getattr(logging, level.upper(), logging.INFO),
+            format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        )
     return logging.getLogger(server_name)
