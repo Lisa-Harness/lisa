@@ -146,8 +146,11 @@ async def emit_stage(
     """
     if on_stage_hook is None:
         return
+    payload = dict(data or {})
+    payload.setdefault("iteration", state.iteration)
+    payload.setdefault("_state.iteration", state.iteration)
     try:
-        await on_stage_hook(label, data or {})
+        await on_stage_hook(label, payload)
     except Exception as stage_exc:  # pylint: disable=broad-except
         log.debug("on_stage(%s) hook failed: %s", label, stage_exc)
 
@@ -287,7 +290,7 @@ def resolve_iteration_model(
             decision = router.choose(req)
         except Exception:  # pylint: disable=broad-except
             log.warning(
-                "model_router.choose failed (iteration=%d): %s",
+                "model_router.choose failed (iteration=%d)",
                 iteration_num,
                 exc_info=True,
             )

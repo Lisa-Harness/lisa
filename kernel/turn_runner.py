@@ -76,6 +76,7 @@ from kernel.operations.registry import (
 from kernel.provider_core import StreamedChunk, StreamedCompletion, _aggregate_streamed_chunks
 from kernel.seams.protocols import (
     ContentRegistry,
+    CoordinatorRouteDecision,
     DataSanitizer,
     EventBus,
     ExtensionEvidenceBuilder,
@@ -84,6 +85,7 @@ from kernel.seams.protocols import (
     ModelRouter,
     OutputGuard,
     ProviderGatewayProvider,
+    RouteCoordinator,
 )
 from kernel.slice import (
     SliceMode,
@@ -483,6 +485,11 @@ class TurnHooks:
     returns the new stage. Default: None (transitions are applied in-process
     but not persisted across turns)."""
 
+    route_coordinator: RouteCoordinator | None = None
+    """Optional route-coordinator backend that persists the next handoff
+    target across turns. The kernel consults it for continuation prompts such
+    as ``proceed`` and saves a target after a successful mid-turn handoff."""
+
     # ── Host state provider ───────────────────────────────────────────────
     state_provider: Any | None = None
     """Callable returning a ``UnifiedState`` for the current host session.
@@ -682,6 +689,55 @@ async def _default_on_turn_complete(
 
 async def _default_slice(_policy: SlicePolicy) -> SliceOutcome:
     return SliceOutcome()
+
+
+def _looks_like_continuation_query(query: str) -> bool:
+    """Return True for continuation-style prompts such as ``proceed``."""
+    lowered = (query or "").strip().lower()
+    if not lowered:
+        return False
+    tokens = (
+        "proceed",
+        "continue",
+        "go ahead",
+        "carry on",
+        "pick up",
+        "resume",
+        "next step",
+    )
+    return any(token in lowered for token in tokens)
+
+
+def _coordinator_routing_hint(
+    *,
+    hooks: TurnHooks,
+    mode_id: str,
+    query: str,
+) -> str:
+    """Return a handoff hint from a persisted route coordinator when applicable."""
+    if hooks.route_coordinator is None or not _looks_like_continuation_query(query):
+        return ""
+    request = {
+        "mode_id": mode_id,
+        "query": query,
+        "surface_id": hooks.surface_id,
+        "conversation_id": hooks.conversation_id,
+        "user_id": hooks.user_id,
+        "session_plan_digest": hooks.session_plan_digest,
+    }
+    try:
+        decision = hooks.route_coordinator.load(request)
+    except Exception as exc:  # pylint: disable=broad-except
+        _log.warning("route_coordinator.load failed: %s", exc)
+        return ""
+    target = (getattr(decision, "next_target", "") or "").strip()
+    if not target:
+        return ""
+    return (
+        "## Routing Hint\n\n"
+        f"Continue with the previously planned next step. Hand off to `{target}` by "
+        f"calling `transition_stage` with target_stage_id `{target}`."
+    )
 
 
 # ── Checkpoint helpers ──────────────────────────────────────────────────────
@@ -1452,6 +1508,13 @@ async def _run_turn_inner(
             routing_targets=get_routing_targets(mode_id) if mode_config else [],
             mode_config=mode_config,
         )
+    coordinator_hint = _coordinator_routing_hint(
+        hooks=hooks,
+        mode_id=mode_id,
+        query=query,
+    )
+    if coordinator_hint:
+        routing_hint = coordinator_hint
     if routing_hint:
         _log.info(
             "routing hint injected mode=%s hint_len=%d hint=%s",
@@ -2071,21 +2134,57 @@ async def _run_turn_inner(
                     tool_catalog=tool_catalog,
                 )
                 if _hint_effect == "write" or _hint_effect == "external_write":
-                    _narration_nudge_count += 1
-                    _log.warning(
-                        "model called write-effect tool %r after a routing "
-                        "hint; injecting correction nudge (mode=%s, "
-                        "iteration=%d, nudge=%d/%d)",
-                        tool_name,
-                        mode_id,
-                        _state.iteration,
-                        _narration_nudge_count,
-                        _NARRATION_NUDGE_CAP,
-                    )
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
+                    tool_def = tool_catalog.get(tool_name)
+                    if getattr(tool_def, "approval_required", False):
+                        # Approval-backed effectful tools should be allowed through
+                        # the routing-hint guard so their host-side approval flow
+                        # can interrupt the turn instead of being silently replaced
+                        # by a nudge. This preserves the expected pause/approval
+                        # semantics for effectful calls such as file writes.
+                        pass
+                    else:
+                        _narration_nudge_count += 1
+                        _log.warning(
+                            "model called write-effect tool %r after a routing "
+                            "hint; injecting correction nudge (mode=%s, "
+                            "iteration=%d, nudge=%d/%d)",
+                            tool_name,
+                            mode_id,
+                            _state.iteration,
+                            _narration_nudge_count,
+                            _NARRATION_NUDGE_CAP,
+                        )
+                        # Resolve a concrete handoff target for the residual
+                        # intent gap so the nudge names the mode the model
+                        # should hand off to (e.g. ``markdown`` for a residual
+                        # ``write`` gap) instead of the generic "the suggested
+                        # target_stage_id" — which is useless when the active
+                        # hint is stale or has been suppressed by the
+                        # duplicate-hint dedup (the 2026-07-27 incident: the
+                        # nudge kept pointing back at ``plan`` after plan had
+                        # already run, so the model had no path to
+                        # ``markdown`` and reached for
+                        # ``coding_create_worktree`` instead). Pass the turn's
+                        # cumulative ``chain_satisfied`` as ``extra_satisfied``
+                        # so already-completed steps are not re-suggested.
+                        _nudge_target = _single_handoff_target_for_gap(
+                            query=query,
+                            routing_targets=get_routing_targets(mode_id) if mode_config else [],
+                            mode_config=mode_config,
+                            extra_satisfied=set(_state.chain_satisfied),
+                        )
+                        if _nudge_target:
+                            _nudge_content = (
+                                f"You called the write-effect tool `{tool_name}` "
+                                "but a routing hint told you this mode lacks "
+                                "the tools needed for this request. Do not "
+                                "write from this mode — call `transition_stage` "
+                                f"with target_stage_id `{_nudge_target}` to hand "
+                                "off, or use a read-only tool and respond "
+                                "directly to the user."
+                            )
+                        else:
+                            _nudge_content = (
                                 f"You called the write-effect tool `{tool_name}` "
                                 "but a routing hint told you this mode lacks "
                                 "the tools needed for this request. Do not "
@@ -2093,10 +2192,11 @@ async def _run_turn_inner(
                                 "with the suggested `target_stage_id` to hand "
                                 "off, or use a read-only tool and respond "
                                 "directly to the user."
-                            ),
-                        }
-                    )
-                    continue
+                            )
+                        messages.append(
+                            {"role": "user", "content": _nudge_content}
+                        )
+                        continue
 
             # ── Forced-fork enforcer ──────────────────────────────────
             # When the kernel has computed a deterministic ``fork:`` target
@@ -2700,6 +2800,28 @@ async def _run_turn_inner(
                                 mode_id = target_stage
                                 mode_config = target_mode_config
                                 handoff_to = target_stage
+                                if hooks.route_coordinator is not None:
+                                    try:
+                                        hooks.route_coordinator.save(
+                                            CoordinatorRouteDecision(
+                                                next_target=target_stage,
+                                                reason=rationale or "handoff",
+                                            ),
+                                            {
+                                                "mode_id": target_stage,
+                                                "query": query,
+                                                "surface_id": hooks.surface_id,
+                                                "conversation_id": hooks.conversation_id,
+                                                "user_id": hooks.user_id,
+                                                "session_plan_digest": hooks.session_plan_digest,
+                                            },
+                                        )
+                                    except Exception as coord_exc:  # pylint: disable=broad-except
+                                        _log.warning(
+                                            "route_coordinator.save failed for target %s: %s",
+                                            target_stage,
+                                            coord_exc,
+                                        )
                                 try:
                                     ctx = ctx.model_copy(update={"mode_id": target_stage})
                                 except Exception:  # pylint: disable=broad-except
@@ -3292,6 +3414,7 @@ from kernel.turn_phases._routing_hint import (  # noqa: F401, F403
     _first_target_for_earliest_intent,
     _format_remaining_steps,
     _query_is_sequential,
+    _single_handoff_target_for_gap,
     _tool_effect,
 )
 
