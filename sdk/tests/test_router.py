@@ -107,13 +107,13 @@ def test_default_router_config_has_rules() -> None:
 
 
 def test_default_router_config_uses_symbolic_refs() -> None:
-    """Default rules use symbolic mode/role refs (default, deep), not literal ids."""
+    """Default rules use symbolic mode refs (default), not literal ids."""
     from sdk.router.default_config import get_default_router_config
 
     config = get_default_router_config()
     uses = {rule["use"] for rule in config["rules"]}
-    assert config["fallback"] in {"default", "deep"} or config["fallback"]
-    assert uses == {"deep"}
+    assert config["fallback"] == "default"
+    assert uses == {"default"}
 
 
 def test_factory_returns_router_when_backend_matches() -> None:
@@ -235,37 +235,6 @@ def test_decision_reason_contains_rule_text() -> None:
     decision = router.choose(_req(iteration=2))
     assert decision is not None
     assert "turn.iteration > 1" in decision.reason
-
-
-# ── Deep-query / roles_needed tests ─────────────────────────────────────────
-
-
-def test_deep_role_downgrade_after_repeats() -> None:
-    """A deep-role turn downgrades to default after iteration 3."""
-    manifest = _manifest(
-        rules=(
-            RouterRule(when='"deep" in route.roles_needed && turn.iteration >= 3', use="gemma4:cloud"),
-            RouterRule(when='"deep" in route.roles_needed', use="gpt-5.4"),
-        ),
-        fallback="gemma4:cloud",
-    )
-    router = LisaRouter(manifest)
-    # iteration 1, deep role → second rule (gpt-5.4)
-    assert router.choose(_req(iteration=1, roles_needed=("deep",))).model_id == "gpt-5.4"
-    # iteration 3, deep role → first rule (gemma4:cloud, downgrade)
-    assert router.choose(_req(iteration=3, roles_needed=("deep",))).model_id == "gemma4:cloud"
-
-
-def test_non_deep_role_unaffected_by_deep_downgrade() -> None:
-    manifest = _manifest(
-        rules=(
-            RouterRule(when='"deep" in route.roles_needed && turn.iteration >= 3', use="gemma4:cloud"),
-        ),
-        fallback="gpt-5.4",
-    )
-    router = LisaRouter(manifest)
-    # No deep role → fallback regardless of iteration
-    assert router.choose(_req(iteration=5, roles_needed=())).model_id == "gpt-5.4"
 
 
 # ── Effective-model metadata tests ──────────────────────────────────────────

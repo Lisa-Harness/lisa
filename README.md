@@ -32,14 +32,13 @@ uv run lisa modes
 uv run lisa models
 uv run lisa once "/search public sdk design"
 uv run lisa once "/markdown Draft a short extension checklist"
-uv run lisa once "/deep Evaluate migration risks"
 uv run lisa once "/discuss capability tradeoffs"
 uv run lisa cli
 uv run lisa desktop
 uv run lisa
 ```
 
-Lisa uses a generated model manifest in `artifacts/models.yaml` (or your configured data-dir) with `default`, `deep`, and `reasoning` designations. Use `/models discover` then `/models apply` to generate and activate it. It supports live completion through `azure_openai`, `openai`, `anthropic`, `google`, and local `ollama` providers, plus local action/chat packs discovered through `SDK_CONTENT_ROOTS`; heavier workflow modes still report the missing host wiring they require.
+Lisa uses a generated model manifest in `artifacts/models.yaml` (or your configured data-dir) with `default` and `reasoning` designations. Use `/models discover` then `/models apply` to generate and activate it. It supports live completion through `azure_openai`, `openai`, `anthropic`, `google`, and local `ollama` providers, plus local action/chat packs discovered through `SDK_CONTENT_ROOTS`; heavier workflow modes still report the missing host wiring they require.
 
 `lisa-pack-memory` is an opt-in pack in this workspace. Install it through the host pack manager when you want memory-backed learning behavior:
 

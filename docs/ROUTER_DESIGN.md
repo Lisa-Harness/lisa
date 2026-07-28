@@ -58,34 +58,30 @@ dispatch order is fixed:
 
 ```mermaid
 flowchart TD
-    A[Inbound message] --> B{Starts with /deep?}
-    B -->|yes| C[default mode + deep model]
-    B -->|no| D{Starts with /?}
-    D -->|yes| E[ipsar.parse_route<br/>string parser, no model call]
-    D -->|no| F{start_mode != default
+    A[Inbound message] --> B{Starts with /?}
+    B -->|yes| C[ipsar.parse_route<br/>string parser, no model call]
+    B -->|no| D{start_mode != default
 AND current == start_mode?}
-    F -->|yes| G[start_mode bypass<br/>go directly to pinned mode]
-    F -->|no| H[Go to current_mode_id<br/>usually default]
-    H --> I[Model runs in current mode]
-    I --> J{Model calls transition_stage?}
-    J -->|mode_id target| K[Mid-turn handoff:<br/>swap prompt + tools]
-    J -->|fork: target| L[Parallel fan-out<br/>via asyncio.TaskGroup]
-    J -->|workflow stage| M[FSM stage transition<br/>existing path]
-    J -->|no| N[Normal tool dispatch / final response]
-    K --> I
-    L --> I
-    M --> I
-    G --> I
-    C --> I
-    E --> I
+    D -->|yes| E[start_mode bypass<br/>go directly to pinned mode]
+    D -->|no| F[Go to current_mode_id<br/>usually default]
+    F --> G[Model runs in current mode]
+    G --> H{Model calls transition_stage?}
+    H -->|mode_id target| I[Mid-turn handoff:<br/>swap prompt + tools]
+    H -->|fork: target| J[Parallel fan-out<br/>via asyncio.TaskGroup]
+    H -->|workflow stage| K[FSM stage transition<br/>existing path]
+    H -->|no| L[Normal tool dispatch / final response]
+    I --> G
+    J --> G
+    K --> G
+    E --> G
+    C --> G
 ```
 
 | Priority | Path | Mechanism | Model call? |
 | --- | --- | --- | --- |
-| 1 | `/deep <query>` | `explicit_deep_query()` → default mode + deep model | No (for routing) |
-| 2 | `/<command> <query>` | `kernel.ipsar.parse_route()` — string parser | No |
-| 3a | NL, `start_mode != default` and `current_mode_id == start_mode` | Start-mode bypass — direct to pinned mode | No |
-| 3b | NL, otherwise (incl. `start_mode == default`) | Go to `current_mode_id` (usually `default`) | No (for routing) |
+| 1 | `/<command> <query>` | `kernel.ipsar.parse_route()` — string parser | No |
+| 2a | NL, `start_mode != default` and `current_mode_id == start_mode` | Start-mode bypass — direct to pinned mode | No |
+| 2b | NL, otherwise (incl. `start_mode == default`) | Go to `current_mode_id` (usually `default`) | No (for routing) |
 
 The key change from the old design: branch 3b no longer calls a router
 planner. It goes directly to `current_mode_id`. The model decides during
@@ -579,7 +575,6 @@ designations:
 | Designation | Used by |
 | --- | --- |
 | `default` | Default chat mode |
-| `deep` | `/deep` prefix |
 | `reasoning` | Reasoning-heavy modes |
 
 There is no separate planner model: natural-language turns route directly
@@ -605,7 +600,7 @@ Hosts manage manifests through commands:
 | `kernel/ipsar.py` | Slash-command route resolution (`parse_route`). String parser, no model call. |
 | `kernel/session_plan.py` | `SessionRouting` model (compiled from session context front matter). Owns `start_mode`, `aliases`, `priority_adjustments`, `hints`. |
 | `kernel/capability_manifest.py` | Compiles `CapabilityManifest` from live tool schemas. Used for proactive routing hints. |
-| `hosts/core/handle_message.py` | Turn-time dispatch contract. The fixed priority order: `/deep` → slash commands → `start_mode` bypass → `current_mode_id`. Persists `handoff_to` after the turn. |
+| `hosts/core/handle_message.py` | Turn-time dispatch contract. The fixed priority order: slash commands → `start_mode` bypass → `current_mode_id`. Persists `handoff_to` after the turn. |
 | `hosts/core/runtime.py` | `HostRuntime.start_mode_id` property and `current_mode_id` initialization + update. |
 
 ### Removed

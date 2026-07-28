@@ -75,7 +75,6 @@ uv run lisa cli --debug
 # Single-turn commands
 uv run lisa once "/search recent Python packaging guidance"
 uv run lisa once "/markdown Draft a short incident-review outline"
-uv run lisa once "/deep Evaluate migration risks"
 uv run lisa once "/discuss capability tradeoffs" --session-context system
 
 # Environment and config
@@ -165,7 +164,7 @@ Model selection is intentionally small and explicit.
 - Active manifest path: `<data-dir>/models.yaml`.
 - Proposal manifest path: `<data-dir>/models.proposed.yaml`.
 - Supported providers: `azure_openai`, `openai`, `anthropic`, `ollama`, `google`.
-- Supported designations: `default`, `deep`, `reasoning`.
+- Supported designations: `default`, `reasoning`.
 
 Model manifests are now generated and managed through host commands:
 
@@ -186,11 +185,9 @@ mode_models:
 models:
   - model_id: gpt-chat-latest
     provider: azure_openai
-    designations: [default]
 
   - model_id: gemma4:latest
     provider: ollama
-    designations: [deep]
 
   - model_id: gpt-5.4
     provider: azure_openai
@@ -283,7 +280,6 @@ All commands are handled by `hosts/core/commands.py` and produce plain text (not
 | `/models discover` | Probe providers and write `<data-dir>/models.proposed.yaml` |
 | `/models apply` | Validate and promote proposal manifest |
 | `/models reload` | Reload active manifest from disk |
-| `/deep <query>` | Route through the deep-designated model |
 | `/quit` | Exit (transport-owned) |
 
 ## MCP Memory

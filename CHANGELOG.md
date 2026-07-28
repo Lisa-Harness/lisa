@@ -4,6 +4,26 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+
+#### Model roles and `/deep` command
+
+The `roles` mapping, the `deep` model role, and the `/deep` host command
+have been removed entirely. The router (`lisa-router`) now owns per-iteration
+model selection; `mode_models.default` is the single static baseline.
+
+- `roles:` block removed from `models.yaml`; `mode_models.default` is the
+  required baseline model.
+- `/deep <query>` host command removed; the router's `rules` and `fallback`
+  handle escalation patterns instead.
+- `RouterRequest.roles_needed` field removed; CEL rules use
+  `route.required_capabilities` for capability-based routing.
+- `lisa.extensions.model_roles` entry-point group removed.
+- `kernel/model_roles.py` deleted.
+- `default_for_roles` field removed from `ManifestModelEntry`.
+- Operations that fell back to `resolve_model_fn("deep")` now use
+  `"default"`.
+
 ### Added
 
 #### Session context auto-install of required packs

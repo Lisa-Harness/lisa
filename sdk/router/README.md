@@ -3,7 +3,7 @@
 The Lisa Framework supports a pluggable model-router mechanism that selects
 a model **per turn-loop iteration** based on turn state, rather than pinning
 one model for the entire turn. This is layered on top of the existing static
-`mode_models`/`roles` resolution — it does not replace it.
+`mode_models` resolution — it does not replace it.
 
 > **What's new.** A `ModelRouter` Protocol (`kernel/seams/protocols.py`) and
 > `lisa.extensions.model_routers` entry-point group let packs contribute
@@ -31,7 +31,7 @@ model for each iteration with this precedence:
 
 1. **`ContextSeams.model_router`** — the formal `ModelRouter` Protocol with
    a widened `RouterRequest` carrying `query`, `last_tool_result`,
-   `required_capabilities`, `mode_id`, `roles_needed`, `budget_remaining`,
+   `required_capabilities`, `mode_id`, `budget_remaining`,
    `default_model_id`, `iteration`, `tool_calls_so_far`, and an
    `effective_model` snapshot of the model used in the preceding
    iteration. This is the pluggable router path.
@@ -52,10 +52,10 @@ When no router is wired and the default `ManifestModelPolicy` is in place
 ```plaintext
 models.yaml
   → load_model_manifest()               # kernel/model_manifest.py
-  → ModelManifest(models, mode_models, roles, router)
+  → ModelManifest(models, mode_models, router)
 
 run_turn()
-  → resolve_model(preferred_model_id)  # mode_models → roles → find_model
+  → resolve_model(preferred_model_id)  # mode_models → find_model
   → per iteration:
       → ModelRouter.choose(RouterRequest) → RouterDecision
           # decision carries exactly one action:
@@ -80,13 +80,12 @@ CEL expression; each rule carries exactly **one** action — `use`, `finish`,
 or `transition_to`:
 
 ```yaml
-mode_models: {}
-roles: {default: 'gemma4:cloud', deep: 'gpt-5.4'}
+mode_models: {default: 'gpt-5.4'}
 
 router:
   backend: lisa-router          # or "aoi-router" (external pack)
   rules:
-    # Capability gate — escalate code-capable turns to the deep/code model
+    # Capability gate — escalate code-capable turns to the code model
     # for the whole turn. Fires first so capability-needing modes never hit
     # the budget or phase gates below.
     - when: '"code" in route.required_capabilities'
@@ -94,8 +93,8 @@ router:
     # Budget gate — downgrade long tool-heavy turns before paying for
     # frontier synthesis.
     - when: turn.tool_calls_so_far >= 5
-      use: gemma4:cloud
-    # Phase gate — synthesize on the deep model after the first tool result.
+      use: gpt-5.4-mini
+    # Phase gate — synthesize on the frontier model after the first tool result.
     # Only reached on plain (non-capability) modes because the capability
     # gate above already captured code turns.
     - when: turn.iteration > 1 && turn.has_tool_result
@@ -103,17 +102,17 @@ router:
     # Terminal gate — stop runaway turns after the tool budget is exhausted.
     - when: turn.tool_calls_so_far >= 8
       finish: tool_budget_exhausted
-  fallback: gemma4:cloud        # if no rule matches, stay on the default
+  fallback: gpt-5.4-mini        # if no rule matches, stay on the cheap model
 ```
 
 - **`backend`** — names the active router backend. When empty or absent, no
-  router is active and static `mode_models`/`roles` resolution is the only
+  router is active and static `mode_models` resolution is the only
   path.
 - **`rules`** — ordered list of `{when, <action>}` entries evaluated
   first-match-wins. `<action>` is exactly one of:
   - `use: <model_id>` — route this iteration to the named model. The id is
-    fed back through `resolve_model()`, so it may be a concrete model id,
-    a mode id, or a role name (the manifest resolves it).
+    fed back through `resolve_model()`, so it may be a concrete model id
+    or a mode id (the manifest resolves it via `mode_models`).
   - `finish: <reason_slug>` — stop the tool loop and force one final
     no-tools completion. The value is a short slug for telemetry/audit
     (e.g. `tool_budget_exhausted`); it is **not** a model id.
@@ -139,12 +138,12 @@ router:
 
 Order rules so earlier rules never shadow later ones:
 
-1. **Capability gate**: a mode that needs `code` gets the deep/code model
+1. **Capability gate**: a mode that needs `code` gets the code model
    for the whole turn. Fires first so capability-needing modes never hit
    the budget, phase, or terminal gates below.
 2. **Budget gate**: a long, tool-heavy turn on a plain mode downgrades to
-   the default model before we pay for frontier synthesis.
-3. **Phase gate**: after the first tool returns, synthesize on the deep
+   the cheap model before we pay for frontier synthesis.
+3. **Phase gate**: after the first tool returns, synthesize on the frontier
    model. Only reached on plain (non-capability) modes because the
    capability gate already captured code turns.
 4. **Terminal gate**: if the tool budget is truly exhausted, `finish` the
@@ -165,12 +164,12 @@ concrete model ids so they're uncomment-and-go, and every rule line carries
 a trailing `# → <target> when <reason>` annotation so you can see *why* each
 rule exists without flipping back to this doc:
 
-- **cost-conscious**: cheap default, escalate to deep only on code or when
-  the turn drags, downgrade to default early on tool-heavy turns.
-- **quality-first**: frontier everywhere, downgrade to default only on very
-  long tool-heavy turns.
-- **coding-focused**: code model for code turns, deep for synthesis, code
-  model as fallback.
+- **cost-conscious**: cheap default, escalate to frontier only on code or
+  when the turn drags, downgrade to cheap model early on tool-heavy turns.
+- **quality-first**: frontier everywhere, downgrade to cheap model only on
+  very long tool-heavy turns.
+- **coding-focused**: code model for code turns, frontier for synthesis,
+  code model as fallback.
 - **terminal-actions**: model selection plus `finish` and `transition_to` to
   stop runaway turns and close out workflow stages. Demonstrates all three
   action kinds in one block.
@@ -180,11 +179,11 @@ comment out the active `router:` block, and run `/models apply`. The apply
 step strips all YAML comments (including the preset annotations) so the
 active `models.yaml` stays machine-clean.
 
-### Relationship to `mode_models` / `roles`
+### Relationship to `mode_models`
 
-These are **not replaced**. They become the router's input defaults:
+This is **not replaced**. It becomes the router's input default:
 
-- `mode_models[mode_id]` / `roles["deep"]` sets the **starting model** for
+- `mode_models[mode_id]` sets the **starting model** for
   the turn (`preferred_model_id`).
 - The router receives this as `RouterRequest.default_model_id` and can
   override it per iteration.
@@ -196,24 +195,22 @@ static selection — no code path changes.
 ### Pack-seeded router config
 
 Installing a router pack can also **seed** the `router:` block
-automatically — you don't have to hand-write the YAML. This is the
-router-side parallel of pack-declared model roles
-(`lisa.extensions.model_roles`):
+automatically — you don't have to hand-write the YAML:
 
 - Packs declare a default router config through the
   `lisa.extensions.model_router_configs` entry-point group.
 - `/models discover` calls `discover_pack_router_config()` (the first
   pack-declared config wins) and merges it into the proposed manifest.
-- Symbolic `use`/`fallback` references (mode/role names like `"default"`
-  or `"deep"`) are resolved to concrete model ids against the discovered
-  model set. Rules referencing models not in the discovered set are
-  stripped, so the proposal always loads cleanly.
+- Symbolic `use`/`fallback` references (mode names like `"default"`)
+  are resolved to concrete model ids against the discovered model set.
+  Rules referencing models not in the discovered set are stripped, so the
+  proposal always loads cleanly.
 - A user-provided `router:` block in `models.yaml` always wins. The pack
   default is only seeded when the user has not written one.
 
 The built-in `lisa-router` backend ships a minimal default config — one
-rule escalating code-capable turns to the `deep` role, with `default` as
-fallback. After `/models discover --force`, the generated
+rule escalating code-capable turns to the `default` model, with `default`
+as fallback. After `/models discover --force`, the generated
 `models.proposed.yaml` includes that ready-to-use `router:` block with
 symbolic refs resolved to concrete model ids — no manual editing required.
 Richer recipes (budget gates, phase gates, `finish`, `transition_to`) are
@@ -244,7 +241,6 @@ expressions through three CEL namespaces. Bindings are populated from
 | --- | --- | --- |
 | `route.query` | string | the user query text |
 | `route.mode_id` | string | the active mode id |
-| `route.roles_needed` | list of string | cross-cutting role names requested (e.g. `["deep"]` for `/deep`) |
 | `route.required_capabilities` | list of string | capability names the current mode's tool surface requires (e.g. `["code", "text"]`) |
 
 ### `model.*` — metadata of the effective model
@@ -288,7 +284,7 @@ rules:
     use: gpt-5.2-codex
 ```
 
-Compound condition — synthesize on the deep model after the first tool
+Compound condition — synthesize on the frontier model after the first tool
 result on iteration 2+:
 
 ```yaml
@@ -303,17 +299,6 @@ Compound `||` — code capability *or* a long turn:
 rules:
   - when: '"code" in route.required_capabilities || turn.iteration > 5'
     use: gpt-5.2-codex
-```
-
-Deep-role downgrade — keep `/deep` on the frontier model for the first two
-iterations, then downgrade to the default model to cap cost:
-
-```yaml
-rules:
-  - when: '"deep" in route.roles_needed && turn.iteration >= 3'
-    use: gemma4:cloud
-  - when: '"deep" in route.roles_needed'
-    use: gpt-5.4
 ```
 
 Effective-model gate — downgrade only when the *current* model is frontier
@@ -392,8 +377,8 @@ backend (e.g. `lisa-pack-aoi-router`).
 - **Active when**: `router.backend == "lisa-router"` in the manifest.
 - **Default config**: the backend declares a **minimal** default `router:`
   block (one capability-escalation rule + fallback) with symbolic refs
-  (`"default"`, `"deep"`) that `/models discover` resolves to concrete
-  model ids from the discovered set. See `sdk/router/default_config.py`.
+  (`"default"`) that `/models discover` resolves to concrete model ids
+  from the discovered set. See `sdk/router/default_config.py`.
 
 > The `lisa-router` engine is **not a pack** — it ships no modes,
 > operations, or authored content. It is a runtime `ModelRouter` backend
@@ -500,9 +485,9 @@ are auditable via the `reason` and `routed_by` fields.
 - **Three actions, one per rule.** `use` selects a model; `finish` stops
   the tool loop; `transition_to` hands off to a workflow stage. Exactly
   one is set per `RouterDecision`/`RouterRule`, enforced at manifest load.
-- **No replacement, layering.** `mode_models`/`roles` are demoted from
-  "pinned model" to "starting model + fallback" but are not removed. They
-  remain the default when the router is absent or declines.
+- **No replacement, layering.** `mode_models` is demoted from
+  "pinned model" to "starting model + fallback" but is not removed. It
+  remains the default when the router is absent or declines.
 - **First-non-None wins.** Router discovery uses the same first-non-None
   pattern as `lisa.extensions.slice_providers`, keeping ordering deterministic.
 - **Graceful failure.** Router exceptions are caught and logged; the loop

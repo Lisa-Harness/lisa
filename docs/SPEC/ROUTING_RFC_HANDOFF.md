@@ -438,7 +438,7 @@ are removed from `WorkflowModeConfig`.
   even a tool-call round-trip. This is a *hint* that short-circuits the
   handoff, not a *gate* that blocks it.
 - **Slash commands** (`/markdown`, `/search`) — unchanged, string parser.
-- **`/deep` prefix** — unchanged, default mode + deep model.
+- **Slash commands** — `ipsar.parse_route` selects the mode from the prefix; the query body IS the conversation.
 - **Explicit `/mode` switching** — unchanged, sets `current_mode_id` directly.
 - **`start_mode` bypass for real owning modes** — unchanged. Only `default` is
   exempt (see `ROUTER_DESIGN.md` §3).

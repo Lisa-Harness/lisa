@@ -60,9 +60,6 @@ class TestIsHostCommandQuery:
         assert not is_host_command_query("tell me about your context")
         assert not is_host_command_query("what is /pack?")
         assert not is_host_command_query("explain /help to me")
-        # ``/deep`` is deliberately excluded — it routes to the model and
-        # the query body IS the conversation.
-        assert not is_host_command_query("/deep design a retry strategy")
         assert not is_host_command_query("/quit")
         assert not is_host_command_query("deep")
         assert not is_host_command_query("")
@@ -88,8 +85,6 @@ class TestIsHostCommandQuery:
         assert "/checkpoint" in prefixes
         assert "/restore" in prefixes
         assert "/checkpoints" in prefixes
-        # ``/deep`` must NOT be registered (routes to model).
-        assert "/deep" not in prefixes
 
     def test_registry_exact_populated_by_handle_message_import(self) -> None:
         exact = host_command_exact()

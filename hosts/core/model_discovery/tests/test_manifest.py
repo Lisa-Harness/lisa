@@ -384,7 +384,7 @@ class TestRouterPresetAnnotations:
         assert router_block is not None
         rendered = render_manifest_yaml(payload, router_block=router_block)
         # Per-rule explanation trailers are present on the active block.
-        assert "→ o3-pro when" in rendered
+        assert "→ gpt-5 when" in rendered
         # The fallback line is annotated too.
         assert "gpt-5" in rendered
 

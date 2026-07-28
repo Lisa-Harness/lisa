@@ -264,7 +264,7 @@ capabilities.
 
 ### 6.5.5 "Install the intent registry" / "scan for packs" — host command interception
 
-The user's natural-language reply ("install the intent registry", "scan for packs") is intercepted by the **host** before the turn reaches the kernel, mirroring how `/pack` and `/deep` are host-reserved commands (see `hosts/cli/repl.py` line 74 — `/pack install` is already a REPL completion). The host adds two natural-language triggers to its command interception layer:
+The user's natural-language reply ("install the intent registry", "scan for packs") is intercepted by the **host** before the turn reaches the kernel, mirroring how `/pack` is a host-reserved command (see `hosts/cli/repl.py` line 74 — `/pack install` is already a REPL completion). The host adds two natural-language triggers to its command interception layer:
 
 - `r"^(?:install|add|get)\b.*\bintent[\s-]?registry\b"` → `maybe_install_registry_pack(runtime)` (state A → install + restart).
 - `r"^(?:scan|build|refresh)\b.*\bpacks?\b"` (only when in state B) → invoke the `intent_registry_scan` operation via the host's `_execute_operation` seam, then reload `runtime.intent_registry`, then continue the turn with the now-populated registry.
@@ -409,7 +409,7 @@ The kernel and host stay registry-agnostic; they consume the bundle the pack pro
 - [ ] `sdk/packs/core/operations/planning/plan_workflow.py` — call `_detect_uninstalled_intents` before the model call; return the actionable empty-target rationale on hit (reuses the rationale contract from commit `0b76759`).
 - [ ] `hosts/core/intent_registry_bridge.py` — `registry_pack_is_installed`, `registry_bundle_is_loaded`, `maybe_install_registry_pack` (§6.5.2). Host-owned, synchronous, mirrors `pack_autoinstall.py`.
 - [ ] `hosts/core/turn_hooks_builder.py` — boot wiring in `_initialize_runtime` (load registry after `auto_install_required_packs`, before content-root discovery) and the deterministic bridge fragment injection in `_assemble_system_prompt` (§6.5.3–§6.5.4).
-- [ ] Host natural-language command interception for "install the intent registry" / "scan for packs" (§6.5.5), in the same layer as `/pack` and `/deep`.
+- [ ] Host natural-language command interception for "install the intent registry" / "scan for packs" (§6.5.5), in the same layer as `/pack`.
 - [ ] `runtime.intent_registry: IntentRegistry | None` and `runtime.intent_registry_bridge_dismissed: bool` host attributes (kernel never reads these).
 - [ ] Tests: `_detect_uninstalled_intents` unit tests (installed vs uninstalled provider, no-registry no-op); "Missing Capability" hint fires and names the pack; `plan_workflow` actionable empty-target rationale; bridge fragment injection in each state A/B/C; boot wiring loads/does-not-load the registry.
 

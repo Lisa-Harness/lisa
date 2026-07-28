@@ -1005,20 +1005,19 @@ def test_normalize_response_format_returns_none_for_none() -> None:
 # ── Model resolution ───────────────────────────────────────────────────
 
 
-def test_resolve_model_supports_designations_and_concrete_ids(tmp_path: Path) -> None:
+def test_resolve_model_supports_mode_models_and_concrete_ids(tmp_path: Path) -> None:
     (tmp_path / "models.yaml").write_text(
         "\n".join(
             [
                 "version: 1",
+                "mode_models: {default: gemma3:latest}",
                 "models:",
                 "  - model_id: gemma3:latest",
                 "    provider: ollama",
                 "    context_window: 65536",
-                "    designations: [default]",
                 "  - model_id: deepseek-r1:latest",
                 "    provider: ollama",
                 "    reasoning_model: true",
-                "    designations: [deep, reasoning]",
             ]
         ),
         encoding="utf-8",
@@ -1026,10 +1025,8 @@ def test_resolve_model_supports_designations_and_concrete_ids(tmp_path: Path) ->
 
     default_model = resolve_little_lisa_model("default", runtime_state={}, data_dir=tmp_path)
     default_model_id = default_model.model_id
-    deep_model_id = resolve_little_lisa_model("deep", runtime_state={}, data_dir=tmp_path).model_id
 
     assert default_model_id
-    assert deep_model_id
     assert default_model.context_window == 65536
     resolved_default = resolve_little_lisa_model(
         default_model_id, runtime_state={}, data_dir=tmp_path
@@ -1042,10 +1039,10 @@ def test_resolve_model_rejects_unknown_manifest_id(tmp_path: Path) -> None:
         "\n".join(
             [
                 "version: 1",
+                "mode_models: {default: gemma3:latest}",
                 "models:",
                 "  - model_id: gemma3:latest",
                 "    provider: ollama",
-                "    designations: [default]",
             ]
         ),
         encoding="utf-8",
@@ -1200,7 +1197,6 @@ def test_build_turn_context_marks_default_mode_handoff() -> None:
         raw_message="hello there",
         mode_id="default",
         query="hello there",
-        deep_route=False,
         preferred_model_id="default",
         resolved_model=StubModelDefinition(
             model_id="gpt-4o",
@@ -1496,16 +1492,6 @@ async def test_complete_live_stream_no_stage_callbacks_for_text_mode(
 
 
 # ── handle_message model turns ───────────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="handle_message now takes (runtime, msg, transport); needs deep migration"
-)
-async def test_handle_message_deep_route_uses_deep_designation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pass
 
 
 @pytest.mark.asyncio

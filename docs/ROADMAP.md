@@ -163,7 +163,7 @@ addressed before any new feature work.
   `lisa.extensions.model_routers` group and activates when
   `router.backend == "aoi-router"`.
 - Consider adding more rule conditions to the built-in `lisa-router`:
-  `roles_needed`, `mode_id` matching, `budget_remaining` thresholds.
+  `mode_id` matching, `budget_remaining` thresholds.
 
 ### 2.5 External pack dependency management
 
