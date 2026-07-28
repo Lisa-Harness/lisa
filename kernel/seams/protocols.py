@@ -50,8 +50,7 @@ class RouterRequest:
     the statically-resolved default model, the iteration number, how many
     tool calls have fired, how much tool-call budget remains, the user query,
     the last tool result text (if any), the capabilities the current mode's
-    tool surface requires, the active mode id, the cross-cutting roles the
-    turn requested (e.g. ``("deep",)`` for ``/deep``), and the metadata of the
+    tool surface requires, the active mode id, and the metadata of the
     model effective in the preceding iteration (``effective_model``).
     """
 
@@ -63,7 +62,6 @@ class RouterRequest:
     last_tool_result: str | None = None
     required_capabilities: tuple[str, ...] = ()
     mode_id: str = ""
-    roles_needed: tuple[str, ...] = ()
     effective_model: RouterModelRef | None = None
 
 

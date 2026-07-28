@@ -134,26 +134,16 @@ def _render_models_manifest_from_manifest(runtime: HostRuntime, manifest: Any) -
         f"- proposal_manifest: {proposal_path}",
         f"- model_count: {len(manifest.models)}",
     ]
-    # Invert manifest.roles so each model knows which roles it holds.
-    roles_by_model: dict[str, list[str]] = {}
-    for role_name, model_ref in sorted(manifest.roles.items()):
-        roles_by_model.setdefault(model_ref, []).append(role_name)
     for model in manifest.models:
-        roles = ", ".join(roles_by_model.get(model.model_id, [])) or "-"
         reasoning = "yes" if model.reasoning_model else "no"
         lines.append(
-            f"- {model.model_id} (provider={model.provider}, reasoning={reasoning}, roles={roles})"
+            f"- {model.model_id} (provider={model.provider}, reasoning={reasoning})"
         )
     if manifest.mode_models:
         mode_map = ", ".join(
             f"{mode_id}->{model_id}" for mode_id, model_id in sorted(manifest.mode_models.items())
         )
         lines.append(f"- mode_models: {mode_map}")
-    if manifest.roles:
-        role_map = ", ".join(
-            f"{role_name}->{model_id}" for role_name, model_id in sorted(manifest.roles.items())
-        )
-        lines.append(f"- roles: {role_map}")
     return "\n".join(lines)
 
 

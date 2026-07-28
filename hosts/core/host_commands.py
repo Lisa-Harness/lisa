@@ -27,9 +27,7 @@ pack-owned commands (``/checkpoint``, ``/restore``, ``/checkpoints``,
 intercepted; it registers its prefixes here so the transcript filter can
 consult the registry without owning command vocabulary.
 
-``/deep`` is deliberately NOT registered: it routes to the model and the
-query body IS the conversation. ``/quit`` is CLI-only and never appended
-to the thread.
+``/quit`` is CLI-only and never appended to the thread.
 
 Public surface
 --------------

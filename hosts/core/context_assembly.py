@@ -116,12 +116,9 @@ def handoff_note(
     *,
     raw_message: str,
     mode_id: str,
-    deep_route: bool,
     preferred_model_id: str,
 ) -> str:
     """Produce a human-readable handoff reason for the turn context."""
-    if deep_route:
-        return "explicit /deep route handoff to deep-designated model"
     if mode_id == "default" and not raw_message.lstrip().startswith("/"):
         return "natural-language intent routed to default model (mid-turn handoff via transition_stage)"
     if raw_message.lstrip().startswith("/"):
@@ -134,7 +131,6 @@ def build_turn_context(
     raw_message: str,
     mode_id: str,
     query: str,
-    deep_route: bool,
     preferred_model_id: str,
     resolved_model: StubModelDefinition,
     mode: WorkflowModeConfig,
@@ -146,7 +142,6 @@ def build_turn_context(
         "mode_id": mode_id,
         "mode_kind": mode.mode_kind,
         "query": query,
-        "deep_route": deep_route,
         "preferred_model_id": preferred_model_id,
         "resolved_model": {
             "model_id": resolved_model.model_id,
@@ -156,7 +151,6 @@ def build_turn_context(
         "handoff": handoff_note(
             raw_message=raw_message,
             mode_id=mode_id,
-            deep_route=deep_route,
             preferred_model_id=preferred_model_id,
         ),
     }

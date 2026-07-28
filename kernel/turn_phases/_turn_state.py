@@ -57,7 +57,6 @@ class _TurnState:
     # ── Router-relevant state ────────────────────────────────────────
     last_tool_result_text: str | None = None
     required_capabilities: tuple[str, ...] = ()
-    roles_needed: tuple[str, ...] = ()
     # Metadata of the model effective in the preceding iteration. Set after
     # the first completion; on iteration 1 the router receives the static
     # preferred model via RouterRequest.effective_model.
@@ -283,7 +282,6 @@ def resolve_iteration_model(
             last_tool_result=state.last_tool_result_text,
             required_capabilities=state.required_capabilities,
             mode_id=mode_id,
-            roles_needed=state.roles_needed,
             effective_model=effective_ref,
         )
         try:

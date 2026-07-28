@@ -171,7 +171,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     model_id = ctx.preferred_model_id
     model_def = ctx.resolve_model_fn(model_id)
     if model_def is None:
-        model_def = ctx.resolve_model_fn("deep")
+        model_def = ctx.resolve_model_fn("default")
     if model_def is None:
         raise RuntimeError("synthesize_and_store_learning could not resolve a model")
 

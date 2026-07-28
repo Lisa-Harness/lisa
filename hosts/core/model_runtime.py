@@ -195,8 +195,7 @@ def resolve_little_lisa_model(
 
     Resolution precedence (single path, no divergence):
     1. ``mode_models[ref]`` — explicit per-mode pin.
-    2. ``roles[ref]`` — cross-cutting role (e.g. ``deep``).
-    3. concrete ``model_id`` lookup.
+    2. concrete ``model_id`` lookup.
 
     No silent first-model fallback: a missing ``default`` mode is a
     load-time validation error (``require_mode_models=True``), not a

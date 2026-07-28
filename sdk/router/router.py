@@ -27,7 +27,6 @@ Supported CEL bindings (see ``router/README.md`` for the full guide):
   none. Use ``turn.has_tool_result`` for a boolean.
 - ``route.query`` — the user query text.
 - ``route.mode_id`` — the active mode id.
-- ``route.roles_needed`` — a list of role names (e.g. ``["deep"]``).
 - ``route.required_capabilities`` — a list of required capability names.
 - ``model.model_id`` / ``model.provider`` / ``model.cost_tier`` /
   ``model.latency_tier`` / ``model.capabilities`` /
@@ -40,8 +39,8 @@ Example rules::
     rules:
       - when: '"code" in route.required_capabilities'
         use: gpt-5.2-codex
-      - when: '"deep" in route.roles_needed && turn.iteration >= 3'
-        use: default
+      - when: turn.iteration > 1 && turn.has_tool_result
+        use: gpt-5.4
       - when: turn.tool_calls_so_far >= 8
         finish: tool_budget_exhausted
       - when: turn.iteration >= 10
@@ -182,7 +181,6 @@ def _build_activation(req: RouterRequest) -> dict[str, Any]:
     route_ctx: dict[str, Any] = {
         "query": req.query,
         "mode_id": req.mode_id,
-        "roles_needed": list(req.roles_needed),
         "required_capabilities": list(req.required_capabilities),
     }
 

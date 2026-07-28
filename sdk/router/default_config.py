@@ -4,11 +4,11 @@ Declares a **minimalist** default ``router:`` block that
 :func:`build_manifest_payload` seeds into ``models.proposed.yaml`` when no
 user ``router:`` block is present. The goal is a small, immediately
 understandable config — one capability escalation rule and a fallback.
-Richer examples (budget gates, phase gates, deep-repeat downgrade,
+Richer examples (budget gates, phase gates, code-model escalation,
 ``finish``, ``transition_to``) live in ``router/README.md`` as
 copy-paste recipes rather than cluttering every generated manifest.
 
-Model ids are *symbolic* — they reference role names that the discovered
+Model ids are *symbolic* — they reference mode names that the discovered
 models may or may not contain. :func:`build_manifest_payload` removes any
 rule whose ``use`` or ``fallback`` references a model that is not in the
 discovered set, so the emitted YAML always loads cleanly.
@@ -25,8 +25,8 @@ def get_default_router_config() -> dict[str, Any]:
     return {
         "backend": "lisa-router",
         "rules": [
-            # Escalate code-capable turns to the deep model.
-            {"when": '"code" in route.required_capabilities', "use": "deep"},
+            # Escalate code-capable turns to the default model.
+            {"when": '"code" in route.required_capabilities', "use": "default"},
         ],
         "fallback": "default",
     }

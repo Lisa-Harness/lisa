@@ -36,9 +36,6 @@ factories consume). Without this layer, installing a router pack alone is
 not enough to activate routing — the user must also hand-write the
 ``router:`` block in ``models.yaml``. With this layer, the pack's default
 config seeds the proposed manifest automatically.
-
-This is also the router-side parallel of :mod:`kernel.model_roles`: that
-module seeds ``roles`` from packs; this module seeds ``router:`` from packs.
 """
 
 from __future__ import annotations

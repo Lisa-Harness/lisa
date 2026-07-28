@@ -143,6 +143,43 @@ def test_compile_session_plan_defaults_sequential_connectors_empty() -> None:
     assert plan.manifest.routing.sequential_connectors == ()
 
 
+def test_compile_session_plan_accepts_execution_request_block() -> None:
+    text = _manifest(
+        extra=(
+            "execution:\n"
+            "  max_model_calls: 12\n"
+            "  max_capability_calls: 20\n"
+            "  max_total_tokens: 40000\n"
+            "  max_wall_ms: 180000\n"
+            "  capabilities:\n"
+            "    fetch_page:\n"
+            "      max_invocations_per_turn: 6\n"
+        )
+    )
+
+    plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
+
+    assert plan.manifest.execution.max_model_calls == 12
+    assert plan.manifest.execution.max_capability_calls == 20
+    assert plan.manifest.execution.max_total_tokens == 40_000
+    assert plan.manifest.execution.max_wall_ms == 180_000
+    assert (
+        plan.manifest.execution.capabilities["fetch_page"].max_invocations_per_turn == 6
+    )
+
+
+def test_compile_session_plan_rejects_non_positive_execution_limits() -> None:
+    text = _manifest(
+        extra=(
+            "execution:\n"
+            "  max_model_calls: 0\n"
+        )
+    )
+
+    with pytest.raises(SessionPlanError, match="greater than or equal to 1"):
+        compile_session_plan(text=text, source_uri="workspace:session_context.md")
+
+
 def test_compile_session_plan_rejects_context_rules_for_unknown_lanes() -> None:
     text = _manifest(
         extra=(
@@ -200,7 +237,7 @@ def test_compaction_tuning_defaults_disabled_and_post_turn() -> None:
     assert tuning.hard_threshold == 0.90
     assert tuning.min_interval_turns == 4
     assert tuning.retention_count == 6
-    assert tuning.preferred_model_id == "deep"
+    assert tuning.preferred_model_id == "default"
     assert tuning.summarize_operation == "checkpoint_history_summarize"
 
 

@@ -37,6 +37,7 @@ from typing import Any, Literal, cast
 import yaml
 
 from kernel.approval import ApprovalRequired
+from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
 from kernel.intake.connector_discovery import discover_installed_signal_collectors
 from kernel.models import (
     CallLedger,
@@ -1566,6 +1567,7 @@ async def _execute_mode_target_ids(
     *,
     failure_policy: Literal["abort", "skip"] = "abort",
     ledger: CallLedger | None = None,
+    execution_policy: ExecutionPolicy | None = None,
 ) -> OperationResult:
     """Execute one ordered list of lifecycle target IDs and merge results.
 
@@ -1611,15 +1613,21 @@ async def _execute_mode_target_ids(
                 operation_catalog=operation_catalog,
                 tool_catalog=tool_catalog,
             )
+            max_calls = 0
             if definition is not None:
-                max_calls = getattr(definition, "max_calls_per_turn", 0)
-                if ledger.is_exhausted(target_id, max_calls):
-                    logger.debug(
-                        "lifecycle target '%s' skipped: per-turn cap %d reached",
-                        target_id,
-                        max_calls,
-                    )
-                    continue
+                max_calls = int(getattr(definition, "max_calls_per_turn", 0) or 0)
+            max_calls = resolve_capability_invocation_limit(
+                execution_policy,
+                target_id,
+                max_calls,
+            )
+            if ledger.is_exhausted(target_id, max_calls):
+                logger.debug(
+                    "lifecycle target '%s' skipped: per-turn cap %d reached",
+                    target_id,
+                    max_calls,
+                )
+                continue
 
         target_ctx = ctx.model_copy(update={"operation_id": target_id, "extra": extra})
         try:
@@ -1696,6 +1704,7 @@ async def run_mode_entry_operations(
     ctx: OperationExecutionContext,
     *,
     ledger: CallLedger | None = None,
+    execution_policy: ExecutionPolicy | None = None,
 ) -> OperationResult:
     """Execute the entry targets configured for one action mode.
 
@@ -1712,6 +1721,7 @@ async def run_mode_entry_operations(
         ctx,
         failure_policy=mode.entry_failure_policy,
         ledger=ledger,
+        execution_policy=execution_policy,
     )
 
 
@@ -1720,6 +1730,7 @@ async def run_mode_pre_turn_operations(
     ctx: OperationExecutionContext,
     *,
     ledger: CallLedger | None = None,
+    execution_policy: ExecutionPolicy | None = None,
 ) -> OperationResult:
     """Execute pre-turn targets for one workflow or chat mode.
 
@@ -1736,6 +1747,7 @@ async def run_mode_pre_turn_operations(
                 ctx,
                 failure_policy="skip",
                 ledger=ledger,
+                execution_policy=execution_policy,
             )
         except ApprovalRequired:
             raise
@@ -1749,6 +1761,7 @@ async def run_mode_post_turn_operations(
     ctx: OperationExecutionContext,
     *,
     ledger: CallLedger | None = None,
+    execution_policy: ExecutionPolicy | None = None,
 ) -> OperationResult:
     """Execute post-turn targets for one workflow or chat mode.
 
@@ -1766,6 +1779,7 @@ async def run_mode_post_turn_operations(
                 ctx,
                 failure_policy="skip",
                 ledger=ledger,
+                execution_policy=execution_policy,
             )
         except ApprovalRequired:
             raise

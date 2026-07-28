@@ -28,7 +28,6 @@ class ManifestModelEntry:
     latency_tier: str = "medium"
     context_window: int = 0
     operator_only: bool = False
-    default_for_roles: tuple[str, ...] = ()
     deployment_only: bool = False
     api_key_env: str = ""
     base_url: str = ""
@@ -79,7 +78,7 @@ class RouterConfig:
     first-match-wins. ``fallback`` is the model_id used when no rule matches;
     it is model-selection-only — terminal actions cannot be fallbacks.
     When ``backend`` is empty, no router is active — the manifest's
-    ``mode_models``/``roles`` static resolution is the only path.
+    ``mode_models`` static resolution is the only path.
     """
 
     backend: str = ""
@@ -93,25 +92,20 @@ class ModelManifest:
 
     models: tuple[ManifestModelEntry, ...]
     mode_models: dict[str, str] = field(default_factory=dict)
-    roles: dict[str, str] = field(default_factory=dict)
     router: RouterConfig | None = None
 
     def resolve(self, ref: str) -> ManifestModelEntry | None:
         """Resolve one reference to a model entry, or None.
 
-        Precedence: ``mode_models[ref]`` → ``roles[ref]`` → ``find_model(ref)``.
-        Mode pins win over cross-cutting roles; a concrete model id is the
-        last resort. There is no silent first-model fallback — if the
-        caller asks for a mode/role that isn't mapped, that's None and the
-        caller decides whether to raise.
+        Precedence: ``mode_models[ref]`` → ``find_model(ref)``.
+        Mode pins win; a concrete model id is the last resort. There is no
+        silent first-model fallback — if the caller asks for a mode that
+        isn't mapped, that's None and the caller decides whether to raise.
         """
         normalized = ref.strip().lower()
         if not normalized:
             return None
         model_ref = self.mode_models.get(normalized)
-        if model_ref:
-            return self.find_model(model_ref)
-        model_ref = self.roles.get(normalized)
         if model_ref:
             return self.find_model(model_ref)
         return self.find_model(ref)
@@ -223,34 +217,6 @@ def _load_model_manifest_payload(
                 )
             mode_models[normalized_mode_id] = normalized_model_ref
 
-    raw_roles = raw_payload.get("roles")
-    roles: dict[str, str] = {}
-    if raw_roles is not None:
-        if not isinstance(raw_roles, dict):
-            raise ValueError("Model manifest 'roles' must be a mapping when provided.")
-        for role_name, model_ref in raw_roles.items():
-            normalized_role = str(role_name or "").strip().lower()
-            normalized_model_ref = str(model_ref or "").strip()
-            if not normalized_role or not normalized_model_ref:
-                raise ValueError(f"roles entry '{role_name}' must have a non-empty key and value.")
-            roles[normalized_role] = normalized_model_ref
-
-    # Merge pack-declared role defaults: packs declare role names + a default
-    # model id. The manifest YAML overrides pack defaults (user wins); roles
-    # declared by packs but absent from the YAML are seeded with the pack's
-    # default. Empty pack defaults (role name only) are skipped — the user
-    # must pin them explicitly.
-    try:
-        from kernel.model_roles import discover_pack_roles  # noqa: PLC0415
-
-        pack_roles = discover_pack_roles()
-    except Exception:  # pylint: disable=broad-except
-        pack_roles = {}
-    for role_name, model_ref in pack_roles.items():
-        if not model_ref:
-            continue
-        roles.setdefault(role_name, model_ref)
-
     normalized_allowed_providers = {
         provider.strip().lower() for provider in (allowed_providers or _DEFAULT_ALLOWED_PROVIDERS)
     }
@@ -282,25 +248,13 @@ def _load_model_manifest_payload(
                 f"Available models: {available_models}"
             )
 
-    for role_name, model_ref in roles.items():
-        if all(
-            model_ref.lower() not in {model.key.lower(), model.model_id.lower()} for model in models
-        ):
-            available_models = ", ".join(sorted(model.model_id for model in models))
-            raise ValueError(
-                f"roles entry '{role_name}' references unknown model '{model_ref}'. "
-                f"Available models: {available_models}"
-            )
-
     # Parse the optional ``router:`` block. Absence means no router —
-    # the manifest's ``mode_models``/``roles`` static resolution is the
-    # only path, preserving today's behavior.
+    # the manifest's ``mode_models`` static resolution is the only path.
     router_config = _parse_router_config(raw_payload.get("router"), models=models)
 
     return ModelManifest(
         models=tuple(models),
         mode_models=mode_models,
-        roles=roles,
         router=router_config,
     )
 
@@ -430,13 +384,6 @@ def _parse_model_entry(
             model_id=key,
         ),
         operator_only=bool(raw_model.get("operator_only", False)),
-        default_for_roles=tuple(
-            _parse_str_list(
-                raw_model.get("default_for_roles"),
-                field_name="default_for_roles",
-                model_id=key,
-            )
-        ),
         deployment_only=bool(raw_model.get("deployment_only", False)),
         api_key_env=str(raw_model.get("api_key_env") or "").strip(),
         base_url=str(raw_model.get("base_url") or "").strip(),

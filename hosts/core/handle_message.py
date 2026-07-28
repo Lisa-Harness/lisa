@@ -42,7 +42,6 @@ from kernel.operations.registry import OperationExecutionError
 from kernel.turn_runner import TurnResult, execute_approved_invocation, run_turn
 
 from hosts.core.commands import (
-    explicit_deep_query,
     format_operation_error,
     format_token_stats,
     format_unsupported_mode,
@@ -553,25 +552,19 @@ async def _route_model_turn(
     """Handle model-backed routing: mode dispatch and run_turn execution.
 
     Routing order (unified FSM — see docs/ROUTING_RFC_HANDOFF.md):
-    1. ``/deep`` prefix → default mode with deep-designated model.
-    2. Other slash commands → ``kernel.ipsar.parse_route``.
-    3. Natural language → check ``start_mode`` override from session
+    1. Slash commands → ``kernel.ipsar.parse_route``.
+    2. Natural language → check ``start_mode`` override from session
        context front matter. When set, bypass and route directly to
        the declared mode.
-    4. Otherwise → go directly to ``current_mode_id`` (defaults to
+    3. Otherwise → go directly to ``current_mode_id`` (defaults to
        ``default``). The model hands off between modes mid-turn via
        ``transition_stage`` — no separate planner call.
-    5. Execute the resolved mode turn via ``kernel.turn_runner.run_turn``.
+    4. Execute the resolved mode turn via ``kernel.turn_runner.run_turn``.
     """
     # Ensure the (possibly deferred) MCP pool is ready before building
     # turn hooks, which snapshot runtime.mcp_tool_pool.
     await runtime.ensure_pool_ready()
-    deep_query = explicit_deep_query(message)
-    deep_route = deep_query is not None
-    if deep_route:
-        mode_id = "default"
-        query = deep_query or ""
-    elif message.lstrip().startswith("/"):
+    if message.lstrip().startswith("/"):
         mode_id, query = parse_route(message)
     else:
         # Check for start_mode override from session-context front matter.
@@ -596,7 +589,7 @@ async def _route_model_turn(
             mode_id = runtime.current_mode_id or "default"
             query = message
 
-    return await _execute_mode_turn(runtime, message, mode_id, query, deep_route, transport)
+    return await _execute_mode_turn(runtime, message, mode_id, query, transport)
 
 
 # ── Turn execution ────────────────────────────────────────────────────
@@ -607,7 +600,6 @@ async def _execute_mode_turn(
     message: str,
     mode_id: str,
     query: str,
-    deep_route: bool,
     transport: TransportCallbacks,
 ) -> str:
     """Resolve mode, build context, and run the turn through the kernel.
@@ -631,7 +623,6 @@ async def _execute_mode_turn(
     preferred_model_id = preferred_model_id_for_route(
         raw_message=message,
         mode_id=mode.mode_id,
-        deep_route=deep_route,
         manifest=runtime.manifest,
     )
     set_runtime_route_preview(
@@ -642,7 +633,7 @@ async def _execute_mode_turn(
 
     # Check for unsupported mode gap.
     if mode_support_gap(mode) is not None:
-        return _handle_unsupported_mode(runtime, message, mode, query, deep_route)
+        return _handle_unsupported_mode(runtime, message, mode, query)
 
     # Resolve the model for this turn.
     from hosts.core.commands import _resolve_model as _resolve_model_cmd
@@ -654,7 +645,6 @@ async def _execute_mode_turn(
         raw_message=message,
         mode_id=mode.mode_id,
         query=query or message,
-        deep_route=deep_route,
         preferred_model_id=preferred_model_id,
         resolved_model=resolved_model,
         mode=mode,
@@ -680,6 +670,7 @@ async def _execute_mode_turn(
             query=query or message,
             hooks=hooks,
             preferred_model_id=preferred_model_id,
+            execution_policy=runtime.execution_policy,
         )
     except OperationExecutionError as exc:
         run_context["operation_error"] = {
@@ -771,7 +762,6 @@ def _handle_unsupported_mode(
     message: str,
     mode: Any,
     query: str,
-    deep_route: bool,
 ) -> str:
     """Handle a mode that the host cannot run."""
     logger.info(
@@ -785,7 +775,6 @@ def _handle_unsupported_mode(
         "mode_id": mode.mode_id,
         "mode_kind": mode.mode_kind,
         "query": query,
-        "deep_route": deep_route,
         "handoff": "unsupported mode",
         "unsupported_requirement": mode_support_gap(mode),
     }
@@ -818,7 +807,6 @@ def _set_turn_context(runtime: HostRuntime, context: dict[str, Any]) -> None:
         mode_id=str(context.get("mode_id") or "default"),
         mode_kind=str(context.get("mode_kind") or ""),
         query=str(context.get("query") or ""),
-        deep_route=bool(context.get("deep_route") or False),
         preferred_model_id=str(context.get("preferred_model_id") or ""),
         resolved_model=context.get("resolved_model")  # type: ignore[arg-type]
         if isinstance(context.get("resolved_model"), dict)

@@ -52,16 +52,13 @@ def _make_runtime(tmp_path: Path, **config_kwargs: str) -> HostRuntime:
         "\n".join(
             [
                 "version: 1",
-                "mode_models: {default: gemma3:latest, deep: deepseek-r1:latest}",
-                "roles: {default: gemma3:latest, deep: deepseek-r1:latest}",
+                "mode_models: {default: gemma3:latest}",
                 "models:",
                 "  - model_id: gemma3:latest",
                 "    provider: ollama",
-                "    designations: [default]",
                 "  - model_id: deepseek-r1:latest",
                 "    provider: ollama",
                 "    reasoning_model: true",
-                "    designations: [deep, reasoning]",
             ]
         ),
         encoding="utf-8",

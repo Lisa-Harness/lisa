@@ -241,7 +241,7 @@ def format_help() -> str:
     Mode commands are derived from the live workflow catalog: every supported
     mode with a ``command_pattern`` gets a ``/<mode>`` line built from its
     authored ``description``. Only host-only shortcuts (``/help``, ``/settings``,
-    ``/tokens``, ``/debug``, ``/consolidate``, ``/deep``, ``/quit``) and the
+    ``/tokens``, ``/debug``, ``/consolidate``, ``/quit``) and the
     runtime entry-point summary are hardcoded — everything else reflects the
     packs actually installed at startup.
     """
@@ -266,7 +266,6 @@ def format_help() -> str:
     # Host-only shortcuts — the minimal hardcoded surface.
     lines.extend(
         [
-            "- /deep <request> routes through default mode on the deep-designated model.",
             "- /pack list|enable|disable|install|uninstall manages pack activation "
             "and runtime installs (restart required after changes).",
             "- Natural-language turns route directly to the current mode; "

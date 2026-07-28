@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from kernel.execution_policy import CapabilityExecutionPolicy, ExecutionPolicy
 from kernel.models import (
     CapabilityManifest,
     OperationExecutionContext,
@@ -205,6 +206,119 @@ async def test_run_turn_max_tool_iterations_capped() -> None:
     assert result.iteration_count == 3
     assert result.tool_call_count == 3
     assert "did not produce a final response" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_run_turn_execution_policy_tightens_model_call_iterations() -> None:
+    """execution_policy.max_model_calls tightens max_tool_iterations."""
+    call_counts = []
+
+    async def infinite_tools(**kwargs: Any) -> _StubCompletion:
+        call_counts.append(1)
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": f"call_{len(call_counts)}",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"q": "test"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(infinite_tools)
+    hooks.execute_operation = _stub_execute_operation
+
+    result = await run_turn(
+        mode_id="default",
+        query="test",
+        hooks=hooks,
+        max_tool_iterations=10,
+        execution_policy=ExecutionPolicy(max_model_calls=2),
+    )
+
+    assert result.iteration_count == 2
+    assert result.tool_call_count == 2
+    assert "did not produce a final response" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_run_turn_execution_policy_seeds_turn_budget_without_explicit_budget() -> None:
+    """execution_policy max_capability_calls is adapted to a legacy TurnBudget."""
+
+    async def budget_aware_complete(**kwargs: Any) -> _StubCompletion:
+        tools = kwargs.get("tools") or []
+        if tools:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"q": "test"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Final response.")
+
+    hooks = _build_minimal_hooks(budget_aware_complete)
+    hooks.execute_operation = _stub_execute_operation
+
+    result = await run_turn(
+        mode_id="default",
+        query="test",
+        hooks=hooks,
+        execution_policy=ExecutionPolicy(max_capability_calls=1),
+    )
+
+    assert result.tool_call_count == 1
+    assert result.response_text == "Final response."
+
+
+@pytest.mark.asyncio
+async def test_run_turn_execution_policy_caps_specific_capability_calls() -> None:
+    """Capability policy limits apply even when catalog limits are looser."""
+    completion_count = 0
+
+    async def repeat_then_finalize(**kwargs: Any) -> _StubCompletion:
+        nonlocal completion_count
+        completion_count += 1
+        if completion_count <= 2:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": f"call_{completion_count}",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"q": "test"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(repeat_then_finalize)
+    hooks.execute_operation = _stub_execute_operation
+
+    result = await run_turn(
+        mode_id="default",
+        query="test",
+        hooks=hooks,
+        max_tool_iterations=4,
+        execution_policy=ExecutionPolicy(
+            capability_limits={
+                "web_search": CapabilityExecutionPolicy(max_invocations_per_turn=1),
+            }
+        ),
+    )
+
+    assert result.tool_call_count == 1
+    assert result.response_text == "Done."
 
 
 @pytest.mark.asyncio

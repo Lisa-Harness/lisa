@@ -85,7 +85,7 @@ async def _summarize_old_turns(
     if ctx.complete_fn is None or not callable(ctx.resolve_model_fn):
         raise RuntimeError("checkpoint history summarize requires complete_fn and resolve_model_fn")
 
-    model_id = ctx.preferred_model_id or "deep"
+    model_id = ctx.preferred_model_id or "default"
     model_def = ctx.resolve_model_fn(model_id)
     if model_def is None:
         model_def = ctx.resolve_model_fn("default")

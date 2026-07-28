@@ -13,6 +13,10 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from kernel.execution_policy import ExecutionPolicy
+
+from hosts.core.execution_policy import default_interactive_execution_policy
+
 logger = logging.getLogger(__name__)
 
 # ── Environment-variable name constants ──────────────────────────────
@@ -164,6 +168,9 @@ class HostConfig:
     memory_auto_capture_enabled: bool = True
     memory_auto_capture_min_salience: float = 0.5
 
+    # ── Execution policy ───────────────────────────────────────────────
+    execution_policy: ExecutionPolicy = field(default_factory=default_interactive_execution_policy)
+
     # ── Surface identity ───────────────────────────────────────────────
     surface_type: str = ""
     surface_id: str = ""
@@ -224,6 +231,7 @@ class HostConfig:
         timezone: str = "",
         session_context: str = "",
         session_context_refresh: bool = False,
+        execution_policy: ExecutionPolicy | None = None,
         user_slug: str = "",
         state_snapshot: str = "",
         mcp_manifest_path: str = "",
@@ -355,6 +363,7 @@ class HostConfig:
             ),
             thread_max_entries=thread_max,
             memory_max_records=memory_max,
+            execution_policy=execution_policy or default_interactive_execution_policy(),
             surface_type=resolved_surface_type,
             surface_id=resolved_surface_id,
             memory_scope=resolved_memory_scope,

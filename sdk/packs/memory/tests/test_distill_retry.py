@@ -43,7 +43,7 @@ def _ctx(
         complete_fn=complete_fn,
         resolve_model_fn=_resolve_model,
         read_authored_text_fn=_read_authored_text,
-        preferred_model_id="deep",
+        preferred_model_id="default",
     )
 
 

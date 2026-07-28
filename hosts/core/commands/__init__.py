@@ -41,7 +41,6 @@ Public surface
 - :func:`build_capability_snapshot`
 - :func:`predict_model`
 - :func:`set_runtime_route_preview`
-- :func:`explicit_deep_query`
 - :func:`preferred_model_id_for_route`
 - :func:`model_alias_for_mode`
 - :func:`render_pack_list`
@@ -139,7 +138,6 @@ from hosts.core.commands._render import (
     render_runtime_settings,
 )
 from hosts.core.commands._routing import (
-    explicit_deep_query,
     format_operation_error,
     format_unsupported_mode,
     mode_support_gap,
@@ -203,7 +201,6 @@ __all__ = [
     "build_capability_snapshot",
     "discover_models",
     "escape_markdown_cell",
-    "explicit_deep_query",
     "format_help",
     "format_operation_error",
     "format_token_stats",

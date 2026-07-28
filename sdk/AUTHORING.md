@@ -55,7 +55,7 @@ description: One clear sentence describing what this operation does.
 mode_allowlist: [my_mode]
 tool_ids: []           # list tools this operation may call; empty is fine
 timeout_seconds: 30    # default 30; 0 disables timeout
-max_calls_per_turn: 1  # default 3
+max_calls_per_turn: 1  # default 0 (unlimited)
 preferred_model_id: default   # optional; omit to inherit mode default
 ```
 
@@ -202,7 +202,7 @@ Return one JSON object matching the declared schema.
 | `tool_ids` | `[]` | Tools the model may call in the instruction loop |
 | `mode_allowlist` | (all modes) | Modes allowed to invoke this operation |
 | `timeout_seconds` | `60` | Wall-clock limit for the full instruction loop |
-| `max_calls_per_turn` | `3` | Max times this operation can be called in one turn |
+| `max_calls_per_turn` | `0` | Max times this operation can be called in one turn (`0` = unlimited) |
 | `completion_max_tokens` | `1500` | Token budget for the model completion |
 | `completion_temperature` | `0.2` | Temperature for the model completion |
 | `preferred_model_id` | (mode default) | Model alias to use for this operation |

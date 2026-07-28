@@ -37,6 +37,7 @@ from typing import Any, cast
 from kernel.approval import ApprovalInvocation, ApprovalRequired, render_approval_request
 from kernel.capability_manifest import compile_capability_manifest
 from kernel.context.models import ContextBudgetSnapshot
+from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
 from kernel.ipsar_fsm import (
     apply_transition,
     get_mode_system_intro,
@@ -953,6 +954,7 @@ async def run_turn(
     max_tool_iterations: int = 15,
     preferred_model_id: str | None = None,
     turn_budget: TurnBudget | None = None,
+    execution_policy: ExecutionPolicy | None = None,
     logger_override: logging.Logger | None = None,
     suppress_routing_hint: bool = False,
 ) -> TurnResult:
@@ -992,6 +994,10 @@ async def run_turn(
             When None, only ``max_tool_iterations`` bounds the loop (the
             historical behavior). The budget is the "ratio" knob: the host
             expresses the mix of inference and compute as one envelope.
+        execution_policy: Optional host-resolved execution policy. In this
+            migration phase, it is adapted to legacy knobs by tightening
+            ``max_tool_iterations`` and populating an equivalent
+            ``TurnBudget`` when one is not explicitly provided.
         logger_override: Optional logger for test capture.
 
     Returns:
@@ -1001,6 +1007,17 @@ async def run_turn(
         NotImplementedError: If hooks.complete is None.
     """
     _log = logger_override or logger
+
+    if execution_policy is not None:
+        if execution_policy.max_model_calls is not None:
+            max_tool_iterations = min(max_tool_iterations, execution_policy.max_model_calls)
+        if turn_budget is None:
+            turn_budget = TurnBudget(
+                max_tool_calls=execution_policy.max_capability_calls or 0,
+                max_total_tokens=execution_policy.max_total_tokens or 0,
+                max_wall_ms=execution_policy.max_wall_ms or 0,
+            )
+
     mode_config = get_workflow_catalog().get(mode_id)
 
     # Resolve hook callables with defaults
@@ -1039,6 +1056,7 @@ async def run_turn(
             max_tool_iterations=max_tool_iterations,
             preferred_model_id=preferred_model_id,
             turn_budget=turn_budget,
+            execution_policy=execution_policy,
             logger_override=logger_override,
             suppress_routing_hint=suppress_routing_hint,
         )
@@ -1060,6 +1078,7 @@ async def run_turn(
             max_tool_iterations=max_tool_iterations,
             preferred_model_id=preferred_model_id,
             turn_budget=turn_budget,
+            execution_policy=execution_policy,
             logger_override=logger_override,
             suppress_routing_hint=suppress_routing_hint,
         )
@@ -1083,6 +1102,7 @@ async def _run_turn_with_approval(
     max_tool_iterations: int,
     preferred_model_id: str | None,
     turn_budget: TurnBudget | None,
+    execution_policy: ExecutionPolicy | None,
     logger_override: logging.Logger | None,
     suppress_routing_hint: bool = False,
 ) -> TurnResult:
@@ -1104,6 +1124,7 @@ async def _run_turn_with_approval(
             max_tool_iterations=max_tool_iterations,
             preferred_model_id=preferred_model_id,
             turn_budget=turn_budget,
+            execution_policy=execution_policy,
             logger_override=logger_override,
             suppress_routing_hint=suppress_routing_hint,
         )
@@ -1224,6 +1245,7 @@ async def _run_turn_inner(
     max_tool_iterations: int,
     preferred_model_id: str | None,
     turn_budget: TurnBudget | None,
+    execution_policy: ExecutionPolicy | None,
     logger_override: logging.Logger | None,
     suppress_routing_hint: bool = False,
 ) -> TurnResult:
@@ -1297,7 +1319,12 @@ async def _run_turn_inner(
             memory_scope=hooks.memory_scope,
             session_plan_digest=hooks.session_plan_digest,
         )
-        result = await run_mode_entry_operations(mode_id, ctx, ledger=ledger)
+        result = await run_mode_entry_operations(
+            mode_id,
+            ctx,
+            ledger=ledger,
+            execution_policy=execution_policy,
+        )
         return TurnResult(
             response_text=result.output_text.strip() or "Done",
             tool_call_count=0,
@@ -1332,7 +1359,12 @@ async def _run_turn_inner(
         memory_scope=hooks.memory_scope,
         session_plan_digest=hooks.session_plan_digest,
     )
-    pre_result = await run_mode_pre_turn_operations(mode_id, ctx, ledger=ledger)
+    pre_result = await run_mode_pre_turn_operations(
+        mode_id,
+        ctx,
+        ledger=ledger,
+        execution_policy=execution_policy,
+    )
     pre_briefing = _extract_pre_turn_briefing(pre_result)
     # ── Phase 1.0: Input guard ─────────────────────────────────────
     # Runs before the pre-turn slice so a blocked input does not consume
@@ -1388,7 +1420,7 @@ async def _run_turn_inner(
     stage_instruction: str | None = None
     if is_workflow and hooks.workflow_session is not None:
         session = hooks.workflow_session()
-        if session is not None and session.stage_id in mode_config.stages:  # type: ignore[union-attr]
+        if session is not None and session.stage_id in mode_config.stages:
             stage_instruction = get_required_stage_instruction(mode_id, session.stage_id)
     system_prompt = assemble_system(mode_instruction, stage_instruction)
 
@@ -1671,19 +1703,14 @@ async def _run_turn_inner(
     if mode_config is not None:
         _state.chain_satisfied.update(mode_config.satisfies_intents)
 
-    # required_capabilities and roles_needed are derived once from the mode
-    # config and the preferred-model resolution. They default to empty — a
-    # router that does not need them ignores them.
+    # required_capabilities are derived once from the mode config. They
+    # default to empty — a router that does not need them ignores them.
     required_capabilities: tuple[str, ...] = ()
     if mode_config is not None:
         required_capabilities = tuple(getattr(mode_config, "required_capabilities", ()) or ())
-    roles_needed: tuple[str, ...] = ()
-    if isinstance(preferred_model_id, str) and preferred_model_id.strip():
-        roles_needed = (preferred_model_id.strip(),)
     # Mutable turn-state fields now live on _state (_TurnState).
     # Initialize the router-relevant fields from the mode config.
     _state.required_capabilities = required_capabilities
-    _state.roles_needed = roles_needed
 
     def _record_model_usage(
         model_def: Any,
@@ -2293,21 +2320,27 @@ async def _run_turn_inner(
                 operation_catalog=operation_catalog,
                 tool_catalog=tool_catalog,
             )
+            max_calls = 0
             if target_def is not None:
-                max_calls = getattr(target_def, "max_calls_per_turn", 0)
-                if ledger.is_exhausted(tool_name, max_calls):
-                    tool_output = (
-                        f"Tool '{tool_name}' has reached its per-turn call limit ({max_calls})."
-                    )
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "name": tool_name,
-                            "content": tool_output,
-                        }
-                    )
-                    continue
+                max_calls = int(getattr(target_def, "max_calls_per_turn", 0) or 0)
+            max_calls = resolve_capability_invocation_limit(
+                execution_policy,
+                tool_name,
+                max_calls,
+            )
+            if ledger.is_exhausted(tool_name, max_calls):
+                tool_output = (
+                    f"Tool '{tool_name}' has reached its per-turn call limit ({max_calls})."
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": tool_name,
+                        "content": tool_output,
+                    }
+                )
+                continue
 
             tools_dispatched = True
             tools_dispatched_ever = True
@@ -2461,6 +2494,7 @@ async def _run_turn_inner(
                                     complete=complete,
                                     exec_op=exec_op,
                                     turn_budget=turn_budget,
+                                    execution_policy=execution_policy,
                                     turn_start_mono=turn_start_mono,
                                     logger_override=_log,
                                     emit_stage=_emit_stage,
@@ -2756,7 +2790,10 @@ async def _run_turn_inner(
                                     try:
                                         entry_ctx = ctx.model_copy(update={"mode_id": target_stage})
                                         entry_result = await run_mode_entry_operations(
-                                            target_stage, entry_ctx, ledger=ledger
+                                            target_stage,
+                                            entry_ctx,
+                                            ledger=ledger,
+                                            execution_policy=execution_policy,
                                         )
                                         entry_output = entry_result.output_text.strip() or "Done"
                                     except Exception as entry_exc:  # pylint: disable=broad-except

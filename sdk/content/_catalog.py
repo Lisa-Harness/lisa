@@ -769,7 +769,7 @@ def _load_markdown_operation(md_path: Path) -> dict[str, Any] | None:
             metadata.get("response_output_json_passthrough")
         ),
         "timeout_seconds": int(metadata.get("timeout_seconds", 60) or 60),
-        "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 3) or 3),
+        "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 0) or 0),
         "completion_max_tokens": int(metadata.get("completion_max_tokens", 1500) or 1500),
         "completion_temperature": float(metadata.get("completion_temperature", 0.2) or 0.2),
         "instruction_markdown_path": str(md_path),
@@ -819,7 +819,7 @@ def _load_runtime_operation(
             str(metadata["preferred_model_id"]) if "preferred_model_id" in metadata else None
         ),
         "timeout_seconds": int(metadata.get("timeout_seconds", 60) or 60),
-        "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 3) or 3),
+        "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 0) or 0),
         "instruction_markdown_path": "",
         "instruction_body": "",
         "module_path": module_path,
@@ -994,7 +994,7 @@ def _load_runtime_tool(
         "approval_required": bool(metadata.get("approval_required", False)),
         "approval_preview": str(metadata.get("approval_preview", "") or "").strip(),
         "mode_allowlist": mode_allowlist,
-        "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 3) or 3),
+        "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 0) or 0),
         "timeout_seconds": int(metadata.get("timeout_seconds", 30) or 30),
         "module_path": module_path,
         "exportable": bool(metadata.get("exportable", False)),

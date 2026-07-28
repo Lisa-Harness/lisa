@@ -13,7 +13,7 @@ _MIN_EXPECTED_MODELS = 2
 _CONTEXT_WINDOW_TOKENS = 131072
 
 
-def test_load_manifest_reads_modes_roles_and_models(tmp_path: Path) -> None:
+def test_load_manifest_reads_modes_and_models(tmp_path: Path) -> None:
     manifest_file = tmp_path / "models.yaml"
     manifest_file.write_text(
         textwrap.dedent(
@@ -21,9 +21,6 @@ def test_load_manifest_reads_modes_roles_and_models(tmp_path: Path) -> None:
             version: 1
             mode_models:
               default: test-default
-            roles:
-              default: test-default
-              deep: test-deep
             models:
               - model_id: test-default
                 provider: ollama
@@ -38,11 +35,9 @@ def test_load_manifest_reads_modes_roles_and_models(tmp_path: Path) -> None:
     manifest = model_manifest.load_model_manifest(manifest_file)
 
     assert len(manifest.models) >= _MIN_EXPECTED_MODELS
-    # resolve() precedence: mode_models wins for modes, roles for roles.
+    # resolve() precedence: mode_models wins for modes, then find_model.
     assert manifest.resolve("default").model_id == "test-default"
-    assert manifest.resolve("deep").model_id == "test-deep"
     assert manifest.resolve("test-deep").model_id == "test-deep"
-    assert manifest.roles == {"default": "test-default", "deep": "test-deep"}
 
 
 def test_load_manifest_requires_mode_models(tmp_path: Path) -> None:
@@ -63,7 +58,7 @@ def test_load_manifest_requires_mode_models(tmp_path: Path) -> None:
         model_manifest.load_model_manifest(manifest_file)
 
 
-def test_load_manifest_rejects_unknown_role_ref(tmp_path: Path) -> None:
+def test_load_manifest_rejects_unknown_mode_model_ref(tmp_path: Path) -> None:
     manifest_file = tmp_path / "models.yaml"
     manifest_file.write_text(
         textwrap.dedent(
@@ -71,8 +66,7 @@ def test_load_manifest_rejects_unknown_role_ref(tmp_path: Path) -> None:
             version: 1
             mode_models:
               default: gpt-4o
-            roles:
-              deep: nope
+              discuss: nope
             models:
               - model_id: gpt-4o
                 provider: azure_openai

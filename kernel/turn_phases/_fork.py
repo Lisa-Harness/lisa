@@ -21,6 +21,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
+from kernel.execution_policy import ExecutionPolicy
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import (
     ConversationSurface,
@@ -131,6 +132,7 @@ async def _run_fork_child_turn(
     target: ForkTarget,
     hooks: TurnHooks,
     child_budget: TurnBudget | None,
+    execution_policy: ExecutionPolicy | None,
     started: float,
     logger_override: logging.Logger | None,
 ) -> tuple[ForkChildResult, str, int]:
@@ -162,6 +164,7 @@ async def _run_fork_child_turn(
             hooks=hooks,
             max_tool_iterations=5,
             turn_budget=child_budget,
+            execution_policy=execution_policy,
             logger_override=_flog,
             # Fork children must NOT re-route. A hint telling a forked
             # markdown/search child to hand off again creates a loop and,
@@ -291,6 +294,7 @@ async def _run_fork_child(
     target: ForkTarget,
     results: list[ForkChildResult | None],
     turn_budget: TurnBudget | None,
+    execution_policy: ExecutionPolicy | None,
     n: int,
     hooks: TurnHooks,
     emit_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
@@ -318,6 +322,7 @@ async def _run_fork_child(
         target=target,
         hooks=hooks,
         child_budget=child_budget,
+        execution_policy=execution_policy,
         started=started,
         logger_override=_flog,
     )
@@ -344,6 +349,7 @@ async def _execute_fork_fanout(
     complete: Callable[..., Awaitable[Any]],
     exec_op: Callable[..., Awaitable[OperationResult]],
     turn_budget: TurnBudget | None,
+    execution_policy: ExecutionPolicy | None,
     turn_start_mono: float,
     logger_override: logging.Logger | None,
     emit_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
@@ -387,6 +393,7 @@ async def _execute_fork_fanout(
             target=target,
             results=results,
             turn_budget=turn_budget,
+            execution_policy=execution_policy,
             n=n,
             hooks=hooks,
             emit_stage=emit_stage,

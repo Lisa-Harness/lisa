@@ -30,6 +30,10 @@ class TestHostConfig:
         assert config.timezone in {"UTC", "America/New_York"} or "/" in config.timezone
         assert config.streaming.mode == "none"
         assert config.slice_config.explicit_budget_ms == 2000
+        assert config.execution_policy.max_model_calls == 20
+        assert config.execution_policy.max_capability_calls == 30
+        assert config.execution_policy.max_total_tokens == 50_000
+        assert config.execution_policy.max_wall_ms == 300_000
 
     def test_from_env_debug_overrides_log_level(self, monkeypatch: pytest.MonkeyPatch) -> None:
         config = HostConfig.from_env(debug=True)
@@ -123,6 +127,8 @@ class TestHostRuntime:
         assert runtime.mcp_started is False
         assert runtime.mcp_tool_pool is None
         assert runtime.tokens.session_turn_count == 0
+        assert runtime.execution_policy.max_model_calls == 20
+        assert runtime.execution_policy.max_capability_calls == 30
 
     def test_path_accessors(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)

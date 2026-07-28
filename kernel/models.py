@@ -157,7 +157,7 @@ class ToolDefinition(BaseModel):
     approval_preview: str = ""
     parameters_schema: type[BaseModel] | None = Field(default=None, exclude=True)
     mode_allowlist: list[str] | None = None
-    max_calls_per_turn: int = Field(default=3)
+    max_calls_per_turn: int = Field(default=0)
     timeout_seconds: int = Field(default=30)
     module_path: str = ""
     implementation_module: Any = Field(default=None, exclude=True)
@@ -263,7 +263,7 @@ class OperationDefinition(BaseModel):
     preferred_model_id: str | None = Field(default=None)
     tool_ids: list[str] = Field(default_factory=list)
     mode_allowlist: list[str] = Field(default_factory=list)
-    max_calls_per_turn: int = Field(default=3)
+    max_calls_per_turn: int = Field(default=0)
     timeout_seconds: int = Field(default=60)
     completion_max_tokens: int = Field(default=1500)
     completion_temperature: float = Field(default=0.2)

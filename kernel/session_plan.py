@@ -30,6 +30,8 @@ __all__ = [
     "PackSelection",
     "ProviderSelections",
     "ResourceSelection",
+    "SessionCapabilityExecutionRequest",
+    "SessionExecutionRequest",
     "SessionInstructionPlan",
     "SessionInstructions",
     "SessionManifestV2",
@@ -213,6 +215,38 @@ class SessionInstructions(_StrictSessionModel):
     fragments: tuple[InstructionFragment, ...] = ()
 
 
+class SessionCapabilityExecutionRequest(_StrictSessionModel):
+    """Optional tighten-only limits for one capability.
+
+    ``None`` means "no request" (host default stays in effect).
+    """
+
+    max_invocations_per_turn: int | None = Field(default=None, ge=1)
+    max_internal_tool_calls: int | None = Field(default=None, ge=1)
+
+
+class SessionExecutionRequest(_StrictSessionModel):
+    """Optional session-authored execution-policy requests.
+
+    Hosts treat these as tighten-only requests relative to their resolved
+    runtime defaults.
+    """
+
+    max_model_calls: int | None = Field(default=None, ge=1)
+    max_capability_calls: int | None = Field(default=None, ge=1)
+    max_total_tokens: int | None = Field(default=None, ge=1)
+    max_wall_ms: int | None = Field(default=None, ge=1)
+    force_final_on_exhausted: bool | None = None
+    capabilities: dict[str, SessionCapabilityExecutionRequest] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_capability_keys(self) -> SessionExecutionRequest:
+        for capability_id in self.capabilities:
+            if not capability_id.strip():
+                raise ValueError("execution.capabilities keys must be non-empty")
+        return self
+
+
 class ContextLanePlan(_StrictSessionModel):
     """Budget and rendering constraints for one named context lane."""
 
@@ -337,7 +371,7 @@ class CompactionTuning(_StrictSessionModel):
     hard_threshold: float = Field(default=0.90, ge=0.0, le=1.0)
     min_interval_turns: int = Field(default=4, ge=0)
     retention_count: int = Field(default=6, ge=1)
-    preferred_model_id: str = "deep"
+    preferred_model_id: str = "default"
     summarize_operation: str = "checkpoint_history_summarize"
 
     @model_validator(mode="after")
@@ -422,6 +456,7 @@ class SessionManifestV2(_StrictSessionModel):
     resources: SessionResources = Field(default_factory=SessionResources)
     providers: ProviderSelections = Field(default_factory=ProviderSelections)
     routing: SessionRouting = Field(default_factory=SessionRouting)
+    execution: SessionExecutionRequest = Field(default_factory=SessionExecutionRequest)
     instructions: SessionInstructions = Field(default_factory=SessionInstructions)
     context: ContextPlan = Field(default_factory=ContextPlan)
 

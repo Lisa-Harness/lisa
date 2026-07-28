@@ -12,7 +12,6 @@ Dependency direction: ``_routing`` → ``_log`` (for ``_resolve_model``),
 from __future__ import annotations
 
 import logging
-import re
 
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.model_manifest import ModelManifest
@@ -48,20 +47,10 @@ def model_alias_for_mode(
     return manifest.mode_models.get("default", "default")
 
 
-def explicit_deep_query(message: str) -> str | None:
-    """Extract a deep-query from a ``/deep ...`` message; return None if not deep."""
-    stripped = message.lstrip()
-    match = re.match(r"^/deep(?:[\s,:;]+(?P<query>.+))?$", stripped, flags=re.IGNORECASE)
-    if not match:
-        return None
-    return str(match.group("query") or "").strip()
-
-
 def preferred_model_id_for_route(
     *,
     raw_message: str,
     mode_id: str,
-    deep_route: bool,
     manifest: ModelManifest | None = None,
 ) -> str:
     """Return the preferred model id for a route decision.
@@ -72,8 +61,6 @@ def preferred_model_id_for_route(
     mode is provided, that explicit model reference wins.
     """
     del raw_message
-    if deep_route:
-        return "deep"
     return model_alias_for_mode(mode_id, manifest=manifest)
 
 

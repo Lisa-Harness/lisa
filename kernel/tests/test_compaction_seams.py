@@ -102,7 +102,7 @@ def test_compaction_factory_returns_none_when_disabled() -> None:
         hard_threshold = 0.90
         min_interval_turns = 4
         retention_count = 6
-        preferred_model_id = "deep"
+        preferred_model_id = "default"
         summarize_operation = "checkpoint_history_summarize"
 
     class _History:
@@ -136,7 +136,7 @@ def test_compaction_factory_returns_slice_when_enabled() -> None:
         hard_threshold = 0.8
         min_interval_turns = 2
         retention_count = 4
-        preferred_model_id = "deep"
+        preferred_model_id = "default"
         summarize_operation = "checkpoint_history_summarize"
 
     class _History:

@@ -21,25 +21,11 @@ is wired into ``lisa-sdk``'s entry points.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import Any
 
 from kernel.model_manifest import ModelManifest
 from kernel.seams.protocols import ModelRouter
-
-
-def get_declared_roles() -> Mapping[str, str]:
-    """Declare the built-in model roles contributed by this backend.
-
-    Returns ``role_name -> default_model_id``. An empty default model id
-    means "declare the role name exists; the user must pin it." For ``deep``
-    we return an empty string so discovery (which always emits a concrete
-    ``deep`` role pin) is the only path that seeds a default — a hand-edited
-    manifest with no ``roles`` block simply leaves ``deep`` unresolved until
-    the user pins it or runs ``/models discover``.
-    """
-
-    return {"deep": ""}
 
 
 def get_router_factory() -> Callable[[ModelManifest | None, Any], ModelRouter | None]:

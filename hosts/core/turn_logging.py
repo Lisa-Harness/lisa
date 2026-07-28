@@ -148,7 +148,6 @@ def build_turn_log_record(
             "mode_kind": str(context.get("mode_kind") or ""),
             "query_chars": len(str(context.get("query") or "")),
             "handoff": str(context.get("handoff") or ""),
-            "deep_route": bool(context.get("deep_route", False)),
         },
         "completion_summary": {
             "tool_call_count": completion_info["tool_call_count"],

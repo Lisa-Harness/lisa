@@ -176,7 +176,7 @@ class DeclarativeOperationModule:
     operation_id: str
     instruction_markdown_path: str
     instruction_body: str
-    max_calls_per_turn: int = 3
+    max_calls_per_turn: int = 0
     response_format_model: type[BaseModel] | None = None
     response_output_text_field: str = "output_text"
     response_output_json_passthrough: dict[str, str] | None = None

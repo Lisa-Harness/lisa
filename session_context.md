@@ -20,25 +20,6 @@ resources:
       - lisa-pack-coding
       - lisa-pack-github
       - lisa-pack-cloudflare
-    # auto_install:
-    #   lisa-pack-brave-search:
-    #     source: "C:/Code/lisa-packs/brave_search"
-    #     editable: true
-    #   lisa-pack-markdown:
-    #     source: "C:/Code/lisa-packs/markdown"
-    #     editable: true
-    #   lisa-pack-search:
-    #     source: "C:/Code/lisa-packs/search"
-    #     editable: true
-    #   lisa-pack-coding:
-    #     source: "C:/Code/lisa-packs-wip/coding"
-    #     editable: true
-    #   lisa-pack-github:
-    #     source: "C:/Code/lisa-packs-wip/github"
-    #     editable: true
-    #   lisa-pack-cloudflare:
-    #     source: "C:/Code/lisa-packs-wip/cloudflare"
-    #     editable: true
 providers:
   capabilities:
     memory: lisa-pack-memory
@@ -49,9 +30,9 @@ providers:
 routing: { from: { pack: lisa-pack-core, session: default } }
 context:
   lanes:
-    - {lane_id: operational, max_tokens: 1200, render_order: 0}
-    - {lane_id: general, max_tokens: 1800, render_order: 10}
-    - {lane_id: history, max_tokens: 1200, render_order: 20}
+    - {lane_id: operational, max_tokens: 1000, render_order: 0}
+    - {lane_id: general, max_tokens: 2000, render_order: 10}
+    - {lane_id: history, max_tokens: 1500, render_order: 20}
   sources:
     - rule_id: alerts
       lane_id: operational

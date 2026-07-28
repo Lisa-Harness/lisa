@@ -514,7 +514,6 @@ def _render_turn_context(console: Console, context: Any) -> None:
                 "mode_id",
                 "mode_kind",
                 "query",
-                "deep_route",
                 "preferred_model_id",
                 "handoff",
             )

@@ -1,6 +1,6 @@
 """Manifest construction and atomic serialization.
 
-Discrete default/role selection plus atomic YAML writes. The algorithm is
+Discrete default selection plus atomic YAML writes. The algorithm is
 deliberately stable and order-independent:
 
 - **default model**: when any local (ollama) models are present, the default
@@ -9,14 +9,10 @@ deliberately stable and order-independent:
   are present, the default is the cheapest gpt-5-family model
   (nano < mini < full, then lowest variant), falling back to the first
   cloud model if no gpt-5+ was probed.
-- **deep role**: first reasoning model (any provider), else the chosen
-  default. ``deep`` is the cross-cutting escalation role, so
-  reasoning-capability is the right signal regardless of provider.
 
-The output emits ``mode_models`` (pinning ``default``) and ``roles``
-(pinning ``default`` and ``deep``) at the top level. Per-model
-``designations`` tags are gone — the manifest schema resolves modes and
-roles through the two top-level maps.
+The output emits ``mode_models`` (pinning ``default``) at the top level.
+Per-model ``designations`` tags are gone — the manifest schema resolves
+modes through the top-level map.
 """
 
 from __future__ import annotations
@@ -120,16 +116,16 @@ def _gpt5_cost_rank(model: DiscoveredModel) -> tuple[int, float]:
     return (size_tier, variant)
 
 
-def _choose_deep_model(
+def _pick_reasoning_model(
     models: tuple[DiscoveredModel, ...],
-    default: DiscoveredModel,
+    fallback: DiscoveredModel,
 ) -> DiscoveredModel:
-    """Pick the deep model: first reasoning model, else the chosen default."""
+    """Pick a reasoning model for preset annotations, else the fallback."""
 
     for model in models:
         if model.reasoning_model or is_reasoning_model(model.model_id):
             return model
-    return default
+    return fallback
 
 
 def _resolve_router_ref(
@@ -137,20 +133,18 @@ def _resolve_router_ref(
     *,
     model_ids: set[str],
     mode_models: dict[str, str],
-    roles: dict[str, str],
 ) -> str:
     """Resolve a symbolic ``use``/``fallback`` ref to a concrete model_id.
 
-    The pack's default router config uses *symbolic* references — mode/role
-    names like ``"default"`` or ``"deep"`` rather than literal model ids. The
-    manifest loader validates that every ``rules[].use`` and ``fallback``
-    references a known model *by model_id*, so we must resolve symbolic refs
-    to concrete model ids before emitting the ``router:`` block.
+    The pack's default router config uses *symbolic* references — mode names
+    like ``"default"`` rather than literal model ids. The manifest loader
+    validates that every ``rules[].use`` and ``fallback`` references a known
+    model *by model_id*, so we must resolve symbolic refs to concrete model
+    ids before emitting the ``router:`` block.
 
     Resolution order mirrors ``ModelManifest.resolve()``:
     1. ``mode_models[ref]`` (mode pins)
-    2. ``roles[ref]`` (cross-cutting roles)
-    3. Literal model id (already in the discovered set)
+    2. Literal model id (already in the discovered set)
 
     Returns the resolved model_id, or an empty string when the ref cannot be
     resolved (the caller strips the rule / fallback in that case).
@@ -159,8 +153,8 @@ def _resolve_router_ref(
     normalized = ref.strip().lower()
     if not normalized:
         return ""
-    # mode_models / roles — symbolic refs.
-    mapped = mode_models.get(normalized) or roles.get(normalized)
+    # mode_models — symbolic ref.
+    mapped = mode_models.get(normalized)
     if mapped:
         return mapped if mapped.lower() in model_ids else ""
     # Literal model id.
@@ -172,7 +166,6 @@ def _resolve_router_rule(
     *,
     model_ids: set[str],
     mode_models: dict[str, str],
-    roles: dict[str, str],
 ) -> dict[str, str] | None:
     """Resolve one raw rule dict to a concrete rule dict, or None to drop it.
 
@@ -194,7 +187,7 @@ def _resolve_router_rule(
         return None
     if use:
         resolved_use = _resolve_router_ref(
-            use, model_ids=model_ids, mode_models=mode_models, roles=roles
+            use, model_ids=model_ids, mode_models=mode_models
         )
         if not resolved_use:
             return None
@@ -208,14 +201,12 @@ def _build_router_block(
     models: tuple[DiscoveredModel, ...],
     *,
     mode_models: dict[str, str],
-    roles: dict[str, str],
 ) -> dict[str, Any] | None:
     """Build the ``router:`` block from the pack-declared default config.
 
     Discovers the first pack-declared router config via
-    ``lisa.extensions.model_router_configs`` (parallel to
-    ``lisa.extensions.model_roles`` for roles). Resolves symbolic
-    ``use``/``fallback`` references (mode/role names) to concrete model ids
+    ``lisa.extensions.model_router_configs``. Resolves symbolic
+    ``use``/``fallback`` references (mode names) to concrete model ids
     against the discovered set. Strips any rule whose ``use`` cannot be
     resolved and drops ``fallback`` if it cannot be resolved.
 
@@ -244,13 +235,13 @@ def _build_router_block(
     resolved_rules: list[dict[str, str]] = []
     for raw_rule in raw_rules:
         resolved = _resolve_router_rule(
-            raw_rule, model_ids=model_ids, mode_models=mode_models, roles=roles
+            raw_rule, model_ids=model_ids, mode_models=mode_models
         )
         if resolved is not None:
             resolved_rules.append(resolved)
 
     resolved_fallback = (
-        _resolve_router_ref(raw_fallback, model_ids=model_ids, mode_models=mode_models, roles=roles)
+        _resolve_router_ref(raw_fallback, model_ids=model_ids, mode_models=mode_models)
         if raw_fallback
         else ""
     )
@@ -296,17 +287,17 @@ def _model_entry(model: DiscoveredModel) -> dict[str, Any]:
 
 def _pick_code_model(
     models: tuple[DiscoveredModel, ...],
-    deep_model_id: str,
+    fallback_model_id: str,
 ) -> str:
     """Pick a code-capable model for the coding-focused preset annotation.
 
     Scans discovered models for one with ``"code"`` in its capabilities.
-    Falls back to ``deep_model_id`` when no code-capable model is found.
+    Falls back to ``fallback_model_id`` when no code-capable model is found.
     """
     for model in models:
         if model.capabilities and "code" in model.capabilities:
             return model.model_id
-    return deep_model_id
+    return fallback_model_id
 
 
 # Per-predicate human-readable explanations, keyed by a substring of the
@@ -327,7 +318,6 @@ _PREDICATE_EXPLANATIONS: tuple[tuple[str, str], ...] = (
     ("turn.iteration >= 2", "the turn is on its second iteration or later"),
     ("turn.iteration > 1", "the turn is past the first iteration"),
     ("turn.iteration >= 10", "the turn has run for 10+ iterations"),
-    ('"deep" in route.roles_needed', "the user invoked /deep (deep model role)"),
     ('model.cost_tier == "standard"', "the effective model is cheap (standard tier)"),
     ("model.reasoning_model", "the effective model is a reasoning model"),
 )
@@ -441,7 +431,6 @@ def _annotated_router_block(router_block: dict[str, Any]) -> str:
 
 def _router_preset_annotations(
     mode_models: dict[str, str],
-    roles: dict[str, str],
     models: tuple[DiscoveredModel, ...],
     *,
     router_block: dict[str, Any] | None = None,
@@ -460,11 +449,13 @@ def _router_preset_annotations(
     (no pack-declared config or no rules survive resolution).
     """
     default_id = mode_models.get("default", "")
-    deep_id = roles.get("deep", "")
-    if not default_id or not deep_id:
+    if not default_id:
         return ""
 
-    code_id = _pick_code_model(models, deep_id)
+    default_model = next((m for m in models if m.model_id == default_id), models[0])
+    reasoning_model = _pick_reasoning_model(models, default_model)
+    reasoning_id = reasoning_model.model_id
+    code_id = _pick_code_model(models, default_id)
 
     lines: list[str] = [
         "",
@@ -479,11 +470,11 @@ def _router_preset_annotations(
     lines.extend(
         _preset_block(
             "cost-conscious",
-            "Cheap default, escalate to deep only on code or when the turn drags, downgrade to default early on tool-heavy turns.",
+            "Cheap default, escalate to reasoning model only on code or when the turn drags, downgrade to default early on tool-heavy turns.",
             "tight token budgets, dev/test, high-volume simple turns.",
             [
                 {"when": '"code" in route.required_capabilities', "use": code_id},
-                {"when": "turn.iteration >= 2", "use": deep_id},
+                {"when": "turn.iteration >= 2", "use": reasoning_id},
                 {"when": "turn.tool_calls_so_far >= 3", "use": default_id},
             ],
             default_id,
@@ -499,11 +490,11 @@ def _router_preset_annotations(
             "production quality, complex multi-step tasks, cost-insensitive.",
             [
                 {"when": '"code" in route.required_capabilities', "use": code_id},
-                {"when": '"reasoning" in route.required_capabilities', "use": deep_id},
-                {"when": "turn.iteration > 1 && turn.has_tool_result", "use": deep_id},
+                {"when": '"reasoning" in route.required_capabilities', "use": reasoning_id},
+                {"when": "turn.iteration > 1 && turn.has_tool_result", "use": reasoning_id},
                 {"when": "turn.tool_calls_so_far >= 8", "use": default_id},
             ],
-            deep_id,
+            reasoning_id,
         )
     )
     lines.append("#")
@@ -512,12 +503,12 @@ def _router_preset_annotations(
     lines.extend(
         _preset_block(
             "coding-focused",
-            "Code model for code turns, deep for synthesis, code model as fallback.",
+            "Code model for code turns, reasoning model for synthesis, code model as fallback.",
             "software engineering work, agentic coding, repo Q&A.",
             [
                 {"when": '"code" in route.required_capabilities', "use": code_id},
                 {"when": "turn.tool_calls_so_far >= 4 && turn.has_tool_result", "use": code_id},
-                {"when": "turn.iteration > 1 && turn.has_tool_result", "use": deep_id},
+                {"when": "turn.iteration > 1 && turn.has_tool_result", "use": reasoning_id},
             ],
             code_id,
         )
@@ -532,7 +523,7 @@ def _router_preset_annotations(
             "long agentic turns, workflow modes with a summary stage.",
             [
                 {"when": '"code" in route.required_capabilities', "use": code_id},
-                {"when": "turn.iteration > 1 && turn.has_tool_result", "use": deep_id},
+                {"when": "turn.iteration > 1 && turn.has_tool_result", "use": reasoning_id},
                 {"when": "turn.tool_calls_so_far >= 8", "finish": "tool_budget_exhausted"},
                 {"when": "turn.iteration >= 10", "transition_to": "summary"},
             ],
@@ -546,18 +537,17 @@ def _router_preset_annotations(
 def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any]:
     """Build a minimal manifest payload from discovered models.
 
-    Emits ``mode_models`` (pinning ``default``) and ``roles`` (pinning
-    ``default`` and ``deep``) at the top level. Per-model ``designations``
-    tags are not emitted — the manifest schema resolves modes and roles
-    through the two top-level maps.
+    Emits ``mode_models`` (pinning ``default``) at the top level. Per-model
+    ``designations`` tags are not emitted — the manifest schema resolves
+    modes through the top-level map.
 
     When a pack declares a default router config via the
-    ``lisa.extensions.model_router_configs`` entry-point group (parallel to
-    ``lisa.extensions.model_roles`` for roles), the config is resolved,
-    symbolic ``use``/``fallback`` refs are mapped to concrete model ids, and
-    a ``router:`` block is emitted. Rules referencing models not in the
-    discovered set are stripped so the proposal always loads cleanly. When
-    no pack declares a router config, no ``router:`` block is emitted.
+    ``lisa.extensions.model_router_configs`` entry-point group, the config
+    is resolved, symbolic ``use``/``fallback`` refs are mapped to concrete
+    model ids, and a ``router:`` block is emitted. Rules referencing models
+    not in the discovered set are stripped so the proposal always loads
+    cleanly. When no pack declares a router config, no ``router:`` block
+    is emitted.
 
     Enrichment fields (``display_name``, ``capabilities``, ``cost_tier``,
     ``latency_tier``, ``thinking_model``, ``context_window``,
@@ -570,31 +560,25 @@ def build_manifest_payload(models: tuple[DiscoveredModel, ...]) -> dict[str, Any
 
     deduped = _dedupe(models)
     default_model = _choose_default_model(deduped)
-    deep_model = _choose_deep_model(deduped, default_model)
     rows = [_model_entry(model) for model in deduped]
 
     mode_models = {"default": default_model.model_id}
-    roles = {
-        "default": default_model.model_id,
-        "deep": deep_model.model_id,
-    }
 
     # Ordering matters for readability: the top-level maps (mode_models,
-    # roles, router) are the user's primary edit surface, so they go first
+    # router) are the user's primary edit surface, so they go first
     # — right after version — and the long models list goes last. yaml.dump
     # preserves dict insertion order.
     payload: dict[str, Any] = {
         "version": 1,
         "mode_models": mode_models,
-        "roles": roles,
     }
 
     # Seed a ``router:`` block from the first pack-declared router config
-    # (lisa.extensions.model_router_configs). Symbolic refs (mode/role
-    # names) are resolved to concrete model ids; rules referencing unknown
-    # models are stripped. Returns None when no pack declares a config or
-    # no rules survive — in which case no router block is emitted.
-    router_block = _build_router_block(deduped, mode_models=mode_models, roles=roles)
+    # (lisa.extensions.model_router_configs). Symbolic refs (mode names)
+    # are resolved to concrete model ids; rules referencing unknown models
+    # are stripped. Returns None when no pack declares a config or no rules
+    # survive — in which case no router block is emitted.
+    router_block = _build_router_block(deduped, mode_models=mode_models)
     if router_block is not None:
         payload["router"] = router_block
 
@@ -612,7 +596,7 @@ def render_manifest_yaml(
 
     The active ``router:`` block is rendered by hand (not by the dumper)
     with a trailing ``# → <model> when <reason>`` on every rule and on the
-    fallback line, then spliced in right after ``roles:``. The alternative
+    fallback line, then spliced in right after ``mode_models:``. The alternative
     preset comments (*annotations*) follow immediately after the active
     block, before the ``models:`` list. Everything sits at the top of the
     file where the user edits, not 400 lines down.

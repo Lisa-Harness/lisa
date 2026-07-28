@@ -27,6 +27,7 @@ from typing import Any
 from kernel.session_plan import SessionPlan
 
 from hosts.core.config import HostConfig
+from hosts.core.execution_policy import resolve_execution_policy
 from hosts.core.session_context import compile_selected_session_plan
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,6 @@ class TurnContext:
     mode_id: str = "default"
     mode_kind: str = ""
     query: str = ""
-    deep_route: bool = False
     preferred_model_id: str = ""
     resolved_model: dict[str, Any] = field(default_factory=dict)
     handoff: str = ""
@@ -138,6 +138,10 @@ class HostRuntime:
             surface_type=config.surface_type or surface.type,
             surface_id=config.surface_id or surface.id,
             memory_scope=config.memory_scope or surface.memory_scope,
+        )
+        self.execution_policy = resolve_execution_policy(
+            default_policy=self.config.execution_policy,
+            session_request=self.session_plan.manifest.execution,
         )
 
         # ── Session routing vocabulary ────────────────────────────────

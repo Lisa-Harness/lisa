@@ -343,20 +343,13 @@ def _build_capability_entries(
         idx += 1
 
     if model_manifest is not None:
-        # Invert manifest.roles so each model knows which roles it holds.
-        roles_by_model: dict[str, list[str]] = {}
-        for role_name, model_ref in model_manifest.roles.items():
-            roles_by_model.setdefault(model_ref, []).append(role_name)
         for model in model_manifest.models[:10]:
-            roles = sorted(roles_by_model.get(model.model_id, []))
             entries.append(
                 SelfKnowledgeEntry(
                     entry_id=_make_entry_id("capability", idx),
                     category="capability",
                     title=model.model_id,
-                    body=(
-                        f"Model '{model.model_id}' (provider: {model.provider}, roles: {roles})."
-                    ),
+                    body=f"Model '{model.model_id}' (provider: {model.provider}).",
                     confidence=1.0,
                     source_refs=["model_manifest"],
                     tags=["model"],

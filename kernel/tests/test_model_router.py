@@ -201,8 +201,8 @@ async def test_no_router_no_choose_uses_static_default() -> None:
     hooks.resolve_model = resolve_model
 
     result = await run_turn(
-        mode_id="default", query="hello", hooks=hooks, preferred_model_id="deep"
+        mode_id="default", query="hello", hooks=hooks, preferred_model_id="default"
     )
 
     assert result.response_text == "Done."
-    assert resolved_ids == ["deep"]
+    assert resolved_ids == ["default"]

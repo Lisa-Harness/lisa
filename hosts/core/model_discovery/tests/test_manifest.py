@@ -29,7 +29,6 @@ class TestBuildManifestPayload:
         )
         payload = build_manifest_payload(models)
         assert payload["mode_models"] == {"default": "gpt-5-mini"}
-        assert payload["roles"]["default"] == "gpt-5-mini"
 
     def test_cloud_gpt5_nano_beats_mini(self) -> None:
         """nano is cheaper than mini; both beat full gpt-5."""
@@ -109,27 +108,9 @@ class TestBuildManifestPayload:
         # Two local models, even count, lower median = small:7b.
         assert payload["mode_models"] == {"default": "small:7b"}
 
-    def test_deep_first_reasoning_any_provider(self) -> None:
-        """deep = first reasoning model regardless of provider."""
-        models = (
-            DiscoveredModel(model_id="gpt-5", provider="openai"),
-            DiscoveredModel(
-                model_id="deepseek-r1:70b",
-                provider="ollama",
-                reasoning_model=True,
-                context_window=65536,
-            ),
-        )
-        payload = build_manifest_payload(models)
-        assert payload["roles"]["deep"] == "deepseek-r1:70b"
 
-    def test_deep_falls_back_to_default_when_no_reasoning(self) -> None:
-        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
-        payload = build_manifest_payload(models)
-        assert payload["roles"]["deep"] == "gpt-5"
-
-    def test_emits_mode_models_and_roles_no_designations(self) -> None:
-        """Output shape: mode_models + roles at top level; no per-model designations."""
+    def test_emits_mode_models_no_designations(self) -> None:
+        """Output shape: mode_models at top level; no per-model designations."""
         models = (
             DiscoveredModel(model_id="gpt-5", provider="openai"),
             DiscoveredModel(
@@ -140,8 +121,7 @@ class TestBuildManifestPayload:
         )
         payload = build_manifest_payload(models)
         assert "mode_models" in payload
-        assert "roles" in payload
-        assert payload["roles"] == {"default": "gpt-5", "deep": "o3-pro"}
+        assert "roles" not in payload
         for row in payload["models"]:
             assert "designations" not in row
 
@@ -178,8 +158,8 @@ class TestRouterBlock:
     """Tests for the pack-seeded ``router:`` block in ``build_manifest_payload``.
 
     The router block is seeded from the first pack-declared router config
-    (``lisa.extensions.model_router_configs``). Symbolic refs (``"default"``,
-    ``"deep"``) are resolved to concrete model ids. Rules referencing unknown
+    (``lisa.extensions.model_router_configs``). Symbolic refs (``"default"``)
+    are resolved to concrete model ids. Rules referencing unknown
     models are stripped. When no pack declares a config, no ``router`` key
     is emitted.
     """
@@ -203,7 +183,7 @@ class TestRouterBlock:
         pack_config = {
             "backend": "lisa-router",
             "rules": [
-                {"when": '"code" in route.required_capabilities', "use": "deep"},
+                {"when": '"code" in route.required_capabilities', "use": "default"},
             ],
             "fallback": "default",
         }
@@ -215,8 +195,8 @@ class TestRouterBlock:
         assert "router" in payload
         router = payload["router"]
         assert router["backend"] == "lisa-router"
-        # Symbolic refs resolved: "deep" → o3-pro, "default" → gpt-5.
-        assert router["rules"][0]["use"] == "o3-pro"
+        # Symbolic ref resolved: "default" → gpt-5.
+        assert router["rules"][0]["use"] == "gpt-5"
         assert router["fallback"] == "gpt-5"
 
     def test_router_block_preserves_finish_action(self) -> None:
@@ -289,7 +269,7 @@ class TestRouterBlock:
         pack_config = {
             "backend": "lisa-router",
             "rules": [
-                {"when": "turn.iteration > 1", "use": "deep"},  # resolvable
+                {"when": "turn.iteration > 1", "use": "default"},  # resolvable
                 {"when": "turn.tool_calls_so_far >= 3", "use": "gpt-99-nonexistent"},  # stripped
             ],
             "fallback": "default",
@@ -301,7 +281,7 @@ class TestRouterBlock:
             payload = build_manifest_payload(models)
         router = payload["router"]
         assert len(router["rules"]) == 1
-        assert router["rules"][0]["use"] == "o3-pro"
+        assert router["rules"][0]["use"] == "gpt-5"
         assert router["fallback"] == "gpt-5"
 
     def test_router_strips_fallback_referencing_unknown_model(self) -> None:
@@ -384,7 +364,6 @@ class TestRouterPresetAnnotations:
         models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
         annotations = _router_preset_annotations(
             mode_models={"default": "gpt-5"},
-            roles={"default": "gpt-5", "deep": "gpt-5"},
             models=models,
             router_block=self._resolved_router_block(),
         )
@@ -416,7 +395,6 @@ class TestRouterPresetAnnotations:
         models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
         annotations = _router_preset_annotations(
             mode_models={"default": "gpt-5"},
-            roles={"default": "gpt-5", "deep": "gpt-5"},
             models=models,
             router_block=self._resolved_router_block(),
         )
@@ -432,7 +410,6 @@ class TestRouterPresetAnnotations:
         )
         annotations = _router_preset_annotations(
             mode_models={"default": "gpt-5"},
-            roles={"default": "gpt-5", "deep": "o3-pro"},
             models=models,
             router_block=self._resolved_router_block(),
         )
@@ -453,26 +430,19 @@ class TestRouterPresetAnnotations:
         )
         annotations = _router_preset_annotations(
             mode_models={"default": "gpt-5"},
-            roles={"default": "gpt-5", "deep": "gpt-5"},
             models=models,
             router_block=self._resolved_router_block(),
         )
         assert "gpt-5.2-codex" in annotations
 
     def test_returns_empty_when_no_mode_models(self) -> None:
-        """Empty string when mode_models or roles are missing."""
+        """Empty string when mode_models is missing."""
         from hosts.core.model_discovery.manifest import _router_preset_annotations
 
         models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
         assert (
             _router_preset_annotations(
-                {}, {"deep": "gpt-5"}, models, router_block=self._resolved_router_block()
-            )
-            == ""
-        )
-        assert (
-            _router_preset_annotations(
-                {"default": "gpt-5"}, {}, models, router_block=self._resolved_router_block()
+                {}, models, router_block=self._resolved_router_block()
             )
             == ""
         )
@@ -489,7 +459,6 @@ class TestRouterPresetAnnotations:
         models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
         annotations = _router_preset_annotations(
             mode_models={"default": "gpt-5"},
-            roles={"default": "gpt-5", "deep": "gpt-5"},
             models=models,
             router_block=None,
         )
