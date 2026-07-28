@@ -108,6 +108,25 @@ class _TurnState:
     """Consecutive count of identical routing hints. Resets to 0 on a
     distinct hint; when it reaches ``_DUPLICATE_HINT_LIMIT`` the hint is
     suppressed."""
+    forced_fork_target: str = ""
+    """The deterministic ``fork:mode,mode,...`` target the kernel will
+    execute itself if the model refuses to call ``transition_stage``.
+    Populated when a fork routing hint is active (see
+    ``_compute_fork_target_string``); consumed by the forced-fork
+    enforcer in the turn loop. Empty when the routing decision is a
+    single handoff, a sequential chain, or no gap at all."""
+    non_fork_tool_dispatches: int = 0
+    """Count of tool dispatches this turn that were NOT
+    ``transition_stage`` with the expected ``fork:`` target, while a
+    ``forced_fork_target`` is set. The enforcer fires when this reaches
+    ``_FORCED_FORK_NON_FORK_TOOL_CAP``."""
+    called_tool_names: set[str] = field(default_factory=set)
+    """Names of every tool actually dispatched this turn (operations,
+    pack tools, MCP tools). Used by the fork-child validator to confirm
+    that an action mode's child invoked at least one of its authored
+    action tools — not just read-only fetches. A child that did 4
+    ``fetch_page`` calls but never called ``markdown_forge_document``
+    hallucinated its success (the 2026-07-27 follow-on incident)."""
 
 
 # ── Closure-free helper functions ──────────────────────────────────────────

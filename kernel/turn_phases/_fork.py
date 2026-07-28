@@ -47,29 +47,83 @@ __all__ = [
 
 
 def _fork_mode_requires_tools(mode_id: str) -> bool:
-    """Return True when a fork child's mode declares action operations/tools.
+    """Return True when a fork child's mode declares side-effecting action tools.
 
     Modes like ``learn`` and ``markdown`` exist to *take action* (distill +
     persist memories, write documents). Their ``_mode.md`` front matter
-    declares non-empty ``allowed_operation_ids`` or ``allowed_tool_ids``.
-    A fork child running such a mode that completes with **zero tool calls**
+    declares non-empty ``allowed_operation_ids`` or ``allowed_tool_ids``
+    that include at least one write/external_write-effect tool. A fork
+    child running such a mode that completes with **zero tool calls**
     almost certainly produced a hallucinated "Done — wrote it to disk" text
     response without invoking its write/learn tool, leaving nothing on disk
     or in memory. The caller marks these ``status="no_tools"`` instead of
     ``"ok"`` so the parent does not report a false success.
 
-    Chat-only modes (``default``, ``ponder``) with empty allowlists
-    legitimately complete without tools, so this returns False for them.
+    Modes whose authored tools are all read-effect (e.g. ``ponder``, whose
+    only authored operation is ``web_search``) legitimately complete with
+    zero tool calls — their output is the response text (the reasoning),
+    not a side-effect — so this returns False for them. Chat-only modes
+    (``default``) with empty allowlists also return False.
+    """
+    return bool(_fork_mode_action_tool_ids(mode_id))
+
+
+def _fork_mode_action_tool_ids(mode_id: str) -> set[str]:
+    """Return the authored *side-effecting* action tool ids a fork child must invoke.
+
+    The subset of the mode's ``allowed_operation_ids`` /
+    ``allowed_tool_ids`` whose ``effect`` is ``write`` or
+    ``external_write`` — the tools that actually *land* the mode's work
+    on disk or in memory (e.g. ``markdown_forge_document``, ``write_file``,
+    ``synthesize_and_store_learning``, ``coding_apply_patch``). A fork
+    child that completes without invoking any of these hallucinated its
+    success: it did read-only fetches / searches but never wrote, learned,
+    or applied anything.
+
+    Read-effect authored tools (e.g. ``ponder``'s ``web_search``) are
+    intentionally excluded. A reasoning mode's *output* is its response
+    text (the opinion/analysis), not a side-effect; its authored
+    ``web_search`` is one research aid among several (``fetch_page`` is
+    another), so demanding it specifically would false-positive on a child
+    that gathered evidence via ``fetch_page`` and produced a real opinion.
+    The 2026-07-27 third run hit exactly this: ``ponder`` called
+    ``fetch_page`` 3 times and was wrongly flagged ``no_tools`` because it
+    skipped ``web_search``. Only side-effecting tools are load-bearing for
+    "did the child do its job?"
     """
     mode_config = get_workflow_catalog().get(mode_id)
     if mode_config is None:
-        return False
-    # Use the *authored* allowlists, not the merged (effective) ones, so a
-    # chat-only mode that inherits ambient capabilities (e.g. recall_memory
-    # via default_available) is not misflagged as requiring tools to complete.
-    return bool(mode_config.authored_allowed_operation_ids) or bool(
-        mode_config.authored_allowed_tool_ids
-    )
+        return set()
+    authored_ops = set(mode_config.authored_allowed_operation_ids)
+    authored_tools = set(mode_config.authored_allowed_tool_ids)
+    if not authored_ops and not authored_tools:
+        return set()
+    # Resolve operation effects via the in-process operation catalog. Tools
+    # are loaded from the catalog MCP server (a separate process) and are
+    # not reliably present in the in-process tool catalog during a fork
+    # child turn, so a tool id not found in the operation catalog is
+    # treated as a candidate action tool (conservative: include it). This
+    # correctly excludes ``ponder``'s ``web_search`` (an operation,
+    # read-effect) while including ``markdown``'s ``write_file`` /
+    # ``markdown_generate`` (tools, not in the op catalog → included).
+    from kernel.operations.registry import get_operation_catalog as _get_ops  # noqa: PLC0415
+
+    op_catalog = _get_ops()
+    result: set[str] = set()
+    for op_id in authored_ops:
+        op_def = op_catalog.get(op_id)
+        if op_def is None:
+            # Unknown operation — include it (can't prove it's read-only).
+            result.add(op_id)
+            continue
+        effect = str(getattr(op_def, "effect", "read") or "read")
+        if effect in ("write", "external_write"):
+            result.add(op_id)
+    # Tools not resolvable in-process: include them. A mode that authors a
+    # tool in its allowlist did so because the tool does its work; we only
+    # exclude operations we can prove are read-effect.
+    result.update(authored_tools)
+    return result
 
 
 async def _run_fork_child_turn(
@@ -133,6 +187,46 @@ async def _run_fork_child_turn(
                         f"fork child {target.mode_id} produced no tool calls; its mode "
                         "declares action operations/tools, so its reported success is "
                         "unverified (nothing written to disk or memory)."
+                    ),
+                    duration_ms=elapsed_ms,
+                ),
+                "no_tools",
+                elapsed_ms,
+            )
+        # A child that made tool calls but never invoked any of its mode's
+        # authored *action* tools (only read-only fetches / searches) also
+        # hallucinated its success: it gathered evidence but never wrote,
+        # learned, or applied anything. The 2026-07-27 follow-on: the
+        # ``markdown`` child did 4 ``fetch_page`` calls then exited empty
+        # without ever calling ``markdown_forge_document``, so nothing
+        # landed on disk yet the ``tool_call_count == 0`` guard passed it
+        # as ``ok``. Catch it here.
+        action_tool_ids = _fork_mode_action_tool_ids(target.mode_id)
+        if (
+            action_tool_ids
+            and not (child_result.called_tool_names & action_tool_ids)
+        ):
+            _flog.warning(
+                "fork child %s made %d tool call(s) but none were its "
+                "mode's authored action tools %s (called: %s); marking "
+                "no_tools (hallucinated success — nothing written/learned)",
+                target.mode_id,
+                child_result.tool_call_count,
+                sorted(action_tool_ids),
+                sorted(child_result.called_tool_names),
+            )
+            return (
+                ForkChildResult(
+                    target=target,
+                    status="no_tools",
+                    output_text=child_result.response_text,
+                    error_message=(
+                        f"fork child {target.mode_id} made "
+                        f"{child_result.tool_call_count} tool call(s) but "
+                        f"none were its mode's authored action tools "
+                        f"({', '.join(sorted(action_tool_ids))}); its "
+                        "reported success is unverified — nothing was "
+                        "written to disk or memory."
                     ),
                     duration_ms=elapsed_ms,
                 ),

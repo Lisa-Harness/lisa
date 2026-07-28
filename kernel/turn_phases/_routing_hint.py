@@ -207,6 +207,179 @@ def _format_remaining_steps(remaining_steps: list[str]) -> str:
     return "(none — this is the final step)"
 
 
+def _compute_fork_target_string(
+    *,
+    query: str,
+    routing_targets: list[str],
+    mode_config: WorkflowModeConfig | None = None,
+    extra_satisfied: set[str] | None = None,
+) -> str | None:
+    """Return the deterministic ``fork:mode,mode,...`` target for this query.
+
+    This is the pure, prose-free core of the routing-hint fork branch. It
+    recomputes the same intent-gap / disjoint-coverage decision that
+    ``_compute_capability_routing_hint`` narrates as a hint, and returns
+    the bare ``fork:`` target string (or ``None`` when the routing decision
+    is a single handoff, a sequential chain, or no gap at all).
+
+    The kernel uses this in two places:
+
+    1. ``_compute_capability_routing_hint`` wraps it in the advisory prose
+       the model sees ("Hand off by calling ``transition_stage`` with
+       target_stage_id ``fork:...``").
+    2. The turn runner's **fork enforcer** uses it to detect that a fork
+       hint is active and, when the model refuses to call
+       ``transition_stage`` itself, force the fork deterministically (see
+       the 2026-07-27 incident in ``docs/lessons/``).
+
+    Tag-blind: the kernel only inspects opaque pack-authored intent-tag
+    sets and routing target ids. It names no intent vocabulary here.
+    """
+    if not routing_targets:
+        return None
+    catalog = get_workflow_catalog()
+    detected_intents = _detect_query_intents(query=query, routing_targets=routing_targets)
+    current_satisfied: set[str] = set(
+        mode_config.satisfies_intents if mode_config is not None else []
+    )
+    if extra_satisfied is not None:
+        current_satisfied |= extra_satisfied
+    gap_intents = detected_intents - current_satisfied
+    if not gap_intents:
+        return None
+    # Plan-mode escalation owns the 3+ intent / sequential-2-intent case.
+    # A fork is only suggested for a non-sequential 2+ gap intent query.
+    if "plan" in routing_targets and (
+        len(gap_intents) >= 3 or (len(gap_intents) >= 2 and _query_is_sequential(query))
+    ):
+        return None
+    # Single target covering all gaps → single handoff, not a fork.
+    for target_id in routing_targets:
+        t_cfg = catalog.get(target_id)
+        if t_cfg is None:
+            continue
+        if gap_intents.issubset(set(t_cfg.routing_intent_tags)):
+            return None
+    # Disjoint multi-target coverage → fork (subject to the
+    # producer/consumer sequential guard below).
+    if len(gap_intents) < 2 or _query_is_sequential(query):
+        return None
+    return _build_fork_target(
+        routing_targets=routing_targets,
+        catalog=catalog,
+        gap_intents=gap_intents,
+    )
+
+
+def _fork_has_producer_consumer_mix(gap_intents: set[str]) -> bool:
+    """Return True when the gap mixes a producer intent with a consumer intent.
+
+    A fork runs children in parallel; none can see another's output. When
+    the gap includes both a *producer* intent (research/reasoning —
+    satisfied by producing text the next step consumes) and a *consumer*
+    intent (write/coding — satisfied by consuming that text to create an
+    artifact), a parallel fork is the wrong shape: the consumer has no
+    evidence to work from, re-does the producer's research, and runs out
+    of iterations before reaching its action tool (the 2026-07-27
+    incident: ``markdown`` child did 7 ``fetch_page`` calls across all 5
+    iterations and never called ``write_file``).
+
+    The intent roles are read from the session-injected routing vocabulary
+    (``get_producer_intents`` / ``get_consumer_intents``); the kernel
+    reads them as opaque tags and never names them in code. Returns False
+    when the gap has no such mix (independent forks are still allowed).
+    """
+    producers = _producer_intent_set()
+    consumers = _consumer_intent_set()
+    return bool(gap_intents & producers) and bool(gap_intents & consumers)
+
+
+def _producer_intent_set() -> frozenset[str]:
+    """Return the active producer-intent set (opaque tags)."""
+    from kernel.routing_vocabulary import get_producer_intents  # noqa: PLC0415
+
+    return get_producer_intents()
+
+
+def _consumer_intent_set() -> frozenset[str]:
+    """Return the active consumer-intent set (opaque tags)."""
+    from kernel.routing_vocabulary import get_consumer_intents  # noqa: PLC0415
+
+    return get_consumer_intents()
+
+
+def _build_fork_target(
+    *,
+    routing_targets: list[str],
+    catalog: Any,
+    gap_intents: set[str],
+) -> str | None:
+    """Build the ``fork:`` target string from disjoint-coverage targets.
+
+    Returns the ``fork:mode,mode,...`` string when at least two targets
+    each cover a disjoint subset of ``gap_intents`` and together cover all
+    of them; otherwise ``None``. Refuses the fork when the gap mixes a
+    producer intent with a consumer intent (sequential dependency — see
+    ``_fork_has_producer_consumer_mix``), so the caller falls back to a
+    single handoff and chains the rest via post-handoff hints. Extracted
+    from the fork branch to keep ``_compute_fork_target_string`` and
+    ``_compute_capability_routing_hint`` under the McCabe complexity cap.
+    """
+    # Sequential-dependency guard: a producer/consumer intent mix means a
+    # parallel fork is the wrong shape (the consumer can't see the
+    # producer's output). Return None so the caller routes sequential.
+    if _fork_has_producer_consumer_mix(gap_intents):
+        return None
+    partial_targets: list[str] = []
+    covered_intents: set[str] = set()
+    for target_id in routing_targets:
+        t_cfg = catalog.get(target_id)
+        if t_cfg is None:
+            continue
+        overlap = set(t_cfg.routing_intent_tags) & gap_intents
+        if overlap:
+            partial_targets.append(target_id)
+            covered_intents.update(overlap)
+    if len(partial_targets) >= 2 and covered_intents == gap_intents:
+        return f"fork:{','.join(partial_targets)}"
+    return None
+
+
+def _producer_first_hint(
+    *,
+    query: str,
+    routing_targets: list[str],
+    catalog: Any,
+    gap_intents: set[str],
+) -> str | None:
+    """Build a single-handoff hint to the first producer target.
+
+    Used when the gap mixes a producer intent with a consumer intent: the
+    consumer needs the producer's output, so route to the first producer
+    and let the post-handoff hint chain the consumer after. Returns the
+    hint string, or ``None`` when no producer target's keywords match the
+    query (the caller then falls back to the generic list). Extracted from
+    ``_compute_capability_routing_hint`` to keep that function under the
+    McCabe complexity cap.
+    """
+    if not _fork_has_producer_consumer_mix(gap_intents):
+        return None
+    producer_target = _first_target_for_earliest_intent(
+        query=query,
+        routing_targets=routing_targets,
+        catalog=catalog,
+        gap_intents=gap_intents & _producer_intent_set(),
+    )
+    if not producer_target:
+        return None
+    return (
+        "## Routing Hint\n\n"
+        f"Your current mode may lack the tools needed for this request. "
+        f"Hand off to `{producer_target}` by calling `transition_stage` "
+        f"with target_stage_id `{producer_target}`."
+    )
+
+
 def _compute_capability_routing_hint(
     *,
     mode_id: str,
@@ -298,10 +471,10 @@ def _compute_capability_routing_hint(
     # handoff branch was skipped and the wrong next step was picked.
     covering_targets: list[str] = []
     for target_id in routing_targets:
-        mode_config = catalog.get(target_id)
-        if mode_config is None:
+        target_cfg = catalog.get(target_id)
+        if target_cfg is None:
             continue
-        target_tags = set(mode_config.routing_intent_tags)
+        target_tags = set(target_cfg.routing_intent_tags)
         if gap_intents and gap_intents.issubset(target_tags):
             covering_targets.append(target_id)
 
@@ -369,21 +542,20 @@ def _compute_capability_routing_hint(
                 return hint
             # No partial target found — fall through to the generic list.
         else:
-            partial_targets: list[str] = []
-            covered_intents: set[str] = set()
-            for target_id in routing_targets:
-                mode_config = catalog.get(target_id)
-                if mode_config is None:
-                    continue
-                target_tags = set(mode_config.routing_intent_tags)
-                overlap = target_tags & gap_intents
-                if overlap:
-                    partial_targets.append(target_id)
-                    covered_intents.update(overlap)
-            # Only suggest a fork when the partial targets collectively cover
-            # all remaining gap intents and there are at least 2 of them.
-            if len(partial_targets) >= 2 and covered_intents == gap_intents:
-                fork_target = f"fork:{','.join(partial_targets)}"
+            # Delegate the disjoint-coverage decision to the pure helper so
+            # the fork enforcer and the hint emitter share one truth. Pass
+            # ``mode_config=None`` and the already-merged ``current_satisfied``
+            # as ``extra_satisfied``: the helper would otherwise re-add the
+            # entry mode's satisfies, and the covering-target loop above
+            # shadowed ``mode_config`` with the last target's config.
+            # ``current_satisfied`` is the authoritative gap baseline here.
+            fork_target = _compute_fork_target_string(
+                query=query,
+                routing_targets=routing_targets,
+                mode_config=None,
+                extra_satisfied=current_satisfied,
+            )
+            if fork_target is not None:
                 # Purely mechanical: name the tool and the fork target id. The
                 # kernel does not narrate tool-policy semantics ("mode-scoped
                 # tools", "rejected") or the fork's internal mechanics — the
@@ -395,6 +567,35 @@ def _compute_capability_routing_hint(
                     f"target_stage_id `{fork_target}`."
                 )
                 return hint
+            # Fork refused — when the gap mixes a producer intent with a
+            # consumer intent, the fork was sequential-wrong. Suggest a
+            # single handoff to the first producer target so the
+            # post-handoff hint can chain the consumer after it.
+            _producer_hint = _producer_first_hint(
+                query=query,
+                routing_targets=routing_targets,
+                catalog=catalog,
+                gap_intents=gap_intents,
+            )
+            if _producer_hint is not None:
+                return _producer_hint
+
+    # ── 4b. Producer-first guard for producer/consumer mixes ──────────
+    # When the gap mixes a producer intent (research/reasoning) with a
+    # consumer intent (write/coding), the consumer needs the producer's
+    # output as input. Route to the first *producer* target so the
+    # post-handoff hint can chain the consumer after the producer
+    # produces its evidence. Without this, section 5 below would pick the
+    # consumer (e.g. ``markdown`` covers ``write``) and the consumer would
+    # run with no evidence to consume (the 2026-07-27 incident).
+    _producer_hint = _producer_first_hint(
+        query=query,
+        routing_targets=routing_targets,
+        catalog=catalog,
+        gap_intents=gap_intents,
+    )
+    if _producer_hint is not None:
+        return _producer_hint
 
     # ── 5. Single handoff to the covering target ──────────────────────
     if covering_targets:

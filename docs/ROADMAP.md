@@ -52,6 +52,16 @@ addressed before any new feature work.
      tools — `kernel/turn_phases/_fork.py`, `kernel/models.py`.
   4. Fork regression tests added — see `test_run_turn_fork_no_tools*`,
      `test_distill_retry.py`, `test_normalize_*`.
+- **Follow-on (2026-07-27): model refusal to fork.** The above fixes
+  caught children that hallucinated success, but the upstream gap
+  remained: a weak model could refuse to call `transition_stage` with
+  the `fork:` target at all, burning iterations on read-only tools or
+  returning empty completions until the iteration cap, ending the turn
+  with no fork ever running. Fixed by the forced-fork enforcer — see
+  `docs/lessons/lisa-fork-refusal-2026-07-27.md` and the Forced-Fork
+  section of `docs/ROUTER_DESIGN.md`. Regression tests:
+  `test_forced_fork_when_model_refuses_to_fork`,
+  `test_forced_fork_when_model_returns_empty_completion`.
 
 ### 0.3 Pre-existing test environment issues
 

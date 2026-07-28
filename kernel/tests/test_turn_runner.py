@@ -703,6 +703,86 @@ def test_fork_mode_requires_tools_true_for_action_modes() -> None:
     assert _fork_mode_requires_tools("nonexistent_mode") is False
 
 
+def test_fork_mode_action_tool_ids_returns_authored_action_tools() -> None:
+    """``_fork_mode_action_tool_ids`` returns the authored *side-effecting*
+    operation/tool ids for action modes and an empty set for modes whose
+    authored tools are all read-effect (ponder) or absent (default)."""
+    from kernel.turn_runner import _fork_mode_action_tool_ids
+
+    markdown_actions = _fork_mode_action_tool_ids("markdown")
+    # markdown declares markdown_forge_document / markdown_generate as
+    # authored operations/tools — at least one must be present.
+    assert "markdown_forge_document" in markdown_actions or "markdown_generate" in markdown_actions
+    # ponder's only authored operation is web_search (read-effect) — it
+    # must be excluded because ponder's output is its response text, not a
+    # side-effect. A child that gathers evidence via fetch_page and
+    # produces an opinion has done its job.
+    assert _fork_mode_action_tool_ids("ponder") == set()
+    # Chat-only modes have no authored action tools.
+    assert _fork_mode_action_tool_ids("default") == set()
+    assert _fork_mode_action_tool_ids("nonexistent_mode") == set()
+
+
+@pytest.mark.asyncio
+async def test_run_turn_fork_marks_no_tools_child_when_action_tool_skipped() -> None:
+    """A fork child that makes tool calls but none of its mode's authored
+    *action* tools (only read-only fetches) is marked ``status="no_tools"``.
+
+    Regression for the 2026-07-27 follow-on: the ``markdown`` child did 4
+    ``fetch_page`` calls then exited empty without ever calling
+    ``markdown_forge_document``, so nothing landed on disk — yet the
+    existing ``tool_call_count == 0`` guard passed it as ``ok`` because
+    it made *some* tool calls. The validator now checks that at least one
+    of the mode's authored action tools was invoked.
+    """
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "fork:markdown"}',
+                        },
+                    }
+                ],
+            )
+        # The markdown child calls fetch_page (read-only) instead of its
+        # action tool (markdown_forge_document). It made tool calls, but
+        # none are its mode's authored action tools.
+        return _StubCompletion(
+            content="Done — wrote it to disk.",
+            tool_calls=[
+                {
+                    "id": "call_2",
+                    "function": {
+                        "name": "fetch_page",
+                        "arguments": '{"url": "https://example.com"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(
+        mode_id="default", query="write a markdown guide", hooks=hooks
+    )
+
+    assert result.fork_results is not None
+    assert len(result.fork_results) == 1
+    child = result.fork_results[0]
+    # The child made a tool call (fetch_page) but skipped its action tools,
+    # so it must be flagged no_tools — not ok.
+    assert child.status == "no_tools"
+    assert child.target.mode_id == "markdown"
+
+
 @pytest.mark.asyncio
 async def test_run_turn_emits_model_call_stage_events() -> None:
     """The on_stage hook fires model_call and model_call_complete around
@@ -1255,6 +1335,62 @@ def test_routing_hint_concurrent_query_still_forks() -> None:
     assert hint != ""
     assert "fork:" in hint
     assert "learn" in hint and "markdown" in hint
+
+
+def test_routing_hint_refuses_fork_for_producer_consumer_mix() -> None:
+    """A query whose gap mixes a producer intent (research/reasoning) with
+    a consumer intent (write/coding) must NOT fork — the consumer needs
+    the producer's output as input, but a parallel fork gives it none.
+
+    Regression for the 2026-07-27 incident: "form an opinion... write it
+    to a markdown doc" was routed as ``fork:ponder,markdown,coding,search``.
+    The ``markdown`` child had no evidence to write from, re-did the
+    research with 7 ``fetch_page`` calls across all 5 iterations, and
+    never reached ``write_file``. The kernel now refuses the fork and
+    routes sequential (single handoff to the first producer), letting the
+    post-handoff hint chain the consumer after.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    # ponder = producer (satisfies research/reasoning), markdown = consumer
+    # (satisfies write). A fork mixing them is sequential-wrong.
+    ponder_cfg = _mode_config(
+        mode_id="ponder", satisfies_intents=["research", "reasoning"],
+        routing_intent_tags=["research", "reasoning"],
+        routing_intent_keywords={
+            "research": ["search", "latest", "framework"],
+            "reasoning": ["opinion", "analyze", "compare"],
+        },
+    )
+    markdown_cfg = _mode_config(
+        mode_id="markdown", satisfies_intents=["write"],
+        routing_intent_tags=["write"],
+        routing_intent_keywords={"write": ["write", "markdown", "document"]},
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {
+        "ponder": ponder_cfg,
+        "markdown": markdown_cfg,
+        "default": default_cfg,
+    }
+
+    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="analyze the frameworks and write a markdown doc",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["ponder", "markdown"],
+            mode_config=default_cfg,
+        )
+
+    assert hint != ""
+    # Must NOT fork — the producer/consumer mix is sequential.
+    assert "fork:" not in hint
+    # Must route to the first producer (ponder), so the post-handoff hint
+    # can chain markdown after ponder produces its reasoning.
+    assert "ponder" in hint
 
 
 def test_query_is_sequential_detects_connectors() -> None:

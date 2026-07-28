@@ -260,6 +260,57 @@ Per-worker queries can be passed in `tool_arguments.queries` (a list parallel
 to the fork targets). When not provided, each worker receives the user's
 original message.
 
+#### Forced fork (when the model refuses)
+
+The routing hint is advisory prose — it *asks* the model to call
+`transition_stage` with a `fork:` target. Weak models (e.g.
+`gpt-5.4-mini` in `plan` mode, faced with a strict tool schema) sometimes
+refuse: they do "useful" read-only work instead (`fetch_page`,
+`web_search`), burn iterations, and return an empty completion. The
+turn then exits at the iteration cap with no fork ever running, and the
+no-tools final-completion fallback hallucinates the tool call as prose.
+See `docs/lessons/lisa-fork-refusal-2026-07-27.md`.
+
+The kernel does not beg the model via nudges when it has already
+computed the deterministic next step. The fork target is derivable from
+the same intent-gap / disjoint-coverage logic that built the hint, so the
+kernel forces the fork itself:
+
+- **`_compute_fork_target_string`** (`kernel/turn_phases/_routing_hint.py`)
+  is the pure, prose-free core of the fork branch. It returns the
+  `fork:mode,mode,...` string (or `None`) for a query + routing_targets
+  + current mode. The hint emitter wraps it in advisory prose; the
+  enforcer calls it directly. They share one truth.
+- When a fork hint is injected, the turn loop stores the computed fork
+  target in `_TurnState.forced_fork_target` and resets a
+  `non_fork_tool_dispatches` counter. The chained-hint recomputation
+  block refreshes both after each handoff so the enforcer tracks the
+  post-handoff routing decision.
+- **Tool-dispatch path**: each non-`transition_stage` tool call while a
+  forced fork is pending increments `non_fork_tool_dispatches`. At
+  `_FORCED_FORK_NON_FORK_TOOL_CAP` (default 2), the kernel synthesizes
+  the `transition_stage(fork:...)` call by overriding the current tool
+  call's name/arguments and lets the existing transition interception
+  dispatch the fan-out.
+- **Empty-completion path**: when the model returns no tool calls with a
+  forced fork pending, the kernel synthesizes the fork call and
+  dispatches it on the next iteration instead of accepting the empty
+  turn.
+
+Both paths clear `forced_fork_target` after firing, so the enforcer runs
+at most once per turn and the post-fork hint recomputation can set a
+fresh target if the chain continues.
+
+> **Philosophy.** This is the same lesson as the `no_tools` guard (which
+> catches children that hallucinated success), applied one layer earlier:
+> *don't hand the model advisory prose and trust it.* When the kernel has
+> already decided the routing, the model is the executor. When the
+> executor won't execute a deterministic next step, the kernel takes
+> over. The hint *is* the pressure; once the model has shown it won't act
+> on it, the kernel acts. This matches the framework's standing
+> preference for **opportunistic, pressure-driven** kernel action over
+> repeated nudges.
+
 ### Workflow stage transition (Case 3)
 
 This is the existing path, unchanged. When the model calls

@@ -37,7 +37,11 @@ from typing import Final
 
 __all__ = [
     "DEFAULT_SEQUENTIAL_CONNECTORS",
+    "DEFAULT_PRODUCER_INTENTS",
+    "DEFAULT_CONSUMER_INTENTS",
     "get_sequential_connectors",
+    "get_producer_intents",
+    "get_consumer_intents",
     "register_routing_vocabulary",
     "reset_routing_vocabulary",
 ]
@@ -56,9 +60,40 @@ DEFAULT_SEQUENTIAL_CONNECTORS: Final[tuple[str, ...]] = (
 )
 
 
+# Producer/consumer intent roles for the fork-sequential guard.
+#
+# A fork runs children in parallel with the whole query; none can see
+# another's output. That is correct when every child is *independent*
+# (e.g. ``learn`` writes memory + ``markdown`` writes a doc from the same
+# query text). It is wrong when one child *consumes* another's output —
+# e.g. ``markdown`` writing a doc from research that ``ponder``/``search``
+# gather in parallel. The consumer has no evidence to work from, so it
+# re-does the research and runs out of iterations before reaching its
+# action tool (the 2026-07-27 incident).
+#
+# Sessions override these via ``routing.producer_intents`` /
+# ``routing.consumer_intents`` in ``session_context.md``. The kernel reads
+# them as opaque intent-tag sets (it never names the intents itself in
+# code — these defaults are the historical vocabulary, mirroring the
+# sequential-connector pattern). A fork is refused when the gap intents
+# include both a producer intent and a consumer intent; the hint then
+# falls back to a single handoff to the first producer, and the
+# post-handoff hint chains the consumer after it.
+DEFAULT_PRODUCER_INTENTS: Final[tuple[str, ...]] = (
+    "research",
+    "reasoning",
+)
+DEFAULT_CONSUMER_INTENTS: Final[tuple[str, ...]] = (
+    "write",
+    "coding",
+)
+
+
 # Process-global registry, injected by the host at boot. ``None`` means
 # "no session plan wired — use the historical default".
 _sequential_connectors: tuple[str, ...] | None = None
+_producer_intents: frozenset[str] | None = None
+_consumer_intents: frozenset[str] | None = None
 
 
 def _normalize_connectors(raw: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
@@ -88,18 +123,35 @@ def _normalize_connectors(raw: list[str] | tuple[str, ...] | None) -> tuple[str,
 def register_routing_vocabulary(
     *,
     sequential_connectors: list[str] | tuple[str, ...] | None = None,
+    producer_intents: list[str] | tuple[str, ...] | None = None,
+    consumer_intents: list[str] | tuple[str, ...] | None = None,
 ) -> None:
     """Inject routing vocabulary compiled from the session plan.
 
     Called once at host boot after the session plan is compiled. Passing
-    ``None`` (or an empty list) resets to the historical default, matching
-    pre-vocabulary behavior. The host is responsible for compiling the
-    session plan's ``routing.sequential_connectors`` list and passing it
-    here; the kernel never reads the session plan directly.
+    ``None`` (or an empty list) for a field resets that field to the
+    historical default, matching pre-vocabulary behavior. The host is
+    responsible for compiling the session plan's
+    ``routing.sequential_connectors`` / ``routing.producer_intents`` /
+    ``routing.consumer_intents`` lists and passing them here; the kernel
+    never reads the session plan directly.
     """
-    global _sequential_connectors  # noqa: PLW0603
+    global _sequential_connectors, _producer_intents, _consumer_intents  # noqa: PLW0603
     normalized = _normalize_connectors(sequential_connectors)
     _sequential_connectors = normalized if normalized else None
+    _producer_intents = _normalize_intent_roles(producer_intents, DEFAULT_PRODUCER_INTENTS)
+    _consumer_intents = _normalize_intent_roles(consumer_intents, DEFAULT_CONSUMER_INTENTS)
+
+
+def _normalize_intent_roles(
+    raw: list[str] | tuple[str, ...] | None,
+    default: tuple[str, ...],
+) -> frozenset[str] | None:
+    """Normalize an intent-role list to a frozenset, or ``None`` for default."""
+    if not raw:
+        return None
+    roles = {(entry or "").strip().lower() for entry in raw if (entry or "").strip()}
+    return frozenset(roles) if roles else None
 
 
 def reset_routing_vocabulary() -> None:
@@ -108,8 +160,10 @@ def reset_routing_vocabulary() -> None:
     Primarily for tests that construct a ``TurnHooks`` without a host boot
     path and need a clean slate. Production code never calls this.
     """
-    global _sequential_connectors  # noqa: PLW0603
+    global _sequential_connectors, _producer_intents, _consumer_intents  # noqa: PLW0603
     _sequential_connectors = None
+    _producer_intents = None
+    _consumer_intents = None
 
 
 def get_sequential_connectors() -> tuple[str, ...]:
@@ -122,3 +176,28 @@ def get_sequential_connectors() -> tuple[str, ...]:
     if _sequential_connectors is not None:
         return _sequential_connectors
     return DEFAULT_SEQUENTIAL_CONNECTORS
+
+
+def get_producer_intents() -> frozenset[str]:
+    """Return the active producer-intent set (evidence-gathering intents).
+
+    Intents whose satisfaction produces text/output that a downstream
+    consumer intent (write/coding) needs as input. A fork mixing a
+    producer-satisfying mode with a consumer-satisfying mode is sequential,
+    not parallel. Returns the session-injected set or the historical
+    default.
+    """
+    if _producer_intents is not None:
+        return _producer_intents
+    return frozenset(DEFAULT_PRODUCER_INTENTS)
+
+
+def get_consumer_intents() -> frozenset[str]:
+    """Return the active consumer-intent set (artifact-creating intents).
+
+    Intents whose satisfaction consumes a producer's output to create an
+    artifact (a doc, a code patch). See ``get_producer_intents``.
+    """
+    if _consumer_intents is not None:
+        return _consumer_intents
+    return frozenset(DEFAULT_CONSUMER_INTENTS)

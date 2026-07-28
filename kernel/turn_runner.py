@@ -27,6 +27,7 @@ Gaps (use the full `app/agent.py` turn loop when you need):
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -107,6 +108,20 @@ logger = logging.getLogger(__name__)
 # a write-effect tool.
 _NARRATION_NUDGE_CAP = 3
 
+# Forced-fork enforcer: when a ``fork:`` routing hint is active (the
+# kernel already computed the deterministic fork target from the query's
+# intent gap) and the model refuses to call ``transition_stage`` — instead
+# burning iterations on read-only tools (``fetch_page`` etc.) or returning
+# empty completions — the kernel forces the fork after this many non-fork
+# tool dispatches. The hint encodes the routing decision; the model is the
+# executor. When the executor won't execute a deterministic next step, the
+# kernel takes over rather than beg via nudges (the 2026-07-27 incident:
+# ``plan`` mode burned 5 ``fetch_page`` calls then returned empty, ending
+# the turn with no fork ever running). See
+# ``docs/lessons/lisa-fork-refusal-2026-07-27.md`` and the Forced-Fork
+# section of ``docs/ROUTER_DESIGN.md``.
+_FORCED_FORK_NON_FORK_TOOL_CAP = 2
+
 # Stuck-session guard: after this many turns in the same stage without a
 # transition, the loop injects a nudge message prompting the model to
 # transition or ask the user. After the cap, the loop forces a final
@@ -140,6 +155,10 @@ class TurnResult:
 
     response_text: str
     tool_call_count: int = 0
+    called_tool_names: set[str] = field(default_factory=set)
+    """Names of every tool actually dispatched this turn. Used by the
+    fork-child validator to confirm an action mode's child invoked at
+    least one of its authored action tools, not just read-only fetches."""
     iteration_count: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -1441,6 +1460,20 @@ async def _run_turn_inner(
             routing_hint[:200],
         )
         system_prompt = system_prompt + "\n\n" + routing_hint
+        # ── Forced-fork enforcer: precompute the deterministic fork target.
+        # When the routing hint names a ``fork:`` target, the kernel already
+        # decided the routing. The model is the executor. If it refuses to
+        # call ``transition_stage`` — instead burning iterations on read-only
+        # tools or returning empty completions (the 2026-07-27 incident) —
+        # the turn loop forces the fork itself rather than begging via
+        # nudges. Stored on ``_state`` and consumed in the tool-dispatch
+        # branch; re-computed after each handoff by the chained-hint block.
+        _state.forced_fork_target = _compute_fork_target_string(
+            query=query,
+            routing_targets=get_routing_targets(mode_id) if mode_config else [],
+            mode_config=mode_config,
+        ) or ""
+        _state.non_fork_tool_dispatches = 0
     else:
         _log.info(
             "no routing hint mode=%s (satisfies_intents=%s routing_targets=%s)",
@@ -1833,136 +1866,181 @@ async def _run_turn_inner(
         messages.append(assistant_msg)
 
         if not tool_calls:
+            # ── Forced-fork enforcer (empty-completion path) ───────────
+            # The model returned no tool calls while a deterministic fork
+            # target is pending. This is the 2026-07-27 Run B failure:
+            # ``plan`` mode returned empty content on iteration 7 with a
+            # fork hint active, ending the turn with no fork ever running
+            # and the iteration-cap fallback hallucinating the tool call
+            # as prose. Synthesize the ``transition_stage(fork:...)`` call
+            # ourselves and dispatch it on this iteration instead of
+            # accepting the empty turn.
+            _synthesized_fork = False
+            if _state.forced_fork_target:
+                _log.warning(
+                    "model returned no tool calls with a forced fork "
+                    "pending (mode=%s, iteration=%d); kernel synthesizing "
+                    "fork target=%s",
+                    mode_id,
+                    _state.iteration,
+                    _state.forced_fork_target,
+                )
+                synth_call = {
+                    "id": f"forced_fork_empty_{_state.iteration}",
+                    "function": {
+                        "name": _TRANSITION_TOOL_NAME,
+                        "arguments": json.dumps(
+                            {
+                                "target_stage_id": _state.forced_fork_target,
+                                "rationale": (
+                                    "Kernel-forced fork: the model returned no "
+                                    "tool calls after the routing hint named "
+                                    "this fork target."
+                                ),
+                            }
+                        ),
+                    },
+                }
+                # Append the synthesized tool call to the last assistant
+                # message (which had no tool_calls) so the tool result
+                # message we attach below stays well-formed.
+                assistant_msg["tool_calls"] = [synth_call]
+                tool_calls = [synth_call]
+                _state.forced_fork_target = ""
+                _state.non_fork_tool_dispatches = 0
+                _synthesized_fork = True
+
             content = getattr(completion, "content", "") or ""
             content = content.strip()
 
-            # ── Hallucinated-transition guard ──────────────────────────
-            # Models sometimes *narrate* a stage transition or handoff in
-            # their text output ("I have transitioned to the search stage…"
-            # / "I would go into coding mode…") instead of actually calling
-            # the ``transition_stage`` tool. When a routing hint is active,
-            # detect transition-like language and inject a correction nudge
-            # so the model retries with the actual tool call.
-            #
-            # The guard fires when:
-            #   - A routing hint is active (the model was told to hand off)
-            #   - The model has NOT yet called transition_stage this turn
-            #     (``transitioned_to`` is still None AND ``handoff_to`` is
-            #     None — either kind of transition counts)
-            #   - We haven't exhausted the retry cap (prevents infinite
-            #     loops with models that never learn to call the tool)
-            #
-            # NOTE: the ``tools_dispatched_ever`` condition was REMOVED.
-            # In a sequential chain the model does real work in each mode
-            # (e.g. web_search in search mode) and then needs to be told
-            # to call transition_stage to continue. The old condition
-            # suppressed the guard after the model did any tool work,
-            # which meant the chain stalled — the model summarized the
-            # search results, said "I would go into coding mode", and
-            # ended the turn without calling the tool.
-            #
-            # After the cap, the guard gives up and lets the narrated
-            # response through so the user sees something rather than a
-            # silent hang. The cap (``_NARRATION_NUDGE_CAP``) is defined at
-            # module scope so the write-tool guard below can share it.
-            if routing_hint and _narration_nudge_count < _NARRATION_NUDGE_CAP:
-                lowered = content.lower()
-                transition_markers = (
-                    "i have transitioned",
-                    "i'll transition",
-                    "i'll hand off",
-                    "i will now transition",
-                    "i am now transitioning",
-                    "i will now hand off",
-                    "i have moved to",
-                    "i am now in the",
-                    "moving to the",
-                    "transitioning to the",
-                    "i would go into",
-                    "i'd go into",
-                    "i would transition",
-                    "i'd transition",
-                    "i would hand off",
-                    "i'd hand off",
-                    "i would move to",
-                    "i'd move to",
-                    "next i would",
-                    "then i would",
-                    "i would then",
-                    "i would proceed",
-                    "i'd proceed",
-                    "i will proceed",
-                )
-                if any(m in lowered for m in transition_markers):
-                    _narration_nudge_count += 1
-                    _log.warning(
-                        "model narrated a transition without calling "
-                        "transition_stage; injecting correction nudge "
-                        "(mode=%s, iteration=%d, nudge=%d/%d)",
-                        mode_id,
-                        _state.iteration,
-                        _narration_nudge_count,
-                        _NARRATION_NUDGE_CAP,
-                    )
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "You wrote that you would transition or go "
-                                "into another mode, but you did not actually "
-                                "call the `transition_stage` tool. A "
-                                "transition only happens when you call the "
-                                "tool — writing about it does nothing. "
-                                "Call `transition_stage` now with the "
-                                "appropriate `target_stage_id`. If you "
-                                "cannot or should not transition, respond "
-                                "directly to the user without claiming a "
-                                "transition."
-                            ),
-                        }
-                    )
-                    continue
-
-                # ── Chain-incomplete guard (silent stop) ────────────────
-                # After a handoff to an action mode, the mode naturally
-                # "summarize and stop" once its entry work is done. When a
-                # post-handoff hint is still active (the workflow is not
-                # finished) but the model produced a final text response
-                # WITHOUT calling ``transition_stage`` and WITHOUT narrating
-                # a transition, the chain stalls. Inject a correction nudge
-                # so the model calls ``transition_stage`` to continue.
+            if not _synthesized_fork:
+                # ── Hallucinated-transition guard ──────────────────────────
+                # Models sometimes *narrate* a stage transition or handoff in
+                # their text output ("I have transitioned to the search stage…"
+                # / "I would go into coding mode…") instead of actually calling
+                # the ``transition_stage`` tool. When a routing hint is active,
+                # detect transition-like language and inject a correction nudge
+                # so the model retries with the actual tool call.
                 #
-                # Detection: routing hint active, no transition markers in
-                # the text, no transition occurred this turn, and we haven't
-                # exhausted the retry cap. Mirrors the hallucinated-
-                # transition guard's bounds so the model still gets to
-                # produce a final response after the cap.
-                if transitioned_to is None and handoff_to is None:
-                    _narration_nudge_count += 1
-                    _log.warning(
-                        "model ended the turn without calling "
-                        "transition_stage while a routing hint is active; "
-                        "injecting chain-incomplete nudge (mode=%s, "
-                        "iteration=%d, nudge=%d/%d)",
-                        mode_id,
-                        _state.iteration,
-                        _narration_nudge_count,
-                        _NARRATION_NUDGE_CAP,
+                # The guard fires when:
+                #   - A routing hint is active (the model was told to hand off)
+                #   - The model has NOT yet called transition_stage this turn
+                #     (``transitioned_to`` is still None AND ``handoff_to`` is
+                #     None — either kind of transition counts)
+                #   - We haven't exhausted the retry cap (prevents infinite
+                #     loops with models that never learn to call the tool)
+                #
+                # NOTE: the ``tools_dispatched_ever`` condition was REMOVED.
+                # In a sequential chain the model does real work in each mode
+                # (e.g. web_search in search mode) and then needs to be told
+                # to call transition_stage to continue. The old condition
+                # suppressed the guard after the model did any tool work,
+                # which meant the chain stalled — the model summarized the
+                # search results, said "I would go into coding mode", and
+                # ended the turn without calling the tool.
+                #
+                # After the cap, the guard gives up and lets the narrated
+                # response through so the user sees something rather than a
+                # silent hang. The cap (``_NARRATION_NUDGE_CAP``) is defined at
+                # module scope so the write-tool guard below can share it.
+                if routing_hint and _narration_nudge_count < _NARRATION_NUDGE_CAP:
+                    lowered = content.lower()
+                    transition_markers = (
+                        "i have transitioned",
+                        "i'll transition",
+                        "i'll hand off",
+                        "i will now transition",
+                        "i am now transitioning",
+                        "i will now hand off",
+                        "i have moved to",
+                        "i am now in the",
+                        "moving to the",
+                        "transitioning to the",
+                        "i would go into",
+                        "i'd go into",
+                        "i would transition",
+                        "i'd transition",
+                        "i would hand off",
+                        "i'd hand off",
+                        "i would move to",
+                        "i'd move to",
+                        "next i would",
+                        "then i would",
+                        "i would then",
+                        "i would proceed",
+                        "i'd proceed",
+                        "i will proceed",
                     )
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "You completed this mode's work but the "
-                                "workflow is not finished. Call "
-                                "`transition_stage` to continue to the "
-                                "next step. Do not end the turn here."
-                            ),
-                        }
-                    )
-                    continue
+                    if any(m in lowered for m in transition_markers):
+                        _narration_nudge_count += 1
+                        _log.warning(
+                            "model narrated a transition without calling "
+                            "transition_stage; injecting correction nudge "
+                            "(mode=%s, iteration=%d, nudge=%d/%d)",
+                            mode_id,
+                            _state.iteration,
+                            _narration_nudge_count,
+                            _NARRATION_NUDGE_CAP,
+                        )
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "You wrote that you would transition or go "
+                                    "into another mode, but you did not actually "
+                                    "call the `transition_stage` tool. A "
+                                    "transition only happens when you call the "
+                                    "tool — writing about it does nothing. "
+                                    "Call `transition_stage` now with the "
+                                    "appropriate `target_stage_id`. If you "
+                                    "cannot or should not transition, respond "
+                                    "directly to the user without claiming a "
+                                    "transition."
+                                ),
+                            }
+                        )
+                        continue
 
-            break
+                    # ── Chain-incomplete guard (silent stop) ────────────────
+                    # After a handoff to an action mode, the mode naturally
+                    # "summarize and stop" once its entry work is done. When a
+                    # post-handoff hint is still active (the workflow is not
+                    # finished) but the model produced a final text response
+                    # WITHOUT calling ``transition_stage`` and WITHOUT narrating
+                    # a transition, the chain stalls. Inject a correction nudge
+                    # so the model calls ``transition_stage`` to continue.
+                    #
+                    # Detection: routing hint active, no transition markers in
+                    # the text, no transition occurred this turn, and we haven't
+                    # exhausted the retry cap. Mirrors the hallucinated-
+                    # transition guard's bounds so the model still gets to
+                    # produce a final response after the cap.
+                    if transitioned_to is None and handoff_to is None:
+                        _narration_nudge_count += 1
+                        _log.warning(
+                            "model ended the turn without calling "
+                            "transition_stage while a routing hint is active; "
+                            "injecting chain-incomplete nudge (mode=%s, "
+                            "iteration=%d, nudge=%d/%d)",
+                            mode_id,
+                            _state.iteration,
+                            _narration_nudge_count,
+                            _NARRATION_NUDGE_CAP,
+                        )
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "You completed this mode's work but the "
+                                    "workflow is not finished. Call "
+                                    "`transition_stage` to continue to the "
+                                    "next step. Do not end the turn here."
+                                ),
+                            }
+                        )
+                        continue
+
+                break
 
         # Dispatch tool calls — MCP tools via pool, operations in-process.
         tools_dispatched = False
@@ -2019,6 +2097,90 @@ async def _run_turn_inner(
                         }
                     )
                     continue
+
+            # ── Forced-fork enforcer ──────────────────────────────────
+            # When the kernel has computed a deterministic ``fork:`` target
+            # (``_state.forced_fork_target``) and the model refuses to call
+            # ``transition_stage`` — instead burning iterations on read-only
+            # tools (``fetch_page``, ``web_search``) or returning empty
+            # completions — the kernel forces the fork itself. The routing
+            # hint already encodes the routing decision; the model is the
+            # executor. When the executor won't execute a deterministic
+            # next step, the kernel takes over rather than begging via
+            # nudges (the 2026-07-27 incident: ``plan`` mode burned 5
+            # ``fetch_page`` calls then returned empty, ending the turn
+            # with no fork ever running and the model hallucinating the
+            # tool call as prose in the iteration-cap fallback).
+            #
+            # Detection: a forced fork target is set AND the model called a
+            # non-``transition_stage`` tool. Each such dispatch increments
+            # ``non_fork_tool_dispatches``; at the cap, the kernel
+            # synthesizes the ``transition_stage(fork:...)`` call itself by
+            # overriding the current tool call's name/arguments and letting
+            # the existing transition interception handle the fan-out.
+            # ``transition_stage`` calls (fork or otherwise) reset the
+            # counter and never trigger the enforcer.
+            if (
+                _state.forced_fork_target
+                and tool_name != _TRANSITION_TOOL_NAME
+            ):
+                _state.non_fork_tool_dispatches += 1
+                if _state.non_fork_tool_dispatches >= _FORCED_FORK_NON_FORK_TOOL_CAP:
+                    _log.warning(
+                        "model refused to fork (mode=%s, iteration=%d, "
+                        "non_fork_tool_dispatches=%d); kernel forcing fork "
+                        "target=%s",
+                        mode_id,
+                        _state.iteration,
+                        _state.non_fork_tool_dispatches,
+                        _state.forced_fork_target,
+                    )
+                    # Synthesize the fork call. Mutate the current
+                    # ``tool_call`` dict IN PLACE — it is the same object
+                    # referenced by the assistant message already appended
+                    # to ``messages`` (``assistant_msg["tool_calls"] =
+                    # tool_calls`` above). Overriding ``function.name`` /
+                    # ``function.arguments`` here keeps the assistant
+                    # message and the tool result message consistent, so
+                    # the provider sees a well-formed tool_call → tool
+                    # result pair. Keep the original ``id`` so the tool
+                    # result message's ``tool_call_id`` matches the
+                    # assistant message's ``tool_calls[].id`` (the
+                    # 2026-07-27 follow-on: a fresh ``forced_fork_N`` id
+                    # was rejected by the provider with ``Invalid
+                    # parameter: 'tool_call_id' not found in 'tool_calls'
+                    # of previous message``).
+                    tool_call["function"]["name"] = _TRANSITION_TOOL_NAME
+                    tool_call["function"]["arguments"] = json.dumps(
+                        {
+                            "target_stage_id": _state.forced_fork_target,
+                            "rationale": (
+                                "Kernel-forced fork: the model did not call "
+                                "transition_stage after the routing hint "
+                                "named this fork target."
+                            ),
+                        }
+                    )
+                    tool_name = _TRANSITION_TOOL_NAME
+                    tool_arguments = {
+                        "target_stage_id": _state.forced_fork_target,
+                        "rationale": (
+                            "Kernel-forced fork: the model did not call "
+                            "transition_stage after the routing hint named "
+                            "this fork target."
+                        ),
+                    }
+                    # tool_call_id stays the original — already set above
+                    # from ``tool_call.get("id")``.
+                    # The enforcer fires once per turn; clear the target so
+                    # a subsequent model-issued fork on a later iteration
+                    # is not re-enforced and so the post-fork hint
+                    # recomputation can set a fresh target if needed.
+                    _state.forced_fork_target = ""
+                    _state.non_fork_tool_dispatches = 0
+                    # Fall through: the transition interception below now
+                    # sees ``tool_name == _TRANSITION_TOOL_NAME`` and
+                    # dispatches the fork.
 
             # Per-target ``max_calls_per_turn`` enforcement (item 2). The
             # ledger is the single enforcement point across operations and
@@ -2153,6 +2315,13 @@ async def _run_turn_inner(
 
                     # ── Case A: fork fan-out ──────────────────────────────
                     if is_fork_target(target_stage):
+                        # The model honored the routing hint and called
+                        # ``transition_stage`` itself. Clear the forced-fork
+                        # enforcer state so it does not re-fire on a later
+                        # iteration (e.g. the post-fork synthesis turn that
+                        # returns text without tool calls).
+                        _state.forced_fork_target = ""
+                        _state.non_fork_tool_dispatches = 0
                         fork_targets_raw = parse_fork_target_string(target_stage)
                         fork_results_list: list[ForkChildResult] = []
                         if not fork_targets_raw:
@@ -2344,6 +2513,13 @@ async def _run_turn_inner(
 
                     # ── Case B: mode handoff (routing FSM) ────────────────
                     if is_routable_mode(target_stage):
+                        # The model honored the routing hint (chose a single
+                        # handoff instead of the suggested fork). Clear the
+                        # forced-fork enforcer state; the post-handoff hint
+                        # recomputation below will set a fresh target if the
+                        # new mode still leaves a fork gap.
+                        _state.forced_fork_target = ""
+                        _state.non_fork_tool_dispatches = 0
                         # Hard backstop against routing-hint loops. The
                         # ``chain_satisfied`` accumulator is the primary
                         # breaker, but it depends on accurate pack-authored
@@ -2616,6 +2792,19 @@ async def _run_turn_inner(
                                             + post_handoff_hint
                                         )
                                         routing_hint = post_handoff_hint
+                                        # Refresh the forced-fork target for the
+                                        # new mode so the enforcer tracks the
+                                        # post-handoff routing decision.
+                                        _state.forced_fork_target = (
+                                            _compute_fork_target_string(
+                                                query=query,
+                                                routing_targets=get_routing_targets(target_stage),
+                                                mode_config=target_mode_config,
+                                                extra_satisfied=_state.chain_satisfied,
+                                            )
+                                            or ""
+                                        )
+                                        _state.non_fork_tool_dispatches = 0
                                 else:
                                     # The new mode satisfies all remaining
                                     # intents; clear the stale hint so the
@@ -2623,6 +2812,9 @@ async def _run_turn_inner(
                                     routing_hint = ""
                                     _state.duplicate_hint_count = 0
                                     _state.last_hint_text = ""
+                                    # No remaining gap → no forced fork.
+                                    _state.forced_fork_target = ""
+                                    _state.non_fork_tool_dispatches = 0
                                 tool_output = f"Handed off to mode: {target_stage}." + (
                                     f" Rationale: {rationale}" if rationale else ""
                                 )
@@ -2774,6 +2966,7 @@ async def _run_turn_inner(
                     mcp_result = await pool.call_tool(tool_name, tool_arguments)
                     tool_output = mcp_result.output_text or "Done"
                 _state.total_tool_calls += 1
+                _state.called_tool_names.add(tool_name)
                 ledger.record(tool_name)
             except ApprovalRequired:
                 raise
@@ -3040,6 +3233,7 @@ async def _run_turn_inner(
     return TurnResult(
         response_text=content,
         tool_call_count=_state.total_tool_calls,
+        called_tool_names=set(_state.called_tool_names),
         iteration_count=_state.iteration,
         prompt_tokens=_state.total_prompt_tokens,
         completion_tokens=_state.total_completion_tokens,
@@ -3073,6 +3267,7 @@ from kernel.turn_phases._fork import (  # noqa: F401, F403
     _build_minimal_context,
     _execute_fork_fanout,
     _fork_child_budget,
+    _fork_mode_action_tool_ids,
     _fork_mode_requires_tools,
     _run_fork_child,
     _run_fork_child_turn,
@@ -3092,6 +3287,7 @@ from kernel.turn_phases._post_turn import (  # noqa: F401, F403
 )
 from kernel.turn_phases._routing_hint import (  # noqa: F401, F403
     _compute_capability_routing_hint,
+    _compute_fork_target_string,
     _detect_query_intents,
     _first_target_for_earliest_intent,
     _format_remaining_steps,

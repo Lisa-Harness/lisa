@@ -120,7 +120,8 @@ def test_fork_mode_requires_tools_true_for_learn() -> None:
 
 
 def test_fork_mode_requires_tools_true_for_markdown() -> None:
-    """markdown mode declares allowed_operation_ids, so it requires tools."""
+    """markdown mode declares write-effect tools (write_file,
+    markdown_generate), so it requires tools."""
     assert _fork_mode_requires_tools("markdown") is True
 
 
@@ -129,9 +130,12 @@ def test_fork_mode_requires_tools_false_for_default() -> None:
     assert _fork_mode_requires_tools("default") is False
 
 
-def test_fork_mode_requires_tools_true_for_ponder() -> None:
-    """ponder declares allowed_operation_ids (web_search), so it requires tools."""
-    assert _fork_mode_requires_tools("ponder") is True
+def test_fork_mode_requires_tools_false_for_ponder() -> None:
+    """ponder's only authored operation is web_search (read-effect), so it
+    does NOT require tools — its output is the response text (the
+    reasoning), not a side-effect on disk. A child that gathers evidence
+    via fetch_page and produces an opinion has done its job."""
+    assert _fork_mode_requires_tools("ponder") is False
 
 
 def test_fork_mode_requires_tools_false_for_unknown_mode() -> None:
@@ -537,6 +541,221 @@ async def test_workflow_transition_invalid_target_produces_error_output() -> Non
     assert any(
         "failed" in out.lower() or "transition" in out.lower() for out in captured_tool_outputs
     )
+
+
+# ── Forced-fork enforcer (2026-07-27 incident) ──────────────────────
+#
+# Regression for the 2026-07-27 stall: a multi-stage workflow handed off
+# to ``plan``, the post-handoff routing hint named a ``fork:`` target, and
+# the model refused to call ``transition_stage`` — instead burning
+# iterations on read-only ``fetch_page`` calls (or returning empty
+# completions) until the iteration cap, ending the turn with no fork ever
+# running. The kernel now forces the fork itself when the model won't.
+# See ``docs/lessons/lisa-fork-refusal-2026-07-27.md`` and the Forced-Fork
+# section of ``docs/ROUTER_DESIGN.md``.
+
+
+def test_compute_fork_target_string_returns_none_without_routing_targets() -> None:
+    """With no routing_targets, no fork target is computed."""
+    from kernel.turn_phases._routing_hint import _compute_fork_target_string
+
+    assert (
+        _compute_fork_target_string(
+            query="anything",
+            routing_targets=[],
+            mode_config=None,
+        )
+        is None
+    )
+
+
+def test_compute_fork_target_string_returns_none_when_no_gap() -> None:
+    """When the current mode already satisfies all detected intents, no fork."""
+    from kernel.ipsar_fsm import get_workflow_catalog
+    from kernel.turn_phases._routing_hint import _compute_fork_target_string
+
+    catalog = get_workflow_catalog()
+    target = _compute_fork_target_string(
+        query="hello",  # no detectable intents
+        routing_targets=["learn", "markdown"],
+        mode_config=catalog.get("default"),
+    )
+    assert target is None
+
+
+@pytest.mark.asyncio
+async def test_forced_fork_when_model_refuses_to_fork() -> None:
+    """When a fork routing hint is active and the model calls non-fork
+    tools instead of ``transition_stage``, the kernel forces the fork
+    after ``_FORCED_FORK_NON_FORK_TOOL_CAP`` non-fork dispatches.
+
+    Regression for the 2026-07-27 incident: the model burned 5
+    ``fetch_page`` calls in ``plan`` mode with a ``fork:`` hint active and
+    never called ``transition_stage``, ending the turn with no fork ever
+    running. The enforcer synthesizes the fork call itself.
+    """
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # First call: model does a read-only fetch instead of forking.
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "fetch_page",
+                            "arguments": '{"url": "https://example.com"}',
+                        },
+                    }
+                ],
+            )
+        if call_count == 2:
+            # Second call: model does ANOTHER read-only fetch instead of
+            # forking. This hits the _FORCED_FORK_NON_FORK_TOOL_CAP=2.
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_2",
+                        "function": {
+                            "name": "fetch_page",
+                            "arguments": '{"url": "https://example.org"}',
+                        },
+                    }
+                ],
+            )
+        # Subsequent calls: the kernel has forced the fork; the children
+        # and the parent synthesis return text.
+        return _StubCompletion(content="Synthesized from forced fork.")
+
+    hooks = _build_hooks(two_step)
+    # A query that triggers a fork hint from default mode (learn + write).
+    result = await run_turn(
+        mode_id="default",
+        query="remember this learning and write a markdown guide",
+        hooks=hooks,
+    )
+
+    # The forced fork must have run — fork_results is populated even though
+    # the model never called transition_stage with a fork target.
+    assert result.fork_results is not None
+    assert len(result.fork_results) >= 2
+
+
+@pytest.mark.asyncio
+async def test_forced_fork_tool_call_id_matches_assistant_message() -> None:
+    """When the enforcer overrides a non-fork tool call with a forced
+    ``transition_stage(fork:...)`` call, the assistant message's
+    ``tool_calls[].id`` and the tool result message's ``tool_call_id``
+    must stay consistent — otherwise the provider rejects the turn with
+    ``Invalid parameter: 'tool_call_id' not found in 'tool_calls' of
+    previous message`` (the 2026-07-27 follow-on BadRequestError).
+
+    Regression: the enforcer must mutate the tool_call dict in place
+    (keeping the original id), not mint a fresh ``forced_fork_N`` id that
+    the assistant message does not carry.
+    """
+    call_count = 0
+    captured_messages: list[list[dict[str, Any]]] = []
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        # Capture the messages list on every call so we can verify the
+        # assistant message -> tool result pairing the provider sees.
+        captured_messages.append(list(kwargs.get("messages", [])))
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "fetch_page",
+                            "arguments": '{"url": "https://example.com"}',
+                        },
+                    }
+                ],
+            )
+        if call_count == 2:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_2",
+                        "function": {
+                            "name": "fetch_page",
+                            "arguments": '{"url": "https://example.org"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Synthesized from forced fork.")
+
+    hooks = _build_hooks(two_step)
+    await run_turn(
+        mode_id="default",
+        query="remember this learning and write a markdown guide",
+        hooks=hooks,
+    )
+
+    # Walk every assistant message that has tool_calls and verify each
+    # following tool result message references an id that exists in the
+    # assistant message's tool_calls. This is the invariant the provider
+    # enforces; the enforcer must not break it.
+    for msgs in captured_messages:
+        for i, msg in enumerate(msgs):
+            if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                continue
+            assistant_ids = {
+                str(tc.get("id") or "") for tc in msg["tool_calls"]
+            }
+            # The next message(s) should be tool results for these calls.
+            for j in range(i + 1, len(msgs)):
+                tool_msg = msgs[j]
+                if tool_msg.get("role") != "tool":
+                    break
+                tcid = str(tool_msg.get("tool_call_id") or "")
+                assert tcid in assistant_ids, (
+                    f"tool result tool_call_id {tcid!r} not found in "
+                    f"preceding assistant tool_calls ids {assistant_ids}"
+                )
+
+
+@pytest.mark.asyncio
+async def test_forced_fork_when_model_returns_empty_completion() -> None:
+    """When a fork routing hint is active and the model returns an empty
+    completion (no tool calls, no content), the kernel synthesizes the
+    fork call instead of accepting the empty turn.
+
+    Regression for the 2026-07-27 Run B: ``plan`` mode returned empty
+    content on iteration 7 with a fork hint active, ending the turn with
+    no fork ever running.
+    """
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        # First call: model returns empty — no tool calls, no content.
+        if call_count == 1:
+            return _StubCompletion(content="", tool_calls=None)
+        # After the kernel forces the fork, return synthesis text.
+        return _StubCompletion(content="Synthesized from forced fork.")
+
+    hooks = _build_hooks(two_step)
+    result = await run_turn(
+        mode_id="default",
+        query="remember this learning and write a markdown guide",
+        hooks=hooks,
+    )
+
+    assert result.fork_results is not None
+    assert len(result.fork_results) >= 2
 
 
 # ── Transition: missing target_stage_id ──────────────────────────────
