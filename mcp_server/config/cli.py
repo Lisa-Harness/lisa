@@ -100,8 +100,18 @@ def configure_logging(level: str, *, server_name: str) -> logging.Logger:
     Routes through the shared :func:`sdk.logging_setup.configure_logging`
     so MCP servers emit the same JSON format as the hosts. MCP servers run
     as separate stdio subprocesses; their log file lives under the
-    server's ``--data-dir`` (via ``LISA_MCP_LOG_PATH``) and stderr mirroring
-    follows the ``LISA_LOG_STDERR`` env var (default off for subprocesses).
+    server's ``--data-dir`` (via ``LISA_MCP_LOG_PATH``, injected by
+    ``kernel.mcp_launch.compiler``) and stderr mirroring follows the
+    ``LISA_LOG_STDERR`` env var (default off for subprocesses).
+
+    When ``LISA_MCP_LOG_PATH`` is unset (e.g. a server launched outside the
+    host's compiler, or a third-party server that cleared its env), the
+    server falls back to a per-server JSONL file at
+    ``<cwd>/<server_name>.jsonl`` — never to bare stderr. The MCP Python
+    SDK's ``StdioServerParameters`` has no ``stderr=`` field in this
+    version, so a ``basicConfig``-on-stderr default would inherit into
+    the host terminal and corrupt the Rich TUI on Linux. Set
+    ``LISA_LOG_STDERR=1`` to force the stderr mirror on for debugging.
     """
     from sdk.logging_setup import (  # noqa: PLC0415
         LISA_LOG_DEBUG_ENV,
@@ -110,18 +120,15 @@ def configure_logging(level: str, *, server_name: str) -> logging.Logger:
     )
 
     log_path = os.getenv("LISA_MCP_LOG_PATH", "")
-    if log_path:
-        _configure_shared(
-            log_path=Path(log_path),
-            level=level,
-            debug_modules=_parse_debug_modules(os.getenv(LISA_LOG_DEBUG_ENV, "")),
-            host_kind=None,
-        )
-    else:
-        # No file path supplied — keep the legacy basicConfig behaviour so
-        # servers without a data-dir still get readable stderr logs.
-        logging.basicConfig(
-            level=getattr(logging, level.upper(), logging.INFO),
-            format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        )
+    if not log_path:
+        # Fall back to a per-server JSONL file in the current working
+        # directory (the host sets cwd to the data dir for first-party
+        # servers). Avoids the inherited-stderr leak.
+        log_path = str(Path.cwd() / f"{server_name}.jsonl")
+    _configure_shared(
+        log_path=Path(log_path),
+        level=level,
+        debug_modules=_parse_debug_modules(os.getenv(LISA_LOG_DEBUG_ENV, "")),
+        host_kind=None,
+    )
     return logging.getLogger(server_name)

@@ -185,7 +185,7 @@ class HostConfig:
 
     @property
     def resolved_host_log_path(self) -> Path:
-        return self.host_log_path or (self.data_dir / "host.log")
+        return self.host_log_path or (self.data_dir / "host.jsonl")
 
     @property
     def resolved_models_path(self) -> Path:

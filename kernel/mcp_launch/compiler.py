@@ -159,6 +159,18 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
     env = compile_env(spec.env_policy)
     cwd = compile_cwd(spec.cwd_policy, workspace_root=spec.workspace_root)
 
+    # Default each first-party MCP server's logs to a per-server JSONL file
+    # under its resolved data dir. The first-party servers read
+    # ``LISA_MCP_LOG_PATH`` in ``mcp_server/config/cli.py:configure_logging``
+    # and route through the shared ``sdk.logging_setup`` JSON formatter.
+    # Without this, servers fall back to ``logging.basicConfig`` on stderr,
+    # which the MCP SDK's ``StdioServerParameters`` (no ``stderr=`` field in
+    # this version) inherits into the host terminal — visible on Linux as
+    # stray log lines corrupting the Rich TUI. A spec may override
+    # ``LISA_MCP_LOG_PATH`` via ``env_policy.forced_overrides``; respect that.
+    if resolved_data_dir is not None and "LISA_MCP_LOG_PATH" not in env:
+        env["LISA_MCP_LOG_PATH"] = str(Path(resolved_data_dir) / f"{spec.server_id}.jsonl")
+
     return MCPClientConfig(
         server_id=spec.server_id,
         command=command,

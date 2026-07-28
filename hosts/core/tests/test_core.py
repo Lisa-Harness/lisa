@@ -42,7 +42,7 @@ class TestHostConfig:
     def test_resolved_paths(self, tmp_path: Path) -> None:
         config = HostConfig.from_env(data_dir=str(tmp_path))
         assert config.resolved_thread_dir == tmp_path / "threads"
-        assert config.resolved_host_log_path == tmp_path / "host.log"
+        assert config.resolved_host_log_path == tmp_path / "host.jsonl"
 
     def test_streaming_config(self) -> None:
         config = HostConfig.from_env(streaming="hybrid:50")

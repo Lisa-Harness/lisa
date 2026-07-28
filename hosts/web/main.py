@@ -82,7 +82,7 @@ HostLogOption = Annotated[
     str,
     typer.Option(
         "--host-log",
-        help="Stdlib host log file. Default: <data-dir>/host.log",
+        help="Stdlib host log file. Default: <data-dir>/host.jsonl",
     ),
 ]
 DataDirOption = Annotated[

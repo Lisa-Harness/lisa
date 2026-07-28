@@ -211,7 +211,7 @@ HostLogOption = Annotated[
         "--host-log",
         help=(
             "Stdlib host log file (kernel/sdk startup and runtime logs). "
-            "Default: <data-dir>/host.log"
+            "Default: <data-dir>/host.jsonl"
         ),
     ),
 ]
