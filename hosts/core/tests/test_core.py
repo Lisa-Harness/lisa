@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -523,6 +524,61 @@ class TestHandleMessage:
 
         config = HostConfig.from_env(data_dir=str(tmp_path))
         runtime = HostRuntime(config)
+
+        class _FakeStoragePool:
+            async def call_tool(
+                self,
+                tool_id: str,
+                arguments: dict[str, object],
+                *,
+                server_id: str | None = None,
+            ) -> object:
+                from types import SimpleNamespace
+
+                if server_id != "lisa-storage":
+                    return SimpleNamespace(
+                        output_text=f"Unknown MCP server '{server_id}'.",
+                        is_error=True,
+                    )
+
+                which = str(arguments.get("which") or "proposal").strip().lower()
+                if which == "active":
+                    path = runtime.models_path
+                else:
+                    path = runtime.models_proposal_path
+
+                if tool_id == "read_model_manifest":
+                    if not path.is_file():
+                        return SimpleNamespace(
+                            output_text=json.dumps(
+                                {"error": f"manifest not found: {which} ({path.name})"}
+                            ),
+                            is_error=False,
+                        )
+                    return SimpleNamespace(output_text=path.read_text(encoding="utf-8"), is_error=False)
+
+                if tool_id == "write_model_manifest":
+                    content = str(arguments.get("content") or "")
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(content, encoding="utf-8")
+                    return SimpleNamespace(
+                        output_text=json.dumps(
+                            {
+                                "ok": True,
+                                "which": which,
+                                "bytes": len(content.encode("utf-8")),
+                            }
+                        ),
+                        is_error=False,
+                    )
+
+                return SimpleNamespace(
+                    output_text=json.dumps({"error": f"unsupported tool: {tool_id}"}),
+                    is_error=False,
+                )
+
+        runtime._mcp_tool_pool = _FakeStoragePool()  # noqa: SLF001
+        runtime._mcp_started = True  # noqa: SLF001
 
         discover_result = await handle_message(runtime, "/models discover")
         assert "proposal_written" in discover_result.text

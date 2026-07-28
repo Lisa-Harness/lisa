@@ -1065,7 +1065,15 @@ def validate_workflow_mode(mode: WorkflowModeConfig) -> None:
 
 
 def _validate_mode_operation_bindings(mode: WorkflowModeConfig) -> None:
-    """Validate that all operation IDs referenced by one mode exist in the operation catalog."""
+    """Validate that all operation IDs referenced by one mode exist in the operation catalog.
+
+    Operations whose owning pack is not installed are silently dropped from
+    the operation catalog during validation. When a mode references such an
+    operation, we warn rather than raise — the mode remains available but the
+    missing operation will fail at call time if invoked. This lets the rest of
+    the workflow catalog load when an external pack's content root is present
+    but its Python package isn't importable.
+    """
     from kernel.operations.registry import is_known_tool
 
     catalog = _get_operation_catalog()
@@ -1077,8 +1085,12 @@ def _validate_mode_operation_bindings(mode: WorkflowModeConfig) -> None:
     )
     for operation_id in referenced_operation_ids:
         if operation_id not in catalog and not is_known_tool(operation_id):
-            raise WorkflowValidationError(
-                f"Mode '{mode.mode_id}' references unknown operation '{operation_id}'."
+            logger.warning(
+                "Mode '%s' references operation '%s' which is not in the catalog "
+                "(the owning pack may not be installed); the operation will fail "
+                "if invoked at runtime.",
+                mode.mode_id,
+                operation_id,
             )
 
 

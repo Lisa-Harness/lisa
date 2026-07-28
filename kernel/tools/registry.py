@@ -105,7 +105,15 @@ def register_tool_mcp(config: MCPClientConfig) -> None:
 
 
 def validate_tool_catalog(catalog: dict[str, ToolDefinition]) -> None:
-    """Validate the tool catalog for basic invariants."""
+    """Validate the tool catalog for basic invariants.
+
+    Tools whose implementation module cannot be imported (e.g. the owning
+    pack's Python package is not installed) are dropped from the catalog
+    with a warning rather than raising. This lets the rest of the catalog
+    validate and function normally when an external pack's content root is
+    present but its code isn't importable.
+    """
+    unimportable: list[str] = []
     for tool_id, definition in catalog.items():
         if tool_id != definition.tool_id:
             raise ToolValidationError(
@@ -114,7 +122,13 @@ def validate_tool_catalog(catalog: dict[str, ToolDefinition]) -> None:
         if not definition.description.strip():
             raise ToolValidationError(f"Tool '{tool_id}' must have a non-empty description.")
         if definition.implementation_module is None:
-            raise ToolValidationError(f"Tool '{tool_id}' has no implementation module.")
+            logger.warning(
+                "Tool '%s' implementation module could not be imported; "
+                "dropping from catalog (install the owning pack to enable it).",
+                tool_id,
+            )
+            unimportable.append(tool_id)
+            continue
         if getattr(definition.implementation_module, "execute", None) is None:
             raise ToolValidationError(f"Tool '{tool_id}' implementation is missing execute(ctx).")
         if definition.max_calls_per_turn < 0:
@@ -125,6 +139,8 @@ def validate_tool_catalog(catalog: dict[str, ToolDefinition]) -> None:
             raise ToolValidationError(
                 f"Tool '{tool_id}' has invalid timeout_seconds={definition.timeout_seconds}."
             )
+    for tool_id in unimportable:
+        del catalog[tool_id]
 
 
 async def execute_tool(

@@ -36,11 +36,14 @@ jobs:
       - name: Lint (ruff)
         run: uv run ruff check kernel sdk mcp_server hosts
 
+      - name: Direct I/O policy (allowlist)
+        run: uv run python scripts/check_direct_io_policy.py
+
       - name: Type check (mypy — all public packages)
         run: uv run mypy kernel sdk mcp_server
 
       - name: Dead code (vulture)
-        run: uv run vulture kernel sdk mcp_server hosts/little_lisa vulture_allowlist.py
+        run: uv run vulture kernel sdk mcp_server hosts vulture_allowlist.py
 
       - name: Unit tests (no live)
         run: uv run pytest -m "not live" --tb=short -v
@@ -68,5 +71,5 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run verify
-        run: uv run little-lisa verify
+        run: uv run lisa verify
 

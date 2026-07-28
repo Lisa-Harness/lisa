@@ -13,8 +13,10 @@ Dependency direction: ``_models`` → ``_simple`` (``handle_simple_command``),
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -25,33 +27,106 @@ from hosts.core.model_discovery import (
     build_manifest_payload,
     discover_models,
     render_manifest_yaml,
-    write_manifest_yaml,
 )
-from hosts.core.model_manifest import load_model_manifest
+from hosts.core.model_manifest import load_model_manifest_text
 from hosts.core.model_runtime import (
     active_manifest_path,
     proposal_manifest_path,
-    reload_manifest,
 )
 from hosts.core.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
 
 
-def _render_models_manifest(runtime: HostRuntime) -> str:
-    active_path = active_manifest_path(data_dir=runtime.data_dir)
-    proposal_path = proposal_manifest_path(data_dir=runtime.data_dir)
+def _resolve_discover_models_fn() -> Any:
+    """Return the discover-models callable, honoring hosts.core.commands monkeypatches."""
 
     try:
-        manifest = runtime.manifest or load_model_manifest(active_path)
-    except Exception as exc:  # pylint: disable=broad-except
-        return (
-            "No active models manifest is available yet.\n\n"
-            f"- expected_path: {active_path}\n"
-            "- next_step: run /models discover to generate models.proposed.yaml, "
-            "then edit and run /models apply\n"
-            f"- load_error: {exc}"
-        )
+        from hosts.core import commands as commands_module
+
+        candidate = getattr(commands_module, "discover_models", None)
+        if callable(candidate):
+            return candidate
+    except Exception:  # pylint: disable=broad-except
+        pass
+    return discover_models
+
+
+def _storage_error_from_output(output_text: str) -> str | None:
+    """Extract a tool-level JSON error from lisa-storage output text."""
+
+    try:
+        decoded = json.loads(output_text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    error = decoded.get("error")
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    return None
+
+
+async def _read_manifest_text_from_storage(
+    runtime: HostRuntime,
+    *,
+    which: str,
+) -> tuple[str | None, str | None]:
+    """Read one manifest text via lisa-storage, returning ``(text, error)``."""
+
+    pool = runtime.mcp_tool_pool
+    if pool is None:
+        return None, "No storage pool available to read model manifests."
+    result = await pool.call_tool(
+        "read_model_manifest",
+        {"which": which},
+        server_id="lisa-storage",
+    )
+    if result.is_error:
+        return None, result.output_text or "lisa-storage read_model_manifest call failed."
+    tool_error = _storage_error_from_output(result.output_text)
+    if tool_error is not None:
+        return None, tool_error
+    return result.output_text, None
+
+
+async def _write_manifest_text_to_storage(
+    runtime: HostRuntime,
+    *,
+    which: str,
+    content: str,
+) -> str | None:
+    """Write one manifest text via lisa-storage, returning an error string or ``None``."""
+
+    pool = runtime.mcp_tool_pool
+    if pool is None:
+        return "No storage pool available to write model manifests."
+    result = await pool.call_tool(
+        "write_model_manifest",
+        {"content": content, "which": which},
+        server_id="lisa-storage",
+    )
+    if result.is_error:
+        return result.output_text or "lisa-storage write_model_manifest call failed."
+    try:
+        decoded = json.loads(result.output_text)
+    except json.JSONDecodeError:
+        return "write_model_manifest returned non-JSON output."
+    if not isinstance(decoded, dict):
+        return "write_model_manifest returned an unexpected response shape."
+    tool_error = decoded.get("error")
+    if isinstance(tool_error, str) and tool_error.strip():
+        return tool_error.strip()
+    if decoded.get("ok") is not True:
+        return "write_model_manifest did not acknowledge a successful write."
+    return None
+
+
+def _render_models_manifest_from_manifest(runtime: HostRuntime, manifest: Any) -> str:
+    """Render manifest details once a validated manifest object is available."""
+
+    active_path = active_manifest_path(data_dir=runtime.data_dir)
+    proposal_path = proposal_manifest_path(data_dir=runtime.data_dir)
 
     lines = [
         "## Models",
@@ -80,6 +155,30 @@ def _render_models_manifest(runtime: HostRuntime) -> str:
         )
         lines.append(f"- roles: {role_map}")
     return "\n".join(lines)
+
+
+async def _render_models_manifest(runtime: HostRuntime) -> str:
+    active_path = active_manifest_path(data_dir=runtime.data_dir)
+
+    try:
+        manifest = runtime.manifest
+        if manifest is None:
+            active_text, active_error = await _read_manifest_text_from_storage(runtime, which="active")
+            if active_error is not None:
+                raise ValueError(active_error)
+            if active_text is None:
+                raise ValueError("read_model_manifest returned empty output")
+            manifest = load_model_manifest_text(active_text)
+    except Exception as exc:  # pylint: disable=broad-except
+        return (
+            "No active models manifest is available yet.\n\n"
+            f"- expected_path: {active_path}\n"
+            "- next_step: run /models discover to generate models.proposed.yaml, "
+            "then edit and run /models apply\n"
+            f"- load_error: {exc}"
+        )
+
+    return _render_models_manifest_from_manifest(runtime, manifest)
 
 
 def _models_help_text(runtime: HostRuntime) -> str:
@@ -143,7 +242,17 @@ async def _handle_models_discover(
 ) -> str:
     """Handle ``/models discover [--force]``."""
     force = "--force" in args
-    if proposal_path.exists() and not force:
+    existing_text, existing_error = await _read_manifest_text_from_storage(
+        runtime,
+        which="proposal",
+    )
+    if existing_error is not None and "not found" not in existing_error.lower():
+        response_text = (
+            "Model discovery failed before write: could not read existing proposal via "
+            f"lisa-storage: {existing_error}"
+        )
+        return handle_simple_command(runtime, message, "models", response_text)
+    if existing_text is not None and not force:
         response_text = "\n".join(
             [
                 f"Proposal already exists at {proposal_path}.",
@@ -152,7 +261,7 @@ async def _handle_models_discover(
         )
         return handle_simple_command(runtime, message, "models", response_text)
 
-    report = await discover_models()
+    report = await _resolve_discover_models_fn()()
     payload = build_manifest_payload(report.models)
     if not payload.get("models"):
         notes_lines = _render_discover_notes(report) or ["- none"]
@@ -167,11 +276,19 @@ async def _handle_models_discover(
         )
         return handle_simple_command(runtime, message, "models", response_text)
 
-    write_manifest_yaml(
-        proposal_path,
-        payload,
-        router_block=payload.get("router"),
+    proposal_text = render_manifest_yaml(payload, router_block=payload.get("router"))
+    write_error = await _write_manifest_text_to_storage(
+        runtime,
+        which="proposal",
+        content=proposal_text,
     )
+    if write_error is not None:
+        response_text = (
+            "Model discovery failed while writing proposal via lisa-storage: "
+            f"{write_error}"
+        )
+        return handle_simple_command(runtime, message, "models", response_text)
+
     provider_summary: dict[str, int] = {}
     for item in report.models:
         provider_summary[item.provider] = provider_summary.get(item.provider, 0) + 1
@@ -195,29 +312,51 @@ async def _handle_models_discover(
     return handle_simple_command(runtime, message, "models", response_text)
 
 
-def _handle_models_apply(
+async def _handle_models_apply(
     runtime: HostRuntime,
     message: str,
     proposal_path: Path,
     active_path: Path,
 ) -> str:
     """Handle ``/models apply``."""
-    if not proposal_path.exists():
+    proposal_text, proposal_error = await _read_manifest_text_from_storage(
+        runtime,
+        which="proposal",
+    )
+    if proposal_error is not None:
+        if "not found" in proposal_error.lower():
+            response_text = (
+                f"Proposal manifest not found at {proposal_path}. Run /models discover first."
+            )
+        else:
+            response_text = (
+                "Failed to read proposal via lisa-storage: "
+                f"{proposal_error}\nFix storage connectivity and retry /models apply."
+            )
+        return handle_simple_command(runtime, message, "models", response_text)
+
+    if proposal_text is None:
         response_text = (
             f"Proposal manifest not found at {proposal_path}. Run /models discover first."
         )
         return handle_simple_command(runtime, message, "models", response_text)
 
     try:
-        manifest = load_model_manifest(proposal_path)
-        active_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest = load_model_manifest_text(proposal_text)
         # Re-emit via yaml.safe_load + render_manifest_yaml to strip
         # YAML comments (hand-edits) from the active manifest. The
         # proposal is already minimal — no preset annotations are
         # injected during discover.
-        raw = proposal_path.read_text(encoding="utf-8")
-        parsed = yaml.safe_load(raw)
-        active_path.write_text(render_manifest_yaml(parsed), encoding="utf-8")
+        parsed = yaml.safe_load(proposal_text)
+        if not isinstance(parsed, dict):
+            raise ValueError("Proposal manifest root must be an object.")
+        write_error = await _write_manifest_text_to_storage(
+            runtime,
+            which="active",
+            content=render_manifest_yaml(parsed),
+        )
+        if write_error is not None:
+            raise ValueError(write_error)
         runtime.manifest = manifest
         response_text = "\n".join(
             [
@@ -254,14 +393,21 @@ async def handle_models_command(
         return handle_simple_command(runtime, message, "models", _models_help_text(runtime))
 
     if subcommand == "show":
-        return handle_simple_command(runtime, message, "models", _render_models_manifest(runtime))
+        rendered = await _render_models_manifest(runtime)
+        return handle_simple_command(runtime, message, "models", rendered)
 
     if subcommand == "reload":
         try:
-            runtime.manifest = reload_manifest(
-                {}, data_dir=runtime.data_dir, path=runtime.models_path
+            active_text, active_error = await _read_manifest_text_from_storage(
+                runtime,
+                which="active",
             )
-            response_text = _render_models_manifest(runtime)
+            if active_error is not None:
+                raise ValueError(active_error)
+            if active_text is None:
+                raise ValueError("read_model_manifest returned empty output")
+            runtime.manifest = load_model_manifest_text(active_text)
+            response_text = _render_models_manifest_from_manifest(runtime, runtime.manifest)
         except Exception as exc:  # pylint: disable=broad-except
             response_text = (
                 f"Failed to reload models from {active_path}: {exc}\n"
@@ -273,7 +419,7 @@ async def handle_models_command(
         return await _handle_models_discover(runtime, message, args, proposal_path)
 
     if subcommand == "apply":
-        return _handle_models_apply(runtime, message, proposal_path, active_path)
+        return await _handle_models_apply(runtime, message, proposal_path, active_path)
 
     if subcommand == "edit":
         response_text = (

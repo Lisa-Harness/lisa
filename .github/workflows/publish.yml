@@ -35,7 +35,7 @@ jobs:
           uv build --package lisa-pack-core
           uv build --package lisa-pack-memory
           uv build --package lisa-pack-search
-          uv build --package little-lisa
+          uv build --package lisa-host-cli
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

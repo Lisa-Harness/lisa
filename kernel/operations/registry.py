@@ -178,7 +178,16 @@ def _wrap_declarative_tool_executor(
 
 
 def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
-    """Validate the operation catalog for basic invariants."""
+    """Validate the operation catalog for basic invariants.
+
+    Runtime operations whose implementation module cannot be imported (e.g.
+    the owning pack's Python package is not installed) are dropped from the
+    catalog with a warning rather than raising. This lets the rest of the
+    catalog validate and function normally when an external pack's content
+    root is present but its code isn't importable. Prompt operations that
+    fail to build their ``DeclarativeOperationModule`` still raise — that
+    indicates a genuine configuration error, not a missing install.
+    """
     tool_catalog = _resolve_tool_catalog() if _get_tool_catalog_fn is not None else None
     # Also validate against the MCP-loaded tool registry even when no legacy
     # callback is registered, so pack-contributed tools satisfy tool_id refs.
@@ -187,6 +196,8 @@ def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
 
         mcp_tools = get_tool_catalog()
         tool_catalog = mcp_tools if mcp_tools else None
+    # Collect unimportable runtime operations to drop after iteration.
+    unimportable: list[str] = []
     for operation_id, definition in catalog.items():
         if operation_id != definition.operation_id:
             raise OperationValidationError(
@@ -198,9 +209,17 @@ def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
                 f"Operation '{operation_id}' must have a non-empty description."
             )
         if definition.implementation_module is None:
-            raise OperationValidationError(
-                f"Operation '{operation_id}' has no implementation module."
+            if definition.execution_kind == "prompt":
+                raise OperationValidationError(
+                    f"Operation '{operation_id}' has no implementation module."
+                )
+            logger.warning(
+                "Operation '%s' implementation module could not be imported; "
+                "dropping from catalog (install the owning pack to enable it).",
+                operation_id,
             )
+            unimportable.append(operation_id)
+            continue
         if getattr(definition.implementation_module, "execute", None) is None:
             raise OperationValidationError(
                 f"Operation '{operation_id}' implementation is missing execute(ctx)."
@@ -233,6 +252,10 @@ def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
                     raise OperationValidationError(
                         f"Operation '{operation_id}' references unknown tool '{tool_id}'."
                     )
+    # Drop unimportable runtime operations after iteration (dict mutation
+    # during iteration is not safe).
+    for operation_id in unimportable:
+        del catalog[operation_id]
 
 
 _PROVIDER_PREFIX = "lisa-pack-"

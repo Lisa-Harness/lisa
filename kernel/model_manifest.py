@@ -144,6 +144,64 @@ def load_model_manifest(
         raise ValueError(f"Model manifest was not found: {path}")
 
     raw_payload = _load_payload(path)
+    return _load_model_manifest_payload(
+        raw_payload,
+        require_mode_models=require_mode_models,
+        allowed_providers=allowed_providers,
+    )
+
+
+def load_model_manifest_from_text(
+    text: str,
+    *,
+    require_mode_models: bool = False,
+    allowed_providers: set[str] | frozenset[str] | None = None,
+    source_format: str = "yaml",
+) -> ModelManifest:
+    """Load and validate one shared model manifest from an in-memory string.
+
+    This mirrors :func:`load_model_manifest` but parses from text instead of a
+    file path so callers can validate storage-gateway reads without direct disk
+    access.
+    """
+
+    raw_text = text.strip()
+    if not raw_text:
+        raise ValueError("Model manifest text is empty.")
+
+    normalized_format = source_format.strip().lower()
+    try:
+        if normalized_format == "json":
+            raw_payload = json.loads(raw_text)
+        elif normalized_format in {"", "yaml", "yml", "auto"}:
+            raw_payload = yaml.safe_load(raw_text)
+        else:
+            raise ValueError(
+                f"Model manifest source_format must be 'yaml', 'yml', 'json', or 'auto'. Got: {source_format}"
+            )
+    except (json.JSONDecodeError, yaml.YAMLError) as exc:
+        raise ValueError(
+            f"Failed to parse model manifest text as {normalized_format or 'yaml'}: {exc}"
+        ) from exc
+
+    if not isinstance(raw_payload, dict):
+        raise ValueError("Model manifest root must be an object.")
+
+    return _load_model_manifest_payload(
+        raw_payload,
+        require_mode_models=require_mode_models,
+        allowed_providers=allowed_providers,
+    )
+
+
+def _load_model_manifest_payload(
+    raw_payload: dict[str, Any],
+    *,
+    require_mode_models: bool = False,
+    allowed_providers: set[str] | frozenset[str] | None = None,
+) -> ModelManifest:
+    """Validate one already-parsed manifest payload into ``ModelManifest``."""
+
     raw_models = raw_payload.get("models")
     if not isinstance(raw_models, list):
         raise ValueError("Model manifest must include a 'models' list.")

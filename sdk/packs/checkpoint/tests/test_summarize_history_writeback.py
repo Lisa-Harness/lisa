@@ -4,8 +4,7 @@ Covers the bug fix landed alongside the compaction pack:
 ``handle_summarize_history`` previously discarded
 ``result.output_json["turn_history"]`` and never persisted the compacted
 history to the live thread JSONL. It now uses the host's
-``write_turn_history_fn`` seam (when wired) or falls back to a direct
-JSONL overwrite.
+``write_turn_history_fn`` seam (when wired).
 """
 
 from __future__ import annotations
@@ -73,17 +72,16 @@ def test_persist_compacted_history_uses_writer_seam_when_wired(tmp_path: Path) -
     assert not (tmp_path / "thread.jsonl").exists()
 
 
-def test_persist_compacted_history_falls_back_to_direct_write(tmp_path: Path) -> None:
-    """When write_turn_history_fn is not wired, fall back to a direct JSONL overwrite."""
+def test_persist_compacted_history_without_writer_returns_false(tmp_path: Path) -> None:
+    """When write_turn_history_fn is not wired, direct file fallback is disallowed."""
     runtime = _runtime_stub(thread_path=tmp_path / "thread.jsonl", write_turn_history_fn=None)
     new_history = [{"summary": "x"}, {"q": "a"}]
     ok = _persist_compacted_history(runtime, new_history)
-    assert ok is True
-    written = (tmp_path / "thread.jsonl").read_text(encoding="utf-8").splitlines()
-    assert [json.loads(line) for line in written] == new_history
+    assert ok is False
+    assert not (tmp_path / "thread.jsonl").exists()
 
 
-def test_persist_compacted_history_no_thread_returns_false(tmp_path: Path) -> None:
+def test_persist_compacted_history_no_thread_returns_false() -> None:
     """When the host has no thread path and no writer, persistence returns False."""
     runtime = _runtime_stub(thread_path=None, write_turn_history_fn=None)
     ok = _persist_compacted_history(runtime, [{"x": 1}])
@@ -128,7 +126,7 @@ async def test_handle_summarize_history_writes_back_compacted_history(
 
 
 async def test_handle_summarize_history_reports_when_no_write_back_available(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When no writer and no thread path, the command reports the result was not persisted."""
     runtime = _runtime_stub(thread_path=None, write_turn_history_fn=None)

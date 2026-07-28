@@ -6,7 +6,7 @@ Thank you for your interest in contributing.
 
 1. Fork the repo and clone it locally.
 2. Install dependencies: `uv sync --extra dev`
-3. Run the verification: `uv run little-lisa verify`
+3. Run the verification: `uv run lisa verify`
 4. Make your changes on a feature branch.
 
 ## Development Loop
@@ -25,13 +25,13 @@ uv run ruff check kernel sdk mcp_server hosts
 uv run mypy kernel sdk mcp_server
 
 # 4. Dead code check
-uv run vulture kernel sdk mcp_server hosts/little_lisa vulture_allowlist.py
+uv run vulture kernel sdk mcp_server hosts vulture_allowlist.py
 
 # 5. Tests (no live API calls)
 uv run pytest -m "not live" --tb=short -v
 
 # 6. Smoke test
-uv run little-lisa verify
+uv run lisa verify
 ```
 
 ## Pull Request Checklist
@@ -41,7 +41,7 @@ uv run little-lisa verify
 - [ ] `mypy` passes with zero new errors for touched packages.
 - [ ] `vulture` passes with zero new reports for touched files.
 - [ ] All non-live tests pass (`pytest -m "not live"`).
-- [ ] `little-lisa verify` exits 0.
+- [ ] `lisa verify` exits 0.
 - [ ] New public APIs have docstrings (module, class, function/method).
 - [ ] New or materially changed public callables have co-maintained tests.
 - [ ] No new `# noqa` without a specific rule code and one-line justification.
@@ -57,7 +57,7 @@ uv run little-lisa verify
 | `lisa-kernel` | `kernel/` | Runtime-neutral contracts, FSM engine, operation registry |
 | `lisa-sdk` | `sdk/` | Author-facing helpers for packs and integration contracts |
 | `lisa-pack-*` | `sdk/packs/` | Public mode/operation packs |
-| `little-lisa` | `hosts/little_lisa/` | Local terminal host CLI |
+| `lisa-host-cli` | `hosts/cli/` | Local terminal host CLI |
 
 ## Commit Conventions
 

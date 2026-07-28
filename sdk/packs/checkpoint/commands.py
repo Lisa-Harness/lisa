@@ -259,10 +259,10 @@ def _persist_compacted_history(runtime: Any, new_history: list[dict[str, Any]]) 
     """Write the compacted turn-history list back to the live thread JSONL.
 
     Prefers the host's ``write_turn_history_fn`` seam (wired on ``TurnHooks``
-    by ``hosts/core/turn_hooks_builder``) when the runtime exposes it; falls
-    back to a direct JSONL overwrite matching the layout used by
-    ``FileBackedStateProvider._compact_thread``. Returns ``True`` when the
-    write succeeded, ``False`` (with a warning logged) when it did not.
+    by ``hosts/core/turn_hooks_builder``). Direct pack-level file writes are
+    intentionally disallowed so all persistence ownership remains in host
+    services / lisa-storage. Returns ``True`` when the write succeeded,
+    ``False`` (with a warning logged) when it did not.
     """
     writer = getattr(runtime, "write_turn_history_fn", None)
     if callable(writer):
@@ -272,21 +272,10 @@ def _persist_compacted_history(runtime: Any, new_history: list[dict[str, Any]]) 
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("summarize-history: write_turn_history_fn failed: %s", exc)
             return False
-    thread_path = runtime.thread_path
-    if thread_path is None:
-        logger.warning("summarize-history: no thread path; compacted history not persisted")
-        return False
-    try:
-        thread_path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [json.dumps(entry, ensure_ascii=False) for entry in new_history]
-        thread_path.write_text(
-            ("\n".join(lines) + "\n") if lines else "",
-            encoding="utf-8",
-        )
-        return True
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("summarize-history: thread write failed: %s", exc)
-        return False
+    logger.warning(
+        "summarize-history: write_turn_history_fn is not wired; compacted history not persisted"
+    )
+    return False
 
 
 async def handle_summarize_history(
