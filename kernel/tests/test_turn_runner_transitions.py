@@ -58,7 +58,7 @@ def _transition_call(call_id: str, target_stage_id: str, **extra: Any) -> dict[s
 
 
 def _build_hooks(complete_fn: Any, **overrides: Any) -> TurnHooks:
-    return TurnHooks(complete=complete_fn, **overrides)
+    return TurnHooks(complete=complete_fn, memory_recall_enabled=False, **overrides)
 
 
 # ── Fork: _fork_child_budget ──────────────────────────────────────────

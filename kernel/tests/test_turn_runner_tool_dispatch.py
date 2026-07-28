@@ -52,7 +52,7 @@ def _make_tool_call(call_id: str, name: str, arguments: dict[str, Any]) -> dict[
 
 
 def _build_hooks(complete_fn: Any, **overrides: Any) -> TurnHooks:
-    return TurnHooks(complete=complete_fn, **overrides)
+    return TurnHooks(complete=complete_fn, memory_recall_enabled=False, **overrides)
 
 
 # ── CallLedger ────────────────────────────────────────────────────────

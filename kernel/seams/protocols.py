@@ -93,6 +93,33 @@ class RouterDecision:
     routed_by: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class CoordinatorRouteDecision:
+    """A persisted next-step route decision for a follow-up turn.
+
+    Hosts can persist a target mode/stage for continuation prompts such as
+    ``proceed`` so the kernel can inject a deterministic handoff hint on the
+    next turn even when the original query did not carry a fresh routing
+    signal.
+    """
+
+    next_target: str = ""
+    reason: str = ""
+
+
+@runtime_checkable
+class RouteCoordinator(Protocol):
+    """Host-owned persistence boundary for route continuation state.
+
+    The kernel calls ``load`` before a turn begins, then ``save`` after a
+    successful handoff so the next turn can continue from the same next step.
+    """
+
+    def load(self, request: Any) -> CoordinatorRouteDecision | None: ...
+
+    def save(self, decision: CoordinatorRouteDecision, request: Any) -> None: ...
+
+
 @runtime_checkable
 class StateProvider(Protocol):
     """Protocol for in-memory state access.

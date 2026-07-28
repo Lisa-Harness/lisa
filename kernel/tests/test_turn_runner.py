@@ -15,6 +15,7 @@ from kernel.models import (
     OperationResult,
     WorkflowModeConfig,
 )
+from kernel.seams.protocols import CoordinatorRouteDecision
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn
 
 # ── Module-level setup ────────────────────────────────────────────
@@ -89,6 +90,40 @@ async def test_run_turn_simple_chat_default_mode() -> None:
     assert result.response_text == "Response from default mode."
     assert result.tool_call_count == 0
     assert result.iteration_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_turn_uses_persisted_route_for_continuation_queries() -> None:
+    """A persisted route target is injected as a routing hint for continuation queries."""
+
+    class _StubCoordinator:
+        def __init__(self) -> None:
+            self.saved_decision: CoordinatorRouteDecision | None = None
+
+        def load(self, _req: Any) -> CoordinatorRouteDecision | None:
+            return self.saved_decision
+
+        def save(self, decision: CoordinatorRouteDecision, _req: Any) -> None:
+            self.saved_decision = decision
+
+    captured_system_prompts: list[str] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        captured_system_prompts.append(str(kwargs["messages"][0].get("content", "")))
+        return _StubCompletion(content="Done.")
+
+    coordinator = _StubCoordinator()
+    coordinator.saved_decision = CoordinatorRouteDecision(next_target="markdown")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.route_coordinator = coordinator
+
+    result = await run_turn(mode_id="default", query="proceed", hooks=hooks)
+
+    assert result.response_text == "Done."
+    assert captured_system_prompts
+    assert "transition_stage" in captured_system_prompts[0]
+    assert "markdown" in captured_system_prompts[0]
 
 
 @pytest.mark.asyncio
@@ -1391,6 +1426,147 @@ def test_routing_hint_refuses_fork_for_producer_consumer_mix() -> None:
     # Must route to the first producer (ponder), so the post-handoff hint
     # can chain markdown after ponder produces its reasoning.
     assert "ponder" in hint
+
+
+def test_routing_hint_does_not_re_escalate_to_plan_after_plan_ran() -> None:
+    """Once ``plan`` has run this turn, the plan-escalation branch must NOT
+    re-fire on the post-handoff hint recompute.
+
+    Regression for the 2026-07-27 glm-5.2 incident: a complex sequential
+    query ("research X then write a markdown doc") escalated ``default →
+    plan``. After ``plan`` ran, the host unioned ``plan``'s
+    ``satisfies_intents: [plan]`` into ``chain_satisfied`` and passed it
+    back as ``extra_satisfied``. Without the ``"plan" not in
+    current_satisfied`` guard, section 3b re-fired on every recompute
+    ("hand off to `plan` again") because ``plan`` is not a detected query
+    intent and so never shrinks the real ``{research, write}`` gap. The
+    duplicate-hint dedup eventually suppressed it, leaving the model in
+    ``coding`` with no path to ``markdown`` — it reached for
+    ``coding_create_worktree`` instead. With the guard, the recompute
+    falls through to the single-handoff branch and names ``markdown`` for
+    the residual ``write`` gap.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    plan_cfg = _mode_config(
+        mode_id="plan",
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+        routing_intent_keywords={"plan": ["plan", "workflow", "multi-step"]},
+    )
+    # coding is the post-plan landing mode: it satisfies "coding" but NOT
+    # "write", so the write intent remains a gap after the handoff.
+    coding_cfg = _mode_config(
+        mode_id="coding",
+        satisfies_intents=["coding", "review"],
+        routing_intent_tags=["coding", "review"],
+        routing_intent_keywords={
+            "coding": ["code", "implement", "refactor", "fix"],
+            "review": ["review", "audit", "check"],
+        },
+    )
+    markdown_cfg = _mode_config(
+        mode_id="markdown",
+        satisfies_intents=["write"],
+        routing_intent_tags=["write"],
+        routing_intent_keywords={"write": ["write", "markdown", "document", "draft"]},
+    )
+    patched_catalog = {"plan": plan_cfg, "coding": coding_cfg, "markdown": markdown_cfg}
+
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog):
+        # Simulate the post-plan → coding handoff: chain_satisfied has
+        # "plan" (plan ran) and "coding" is the current mode. The residual
+        # gap is {write} (markdown covers it).
+        hint = _compute_capability_routing_hint(
+            mode_id="coding",
+            query="research the latest frameworks then write a markdown report",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["plan", "markdown"],
+            mode_config=coding_cfg,
+            extra_satisfied={"plan"},  # plan already ran this turn
+        )
+
+    assert hint != ""
+    # Must NOT re-escalate to plan — plan already ran.
+    assert "plan" not in hint
+    # Must name markdown for the residual write gap.
+    assert "markdown" in hint
+    assert "transition_stage" in hint
+
+
+def test_single_handoff_target_for_gap_names_markdown_for_write_gap() -> None:
+    """``_single_handoff_target_for_gap`` resolves the concrete handoff
+    target for a residual intent gap, used by the write-effect correction
+    nudge.
+
+    Regression for the 2026-07-27 glm-5.2 incident: after landing in
+    ``coding`` with a residual ``write`` gap, the model called
+    ``coding_create_worktree``. The correction nudge said "call
+    transition_stage with the suggested target_stage_id" — but the only
+    target in scope was the stale ``plan`` hint, so the model had no path
+    to ``markdown``. With this helper, the nudge names ``markdown``
+    explicitly so the model has a concrete escape hatch.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_phases._routing_hint import _single_handoff_target_for_gap
+
+    coding_cfg = _mode_config(
+        mode_id="coding",
+        satisfies_intents=["coding", "review"],
+        routing_intent_tags=["coding", "review"],
+        routing_intent_keywords={
+            "coding": ["code", "implement", "refactor", "fix"],
+            "review": ["review", "audit", "check"],
+        },
+    )
+    markdown_cfg = _mode_config(
+        mode_id="markdown",
+        satisfies_intents=["write"],
+        routing_intent_tags=["write"],
+        routing_intent_keywords={"write": ["write", "markdown", "document", "draft"]},
+    )
+    patched_catalog = {"coding": coding_cfg, "markdown": markdown_cfg}
+
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog):
+        target = _single_handoff_target_for_gap(
+            query="research the latest frameworks then write a markdown report",
+            routing_targets=["markdown"],
+            mode_config=coding_cfg,
+            extra_satisfied={"plan"},  # plan already ran
+        )
+
+    # markdown covers the whole residual {write} gap → single handoff.
+    assert target == "markdown"
+
+
+def test_single_handoff_target_for_gap_returns_none_when_no_gap() -> None:
+    """When the current mode already satisfies all detected intents (no
+    residual gap), ``_single_handoff_target_for_gap`` returns ``None`` so
+    the nudge falls back to its generic message.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_phases._routing_hint import _single_handoff_target_for_gap
+
+    markdown_cfg = _mode_config(
+        mode_id="markdown",
+        satisfies_intents=["write"],
+        routing_intent_tags=["write"],
+        routing_intent_keywords={"write": ["write", "markdown", "document", "draft"]},
+    )
+    patched_catalog = {"markdown": markdown_cfg}
+
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog):
+        target = _single_handoff_target_for_gap(
+            query="write a markdown document",
+            routing_targets=["markdown"],
+            mode_config=markdown_cfg,  # satisfies write → no gap
+        )
+
+    assert target is None
 
 
 def test_query_is_sequential_detects_connectors() -> None:

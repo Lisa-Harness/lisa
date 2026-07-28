@@ -196,6 +196,138 @@ def _first_target_for_earliest_intent(
     return best_target
 
 
+def _single_handoff_target_for_gap(
+    *,
+    query: str,
+    routing_targets: list[str],
+    mode_config: WorkflowModeConfig | None = None,
+    extra_satisfied: set[str] | None = None,
+) -> str | None:
+    """Return the single best handoff target for the residual intent gap.
+
+    Pure resolution helper used by the write-effect correction nudge (see
+    ``kernel.turn_runner``) and any other site that needs a concrete
+    ``transition_stage`` target when the active routing hint is stale or
+    has been suppressed by the duplicate-hint dedup. It does NOT consult
+    the plan-escalation branch (the caller already knows planning did not
+    resolve the gap — re-escalating would loop). Instead it picks:
+
+    - the single target whose ``routing_intent_tags`` cover the whole
+      residual gap (the section-5 single-handoff case), or
+    - the first producer target when the gap mixes a producer intent with
+      a consumer intent (the section-4b producer-first case), or
+    - the target whose intent keywords appear earliest in the query for a
+      sequential chain (the section-4 sequential case), or
+    - ``None`` when no target covers any residual gap intent.
+
+    Tag- and prose-blind: the kernel manipulates only opaque intent-tag
+    sets and routing target ids; it names no intent vocabulary. Returns
+    ``None`` (rather than the generic routing-target list) so the caller
+    can fall back to its own message when no concrete target exists.
+    """
+    if not routing_targets:
+        return None
+    catalog = get_workflow_catalog()
+    detected_intents = _detect_query_intents(query=query, routing_targets=routing_targets)
+    current_satisfied: set[str] = set(
+        mode_config.satisfies_intents if mode_config is not None else []
+    )
+    if extra_satisfied is not None:
+        current_satisfied |= extra_satisfied
+    gap_intents = detected_intents - current_satisfied
+    if not gap_intents:
+        return None
+    # Single target covering the whole residual gap → that is the
+    # canonical "route back to markdown for the write gap" case.
+    for target_id in routing_targets:
+        t_cfg = catalog.get(target_id)
+        if t_cfg is None:
+            continue
+        if gap_intents.issubset(set(t_cfg.routing_intent_tags)):
+            return target_id
+    # Producer/consumer mix or sequential chain → first producer / first
+    # remaining gap-intent target (mirror sections 4b and 4 sequential).
+    chained = _chained_handoff_target(
+        query=query,
+        routing_targets=routing_targets,
+        catalog=catalog,
+        gap_intents=gap_intents,
+    )
+    if chained is not None:
+        return chained
+    # Partial coverage: pick the target covering the most residual gap
+    # intents (deterministic tie-break by routing_targets order).
+    return _best_partial_coverage_target(
+        routing_targets=routing_targets,
+        catalog=catalog,
+        gap_intents=gap_intents,
+    )
+
+
+def _chained_handoff_target(
+    *,
+    query: str,
+    routing_targets: list[str],
+    catalog: Any,
+    gap_intents: set[str],
+) -> str | None:
+    """Return the first producer (for a producer/consumer mix) or the first
+    remaining gap-intent target (for a sequential chain).
+
+    Mirrors sections 4b and 4-sequential of
+    ``_compute_capability_routing_hint`` so the write-effect nudge lands
+    on the same target the proactive hint would have named. Extracted to
+    keep ``_single_handoff_target_for_gap`` under the McCabe complexity
+    cap. Returns ``None`` when neither branch applies or no target's
+    keywords match the query.
+    """
+    if _fork_has_producer_consumer_mix(gap_intents):
+        producer_target = _first_target_for_earliest_intent(
+            query=query,
+            routing_targets=routing_targets,
+            catalog=catalog,
+            gap_intents=gap_intents & _producer_intent_set(),
+        )
+        if producer_target is not None:
+            return producer_target
+    if _query_is_sequential(query):
+        first_target = _first_target_for_earliest_intent(
+            query=query,
+            routing_targets=routing_targets,
+            catalog=catalog,
+            gap_intents=gap_intents,
+        )
+        if first_target is not None:
+            return first_target
+    return None
+
+
+def _best_partial_coverage_target(
+    *,
+    routing_targets: list[str],
+    catalog: Any,
+    gap_intents: set[str],
+) -> str | None:
+    """Return the target covering the most residual gap intents.
+
+    Deterministic tie-break by ``routing_targets`` order so the helper is
+    stable across calls. Returns ``None`` when no target covers any gap
+    intent. Extracted from ``_single_handoff_target_for_gap`` to keep that
+    function under the McCabe complexity / branch caps.
+    """
+    best_target: str | None = None
+    best_overlap = 0
+    for target_id in routing_targets:
+        t_cfg = catalog.get(target_id)
+        if t_cfg is None:
+            continue
+        overlap = len(set(t_cfg.routing_intent_tags) & gap_intents)
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_target = target_id
+    return best_target
+
+
 def _format_remaining_steps(remaining_steps: list[str]) -> str:
     """Render the remaining chain steps for the handoff context block.
 
@@ -493,8 +625,22 @@ def _compute_capability_routing_hint(
     # name any intent vocabulary. This runs BEFORE the sequential/fork
     # branches so a complex sequential chain escalates to the planner
     # rather than hand-rolling the first step.
-    if "plan" in routing_targets and (
-        len(gap_intents) >= 3 or (len(gap_intents) >= 2 and _query_is_sequential(query))
+    #
+    # Re-escalation guard: ``plan`` is itself a routable target that
+    # declares ``satisfies_intents: [plan]``. Once the turn has run
+    # ``plan``, the host's chained-hint recomputation unions ``plan`` into
+    # ``chain_satisfied`` and passes it back here as ``extra_satisfied``;
+    # ``current_satisfied`` therefore contains ``plan``. Without this guard
+    # the branch re-fires on every post-handoff recompute (the 2026-07-27
+    # incident: after ``plan → coding`` the hint said "hand off to `plan`
+    # again" instead of naming ``markdown`` for the residual ``write`` gap,
+    # looping until the duplicate-hint dedup suppressed it and leaving the
+    # model in ``coding`` with no path to ``markdown``). Gating on
+    # ``"plan" not in current_satisfied`` trips exactly once per turn.
+    if (
+        "plan" in routing_targets
+        and "plan" not in current_satisfied
+        and (len(gap_intents) >= 3 or (len(gap_intents) >= 2 and _query_is_sequential(query)))
     ):
         return (
             "## Routing Hint\n\n"

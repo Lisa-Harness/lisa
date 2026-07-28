@@ -35,10 +35,45 @@ _LEARNING_ROOT: Path = (
 _PACKS_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / ".." / "lisa_packs").resolve()
 
 
+def _installed_pack_names() -> set[str]:
+    """Return the set of pack names already installed via entry points.
+
+    A pack installed into the venv (e.g. via ``uv sync --extra ext``)
+    registers a ``lisa.extensions.content_roots`` entry point that
+    resolves to ``site-packages/lisa_packs/<name>``. When such an install
+    is present, the source-tree root under ``_PACKS_ROOT`` is redundant
+    and must NOT be added as an extra content root — adding both makes
+    the catalog scan the same ``operations/`` twice and raises
+    "Duplicate operation ID" errors (the 2026-07-27 ``context_compact``
+    collision).
+    """
+    try:
+        from kernel.content_roots import discover_installed_content_roots
+    except Exception:  # pylint: disable=broad-except
+        return set()
+    names: set[str] = set()
+    for root in discover_installed_content_roots():
+        # The installed root path ends in lisa_packs/<name>.
+        if root.parent.name == "lisa_packs":
+            names.add(root.name)
+    return names
+
+
 def _external_pack_roots() -> list[Path]:
-    """Return the content roots of migrated packs that are checked out."""
+    """Return the content roots of migrated packs that are checked out.
+
+    Skips a pack's source-tree root when that pack is already installed
+    (e.g. via ``uv sync --extra ext``), because the installed root under
+    the venv's ``site-packages/lisa_packs/<name>`` already covers it.
+    Adding both produces a duplicate ``operations/`` scan → "Duplicate
+    operation ID" catalog errors at fixture setup (the 2026-07-27
+    ``context_compact`` collision).
+    """
+    installed = _installed_pack_names()
     roots: list[Path] = []
     for name in ("search", "markdown", "compaction", "letta"):
+        if name in installed:
+            continue
         root = (_PACKS_ROOT / name / "lisa_packs" / name).resolve()
         if root.exists():
             roots.append(root)

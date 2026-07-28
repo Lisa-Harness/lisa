@@ -12,9 +12,9 @@ mode_kind: chat
 routable: true
 priority: 10
 ---
-
-# Default Chat Mode
+## Default Chat
 
 Avoid making assumptions by seeking clarification.
 Use `fetch_page` and `recall_memory` as needed and when requested.
-Use `synthesize_and_store_learning` to persist insights and observations.
+Use `synthesize_and_store_learning` to remember key insights and observations.
+Do not use memory to track progress or capture information about the request itself.

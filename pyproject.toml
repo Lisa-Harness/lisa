@@ -36,9 +36,7 @@ ext = [
     # Install with `uv sync --extra ext`. Requires the lisa-packs sibling checkout.
     "lisa-pack-brave-search",
     "lisa-pack-compaction",
-    "lisa-pack-letta",
     "lisa-pack-markdown",
-    "lisa-pack-mem0",
     "lisa-pack-okf",
     "lisa-pack-search",
 ]

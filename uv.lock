@@ -1101,9 +1101,7 @@ dev = [
 ext = [
     { name = "lisa-pack-brave-search" },
     { name = "lisa-pack-compaction" },
-    { name = "lisa-pack-letta" },
     { name = "lisa-pack-markdown" },
-    { name = "lisa-pack-mem0" },
     { name = "lisa-pack-okf" },
     { name = "lisa-pack-search" },
 ]
@@ -1133,9 +1131,7 @@ requires-dist = [
     { name = "lisa-pack-github", marker = "extra == 'wip'", directory = "../lisa-packs-wip/github" },
     { name = "lisa-pack-gmail", marker = "extra == 'wip'", directory = "../lisa-packs-wip/gmail" },
     { name = "lisa-pack-introspect", editable = "sdk/packs/introspect" },
-    { name = "lisa-pack-letta", marker = "extra == 'ext'", directory = "../lisa-packs/letta" },
     { name = "lisa-pack-markdown", marker = "extra == 'ext'", directory = "../lisa-packs/markdown" },
-    { name = "lisa-pack-mem0", marker = "extra == 'ext'", directory = "../lisa-packs/mem0" },
     { name = "lisa-pack-memory", editable = "sdk/packs/memory" },
     { name = "lisa-pack-okf", marker = "extra == 'ext'", directory = "../lisa-packs/okf" },
     { name = "lisa-pack-search", marker = "extra == 'ext'", directory = "../lisa-packs/search" },
@@ -1600,25 +1596,6 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "lisa-pack-letta"
-version = "0.1.0"
-source = { directory = "../lisa-packs/letta" }
-dependencies = [
-    { name = "httpx" },
-    { name = "lisa-kernel" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "lisa-kernel" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "lisa-pack-markdown"
 version = "0.1.0"
 source = { directory = "../lisa-packs/markdown" }
@@ -1640,11 +1617,6 @@ requires-dist = [
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
 ]
 provides-extras = ["dev"]
-
-[[package]]
-name = "lisa-pack-mem0"
-version = "0.1.0"
-source = { directory = "../lisa-packs/mem0" }
 
 [[package]]
 name = "lisa-pack-memory"

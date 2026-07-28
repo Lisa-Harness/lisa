@@ -29,8 +29,7 @@ routing_intent_keywords:
 allowed_tool_ids: [memory.add, memory.search, memory.list]
 command_pattern: '^(?:(?:/)?(?:learn|reflect|note)(?:[\s,:;]+|(?=$))|(?:please\s+)?(?:take\s+a\s+note\s+of|note\s+that)\s+)(?P<query>.*)$'
 ---
-
-# Learn Mode
+## Learn Mode
 
 Reflect on the context and synthesize it into 1-3 memories.
 Look for durable facts, actionable insights, strategic intent, decisions, and rules.
