@@ -18,7 +18,7 @@ Packs live in one of two places depending on whether they are bundled with the f
 
 | Location | Packages | Import namespace | When to use |
 | --- | --- | --- | --- |
-| `sdk/packs/<name>` | `lisa-pack-core`, `lisa-pack-introspect`, `lisa-pack-memory`, `lisa-pack-checkpoint` | `sdk.packs.<name>` | Bundled reference packs shipped with the framework |
+| `sdk/packs/<name>` | `lisa-pack-core`, `lisa-pack-introspect`, `lisa-pack-memory`, `lisa-pack-checkpoint`, `lisa-pack-recovery` | `sdk.packs.<name>` | Bundled reference packs shipped with the framework |
 | `../lisa-packs/<name>` (public repo: `github.com/Lisa-Framework/lisa-packs`) and `../lisa-packs-wip/<name>` (private repo: `github.com/Lisa-Framework/packs-wip`) | `lisa-pack-brave-search`, `lisa-pack-cloudflare`, `lisa-pack-coding`, `lisa-pack-compaction`, `lisa-pack-github`, `lisa-pack-gmail`, `lisa-pack-letta`, `lisa-pack-markdown`, `lisa-pack-mem0`, `lisa-pack-okf`, `lisa-pack-search`, `lisa-pack-stripe` | `lisa_packs.<name>` | External integration packs maintained in separate repos; public subset in lisa-packs, WIP subset in packs-wip |
 
 The framework `pyproject.toml` consumes external packs via path dependencies (public: `{ path = "../lisa-packs/<name>" }`, WIP: `{ path = "../lisa-packs-wip/<name>" }`). Bundled packs are uv workspace members. Public packs are runtime deps; WIP packs are gated behind the `wip` optional-dependency extra. Both are installed editable in the venv and discovered through entry points at runtime. See `../lisa-packs/docs/PROMOTION_GUIDE.md` for the private -> WIP -> public lifecycle.

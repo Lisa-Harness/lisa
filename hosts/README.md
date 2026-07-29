@@ -151,11 +151,12 @@ The `TransportCallbacks` protocol is the Option B seam — the runtime delivers 
 
 `handle_message(runtime, message, transport)` is the transport-neutral entry point all hosts call. It:
 
-1. Dispatches host shortcut commands (`/help`, `/settings`, `/tokens`, `/debug`, `/consolidate`, `/checkpoint`, `/restore`, `/pack`, `/models`).
-2. Routes natural-language turns through the router.
-3. Executes the mode turn via `kernel.turn_runner.run_turn`.
-4. Persists thread entries and updates token counters.
-5. Emits transport callbacks at each pipeline stage.
+1. Dispatches host shortcut commands (`/help`, `/settings`, `/tokens`, `/debug`, `/consolidate`, `/pack`, `/models`).
+2. Discovers and dispatches pack-registered commands (`/checkpoint`, `/restore`, `/checkpoints`, `/stalls`, `/stall`, `/retry`, `/retry-safe`, `/skip`, `/cancel`) via `lisa.extensions.host_commands`.
+3. Routes natural-language turns through the router.
+4. Executes the mode turn via `kernel.turn_runner.run_turn`.
+5. Persists thread entries and updates token counters.
+6. Emits transport callbacks at each pipeline stage.
 
 ## Model Manifest
 

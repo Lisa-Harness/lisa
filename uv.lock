@@ -24,6 +24,7 @@ members = [
     "lisa-pack-core",
     "lisa-pack-introspect",
     "lisa-pack-memory",
+    "lisa-pack-recovery",
     "lisa-sdk",
 ]
 
@@ -1081,6 +1082,7 @@ dependencies = [
     { name = "lisa-pack-core" },
     { name = "lisa-pack-introspect" },
     { name = "lisa-pack-memory" },
+    { name = "lisa-pack-recovery" },
     { name = "lisa-sdk" },
     { name = "rich" },
     { name = "typer" },
@@ -1134,6 +1136,7 @@ requires-dist = [
     { name = "lisa-pack-markdown", marker = "extra == 'ext'", directory = "../lisa-packs/markdown" },
     { name = "lisa-pack-memory", editable = "sdk/packs/memory" },
     { name = "lisa-pack-okf", marker = "extra == 'ext'", directory = "../lisa-packs/okf" },
+    { name = "lisa-pack-recovery", editable = "sdk/packs/recovery" },
     { name = "lisa-pack-search", marker = "extra == 'ext'", directory = "../lisa-packs/search" },
     { name = "lisa-pack-stripe", marker = "extra == 'wip'", directory = "../lisa-packs-wip/stripe" },
     { name = "lisa-sdk", editable = "sdk" },
@@ -1179,6 +1182,7 @@ dependencies = [
     { name = "lisa-pack-core" },
     { name = "lisa-pack-introspect" },
     { name = "lisa-pack-memory" },
+    { name = "lisa-pack-recovery" },
     { name = "lisa-sdk" },
     { name = "openai" },
     { name = "pillow" },
@@ -1211,6 +1215,7 @@ requires-dist = [
     { name = "lisa-pack-core" },
     { name = "lisa-pack-introspect" },
     { name = "lisa-pack-memory" },
+    { name = "lisa-pack-recovery" },
     { name = "lisa-sdk" },
     { name = "openai", specifier = ">=1.30.0" },
     { name = "pillow", specifier = ">=10.0.0" },
@@ -1241,6 +1246,7 @@ dependencies = [
     { name = "lisa-pack-core" },
     { name = "lisa-pack-introspect" },
     { name = "lisa-pack-memory" },
+    { name = "lisa-pack-recovery" },
     { name = "lisa-sdk" },
     { name = "openai" },
     { name = "pydantic" },
@@ -1264,6 +1270,7 @@ requires-dist = [
     { name = "lisa-pack-core" },
     { name = "lisa-pack-introspect" },
     { name = "lisa-pack-memory" },
+    { name = "lisa-pack-recovery" },
     { name = "lisa-sdk" },
     { name = "openai", specifier = ">=1.30.0" },
     { name = "pydantic", specifier = ">=2.7.0" },
@@ -1289,6 +1296,7 @@ dependencies = [
     { name = "lisa-pack-core" },
     { name = "lisa-pack-introspect" },
     { name = "lisa-pack-memory" },
+    { name = "lisa-pack-recovery" },
     { name = "lisa-sdk" },
     { name = "openai" },
     { name = "pydantic" },
@@ -1320,6 +1328,7 @@ requires-dist = [
     { name = "lisa-pack-core" },
     { name = "lisa-pack-introspect" },
     { name = "lisa-pack-memory" },
+    { name = "lisa-pack-recovery" },
     { name = "lisa-sdk" },
     { name = "openai", specifier = ">=1.30.0" },
     { name = "pillow", marker = "extra == 'tray'", specifier = ">=10.0.0" },
@@ -1652,6 +1661,30 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "lisa-pack-recovery"
+version = "0.1.0"
+source = { editable = "sdk/packs/recovery" }
+dependencies = [
+    { name = "lisa-kernel" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-mock" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lisa-kernel" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
 ]
 provides-extras = ["dev"]
 

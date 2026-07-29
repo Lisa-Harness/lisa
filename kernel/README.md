@@ -60,6 +60,7 @@ Key principles:
 | `approval.py` | Exact-action approval contracts. `ApprovalInvocation`, `ApprovalReceipt`, `ApprovalService` protocol, `InMemoryApprovalService`, digest construction, and receipt validation. |
 | `capability_manifest.py` | Dynamic capability manifest compiler. Cross-references live tool schemas against operation/tool catalogs to produce a deterministic `CapabilityManifest` for the current turn. |
 | `code_artifacts.py` | Pack-neutral artifacts for approved local code changes. `CodeChangeArtifact`, `CodeChangeArtifactStore` protocol, and `CodeCheckRecord`. |
+| `recovery.py` | Durable recovery contracts for interrupted dispatch work items. `RecoveryRecord`, `RecoveryIdentity`, `RecoveryService` protocol, and state/retry/scope enums for write-ahead lifecycle tracking. |
 | `host_commands.py` | Protocol for pack-registered host command handlers. `HostCommandHandler`, `HostCommandSpec`, and `PackCommandEntry`. |
 | `host_command_discovery.py` | Discovery for pack-registered host commands via `lisa.extensions.host_commands` entry points. |
 | `introspect.py` | Live Python-level introspection for Lisa's self-model. Gathers process memory, asyncio tasks, thread count, MCP pool health, token usage trends, and log errors. |

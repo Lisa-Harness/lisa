@@ -11,6 +11,7 @@ dependencies = [
     "lisa-pack-core",
     "lisa-pack-introspect",
     "lisa-pack-checkpoint",
+    "lisa-pack-recovery",
     "lisa-host-core",
     "lisa-host-cli",
     "lisa-host-web",
@@ -62,6 +63,7 @@ members = [
     "sdk/packs/introspect",
     "sdk/packs/memory",
     "sdk/packs/checkpoint",
+    "sdk/packs/recovery",
     "hosts/core",
     "hosts/cli",
     "hosts/web",
@@ -80,6 +82,7 @@ lisa-pack-stripe = { path = "../lisa-packs-wip/stripe" }
 lisa-pack-core = { workspace = true }
 lisa-pack-introspect = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
+lisa-pack-recovery = { workspace = true }
 lisa-pack-okf = { path = "../lisa-packs/okf" }
 lisa-pack-mem0 = { path = "../lisa-packs/mem0" }
 lisa-pack-brave-search = { path = "../lisa-packs/brave_search" }

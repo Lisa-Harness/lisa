@@ -20,6 +20,7 @@ dependencies = [
     "lisa-pack-core",
     "lisa-pack-introspect",
     "lisa-pack-checkpoint",
+    "lisa-pack-recovery",
     "aiohttp>=3.10.0",
     "openai>=1.30.0",
     "rich>=13.7.0",

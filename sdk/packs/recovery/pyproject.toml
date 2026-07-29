@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["../.."]
+include = ["sdk.packs.recovery*"]
+
+[project]
+name = "lisa-pack-recovery"
+version = "0.1.0"
+description = "Lisa recovery pack - operator commands for interrupted dispatch work items"
+requires-python = ">=3.11"
+
+dependencies = [
+    "lisa-kernel",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.14.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["../.."]
+testpaths = ["tests"]
+
+[project.entry-points."lisa.extensions.content_roots"]
+recovery = "sdk.packs.recovery:get_content_root"
+
+[project.entry-points."lisa.extensions.host_commands"]
+recovery = "sdk.packs.recovery.commands:get_host_commands"
