@@ -1,4 +1,4 @@
-"""Tests for the live introspection module (kernel/introspect.py)."""
+"""Tests for the live introspection module (hosts/core/introspect.py)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kernel.introspect import gather_introspection
+from hosts.core.introspect import gather_introspection
 from kernel.models import IntrospectSnapshot
 
 

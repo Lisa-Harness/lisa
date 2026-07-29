@@ -10,6 +10,11 @@ and injects them via the ``introspect_fn`` callback on ``TurnHooks``. This
 module provides the pure ``gather_introspection`` function that the host's
 callback delegates to.
 
+This is a host-runtime implementation backed by host-owned resources, so it
+lives in ``hosts.core`` rather than the kernel. The kernel only owns the
+``IntrospectSnapshot`` contracts and the ``introspect_fn`` seam on
+``OperationExecutionContext`` / ``TurnRunnerTurnConfig``.
+
 Design — soft dependencies:
     ``psutil`` is optional. When unavailable, process-level fields (RSS, CPU,
     uptime) return zero and the snapshot is still valid — just less rich.

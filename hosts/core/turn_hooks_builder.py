@@ -20,7 +20,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
-from kernel.introspect import gather_introspection
+from hosts.core.introspect import gather_introspection
 from kernel.model_router_discovery import discover_model_router_factories
 from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from kernel.operations.registry import execute_operation

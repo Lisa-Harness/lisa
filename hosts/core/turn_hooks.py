@@ -56,7 +56,7 @@ class LittleLisaTurnHooks:
     async def introspect(self) -> Any:
         """Gather a live introspection snapshot from the host runtime.
 
-        Delegates to ``kernel.introspect.gather_introspection`` with the
+        Delegates to ``hosts.core.introspect.gather_introspection`` with the
         host's warm MCP pool, turn log path, and token usage path. When
         the introspect callable was not wired at construction time, returns
         ``None``.

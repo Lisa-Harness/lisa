@@ -63,7 +63,6 @@ Key principles:
 | `recovery.py` | Durable recovery contracts for interrupted dispatch work items. `RecoveryRecord`, `RecoveryIdentity`, `RecoveryService` protocol, and state/retry/scope enums for write-ahead lifecycle tracking. |
 | `host_commands.py` | Protocol for pack-registered host command handlers. `HostCommandHandler`, `HostCommandSpec`, and `PackCommandEntry`. |
 | `host_command_discovery.py` | Discovery for pack-registered host commands via `lisa.extensions.host_commands` entry points. |
-| `introspect.py` | Live Python-level introspection for Lisa's self-model. Gathers process memory, asyncio tasks, thread count, MCP pool health, token usage trends, and log errors. |
 
 ### Subpackages
 

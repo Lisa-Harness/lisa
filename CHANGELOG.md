@@ -4,6 +4,25 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+#### `kernel/introspect.py` moved to `hosts/core/introspect.py`
+
+- **Live introspection gatherer relocated from the kernel to the host runtime.**
+  `gather_introspection` reads host-owned concrete resources (the MCP tool
+  pool, turn log path, token usage path), so it is a host-runtime
+  implementation, not a runtime-neutral contract. The kernel only owns the
+  `IntrospectSnapshot` / `McpServerHealth` / `TokenUsageSummary` /
+  `LogErrorEntry` / `OperationalHealth` models and the `introspect_fn` seam
+  on `OperationExecutionContext` and `TurnRunnerTurnConfig.introspect`.
+- **Hard cutover, no compat.** `kernel/introspect.py` and
+  `kernel/tests/test_introspect.py` are deleted. The single non-test
+  importer (`hosts/core/turn_hooks_builder.py`) now imports
+  `from hosts.core.introspect import gather_introspection`. The test moved
+  to `hosts/core/tests/test_introspect.py`. `kernel/README.md`'s Built-in
+  Capabilities table drops the `introspect.py` row; the `introspect` hook
+  row (seam contract) stays.
+
 ### Removed
 
 #### Model roles and `/deep` command
