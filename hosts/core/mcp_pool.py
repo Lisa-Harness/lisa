@@ -244,6 +244,14 @@ def build_content_mcp_config(
     # ``lisa_packs.markdown.operations.forge.forge_document`` raise
     # ``ModuleNotFoundError: No module named 'lisa_packs'`` in the child.
     _inject_packs_venv_pythonpath(data_dir, env)
+
+    # Route this server's logs to <data_dir>/lisa-content.jsonl. The
+    # content/catalog servers are built directly here rather than via
+    # kernel.mcp_launch.compiler (which sets this for spec-driven servers),
+    # so without this the child's configure_logging falls back to
+    # ``<cwd>/lisa-content.jsonl`` — i.e. the project root — because these
+    # configs leave cwd=None and the child inherits the host's cwd.
+    env.setdefault("LISA_MCP_LOG_PATH", str(Path(data_dir) / "lisa-content.jsonl"))
     return MCPClientConfig(
         server_id="lisa-content",
         command=sys.executable,
@@ -281,6 +289,15 @@ def build_catalog_mcp_config(*, content_config: MCPClientConfig, data_dir: Path)
     difference is the module (``mcp_server.catalog.server`` vs
     ``mcp_server.content.server``).
     """
+    # Reuse the content server's env (which already sets SDK_CONTENT_ROOTS,
+    # LISA_DISABLED_PACKS, the packs-venv PYTHONPATH, and LISA_MCP_LOG_PATH),
+    # but override the log path so this server writes to its own file. Like
+    # build_content_mcp_config, this is built directly rather than via
+    # kernel.mcp_launch.compiler, so without this the child's
+    # configure_logging falls back to ``<cwd>/lisa-catalog.jsonl`` (project
+    # root) since cwd is None and inherited from the host.
+    env = dict(content_config.env)
+    env["LISA_MCP_LOG_PATH"] = str(Path(data_dir) / "lisa-catalog.jsonl")
     return MCPClientConfig(
         server_id="lisa-catalog",
         command=content_config.command,
@@ -290,7 +307,7 @@ def build_catalog_mcp_config(*, content_config: MCPClientConfig, data_dir: Path)
             "--data-dir",
             str(data_dir),
         ],
-        env=content_config.env,
+        env=env,
     )
 
 
