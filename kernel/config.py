@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     sdk_content_roots: str = ""
     workspace_id_fallback: str = "default"
 
+    # ── Declarative operations ──────────────────────────────────────────
+    declarative_completion_max_tokens: int = 1500
+    declarative_completion_temperature: float = 0.2
+
     # ── Context broker ──────────────────────────────────────────────────
     heartbeat_interval_seconds: int = 60
     repo_context_stale_after_hours: int = 6
@@ -186,6 +190,7 @@ class Settings(BaseSettings):
         return value.split("#", 1)[0].strip()
 
     @field_validator(
+        "declarative_completion_max_tokens",
         "heartbeat_interval_seconds",
         "repo_context_stale_after_hours",
         "reflection_cadence_minutes",

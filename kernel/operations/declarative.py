@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from kernel.approval import ApprovalRequired
+from kernel.config import settings as _kernel_settings
 from kernel.models import (
     OperationExecutionContext,
     OperationResult,
@@ -33,8 +34,8 @@ from kernel.operations.structured_output import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MAX_TOKENS = 1500
-_DEFAULT_TEMPERATURE = 0.2
+_DEFAULT_MAX_TOKENS = _kernel_settings.declarative_completion_max_tokens
+_DEFAULT_TEMPERATURE = _kernel_settings.declarative_completion_temperature
 _MISSING = object()
 
 

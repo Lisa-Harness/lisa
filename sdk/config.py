@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     intel_inbox_container: str = "lisa-intel-inbox"
     memory_recall_final_limit: int = 8
 
+    # ── Declarative operations ──────────────────────────────────────────
+    declarative_completion_max_tokens: int = 1500
+    declarative_completion_temperature: float = 0.2
+
     @staticmethod
     def _strip_inline_comment(value: object) -> object:
         if not isinstance(value, str):
@@ -52,6 +56,7 @@ class Settings(BaseSettings):
         return value.split("#", 1)[0].strip()
 
     @field_validator(
+        "declarative_completion_max_tokens",
         "heartbeat_interval_seconds",
         "external_signal_timeout_seconds",
         "memory_recall_final_limit",

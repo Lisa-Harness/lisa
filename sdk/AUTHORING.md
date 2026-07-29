@@ -203,8 +203,8 @@ Return one JSON object matching the declared schema.
 | `mode_allowlist` | (all modes) | Modes allowed to invoke this operation |
 | `timeout_seconds` | `60` | Wall-clock limit for the full instruction loop |
 | `max_calls_per_turn` | `0` | Max times this operation can be called in one turn (`0` = unlimited) |
-| `completion_max_tokens` | `1500` | Token budget for the model completion |
-| `completion_temperature` | `0.2` | Temperature for the model completion |
+| `completion_max_tokens` | `declarative_completion_max_tokens` setting (default `1500`) | Token budget for the model completion |
+| `completion_temperature` | `declarative_completion_temperature` setting (default `0.2`) | Temperature for the model completion |
 | `preferred_model_id` | (mode default) | Model alias to use for this operation |
 | `response_format_model_path` | (none) | Dotted path to a Pydantic response model class |
 | `response_output_text_field` | `"output_text"` | Field name to extract as `OperationResult.output_text` |

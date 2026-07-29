@@ -17,7 +17,12 @@ from typing import Any
 
 import yaml
 
+from sdk.config import settings as _sdk_settings
 from sdk.content._front_matter import FrontMatterError, parse_front_matter
+
+# Config-backed completion defaults for declarative operations.
+_DEFAULT_COMPLETION_MAX_TOKENS = _sdk_settings.declarative_completion_max_tokens
+_DEFAULT_COMPLETION_TEMPERATURE = _sdk_settings.declarative_completion_temperature
 
 logger = logging.getLogger(__name__)
 
@@ -770,8 +775,14 @@ def _load_markdown_operation(md_path: Path) -> dict[str, Any] | None:
         ),
         "timeout_seconds": int(metadata.get("timeout_seconds", 60) or 60),
         "max_calls_per_turn": int(metadata.get("max_calls_per_turn", 0) or 0),
-        "completion_max_tokens": int(metadata.get("completion_max_tokens", 1500) or 1500),
-        "completion_temperature": float(metadata.get("completion_temperature", 0.2) or 0.2),
+        "completion_max_tokens": int(
+            metadata.get("completion_max_tokens", _DEFAULT_COMPLETION_MAX_TOKENS)
+            or _DEFAULT_COMPLETION_MAX_TOKENS
+        ),
+        "completion_temperature": float(
+            metadata.get("completion_temperature", _DEFAULT_COMPLETION_TEMPERATURE)
+            or _DEFAULT_COMPLETION_TEMPERATURE
+        ),
         "instruction_markdown_path": str(md_path),
         "instruction_body": body,
         "module_path": "",
