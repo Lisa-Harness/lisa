@@ -4,4 +4,4 @@ mode_allowlist: [default, discuss, learn]
 tool_ids: [save_checkpoint]
 timeout_seconds: 30
 max_calls_per_turn: 1
-preferred_model_id: deep
+preferred_model_id: default

@@ -61,7 +61,6 @@ class TestIsHostCommandQuery:
         assert not is_host_command_query("what is /pack?")
         assert not is_host_command_query("explain /help to me")
         assert not is_host_command_query("/quit")
-        assert not is_host_command_query("deep")
         assert not is_host_command_query("")
 
     def test_empty_or_whitespace_only(self) -> None:

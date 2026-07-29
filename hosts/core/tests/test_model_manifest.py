@@ -107,10 +107,7 @@ def test_load_manifest_accepts_anthropic_ollama_and_google_providers(tmp_path: P
             version: 1
             mode_models:
               default: claude-3-5-sonnet
-              deep: llama3.1
               discuss: gemini-2.5-flash
-            roles:
-              deep: llama3.1
             models:
               - model_id: claude-3-5-sonnet
                 provider: anthropic
@@ -126,7 +123,7 @@ def test_load_manifest_accepts_anthropic_ollama_and_google_providers(tmp_path: P
     manifest = model_manifest.load_model_manifest(manifest_file)
 
     assert manifest.resolve("default").model_id == "claude-3-5-sonnet"
-    assert manifest.resolve("deep").model_id == "llama3.1"
+    assert manifest.resolve("discuss").model_id == "gemini-2.5-flash"
     google_model = manifest.find_model("gemini-2.5-flash")
     assert google_model is not None
     assert google_model.provider == "google"

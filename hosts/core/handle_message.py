@@ -10,11 +10,11 @@ This is the core ``handle_message`` entry point that all transport hosts
     ``/checkpoints``, ``/summarize-history``) are discovered via
     ``lisa.extensions.host_commands`` and dispatched after built-in host
     commands.
-2. **Model turn routing** — for non-command messages: checks for ``/deep``
-   prefix, parses slash-command routes, then routes natural language
-   directly to the current mode and executes the turn via
-   ``kernel.turn_runner.run_turn``. Mode handoff happens mid-turn through
-   the ``transition_stage`` tool — there is no separate router planner.
+2. **Model turn routing** — for non-command messages: parses slash-command
+   routes, then routes natural language directly to the current mode and
+   executes the turn via ``kernel.turn_runner.run_turn``. Mode handoff
+   happens mid-turn through the ``transition_stage`` tool — there is no
+   separate router planner.
 3. **Turn execution** — builds ``TurnHooks`` via
    ``hosts.core.turn_hooks_builder.build_turn_hooks``, calls ``run_turn``,
    persists thread entries, updates token counters, and emits transport
@@ -266,9 +266,7 @@ async def handle_message(
 # and ``state_provider.py``) so the persistence layer never owns command
 # vocabulary.
 #
-# ``/deep`` is deliberately NOT registered: it routes to the model and the
-# query body IS the conversation. ``/quit`` is CLI-only and never appended
-# to the thread.
+# ``/quit`` is CLI-only and never appended to the thread.
 register_host_command_prefixes(
     (
         "/help",

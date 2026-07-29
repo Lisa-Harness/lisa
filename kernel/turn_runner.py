@@ -1134,7 +1134,7 @@ async def run_turn(
             policy may further tighten this via ``min()``.
         preferred_model_id: Optional per-turn model alias override supplied by
             the host when routing needs an explicit model designation
-            (e.g. ``"deep"`` for ``/deep``).
+            (e.g. ``"discuss"`` for /discuss routing).
         turn_budget: Optional whole-turn resource budget. When set, the loop
             tracks tool calls, tokens, and wall time against the budget and
             forces a final no-tools completion when any limit is reached.

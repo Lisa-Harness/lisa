@@ -87,7 +87,6 @@ _HOST_REPL_SHORTCUTS: tuple[str, ...] = (
     "/checkpoint",
     "/restore",
     "/checkpoints",
-    "/deep ",
     "/quit",
 )
 
@@ -215,7 +214,7 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
     console.print(
         Panel(
             "Type /help, /help capabilities, /debug context, "
-            "/pack list, /models discover, /search <query>, /deep <query>, or /quit.",
+            "/pack list, /models discover, /search <query>, or /quit.",
             title="Session",
             border_style=STYLE_BORDER_SESSION,
         )

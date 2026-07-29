@@ -92,7 +92,7 @@ All keys live under `context.history.compaction` in the session manifest. The mo
 | `hard_threshold` | `float 0.0-1.0` | `0.90` | Guardrail: fire regardless of pressure budget or interval when utilization reaches this fraction. Must be `>= pressure_threshold`. |
 | `min_interval_turns` | `int >= 0` | `4` | Don't re-compact more often than every N turns. Ignored when the hard threshold overrides. |
 | `retention_count` | `int >= 1` | `6` | Most-recent turns kept verbatim; older turns are summarized into one record. |
-| `preferred_model_id` | `string` | `deep` | Model ID used for the summarize operation. |
+| `preferred_model_id` | `string` | `default` | Model ID used for the summarize operation. |
 | `summarize_operation` | `string` | `checkpoint_history_summarize` | Operation ID invoked to compact. Override to `context_compact` for the utilization-aware prompt shipped by the compaction pack. |
 
 ### Choosing thresholds
