@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
@@ -146,6 +146,30 @@ class Settings(BaseSettings):
     context_budget_operational_max_tokens: int = 800
     context_budget_token_char_ratio: int = 4
 
+    # ── Context mapper scoring ─────────────────────────────────────────
+    # Per-provenance authority multiplier used when scoring context
+    # candidates. Keys must exactly match the ``ContextProvenance``
+    # literals in ``kernel/context/models.py``. Override via
+    # ``CONTEXT_MAPPER_PROVENANCE_AUTHORITY`` as a JSON object.
+    context_mapper_provenance_authority: dict[str, float] = {
+        "authoritative": 1.0,
+        "system_observed": 0.98,
+        "user_asserted": 0.75,
+        "recalled_memory": 0.70,
+        "inferred": 0.55,
+        "diagnostic": 0.45,
+        "speculative": 0.30,
+    }
+    # Per-conflict-risk penalty applied to the conflict component. Keys
+    # must exactly match the ``ContextConflictRisk`` literals in
+    # ``kernel/context/models.py``. Override via
+    # ``CONTEXT_MAPPER_CONFLICT_PENALTY`` as a JSON object.
+    context_mapper_conflict_penalty: dict[str, float] = {
+        "low": 0.0,
+        "medium": 0.5,
+        "high": 1.0,
+    }
+
     # ── Conversation digest ─────────────────────────────────────────────
     conversation_digest_enabled: bool = True
     conversation_digest_model: str = ""
@@ -210,6 +234,47 @@ class Settings(BaseSettings):
     passive_intelligence_window_memories: int = 20
     passive_intelligence_stale_after_minutes: int = 30
     passive_intelligence_default_chat_min_overlap: float = 0.25
+
+    @model_validator(mode="after")
+    def _validate_mapper_scoring_keys(self) -> "Settings":
+        """Ensure context-mapper scoring dicts cover exactly the Literal keys."""
+        required_provenance = {
+            "authoritative",
+            "inferred",
+            "speculative",
+            "user_asserted",
+            "system_observed",
+            "recalled_memory",
+            "diagnostic",
+        }
+        provenance_keys = set(self.context_mapper_provenance_authority)
+        missing_provenance = required_provenance - provenance_keys
+        extra_provenance = provenance_keys - required_provenance
+        if missing_provenance or extra_provenance:
+            details: list[str] = []
+            if missing_provenance:
+                details.append("missing: " + ", ".join(sorted(missing_provenance)))
+            if extra_provenance:
+                details.append("extra: " + ", ".join(sorted(extra_provenance)))
+            raise ValueError(
+                "context_mapper_provenance_authority keys must match the "
+                "ContextProvenance literals exactly (" + "; ".join(details) + ")"
+            )
+        required_conflict = {"low", "medium", "high"}
+        conflict_keys = set(self.context_mapper_conflict_penalty)
+        missing_conflict = required_conflict - conflict_keys
+        extra_conflict = conflict_keys - required_conflict
+        if missing_conflict or extra_conflict:
+            details = []
+            if missing_conflict:
+                details.append("missing: " + ", ".join(sorted(missing_conflict)))
+            if extra_conflict:
+                details.append("extra: " + ", ".join(sorted(extra_conflict)))
+            raise ValueError(
+                "context_mapper_conflict_penalty keys must match the "
+                "ContextConflictRisk literals exactly (" + "; ".join(details) + ")"
+            )
+        return self
 
     @staticmethod
     def _strip_inline_comment(value: object) -> object:

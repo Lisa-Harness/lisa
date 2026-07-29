@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final, cast
 
+from kernel.config import settings
 from kernel.context.models import (
     ContextBudgetSnapshot,
     ContextCandidate,
@@ -58,20 +59,6 @@ _STOP_WORDS: Final[frozenset[str]] = frozenset(
         "with",
     }
 )
-_PROVENANCE_AUTHORITY: Final[dict[str, float]] = {
-    "authoritative": 1.0,
-    "system_observed": 0.98,
-    "user_asserted": 0.75,
-    "recalled_memory": 0.70,
-    "inferred": 0.55,
-    "diagnostic": 0.45,
-    "speculative": 0.30,
-}
-_CONFLICT_PENALTY: Final[dict[str, float]] = {
-    "low": 0.0,
-    "medium": 0.5,
-    "high": 1.0,
-}
 
 
 class ContextMappingError(ValueError):
@@ -116,7 +103,7 @@ def context_candidates_from_evidence(
         provenance = _metadata_choice(
             metadata,
             key="provenance",
-            allowed_values=_PROVENANCE_AUTHORITY,
+            allowed_values=settings.context_mapper_provenance_authority,
             default="system_observed" if evidence.collector_id else "authoritative",
             evidence_id=candidate_id,
         )
@@ -833,6 +820,8 @@ def _score_components(
     token_count: int,
 ) -> dict[str, float]:
     available_tokens = _available_context_tokens(request)
+    provenance_authority = settings.context_mapper_provenance_authority
+    conflict_penalty = settings.context_mapper_conflict_penalty
     return {
         "relevance": _lexical_relevance(request.query, candidate),
         "mode_affinity": 1.0 if request.mode_id in candidate.mode_ids else 0.6,
@@ -840,11 +829,11 @@ def _score_components(
         "freshness": _freshness(candidate, now),
         "authority": candidate.authority
         * candidate.confidence
-        * _PROVENANCE_AUTHORITY[candidate.provenance],
+        * provenance_authority[candidate.provenance],
         "continuity": candidate.continuity,
         "user_priority": candidate.user_priority,
         "recency": _recency(candidate, now),
-        "conflict": _CONFLICT_PENALTY[candidate.conflict_risk],
+        "conflict": conflict_penalty[candidate.conflict_risk],
         "token_cost": min(token_count / max(available_tokens, 1), 1.0),
     }
 

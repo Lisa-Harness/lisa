@@ -497,3 +497,42 @@ def test_mapper_reserves_model_budget_before_context_selection() -> None:
     budget = result.trace.budget
     assert budget.available_context_tokens == _AVAILABLE_CONTEXT_TOKENS
     assert budget.used_context_tokens == _SELECTED_CONTEXT_TOKENS
+
+
+def test_mapper_reads_provenance_authority_and_conflict_penalty_from_settings() -> None:
+    from kernel.config import settings
+
+    candidate = _candidate(
+        "provenance",
+        "Deployment context with conflict risk.",
+        provenance="speculative",
+        conflict_risk="high",
+        conflict_key="deploy-conflict",
+    )
+
+    original_provenance = dict(settings.context_mapper_provenance_authority)
+    original_conflict = dict(settings.context_mapper_conflict_penalty)
+    try:
+        settings.context_mapper_provenance_authority = {
+            **original_provenance,
+            "speculative": 0.1,
+        }
+        settings.context_mapper_conflict_penalty = {
+            **original_conflict,
+            "high": 0.9,
+        }
+
+        result = ContextMapper().map(_request((candidate,)))
+
+        decision = next(
+            decision
+            for decision in result.trace.decisions
+            if decision.candidate_id == "provenance"
+        )
+        assert decision.component_scores["authority"] == pytest.approx(
+            candidate.authority * candidate.confidence * 0.1
+        )
+        assert decision.component_scores["conflict"] == pytest.approx(0.9)
+    finally:
+        settings.context_mapper_provenance_authority = original_provenance
+        settings.context_mapper_conflict_penalty = original_conflict
