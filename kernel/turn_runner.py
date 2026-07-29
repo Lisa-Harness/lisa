@@ -152,6 +152,50 @@ _MAX_HANDOFFS_PER_TURN = 6
 # advance and the model is in a routing loop.
 _DUPLICATE_HINT_LIMIT = 2
 
+
+def _is_workflow_instance_complete(instance: Any) -> bool:
+    """Return True when the workflow instance has no remaining steps.
+
+    Thin wrapper around ``kernel.workflow_instance.is_complete`` with
+    graceful degradation: any exception or missing attribute returns
+    ``True`` so the per-step cap falls through to the existing final
+    completion rather than synthesizing a handoff to a step that may not
+    exist.
+    """
+    try:
+        from kernel.workflow_instance import is_complete  # noqa: PLC0415
+
+        return bool(is_complete(instance))
+    except Exception:  # pylint: disable=broad-except
+        return True
+
+
+def _next_remaining_step(instance: Any) -> Any:
+    """Return the first uncompleted ``WorkflowStep`` after the current one.
+
+    Wraps ``kernel.workflow_instance.remaining_steps`` and selects the
+    step immediately following ``current_step_id`` in declaration order
+    (falling back to the first remaining step when the current step is
+    already advanced or missing). Returns ``None`` when there are no
+    remaining steps or on any exception.
+    """
+    try:
+        from kernel.workflow_instance import remaining_steps  # noqa: PLC0415
+
+        remaining = remaining_steps(instance)
+        if not remaining:
+            return None
+        current = getattr(instance, "current_step_id", "") or ""
+        # Prefer the step immediately after the current one in
+        # declaration order; fall back to the first remaining step.
+        for step in remaining:
+            if step.step_id != current:
+                return step
+        return remaining[0]
+    except Exception:  # pylint: disable=broad-except
+        return None
+
+
 # ── Public types ───────────────────────────────────────────────────────────
 
 
@@ -1022,6 +1066,8 @@ async def run_turn(
     query: str,
     hooks: TurnHooks,
     max_tool_iterations: int | None = None,
+    per_step_max_iterations: int | None = None,
+    per_step_max_tool_calls: int | None = None,
     preferred_model_id: str | None = None,
     turn_budget: TurnBudget | None = None,
     execution_policy: ExecutionPolicy | None = None,
@@ -1083,6 +1129,10 @@ async def run_turn(
 
     if max_tool_iterations is None:
         max_tool_iterations = _kernel_settings.max_tool_iterations
+    if per_step_max_iterations is None:
+        per_step_max_iterations = _kernel_settings.per_step_max_iterations
+    if per_step_max_tool_calls is None:
+        per_step_max_tool_calls = _kernel_settings.per_step_max_tool_calls
 
     if execution_policy is not None:
         if execution_policy.max_model_calls is not None:
@@ -1138,6 +1188,8 @@ async def run_turn(
             on_complete=on_complete,
             mode_config=mode_config,
             max_tool_iterations=max_tool_iterations,
+            per_step_max_iterations=per_step_max_iterations,
+            per_step_max_tool_calls=per_step_max_tool_calls,
             preferred_model_id=preferred_model_id,
             turn_budget=turn_budget,
             execution_policy=execution_policy,
@@ -1160,6 +1212,8 @@ async def run_turn(
             on_complete=on_complete,
             mode_config=mode_config,
             max_tool_iterations=max_tool_iterations,
+            per_step_max_iterations=per_step_max_iterations,
+            per_step_max_tool_calls=per_step_max_tool_calls,
             preferred_model_id=preferred_model_id,
             turn_budget=turn_budget,
             execution_policy=execution_policy,
@@ -1184,6 +1238,8 @@ async def _run_turn_with_approval(
     on_complete: Callable[[str, str, str, list[dict[str, Any]]], Awaitable[None]],
     mode_config: Any,
     max_tool_iterations: int,
+    per_step_max_iterations: int,
+    per_step_max_tool_calls: int,
     preferred_model_id: str | None,
     turn_budget: TurnBudget | None,
     execution_policy: ExecutionPolicy | None,
@@ -1206,6 +1262,8 @@ async def _run_turn_with_approval(
             on_complete=on_complete,
             mode_config=mode_config,
             max_tool_iterations=max_tool_iterations,
+            per_step_max_iterations=per_step_max_iterations,
+            per_step_max_tool_calls=per_step_max_tool_calls,
             preferred_model_id=preferred_model_id,
             turn_budget=turn_budget,
             execution_policy=execution_policy,
@@ -1341,6 +1399,8 @@ async def _run_turn_inner(
     on_complete: Callable[[str, str, str, list[dict[str, Any]]], Awaitable[None]],
     mode_config: Any,
     max_tool_iterations: int,
+    per_step_max_iterations: int,
+    per_step_max_tool_calls: int,
     preferred_model_id: str | None,
     turn_budget: TurnBudget | None,
     execution_policy: ExecutionPolicy | None,
@@ -1483,6 +1543,8 @@ async def _run_turn_inner(
                 query=query,
                 hooks=hooks,
                 max_tool_iterations=max_tool_iterations,
+                per_step_max_iterations=per_step_max_iterations,
+                per_step_max_tool_calls=per_step_max_tool_calls,
                 preferred_model_id=preferred_model_id,
                 turn_budget=turn_budget,
                 execution_policy=execution_policy,
@@ -1897,6 +1959,14 @@ async def _run_turn_inner(
     _state.chain_satisfied = set()
     if mode_config is not None:
         _state.chain_satisfied.update(mode_config.satisfies_intents)
+    # Per-step iteration sub-budget counters. Reset to 0 here (the entry
+    # mode is step 1; the first loop increment moves them to 1) and reset
+    # again on every successful ``transition_stage`` handoff so each step
+    # in a chained workflow gets its own budget (Phase 3). When no
+    # ``WorkflowInstance`` is wired these are unused — the global
+    # ``max_tool_iterations`` alone governs the loop.
+    _state.step_iteration = 0
+    _state.step_tool_calls = 0
 
     # required_capabilities are derived once from the mode config. They
     # default to empty — a router that does not need them ignores them.
@@ -1944,6 +2014,58 @@ async def _run_turn_inner(
 
     while _state.iteration < max_tool_iterations:
         _state.iteration += 1
+        _state.step_iteration += 1
+
+        # ── Per-step iteration sub-budget (Phase 3) ───────────────────
+        # When the current workflow step has exhausted its per-step
+        # iteration or tool-call budget but the global turn cap has not
+        # fired, synthesize a handoff to the next remaining step instead
+        # of letting the model keep looping in the same mode (the
+        # 2026-07-28 glm-5.2 stall: a 6-step chain starved its final
+        # ``markdown`` step because earlier steps consumed the whole
+        # shared 15-iteration budget). We reuse the existing
+        # ``pending_planned_handoff`` synthesis block below: set the next
+        # step's mode_id and ``continue`` so the synth fires on the next
+        # loop iteration. When there is no active ``WorkflowInstance`` or
+        # no remaining step (the instance is complete), fall through to
+        # the existing empty-content final-completion fallback — the
+        # per-step cap then behaves as a tighter global cap, which is
+        # acceptable for a complete workflow (it should produce an
+        # answer, not loop forever; the global cap is the backstop).
+        _step_budget_exhausted = (
+            _state.step_iteration > per_step_max_iterations
+            or _state.step_tool_calls >= per_step_max_tool_calls
+        )
+        if _step_budget_exhausted and hooks.workflow_instance is not None:
+            try:
+                _wi = hooks.workflow_instance()
+            except Exception:  # pylint: disable=broad-except
+                _wi = None
+            if _wi is not None and not _is_workflow_instance_complete(_wi):
+                _next_step = _next_remaining_step(_wi)
+                if _next_step is not None:
+                    _log.info(
+                        "per-step budget exhausted (step_iteration=%d, "
+                        "step_tool_calls=%d, mode=%s, global_iteration=%d/%d); "
+                        "synthesizing handoff to next step %s",
+                        _state.step_iteration,
+                        _state.step_tool_calls,
+                        mode_id,
+                        _state.iteration,
+                        max_tool_iterations,
+                        _next_step.mode_id,
+                    )
+                    _state.pending_planned_handoff = _next_step.mode_id
+                    # Reset the per-step counters now (rather than waiting
+                    # for the post-handoff block) so the cap check does not
+                    # re-fire on the next iteration before the synth block
+                    # below can process the pending handoff.
+                    _state.step_iteration = 0
+                    _state.step_tool_calls = 0
+                    continue
+                # No remaining step but instance not complete — fall
+                # through to final completion (decision: B).
+            _wi = None  # noqa: F841  # explicit fall-through
 
         # Stuck-session guard: if the session has been in the same stage
         # for too many turns, inject a nudge. After the cap, strip tools to
@@ -3261,6 +3383,13 @@ async def _run_turn_inner(
                                     # mode's intents were added at init; each
                                     # handoff adds its target's intents here.
                                     _state.chain_satisfied.update(target_mode_config.satisfies_intents)
+                                    # Reset the per-step iteration sub-budget
+                                    # counters so the new step gets its own
+                                    # full budget. Placed before the durable
+                                    # instance advancement so a failure there
+                                    # does not leave a stale counter. (Phase 3)
+                                    _state.step_iteration = 0
+                                    _state.step_tool_calls = 0
                                     post_handoff_hint = _compute_capability_routing_hint(
                                         mode_id=target_stage,
                                         query=query,
@@ -3511,6 +3640,7 @@ async def _run_turn_inner(
                     mcp_result = await pool.call_tool(tool_name, tool_arguments)
                     tool_output = mcp_result.output_text or "Done"
                 _state.total_tool_calls += 1
+                _state.step_tool_calls += 1
                 _state.called_tool_names.add(tool_name)
                 ledger.record(tool_name)
                 if recovery_item_id and hooks.recovery_service is not None:

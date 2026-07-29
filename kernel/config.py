@@ -107,6 +107,22 @@ class Settings(BaseSettings):
     # parallel and get a smaller slice than a full sequential turn.
     # Override via ``FORK_CHILD_MAX_TOOL_ITERATIONS``.
     fork_child_max_tool_iterations: int = 5
+    # Per-step iteration sub-budget. Each workflow step (between two
+    # ``transition_stage`` handoffs) gets its own iteration budget so a
+    # chained producer→consumer pipeline does not starve its final step
+    # on the shared ``max_tool_iterations`` budget. When a step exhausts
+    # its per-step cap but the global cap has not fired, the kernel
+    # synthesizes a handoff to the next remaining step instead of the
+    # generic empty-content final completion. The global cap remains the
+    # hard ceiling: a 6-step chain with per_step=8 cannot exceed 15 total
+    # iterations — the per-step cap only redistributes *when* the budget
+    # runs out. Override via ``PER_STEP_MAX_ITERATIONS``.
+    per_step_max_iterations: int = 8
+    # Per-step tool-call sub-budget. Secondary guard against a model that
+    # burns many tool calls within one step without converging. Same reset
+    # and handoff-synth behavior as ``per_step_max_iterations``.
+    # Override via ``PER_STEP_MAX_TOOL_CALLS``.
+    per_step_max_tool_calls: int = 12
 
     # ── Context broker ──────────────────────────────────────────────────
     heartbeat_interval_seconds: int = 60

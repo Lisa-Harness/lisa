@@ -74,6 +74,27 @@ class _TurnState:
     fork_results: list[Any] | None = None
     workflow_terminated: bool = False
     iteration: int = 0
+    # ── Per-step iteration sub-budget ────────────────────────────────
+    # Iterations and tool calls consumed by the *current* workflow step
+    # only, reset to 0 on every successful ``transition_stage`` (the same
+    # site as the durable instance advancement). The global ``iteration``
+    # counter is NOT reset on handoffs — it bounds the whole turn — but
+    # ``step_iteration`` bounds a single step so a long chained workflow
+    # (default→plan→search→ponder→coding→markdown) does not starve its
+    # final step on the shared ``max_tool_iterations`` budget. When the
+    # per-step cap binds before the global cap, the kernel synthesizes a
+    # handoff to the next remaining step instead of running the generic
+    # empty-content final completion (see Phase 3 of the durable-workflow
+    # plan, 2026-07-29). When no ``WorkflowInstance`` is wired, these
+    # counters are unused and the global cap alone governs the loop.
+    step_iteration: int = 0
+    """Model-completion iterations consumed by the current workflow step.
+    Reset to 0 on every ``transition_stage``; bounded by
+    ``per_step_max_iterations`` from ``kernel.config.Settings``."""
+    step_tool_calls: int = 0
+    """Tool calls dispatched during the current workflow step. Reset to 0
+    on every ``transition_stage``; bounded by ``per_step_max_tool_calls``
+    as a secondary guard against a model stuck in a tool-calling rut."""
 
     # ── Chain routing accumulator ────────────────────────────────────
     chain_satisfied: set[str] = field(default_factory=set)
