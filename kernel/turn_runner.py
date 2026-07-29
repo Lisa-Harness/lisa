@@ -1170,9 +1170,23 @@ async def _run_turn_with_approval(
             suppress_routing_hint=suppress_routing_hint,
         )
     except ApprovalRequired as required:
+        # Preserve the mid-turn handoff across the approval boundary. The
+        # pending invocation carries the identity of the mode that owned
+        # the effectful action (e.g. ``coding`` after a default -> coding
+        # handoff). Without this, ``run_turn`` returns ``handoff_to=None``
+        # and the host leaves ``current_mode_id`` at the turn's entry mode
+        # (``default``). The subsequent ``/approve`` rebuilds the approval
+        # identity from ``current_mode_id`` and the exact-match in
+        # ``_identity_matches`` fails, stranding the approval. Surface the
+        # owning mode as ``handoff_to`` so the host advances
+        # ``current_mode_id`` before the user resumes — but only when it
+        # differs from the entry mode, so an approval paused in the entry
+        # mode does not fabricate a self-handoff.
+        owning_mode = required.invocation.identity.mode_id or ""
         return TurnResult(
             response_text=render_approval_request(required.invocation),
             pending_approval=required.invocation,
+            handoff_to=owning_mode if owning_mode and owning_mode != mode_id else None,
         )
 
 
