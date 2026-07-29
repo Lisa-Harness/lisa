@@ -21,8 +21,10 @@ hooks.
 
 This module owns that missing object — **``WorkflowInstance``** — plus the
 pure helpers that advance it and the step compiler that derives steps from
-routing targets for ad-hoc workflows. The durable store lives in
-``kernel/workflow_instance_store.py``; the model and helpers are here.
+routing targets for ad-hoc workflows. The durable store contract lives in
+``kernel/workflow_instance_store.py`` (Protocol only); the file-backed
+implementation lives in ``hosts/core/workflow_instance_store.py``. The
+model and helpers are here.
 
 Design constraints (mirroring the codebase conventions):
 
@@ -50,9 +52,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from kernel.routing_vocabulary import get_consumer_intents, get_producer_intents
 
 __all__ = [
-    "WorkflowStep",
     "WorkflowInstance",
     "WorkflowInstanceOrigin",
+    "WorkflowStep",
     "advance_step",
     "compile_steps_from_routing_targets",
     "is_complete",

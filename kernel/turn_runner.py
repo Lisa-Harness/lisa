@@ -35,9 +35,9 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, cast
 
-from kernel.config import settings as _kernel_settings
 from kernel.approval import ApprovalInvocation, ApprovalRequired, render_approval_request
 from kernel.capability_manifest import compile_capability_manifest
+from kernel.config import settings as _kernel_settings
 from kernel.context.models import ContextBudgetSnapshot
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
 from kernel.ipsar_fsm import (
@@ -151,6 +151,34 @@ _MAX_HANDOFFS_PER_TURN = 6
 # the exact same hint is a strong signal the accumulator failed to
 # advance and the model is in a routing loop.
 _DUPLICATE_HINT_LIMIT = 2
+# Minimum hint-target history length that forms a detectable 2-cycle
+# (A, B, A). Used by the hint-cycle guard to suppress oscillating hints
+# that the byte-identical dedup misses.
+_HINT_CYCLE_MIN_LEN = 3
+
+
+def _extract_hint_target(hint_text: str) -> str:
+    """Extract the ``target_stage_id`` value from a routing-hint string.
+
+    Hint prose is pack-authored but the kernel emits the mechanical
+    ``target_stage_id `<id>`` suffix itself (see
+    ``_compute_capability_routing_hint``). This extracts that id so the
+    hint-cycle guard can track the target sequence without parsing
+    arbitrary prose. Returns ``""`` when no target is found (e.g. the
+    generic fallback hint that lists multiple targets).
+    """
+    if not hint_text:
+        return ""
+    # The hint always ends with: target_stage_id `<id>`.
+    marker = "target_stage_id `"
+    idx = hint_text.rfind(marker)
+    if idx < 0:
+        return ""
+    rest = hint_text[idx + len(marker):]
+    end = rest.find("`")
+    if end < 0:
+        return ""
+    return rest[:end].strip()
 
 
 def _is_workflow_instance_complete(instance: Any) -> bool:
@@ -1426,10 +1454,20 @@ async def _run_turn_inner(
     # through every helper call instead of being captured by closures.
     from kernel.turn_phases._turn_state import (
         _TurnState,
+    )
+    from kernel.turn_phases._turn_state import (
         budget_forces_final as _budget_forces_final_fn,
+    )
+    from kernel.turn_phases._turn_state import (
         emit_stage as _emit_stage_fn,
+    )
+    from kernel.turn_phases._turn_state import (
         mcp_tool_executor as _mcp_tool_executor_fn,
+    )
+    from kernel.turn_phases._turn_state import (
         record_model_usage as _record_model_usage_fn,
+    )
+    from kernel.turn_phases._turn_state import (
         resolve_iteration_model as _resolve_iteration_model_fn,
     )
 
@@ -2065,7 +2103,7 @@ async def _run_turn_inner(
                     continue
                 # No remaining step but instance not complete — fall
                 # through to final completion (decision: B).
-            _wi = None  # noqa: F841  # explicit fall-through
+            _wi = None  # explicit fall-through
 
         # Stuck-session guard: if the session has been in the same stage
         # for too many turns, inject a nudge. After the cap, strip tools to
@@ -3099,6 +3137,18 @@ async def _run_turn_inner(
                             )
                             content = tool_output
                             break
+                        # Initialize the post-handoff hint to empty for every
+                        # handoff path. The chained-hint recomputation below
+                        # (inside the target-mode-found ``else`` branch)
+                        # overwrites this when the new mode leaves a residual
+                        # intent gap. Branches that reject the handoff (not
+                        # routable, target mode missing) leave it empty so the
+                        # post-tool-output nudge at the ``if post_handoff_hint``
+                        # check below is skipped. Without this initialization
+                        # those reject branches reach that check with an
+                        # unbound local → ``UnboundLocalError`` (logged as
+                        # "Tool 'transition_stage' failed in turn runner").
+                        post_handoff_hint = ""
                         routing_targets = get_routing_targets(mode_id)
                         if target_stage not in routing_targets and target_stage != "default":
                             tool_output = (
@@ -3417,7 +3467,9 @@ async def _run_turn_inner(
                                             _wi = None
                                         if _wi is not None and getattr(_wi, "current_step_id", ""):
                                             try:
-                                                from kernel.workflow_instance import advance_step  # noqa: PLC0415
+                                                from kernel.workflow_instance import (
+                                                    advance_step,
+                                                )
                                                 _advanced = advance_step(_wi, _wi.current_step_id)
                                                 hooks.workflow_instance_updater(_advanced)
                                             except Exception as wi_exc:  # pylint: disable=broad-except
@@ -3441,7 +3493,52 @@ async def _run_turn_inner(
                                     else:
                                         _state.duplicate_hint_count = 0
                                     _state.last_hint_text = post_handoff_hint
-                                    if _state.duplicate_hint_count >= _DUPLICATE_HINT_LIMIT:
+                                    # ── Hint-cycle guard ────────────────
+                                    # A 2-cycle (A→B then B→A) produces two
+                                    # *different* hint strings, so the
+                                    # byte-identical dedup above never fires.
+                                    # The chain_satisfied accumulator is the
+                                    # primary breaker, but it depends on
+                                    # accurate pack-authored
+                                    # ``satisfies_intents``. When a stale
+                                    # catalog drops those declarations, the
+                                    # gap never shrinks and the hint
+                                    # oscillates A↔B until the hard
+                                    # ``handoff_count`` cap (wasting model
+                                    # round-trips). Extract the target from
+                                    # the hint and detect a repeat of a
+                                    # target seen 2 handoffs ago — that is
+                                    # the A→B→A signature. Suppress the hint
+                                    # so the ``handoff_count`` backstop
+                                    # completes the turn immediately.
+                                    _hint_target = _extract_hint_target(
+                                        post_handoff_hint
+                                    )
+                                    _cycle_detected = False
+                                    if _hint_target:
+                                        _state.hint_target_history.append(
+                                            _hint_target
+                                        )
+                                        # A 2-cycle: the latest target
+                                        # matches the one before the
+                                        # previous (A, B, A).
+                                        if (
+                                            len(_state.hint_target_history)
+                                            >= _HINT_CYCLE_MIN_LEN
+                                            and _state.hint_target_history[-1]
+                                            == _state.hint_target_history[-3]
+                                        ):
+                                            _cycle_detected = True
+                                    if _cycle_detected:
+                                        _log.warning(
+                                            "suppressing routing hint 2-cycle "
+                                            "(mode=%s, history=%s)",
+                                            target_stage,
+                                            _state.hint_target_history[-3:],
+                                        )
+                                        post_handoff_hint = ""
+                                        routing_hint = ""
+                                    elif _state.duplicate_hint_count >= _DUPLICATE_HINT_LIMIT:
                                         _log.warning(
                                             "suppressing duplicate routing hint "
                                             "(mode=%s, repeats=%d)",
@@ -3875,9 +3972,9 @@ async def _run_turn_inner(
     # outputs emit a guardrail.audit event and skip the post-turn slice.
     output_guard_result = await hooks.context_seams.output_guard.validate(content, guard_surface)
     turn_blocked = False
-    if _state.entry_failed or _state.fork_results and any(
+    if _state.entry_failed or (_state.fork_results and any(
         r.status == "no_tools" for r in (_state.fork_results or [])
-    ):
+    )):
         # A handoff entry operation failed, or a fork child was marked
         # ``no_tools`` (hallucinated success). Either way the turn broke
         # with a deterministic failure message. Mark blocked so the host
@@ -3986,7 +4083,7 @@ async def _run_turn_inner(
 
 # Routing-hint cluster (extracted in Phase 1)
 # Fork fan-out cluster (extracted in Phase 2)
-from kernel.turn_phases._fork import (  # noqa: F401, F403
+from kernel.turn_phases._fork import (  # noqa: F401
     _build_minimal_context,
     _execute_fork_fanout,
     _fork_child_budget,
@@ -3997,7 +4094,7 @@ from kernel.turn_phases._fork import (  # noqa: F401, F403
 )
 
 # Post-turn / capability-gate / serialization cluster (extracted in Phase 4)
-from kernel.turn_phases._post_turn import (  # noqa: F401, F403
+from kernel.turn_phases._post_turn import (  # noqa: F401
     _CapabilityGateBlock,
     _coerce_non_negative_float,
     _coerce_non_negative_int,
@@ -4008,7 +4105,7 @@ from kernel.turn_phases._post_turn import (  # noqa: F401, F403
     _to_tool_context,
     _validate_model_capabilities,
 )
-from kernel.turn_phases._routing_hint import (  # noqa: F401, F403
+from kernel.turn_phases._routing_hint import (  # noqa: F401
     _compute_capability_routing_hint,
     _compute_fork_target_string,
     _detect_query_intents,
@@ -4020,7 +4117,7 @@ from kernel.turn_phases._routing_hint import (  # noqa: F401, F403
 )
 
 # Tool-schema cluster (extracted in Phase 3)
-from kernel.turn_phases._tool_schemas import (  # noqa: F401, F403
+from kernel.turn_phases._tool_schemas import (  # noqa: F401
     _TRANSITION_TOOL_NAME,
     _build_in_process_tool_schemas,
     _mode_bound_operation_ids,

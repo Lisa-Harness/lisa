@@ -267,7 +267,7 @@ class HostRuntime:
         # pattern, same data_dir. The store keys active instances by
         # ``RecoveryIdentity`` (the same scope recovery records use); one
         # user has at most one active (non-complete) instance per surface.
-        from kernel.workflow_instance_store import FileWorkflowInstanceStore  # noqa: PLC0415
+        from hosts.core.workflow_instance_store import FileWorkflowInstanceStore  # noqa: PLC0415
 
         self.workflow_instance_store = FileWorkflowInstanceStore(
             self.data_dir / "workflow-instances.json"

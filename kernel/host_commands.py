@@ -6,8 +6,7 @@ that the host dispatch layer consults after its own built-in commands.
 
 This keeps pack-owned behavior out of ``hosts/core`` — the host owns only the
 dispatch mechanism and host-intrinsic commands (``/help``, ``/tokens``,
-``/debug``, etc.). Pack-owned commands (``/checkpoint``, ``/restore``,
-``/checkpoints``, ``/summarize-history``, etc.) live in the pack that owns
+``/debug``, etc.). Pack-owned commands live in the pack that owns
 the operations they call.
 """
 

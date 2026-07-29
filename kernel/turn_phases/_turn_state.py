@@ -128,6 +128,14 @@ class _TurnState:
     """Consecutive count of identical routing hints. Resets to 0 on a
     distinct hint; when it reaches ``_DUPLICATE_HINT_LIMIT`` the hint is
     suppressed."""
+    hint_target_history: list[str] = field(default_factory=list)
+    """Ordered list of routing-hint target mode ids injected this turn
+    (e.g. ``["ponder", "markdown", "ponder"]``). Used by the hint-cycle
+    guard to detect A→B→A 2-cycles that the byte-identical dedup misses:
+    a 2-cycle produces two *different* hint strings, so
+    ``duplicate_hint_count`` never increments. When a cycle is detected
+    the hint is suppressed so the ``handoff_count`` backstop fires
+    immediately instead of wasting model round-trips on the oscillation."""
     forced_fork_target: str = ""
     """The deterministic ``fork:mode,mode,...`` target the kernel will
     execute itself if the model refuses to call ``transition_stage``.

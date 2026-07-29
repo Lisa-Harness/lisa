@@ -6,6 +6,25 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Changed
 
+#### `FileWorkflowInstanceStore` moved from `kernel/` to `hosts/core/`
+
+- **File-backed workflow-instance store relocated from the kernel to the host
+  runtime.** `FileWorkflowInstanceStore` does file I/O, holds an
+  `asyncio.Lock`, and writes under the host's `data_dir` — it is a
+  host-runtime implementation, not a runtime-neutral contract. This mirrors
+  the existing `recovery` split (`kernel/recovery.py` contracts vs
+  `hosts/core/recovery.py` `FileRecoveryService`) and the `approvals` split.
+- **Kernel keeps only the seam.** `kernel/workflow_instance_store.py` is
+  trimmed to the `WorkflowInstanceStore` Protocol; its imports drop
+  `asyncio`, `json`, `os`, `Path`, and `is_complete`.
+- **Hard cutover, no compat.** The implementation now lives in
+  `hosts/core/workflow_instance_store.py`. The single non-test importer
+  (`hosts/core/runtime.py`) and the host wiring test import from the new
+  location. The seven `FileWorkflowInstanceStore` tests moved from
+  `kernel/tests/test_workflow_instance.py` to
+  `hosts/core/tests/test_workflow_instance_store.py`; the kernel test file
+  no longer imports a host implementation.
+
 #### `kernel/introspect.py` moved to `hosts/core/introspect.py`
 
 - **Live introspection gatherer relocated from the kernel to the host runtime.**
