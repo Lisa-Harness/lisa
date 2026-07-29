@@ -7,8 +7,7 @@ Each collector:
 - Returns a typed snapshot (Pydantic model) that can be serialized to state cache or blob storage
 - Provides error recovery paths for misconfiguration or collection failures
 
-Signal collectors are invoked by a one-shot bottom-half process
-(``lisa intake``) triggered by a systemd timer or cron.
+Signal collectors are invoked by a one-shot bottom-half process ``lisa intake``.
 
 TypeVar SnapshotT is the Pydantic model returned by each collector's collect() method.
 """
@@ -28,17 +27,19 @@ SnapshotT = TypeVar("SnapshotT", bound=BaseModel)
 class SignalCollector(ABC, Generic[SnapshotT]):
     """Base class for stateless, repeatable external signal collection.
 
-    Each signal collector monitors one external system (Cloudflare, GitHub, Stripe, etc.)
-    and provides three key capabilities:
+    Each signal collector monitors one external system and provides three key
+    capabilities:
 
-    1. Configuration validation: missing_configuration() returns required env vars not set.
+    1. Configuration validation: missing_configuration() returns required env
+    vars not set.
     2. Collection: collect() fetches fresh data and returns a typed snapshot.
-    3. Error recovery: build_unconfigured_snapshot() and build_error_snapshot() provide
-       graceful fallbacks when collection cannot run.
+    3. Error recovery: build_unconfigured_snapshot() and build_error_snapshot()
+    provide graceful fallbacks when collection cannot run.
 
     Subclasses must implement collect(), build_unconfigured_snapshot(), and
-    build_error_snapshot(). The extract_status() method can be overridden to customize
-    status classification logic beyond the default snapshot.status field.
+    build_error_snapshot(). The extract_status() method can be overridden to
+    customize status classification logic beyond the default snapshot.status
+    field.
     """
 
     collector_id: str

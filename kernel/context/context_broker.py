@@ -15,6 +15,22 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from kernel.config import settings
+from kernel.context.context_frames import render_ranked_evidence_namespace_frame
+from kernel.context.extension_evidence import NoOpExtensionEvidenceBuilder
+from kernel.extension_runtime import ExtensionRuntimeContext
+from kernel.intake.connector_discovery import discover_installed_signal_collectors
+from kernel.models import (
+    ContextConflictRisk,
+    ContextEvidence,
+    ContextEvidenceNamespace,
+    ContextEvidenceSourceType,
+    ContextPacket,
+    ContextRoutingConfig,
+    UnifiedState,
+)
+from kernel.seams.protocols import ExtensionEvidenceBuilder
+
 
 def resolve_host_name() -> str:
     """Resolve the OS hostname for ambient context injection.
@@ -34,22 +50,6 @@ def resolve_host_name() -> str:
     except OSError:
         return ""
 
-
-from kernel.config import settings
-from kernel.context.context_frames import render_ranked_evidence_namespace_frame
-from kernel.context.extension_evidence import NoOpExtensionEvidenceBuilder
-from kernel.extension_runtime import ExtensionRuntimeContext
-from kernel.intake.connector_discovery import discover_installed_signal_collectors
-from kernel.models import (
-    ContextConflictRisk,
-    ContextEvidence,
-    ContextEvidenceNamespace,
-    ContextEvidenceSourceType,
-    ContextPacket,
-    ContextRoutingConfig,
-    UnifiedState,
-)
-from kernel.seams.protocols import ExtensionEvidenceBuilder
 
 # Module-level extension-evidence builder. Hosts override via
 # ``set_extension_evidence_builder`` when they need the production builder.

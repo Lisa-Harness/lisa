@@ -29,9 +29,9 @@ from kernel.models import (
     WorkflowStageConfig,
 )
 from kernel.operations.declarative import (
+    _DEFAULT_MAX_TOKENS,
+    _DEFAULT_TEMPERATURE,
     DeclarativeOperationModule,
-    _DEFAULT_MAX_TOKENS as _DEFAULT_COMPLETION_MAX_TOKENS,
-    _DEFAULT_TEMPERATURE as _DEFAULT_COMPLETION_TEMPERATURE,
 )
 from kernel.tools.mcp_client import MCPClientConfig
 
@@ -311,12 +311,8 @@ def _deserialize_operation(data: dict[str, Any]) -> OperationDefinition:
             response_format_model=response_format_model,
             response_output_text_field=data.get("response_output_text_field", "output_text"),
             response_output_json_passthrough=data.get("response_output_json_passthrough", {}),
-            completion_max_tokens=data.get(
-                "completion_max_tokens", _DEFAULT_COMPLETION_MAX_TOKENS
-            ),
-            completion_temperature=data.get(
-                "completion_temperature", _DEFAULT_COMPLETION_TEMPERATURE
-            ),
+            completion_max_tokens=data.get("completion_max_tokens", _DEFAULT_MAX_TOKENS),
+            completion_temperature=data.get("completion_temperature", _DEFAULT_TEMPERATURE),
         )
     else:
         module_path = data.get("module_path", "")
@@ -346,12 +342,8 @@ def _deserialize_operation(data: dict[str, Any]) -> OperationDefinition:
         mode_allowlist=data.get("mode_allowlist", []),
         max_calls_per_turn=data.get("max_calls_per_turn", 0),
         timeout_seconds=data.get("timeout_seconds", 60),
-        completion_max_tokens=data.get(
-            "completion_max_tokens", _DEFAULT_COMPLETION_MAX_TOKENS
-        ),
-        completion_temperature=data.get(
-            "completion_temperature", _DEFAULT_COMPLETION_TEMPERATURE
-        ),
+        completion_max_tokens=data.get("completion_max_tokens", _DEFAULT_MAX_TOKENS),
+        completion_temperature=data.get("completion_temperature", _DEFAULT_TEMPERATURE),
         instruction_markdown_path=data.get("instruction_markdown_path", ""),
         instruction_body=data.get("instruction_body", ""),
         implementation_module=implementation_module,
