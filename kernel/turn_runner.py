@@ -32,6 +32,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, cast
 
 from kernel.approval import ApprovalInvocation, ApprovalRequired, render_approval_request
@@ -1365,6 +1366,72 @@ async def _run_turn_inner(
             ledger=ledger,
             execution_policy=execution_policy,
         )
+        # ── Kernel-driven handoff for planner action modes ──────────────
+        # When an action mode's entry operation returns a routing target
+        # (``output_json["target_stage_id"]``), the kernel drives the
+        # handoff itself instead of asking the model to call
+        # ``transition_stage``. This is the hard cutover from the old
+        # contract (``plan`` mode's ``_mode.md`` told the model to call
+        # ``transition_stage`` after ``plan_workflow``) to a kernel-driven
+        # one: weak models that stop after planning — emitting a summary
+        # like "the next step is `search`" without calling the tool — left
+        # no persisted route state, so a follow-up ``proceed`` had nothing
+        # to load and the chain stalled (the 2026-07-28 incident).
+        #
+        # The kernel persists the coordinator decision *from the plan
+        # result* (not from a successful ``transition_stage`` tool call),
+        # then recursively runs the turn against the target mode with
+        # routing hints suppressed so the target does not re-plan. The
+        # target mode's own entry operations run in the recursive call.
+        # An empty ``target_stage_id`` (no routable mode matched, no model
+        # wiring, or a parse failure) falls through to the user-facing
+        # text return — the planner legitimately reports it cannot route.
+        planned_target = str(
+            (result.output_json or {}).get("target_stage_id", "") or ""
+        ).strip()
+        if planned_target:
+            if hooks.route_coordinator is not None:
+                try:
+                    hooks.route_coordinator.save(
+                        CoordinatorRouteDecision(
+                            next_target=planned_target,
+                            reason=(
+                                result.output_json.get("rationale")
+                                or f"planned handoff from {mode_id}"
+                            ),
+                        ),
+                        {
+                            "mode_id": planned_target,
+                            "query": query,
+                            "surface_id": hooks.surface_id,
+                            "conversation_id": hooks.conversation_id,
+                            "user_id": hooks.user_id,
+                            "session_plan_digest": hooks.session_plan_digest,
+                        },
+                    )
+                except Exception as coord_exc:  # pylint: disable=broad-except
+                    _log.warning(
+                        "route_coordinator.save failed for planned target %s: %s",
+                        planned_target,
+                        coord_exc,
+                    )
+            _log.info(
+                "kernel-driven handoff from planner mode=%s target=%s "
+                "(planned by entry op, not model transition_stage)",
+                mode_id,
+                planned_target,
+            )
+            return await run_turn(
+                mode_id=planned_target,
+                query=query,
+                hooks=hooks,
+                max_tool_iterations=max_tool_iterations,
+                preferred_model_id=preferred_model_id,
+                turn_budget=turn_budget,
+                execution_policy=execution_policy,
+                logger_override=logger_override,
+                suppress_routing_hint=True,
+            )
         return TurnResult(
             response_text=result.output_text.strip() or "Done",
             tool_call_count=0,
@@ -1895,35 +1962,96 @@ async def _run_turn_inner(
                         "mode; ignoring"
                     )
                 effective_tools = None
-        await _emit_stage(
-            "model_call",
-            {
-                "mode_id": mode_id,
-                "model_id": getattr(effective_model_def, "model_id", ""),
-                "provider": getattr(effective_model_def, "provider", ""),
-                "_state.iteration": _state.iteration,
-                "tool_calls_so_far": _state.total_tool_calls,
-                "tools_offered": bool(effective_tools),
-            },
-        )
-        if hooks.complete_stream is not None:
-            # ── Streaming path ──────────────────────────────────────────
-            # v1: stream tokens to the host. When the stream indicates
-            # tool_calls are needed (finish_reason='tool_calls'), fall
-            # back to the non-streaming complete() for that iteration to
-            # get the structured tool-call payload.
-            chunks: list[StreamedChunk] = []
-            async for chunk in hooks.complete_stream(
-                messages=messages,
-                model_def=effective_model_def,
-                max_tokens=4096,
-                temperature=0.4,
-                tools=effective_tools,
-            ):
-                chunks.append(chunk)
-            aggregated = _aggregate_streamed_chunks(chunks)
-            if aggregated.finish_reason == "tool_calls":
-                # Fall back to non-streaming for tool-call payload
+
+        # ── Kernel-driven planned handoff synthesis ───────────────────
+        # When a planner action mode's entry op (e.g. ``plan_workflow``)
+        # returned a ``target_stage_id`` during the previous iteration's
+        # mid-turn handoff, the kernel drives the next handoff itself
+        # instead of calling the model. The model in ``plan`` mode
+        # reliably stops after planning (the 2026-07-28 stall), so we
+        # synthesize a ``transition_stage`` tool call with the planned
+        # target and dispatch it through the existing tool-dispatch path.
+        # This mirrors the forced-fork synthesizer but fires
+        # deterministically from the plan result. Clear the pending target
+        # first so the synthesized call cannot re-enter this branch; if
+        # the new handoff target is itself a planner, its own entry op
+        # sets a fresh ``pending_planned_handoff`` for the next link.
+        _planned_handoff_target = _state.pending_planned_handoff
+        _state.pending_planned_handoff = ""
+        if _planned_handoff_target:
+            _log.info(
+                "kernel synthesizing planned transition_stage target=%s "
+                "(mode=%s, iteration=%d)",
+                _planned_handoff_target,
+                mode_id,
+                _state.iteration,
+            )
+            _synth_planned_call = {
+                "id": f"planned_handoff_{_state.iteration}",
+                "function": {
+                    "name": _TRANSITION_TOOL_NAME,
+                    "arguments": json.dumps(
+                        {
+                            "target_stage_id": _planned_handoff_target,
+                            "rationale": (
+                                "Kernel-driven handoff from the plan "
+                                "result; the model is not asked to call "
+                                "transition_stage."
+                            ),
+                        }
+                    ),
+                },
+            }
+            completion = SimpleNamespace(
+                content="",
+                tool_calls=[_synth_planned_call],
+                model=getattr(effective_model_def, "model_id", ""),
+            )
+            prompt_tokens = completion_tokens = completion_total_tokens = 0
+            cached_tokens = reasoning_tokens = 0
+            duration_ms = 0.0
+            latency_ms = 0
+        else:
+            await _emit_stage(
+                "model_call",
+                {
+                    "mode_id": mode_id,
+                    "model_id": getattr(effective_model_def, "model_id", ""),
+                    "provider": getattr(effective_model_def, "provider", ""),
+                    "_state.iteration": _state.iteration,
+                    "tool_calls_so_far": _state.total_tool_calls,
+                    "tools_offered": bool(effective_tools),
+                },
+            )
+            if hooks.complete_stream is not None:
+                # ── Streaming path ──────────────────────────────────────
+                # v1: stream tokens to the host. When the stream indicates
+                # tool_calls are needed (finish_reason='tool_calls'), fall
+                # back to the non-streaming complete() for that iteration to
+                # get the structured tool-call payload.
+                chunks: list[StreamedChunk] = []
+                async for chunk in hooks.complete_stream(
+                    messages=messages,
+                    model_def=effective_model_def,
+                    max_tokens=4096,
+                    temperature=0.4,
+                    tools=effective_tools,
+                ):
+                    chunks.append(chunk)
+                aggregated = _aggregate_streamed_chunks(chunks)
+                if aggregated.finish_reason == "tool_calls":
+                    # Fall back to non-streaming for tool-call payload
+                    completion = await complete(
+                        messages=messages,
+                        model_def=effective_model_def,
+                        max_tokens=4096,
+                        temperature=0.4,
+                        tools=effective_tools,
+                    )
+                else:
+                    # Build a completion-like object from the aggregated stream
+                    completion = StreamedCompletionAdapter(aggregated)
+            else:
                 completion = await complete(
                     messages=messages,
                     model_def=effective_model_def,
@@ -1931,17 +2059,6 @@ async def _run_turn_inner(
                     temperature=0.4,
                     tools=effective_tools,
                 )
-            else:
-                # Build a completion-like object from the aggregated stream
-                completion = StreamedCompletionAdapter(aggregated)
-        else:
-            completion = await complete(
-                messages=messages,
-                model_def=effective_model_def,
-                max_tokens=4096,
-                temperature=0.4,
-                tools=effective_tools,
-            )
         (
             prompt_tokens,
             completion_tokens,
@@ -2867,6 +2984,70 @@ async def _run_turn_inner(
                                             execution_policy=execution_policy,
                                         )
                                         entry_output = entry_result.output_text.strip() or "Done"
+                                        # ── Kernel-driven next handoff ──
+                                        # When the handoff target is a
+                                        # planner action mode (e.g. ``plan``)
+                                        # whose entry op returns a
+                                        # ``target_stage_id`` in
+                                        # ``output_json``, the kernel drives
+                                        # the next handoff itself instead
+                                        # of injecting the plan result as
+                                        # text and waiting for the model to
+                                        # call ``transition_stage``. The
+                                        # model in ``plan`` mode reliably
+                                        # stops after planning (the
+                                        # 2026-07-28 stall), so the kernel
+                                        # synthesizes the transition at the
+                                        # top of the next iteration. The
+                                        # coordinator decision is saved
+                                        # from the plan result so a later
+                                        # ``proceed`` can resume the chain.
+                                        _planned_next = str(
+                                            (entry_result.output_json or {}).get(
+                                                "target_stage_id", ""
+                                            )
+                                            or ""
+                                        ).strip()
+                                        if _planned_next:
+                                            _state.pending_planned_handoff = (
+                                                _planned_next
+                                            )
+                                            if hooks.route_coordinator is not None:
+                                                try:
+                                                    hooks.route_coordinator.save(
+                                                        CoordinatorRouteDecision(
+                                                            next_target=_planned_next,
+                                                            reason=(
+                                                                entry_result.output_json.get(
+                                                                    "rationale"
+                                                                )
+                                                                or f"planned handoff from {target_stage}"
+                                                            ),
+                                                        ),
+                                                        {
+                                                            "mode_id": _planned_next,
+                                                            "query": query,
+                                                            "surface_id": hooks.surface_id,
+                                                            "conversation_id": hooks.conversation_id,
+                                                            "user_id": hooks.user_id,
+                                                            "session_plan_digest": hooks.session_plan_digest,
+                                                        },
+                                                    )
+                                                except Exception as coord_exc:  # pylint: disable=broad-except
+                                                    _log.warning(
+                                                        "route_coordinator.save "
+                                                        "failed for planned "
+                                                        "next target %s: %s",
+                                                        _planned_next,
+                                                        coord_exc,
+                                                    )
+                                            _log.info(
+                                                "kernel-driven next handoff "
+                                                "from planner mode=%s target=%s "
+                                                "(planned by entry op)",
+                                                target_stage,
+                                                _planned_next,
+                                            )
                                     except Exception as entry_exc:  # pylint: disable=broad-except
                                         entry_output = (
                                             f"Entry operation failed: "

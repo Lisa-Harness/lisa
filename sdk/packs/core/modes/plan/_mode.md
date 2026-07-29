@@ -23,10 +23,11 @@ description: "Plan a multi-step workflow and hand off to the first target mode."
 
 Analyze the user's request and determine the best routing target.
 
-Call `plan_workflow` to produce the target, then call `transition_stage`
-with the returned `target_stage_id` to hand off. The framework handles the
-handoff, fork fan-out, or sequential chain dispatch automatically.
+Call `plan_workflow` to produce the target. The kernel drives the handoff
+itself from the returned `target_stage_id` — do **not** call
+`transition_stage`; the framework hands off, fans out, or chains the next
+step automatically from the plan result.
 
 When `plan_workflow` returns an empty `target_stage_id` (no routable mode
-matched, no model wiring, or a parse failure), respond to the user directly
-without calling `transition_stage`.
+matched, no model wiring, or a parse failure), respond to the user
+directly.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -125,6 +126,254 @@ async def test_run_turn_uses_persisted_route_for_continuation_queries() -> None:
     assert captured_system_prompts
     assert "transition_stage" in captured_system_prompts[0]
     assert "markdown" in captured_system_prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_run_turn_planner_action_mode_drives_handoff_without_model_transition() -> None:
+    """When a planner action mode's entry operation returns a
+    ``target_stage_id`` in ``output_json``, the kernel drives the handoff
+    itself by recursing into ``run_turn`` against the target mode — it does
+    NOT rely on the model calling ``transition_stage``.
+
+    Regression for the 2026-07-28 incident: weak models stopped after
+    ``plan_workflow`` produced a target, emitting a summary instead of
+    calling ``transition_stage``. No coordinator decision was saved, so a
+    follow-up ``proceed`` had nothing to load and the chain stalled. The
+    cutover makes the kernel the handoff driver: the coordinator is saved
+    from the plan result, and the target mode runs deterministically.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    patched_catalog = {"plan": plan_cfg, "search": search_cfg}
+
+    captured_modes: list[str] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        # The recursive turn runs in `search` mode; capture the system
+        # prompt's mode marker to prove the handoff happened.
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        if "search" in sys_content.lower() or "research" in sys_content.lower():
+            captured_modes.append("search")
+        else:
+            captured_modes.append("other")
+        return _StubCompletion(content="Search results.")
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        # Simulate plan_workflow returning a routing target.
+        return OperationResult(
+            output_text="research intent detected",
+            output_json={"target_stage_id": "search", "rationale": "research intent"},
+        )
+
+    class _StubCoordinator:
+        def __init__(self) -> None:
+            self.saved_decision: CoordinatorRouteDecision | None = None
+
+        def load(self, _req: Any) -> CoordinatorRouteDecision | None:
+            return self.saved_decision
+
+        def save(self, decision: CoordinatorRouteDecision, _req: Any) -> None:
+            self.saved_decision = decision
+
+    coordinator = _StubCoordinator()
+    hooks = _build_minimal_hooks(complete)
+    hooks.route_coordinator = coordinator
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(mode_id="plan", query="search for rust news", hooks=hooks)
+
+    # The kernel recursed into search mode and produced its response, not
+    # the planner's rationale text.
+    assert result.response_text == "Search results."
+    assert "search" in captured_modes
+    # The coordinator was saved from the plan result — so a later
+    # `proceed` can resume the chain even if the search turn stalls.
+    assert coordinator.saved_decision is not None
+    assert coordinator.saved_decision.next_target == "search"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_planner_action_mode_empty_target_falls_back_to_text() -> None:
+    """When a planner action mode's entry op returns an empty
+    ``target_stage_id`` (no routable mode matched), the kernel returns the
+    entry op's text to the user instead of recursing — the planner
+    legitimately reports it cannot route."""
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    patched_catalog = {"plan": plan_cfg}
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        return OperationResult(
+            output_text="No installed mode provides a write capability.",
+            output_json={"target_stage_id": "", "rationale": "no match"},
+        )
+
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        # Should never be called when the target is empty.
+        return _StubCompletion(content="should not reach model")
+
+    hooks = _build_minimal_hooks(complete)
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(mode_id="plan", query="write a novel", hooks=hooks)
+
+    assert result.response_text == "No installed mode provides a write capability."
+    assert result.tool_call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_run_turn_mid_turn_handoff_to_planner_drives_next_handoff() -> None:
+    """When a mid-turn handoff lands in a planner action mode (e.g.
+    ``plan``) and the planner's entry op returns a ``target_stage_id``,
+    the kernel synthesizes the next ``transition_stage`` call itself
+    instead of injecting the plan result as text and waiting for the
+    model to call ``transition_stage``.
+
+    Regression for the 2026-07-28 stall: the escalation path is
+    ``default`` → (routing hint) → model calls ``transition_stage`` to
+    ``plan`` (mid-turn handoff) → ``plan_workflow`` returns
+    ``target_stage_id="search"`` → the model in ``plan`` mode reads the
+    plan result and STOPS. The fix sets ``pending_planned_handoff`` from
+    the entry-op result; the next loop iteration synthesizes a
+    ``transition_stage`` tool call for the planned target and dispatches
+    it through the existing handler — no model call, no begging.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+
+    default_cfg = _mode_config(mode_id="default")
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    patched_catalog = {
+        "default": default_cfg, "plan": plan_cfg, "search": search_cfg,
+    }
+
+    call_log: list[str] = []
+    plan_entry_calls = 0
+    _default_calls = 0
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        nonlocal _default_calls
+        # Inspect the messages to determine which mode the model is in.
+        # The routing hint for the plan escalation names "plan" in the
+        # system prompt while still in default mode, so we detect the
+        # default mode by the absence of plan/search mode markers AND
+        # the presence of the user query (the first call).
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        # search mode: has search-specific tool schemas or the search
+        # mode intro. The handoff to search rebuilds the system prompt
+        # with the search mode's intro, which is empty in this stub
+        # catalog — so detect by the absence of the plan routing hint
+        # AND the absence of the transition_stage handoff-context block.
+        is_plan_mode = "## Handoff Context" in sys_content and "`plan`" in sys_content
+        is_search_mode = (
+            "## Handoff Context" in sys_content and "`search`" in sys_content
+        ) or ("Handed off to mode: search" in str(
+            [m.get("content", "") for m in kwargs["messages"]]
+        ))
+        if is_search_mode:
+            call_log.append("model_call:search")
+            return _StubCompletion(content="Search results from web_search.")
+        if is_plan_mode:
+            call_log.append("model_call:plan")
+            # The kernel's mid-turn entry-op detection sets
+            # pending_planned_handoff, so the NEXT iteration synthesizes
+            # the transition_stage call. Return a harmless text.
+            return _StubCompletion(content="Planning...")
+        # default mode: the model calls transition_stage to hand off to plan
+        _default_calls += 1
+        call_log.append("model_call:default")
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_default_to_plan",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": json.dumps(
+                            {"target_stage_id": "plan", "rationale": "escalate to plan"}
+                        ),
+                    },
+                }
+            ],
+        )
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        nonlocal plan_entry_calls
+        plan_entry_calls += 1
+        return OperationResult(
+            output_text="research intent detected",
+            output_json={"target_stage_id": "search", "rationale": "research intent"},
+        )
+
+    class _StubCoordinator:
+        def __init__(self) -> None:
+            self.saved: list[CoordinatorRouteDecision] = []
+
+        def load(self, _req: Any) -> CoordinatorRouteDecision | None:
+            return None
+
+        def save(self, decision: CoordinatorRouteDecision, _req: Any) -> None:
+            self.saved.append(decision)
+
+    coordinator = _StubCoordinator()
+    hooks = _build_minimal_hooks(complete)
+    hooks.route_coordinator = coordinator
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(
+            mode_id="default", query="search for rust news then write a summary", hooks=hooks
+        )
+
+    # The kernel drove the chain: default → plan → search, and the final
+    # response came from the search mode, not the planner's rationale.
+    assert result.response_text == "Search results from web_search."
+    # The planner entry op ran exactly once (for the mid-turn handoff).
+    assert plan_entry_calls == 1
+    # The coordinator recorded the planned next target (search) from the
+    # plan result, so a later "proceed" can resume.
+    assert any(d.next_target == "search" for d in coordinator.saved)
 
 
 @pytest.mark.asyncio
