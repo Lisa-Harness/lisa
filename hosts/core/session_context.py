@@ -12,8 +12,9 @@ providers, routing, context lanes/sources, history) come from the compiled
 Resolution order (see :func:`resolve_session_context_source`):
 
 1. Explicit local file, remote URL, or registry slug.
-2. Auto-discover ``session_context.md`` in cwd or the data directory.
-3. Bundled core default session.
+2. ``LISA_SESSION_CONTEXT_PATH`` env var (highest auto-discovery precedence).
+3. Auto-discover ``session_context.md`` in cwd or the data directory.
+4. Bundled core default session.
 
 Dependency direction
 --------------------
@@ -66,6 +67,9 @@ def bundled_default_session_path() -> Path:
     )
 
 
+LISA_SESSION_CONTEXT_PATH_ENV = "LISA_SESSION_CONTEXT_PATH"
+
+
 def resolve_session_context_source(
     *,
     session_context: str,
@@ -75,8 +79,9 @@ def resolve_session_context_source(
     """Resolve one strict session source without legacy registry or directory rules.
 
     Explicit local files, remote URLs, and registry slugs take precedence.
-    With no explicit reference, an authored ``session_context.md`` in the
-    working directory or data directory wins over the bundled core default.
+    Next, ``LISA_SESSION_CONTEXT_PATH`` (when set) overrides auto-discovery.
+    Otherwise, an authored ``session_context.md`` in the working directory or
+    data directory wins over the bundled core default.
     """
 
     requested = session_context.strip()
@@ -85,6 +90,20 @@ def resolve_session_context_source(
             requested,
             data_dir=data_dir,
             force_refresh=force_refresh,
+        )
+
+    env_path = os.getenv(LISA_SESSION_CONTEXT_PATH_ENV, "").strip()
+    if env_path:
+        env_candidate = Path(env_path).expanduser()
+        if env_candidate.is_file():
+            return _read_session_source(
+                source_uri=str(env_candidate.resolve()),
+                path=env_candidate,
+            )
+        logger.warning(
+            "%s='%s' is not a file; falling back to auto-discovery.",
+            LISA_SESSION_CONTEXT_PATH_ENV,
+            env_path,
         )
 
     checked_paths: set[Path] = set()

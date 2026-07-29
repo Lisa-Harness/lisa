@@ -433,6 +433,7 @@ Provider IDs are normalized: `lisa-pack-brave-search`, `brave-search`, and `brav
 The host resolves a session context source at startup via `hosts.core.session_context.resolve_session_context_source`:
 
 1. **Auto-discovery** (empty `--session-context`):
+   - `LISA_SESSION_CONTEXT_PATH` env var (highest auto-discovery precedence) — an explicit `.md` path overriding the cwd/data-dir scan.
    - `./session_context.md` in the current working directory.
    - `<data-dir>/session_context.md`.
    - Bundled default: `sdk/packs/core/sessions/default.md`.
