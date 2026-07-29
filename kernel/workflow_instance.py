@@ -57,6 +57,7 @@ __all__ = [
     "compile_steps_from_routing_targets",
     "is_complete",
     "remaining_steps",
+    "render_workflow_progress",
 ]
 
 
@@ -414,3 +415,32 @@ def _intents_by_earliest_keyword(
     # Use a stable sort so ties keep first-seen order.
     positions.sort(key=lambda item: (1 if item[0] == -1 else 0, item[0]))
     return [intent for _, intent in positions]
+
+
+def render_workflow_progress(instance: WorkflowInstance) -> str:
+    """Render a short human-readable summary of completed and remaining steps.
+
+    Used by the host's context assembler (Phase 7) as the "work done so far"
+    summary — replacing re-reading ``CheckpointBundle.turn_history`` (which
+    is host-owned UI/replay state the kernel never reads for routing). The
+    summary lists each declared step with a checkmark (done) or a dash
+    (remaining), plus the result preview when available.
+
+    Returns an empty string when the instance has no declared steps or is
+    complete (no progress to report).
+    """
+    if not instance.declared_steps:
+        return ""
+    if is_complete(instance):
+        return ""
+    completed = set(instance.completed_steps)
+    lines: list[str] = ["## Workflow progress"]
+    for step in instance.declared_steps:
+        mark = "[x]" if step.step_id in completed else "[ ]"
+        label = f"{mark} {step.mode_id}"
+        preview = instance.step_results.get(step.step_id, "")
+        if preview:
+            # Truncate the preview to keep the summary compact.
+            label += f": {preview[:120]}"
+        lines.append(label)
+    return "\n".join(lines)

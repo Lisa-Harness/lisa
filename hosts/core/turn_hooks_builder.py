@@ -277,6 +277,21 @@ def build_turn_hooks(
         pre_turn_briefing: str,
         capability_manifest: Any = None,
     ) -> str:
+        # ── Workflow progress summary (Phase 7) ──────────────────────
+        # When a multi-stage workflow is in flight, prepend a "work done
+        # so far" summary derived from the active instance's
+        # ``completed_steps`` + ``step_results``. This replaces re-reading
+        # ``CheckpointBundle.turn_history`` (host-owned UI/replay state the
+        # kernel never reads for routing) and gives the model awareness of
+        # which chain steps have already completed so it does not redo them.
+        from kernel.workflow_instance import render_workflow_progress  # noqa: PLC0415
+
+        progress = ""
+        if runtime._active_workflow_instance is not None:
+            progress = render_workflow_progress(runtime._active_workflow_instance)
+        if progress:
+            pre_turn_briefing = f"{progress}\n\n{pre_turn_briefing}"
+
         # Build the UnifiedState from the runtime snapshot for the broker.
         state = build_unified_state(
             state_snapshot=runtime.state_snapshot,
@@ -743,5 +758,19 @@ def build_turn_hooks(
         # helper swallows hook failures, so a transport error never breaks
         # the turn.
         on_stage=_on_stage_event,
+        # ── Durable workflow-instance + FSM seams ──────────────────────
+        # Wire the five hooks the kernel already defines but the host left
+        # dormant (Phase 5). With these wired, the kernel's turn-start
+        # ``chain_satisfied`` hydration (from the instance's
+        # ``completed_steps``), in-turn instance advancement on handoff, and
+        # checkpoint-bundle build+persist all fire automatically — no further
+        # host-side code is needed for those paths. ``on_checkpoint`` persists
+        # the bundle via the storage MCP pool; the other four are in-memory
+        # refs the kernel reads/writes during the turn.
+        workflow_instance=lambda: runtime._active_workflow_instance,
+        workflow_instance_updater=runtime._set_workflow_instance,
+        workflow_session=lambda: runtime._workflow_session,
+        workflow_session_updater=runtime._set_workflow_session,
+        on_checkpoint=runtime._on_checkpoint,
     )
 

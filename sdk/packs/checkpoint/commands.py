@@ -207,6 +207,33 @@ async def handle_restore(
                     "restore: workflow session state present but no updater wired on runtime"
                 )
 
+        # ── Durable workflow-instance restore ───────────────────────────
+        # Rehydrate the inter-mode chain state (completed_steps,
+        # current_step_id) and override ``current_mode_id`` from the
+        # instance's current step's mode — the fix for the gap where a
+        # restore never changed the active mode, so the next turn ran in
+        # whatever mode was active before the restore instead of the
+        # workflow's current step's mode.
+        wf_instance_dict = bundle_data.get("workflow_instance") or {}
+        if wf_instance_dict:
+            instance_updater = getattr(runtime, "_set_workflow_instance", None)
+            if instance_updater is not None:
+                try:
+                    from kernel.workflow_instance import WorkflowInstance  # noqa: PLC0415
+
+                    instance = WorkflowInstance.model_validate(wf_instance_dict)
+                    instance_updater(instance)
+                    # Override current_mode_id from the instance's current step.
+                    current_mode = getattr(instance, "current_mode_id", "") or ""
+                    if current_mode:
+                        runtime.current_mode_id = current_mode
+                except Exception as exc:  # pylint: disable=broad-except
+                    logger.warning("restore: workflow instance restore failed: %s", exc)
+            else:
+                logger.debug(
+                    "restore: workflow instance state present but no updater wired on runtime"
+                )
+
         return result.output_text or f"Restored checkpoint {checkpoint_id}"
     except Exception as exc:  # pylint: disable=broad-except
         return f"Restore failed: {exc}"

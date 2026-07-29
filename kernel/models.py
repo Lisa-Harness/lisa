@@ -849,6 +849,16 @@ class ContextPacket(BaseModel):
     dropped_evidence_count: int = 0
     truncation_reason: str = ""
     ranking_metadata: dict[str, Any] = Field(default_factory=dict)
+    # ── Workflow progress summary (Phase 7) ──────────────────────────
+    # A short human-readable summary of which workflow steps have
+    # completed and which remain, derived from the active
+    # ``WorkflowInstance``'s ``completed_steps`` + ``step_results``. This
+    # replaces re-reading ``CheckpointBundle.turn_history`` (which is
+    # host-owned UI/replay state the kernel never reads for routing). Empty
+    # when no multi-stage workflow is in flight. The host's context
+    # assembler populates this from ``runtime._active_workflow_instance``;
+    # the kernel leaves it empty (it does not read the instance here).
+    workflow_progress: str = ""
 
 
 class ContextBrokerRequest(BaseModel):
@@ -1385,6 +1395,12 @@ class CheckpointBundle(BaseModel):
     turn_count: int = 0
     unified_state: dict[str, Any] = Field(default_factory=dict)
     workflow_session_state: dict[str, Any] = Field(default_factory=dict)
+    # Serialized ``WorkflowInstance`` (the durable inter-mode workflow state)
+    # captured at checkpoint time. Populated by ``_build_checkpoint_bundle``
+    # from ``hooks.workflow_instance``; on restore, ``handle_restore``
+    # rehydrates it and sets ``current_mode_id`` from the instance's current
+    # step's mode. Empty when no multi-stage workflow is in flight.
+    workflow_instance: dict[str, Any] = Field(default_factory=dict)
     turn_history: list[dict[str, Any]] = Field(default_factory=list)
     # ── Enrichment fields (populated by checkpoint-pack operations) ──
     overview: str = ""

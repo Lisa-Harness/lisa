@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, cast
 
+from kernel.config import settings as _kernel_settings
 from kernel.approval import ApprovalInvocation, ApprovalRequired, render_approval_request
 from kernel.capability_manifest import compile_capability_manifest
 from kernel.context.models import ContextBudgetSnapshot
@@ -833,7 +834,24 @@ def _build_checkpoint_bundle(
             stage_id = str(getattr(session, "stage_id", "") or "")
             turn_count = int(getattr(session, "turn_count", 0) or 0)
 
-    if not unified_state_dict and not workflow_session_dict:
+    # ── Durable workflow-instance snapshot ───────────────────────────
+    # Capture the active ``WorkflowInstance`` so a restore rehydrates the
+    # inter-mode chain state (completed_steps, current_step_id) — the fix
+    # for the glm-5.2 stall where a restored turn had no memory of which
+    # chain steps had already run.
+    workflow_instance_dict: dict[str, Any] = {}
+    if hooks.workflow_instance is not None:
+        try:
+            instance = hooks.workflow_instance()
+        except Exception:  # pylint: disable=broad-except
+            instance = None
+        if instance is not None:
+            try:
+                workflow_instance_dict = instance.model_dump(mode="json")
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("checkpoint: workflow_instance dump failed: %s", exc)
+
+    if not unified_state_dict and not workflow_session_dict and not workflow_instance_dict:
         return None
 
     return CheckpointBundle(
@@ -844,6 +862,7 @@ def _build_checkpoint_bundle(
         turn_count=turn_count,
         unified_state=unified_state_dict,
         workflow_session_state=workflow_session_dict,
+        workflow_instance=workflow_instance_dict,
     )
 
 
@@ -1002,7 +1021,7 @@ async def run_turn(
     mode_id: str,
     query: str,
     hooks: TurnHooks,
-    max_tool_iterations: int = 15,
+    max_tool_iterations: int | None = None,
     preferred_model_id: str | None = None,
     turn_budget: TurnBudget | None = None,
     execution_policy: ExecutionPolicy | None = None,
@@ -1036,6 +1055,9 @@ async def run_turn(
         query: The user's message text after command-prefix stripping.
         hooks: Extension-point callbacks provided by the host.
         max_tool_iterations: Maximum number of tool-calling loop iterations.
+            When ``None`` (the default), reads ``kernel.config.Settings.max_tool_iterations``
+            (env var ``LISA_MAX_TOOL_ITERATIONS``, default 15). The execution
+            policy may further tighten this via ``min()``.
         preferred_model_id: Optional per-turn model alias override supplied by
             the host when routing needs an explicit model designation
             (e.g. ``"deep"`` for ``/deep``).
@@ -1058,6 +1080,9 @@ async def run_turn(
         NotImplementedError: If hooks.complete is None.
     """
     _log = logger_override or logger
+
+    if max_tool_iterations is None:
+        max_tool_iterations = _kernel_settings.max_tool_iterations
 
     if execution_policy is not None:
         if execution_policy.max_model_calls is not None:
@@ -2600,6 +2625,21 @@ async def _run_turn_inner(
                     elif _tool_kind == "mcp_tool":
                         effect = "execute"
                     recovery_retry_policy = "safe" if effect == "read" else "confirm"
+                    # ── Durable workflow-instance correlation ──────────
+                    # When a ``WorkflowInstance`` is active, stamp the
+                    # recovery record with its id + current step id so the
+                    # host can decide whether a stalled record blocks the
+                    # instance from advancing (``step_blocks_instance``).
+                    _wi_id = ""
+                    _wi_step_id = ""
+                    if hooks.workflow_instance is not None:
+                        try:
+                            _wi = hooks.workflow_instance()
+                        except Exception:  # pylint: disable=broad-except
+                            _wi = None
+                        if _wi is not None:
+                            _wi_id = getattr(_wi, "instance_id", "") or ""
+                            _wi_step_id = getattr(_wi, "current_step_id", "") or ""
                     started_record = await hooks.recovery_service.begin(
                         RecoveryRecord(
                             identity=_build_recovery_identity(hooks),
@@ -2609,6 +2649,8 @@ async def _run_turn_inner(
                                 hooks=hooks,
                                 is_workflow=is_workflow,
                             ),
+                            workflow_instance_id=_wi_id,
+                            step_id=_wi_step_id,
                             target_kind=cast(Any, _tool_kind),
                             target_id=tool_name,
                             effect=cast(Any, effect),

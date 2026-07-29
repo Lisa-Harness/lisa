@@ -104,6 +104,60 @@ class FileWorkflowInstanceStore:
                 return None
             return instance
 
+    def load_active_sync(self, identity: RecoveryIdentity) -> WorkflowInstance | None:
+        """Synchronous active-instance lookup for boot-load (no lock).
+
+        ``HostRuntime.__init__`` runs before the host's event loop is running,
+        so it cannot ``await`` the async ``load_active`` (the store's
+        ``asyncio.Lock`` is bound to the host loop). This sync path does the
+        same file read + identity match without the lock — safe because
+        boot-load is single-threaded and no concurrent writes are possible
+        before the loop starts.
+        """
+        records = self._load_records()
+        active: list[WorkflowInstance] = []
+        for instance_id, instance in records.items():
+            entry_identity = self._identities.get(instance_id)
+            if entry_identity is None or entry_identity != identity:
+                continue
+            if not is_complete(instance):
+                active.append(instance)
+        if not active:
+            return None
+        active.sort(key=lambda inst: inst.last_progressed_at, reverse=True)
+        return active[0]
+
+    def save_sync(
+        self, instance: WorkflowInstance, identity: RecoveryIdentity | None = None
+    ) -> None:
+        """Synchronous save for host-side callers already inside the event loop.
+
+        The kernel calls ``workflow_instance_updater`` from within the turn
+        loop, so the host cannot ``await`` the async ``save`` (the store's
+        ``asyncio.Lock`` is bound to the loop and would deadlock). This sync
+        path does the same file write without the lock — safe because the
+        turn loop is single-threaded within a turn.
+        """
+        records = self._load_records()
+        if identity is not None:
+            self._identities[instance.instance_id] = identity
+        records[instance.instance_id] = instance
+        self._store_records(records)
+
+    def clear_sync(self, instance_id: str, identity: RecoveryIdentity) -> bool:
+        """Synchronous clear for host-side callers inside the event loop."""
+        records = self._load_records()
+        instance = records.get(instance_id)
+        if instance is None:
+            return False
+        entry_identity = self._identities.get(instance_id)
+        if entry_identity is None or entry_identity != identity:
+            return False
+        del records[instance_id]
+        self._identities.pop(instance_id, None)
+        self._store_records(records)
+        return True
+
     async def load_active(self, identity: RecoveryIdentity) -> WorkflowInstance | None:
         async with self._lock:
             records = self._load_records()
