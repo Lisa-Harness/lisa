@@ -10,6 +10,23 @@ resources:
     configuration:
       lisa-pack-coding:
         workspace_root: "."
+        checks:
+          - id: ruff-format
+            argv: [uv, run, ruff, format, --check, kernel, sdk, mcp_server, hosts]
+            timeout_seconds: 120
+          - id: ruff-check
+            argv: [uv, run, ruff, check, kernel, sdk, mcp_server, hosts]
+            timeout_seconds: 120
+          - id: mypy
+            argv: [uv, run, mypy, kernel, sdk, mcp_server]
+            timeout_seconds: 300
+          - id: tests
+            argv: [uv, run, pytest, -m, "not live", --tb=short, -q]
+            timeout_seconds: 600
+        required_check_ids: [ruff-format, ruff-check, mypy, tests]
+        branch_prefix: "lisa/"
+        protected_branches: [main, master, develop, prod, production]
+        push_remote: origin
       lisa-pack-github:
         base_branch: main
     include:
