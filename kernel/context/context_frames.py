@@ -17,7 +17,6 @@ ContextFrameId = Literal[
     "passive_intelligence",
     "memory_recall",
     "reflection",
-    "architecture_context",
     "capability_snapshot",
     "answer_planner",
 ]
@@ -31,7 +30,6 @@ CONTEXT_FRAME_IDS: tuple[ContextFrameId, ...] = (
     "passive_intelligence",
     "memory_recall",
     "reflection",
-    "architecture_context",
     "capability_snapshot",
     "answer_planner",
 )
