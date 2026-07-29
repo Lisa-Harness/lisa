@@ -96,6 +96,18 @@ class Settings(BaseSettings):
     declarative_completion_max_tokens: int = 1500
     declarative_completion_temperature: float = 0.2
 
+    # ── Turn runner ─────────────────────────────────────────────────────
+    # Maximum model-completion iterations per turn. Shared across all
+    # handoffs within a single turn (the counter is not reset on
+    # ``transition_stage``), so chained producer→consumer pipelines
+    # (research→write) consume the same budget. Override via
+    # ``MAX_TOOL_ITERATIONS``.
+    max_tool_iterations: int = 15
+    # Per-child iteration cap for fork fan-out. Fork children run in
+    # parallel and get a smaller slice than a full sequential turn.
+    # Override via ``FORK_CHILD_MAX_TOOL_ITERATIONS``.
+    fork_child_max_tool_iterations: int = 5
+
     # ── Context broker ──────────────────────────────────────────────────
     heartbeat_interval_seconds: int = 60
     repo_context_stale_after_hours: int = 6
@@ -191,6 +203,8 @@ class Settings(BaseSettings):
 
     @field_validator(
         "declarative_completion_max_tokens",
+        "max_tool_iterations",
+        "fork_child_max_tool_iterations",
         "heartbeat_interval_seconds",
         "repo_context_stale_after_hours",
         "reflection_cadence_minutes",

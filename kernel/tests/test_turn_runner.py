@@ -458,6 +458,45 @@ async def test_run_turn_max_tool_iterations_capped() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_turn_max_tool_iterations_defaults_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When max_tool_iterations is None, the cap comes from kernel.config.Settings."""
+    from kernel import config
+
+    monkeypatch.setattr(config.settings, "max_tool_iterations", 2)
+
+    call_counts: list[int] = []
+
+    async def infinite_tools(**kwargs: Any) -> _StubCompletion:
+        call_counts.append(1)
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": f"call_{len(call_counts)}",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"q": "test"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(infinite_tools)
+    hooks.execute_operation = _stub_execute_operation
+
+    result = await run_turn(
+        mode_id="default",
+        query="test",
+        hooks=hooks,
+        # max_tool_iterations intentionally omitted — must read from config
+    )
+
+    assert result.iteration_count == 2
+    assert result.tool_call_count == 2
+    assert "did not produce a final response" in result.response_text
+
+
+@pytest.mark.asyncio
 async def test_run_turn_execution_policy_tightens_model_call_iterations() -> None:
     """execution_policy.max_model_calls tightens max_tool_iterations."""
     call_counts = []

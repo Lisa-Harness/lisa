@@ -21,6 +21,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
+from kernel.config import settings as _kernel_settings
 from kernel.execution_policy import ExecutionPolicy
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import (
@@ -162,7 +163,7 @@ async def _run_fork_child_turn(
             mode_id=target.mode_id,
             query=target.query,
             hooks=hooks,
-            max_tool_iterations=5,
+            max_tool_iterations=_kernel_settings.fork_child_max_tool_iterations,
             turn_budget=child_budget,
             execution_policy=execution_policy,
             logger_override=_flog,

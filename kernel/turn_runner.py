@@ -1056,7 +1056,7 @@ async def run_turn(
         hooks: Extension-point callbacks provided by the host.
         max_tool_iterations: Maximum number of tool-calling loop iterations.
             When ``None`` (the default), reads ``kernel.config.Settings.max_tool_iterations``
-            (env var ``LISA_MAX_TOOL_ITERATIONS``, default 15). The execution
+            (env var ``MAX_TOOL_ITERATIONS``, default 15). The execution
             policy may further tighten this via ``min()``.
         preferred_model_id: Optional per-turn model alias override supplied by
             the host when routing needs an explicit model designation
