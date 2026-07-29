@@ -488,6 +488,24 @@ class TurnHooks:
     returns the new stage. Default: None (transitions are applied in-process
     but not persisted across turns)."""
 
+    workflow_instance: Any | None = None
+    """Callable returning the active ``WorkflowInstance`` for the current
+    user/surface, or ``None`` when no multi-stage workflow is in flight. The
+    instance is the durable inter-mode object that survives across modes,
+    turns, and host restarts; ``chain_satisfied`` is hydrated from its
+    ``completed_steps`` at turn start so a resumed turn does not re-suggest
+    already-completed steps (the fix for the 2026-07-28 glm-5.2
+    self-assessment stall where ``coding`` was never reached after resume).
+    Default: None (ephemeral ``chain_satisfied`` behavior is preserved)."""
+
+    workflow_instance_updater: Any | None = None
+    """Callable receiving an updated ``WorkflowInstance`` after a successful
+    ``transition_stage`` to a new mode, persisting progress so the next
+    turn's ``workflow_instance`` hook returns the advanced instance. The
+    host owns the instance lifecycle (create on turn 1, advance on handoff,
+    clear on completion, load on boot). Default: None (transitions advance
+    in-process ``chain_satisfied`` but the instance is not persisted)."""
+
     route_coordinator: RouteCoordinator | None = None
     """Optional route-coordinator backend that persists the next handoff
     target across turns. The kernel consults it for continuation prompts such
@@ -1641,6 +1659,32 @@ async def _run_turn_inner(
     # so the model's self-knowledge context matches what it can actually call.
     capability_manifest = compile_capability_manifest(tool_schemas, mode_config=mode_config)
 
+    # ── Durable instance hydration ─────────────────────────────────────
+    # When a ``WorkflowInstance`` is wired, hydrate ``chain_satisfied`` from
+    # its ``completed_steps`` so a resumed turn does not re-suggest
+    # already-completed chain steps. The instance is the durable form of this
+    # accumulator; ``chain_satisfied`` is its in-memory projection. This runs
+    # BEFORE the routing-hint computation below so the hint sees the hydrated
+    # gap (the remaining consumer intents, not the already-done producers).
+    # This is the fix for the glm-5.2 self-assessment stall: after
+    # ``proceed``, the instance's completed research/write steps are
+    # rehydrated and the router names the remaining consumer (coding) as the
+    # gap instead of re-offering the first producer (search).
+    if hooks.workflow_instance is not None:
+        try:
+            _active_instance = hooks.workflow_instance()
+        except Exception:  # pylint: disable=broad-except
+            _active_instance = None
+        if _active_instance is not None:
+            for _step_id in getattr(_active_instance, "completed_steps", ()):
+                _step = (
+                    _active_instance.step_by_id(_step_id)
+                    if hasattr(_active_instance, "step_by_id")
+                    else None
+                )
+                if _step is not None:
+                    _state.chain_satisfied.update(_step.satisfies_intents)
+
     # Unified FSM routing: capability-manifest-aware proactive hint injection.
     # Compare the manifest against the user's query — if the current mode
     # lacks tools the query seems to need, inject a routing hint into the
@@ -1660,6 +1704,11 @@ async def _run_turn_inner(
             capability_manifest=capability_manifest,
             routing_targets=get_routing_targets(mode_id) if mode_config else [],
             mode_config=mode_config,
+            # Pass the hydrated chain memory so a resumed turn's hint names
+            # the remaining gap (not already-completed steps). Without this
+            # the turn-start hint re-suggests the first producer even when
+            # the instance marks it complete (the glm-5.2 stall).
+            extra_satisfied=_state.chain_satisfied,
         )
     coordinator_hint = _coordinator_routing_hint(
         hooks=hooks,
@@ -3178,6 +3227,35 @@ async def _run_turn_inner(
                                         mode_config=target_mode_config,
                                         extra_satisfied=_state.chain_satisfied,
                                     )
+                                    # ── Durable instance advancement ──
+                                    # Persist the handoff on the active
+                                    # ``WorkflowInstance`` so the next turn's
+                                    # ``chain_satisfied`` hydration rehydrates
+                                    # the completed step. The step that just
+                                    # finished is the instance's
+                                    # ``current_step_id`` (the mode we handed
+                                    # *from*); advancing it moves the pointer
+                                    # to the new target. Idempotent: a
+                                    # repeated handoff to the same target is
+                                    # a no-op. Runs after the hint recomputation
+                                    # so a failure here never suppresses it.
+                                    if hooks.workflow_instance is not None and hooks.workflow_instance_updater is not None:
+                                        try:
+                                            _wi = hooks.workflow_instance()
+                                        except Exception:  # pylint: disable=broad-except
+                                            _wi = None
+                                        if _wi is not None and getattr(_wi, "current_step_id", ""):
+                                            try:
+                                                from kernel.workflow_instance import advance_step  # noqa: PLC0415
+                                                _advanced = advance_step(_wi, _wi.current_step_id)
+                                                hooks.workflow_instance_updater(_advanced)
+                                            except Exception as wi_exc:  # pylint: disable=broad-except
+                                                _log.warning(
+                                                    "workflow_instance_updater failed after "
+                                                    "handoff to '%s': %s",
+                                                    target_stage,
+                                                    wi_exc,
+                                                )
                                 if post_handoff_hint:
                                     # Duplicate-hint dedup: when the
                                     # recomputed hint is byte-identical to the
