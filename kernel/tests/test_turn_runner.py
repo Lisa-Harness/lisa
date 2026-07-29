@@ -2862,6 +2862,47 @@ def test_duplicate_hint_limit_constant_is_bound() -> None:
     assert 1 <= _DUPLICATE_HINT_LIMIT <= 3
 
 
+def test_hint_cycle_min_len_constant_is_bound() -> None:
+    """The hint-cycle detection threshold exists and is 3 (A, B, A)."""
+    from kernel.turn_runner import _HINT_CYCLE_MIN_LEN
+
+    assert isinstance(_HINT_CYCLE_MIN_LEN, int)
+    assert _HINT_CYCLE_MIN_LEN == 3
+
+
+def test_extract_hint_target_parses_single_handoff() -> None:
+    """``_extract_hint_target`` pulls the target id from a single-handoff hint."""
+    from kernel.turn_runner import _extract_hint_target
+
+    hint = (
+        "## Routing Hint\n\n"
+        "Your current mode may lack the tools needed for this request. "
+        "Hand off to `markdown` by calling `transition_stage` "
+        "with target_stage_id `markdown`."
+    )
+    assert _extract_hint_target(hint) == "markdown"
+
+
+def test_extract_hint_target_parses_fork_target() -> None:
+    """``_extract_hint_target`` pulls the fork target id from a fork hint."""
+    from kernel.turn_runner import _extract_hint_target
+
+    hint = (
+        "## Routing Hint\n\n"
+        "Hand off by calling `transition_stage` with "
+        "target_stage_id `fork:learn,markdown`."
+    )
+    assert _extract_hint_target(hint) == "fork:learn,markdown"
+
+
+def test_extract_hint_target_returns_empty_for_no_marker() -> None:
+    """``_extract_hint_target`` returns ``""`` when no target marker is present."""
+    from kernel.turn_runner import _extract_hint_target
+
+    assert _extract_hint_target("") == ""
+    assert _extract_hint_target("no marker here") == ""
+
+
 def test_turn_state_has_loop_guard_fields() -> None:
     """The ``_TurnState`` dataclass exposes the new loop-guard / failure
     fields the turn runner reads. Guards against the fields being
@@ -2875,3 +2916,4 @@ def test_turn_state_has_loop_guard_fields() -> None:
     assert state.handoff_count == 0
     assert state.last_hint_text == ""
     assert state.duplicate_hint_count == 0
+    assert state.hint_target_history == []
