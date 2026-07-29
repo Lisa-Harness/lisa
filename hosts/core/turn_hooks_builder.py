@@ -33,7 +33,7 @@ from hosts.core.context_assembly import (
     assemble_dynamic_user_context,
     assemble_system_prompt,
 )
-from hosts.core.model_runtime import StubModelDefinition, load_manifest, resolve_little_lisa_model
+from hosts.core.model_runtime import StubModelDefinition, load_manifest, resolve_model
 from hosts.core.state_provider import FileBackedStateProvider, build_unified_state
 from hosts.core.thread import build_recent_thread_excerpt, load_thread_digest
 
@@ -167,7 +167,7 @@ def build_turn_hooks(
             runtime.manifest = load_manifest(
                 {}, data_dir=runtime.data_dir, path=runtime.models_path
             )
-        return resolve_little_lisa_model(
+        return resolve_model(
             model_id,
             runtime_state={"manifest": runtime.manifest},
             data_dir=runtime.data_dir,
@@ -744,3 +744,4 @@ def build_turn_hooks(
         # the turn.
         on_stage=_on_stage_event,
     )
+

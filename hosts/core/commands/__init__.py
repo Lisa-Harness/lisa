@@ -312,9 +312,9 @@ def _import_load_manifest() -> object:
 
 
 def _import_resolve_little_lisa_model() -> object:
-    from hosts.core.model_runtime import resolve_little_lisa_model  # noqa: PLC0415
+    from hosts.core.model_runtime import resolve_model  # noqa: PLC0415
 
-    return resolve_little_lisa_model
+    return resolve_model
 
 
 def _import_stub_model_definition() -> object:

@@ -44,17 +44,16 @@ from hosts.core.callbacks import NullTransport
 from hosts.core.config import HostConfig
 from hosts.core.config_resolver import resolve_log_level, resolve_stream_enabled, resolve_timezone
 from hosts.core.handle_message import handle_message
+from hosts.core.model_runtime import StubModelDefinition, resolve_model
+from hosts.core.runtime import HostRuntime, TurnContext
+from hosts.core.state_provider import FileBackedStateProvider
+from hosts.core.token_accounting import apply_turn_usage, format_session_exit_summary_lines
 
 # ``hosts.core.__init__`` re-exports ``handle_message`` as the *function*,
 # shadowing the submodule attribute, so grab the real module from sys.modules
 # for monkeypatching module-private functions (e.g. _route_model_turn).
 
 handle_message_mod = sys.modules["hosts.core.handle_message"]
-from hosts.core.model_runtime import StubModelDefinition, resolve_little_lisa_model
-from hosts.core.runtime import HostRuntime, TurnContext
-from hosts.core.state_provider import FileBackedStateProvider
-from hosts.core.token_accounting import apply_turn_usage, format_session_exit_summary_lines
-
 
 def _make_runtime(tmp_path: Path, **config_kwargs) -> HostRuntime:
     """Build a HostRuntime whose data_dir is tmp_path.
@@ -1023,12 +1022,12 @@ def test_resolve_model_supports_mode_models_and_concrete_ids(tmp_path: Path) -> 
         encoding="utf-8",
     )
 
-    default_model = resolve_little_lisa_model("default", runtime_state={}, data_dir=tmp_path)
+    default_model = resolve_model("default", runtime_state={}, data_dir=tmp_path)
     default_model_id = default_model.model_id
 
     assert default_model_id
     assert default_model.context_window == 65536
-    resolved_default = resolve_little_lisa_model(
+    resolved_default = resolve_model(
         default_model_id, runtime_state={}, data_dir=tmp_path
     ).model_id
     assert resolved_default == default_model_id
@@ -1049,7 +1048,7 @@ def test_resolve_model_rejects_unknown_manifest_id(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="not in the host's manifest"):
-        resolve_little_lisa_model("not-a-real-model", runtime_state={}, data_dir=tmp_path)
+        resolve_model("not-a-real-model", runtime_state={}, data_dir=tmp_path)
 
 
 # ── Ollama host normalization ────────────────────────────────────────
@@ -1901,3 +1900,4 @@ def test_little_lisa_discovers_and_runs_hello_world_pack_from_sdk_content_roots(
 
 def test_verify_command_respects_data_dir_override(tmp_path: Path) -> None:
     pytest.skip("migrated: _verify_command now in hosts/cli (CLI verify command)")
+

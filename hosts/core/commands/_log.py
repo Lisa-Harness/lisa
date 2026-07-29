@@ -20,13 +20,13 @@ import logging
 import os
 from typing import Any
 
-from sdk.logging_setup import emit_structured_event
 from kernel.models import CapabilityManifest
+from sdk.logging_setup import emit_structured_event
 
 from hosts.core.model_runtime import (
     StubModelDefinition,
     load_manifest,
-    resolve_little_lisa_model,
+    resolve_model,
 )
 from hosts.core.runtime import HostRuntime, TurnContext
 from hosts.core.thread import append_thread_entry
@@ -139,7 +139,7 @@ def _resolve_model(runtime: HostRuntime, model_id: str) -> StubModelDefinition:
         runtime.manifest = load_manifest(
             {}, data_dir=runtime.data_dir, path=runtime.models_path
         )
-    return resolve_little_lisa_model(
+    return resolve_model(
         model_id,
         runtime_state={"manifest": runtime.manifest},
         data_dir=runtime.data_dir,

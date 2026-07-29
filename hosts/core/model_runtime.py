@@ -5,11 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from kernel.model_manifest import ManifestModelEntry
+from kernel.model_manifest import ModelManifest
 
 from hosts.core.model_manifest import load_model_manifest
 
 logger = logging.getLogger(__name__)
+
 
 _MANIFEST_CACHE_KEY = "manifest"
 
@@ -19,15 +20,25 @@ class StubModelDefinition:
     """Tiny model-definition shape expected by the host's operations."""
 
     model_id: str
+
     provider: str = "azure_openai"
+
     reasoning_model: bool = False
+
     context_window: int = 0
+
     capabilities: tuple[str, ...] = ()
+
     """``ModelCapability`` strings (``text``, ``tools``, ``code``, ...) the
+
     resolved model declares in the manifest. Forwarded from
+
     ``ManifestModelEntry.capabilities`` so the kernel's capability gate can
+
     validate the resolved model against the mode's ``required_capabilities``
+
     without the kernel reaching into the host's manifest directly. Default
+
     empty for backward compatibility with stubs that do not carry caps."""
 
 
@@ -35,33 +46,55 @@ class StubModelDefinition:
 class StubCompletion:
     """Completion result shape consumed by the declarative operation runner.
 
+
     Token sub-counters (``cached_tokens``, ``reasoning_tokens``) and
+
     ``duration_ms`` flow through from the provider response so the
+
     host's token-usage ledger can bill cache hits, reasoning tokens,
+
     and time-based providers (e.g. Ollama local GPU time) accurately.
 
+
     ``finish_reason`` carries the provider's termination signal
+
     (``'stop'``, ``'length'``, ``'tool_calls'``, or ``None``/``'unknown'``
+
     for backends that do not report it). Operations that synthesize
+
     long-form output (e.g. forge_document) use it to detect mid-document
+
     truncation and issue a continuation pass rather than persisting a
     partial artifact.
     """
 
     content: str
+
     tool_calls: list[dict[str, Any]]
+
     prompt_tokens: int = 0
+
     completion_tokens: int = 0
+
     total_tokens: int = 0
+
     cached_tokens: int = 0
+
     reasoning_tokens: int = 0
+
     duration_ms: float = 0.0
+
     finish_reason: str | None = None
+
     reasoning_content: str = ""
+
     """Reasoning-model "thinking" text (gpt-5.x ``message.reasoning_content``).
 
+
     Surfaced as a fallback when ``content`` is empty for reasoning models —
+
     the turn runner decides whether to fold it into the visible response.
+
     Empty for non-reasoning backends (back-compat default).
     """
 
@@ -80,49 +113,69 @@ def resolve_session_manifest_path(
 ) -> Path:
     """Resolve the active model-manifest path for one session.
 
+
     When the session plan declares ``context.models.path``, it is resolved
+
     relative to the session-context file's directory (``session_source_dir``)
+
     or as an absolute path, and returned. When the plan omits
+
     ``context.models`` — or ``session_plan`` is ``None`` — this falls back to
+
     ``active_manifest_path(data_dir=data_dir)`` so legacy behavior is
+
     preserved.
 
+
     The host boot path validates that a session-declared path exists and is a
+
     ``.yaml``/``.yml``/``.json`` file; a missing or wrong-type path raises a
+
     startup ``ValueError``. The compiler (``kernel.session_plan``) only
+
     validates non-emptiness — it has no filesystem access by design.
     """
+
     fallback = active_manifest_path(data_dir=data_dir)
+
     if session_plan is None:
         return fallback
+
     try:
         models_ref = session_plan.manifest.context.models
+
     except AttributeError:
         return fallback
+
     if models_ref is None:
         return fallback
+
     raw = models_ref.path.strip()
+
     if not raw:
         return fallback
+
     candidate = Path(raw).expanduser()
+
     if not candidate.is_absolute():
         if session_source_dir is None:
             raise ValueError(
                 f"context.models.path {raw!r} is relative but the session "
                 f"source directory is unknown; pass an absolute path instead."
             )
+
         candidate = (session_source_dir / candidate).resolve()
+
     else:
         candidate = candidate.resolve()
+
     if not candidate.is_file():
         raise ValueError(
-            f"context.models.path {raw!r} resolved to {candidate}, which is "
-            f"not a file."
+            f"context.models.path {raw!r} resolved to {candidate}, which is not a file."
         )
+
     if candidate.suffix.lower() not in {".yaml", ".yml", ".json"}:
-        raise ValueError(
-            f"context.models.path {raw!r} must be a .yaml, .yml, or .json file."
-        )
+        raise ValueError(f"context.models.path {raw!r} must be a .yaml, .yml, or .json file.")
     return candidate
 
 
@@ -140,17 +193,25 @@ def load_manifest(
 ) -> ModelManifest:
     """Return the cached manifest snapshot, loading it from disk on first use.
 
+
     When ``path`` is provided it overrides ``data_dir``'s default
+
     ``models.yaml`` location; this is how a session plan's
+
     ``context.models.path`` reaches the loader. Callers without a session
+
     override omit ``path`` and get ``active_manifest_path(data_dir)``.
     """
 
     manifest = runtime_state.get(_MANIFEST_CACHE_KEY)
+
     if manifest is None:
         logger.debug("manifest cache miss; loading from disk")
+
         resolved = path if path is not None else active_manifest_path(data_dir=data_dir)
+
         manifest = load_model_manifest(resolved)
+
         runtime_state[_MANIFEST_CACHE_KEY] = manifest
     return manifest
 
@@ -164,8 +225,11 @@ def reload_manifest(
     """Reload the manifest from disk and return the new snapshot."""
 
     logger.debug("reloading model manifest from disk")
+
     resolved = path if path is not None else active_manifest_path(data_dir=data_dir)
+
     manifest = load_model_manifest(resolved)
+
     runtime_state[_MANIFEST_CACHE_KEY] = manifest
     return manifest
 
@@ -179,12 +243,14 @@ def require_models_present(
     """Assert that the active host manifest contains at least one model."""
 
     manifest = load_manifest(runtime_state, data_dir=data_dir, path=path)
+
     if not manifest.models:
         logger.error("manifest has no models configured")
+
         raise ValueError("The host requires at least one model in models.yaml.")
 
 
-def resolve_little_lisa_model(
+def resolve_model(
     model_id: str,
     *,
     runtime_state: dict[str, Any],
@@ -193,34 +259,44 @@ def resolve_little_lisa_model(
 ) -> StubModelDefinition:
     """Resolve one model id, mode, or role against the host's manifest.
 
+
     Resolution precedence (single path, no divergence):
+
     1. ``mode_models[ref]`` — explicit per-mode pin.
+
     2. concrete ``model_id`` lookup.
 
+
     No silent first-model fallback: a missing ``default`` mode is a
+
     load-time validation error (``require_mode_models=True``), not a
+
     runtime fallback. Empty input defaults to ``"default"`` so callers
+
     that pass through a bare alias resolve against the default mode.
     """
 
     manifest = load_manifest(runtime_state, data_dir=data_dir, path=path)
+
     requested = (model_id or "default").strip()
+
     resolved = manifest.resolve(requested)
+
     if resolved is None:
         known_models = ", ".join(model.model_id for model in manifest.models)
+
         logger.error("model %r not in manifest (configured: %s)", requested, known_models)
+
         raise ValueError(
             f"Model '{requested}' is not in the host's manifest. Configured models: {known_models}"
         )
+
     logger.debug("resolved %r -> %s", requested, resolved.model_id)
-    return _to_stub_model_definition(resolved)
 
-
-def _to_stub_model_definition(model: ManifestModelEntry) -> StubModelDefinition:
     return StubModelDefinition(
-        model_id=model.model_id,
-        provider=model.provider,
-        reasoning_model=model.reasoning_model,
-        context_window=model.context_window,
-        capabilities=tuple(model.capabilities),
+        model_id=resolved.model_id,
+        provider=resolved.provider,
+        reasoning_model=resolved.reasoning_model,
+        context_window=resolved.context_window,
+        capabilities=tuple(resolved.capabilities),
     )

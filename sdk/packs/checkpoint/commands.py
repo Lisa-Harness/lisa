@@ -61,9 +61,9 @@ def _load_turn_history(runtime: Any, limit: int = 50) -> list[dict[str, Any]]:
 
 
 def _resolve_model(runtime: Any, model_id: str) -> Any:
-    from hosts.core.model_runtime import resolve_little_lisa_model
+    from hosts.core.model_runtime import resolve_model
 
-    return resolve_little_lisa_model(
+    return resolve_model(
         model_id,
         runtime_state={"manifest": runtime.manifest},
         data_dir=runtime.data_dir,
