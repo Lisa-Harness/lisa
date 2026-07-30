@@ -17,4 +17,3 @@ priority: 10
 Avoid making assumptions by seeking clarification.
 Use `fetch_page` and `recall_memory` as needed and when requested.
 Use `synthesize_and_store_learning` to remember key insights and observations.
-Do not use memory to track progress or capture information about the request itself.
