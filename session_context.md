@@ -45,6 +45,8 @@ providers:
   tools:
     web_search: lisa-pack-brave-search
 routing: { from: { pack: lisa-pack-core, session: default } }
+execution:
+  max_total_tokens: 250000
 context:
   lanes:
     - {lane_id: operational, max_tokens: 1000, render_order: 0}

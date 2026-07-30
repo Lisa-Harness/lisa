@@ -197,6 +197,19 @@ class _TurnState:
     ``transition_stage`` with the expected ``fork:`` target, while a
     ``forced_fork_target`` is set. The enforcer fires when this reaches
     ``forced_fork_non_fork_tool_cap`` (``kernel.config.Settings``)."""
+    forced_plan_target: str = ""
+    """The ``plan`` mode_id the kernel will hand off to itself if the
+    model refuses to call ``transition_stage`` after a plan-escalation
+    routing hint. Populated when the turn-start routing hint names
+    ``plan`` as the target (3+ gap intents); consumed by the
+    forced-plan enforcer in the turn loop. Empty when the routing
+    decision is a fork, a single non-plan handoff, or no gap at all.
+    Mirrors ``forced_fork_target`` for the plan-escalation path."""
+    non_plan_tool_dispatches: int = 0
+    """Count of tool dispatches this turn that were NOT
+    ``transition_stage`` while a ``forced_plan_target`` is set. The
+    enforcer fires when this reaches
+    ``forced_plan_non_transition_tool_cap`` (``kernel.config.Settings``)."""
     called_tool_names: set[str] = field(default_factory=set)
     """Names of every tool actually dispatched this turn (operations,
     pack tools, MCP tools). Used by the fork-child validator to confirm

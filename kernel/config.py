@@ -142,6 +142,18 @@ class Settings(BaseSettings):
     # kernel forces the fork after this many non-fork tool dispatches.
     # Override via ``FORCED_FORK_NON_FORK_TOOL_CAP``.
     forced_fork_non_fork_tool_cap: int = 2
+    # Forced-plan enforcer: when a plan-escalation routing hint is active
+    # (3+ gap intents → hand off to ``plan``) and the model refuses to
+    # call ``transition_stage`` — instead burning iterations on read-only
+    # tools in the entry mode (the 2026-07-30 400k-token burn: 15
+    # iterations of tool-cycling in ``default`` before the model finally
+    # handed off to ``plan``, which then failed to parse) — the kernel
+    # forces the plan handoff after this many non-transition tool
+    # dispatches. This bounds the pre-plan token burn to roughly
+    # ``cap × per-iteration-tokens`` instead of the full
+    # ``max_tool_iterations`` budget. Override via
+    # ``FORCED_PLAN_NON_TRANSITION_TOOL_CAP``.
+    forced_plan_non_transition_tool_cap: int = 2
     # Stuck-session guard: after this many turns in the same stage
     # without a transition, the loop injects a nudge. Override via
     # ``STAGE_NUDGE_THRESHOLD``.
@@ -330,6 +342,7 @@ class Settings(BaseSettings):
         "fork_child_max_tool_iterations",
         "narration_nudge_cap",
         "forced_fork_non_fork_tool_cap",
+        "forced_plan_non_transition_tool_cap",
         "stage_nudge_threshold",
         "stage_nudge_cap",
         "max_handoffs_per_turn",

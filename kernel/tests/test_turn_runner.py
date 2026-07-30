@@ -2941,3 +2941,117 @@ def test_turn_state_has_loop_guard_fields() -> None:
     assert state.last_hint_text == ""
     assert state.duplicate_hint_count == 0
     assert state.hint_target_history == []
+    assert state.forced_plan_target == ""
+    assert state.non_plan_tool_dispatches == 0
+
+
+@pytest.mark.asyncio
+async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
+    """When a plan-escalation routing hint is active and the model calls
+    non-``transition_stage`` tools instead of handing off to ``plan``,
+    the kernel forces the plan handoff after
+    ``forced_plan_non_transition_tool_cap`` non-transition dispatches.
+
+    Regression for the 2026-07-30 incident: the model burned 15
+    iterations of tool-cycling in ``default`` mode (≈400k tokens) before
+    finally handing off to ``plan``, which then failed to parse. The
+    forced-plan enforcer bounds the pre-plan token burn to roughly
+    ``cap × per-iteration-tokens`` by synthesizing the
+    ``transition_stage(plan)`` call itself.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+
+    default_cfg = _mode_config(mode_id="default")
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    patched_catalog = {
+        "default": default_cfg, "plan": plan_cfg, "search": search_cfg,
+    }
+
+    call_count = 0
+    plan_entry_calls = 0
+    forced_plan_fired = False
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count, forced_plan_fired
+        call_count += 1
+        # Inspect messages to detect which mode we're in.
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        # In default mode with a plan-escalation hint: the model does
+        # read-only fetches instead of calling transition_stage.
+        is_plan_mode = "## Handoff Context" in sys_content and "`plan`" in sys_content
+        is_search_mode = (
+            "## Handoff Context" in sys_content and "`search`" in sys_content
+        ) or ("Handed off to mode: search" in str(
+            [m.get("content", "") for m in kwargs["messages"]]
+        ))
+        if is_search_mode:
+            return _StubCompletion(content="Search results from web_search.")
+        if is_plan_mode:
+            # The kernel's mid-turn entry-op detection sets
+            # pending_planned_handoff; the next iteration synthesizes the
+            # transition_stage call. Return harmless text.
+            return _StubCompletion(content="Planning...")
+        # default mode: the model does read-only fetches instead of
+        # handing off to plan. After forced_plan_non_transition_tool_cap
+        # (default 2) non-transition dispatches, the kernel forces the
+        # plan handoff.
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": f"call_{call_count}",
+                    "function": {
+                        "name": "fetch_page",
+                        "arguments": '{"url": "https://example.com"}',
+                    },
+                }
+            ],
+        )
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        nonlocal plan_entry_calls
+        plan_entry_calls += 1
+        return OperationResult(
+            output_text="research intent detected",
+            output_json={"target_stage_id": "search", "rationale": "research intent"},
+        )
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.memory_recall_enabled = False
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="search for rust news then write a summary then code it",
+            hooks=hooks,
+        )
+
+    # The kernel forced the plan handoff — the final response came from
+    # the search mode (the plan_workflow target), not from the default
+    # mode's read-only fetches.
+    assert result.response_text == "Search results from web_search."
+    # The planner entry op ran exactly once (for the forced plan handoff).
+    assert plan_entry_calls == 1
+    # The model did NOT burn the full 15-iteration budget in default mode
+    # before the kernel forced the handoff. With cap=2, the kernel forces
+    # the plan handoff on the 3rd non-transition dispatch (after 2
+    # fetch_page calls), so the total model calls should be well under
+    # the 15-iteration cap.
+    assert call_count < 10, (
+        f"expected the forced-plan enforcer to fire early; got {call_count} "
+        "model calls (the model burned the full iteration budget)"
+    )

@@ -1885,6 +1885,23 @@ async def _run_turn_inner(
             mode_config=mode_config,
         ) or ""
         _state.non_fork_tool_dispatches = 0
+        # ── Forced-plan enforcer: precompute the plan-escalation target.
+        # When the routing hint names ``plan`` as the target (3+ gap
+        # intents → plan-mode escalation), the kernel already decided the
+        # routing. The model is the executor. If it refuses to call
+        # ``transition_stage`` — instead burning iterations on read-only
+        # tools in the entry mode (the 2026-07-30 400k-token burn: 15
+        # iterations of tool-cycling in ``default`` before the model
+        # finally handed off to ``plan``, which then failed to parse) —
+        # the turn loop forces the plan handoff itself after a small cap
+        # of non-transition tool dispatches. This bounds the pre-plan
+        # token burn to roughly ``cap × per-iteration-tokens`` instead
+        # of the full ``max_tool_iterations`` budget. Mirrors the
+        # forced-fork enforcer for the plan-escalation path.
+        _state.forced_plan_target = (
+            "plan" if _extract_hint_target(routing_hint) == "plan" else ""
+        )
+        _state.non_plan_tool_dispatches = 0
     else:
         _log.info(
             "no routing hint mode=%s (satisfies_intents=%s routing_targets=%s)",
@@ -2426,10 +2443,48 @@ async def _run_turn_inner(
                 _state.non_fork_tool_dispatches = 0
                 _synthesized_fork = True
 
+            # ── Forced-plan enforcer (empty-completion path) ──────────
+            # The model returned no tool calls while a plan-escalation
+            # target is pending. Synthesize the
+            # ``transition_stage(plan)`` call ourselves and dispatch it
+            # on this iteration instead of accepting the empty turn
+            # (mirrors the forced-fork empty-completion synth).
+            _synthesized_plan = False
+            if _state.forced_plan_target:
+                _log.warning(
+                    "model returned no tool calls with a forced plan "
+                    "pending (mode=%s, iteration=%d); kernel synthesizing "
+                    "plan handoff target=%s",
+                    mode_id,
+                    _state.iteration,
+                    _state.forced_plan_target,
+                )
+                synth_plan_call = {
+                    "id": f"forced_plan_empty_{_state.iteration}",
+                    "function": {
+                        "name": _TRANSITION_TOOL_NAME,
+                        "arguments": json.dumps(
+                            {
+                                "target_stage_id": _state.forced_plan_target,
+                                "rationale": (
+                                    "Kernel-forced plan handoff: the model "
+                                    "returned no tool calls after the routing "
+                                    "hint named plan as the target."
+                                ),
+                            }
+                        ),
+                    },
+                }
+                assistant_msg["tool_calls"] = [synth_plan_call]
+                tool_calls = [synth_plan_call]
+                _state.forced_plan_target = ""
+                _state.non_plan_tool_dispatches = 0
+                _synthesized_plan = True
+
             content = getattr(completion, "content", "") or ""
             content = content.strip()
 
-            if not _synthesized_fork:
+            if not _synthesized_fork and not _synthesized_plan:
                 # ── Hallucinated-transition guard ──────────────────────────
                 # Models sometimes *narrate* a stage transition or handoff in
                 # their text output ("I have transitioned to the search stage…"
@@ -2739,6 +2794,74 @@ async def _run_turn_inner(
                     # sees ``tool_name == _TRANSITION_TOOL_NAME`` and
                     # dispatches the fork.
 
+            # ── Forced-plan enforcer ────────────────────────────────
+            # When the kernel has computed a plan-escalation target
+            # (``_state.forced_plan_target == "plan"``) and the model
+            # refuses to call ``transition_stage`` — instead burning
+            # iterations on read-only tools in the entry mode — the
+            # kernel forces the plan handoff itself. The routing hint
+            # already named ``plan`` as the target; the model is the
+            # executor. When the executor won't execute a deterministic
+            # next step, the kernel takes over rather than begging via
+            # nudges (the 2026-07-30 incident: the model burned 15
+            # iterations of tool-cycling in ``default`` before finally
+            # handing off to ``plan``, which then failed to parse —
+            # 400k tokens lost to the pre-plan loop). Mirrors the
+            # forced-fork enforcer: each non-``transition_stage``
+            # dispatch increments ``non_plan_tool_dispatches``; at the
+            # cap, the kernel synthesizes the
+            # ``transition_stage(plan)`` call itself.
+            if (
+                _state.forced_plan_target
+                and tool_name != _TRANSITION_TOOL_NAME
+            ):
+                _state.non_plan_tool_dispatches += 1
+                if _state.non_plan_tool_dispatches >= (
+                    _kernel_settings.forced_plan_non_transition_tool_cap
+                ):
+                    _log.warning(
+                        "model refused to hand off to plan (mode=%s, "
+                        "iteration=%d, non_plan_tool_dispatches=%d); "
+                        "kernel forcing plan handoff target=%s",
+                        mode_id,
+                        _state.iteration,
+                        _state.non_plan_tool_dispatches,
+                        _state.forced_plan_target,
+                    )
+                    # Synthesize the plan handoff. Mutate the current
+                    # ``tool_call`` dict IN PLACE (same rationale as the
+                    # forced-fork enforcer: keeps the assistant message
+                    # and tool result message consistent so the provider
+                    # sees a well-formed pair).
+                    tool_call["function"]["name"] = _TRANSITION_TOOL_NAME
+                    tool_call["function"]["arguments"] = json.dumps(
+                        {
+                            "target_stage_id": _state.forced_plan_target,
+                            "rationale": (
+                                "Kernel-forced plan handoff: the model did "
+                                "not call transition_stage after the "
+                                "routing hint named plan as the target."
+                            ),
+                        }
+                    )
+                    tool_name = _TRANSITION_TOOL_NAME
+                    tool_arguments = {
+                        "target_stage_id": _state.forced_plan_target,
+                        "rationale": (
+                            "Kernel-forced plan handoff: the model did "
+                            "not call transition_stage after the routing "
+                            "hint named plan as the target."
+                        ),
+                    }
+                    # The enforcer fires once per turn; clear the target
+                    # so a subsequent model-issued handoff is not
+                    # re-enforced.
+                    _state.forced_plan_target = ""
+                    _state.non_plan_tool_dispatches = 0
+                    # Fall through: the transition interception below now
+                    # sees ``tool_name == _TRANSITION_TOOL_NAME`` and
+                    # dispatches the plan handoff.
+
             # Per-target ``max_calls_per_turn`` enforcement (item 2). The
             # ledger is the single enforcement point across operations and
             # pack tools. MCP tools have no catalog definition, so they are
@@ -2928,11 +3051,14 @@ async def _run_turn_inner(
                     if is_fork_target(target_stage):
                         # The model honored the routing hint and called
                         # ``transition_stage`` itself. Clear the forced-fork
-                        # enforcer state so it does not re-fire on a later
-                        # iteration (e.g. the post-fork synthesis turn that
-                        # returns text without tool calls).
+                        # and forced-plan enforcer state so it does not
+                        # re-fire on a later iteration (e.g. the post-fork
+                        # synthesis turn that returns text without tool
+                        # calls).
                         _state.forced_fork_target = ""
                         _state.non_fork_tool_dispatches = 0
+                        _state.forced_plan_target = ""
+                        _state.non_plan_tool_dispatches = 0
                         fork_targets_raw = parse_fork_target_string(target_stage)
                         fork_results_list: list[ForkChildResult] = []
                         if not fork_targets_raw:
@@ -3127,11 +3253,13 @@ async def _run_turn_inner(
                     if is_routable_mode(target_stage):
                         # The model honored the routing hint (chose a single
                         # handoff instead of the suggested fork). Clear the
-                        # forced-fork enforcer state; the post-handoff hint
-                        # recomputation below will set a fresh target if the
-                        # new mode still leaves a fork gap.
+                        # forced-fork and forced-plan enforcer state; the
+                        # post-handoff hint recomputation below will set a
+                        # fresh target if the new mode still leaves a gap.
                         _state.forced_fork_target = ""
                         _state.non_fork_tool_dispatches = 0
+                        _state.forced_plan_target = ""
+                        _state.non_plan_tool_dispatches = 0
                         # ── Hint-override tracking ──────────────────────
                         # When the model hands off to a target that differs
                         # from the routing hint's suggested target, it is
@@ -3693,6 +3821,16 @@ async def _run_turn_inner(
                                             or ""
                                         )
                                         _state.non_fork_tool_dispatches = 0
+                                        # Refresh the forced-plan target for
+                                        # the new mode so the enforcer
+                                        # tracks the post-handoff routing
+                                        # decision.
+                                        _state.forced_plan_target = (
+                                            "plan"
+                                            if _extract_hint_target(post_handoff_hint) == "plan"
+                                            else ""
+                                        )
+                                        _state.non_plan_tool_dispatches = 0
                                 else:
                                     # The new mode satisfies all remaining
                                     # intents; clear the stale hint so the
@@ -3700,9 +3838,12 @@ async def _run_turn_inner(
                                     routing_hint = ""
                                     _state.duplicate_hint_count = 0
                                     _state.last_hint_text = ""
-                                    # No remaining gap → no forced fork.
+                                    # No remaining gap → no forced fork or
+                                    # forced plan.
                                     _state.forced_fork_target = ""
                                     _state.non_fork_tool_dispatches = 0
+                                    _state.forced_plan_target = ""
+                                    _state.non_plan_tool_dispatches = 0
                                 tool_output = f"Handed off to mode: {target_stage}." + (
                                     f" Rationale: {rationale}" if rationale else ""
                                 )
