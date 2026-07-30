@@ -863,9 +863,45 @@ def _coordinator_routing_hint(
     mode_id: str,
     query: str,
 ) -> str:
-    """Return a handoff hint from a persisted route coordinator when applicable."""
+    """Return a handoff hint from a persisted route coordinator when applicable.
+
+    When a ``plan_workflow_op`` WorkflowInstance is active and has a
+    current step, the instance is the source of truth for the next target
+    (not the coordinator's saved decision, which points at the first step
+    and goes stale after advancement). The instance's ``current_step_id``
+    was advanced by ``advance_step`` when the previous step completed, so
+    it names the step that should run next on a ``/proceed`` resume.
+    """
     if hooks.route_coordinator is None or not _looks_like_continuation_query(query):
         return ""
+    # ── Plan-instance-driven resume ──────────────────────────────────
+    # When a plan_workflow_op instance is active, read the next target
+    # from the instance's current step (the coordinator's saved
+    # next_target is the FIRST step and goes stale after advancement).
+    if hooks.workflow_instance is not None:
+        try:
+            _instance = hooks.workflow_instance()
+        except Exception:  # pylint: disable=broad-except
+            _instance = None
+        if (
+            _instance is not None
+            and getattr(_instance, "spawned_from", "") == "plan_workflow_op"
+            and getattr(_instance, "current_step_id", "")
+        ):
+            _step = (
+                _instance.step_by_id(_instance.current_step_id)
+                if hasattr(_instance, "step_by_id")
+                else None
+            )
+            if _step is not None and _step.mode_id:
+                return (
+                    "## Routing Hint\n\n"
+                    f"Continue with the next step in the planned workflow. "
+                    f"Hand off to `{_step.mode_id}` by calling "
+                    f"`transition_stage` with target_stage_id "
+                    f"`{_step.mode_id}`."
+                )
+    # ── Coordinator-driven resume (legacy / non-plan) ────────────────
     request = {
         "mode_id": mode_id,
         "query": query,
@@ -3921,6 +3957,50 @@ async def _run_turn_inner(
                                                 )
                                                 _advanced = advance_step(_wi, _wi.current_step_id)
                                                 hooks.workflow_instance_updater(_advanced)
+                                                # ── Plan-driven next-step hint ──
+                                                # When a plan_workflow_op
+                                                # instance is active and has
+                                                # a remaining step after
+                                                # advancement, override the
+                                                # emergent routing hint with
+                                                # a directive hint naming the
+                                                # next step's mode from the
+                                                # precomputed plan. This
+                                                # replaces the one-step-at-a-
+                                                # time emergent hint chain
+                                                # with the declared plan
+                                                # sequence. The plan is the
+                                                # source of truth, not the
+                                                # gap-intent recompute.
+                                                if (
+                                                    _advanced is not None
+                                                    and _advanced.spawned_from == "plan_workflow_op"
+                                                    and _advanced.current_step_id
+                                                ):
+                                                    _next_step = (
+                                                        _advanced.step_by_id(
+                                                            _advanced.current_step_id
+                                                        )
+                                                        if hasattr(_advanced, "step_by_id")
+                                                        else None
+                                                    )
+                                                    if _next_step is not None:
+                                                        post_handoff_hint = (
+                                                            "## Routing Hint\n\n"
+                                                            f"This is the next step in the "
+                                                            f"planned workflow. Call "
+                                                            f"`transition_stage` with "
+                                                            f"target_stage_id "
+                                                            f"`{_next_step.mode_id}`."
+                                                        )
+                                                        _log.info(
+                                                            "plan-driven next step: "
+                                                            "instance=%s step=%s "
+                                                            "target=%s",
+                                                            _advanced.instance_id,
+                                                            _next_step.step_id,
+                                                            _next_step.mode_id,
+                                                        )
                                             except Exception as wi_exc:  # pylint: disable=broad-except
                                                 _log.warning(
                                                     "workflow_instance_updater failed after "
@@ -4577,6 +4657,31 @@ async def _run_turn_inner(
                     await hooks.on_checkpoint(bundle)
             except Exception as exc:  # pylint: disable=broad-except
                 _log.warning("on_checkpoint hook failed: %s", exc)
+
+    # ── Plan progress rendering ──────────────────────────────────────
+    # When a plan_workflow_op instance is active and has remaining steps,
+    # append a short progress summary so the user sees which step just
+    # finished and what's next. Only appended when there is visible
+    # content (don't append to an empty error response).
+    if content and hooks.workflow_instance is not None:
+        try:
+            _progress_instance = hooks.workflow_instance()
+        except Exception:  # pylint: disable=broad-except
+            _progress_instance = None
+        if (
+            _progress_instance is not None
+            and getattr(_progress_instance, "spawned_from", "") == "plan_workflow_op"
+            and getattr(_progress_instance, "declared_steps", ())
+        ):
+            try:
+                from kernel.workflow_instance import (
+                    render_workflow_progress,
+                )
+                _progress = render_workflow_progress(_progress_instance)
+                if _progress:
+                    content = f"{content}\n\n{_progress}"
+            except Exception:  # pylint: disable=broad-except
+                _log.warning("render_workflow_progress failed: %s", exc)
 
     return TurnResult(
         response_text=content,

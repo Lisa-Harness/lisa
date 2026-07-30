@@ -430,6 +430,132 @@ async def test_run_turn_planner_without_steps_no_plan_block_no_instance() -> Non
 
 
 @pytest.mark.asyncio
+async def test_coordinator_routing_hint_uses_plan_instance_current_step_on_proceed() -> None:
+    """When a ``/proceed`` resume query is sent and a
+    ``plan_workflow_op`` WorkflowInstance is active, the routing hint
+    reads the next target from the instance's ``current_step_id`` (which
+    was advanced when the previous step completed), NOT from the
+    coordinator's saved ``next_target`` (which points at the first step
+    and is stale after advancement). This is the cross-turn plan resume
+    path — the plan survives across turns and ``/proceed`` picks up the
+    correct next step.
+    """
+    from kernel.workflow_instance import WorkflowInstance, WorkflowStep
+
+    # Build an instance that has already completed step 0 (search) and
+    # advanced to step 1 (markdown). The coordinator's saved
+    # next_target still says "search" (stale), but the instance's
+    # current_step_id says "markdown" (correct).
+    steps = (
+        WorkflowStep(
+            step_id="search_0",
+            mode_id="search",
+            satisfies_intents=("research",),
+            spawned_from="plan_workflow_op",
+        ),
+        WorkflowStep(
+            step_id="markdown_1",
+            mode_id="markdown",
+            satisfies_intents=("write",),
+            is_terminal=True,
+            spawned_from="plan_workflow_op",
+        ),
+    )
+    active_instance = WorkflowInstance(
+        declared_steps=steps,
+        completed_steps=("search_0",),
+        current_step_id="markdown_1",
+        current_mode_id="markdown",
+        spawned_from="plan_workflow_op",
+    )
+
+    class _StubCoordinator:
+        def __init__(self) -> None:
+            self.saved_decision = CoordinatorRouteDecision(next_target="search")
+
+        def load(self, _req: Any) -> CoordinatorRouteDecision | None:
+            return self.saved_decision
+
+        def save(self, decision: CoordinatorRouteDecision, _req: Any) -> None:
+            self.saved_decision = decision
+
+    coordinator = _StubCoordinator()
+
+    captured_hints: list[str] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        captured_hints.append(sys_content)
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.route_coordinator = coordinator
+    hooks.workflow_instance = lambda: active_instance
+
+    result = await run_turn(mode_id="default", query="proceed", hooks=hooks)
+
+    # The hint must point to the instance's current step (markdown), not
+    # the coordinator's stale saved target (search). Verify via the
+    # captured system prompts (the hint is injected into messages[0]).
+    assert any("markdown" in h for h in captured_hints), (
+        "routing hint must reference the plan instance's current step (markdown)"
+    )
+    # None of the captured hints should point ONLY at search (the stale
+    # coordinator target) without also mentioning markdown.
+    assert not any(
+        "search" in h and "markdown" not in h for h in captured_hints
+    ), "routing hint must NOT point at the stale coordinator target (search)"
+
+
+@pytest.mark.asyncio
+async def test_plan_progress_rendered_when_plan_instance_active() -> None:
+    """When a ``plan_workflow_op`` WorkflowInstance is active and has
+    remaining steps, the turn result's ``response_text`` includes a
+    ``## Workflow progress`` summary so the user sees which steps are
+    done and which remain."""
+    from kernel.workflow_instance import WorkflowInstance, WorkflowStep
+
+    steps = (
+        WorkflowStep(
+            step_id="search_0",
+            mode_id="search",
+            satisfies_intents=("research",),
+            spawned_from="plan_workflow_op",
+        ),
+        WorkflowStep(
+            step_id="markdown_1",
+            mode_id="markdown",
+            satisfies_intents=("write",),
+            is_terminal=True,
+            spawned_from="plan_workflow_op",
+        ),
+    )
+    active_instance = WorkflowInstance(
+        declared_steps=steps,
+        completed_steps=("search_0",),
+        current_step_id="markdown_1",
+        current_mode_id="markdown",
+        spawned_from="plan_workflow_op",
+    )
+
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Drafted the markdown summary.")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow_instance = lambda: active_instance
+
+    result = await run_turn(mode_id="markdown", query="write the summary", hooks=hooks)
+
+    assert "## Workflow progress" in result.response_text
+    assert "search" in result.response_text
+    assert "markdown" in result.response_text
+    # Step 0 (search) should be marked done.
+    assert "[x]" in result.response_text
+    # Step 1 (markdown) should be marked remaining.
+    assert "[ ]" in result.response_text
+
+
+@pytest.mark.asyncio
 async def test_run_turn_mid_turn_handoff_to_planner_drives_next_handoff() -> None:
     """When a mid-turn handoff lands in a planner action mode (e.g.
     ``plan``) and the planner's entry op returns a ``target_stage_id``,
