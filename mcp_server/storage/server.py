@@ -1,18 +1,23 @@
-"""Lisa Storage MCP server — file I/O and checkpoint persistence.
+"""Lisa Storage MCP server — thin facade over :class:`sdk.storage.StorageBackend`.
 
-This is the sole storage server for the framework. It owns two concerns:
+This is the sole storage server for the framework. It is a transport-only
+wrapper: every tool delegates to the SDK backend, which owns the sandbox
+resolution, deny-glob policy, checkpoint persistence, and model-manifest
+read/write. Hosts or tools that want in-process storage access can use
+:class:`sdk.storage.StorageBackend` directly without spawning this server.
 
-1. **File I/O** (6 tools) — a sandboxed filesystem scoped to
-   ``data_dir / "files"``. The model can read, write, list, delete, stat,
-   and make directories within that root. Path traversal (``..`` segments,
-   absolute paths) is rejected so a crafted path cannot escape the sandbox.
+Tools (11 total):
 
-2. **Checkpoints** (3 tools) — save, restore, and list serialized
-   :class:`~kernel.models.CheckpointBundle` objects as JSON files under
-   ``data_dir / "checkpoints"``. The kernel builds the bundle from
-   ``UnifiedState`` and ``WorkflowSessionState``; the host's
-   ``on_checkpoint`` hook calls ``save_checkpoint`` through the MCP tool
-   pool. ``--readonly`` disables writes, deletes, and checkpoint saves.
+- File I/O (6): ``read_file``, ``write_file``, ``list_files``, ``delete_file``,
+  ``stat_file``, ``make_dir`` — scoped to ``data_dir / "files"``.
+- Checkpoints (3): ``save_checkpoint``, ``restore_checkpoint``, ``list_checkpoints``
+  — serialized checkpoint bundles as JSON under ``data_dir / "checkpoints"``.
+- Model manifests (2): ``read_model_manifest``, ``write_model_manifest`` —
+  ``models.yaml`` / ``models.proposed.yaml`` directly under ``data_dir``.
+
+``--readonly`` disables writes, deletes, checkpoint saves, and manifest
+writes. ``--deny-glob`` (repeatable) + ``LISA_STORAGE_DENY_GLOBS`` env add
+glob patterns to the file-sandbox denylist.
 
 Storage is an MCP feature, not a kernel seam — there is no ``BlobIO``
 Protocol in ``kernel/seams/protocols.py``. Hosts that need full blob
@@ -22,17 +27,15 @@ the kernel does not care.
 
 from __future__ import annotations
 
-import json
 import logging
-import uuid
-from datetime import UTC, datetime
+import os
 from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.config.cli import build_parser, configure_logging, resolve_data_dir
-from sdk.content import is_safe_relative_path
+from sdk.storage import StorageBackend
 
 __all__ = ["init_storage", "main", "mcp"]
 
@@ -40,98 +43,42 @@ logger = logging.getLogger(__name__)
 
 mcp = FastMCP("Lisa Storage Server")
 
-_data_dir: Path | None = None
-_readonly: bool = False
-
-_FILES_SUBDIR = "files"
-_CHECKPOINTS_SUBDIR = "checkpoints"
+_backend: StorageBackend | None = None
 
 
 # ── Initialization ──────────────────────────────────────────────────────────
 
 
-def init_storage(data_dir: Path, *, readonly: bool = False) -> None:
+def init_storage(
+    data_dir: Path,
+    *,
+    readonly: bool = False,
+    deny_globs: tuple[str, ...] = (),
+) -> None:
     """Initialize the storage server with a resolved data directory.
 
     Called by ``main()`` after arg parsing. Tests may call this directly.
     Creates the ``files/`` and ``checkpoints/`` subdirectories if they
     don't already exist (unless ``readonly`` is True, in which case the
     directories must pre-exist or reads will return empty/error results).
+
+    Args:
+        deny_globs: Glob patterns (forward-slash, ``fnmatch`` syntax)
+            matched against the relative path within the ``files/`` sandbox.
+            Any match denies read/write/list/stat/delete/make_dir on that
+            path. Empty by default (no denial). Glob syntax is portable
+            (``*.db``, ``threads/**``, ``repl_history.txt``).
     """
-    global _data_dir, _readonly
-    _data_dir = data_dir
-    _readonly = readonly
-    if not readonly:
-        (data_dir / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)
-        (data_dir / _CHECKPOINTS_SUBDIR).mkdir(parents=True, exist_ok=True)
+    global _backend
+    _backend = StorageBackend(data_dir, readonly=readonly, deny_globs=deny_globs)
 
 
-def _files_root() -> Path:
-    """Return the files sandbox root, raising if uninitialized."""
-    if _data_dir is None:
+def _backend_instance() -> StorageBackend:
+    """Return the active backend, raising if uninitialized."""
+    if _backend is None:
         raise RuntimeError("lisa-storage is not initialized. Call init_storage(data_dir).")
-    return _data_dir / _FILES_SUBDIR
-
-
-def _checkpoints_root() -> Path:
-    """Return the checkpoints root, raising if uninitialized."""
-    if _data_dir is None:
-        raise RuntimeError("lisa-storage is not initialized. Call init_storage(data_dir).")
-    return _data_dir / _CHECKPOINTS_SUBDIR
-
-
-def _manifest_path(which: str) -> Path:
-    """Return the path to the active or proposed model manifest.
-
-    Manifests are first-class framework artifacts (like checkpoints), so
-    they live directly under ``data_dir`` — not under the ``files/`` sandbox.
-    The ``which`` argument selects the active manifest (``"active"`` →
-    ``models.yaml``) or the proposal (``"proposal"`` →
-    ``models.proposed.yaml``).
-    """
-
-    if _data_dir is None:
-        raise RuntimeError("lisa-storage is not initialized. Call init_storage(data_dir).")
-    normalized = which.strip().lower()
-    if normalized == "active":
-        return _data_dir / "models.yaml"
-    if normalized == "proposal":
-        return _data_dir / "models.proposed.yaml"
-    raise ValueError(f"manifest kind must be 'active' or 'proposal', got {which!r}")
-
-
-def _resolve_file_path(relative_path: str) -> Path | None:
-    """Resolve a user-supplied relative path against the files root.
-
-    Returns the absolute ``Path`` if safe, or ``None`` if the path is
-    rejected (empty, absolute, contains ``..``, or escapes the root after
-    resolution).
-    """
-    raw = relative_path.strip()
-    if not raw or Path(raw).is_absolute():
-        return None
-    normalized = raw.strip("/\\")
-    if not is_safe_relative_path(normalized):
-        return None
-    root = _files_root()
-    resolved = (root / normalized).resolve()
-    try:
-        resolved.relative_to(root.resolve())
-    except ValueError:
-        return None
-    return resolved
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
-
-
-def _checkpoint_id() -> str:
-    return uuid.uuid4().hex[:16]
-
-
-def _checkpoint_path(checkpoint_id: str) -> Path:
-    return _checkpoints_root() / f"{checkpoint_id}.json"
+    backend: StorageBackend = _backend
+    return backend
 
 
 # ── File I/O tools ──────────────────────────────────────────────────────────
@@ -149,17 +96,7 @@ async def read_file(path: str, encoding: str = "utf-8") -> str:
         The file content as a string, or a JSON error object if the path
         is unsafe or the file doesn't exist.
     """
-    resolved = _resolve_file_path(path)
-    if resolved is None:
-        return json.dumps({"error": "path rejected: unsafe or escapes sandbox"})
-    if not resolved.is_file():
-        return json.dumps({"error": f"file not found: {path}"})
-    try:
-        return resolved.read_text(encoding=encoding)
-    except UnicodeDecodeError:
-        return json.dumps({"error": "file is not valid text for the requested encoding"})
-    except OSError as exc:
-        return json.dumps({"error": f"read failed: {exc}"})
+    return _backend_instance().read_file(path, encoding=encoding)
 
 
 @mcp.tool()
@@ -171,17 +108,7 @@ async def write_file(path: str, content: str) -> str:
     Returns:
         JSON object with ``ok``, ``path``, and ``bytes``.
     """
-    if _readonly:
-        return json.dumps({"error": "server is read-only"})
-    resolved = _resolve_file_path(path)
-    if resolved is None:
-        return json.dumps({"error": "path rejected: unsafe or escapes sandbox"})
-    try:
-        resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_text(content, encoding="utf-8")
-        return json.dumps({"ok": True, "path": path, "bytes": len(content.encode("utf-8"))})
-    except OSError as exc:
-        return json.dumps({"error": f"write failed: {exc}"})
+    return _backend_instance().write_file(path, content)
 
 
 @mcp.tool()
@@ -190,28 +117,7 @@ async def list_files(prefix: str = "") -> str:
 
     Returns a JSON array of relative paths (using forward slashes).
     """
-    root = _files_root()
-    if prefix.strip():
-        normalized = prefix.strip().strip("/\\")
-        if not is_safe_relative_path(normalized):
-            return json.dumps({"error": "prefix rejected: unsafe or escapes sandbox"})
-        search_root = (root / normalized).resolve()
-        try:
-            search_root.relative_to(root.resolve())
-        except ValueError:
-            return json.dumps({"error": "prefix escapes sandbox"})
-    else:
-        search_root = root
-
-    if not search_root.is_dir():
-        return json.dumps([])
-
-    files: list[str] = []
-    for item in sorted(search_root.rglob("*")):
-        if item.is_file():
-            rel = item.relative_to(root)
-            files.append(str(rel).replace("\\", "/"))
-    return json.dumps(files)
+    return _backend_instance().list_files(prefix)
 
 
 @mcp.tool()
@@ -221,39 +127,13 @@ async def delete_file(path: str) -> str:
     Fails on directories (use ``make_dir`` is not reversible here —
     delete is files-only). Respects ``--readonly``.
     """
-    if _readonly:
-        return json.dumps({"error": "server is read-only"})
-    resolved = _resolve_file_path(path)
-    if resolved is None:
-        return json.dumps({"error": "path rejected: unsafe or escapes sandbox"})
-    if not resolved.exists():
-        return json.dumps({"error": f"file not found: {path}"})
-    if resolved.is_dir():
-        return json.dumps({"error": "delete_file targets a directory; use a file path"})
-    try:
-        resolved.unlink()
-        return json.dumps({"ok": True, "path": path})
-    except OSError as exc:
-        return json.dumps({"error": f"delete failed: {exc}"})
+    return _backend_instance().delete_file(path)
 
 
 @mcp.tool()
 async def stat_file(path: str) -> str:
     """Return file metadata (size, modified timestamp, is_dir) for a path."""
-    resolved = _resolve_file_path(path)
-    if resolved is None:
-        return json.dumps({"error": "path rejected: unsafe or escapes sandbox"})
-    if not resolved.exists():
-        return json.dumps({"error": f"not found: {path}"})
-    stat = resolved.stat()
-    return json.dumps(
-        {
-            "path": path,
-            "size": stat.st_size,
-            "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
-            "is_dir": resolved.is_dir(),
-        }
-    )
+    return _backend_instance().stat_file(path)
 
 
 @mcp.tool()
@@ -262,16 +142,7 @@ async def make_dir(path: str) -> str:
 
     Respects ``--readonly``.
     """
-    if _readonly:
-        return json.dumps({"error": "server is read-only"})
-    resolved = _resolve_file_path(path)
-    if resolved is None:
-        return json.dumps({"error": "path rejected: unsafe or escapes sandbox"})
-    try:
-        resolved.mkdir(parents=True, exist_ok=True)
-        return json.dumps({"ok": True, "path": path})
-    except OSError as exc:
-        return json.dumps({"error": f"make_dir failed: {exc}"})
+    return _backend_instance().make_dir(path)
 
 
 # ── Checkpoint tools ────────────────────────────────────────────────────────
@@ -287,23 +158,7 @@ async def save_checkpoint(bundle: dict[str, Any]) -> str:
 
     Returns a JSON object with ``checkpoint_id``.
     """
-    if _readonly:
-        return json.dumps({"error": "server is read-only"})
-    checkpoints_root = _checkpoints_root()
-    checkpoints_root.mkdir(parents=True, exist_ok=True)
-
-    checkpoint_id = str(bundle.get("checkpoint_id") or "").strip() or _checkpoint_id()
-    bundle["checkpoint_id"] = checkpoint_id
-    if "created_at" not in bundle:
-        bundle["created_at"] = _now_iso()
-
-    path = _checkpoint_path(checkpoint_id)
-    try:
-        path.write_text(json.dumps(bundle, default=str, indent=2), encoding="utf-8")
-    except OSError as exc:
-        return json.dumps({"error": f"save_checkpoint failed: {exc}"})
-
-    return json.dumps({"checkpoint_id": checkpoint_id})
+    return _backend_instance().save_checkpoint(bundle)
 
 
 @mcp.tool()
@@ -312,16 +167,7 @@ async def restore_checkpoint(checkpoint_id: str) -> str:
 
     Returns the full bundle dict, or a JSON error object if not found.
     """
-    cid = checkpoint_id.strip()
-    if not cid or not is_safe_relative_path(f"{cid}.json"):
-        return json.dumps({"error": "invalid checkpoint_id"})
-    path = _checkpoint_path(cid)
-    if not path.is_file():
-        return json.dumps({"error": f"checkpoint not found: {checkpoint_id}"})
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return json.dumps({"error": f"restore_checkpoint failed: {exc}"})
+    return _backend_instance().restore_checkpoint(checkpoint_id)
 
 
 @mcp.tool()
@@ -332,33 +178,7 @@ async def list_checkpoints(prefix: str = "") -> str:
     ``stage_id``, ``turn_count``, and ``mode_id`` (extracted from the
     stored JSON). Sorted by ``created_at`` descending (newest first).
     """
-    root = _checkpoints_root()
-    if not root.is_dir():
-        return json.dumps([])
-
-    summaries: list[dict[str, Any]] = []
-    for item in sorted(root.glob("*.json")):
-        try:
-            data = json.loads(item.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        cid = str(data.get("checkpoint_id") or item.stem)
-        label = str(data.get("label") or "")
-        if prefix and prefix not in cid and prefix not in label:
-            continue
-        summaries.append(
-            {
-                "checkpoint_id": cid,
-                "label": label,
-                "created_at": str(data.get("created_at") or ""),
-                "stage_id": str(data.get("stage_id") or ""),
-                "turn_count": int(data.get("turn_count") or 0),
-                "mode_id": str(data.get("mode_id") or ""),
-            }
-        )
-
-    summaries.sort(key=lambda s: s["created_at"], reverse=True)
-    return json.dumps(summaries, default=str)
+    return _backend_instance().list_checkpoints(prefix)
 
 
 # ── Model manifest tools ────────────────────────────────────────────────────
@@ -376,17 +196,7 @@ async def read_model_manifest(which: str = "proposal") -> str:
         The manifest file content as text, or a JSON error object if the
         kind is invalid or the file does not exist.
     """
-
-    try:
-        path = _manifest_path(which)
-    except ValueError as exc:
-        return json.dumps({"error": str(exc)})
-    if not path.is_file():
-        return json.dumps({"error": f"manifest not found: {which} ({path.name})"})
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return json.dumps({"error": f"read_model_manifest failed: {exc}"})
+    return _backend_instance().read_model_manifest(which)
 
 
 @mcp.tool()
@@ -403,19 +213,7 @@ async def write_model_manifest(content: str, which: str = "proposal") -> str:
     Returns:
         JSON object with ``ok``, ``which``, and ``bytes``.
     """
-
-    if _readonly:
-        return json.dumps({"error": "server is read-only"})
-    try:
-        path = _manifest_path(which)
-    except ValueError as exc:
-        return json.dumps({"error": str(exc)})
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        return json.dumps({"ok": True, "which": which, "bytes": len(content.encode("utf-8"))})
-    except OSError as exc:
-        return json.dumps({"error": f"write_model_manifest failed: {exc}"})
+    return _backend_instance().write_model_manifest(content, which)
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────
@@ -427,15 +225,37 @@ def main() -> None:
     Parses the standard CLI contract via the shared argparse helper.
     ``--data-dir`` is required; the files and checkpoints subdirectories
     are derived from it. ``--readonly`` disables all write operations.
+    ``--deny-glob`` (repeatable) adds glob patterns to the file-sandbox
+    denylist; ``LISA_STORAGE_DENY_GLOBS`` (comma-separated) is merged in
+    too, so hosts can set policy via env without editing the launch YAML.
     """
     parser = build_parser("lisa-storage", supports_readonly=True)
+    parser.add_argument(
+        "--deny-glob",
+        action="append",
+        default=[],
+        help="Glob pattern to deny in the files sandbox (repeatable). "
+        "Matched against forward-slash relative paths via fnmatch.",
+    )
     args = parser.parse_args()
 
     log = configure_logging(args.log_level, server_name="lisa-storage")
     data_dir = resolve_data_dir(args.data_dir)
-    log.info("lisa-storage starting (data_dir=%s, readonly=%s)", data_dir, args.readonly)
 
-    init_storage(data_dir, readonly=args.readonly)
+    env_globs = [
+        g.strip()
+        for g in os.getenv("LISA_STORAGE_DENY_GLOBS", "").split(",")
+        if g.strip()
+    ]
+    deny_globs = (*args.deny_glob, *env_globs)
+    log.info(
+        "lisa-storage starting (data_dir=%s, readonly=%s, deny_globs=%s)",
+        data_dir,
+        args.readonly,
+        deny_globs,
+    )
+
+    init_storage(data_dir, readonly=args.readonly, deny_globs=deny_globs)
     mcp.run(transport=args.transport)
 
 

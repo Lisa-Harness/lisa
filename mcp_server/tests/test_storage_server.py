@@ -348,3 +348,107 @@ async def test_readonly_blocks_write_model_manifest(storage_readonly: None) -> N
     )
     data = json.loads(_tool_text(result))
     assert "error" in data
+
+
+# ── Glob denylist ───────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def storage_with_deny(tmp_path: Path) -> Path:
+    """Initialize lisa-storage with a representative denylist; return data dir."""
+    from mcp_server.storage.server import init_storage
+
+    init_storage(
+        tmp_path,
+        readonly=False,
+        deny_globs=("*.db", "threads/**", "repl_history.txt"),
+    )
+    return tmp_path
+
+
+@pytest.mark.asyncio
+async def test_deny_blocks_write_denied_glob(storage_with_deny: Path) -> None:
+    from mcp_server.storage.server import mcp
+
+    for denied in ("secret.db", "threads/abc.jsonl", "repl_history.txt"):
+        result = await mcp.call_tool("write_file", {"path": denied, "content": "x"})
+        data = json.loads(_tool_text(result))
+        assert "error" in data, denied
+        assert "denied by policy" in data["error"], denied
+
+
+@pytest.mark.asyncio
+async def test_deny_blocks_read_denied_glob(storage_with_deny: Path) -> None:
+    from mcp_server.storage.server import mcp
+
+    for denied in ("secret.db", "threads/abc.jsonl", "repl_history.txt"):
+        result = await mcp.call_tool("read_file", {"path": denied})
+        data = json.loads(_tool_text(result))
+        assert "error" in data, denied
+        assert "denied by policy" in data["error"], denied
+
+
+@pytest.mark.asyncio
+async def test_deny_blocks_delete_and_stat(storage_with_deny: Path) -> None:
+    from mcp_server.storage.server import mcp
+
+    for tool, args in (
+        ("delete_file", {"path": "secret.db"}),
+        ("stat_file", {"path": "secret.db"}),
+        ("make_dir", {"path": "threads/new"}),
+    ):
+        result = await mcp.call_tool(tool, args)
+        data = json.loads(_tool_text(result))
+        assert "error" in data, tool
+        assert "denied by policy" in data["error"], tool
+
+
+@pytest.mark.asyncio
+async def test_deny_filters_list_files(storage_with_deny: Path) -> None:
+    from mcp_server.storage.server import mcp
+
+    # Write a normal file and a denied file directly to disk, then confirm
+    # list_files drops the denied one.
+    files_root = storage_with_deny / "files"
+    files_root.mkdir(parents=True, exist_ok=True)
+    (files_root / "keep.txt").write_text("ok", encoding="utf-8")
+    (files_root / "secret.db").write_text("no", encoding="utf-8")
+    result = await mcp.call_tool("list_files", {})
+    files = json.loads(_tool_text(result))
+    assert "keep.txt" in files
+    assert "secret.db" not in files
+
+
+@pytest.mark.asyncio
+async def test_deny_rejects_denied_prefix(storage_with_deny: Path) -> None:
+    from mcp_server.storage.server import mcp
+
+    # A prefix that itself matches a deny glob is rejected outright.
+    result = await mcp.call_tool("list_files", {"prefix": "repl_history.txt"})
+    data = json.loads(_tool_text(result))
+    assert "error" in data
+    assert "denied by policy" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_deny_prefix_ancestor_filters_not_leaks(storage_with_deny: Path) -> None:
+    from mcp_server.storage.server import mcp
+
+    # Listing an ancestor of denied files must not error (the ancestor
+    # isn't itself denied) and must not leak denied file names.
+    files_root = storage_with_deny / "files"
+    (files_root / "threads" / "deep").mkdir(parents=True, exist_ok=True)
+    (files_root / "threads" / "deep" / "abc.jsonl").write_text("x", encoding="utf-8")
+    result = await mcp.call_tool("list_files", {"prefix": "threads"})
+    data = json.loads(_tool_text(result))
+    assert data == []
+
+
+@pytest.mark.asyncio
+async def test_no_deny_globs_allows_everything(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    # storage_setup uses the default empty denylist; a .db file is fine.
+    result = await mcp.call_tool("write_file", {"path": "anything.db", "content": "x"})
+    data = json.loads(_tool_text(result))
+    assert data.get("ok") is True
