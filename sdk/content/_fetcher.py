@@ -74,7 +74,7 @@ _DEFAULT_PRIVATE_IP_BLOCKS: tuple[str, ...] = (
     "fe80::/10",
 )
 
-_L2_CACHE_SUBDIR = Path("files") / "_fetch"
+_L2_CACHE_SUBDIR = Path("fetch")
 
 
 # ── Policy + result models ──────────────────────────────────────────────────
