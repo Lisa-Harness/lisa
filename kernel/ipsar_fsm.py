@@ -51,6 +51,7 @@ from kernel.models import (
     WorkflowSessionState,
     WorkflowStageConfig,
     WorkflowTransitionRequest,
+    YieldPolicy,
 )
 from kernel.openai_function_tools import build_strict_openai_function_tool
 from kernel.tools.mcp_client import MCPClientConfig
@@ -317,6 +318,7 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "required_capabilities",
         "default_intent_bridges",
         "artifact_type",
+        "yield_policy",
     }
 )
 # Every front-matter key the loader reads into a typed WorkflowModeConfig field.
@@ -330,6 +332,7 @@ _KERNEL_OWNED_FRONT_MATTER_KEYS: frozenset[str] = _MODE_OVERRIDES_PROTECTED_KEYS
         "default_model",
         "mode_provider_id",
         "context_evidence_packs",
+        "yield_policy",
     }
 )
 
@@ -783,6 +786,28 @@ def load_catalog_from_disk(
                 )
             )
 
+        # Parse yield_policy: the per-mode policy for the unified turn-lifecycle
+        # ``yield`` action. Authored in ``_mode.md`` front matter as a dict with
+        # keys ``allowed`` (bool), ``fallback_mode`` (str),
+        # ``is_default_yield_target`` (bool), and ``default_question`` (str). See
+        # :class:`kernel.models.YieldPolicy` and :class:`kernel.models.YieldAction`.
+        # Default-empty (YieldPolicy()) means inline asks allowed, no fallback,
+        # not the default target — safe for chat modes; action modes override
+        # with ``allowed: false`` + a ``fallback_mode`` (typically ``discuss``).
+        yield_policy_raw = mode_front_matter.get("yield_policy") or {}
+        if not isinstance(yield_policy_raw, dict):
+            raise WorkflowValidationError(
+                f"yield_policy must be a mapping in {mode_config_path}"
+            )
+        yield_policy = YieldPolicy(
+            allowed=bool(yield_policy_raw.get("allowed", True)),
+            fallback_mode=str(yield_policy_raw.get("fallback_mode", "") or ""),
+            is_default_yield_target=bool(
+                yield_policy_raw.get("is_default_yield_target", False)
+            ),
+            default_question=str(yield_policy_raw.get("default_question", "") or ""),
+        )
+
         # Collect app/pack-owned extension keys the kernel does not interpret.
         # Everything in the (possibly overridden) front matter that is not a
         # kernel-owned field flows through opaquely as ``extra_front_matter``.
@@ -829,6 +854,7 @@ def load_catalog_from_disk(
             context_evidence_packs=[
                 str(p) for p in (mode_front_matter.get("context_evidence_packs") or [])
             ],
+            yield_policy=yield_policy,
             extra_front_matter=extra_front_matter,
         )
         resolved_provider_id = catalog[mode_id].mode_provider_id

@@ -28,6 +28,9 @@ routing_intent_keywords:
     - store
 allowed_tool_ids: [memory.add, memory.search, memory.list]
 command_pattern: '^(?:(?:/)?(?:learn|reflect|note)(?:[\s,:;]+|(?=$))|(?:please\s+)?(?:take\s+a\s+note\s+of|note\s+that)\s+)(?P<query>.*)$'
+yield_policy:
+  allowed: true
+  default_question: "I want to capture the right insight. What specifically should I learn from this?"
 ---
 ## Learn Mode
 

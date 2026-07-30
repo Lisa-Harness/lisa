@@ -1211,6 +1211,30 @@ class CallLedger(BaseModel):
         return self.counts.get(target_id, 0) >= max_calls
 
 
+class YieldPolicy(BaseModel):
+    """Per-mode policy for how ``yield`` is resolved.
+
+    Authored in ``_mode.md`` front matter under ``yield_policy``. The kernel
+    never names mode ids in code; the pack owns the routing via this policy.
+
+    - ``allowed``: whether the model may emit ``yield`` from this mode. Action
+      modes (``coding``, ``plan``) set this False and rely on
+      ``fallback_mode`` to redirect a forced yield to a chat mode.
+    - ``fallback_mode``: the mode id to route a forced/system-yield to when the
+      current mode does not allow inline asks (or when the model yields without
+      a target).
+    - ``is_default_yield_target``: set True on exactly one chat mode (typically
+      ``discuss``) so the harness can route undirected yields there.
+    - ``default_question``: a fallback question when the harness forces a
+      yield (e.g. iteration cap hit) and the model did not supply one.
+    """
+
+    allowed: bool = True
+    fallback_mode: str = ""
+    is_default_yield_target: bool = False
+    default_question: str = ""
+
+
 class WorkflowModeConfig(BaseModel):
     """Defines all stage metadata for a single workflow mode.
 
@@ -1351,6 +1375,14 @@ class WorkflowModeConfig(BaseModel):
     # so the kernel never has to name or allowlist app-owned concepts. Hosts and
     # packs read this dict directly; the kernel only persists and passes it through.
     extra_front_matter: dict[str, Any] = Field(default_factory=dict)
+    # Per-mode policy for the unified turn-lifecycle ``yield`` action. Authored
+    # in ``_mode.md`` front matter under ``yield_policy``. When absent (the
+    # default empty policy), the mode inherits the system default: inline asks
+    # allowed, no fallback mode, not the default yield target. The resolver
+    # consults this to decide whether a model ``yield`` is honored in-place or
+    # rerouted to ``fallback_mode`` (typically ``discuss``). See
+    # :class:`kernel.models.YieldPolicy` and :class:`kernel.models.YieldAction`.
+    yield_policy: YieldPolicy = Field(default_factory=YieldPolicy)
 
 
 class WorkflowSessionState(BaseModel):
@@ -1407,6 +1439,22 @@ class CheckpointBundle(BaseModel):
     work_done: str = ""
     important_files: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
+    # ── Lifecycle state (unified turn lifecycle) ─────────────────────────
+    # The turn lifecycle's terminal action that produced this checkpoint.
+    # ``working``: in-progress snapshot (legacy behavior; no resume contract).
+    # ``yielded``: the model (or harness) emitted a ``YieldAction`` — the turn
+    #   paused to ask the user a question. ``awaiting_input_question`` carries
+    #   the question. On reply, the host loads this bundle, injects the reply
+    #   as a ``user`` message, and resumes the turn against the same
+    #   ``WorkflowInstance`` step (``/proceed`` becomes a checkpoint-resume).
+    # ``committed``: the model emitted a ``finish`` and produced final output;
+    #   the checkpoint is a durable record, not a resume point.
+    # ``stalled``: a ``RecoveryRecord`` blocks the workflow; the harness forced
+    #   a yield naming the stall. Resumable once the stall clears or is skipped.
+    lifecycle_state: Literal["working", "yielded", "committed", "stalled"] = "working"
+    # The question surfaced to the user when ``lifecycle_state`` is ``yielded``
+    # or ``stalled``. Empty for ``working`` / ``committed``.
+    awaiting_input_question: str = ""
 
 
 class WorkflowTransitionRequest(BaseModel):
@@ -1424,6 +1472,42 @@ class WorkflowTransitionRequest(BaseModel):
     required_missing_inputs: list[str] = Field(
         default_factory=list,
         description="Inputs the transition still needs from the user, if any.",
+    )
+
+
+class YieldAction(BaseModel):
+    """First-class "ask the user" terminal action.
+
+    The unified turn-lifecycle vocabulary is ``continue`` / ``transition_stage``
+    / ``yield`` / ``finish``. ``yield`` is a *terminal* action — it breaks the
+    tool loop like ``finish`` — but instead of producing a final answer it
+    checkpoints durable state and surfaces a question to the user. This makes
+    "ask" distinguishable from "done" (the 2026-07-30 bug: both were "no tool
+    calls").
+
+    The harness resolves a ``yield`` to a target mode via the current mode's
+    ``yield_policy`` (typically routing the question to ``discuss`` mode). When
+    the user replies, the host loads the yielded checkpoint and resumes the
+    turn against the same ``WorkflowInstance`` step.
+
+    ``target_mode_id`` optionally overrides ``yield_policy.fallback_mode`` for
+    a one-off ask targeted at a specific mode (e.g. yield straight to ``plan``
+    to re-plan after a blocked step).
+    """
+
+    question: str = Field(
+        description="The question to surface to the user. Must be answerable inline."
+    )
+    context: str = Field(
+        default="",
+        description="Why the model is asking — shown alongside the question in the UI.",
+    )
+    target_mode_id: str = Field(
+        default="",
+        description=(
+            "Optional override of ``yield_policy.fallback_mode``. Empty means "
+            "use the policy's default yield target (typically ``discuss``)."
+        ),
     )
 
 

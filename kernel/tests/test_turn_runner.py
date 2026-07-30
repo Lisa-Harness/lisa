@@ -272,7 +272,79 @@ async def test_run_turn_planner_action_mode_empty_target_falls_back_to_text() ->
 
 
 @pytest.mark.asyncio
-async def test_run_turn_planner_failure_with_partial_steps_includes_them_in_recovery() -> None:
+async def test_run_turn_non_planner_action_mode_entry_op_no_target_not_plan_failure() -> None:
+    """A non-planner action mode (e.g. ``search`` with ``web_search``) whose
+    entry op returns its own output shape (search results) with NO
+    ``target_stage_id`` must NOT trigger the plan-failure path.
+
+    This is the 2026-07-30 ``search`` incident: after fixing ``web_search``
+    to fall through to the tool-dispatch loop, the kernel-driven handoff
+    logic misread ``web_search``'s output (which has no ``target_stage_id``
+    by design — it returns search results, not a routing decision) as a
+    failed plan, marked the model unreliable for planning, and hard-stopped
+    the turn. The fix gates the kernel-driven handoff on the target being
+    ``plan`` (or its entry op being ``plan_workflow``), so non-planner
+    action modes are left to run their entry op and proceed normally.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+    from kernel.routing_vocabulary import (
+        is_plan_reliable_for_model,
+        reset_plan_reliability,
+    )
+
+    reset_plan_reliability()
+    # ``search`` is an action mode whose entry op is ``web_search`` — NOT a
+    # planner. Its entry op returns search results, not a routing target.
+    search_cfg = WorkflowModeConfig(
+        mode_id="search",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["web_search"],
+        satisfies_intents=["research"],
+        routing_intent_tags=["research"],
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {"default": default_cfg, "search": search_cfg}
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        # web_search returns search results — no target_stage_id field at all.
+        return OperationResult(
+            output_text="### Research Briefing: agent frameworks\n\nResults here.",
+            output_json={
+                "operation_id": "web_search",
+                "results": [{"name": "Smolagents", "url": "https://example.com"}],
+            },
+        )
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        # The model lands in search mode and produces a summary from the
+        # entry-op output. It must NOT be blocked by a plan-failure break.
+        return _StubCompletion(content="Summary of search results.")
+
+    hooks = _build_minimal_hooks(complete)
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="search for agent frameworks",
+            hooks=hooks,
+            preferred_model_id="test-search-model",
+        )
+
+    # The turn completed normally — the model produced its summary, not a
+    # plan-failure recovery prompt.
+    assert "plan" not in result.response_text.lower() or "summary" in result.response_text.lower()
+    assert result.tool_call_count == 0
+    # The model was NOT marked unreliable for planning — web_search's lack of
+    # a target_stage_id is not a plan failure.
+    assert is_plan_reliable_for_model("test-search-model")
+    reset_plan_reliability()
     """When plan_workflow fails (empty target) but produced partial steps
     before failing, the recovery prompt includes the partial steps so the
     user has diagnostic context for rephrasing. This is the Phase 4
@@ -828,7 +900,11 @@ async def test_run_turn_max_tool_iterations_capped() -> None:
 
     assert result.iteration_count == 3
     assert result.tool_call_count == 3
-    assert "did not produce a final response" in result.response_text
+    # Unified turn lifecycle: the iteration cap forces a YieldAction (not a
+    # silent "did not produce a final response") for chat modes like
+    # ``default`` whose ``yield_policy.allowed`` is True. The user gets a
+    # redirect question they can answer.
+    assert "iteration budget" in result.response_text
 
 
 @pytest.mark.asyncio
@@ -867,7 +943,8 @@ async def test_run_turn_max_tool_iterations_defaults_from_config(monkeypatch: py
 
     assert result.iteration_count == 2
     assert result.tool_call_count == 2
-    assert "did not produce a final response" in result.response_text
+    # Unified turn lifecycle: iteration cap yields for ``default`` mode.
+    assert "iteration budget" in result.response_text
 
 
 @pytest.mark.asyncio
@@ -903,7 +980,9 @@ async def test_run_turn_execution_policy_tightens_model_call_iterations() -> Non
 
     assert result.iteration_count == 2
     assert result.tool_call_count == 2
-    assert "did not produce a final response" in result.response_text
+    # Unified turn lifecycle: iteration cap (tightened by execution_policy)
+    # yields for ``default`` mode.
+    assert "iteration budget" in result.response_text
 
 
 @pytest.mark.asyncio
@@ -938,7 +1017,11 @@ async def test_run_turn_execution_policy_seeds_turn_budget_without_explicit_budg
     )
 
     assert result.tool_call_count == 1
-    assert result.response_text == "Final response."
+    # Unified turn lifecycle: the turn budget exhausted by the capability
+    # cap forces a yield (not the model's forced "Final response." synthesis).
+    # The user gets a redirect question instead of a possibly-incoherent
+    # forced final.
+    assert "resource budget" in result.response_text or "iteration budget" in result.response_text
 
 
 @pytest.mark.asyncio
@@ -980,7 +1063,10 @@ async def test_run_turn_execution_policy_caps_specific_capability_calls() -> Non
     )
 
     assert result.tool_call_count == 1
-    assert result.response_text == "Done."
+    # Unified turn lifecycle: the capability cap (web_search limited to 1)
+    # followed by the iteration cap forces a yield for ``default`` mode.
+    # The model's "Done." synthesis is replaced by a redirect question.
+    assert "iteration budget" in result.response_text or "resource budget" in result.response_text
 
 
 @pytest.mark.asyncio
@@ -3416,7 +3502,7 @@ async def test_budget_briefing_injected_into_system_prompt() -> None:
     prompt (``messages[0]``) so the model can self-scope its work within
     the remaining iteration envelope.
 
-    The briefing is super-brief (a single ``## Turn Budget`` block with
+    The briefing is super-brief (a single ``## Turn Lifecycle`` block with
     dot-separated counts) and is replaced — not accumulated — each
     iteration. Iteration 1 shows the full contract; later iterations
     show only the delta (partially-consumed per-target limits).
@@ -3459,19 +3545,19 @@ async def test_budget_briefing_injected_into_system_prompt() -> None:
     # Two model calls → two captured system prompts.
     assert len(captured_system_prompts) == 2
     # Iteration 1: the briefing must be present.
-    assert "## Turn Budget" in captured_system_prompts[0]
+    assert "## Turn Lifecycle" in captured_system_prompts[0]
     # The briefing reports iterations remaining (4/5 after iteration 1
     # incremented to 1).
     assert "iters: 4/5" in captured_system_prompts[0]
     # Iteration 2: the briefing must still be present (replaced, not
-    # accumulated — only one ``## Turn Budget`` block).
-    assert "## Turn Budget" in captured_system_prompts[1]
-    assert captured_system_prompts[1].count("## Turn Budget") == 1
+    # accumulated — only one ``## Turn Lifecycle`` block).
+    assert "## Turn Lifecycle" in captured_system_prompts[1]
+    assert captured_system_prompts[1].count("## Turn Lifecycle") == 1
     # Iteration 2: iterations remaining is now 3/5.
     assert "iters: 3/5" in captured_system_prompts[1]
     # The base system prompt content (mode intro) is preserved — the
     # briefing is appended, not replacing the base.
-    assert captured_system_prompts[0].split("## Turn Budget")[0].strip() != ""
+    assert captured_system_prompts[0].split("## Turn Lifecycle")[0].strip() != ""
 
 
 @pytest.mark.asyncio
@@ -3506,4 +3592,4 @@ async def test_budget_briefing_disabled_when_config_off() -> None:
 
     assert result.response_text == "Done."
     assert len(captured_system_prompts) == 1
-    assert "## Turn Budget" not in captured_system_prompts[0]
+    assert "## Turn Lifecycle" not in captured_system_prompts[0]

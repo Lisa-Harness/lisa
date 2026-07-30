@@ -11,6 +11,9 @@ start_stage_id: none
 mode_kind: chat
 routable: true
 priority: 10
+yield_policy:
+  allowed: true
+  default_question: "I need more information to proceed. What would you like me to focus on?"
 ---
 ## Default Chat
 

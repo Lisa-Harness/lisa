@@ -33,7 +33,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from kernel.approval import ApprovalInvocation, ApprovalRequired, render_approval_request
 from kernel.capability_manifest import compile_capability_manifest
@@ -70,6 +70,8 @@ from kernel.models import (
     ToolResult,
     TurnBudget,
     WorkflowTransitionRequest,
+    YieldAction,
+    YieldPolicy,
 )
 from kernel.operations.registry import (
     build_operation_tool_schemas,
@@ -159,14 +161,23 @@ def _build_budget_briefing(
     execution_policy: Any,
     budget_exhausted: bool,
 ) -> str:
-    """Build a compact, per-iteration budget status block for the system prompt.
+    """Build a compact, per-iteration lifecycle status block for the system prompt.
 
-    Only **discrete, actionable** budgets are surfaced: iterations remaining,
+    The unified turn lifecycle replaces the old ``## Turn Budget`` block with a
+    ``## Turn Lifecycle`` block that speaks the model's new vocabulary:
+    ``continue`` / ``transition_stage`` / ``yield`` / ``finish``. Only
+    **discrete, actionable** budgets are surfaced: iterations remaining,
     this step's iteration/tool-call sub-budget, and per-target call limits
     for tools that declare a non-zero ``max_calls_per_turn``. Continuous
     budgets (tokens, wall time) are deliberately omitted — the model cannot
     reliably convert "50k tokens left" into a concrete decision, and
     advertising a large token budget risks anchoring the model to *use* it.
+
+    When ``budget_exhausted`` is True, the block tells the model the harness
+    is about to yield (not "produce your answer now" — the old instruction
+    that fought the yield). The model sees this on the iteration where the
+    budget fires; the harness then breaks with a ``YieldAction`` regardless
+    of what the model produces.
 
     The block is designed to be **super-brief** so it can be replaced in
     the system prompt every iteration without token bloat. The full
@@ -226,12 +237,18 @@ def _build_budget_briefing(
             per_target_parts.append(f"{name}:{remaining}/{max_calls}")
     if per_target_parts:
         lines.append("calls: " + ", ".join(per_target_parts))
-    # ── Budget-exhausted flag ──
+    # ── Lifecycle state ──
+    # When the harness is about to yield (budget exhausted, stuck-in-stage
+    # cap, or recovery stall), tell the model the harness will ask the user —
+    # NOT "produce your answer now" (the old instruction that fought the
+    # yield). The model sees this on the iteration where the budget fires;
+    # the harness then breaks with a YieldAction regardless of what the
+    # model produces.
     if budget_exhausted:
-        lines.append("FINAL: budget exhausted — produce your answer now")
+        lines.append("YIELD: budget exhausted — harness will ask the user")
     if not lines:
         return ""
-    return "## Turn Budget\n\n" + " · ".join(lines)
+    return "## Turn Lifecycle\n\n" + " · ".join(lines)
 
 
 def _is_workflow_instance_complete(instance: Any) -> bool:
@@ -275,6 +292,41 @@ def _next_remaining_step(instance: Any) -> Any:
         return remaining[0]
     except Exception:  # pylint: disable=broad-except
         return None
+
+
+def _resolve_yield_policy(mode_config: Any) -> YieldPolicy:
+    """Return the ``YieldPolicy`` for one mode, tolerating missing config.
+
+    The policy is authored in ``_mode.md`` front matter and loaded onto
+    ``WorkflowModeConfig.yield_policy`` by ``kernel.ipsar_fsm``. When the
+    config or policy is absent (e.g. a minimal test fixture), return the
+    default-empty policy (inline asks allowed, no fallback) so the turn
+    degrades to the legacy "ask in place" behavior rather than crashing.
+    """
+    if mode_config is None:
+        return YieldPolicy()
+    policy = getattr(mode_config, "yield_policy", None)
+    if isinstance(policy, YieldPolicy):
+        return policy
+    return YieldPolicy()
+
+
+def _next_remaining_step_mode_id(hooks: Any) -> str:
+    """Return the mode id of the next uncompleted workflow step, or "".
+
+    Thin wrapper around ``_next_remaining_step`` that reads the active
+    ``WorkflowInstance`` from ``hooks.workflow_instance``. Used by the
+    stuck-in-stage yield path to route a forced yield to the next step's
+    mode when the current mode forbids inline asks (action modes).
+    """
+    if hooks.workflow_instance is None:
+        return ""
+    try:
+        instance = hooks.workflow_instance()
+    except Exception:  # pylint: disable=broad-except
+        return ""
+    step = _next_remaining_step(instance)
+    return step.mode_id if step is not None else ""
 
 
 # ── Public types ───────────────────────────────────────────────────────────
@@ -963,12 +1015,21 @@ def _build_checkpoint_bundle(
     transitioned_to: str | None,
     is_workflow: bool,
     hooks: TurnHooks,
+    lifecycle_state: Literal["working", "yielded", "committed", "stalled"] = "working",
+    awaiting_input_question: str = "",
 ) -> CheckpointBundle | None:
     """Build a CheckpointBundle from the current host state.
 
     Reads ``UnifiedState`` via ``hooks.state_provider`` (if wired) and
     ``WorkflowSessionState`` via ``hooks.workflow_session`` (if wired).
     Returns None when neither is available — there's nothing to checkpoint.
+
+    ``lifecycle_state`` / ``awaiting_input_question`` carry the unified turn
+    lifecycle's terminal action so a yielded checkpoint is resumable by
+    ``/proceed`` (the host loads the bundle, sees ``yielded``, injects the
+    user's reply, and resumes the turn against the same ``WorkflowInstance``
+    step). ``working`` is the legacy default (in-progress snapshot);
+    ``committed`` marks a clean finish.
     """
     import uuid
     from datetime import UTC, datetime
@@ -1024,6 +1085,8 @@ def _build_checkpoint_bundle(
         unified_state=unified_state_dict,
         workflow_session_state=workflow_session_dict,
         workflow_instance=workflow_instance_dict,
+        lifecycle_state=lifecycle_state,
+        awaiting_input_question=awaiting_input_question,
     )
 
 
@@ -2204,7 +2267,7 @@ async def _run_turn_inner(
     # prompt each iteration; the base is the stable contract (mode
     # instruction, stage instruction, routing hint).
     _base_system_prompt = system_prompt
-    _budget_briefing_marker = "\n\n## Turn Budget\n\n"
+    _budget_briefing_marker = "\n\n## Turn Lifecycle\n\n"
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
     # Build user message
@@ -2262,6 +2325,11 @@ async def _run_turn_inner(
     handoff_to: str | None = None
     fork_results: list[ForkChildResult] | None = None
     workflow_terminated = False
+    # ── Unified turn lifecycle ───────────────────────────────────────────
+    # ``_yielded`` is set True when the loop breaks via a forced or
+    # model-emitted ``YieldAction``. The checkpoint layer reads it to stamp
+    # ``CheckpointBundle.lifecycle_state`` (``yielded`` vs ``committed``).
+    _yielded = False
     # total_tool_calls, iteration, and per-model usage live on _state
     # (initialized to 0/empty by _TurnState).
     # Cumulative set of intents satisfied by every mode entered during this
@@ -2327,6 +2395,16 @@ async def _run_turn_inner(
 
     tools_dispatched_ever = False  # tracks if *any* tool was called this turn
     _narration_nudge_count = 0  # guards against infinite narration retries
+    # ── Unified turn lifecycle: pending yield ───────────────────────────
+    # When the harness forces a yield (stuck-in-stage cap, iteration cap, or
+    # recovery stall), it sets ``_pending_yield``. The loop checks this after
+    # the model produces its next completion: if set, the loop breaks with the
+    # yield's question as the turn's content and stamps
+    # ``CheckpointBundle.lifecycle_state="yielded"``. This makes "ask"
+    # distinguishable from "done" (the 2026-07-30 bug: both were "no tool
+    # calls"). ``None`` means no forced yield is pending; the model works
+    # normally.
+    _pending_yield: YieldAction | None = None
 
     while _state.iteration < max_tool_iterations:
         _state.iteration += 1
@@ -2400,13 +2478,44 @@ async def _run_turn_inner(
                     },
                 )
                 if turns_in_stage >= _kernel_settings.stage_nudge_cap:
+                    # ── Unified turn lifecycle: cap forces a yield, not a silent final ──
+                    # The 2026-07-30 fix: hitting the stuck-in-stage cap used to set
+                    # ``budget_exhausted = True`` (strip tools → force a truncated final
+                    # that cut off the user's experience). The unified lifecycle makes
+                    # "ask" distinguishable from "done": the cap now forces a
+                    # :class:`kernel.models.YieldAction` so the user gets a question
+                    # they can answer to redirect, instead of a truncated response.
+                    # The resolver (``resolve_lifecycle_action``) owns this decision in
+                    # the full design; this branch is the in-loop application of its
+                    # "stuck-in-stage cap" priority until the full cutover lands.
                     _log.warning(
-                        "workflow mode=%s stuck in stage=%s for %d turns; forcing final",
+                        "workflow mode=%s stuck in stage=%s for %d turns; forcing yield",
                         mode_id,
                         wf_session.stage_id,
                         turns_in_stage,
                     )
-                    budget_exhausted = True
+                    _yield_policy = _resolve_yield_policy(mode_config)
+                    _yield_target = _yield_policy.fallback_mode or (
+                        _next_remaining_step_mode_id(hooks) or "discuss"
+                        if not _yield_policy.allowed
+                        else ""
+                    )
+                    _yield_question = (
+                        _yield_policy.default_question
+                        or (
+                            f"I've been working in the '{wf_session.stage_id}' stage "
+                            f"for {turns_in_stage} turns and haven't converged. "
+                            f"Can you clarify what you need?"
+                        )
+                    )
+                    _pending_yield = YieldAction(
+                        question=_yield_question,
+                        context=f"stuck in stage '{wf_session.stage_id}' for {turns_in_stage} turns (cap)",
+                        target_mode_id=_yield_target,
+                    )
+                    # ``budget_exhausted`` is NOT set here: the ``_pending_yield``
+                    # takes over at the loop break and surfaces the question. The
+                    # old strip-tools path was redundant with the yield.
                 elif turns_in_stage >= _kernel_settings.stage_nudge_threshold:
                     messages.append(
                         {
@@ -2414,23 +2523,46 @@ async def _run_turn_inner(
                             "content": (
                                 f"You have been in the '{wf_session.stage_id}' stage "
                                 f"for {turns_in_stage} turns. If you have enough evidence, "
-                                f"call transition_stage to advance. Otherwise, ask the user "
-                                f"a clarifying question."
+                                f"call transition_stage to advance. Otherwise, call yield "
+                                f"with a clarifying question for the user."
                             ),
                         }
                     )
 
-        # Budget enforcement: when exhausted, strip tools so the model must
-        # produce a final text response. This is the "ratio" stop condition.
-        budget_exhausted = _budget_forces_final()
-        effective_tools = None if budget_exhausted else (tool_schemas if tool_schemas else None)
-        if budget_exhausted:
-            _log.debug(
-                "turn budget exhausted (mode=%s, tool_calls=%d, tokens=%d); forcing final",
+        # ── Unified turn lifecycle: resource-budget exhaustion forces a yield ──
+        # The old ``_budget_forces_final()`` path stripped tools to force a silent
+        # final when ``TurnBudget`` limits (tool calls, tokens, wall time) were
+        # exhausted. The unified lifecycle makes this consistent with the
+        # iteration cap: exhaustion forces a ``YieldAction`` so the user can
+        # redirect, instead of a truncated response. When no ``TurnBudget`` is
+        # wired (the common case — ``turn_budget`` is None), this is a no-op and
+        # the loop runs under ``max_tool_iterations`` alone.
+        budget_exhausted = False
+        if _budget_forces_final() and _pending_yield is None:
+            _log.info(
+                "turn budget exhausted (mode=%s, tool_calls=%d, tokens=%d); forcing yield",
                 mode_id,
                 _state.total_tool_calls,
                 _state.total_tokens,
             )
+            _yield_policy = _resolve_yield_policy(mode_config)
+            _yield_target = _yield_policy.fallback_mode or (
+                _next_remaining_step_mode_id(hooks) or "discuss"
+                if not _yield_policy.allowed
+                else ""
+            )
+            _pending_yield = YieldAction(
+                question=(
+                    _yield_policy.default_question
+                    or "I've hit a resource budget for this turn. How would you like me to proceed?"
+                ),
+                context="turn budget exhausted (tool calls / tokens / wall time)",
+                target_mode_id=_yield_target,
+            )
+            # Strip tools on the final completion so the model produces the
+            # yield question text (the break applies ``_pending_yield``).
+            budget_exhausted = True
+        effective_tools = None if budget_exhausted else (tool_schemas if tool_schemas else None)
 
         # ── Per-iteration budget briefing ───────────────────────────
         # Inject a compact, per-iteration budget status block into the
@@ -2909,6 +3041,28 @@ async def _run_turn_inner(
                             }
                         )
                         continue
+
+                # ── Unified turn lifecycle: apply pending yield ──────────
+                # A forced yield (stuck-in-stage cap, iteration cap, or
+                # recovery stall) was set earlier in this iteration. The
+                # model produced no tool calls (it either complied with the
+                # stripped-tools force-final path, or it finished naturally
+                # at the same iteration the cap fired). Instead of accepting
+                # the model's text as the final answer, break the loop with
+                # the yield's question as the turn content so the user can
+                # redirect. The checkpoint layer stamps
+                # ``lifecycle_state="yielded"``.
+                if _pending_yield is not None:
+                    content = _pending_yield.question
+                    _yielded = True
+                    _log.info(
+                        "turn lifecycle: applying forced yield (mode=%s, "
+                        "iteration=%d, target=%s)",
+                        mode_id,
+                        _state.iteration,
+                        _pending_yield.target_mode_id or "(in-place)",
+                    )
+                    break
 
                 break
 
@@ -3755,12 +3909,39 @@ async def _run_turn_inner(
                                         # coordinator decision is saved
                                         # from the plan result so a later
                                         # ``proceed`` can resume the chain.
-                                        _planned_next = str(
-                                            (entry_result.output_json or {}).get(
-                                                "target_stage_id", ""
-                                            )
-                                            or ""
-                                        ).strip()
+                                        #
+                                        # IMPORTANT: only ``plan`` mode's
+                                        # entry op (``plan_workflow``)
+                                        # returns a ``target_stage_id``.
+                                        # Other action modes (e.g.
+                                        # ``search`` with ``web_search``)
+                                        # return their own output shape
+                                        # (search results), which has no
+                                        # routing target. Applying the
+                                        # kernel-driven handoff to every
+                                        # action-mode entry op misreads
+                                        # ``web_search`` output as a failed
+                                        # plan and hard-stops the turn — the
+                                        # 2026-07-30 ``search`` incident
+                                        # (``plan_workflow in mid-turn
+                                        # handoff returned no target
+                                        # (mode=search)``). Gate the planner
+                                        # logic on the target actually being
+                                        # ``plan`` (or, more generally, on
+                                        # the entry op being a planner op
+                                        # that returns routing decisions).
+                                        _is_planner_handoff = (
+                                            target_stage == "plan"
+                                            or "plan_workflow" in (target_mode_config.entry_operation_ids or [])
+                                        )
+                                        _planned_next = ""
+                                        if _is_planner_handoff:
+                                            _planned_next = str(
+                                                (entry_result.output_json or {}).get(
+                                                    "target_stage_id", ""
+                                                )
+                                                or ""
+                                            ).strip()
                                         if _planned_next:
                                             _state.pending_planned_handoff = (
                                                 _planned_next
@@ -3801,7 +3982,7 @@ async def _run_turn_inner(
                                                 target_stage,
                                                 _planned_next,
                                             )
-                                        else:
+                                        elif _is_planner_handoff:
                                             # ── Plan failure mid-turn ──
                                             # The planner returned no
                                             # ``target_stage_id`` (parse
@@ -3817,6 +3998,14 @@ async def _run_turn_inner(
                                             # deterministic recovery prompt
                                             # so the user re-issues or
                                             # names a target directly.
+                                            #
+                                            # Only fire for planner handoffs.
+                                            # A non-planner action mode (e.g.
+                                            # ``search``/``web_search``) has
+                                            # no ``target_stage_id`` by
+                                            # design — that is NOT a plan
+                                            # failure, and must not hard-stop
+                                            # the turn (2026-07-30 incident).
                                             _plan_fail_reason = str(
                                                 (entry_result.output_json or {}).get(
                                                     "rationale", ""
@@ -4494,73 +4683,100 @@ async def _run_turn_inner(
             break
 
     if not content:
-        # Diagnostic: log why the loop exited with no usable content so this
-        # class of failure is diagnosable without re-reading the full log.
-        # Common exit causes: max_tool_iterations reached, a hard-failure
-        # guard (entry_failed / handoff cap / fork no_tools) set ``content``,
-        # or the model returned an empty/whitespace completion (often a
-        # reasoning model whose visible answer landed in reasoning_content).
-        _log.warning(
-            "turn loop exited with empty content mode=%s iteration=%d/%d "
-            "tool_calls_total=%d handoffs=%d entry_failed=%s fork_no_tools=%s "
-            "transitioned_to=%s routing_hint=%s",
-            mode_id,
-            _state.iteration,
-            max_tool_iterations,
-            _state.total_tool_calls,
-            _state.handoff_count,
-            _state.entry_failed,
-            bool(_state.fork_results is not None and any(r.status == "no_tools" for r in _state.fork_results)),
-            transitioned_to,
-            bool(routing_hint),
-        )
-        # The loop exited due to max_tool_iterations while the model was
-        # still calling tools. Force one final no-tools completion so the
-        # model synthesizes its findings into a coherent response instead
-        # of the generic "did not produce a final response" fallback.
-        final_reasoning_tokens = 0
-        try:
-            final_completion = await complete(
-                messages=messages,
-                model_def=effective_model_def,
-                max_tokens=4096,
-                temperature=0.4,
-                tools=None,
+        # ── Unified turn lifecycle: iteration-cap with no content → yield ──
+        # The loop exited due to ``max_tool_iterations`` while the model was
+        # still calling tools and produced no usable text. The unified
+        # lifecycle prefers a yield when the mode allows it (the user can
+        # redirect instead of getting a possibly-incoherent synthesis). When
+        # the mode forbids yields (action modes), fall through to the legacy
+        # forced-final (preserving the truncate as the last resort).
+        if _pending_yield is not None:
+            content = _pending_yield.question
+            _yielded = True
+        elif _resolve_yield_policy(mode_config).allowed:
+            _yield_policy = _resolve_yield_policy(mode_config)
+            _pending_yield = YieldAction(
+                question=(
+                    _yield_policy.default_question
+                    or (
+                        "I've hit my iteration budget for this turn. "
+                        "How would you like me to proceed?"
+                    )
+                ),
+                context=f"iteration cap {max_tool_iterations} reached with no final content",
+                target_mode_id=_yield_policy.fallback_mode,
             )
-            # Canonical extractor: a reasoning model may put the synthesis
-            # in ``reasoning_content``; reading only ``.content`` here would
-            # repeat the zero-output bug on the final forced completion.
-            final_content = completion_content(final_completion)
-            if final_content.strip():
-                content = final_content.strip()
-                final_usage = _extract_completion_usage(final_completion)
-                final_reasoning_tokens = final_usage[4]
-                _state.total_prompt_tokens += final_usage[0]
-                _state.total_completion_tokens += final_usage[1]
-                _state.total_tokens += final_usage[2]
-                _state.total_duration_ms += final_usage[5]
-                _record_model_usage(
-                    effective_model_def,
-                    p=final_usage[0],
-                    c=final_usage[1],
-                    t=final_usage[2],
-                    ct=final_usage[3],
-                    rt=final_usage[4],
-                    d=final_usage[5],
-                    lat=final_usage[6],
+            content = _pending_yield.question
+            _yielded = True
+        else:
+            # Action mode with no yield escape: preserve the legacy forced final.
+            # Diagnostic: log why the loop exited with no usable content so this
+            # class of failure is diagnosable without re-reading the full log.
+            # Common exit causes: max_tool_iterations reached, a hard-failure
+            # guard (entry_failed / handoff cap / fork no_tools) set ``content``,
+            # or the model returned an empty/whitespace completion (often a
+            # reasoning model whose visible answer landed in reasoning_content).
+            _log.warning(
+                "turn loop exited with empty content mode=%s iteration=%d/%d "
+                "tool_calls_total=%d handoffs=%d entry_failed=%s fork_no_tools=%s "
+                "transitioned_to=%s routing_hint=%s",
+                mode_id,
+                _state.iteration,
+                max_tool_iterations,
+                _state.total_tool_calls,
+                _state.handoff_count,
+                _state.entry_failed,
+                bool(_state.fork_results is not None and any(r.status == "no_tools" for r in _state.fork_results)),
+                transitioned_to,
+                bool(routing_hint),
+            )
+            # The loop exited due to max_tool_iterations while the model was
+            # still calling tools. Force one final no-tools completion so the
+            # model synthesizes its findings into a coherent response instead
+            # of the generic "did not produce a final response" fallback.
+            final_reasoning_tokens = 0
+            try:
+                final_completion = await complete(
+                    messages=messages,
+                    model_def=effective_model_def,
+                    max_tokens=4096,
+                    temperature=0.4,
+                    tools=None,
                 )
-            else:
-                _log.warning(
-                    "iteration-cap final completion also returned empty "
-                    "content (mode=%s, finish_reason=%s, reasoning_tokens=%d); "
-                    "falling back to generic message",
-                    mode_id,
-                    getattr(final_completion, "finish_reason", "unknown"),
-                    final_reasoning_tokens,
-                )
-        except Exception as exc:  # pylint: disable=broad-except
-            _log.warning("_state.iteration-cap final completion failed: %s", exc)
-        content = content or "The model did not produce a final response."
+                # Canonical extractor: a reasoning model may put the synthesis
+                # in ``reasoning_content``; reading only ``.content`` here would
+                # repeat the zero-output bug on the final forced completion.
+                final_content = completion_content(final_completion)
+                if final_content.strip():
+                    content = final_content.strip()
+                    final_usage = _extract_completion_usage(final_completion)
+                    final_reasoning_tokens = final_usage[4]
+                    _state.total_prompt_tokens += final_usage[0]
+                    _state.total_completion_tokens += final_usage[1]
+                    _state.total_tokens += final_usage[2]
+                    _state.total_duration_ms += final_usage[5]
+                    _record_model_usage(
+                        effective_model_def,
+                        p=final_usage[0],
+                        c=final_usage[1],
+                        t=final_usage[2],
+                        ct=final_usage[3],
+                        rt=final_usage[4],
+                        d=final_usage[5],
+                        lat=final_usage[6],
+                    )
+                else:
+                    _log.warning(
+                        "iteration-cap final completion also returned empty "
+                        "content (mode=%s, finish_reason=%s, reasoning_tokens=%d); "
+                        "falling back to generic message",
+                        mode_id,
+                        getattr(final_completion, "finish_reason", "unknown"),
+                        final_reasoning_tokens,
+                    )
+            except Exception as exc:  # pylint: disable=broad-except
+                _log.warning("_state.iteration-cap final completion failed: %s", exc)
+            content = content or "The model did not produce a final response."
 
     # Terminal-stage handling: if the model transitioned to a terminal
     # stage during this turn, force one final no-tools completion using the
@@ -4684,11 +4900,24 @@ async def _run_turn_inner(
         )
         if should_checkpoint:
             try:
+                # ── Unified turn lifecycle: stamp the checkpoint ──────────
+                # ``_yielded`` is set when the loop broke via a forced or
+                # model-emitted ``YieldAction``. A yielded checkpoint is
+                # resumable by ``/proceed`` (the host loads the bundle, sees
+                # ``lifecycle_state="yielded"``, injects the user's reply,
+                # and resumes the turn against the same ``WorkflowInstance``
+                # step). Otherwise the turn committed cleanly.
+                _ckpt_state: Literal["working", "yielded", "committed", "stalled"] = (
+                    "yielded" if _yielded else "committed"
+                )
+                _ckpt_question = content if _yielded else ""
                 bundle = _build_checkpoint_bundle(
                     mode_id=mode_id,
                     transitioned_to=transitioned_to,
                     is_workflow=is_workflow,
                     hooks=hooks,
+                    lifecycle_state=_ckpt_state,
+                    awaiting_input_question=_ckpt_question,
                 )
                 if bundle is not None:
                     await hooks.on_checkpoint(bundle)

@@ -347,6 +347,68 @@ def test_load_catalog_from_disk_extra_front_matter_empty_when_no_app_keys(
 
 
 # ---------------------------------------------------------------------------
+# load_catalog_from_disk: yield_policy
+# ---------------------------------------------------------------------------
+
+
+def test_load_catalog_from_disk_reads_yield_policy(tmp_path: Path) -> None:
+    """``yield_policy`` flows from front matter into the typed field.
+
+    The unified turn lifecycle routes ``yield`` actions via this per-mode
+    policy. Authored by packs; the kernel never names mode ids in code.
+    """
+    from kernel.models import YieldPolicy
+
+    _write_mode(
+        tmp_path,
+        extra_front_matter={
+            "yield_policy": {
+                "allowed": False,
+                "fallback_mode": "discuss",
+                "is_default_yield_target": False,
+                "default_question": "What should I focus on?",
+            }
+        },
+    )
+    catalog = _load(tmp_path)
+
+    policy = catalog["demo"].yield_policy
+    assert isinstance(policy, YieldPolicy)
+    assert policy.allowed is False
+    assert policy.fallback_mode == "discuss"
+    assert policy.is_default_yield_target is False
+    assert policy.default_question == "What should I focus on?"
+    # yield_policy is kernel-owned — it must NOT leak into extra_front_matter.
+    assert "yield_policy" not in catalog["demo"].extra_front_matter
+
+
+def test_load_catalog_from_disk_yield_policy_defaults_when_absent(
+    tmp_path: Path,
+) -> None:
+    """A mode with no ``yield_policy`` front matter gets the default-empty policy."""
+    from kernel.models import YieldPolicy
+
+    _write_mode(tmp_path)
+    catalog = _load(tmp_path)
+
+    policy = catalog["demo"].yield_policy
+    assert isinstance(policy, YieldPolicy)
+    assert policy.allowed is True
+    assert policy.fallback_mode == ""
+    assert policy.is_default_yield_target is False
+    assert policy.default_question == ""
+
+
+def test_load_catalog_from_disk_rejects_non_mapping_yield_policy(
+    tmp_path: Path,
+) -> None:
+    """A non-dict ``yield_policy`` is a catalog validation error."""
+    _write_mode(tmp_path, extra_front_matter={"yield_policy": "not-a-mapping"})
+    with pytest.raises(WorkflowValidationError, match="yield_policy"):
+        _load(tmp_path)
+
+
+# ---------------------------------------------------------------------------
 # load_catalog_from_disk: satisfies_intents
 # ---------------------------------------------------------------------------
 
