@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import OperationExecutionContext, OperationResult
 from kernel.operations.structured_output import (
+    EmptyStructuredOutputError,
     completion_content,
     json_only_retry_messages,
     parse_structured_payload,
@@ -266,7 +267,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     content = completion_content(completion)
     try:
         parsed = cast(PlanWorkflowOutput, parse_structured_payload(PlanWorkflowOutput, content))
-    except ValidationError:
+    except (ValidationError, EmptyStructuredOutputError):
         logger.info("plan_workflow structured parse failed; retrying with JSON-only instruction")
         try:
             completion = await ctx.complete_fn(

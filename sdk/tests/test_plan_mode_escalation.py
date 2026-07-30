@@ -446,3 +446,46 @@ def test_plan_workflow_handles_missing_model_wiring() -> None:
     result = asyncio.run(execute(ctx))
     assert result.output_json["target_stage_id"] == ""
     assert "complete_fn" in result.output_text or "model" in result.output_text.lower()
+
+
+def test_plan_workflow_retries_when_first_completion_is_empty() -> None:
+    """Regression for the 2026-07-30 plan-mode crash.
+
+    When the provider returns empty content on the first structured-output
+    call, ``parse_structured_payload`` raises ``EmptyStructuredOutputError``
+    (a ``ValueError`` subclass, NOT a ``ValidationError``). The first
+    parse's ``except ValidationError`` missed it, so the exception escaped
+    ``execute`` and surfaced as
+    ``operation 'plan_workflow' failed: Empty structured-output content``
+    — the JSON-only retry never ran. The fix widens the catch to include
+    ``EmptyStructuredOutputError`` so the retry fires and recovers.
+    """
+    from sdk.packs.core.operations.planning.plan_workflow import execute
+
+    payload = {"target_stage_id": "search", "rationale": "research intent detected"}
+    call_count = {"n": 0}
+
+    async def fake_complete(
+        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+    ):
+        call_count["n"] += 1
+        # First call returns empty content (the incident). The retry must
+        # then fire and return valid JSON.
+        if call_count["n"] == 1:
+            return _FakeCompletion("")
+        return _FakeCompletion(json.dumps(payload))
+
+    ctx = _make_ctx(query="search for the latest rust news", complete_fn=fake_complete)
+    catalog = _full_catalog()
+    with (
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch(
+            "sdk.packs.core.operations.planning.plan_workflow.get_workflow_catalog",
+            return_value=catalog,
+        ),
+    ):
+        result = asyncio.run(execute(ctx))
+
+    assert call_count["n"] == 2, "JSON-only retry must fire after empty first content"
+    assert result.output_json["target_stage_id"] == "search"
+    assert result.output_text == "research intent detected"
