@@ -2784,6 +2784,7 @@ async def _run_turn_inner(
                         getattr(effective_model_def, "reasoning_model", False)
                     ),
                     "_state.iteration": _state.iteration,
+                    "max_iterations": max_tool_iterations,
                     "tool_calls_so_far": _state.total_tool_calls,
                     "tools_offered": bool(effective_tools),
                 },
@@ -2860,6 +2861,7 @@ async def _run_turn_inner(
                     getattr(effective_model_def, "reasoning_model", False)
                 ),
                 "_state.iteration": _state.iteration,
+                "max_iterations": max_tool_iterations,
                 "tool_calls": len(getattr(completion, "tool_calls", None) or []),
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
@@ -3233,6 +3235,7 @@ async def _run_turn_inner(
                     "tool_kind": _tool_kind,
                     "_state.iteration": _state.iteration,
                     "tool_calls_so_far": _state.total_tool_calls + 1,
+                    "max_tool_calls": max_tool_iterations,
                     "mode_id": mode_id,
                 },
             )
@@ -4314,9 +4317,11 @@ async def _run_turn_inner(
                                 "tool_kind": "transition",
                                 "_state.iteration": _state.iteration,
                                 "tool_calls_so_far": _state.total_tool_calls,
+                                "max_tool_calls": max_tool_iterations,
                                 "ok": True,
                                 "transition": "handoff",
                                 "handoff_to": target_stage,
+                                "max_handoffs": _max_handoffs_per_turn,
                                 "duration_ms": int(
                                     (time.monotonic() - _tool_dispatch_started) * 1000
                                 ),
