@@ -489,3 +489,56 @@ def test_plan_workflow_retries_when_first_completion_is_empty() -> None:
     assert call_count["n"] == 2, "JSON-only retry must fire after empty first content"
     assert result.output_json["target_stage_id"] == "search"
     assert result.output_text == "research intent detected"
+
+
+def test_plan_workflow_retry_drops_response_format() -> None:
+    """Regression for the 2026-07-30 plan-mode retry failure.
+
+    The JSON-only retry must clear ``response_format`` (pass ``None``),
+    not re-pin ``PlanWorkflowOutput``. Ollama reasoning models
+    (glm-5.2, kimi-k2.6) return EMPTY content when ``response_format`` is
+    pinned on a structured-output call, but emit valid JSON when it is
+    cleared and the JSON-only instruction is appended. Re-passing
+    ``response_format`` on the retry reproduces the empty-content
+    condition and the retry fails identically — every plan_workflow
+    retry in the incident log returned "Empty structured-output content"
+    because ``response_format`` was still set. The declarative runtime
+    (kernel/operations/declarative.py) and synthesize_learning both
+    drop ``response_format`` on the JSON-only retry; plan_workflow must
+    match.
+    """
+    from sdk.packs.core.operations.planning.plan_workflow import execute
+
+    payload = {"target_stage_id": "search", "rationale": "research intent detected"}
+    calls: list[dict[str, Any]] = []
+
+    async def fake_complete(
+        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+    ):
+        calls.append({"response_format": response_format, "n": len(calls) + 1})
+        # First call (response_format pinned) returns empty — the incident.
+        # Retry (response_format=None) returns valid JSON.
+        if len(calls) == 1:
+            return _FakeCompletion("")
+        return _FakeCompletion(json.dumps(payload))
+
+    ctx = _make_ctx(query="search for the latest rust news", complete_fn=fake_complete)
+    catalog = _full_catalog()
+    with (
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch(
+            "sdk.packs.core.operations.planning.plan_workflow.get_workflow_catalog",
+            return_value=catalog,
+        ),
+    ):
+        result = asyncio.run(execute(ctx))
+
+    assert len(calls) == 2, "exactly two model calls (first + retry)"
+    # First call pins response_format (the structured-output attempt).
+    assert calls[0]["response_format"] is not None, "first call must pin response_format"
+    # Retry MUST clear response_format — re-pinning reproduces empty content.
+    assert calls[1]["response_format"] is None, (
+        "JSON-only retry must clear response_format (None), not re-pin it; "
+        "re-pinning causes Ollama reasoning models to return empty content again"
+    )
+    assert result.output_json["target_stage_id"] == "search"

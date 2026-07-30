@@ -270,12 +270,24 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     except (ValidationError, EmptyStructuredOutputError):
         logger.info("plan_workflow structured parse failed; retrying with JSON-only instruction")
         try:
+            # Clear response_format on the retry. The first attempt failed
+            # to produce parseable structured output — often because the
+            # provider (e.g. Ollama reasoning models: glm-5.2, kimi-k2.6)
+            # returns EMPTY content when response_format is pinned but
+            # emits valid JSON when it is cleared and the JSON-only
+            # instruction is appended. Re-passing response_format reproduces
+            # the empty-content condition and the retry fails identically
+            # (the 2026-07-30 incident: every plan_workflow retry returned
+            # "Empty structured-output content" because response_format was
+            # still set). This mirrors the declarative runtime
+            # (kernel/operations/declarative.py) and synthesize_learning,
+            # which both drop response_format on the JSON-only retry.
             completion = await ctx.complete_fn(
                 messages=json_only_retry_messages(messages, PlanWorkflowOutput),
                 model_def=model_def,
                 max_tokens=500,
                 temperature=0.1,
-                response_format=PlanWorkflowOutput,
+                response_format=None,
             )
             content = completion_content(completion)
             parsed = cast(PlanWorkflowOutput, parse_structured_payload(PlanWorkflowOutput, content))
