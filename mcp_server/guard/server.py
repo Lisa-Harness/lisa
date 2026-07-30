@@ -1,17 +1,21 @@
-"""Lisa Guard MCP server — content safety validation.
+"""Lisa Guard MCP server — thin facade over :class:`sdk.guard.GuardBackend`.
 
 Tools:
 - ``validate_input`` — validate user input before it reaches the model
 - ``validate_output`` — validate model output before it reaches the user
 - ``guard_configured`` — report backend configuration
 
-The default backend is ``passthrough`` (allows everything, sanitizes nothing).
-Backend selection via ``--backend`` CLI arg (default from ``LISA_GUARD_BACKEND``
-env or ``passthrough``). When a guard blocks, the server logs a structured
-audit record to stderr.
+This is a transport-only wrapper. The SDK owns backend selection, the
+result shape, and the blocked-audit logger; the server owns ``FastMCP``
+wiring, ``--backend`` arg parsing, and the process entrypoint. Hosts or
+tools that want in-process guard validation can use a backend directly
+without spawning this server.
 
-The server owns audit logging — hosts using ``MCPInputGuard``/``MCPOutputGuard``
-adapters do not need an event bus for guardrail audits.
+The default backend is ``passthrough`` (allows everything, sanitizes
+nothing). Backend selection via ``--backend`` CLI arg (default from
+``LISA_GUARD_BACKEND`` env or ``passthrough``). When a guard blocks, the
+SDK backend logs a structured audit record (see
+:func:`sdk.guard.log_blocked_guard`).
 """
 
 from __future__ import annotations
@@ -22,52 +26,34 @@ import os
 
 from mcp.server.fastmcp import FastMCP
 
+from sdk.guard import GuardBackend, format_guard_result, get_backend, log_blocked_guard
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["init_backend", "main", "mcp"]
 
 mcp = FastMCP("Lisa Guard Server")
 
-_backend: str = "passthrough"
-_readonly: bool = False
+_backend_name: str = "passthrough"
+_backend: GuardBackend | None = None
 
 
 def init_backend(backend: str, *, readonly: bool = False) -> None:
-    """Initialize the guard backend. Called by ``main()`` after arg parsing."""
-    global _backend, _readonly
-    _backend = backend
-    _readonly = readonly
+    """Initialize the guard backend. Called by ``main()`` after arg parsing.
 
-
-def _log_blocked(
-    *,
-    direction: str,
-    surface_id: str,
-    blocked_reason: str,
-    text_len: int,
-) -> None:
-    """Log a structured audit record for a blocked guard check.
-
-    Emits through the stdlib ``logger.warning`` so the record lands in the
-    same JSON stream as every other host/server event (the shared
-    :class:`sdk.logging_setup.JSONFormatter` serializes the ``extra``
-    fields). Gated by ``LISA_GUARD_LOG_BLOCKED`` (default on).
+    ``readonly`` is accepted for CLI-contract consistency but inert: guards
+    are stateless and read-only by design.
     """
-    if os.getenv("LISA_GUARD_LOG_BLOCKED", "1") != "0":
-        logger.warning(
-            "guard.blocked: direction=%s surface=%s reason=%s len=%d",
-            direction,
-            surface_id,
-            blocked_reason,
-            text_len,
-            extra={
-                "event": "guard.blocked",
-                "direction": direction,
-                "surface_id": surface_id,
-                "blocked_reason": blocked_reason,
-                "text_len": text_len,
-            },
-        )
+    global _backend_name, _backend
+    del readonly
+    _backend_name = backend
+    _backend = get_backend(backend)
+
+
+def _backend_instance() -> GuardBackend:
+    if _backend is None:
+        raise RuntimeError("lisa-guard backend is not initialized. Call init_backend(name).")
+    return _backend
 
 
 @mcp.tool()
@@ -83,24 +69,20 @@ async def validate_input(
     Returns JSON: ``{"allowed": bool, "blocked_reason": str|null,
     "sanitized_text": str|null, "annotations": {}}``.
     """
-    if _backend == "passthrough":
-        return json.dumps(
-            {
-                "allowed": True,
-                "blocked_reason": None,
-                "sanitized_text": None,
-                "annotations": {},
-            }
-        )
-    # Future backends (azure_content_safety, etc.) plug in here.
-    return json.dumps(
-        {
-            "allowed": True,
-            "blocked_reason": None,
-            "sanitized_text": None,
-            "annotations": {"backend": _backend},
-        }
+    result = _backend_instance().validate_input(
+        query, surface_type=surface_type, surface_id=surface_id,
+        memory_scope=memory_scope, thread_owner_id=thread_owner_id,
     )
+    if not result.allowed:
+        log_blocked_guard(
+            direction="input",
+            surface_id=surface_id,
+            blocked_reason=result.blocked_reason or "",
+            text_len=len(query),
+        )
+    if _backend_name != "passthrough":
+        result.annotations = {**result.annotations, "backend": _backend_name}
+    return format_guard_result(result)
 
 
 @mcp.tool()
@@ -115,29 +97,26 @@ async def validate_output(
 
     Returns the same JSON shape as ``validate_input``.
     """
-    if _backend == "passthrough":
-        return json.dumps(
-            {
-                "allowed": True,
-                "blocked_reason": None,
-                "sanitized_text": None,
-                "annotations": {},
-            }
-        )
-    return json.dumps(
-        {
-            "allowed": True,
-            "blocked_reason": None,
-            "sanitized_text": None,
-            "annotations": {"backend": _backend},
-        }
+    result = _backend_instance().validate_output(
+        text, surface_type=surface_type, surface_id=surface_id,
+        memory_scope=memory_scope, thread_owner_id=thread_owner_id,
     )
+    if not result.allowed:
+        log_blocked_guard(
+            direction="output",
+            surface_id=surface_id,
+            blocked_reason=result.blocked_reason or "",
+            text_len=len(text),
+        )
+    if _backend_name != "passthrough":
+        result.annotations = {**result.annotations, "backend": _backend_name}
+    return format_guard_result(result)
 
 
 @mcp.tool()
 async def guard_configured() -> str:
     """Report whether the guard is configured and which backend is active."""
-    return json.dumps({"configured": True, "backend": _backend})
+    return json.dumps({"configured": True, "backend": _backend_name})
 
 
 def main() -> None:

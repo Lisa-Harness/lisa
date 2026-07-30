@@ -23,14 +23,14 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
-from kernel.context.context_broker import (
-    build_ambient_facts,
-    render_context_packet_markdown,
-    select_ranked_context,
-)
 from kernel.models import (
     ContextBrokerResponse,
     UnifiedState,
+)
+from sdk.context.context_broker import (
+    build_ambient_facts,
+    render_context_packet_markdown,
+    select_ranked_context,
 )
 
 __all__ = ["BrokerContextRequest", "main", "mcp"]
