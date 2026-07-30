@@ -26,6 +26,7 @@ from kernel.models import (
 )
 from kernel.operations.registry import OperationExecutionError
 from kernel.operations.structured_output import (
+    completion_content,
     is_structured_output_unsupported,
     json_only_instruction,
     json_only_retry_messages,
@@ -108,6 +109,37 @@ def _stringify_tool_result(result: ToolResult | str) -> str:
     if result.output_json:
         return json.dumps(result.output_json, indent=2, sort_keys=True)
     return "Done"
+
+
+def _empty_content_detail(
+    operation_id: str,
+    finish_reason: Any,
+    completion_tokens: Any,
+    max_tokens: int,
+) -> str:
+    """Render a diagnostic suffix for the empty-content failure path.
+
+    ``finish_reason=length`` with ``completion_tokens`` near ``max_tokens``
+    means the reasoning model spent its budget on internal reasoning before
+    emitting visible content — the op needs more headroom, not a retry. Any
+    other finish reason with zero content is a genuine provider-empty
+    response. Surfacing both fields makes the two cases distinguishable in
+    logs and in the ``OperationExecutionError`` message, which is what the
+    2026-07-30 ``web_search`` and ``plan_workflow`` post-mortems asked for.
+    """
+    parts: list[str] = []
+    if finish_reason is not None:
+        parts.append(f"finish_reason={finish_reason}")
+    if completion_tokens is not None:
+        parts.append(f"completion_tokens={completion_tokens}")
+    parts.append(f"max_tokens={max_tokens}")
+    if str(finish_reason) == "length" and completion_tokens is not None:
+        try:
+            if int(completion_tokens) >= int(max_tokens) * 0.9:
+                parts.append("likely_token_budget_truncation")
+        except (TypeError, ValueError):
+            pass
+    return f"[{', '.join(parts)}]"
 
 
 # Structured-output helpers (extraction, tolerant parse, json-only retry) live in
@@ -244,12 +276,19 @@ async def execute_declarative_operation(
                 tools=ctx.tool_schemas or None,
                 response_format=response_format_model,
             )
+            # Use the canonical extractor so reasoning models (gpt-5.x,
+            # glm-5.2, kimi-k2.6) that put the answer in ``reasoning_content``
+            # while leaving ``content`` empty are parsed correctly. Reading
+            # ``completion.content`` raw was the 2026-07-30 ``web_search``
+            # root cause: the empty-content guard skipped parsing, the retry
+            # hit the same condition, and the op hard-failed.
+            content_text = completion_content(completion)
             parsed_payload: BaseModel | None = None
-            if response_format_model is not None and completion.content:
+            if response_format_model is not None and content_text:
                 try:
                     parsed_payload = _parse_structured_payload(
                         response_format_model,
-                        completion.content,
+                        content_text,
                     )
                 except ValidationError:
                     should_retry_for_json_only = True
@@ -265,31 +304,41 @@ async def execute_declarative_operation(
                 temperature=completion_temperature,
                 tools=ctx.tool_schemas or None,
             )
-            # Guard empty retry content the same way the first attempt does
-            # (line ~246: ``if response_format_model is not None and
-            # completion.content:``). Without this, a JSON-only retry that
-            # returns no text (e.g. a tool-call-only turn or a provider that
-            # drops ``response_format``) feeds ``model_validate_json("")``
-            # and leaks an opaque Pydantic "Invalid JSON: EOF" ValidationError
-            # to callers — the 2026-07-25 ``web_search`` incident. Surface a
-            # typed ``OperationExecutionError`` instead so the turn runner can
-            # treat an empty upstream result as a hard failure.
-            if response_format_model is not None and completion.content:
+            content_text = completion_content(completion)
+            # Guard empty retry content the same way the first attempt does.
+            # Without this, a JSON-only retry that returns no text (e.g. a
+            # tool-call-only turn, a provider that drops ``response_format``,
+            # or a reasoning model that exhausted its token budget on internal
+            # reasoning before emitting visible content) feeds
+            # ``model_validate_json("")`` and leaks an opaque Pydonic
+            # "Invalid JSON: EOF" ValidationError to callers — the
+            # 2026-07-25 and 2026-07-30 ``web_search`` incidents. Surface a
+            # typed ``OperationExecutionError`` with diagnostics instead so
+            # the turn runner can treat an empty upstream result as a hard
+            # failure and the operator can distinguish truncation from a
+            # genuine provider-empty response.
+            if response_format_model is not None and content_text:
                 parsed_payload = _parse_structured_payload(
                     response_format_model,
-                    completion.content,
+                    content_text,
                 )
             else:
+                finish_reason = getattr(completion, "finish_reason", None)
+                completion_tokens = getattr(completion, "completion_tokens", None)
+                detail = _empty_content_detail(
+                    operation_id, finish_reason, completion_tokens, completion_max_tokens
+                )
+                logger.warning("declarative operation '%s' empty after retry: %s", operation_id, detail)
                 raise OperationExecutionError(
                     f"Declarative operation '{operation_id}' returned no content "
-                    f"after JSON-only retry; cannot parse structured output."
+                    f"after JSON-only retry; cannot parse structured output. {detail}"
                 )
         else:
             parsed_payload = parsed_payload if response_format_model is not None else None
 
         assistant_message: dict[str, Any] = {"role": "assistant"}
-        if completion.content:
-            assistant_message["content"] = completion.content
+        if content_text:
+            assistant_message["content"] = content_text
         if completion.tool_calls:
             assistant_message["tool_calls"] = completion.tool_calls
         messages.append(assistant_message)
@@ -306,7 +355,7 @@ async def execute_declarative_operation(
                     last_tool_output_json=last_tool_output_json,
                 )
             return OperationResult(
-                output_text=completion.content.strip() or "Done",
+                output_text=content_text.strip() or "Done",
                 output_json={
                     "operation_id": operation_id,
                     "execution_kind": "prompt",

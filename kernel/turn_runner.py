@@ -2583,6 +2583,9 @@ async def _run_turn_inner(
                     "mode_id": mode_id,
                     "model_id": getattr(effective_model_def, "model_id", ""),
                     "provider": getattr(effective_model_def, "provider", ""),
+                    "reasoning_model": bool(
+                        getattr(effective_model_def, "reasoning_model", False)
+                    ),
                     "_state.iteration": _state.iteration,
                     "tool_calls_so_far": _state.total_tool_calls,
                     "tools_offered": bool(effective_tools),
@@ -2656,6 +2659,9 @@ async def _run_turn_inner(
             {
                 "mode_id": mode_id,
                 "model_id": getattr(effective_model_def, "model_id", ""),
+                "reasoning_model": bool(
+                    getattr(effective_model_def, "reasoning_model", False)
+                ),
                 "_state.iteration": _state.iteration,
                 "tool_calls": len(getattr(completion, "tool_calls", None) or []),
                 "prompt_tokens": prompt_tokens,

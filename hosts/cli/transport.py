@@ -8,6 +8,26 @@ text chunks, final responses, debug context, and errors.
 
 Rich is allowed here — this is the terminal host. The core runtime never
 imports Rich; it only calls these methods on the injected transport.
+
+Stage-line legend
+-----------------
+Each pane row is one left-aligned line: ``<graphic>  <words>``.
+
+* **Graphic column** (left):
+  - ``●``/``○`` pip counter — iteration / tool-call / handoff fill.
+  - ``N<n>`` — unlimited-capacity compact counter.
+  - block-ramp sparkline (``▁▂▃▄▅▆▇█``) — per-iteration duration trend.
+* **Words column** (right of the graphic):
+  - ``[mode] stage: <label> (…)`` — the status line and compact suffix.
+  - Suffix glyphs (no verbose ``key=value``):
+    + ``<id>``      model_id (bare; no decorative prefix).
+    + ``⟁``         reasoning-model capability flag (present only when
+                    ``reasoning_model`` is true — signifies the model is a
+                    deep-reasoning variant).
+    + ``↑<n>``      prompt_tokens
+    + ``↓<n>``      completion_tokens
+    + ``Σ<n>``      total_tokens
+    + ``provider`` / ``stage_id`` / ``turn_count`` shown as bare values.
 """
 
 from __future__ import annotations
@@ -16,7 +36,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from rich.console import Console, Group
+from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -147,13 +167,48 @@ def _block_bar(value: float, reference: float = 0.0) -> str:
     return _BLOCK_RAMP[idx]
 
 
+class _TrailingSpinner:
+    """A Live-compatible renderable that puts the spinner *after* the line.
+
+    Rich's :class:`~rich.spinner.Spinner` renders the animation frame
+    *before* its text (``frame + " " + text``), which pushes the whole
+    active row right by the frame width and breaks the left-aligned
+    graphic column. This renderable inverts that: it renders the fixed
+    line content first (so it stays aligned with every other row in the
+    pane) and appends a single spinner frame glyph as a trailing
+    activity indicator after a one-space gap.
+
+    Implements ``render(time)`` so Rich's Live refresh animates the
+    trailing frame without touching the leading content.
+    """
+
+    __slots__ = ("_line", "_spinner", "_style")
+
+    def __init__(self, line: Text, spinner_name: str, style: str) -> None:
+        self._line = line
+        self._spinner = Spinner(spinner_name, style=style)
+        self._style = style
+
+    def render(self, time: float) -> RenderableType:
+        frame = self._spinner.render(time)
+        # ``frame`` is a Text whose first appended segment is the glyph;
+        # when the spinner has empty text it is just the glyph Text.
+        glyph = frame.plain if isinstance(frame, Text) else ""
+        out = Text()
+        out.append(self._line)
+        if glyph:
+            out.append(" ")
+            out.append(glyph, style=self._style)
+        return out
+
+
 @dataclass
 class _PaneRow:
-    """One row in a pane: textual label on the left, graphic on the right.
+    """One row in a pane: graphic on the left, textual label after it.
 
-    The Live renderer right-aligns the graphic within the pane width so
-    the textual column stays readable while the graphical column forms a
-    fixed-width visual strip on the right edge of each pane.
+    The pane renderer lays each row out as ``<graphic>  <text>`` on a
+    single left-aligned line so the per-iteration dots form a vertically
+    aligned column across every row in every pane.
     """
 
     text: str
@@ -215,10 +270,12 @@ class RichTransport:
     * **Tools** (2 parts) — ``tool_dispatch`` / ``tool_dispatch_complete``
       and fork fan-out rows, with the tool-call pip counter.
 
-    Each row carries a textual label on the left and a graphical
-    representation on the right (pip row, sparkline, or status glyph).
-    The pane that owns the currently-active stage shows a live spinner
-    on its last row; the other two panes show only completed entries.
+    Each row is a single left-aligned line with the graphical strip
+    (pip-counter dots and, when present, the duration sparkline) on the
+    left and the status words after it, so the per-iteration dots line
+    up vertically when the pane is scrolled back. The pane that owns the
+    currently-active stage shows a live spinner on its last row; the
+    other two panes show only completed entries.
 
     Attributes:
         console: The Rich Console to render to. Defaults to a shared
@@ -306,14 +363,19 @@ class RichTransport:
         height: int,
         style: str,
     ) -> list[Any]:
-        """Render one pane: a plain header line followed by up to ``height`` rows.
+        """Render one pane: a header followed by scrolling rows.
+
+        Each row is a single left-aligned line in the order
+        **graphic → text**: the pip-counter dots (and sparkline, when
+        present) come first, then the status words. Putting the graphical
+        strip on the left keeps the per-iteration dots in a vertically
+        aligned column across every row in every pane, so the graph
+        reads top-to-bottom when the user scrolls back. Rows without a
+        graphic render just the text.
 
         The most recent ``height`` rows are kept (the pane scrolls from
         the top). The active row — if this pane owns it — gets a live
-        spinner on its last line instead of a plain ``Text``. The graphic
-        is appended after a single-space gap (no right-alignment, no
-        box-drawing borders) so the layout is terminal-agnostic and
-        resizes cleanly on Windows consoles.
+        spinner on its line.
         """
         renderables: list[Any] = []
         renderables.append(Text(title, style=STYLE_PANE_HEADER))
@@ -322,13 +384,18 @@ class RichTransport:
             is_last = i == len(visible) - 1
             is_active = is_last and row.active and self._live is not None
             line = Text()
-            line.append(row.text, style=style)
             if row.graphic:
-                line.append(" ")
                 line.append(row.graphic, style=STYLE_GRAPHIC)
+                line.append("  ")
+            line.append(row.text, style=style)
             if is_active:
+                # Trailing spinner: the line content (graphic + text) is
+                # rendered first and stays aligned with every other row;
+                # the spinner frame is appended after a one-space gap so
+                # it reads as an activity indicator without offsetting the
+                # row's leading column.
                 renderables.append(
-                    Spinner(self._thinking_spinner, line, style=style)
+                    _TrailingSpinner(line, self._thinking_spinner, STYLE_GRAPHIC)
                 )
             else:
                 renderables.append(line)
@@ -614,14 +681,20 @@ class RichTransport:
         """
         text = self._render_status_line(label, data)
         max_iter = int(data.get("max_iterations") or 0)
+        # The kernel emits the iteration under ``_state.iteration`` (the
+        # turn-runner state field), not a bare ``iteration`` key. Read
+        # both for robustness so the pip counter reflects the real
+        # iteration instead of always rendering ``N0``.
         iter_raw = data.get("iteration")
+        if iter_raw is None or iter_raw == "" or iter_raw == 0:
+            iter_raw = data.get("_state.iteration")
         iter_count = int(iter_raw) if iter_raw is not None and iter_raw != "" and iter_raw != 0 else 0
         graphic = _pip_counter(iter_count, max_iter)
         if label == "model_call_complete":
             spark = _sparkline(self._iteration_durations)
             dur_raw = data.get("duration_ms")
             if dur_raw is not None and dur_raw != "" and dur_raw != 0:
-                dur_str = f"{spark or _block_bar(float(dur_raw))} {dur_raw}ms"
+                dur_str = f"{spark or _block_bar(float(dur_raw))} {round(float(dur_raw), 3)}ms"
                 graphic = f"{graphic}  {dur_str}"
         self._model_calls.append(_PaneRow(text=text, graphic=graphic))
         self._mark_active("model_calls")
@@ -687,24 +760,45 @@ class RichTransport:
         """Compact one-line rendering of the textual stage metadata.
 
         Graphical quantities (iteration pip, tool-call pip, duration
-        sparkline) are rendered in the pane's right-aligned graphic
-        column by ``_append_model_row`` / ``_append_tool_row``; this
-        suffix carries only the remaining textual metadata
-        (``provider``, ``model_id``, token counts, etc.).
+        sparkline) are rendered in the pane's graphic column by
+        ``_append_model_row`` / ``_append_tool_row``; this suffix carries
+        only the remaining textual metadata, using compact visual glyphs
+        instead of verbose ``key=value`` pairs:
+
+        * ``provider`` / ``stage_id`` / ``turn_count`` → bare value
+          (their position makes them self-evident).
+        * ``model_id`` → bare id (no decorative prefix).
+        * ``reasoning_model`` → ``⟁`` when true (signifies the model is a
+          deep-reasoning variant); omitted when false.
+        * ``prompt_tokens`` → ``↑<n>``, ``completion_tokens`` → ``↓<n>``,
+          ``total_tokens`` → ``Σ<n>`` (token-flow arrows).
+
+        A legend is documented in the module docstring rather than
+        repeated on every line.
         """
         parts: list[str] = []
-        for key in ("provider", "model_id", "stage_id", "turn_count"):
+        for key in ("provider", "stage_id", "turn_count"):
             value = data.get(key)
             if value in (None, "", 0):
                 continue
-            parts.append(f"{key}={value}")
+            parts.append(str(value))
+        model_id = data.get("model_id")
+        if model_id not in (None, "", 0):
+            parts.append(str(model_id))
+        if data.get("reasoning_model"):
+            parts.append("⟁")
         # Token counts are nested under model_call_complete.
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            value = data.get(key)
-            if value:
-                parts.append(f"{key}={value}")
+        prompt = data.get("prompt_tokens")
+        if prompt:
+            parts.append(f"↑{prompt}")
+        completion = data.get("completion_tokens")
+        if completion:
+            parts.append(f"↓{completion}")
+        total = data.get("total_tokens")
+        if total:
+            parts.append(f"Σ{total}")
         if parts:
-            return f" ({', '.join(parts)})"
+            return f" ({' '.join(parts)})"
         return ""
 
     # ── tool_dispatch legible rendering ──────────────────────────────
