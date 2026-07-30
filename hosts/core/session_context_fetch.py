@@ -1,20 +1,28 @@
 """Remote session context fetching and caching.
 
-Provides transport-neutral fetching of remote session context files via HTTP(S),
-with conditional GET caching and trust-policy enforcement.
+Thin adapter over :class:`sdk.content.ContentFetcher`, the SDK fetch-and-cache
+primitive. The fetcher owns SSRF validation, the L1/L2 cache, conditional-GET,
+and stale-fallback. This module owns only the session-context-specific
+**policy translation** (env getters → :class:`FetchPolicy` / ctor args) and
+the legacy ``Path`` return contract: the fetched body is written to
+``data_dir / "session_context_cache" / "<hash>.md"`` so existing callers in
+:mod:`hosts.core.session_context` and the meta-inspecting tests keep working.
+
+Env getters stay here (in the adapter, not the primitive) per the design:
+the primitive takes explicit args and reads no env.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import urllib.parse
-from datetime import UTC, datetime
 from pathlib import Path
 
-import httpx
+from sdk.content import ContentFetcher, FetchPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -81,97 +89,55 @@ def fetch_session_context_url(
     force_refresh: bool = False,
     timeout: float | None = None,
 ) -> Path:
-    """Fetch a remote session context, caching via conditional GET.
+    """Fetch a remote session context, caching via the SDK ContentFetcher.
+
+    Delegates to :class:`sdk.content.ContentFetcher` for SSRF validation,
+    L1/L2 caching, conditional-GET, and stale-fallback. The fetched body is
+    written to the legacy ``data_dir / "session_context_cache" / "<hash>.md"``
+    path (and a sibling ``.meta.json``) so callers that expect a ``Path``
+    and the meta-inspecting tests keep working.
 
     Raises ValueError if the scheme or host is rejected, or if the network fetch
     fails with no valid stale cache to fall back upon.
     """
     s = url.strip()
-    parsed = urllib.parse.urlparse(s)
 
-    # 1. Scheme checks
-    if parsed.scheme == "http" and not session_context_allow_http():
-        raise ValueError(
-            f"Blocked HTTP session context '{s}'. HTTPS is required by default. "
-            f"Set {LISA_SESSION_CONTEXT_ALLOW_HTTP_ENV}=1 to override."
-        )
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError(f"Session context URL must be http or https, got '{s}'.")
+    # Build the fetcher with session-context-specific security policy
+    # translated from env. The primitive enforces scheme/host/private-IP.
+    fetcher = ContentFetcher(
+        data_dir,
+        default_policy=FetchPolicy(
+            ttl_seconds=86_400.0,
+            force_refresh=force_refresh,
+            max_bytes=200_000,
+            cache=True,
+            revalidate_etag=True,
+            timeout_seconds=timeout if timeout is not None else session_context_fetch_timeout(),
+            auth_header=session_context_auth_header(),
+        ),
+        allowed_hosts=session_context_allowed_hosts(),
+        allow_http=session_context_allow_http(),
+    )
 
-    # 2. Host checks
-    host = (parsed.hostname or "").lower()
-    allowed = session_context_allowed_hosts()
-    if host not in allowed:
-        raise ValueError(
-            f"Blocked session context from host '{host}'. Allowed hosts are: {', '.join(allowed)}."
-        )
+    # Bridge async→sync at this narrow boundary. The caller
+    # (``hosts.core.session_context``) is sync.
+    try:
+        result = asyncio.run(fetcher.fetch(s))
+    except ValueError:
+        # Re-raise SSRF / no-cache errors unchanged for the existing tests.
+        raise
 
-    # 3. Path setup
+    # Write to the legacy cache paths for back-compat with the Path contract
+    # and the meta-inspecting tests.
     cache_md = _cache_path_for(s, data_dir)
     cache_meta = _cache_meta_path(s, data_dir)
     cache_md.parent.mkdir(parents=True, exist_ok=True)
-
-    have_cache = cache_md.is_file() and cache_meta.is_file()
-
-    meta: dict[str, str] = {}
-    if have_cache:
-        try:
-            meta = json.loads(cache_meta.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            have_cache = False
-
-    # 4. Fetch conditional GET
-    headers = {"User-Agent": "lisa_framework"}
-    auth = session_context_auth_header()
-    if auth:
-        if ":" in auth:
-            hk, hv = auth.split(":", 1)
-            headers[hk.strip()] = hv.strip()
-        else:
-            headers["Authorization"] = auth
-
-    if have_cache and not force_refresh:
-        etag = meta.get("etag")
-        last_modified = meta.get("last_modified")
-        if etag:
-            headers["If-None-Match"] = etag
-        if last_modified:
-            headers["If-Modified-Since"] = last_modified
-
-    to = timeout if timeout is not None else session_context_fetch_timeout()
-
-    with httpx.Client(timeout=to) as client:
-        try:
-            response = client.get(s, headers=headers, follow_redirects=True)
-            if response.status_code == 304 and have_cache:
-                logger.debug("session_context_fetch: 304 Not Modified %s", s)
-                # update fetched attr
-                meta["fetched_at"] = datetime.now(UTC).isoformat()
-                cache_meta.write_text(json.dumps(meta), encoding="utf-8")
-                return cache_md
-
-            response.raise_for_status()
-            logger.debug("session_context_fetch: 200 OK %s", s)
-
-            # Write body
-            cache_md.write_bytes(response.content)
-
-            # Write meta
-            new_meta = {
-                "source_ref": s,
-                "fetched_at": datetime.now(UTC).isoformat(),
-                "etag": response.headers.get("etag", ""),
-                "last_modified": response.headers.get("last-modified", ""),
-            }
-            cache_meta.write_text(json.dumps(new_meta), encoding="utf-8")
-            return cache_md
-
-        except httpx.HTTPError as e:
-            if have_cache:
-                logger.warning(
-                    "Network error fetching %s, falling back to stale cache. Error: %s",
-                    s,
-                    e,
-                )
-                return cache_md
-            raise ValueError(f"Failed to fetch remote session context '{s}': {e}") from e
+    cache_md.write_bytes(result.body)
+    new_meta = {
+        "source_ref": s,
+        "fetched_at": result.fetched_at,
+        "etag": result.etag,
+        "last_modified": result.last_modified,
+    }
+    cache_meta.write_text(json.dumps(new_meta), encoding="utf-8")
+    return cache_md

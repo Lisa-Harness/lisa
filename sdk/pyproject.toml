@@ -20,6 +20,9 @@ dependencies = [
     "httpx>=0.27.0",
     "pydantic>=2.13.4",
     "sqlite-vec>=0.1.9",
+    # SQLite-backed on-disk cache for the SDK ContentFetcher primitive
+    # (fetch-and-cache remote documents). Pure-Python, thread-safe, no server.
+    "diskcache>=5.6",
     # Copilot customization file globbing (applyTo / paths). Supports **,
     # brace alternation, and comma-lists the way Copilot's matcher does.
     "wcmatch>=8.5",

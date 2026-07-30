@@ -22,7 +22,7 @@ async def test_fetch_page_rejects_empty_url() -> None:
     ctx = ToolExecutionContext(tool_id="fetch_page", parameters={"url": ""})
     result = await fp.execute(ctx)
 
-    assert result.error == "fetch_page requires a url."
+    assert result.error == "URL is required."
 
 
 @pytest.mark.asyncio
@@ -36,7 +36,7 @@ async def test_fetch_page_rejects_non_http_scheme() -> None:
     )
     result = await fp.execute(ctx)
 
-    assert result.error.startswith("fetch_page only supports http(s) URLs")
+    assert result.error.startswith("URL must be http or https")
 
 
 @pytest.mark.asyncio

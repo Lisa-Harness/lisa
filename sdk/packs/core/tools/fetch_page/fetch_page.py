@@ -20,20 +20,19 @@ import os
 import re
 from datetime import UTC, datetime
 from html import unescape
-from urllib.parse import urlparse
+from pathlib import Path
 
-import httpx
 from pydantic import BaseModel, Field
 
 from kernel.models import ToolExecutionContext, ToolResult
+from sdk.content import ContentFetcher, FetchPolicy, validate_url
 from sdk.packs.core.tools.fetch_page.models import FetchedPage
 
-__all__ = ["Parameters", "execute", "fetch", "is_configured"]
+__all__ = ["Parameters", "execute", "fetch", "get_fetcher", "is_configured"]
 
 _DEFAULT_TIMEOUT_SECONDS: float = 15.0
 _DEFAULT_MAX_BYTES: int = 200_000
 _MAX_TEXT_CHARS: int = 12_000
-_ALLOWED_SCHEMES: tuple[str, ...] = ("http", "https")
 _BLOCK_TAGS = re.compile(
     r"<(script|style|noscript|template|svg|head)\b[\s\S]*?</\1\s*>",
     re.IGNORECASE,
@@ -76,6 +75,55 @@ def _get_max_bytes() -> int:
         return _DEFAULT_MAX_BYTES
 
 
+def _get_data_dir() -> Path:
+    """Return the data dir for the fetcher cache.
+
+    Defaults to ``./artifacts`` (the conventional Lisa data root) but can be
+    overridden via ``LISA_DATA_DIR``. The fetcher creates the cache subdir
+    lazily.
+    """
+    raw = os.environ.get("LISA_DATA_DIR", "").strip()
+    return Path(raw) if raw else Path("artifacts")
+
+
+def _build_policy(*, force_refresh: bool = False) -> FetchPolicy:
+    """Translate env vars into a :class:`FetchPolicy` for this tool."""
+    return FetchPolicy(
+        ttl_seconds=86_400.0,  # fetch_page content is research-grade; 24h is fine
+        force_refresh=force_refresh,
+        max_bytes=_get_max_bytes(),
+        cache=True,
+        revalidate_etag=True,
+        timeout_seconds=_get_timeout(),
+    )
+
+
+# ── Module-level lazy fetcher singleton ─────────────────────────────────────
+# Mirrors the ``_reader_instance()`` pattern in ``mcp_server/content/server.py``:
+# one ContentFetcher per process, shared across all fetch_page calls so the L1
+# cache is reused within a turn and across turns. Tests call ``reset_fetcher``
+# for isolation.
+
+_fetcher: ContentFetcher | None = None
+
+
+def get_fetcher() -> ContentFetcher:
+    """Return the module-level :class:`ContentFetcher`, creating it lazily."""
+    global _fetcher
+    if _fetcher is None:
+        _fetcher = ContentFetcher(
+            _get_data_dir(),
+            default_policy=_build_policy(),
+        )
+    return _fetcher
+
+
+def reset_fetcher() -> None:
+    """Reset the module-level fetcher (for test isolation)."""
+    global _fetcher
+    _fetcher = None
+
+
 def is_configured() -> bool:
     """Return True — fetch_page needs no API key, only network access.
 
@@ -83,19 +131,6 @@ def is_configured() -> bool:
     uniformly.
     """
     return True
-
-
-def _validate_url(url: str) -> str | None:
-    """Return a normalized URL string or an error reason."""
-    cleaned = (url or "").strip()
-    if not cleaned:
-        return "fetch_page requires a url."
-    parsed = urlparse(cleaned)
-    if parsed.scheme.lower() not in _ALLOWED_SCHEMES:
-        return f"fetch_page only supports http(s) URLs: {cleaned}"
-    if not parsed.netloc:
-        return f"fetch_page URL has no host: {cleaned}"
-    return None
 
 
 def _strip_html(html: str, *, max_chars: int) -> tuple[str, str]:
@@ -121,38 +156,24 @@ def _strip_html(html: str, *, max_chars: int) -> tuple[str, str]:
 async def fetch(
     url: str,
     *,
-    client: httpx.AsyncClient | None = None,
+    force_refresh: bool = False,
+    fetcher: ContentFetcher | None = None,
 ) -> FetchedPage:
-    """Fetch one URL and return extracted text.
+    """Fetch one URL via :class:`ContentFetcher` and return extracted text.
 
     Raises:
-        httpx.HTTPError: on transport or status failure.
+        ValueError: on SSRF rejection or network failure with no cache.
     """
-    headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Encoding": "gzip",
-    }
-
-    async def _do_request(c: httpx.AsyncClient) -> FetchedPage:
-        response = await c.get(url, headers=headers, timeout=_get_timeout())
-        response.raise_for_status()
-        content_type = response.headers.get("content-type", "")
-        raw = response.content[: _get_max_bytes()]
-        body = raw.decode(response.encoding or "utf-8", errors="replace")
-        text, title = _strip_html(body, max_chars=_MAX_TEXT_CHARS)
-        return FetchedPage(
-            url=url,
-            status_code=response.status_code,
-            title=title,
-            text=text,
-            content_type=content_type,
-        )
-
-    if client is not None:
-        return await _do_request(client)
-
-    async with httpx.AsyncClient() as managed_client:
-        return await _do_request(managed_client)
+    f = fetcher if fetcher is not None else get_fetcher()
+    result = await f.fetch(url, policy=_build_policy(force_refresh=force_refresh))
+    text, title = _strip_html(result.text, max_chars=_MAX_TEXT_CHARS)
+    return FetchedPage(
+        url=result.url,
+        status_code=result.status_code,
+        title=title,
+        text=text,
+        content_type=result.content_type,
+    )
 
 
 async def execute(ctx: ToolExecutionContext) -> ToolResult:
@@ -167,8 +188,9 @@ async def execute(ctx: ToolExecutionContext) -> ToolResult:
         url = (ctx.parameters or {}).get("url", "")
         max_chars = _MAX_TEXT_CHARS
 
-    reason = _validate_url(url)
-    if reason:
+    # Validate first so SSRF rejections surface as tool errors, not exceptions.
+    _, reason = validate_url(url)
+    if reason is not None:
         return ToolResult(tool_id=ctx.tool_id or "fetch_page", error=reason)
 
     try:
