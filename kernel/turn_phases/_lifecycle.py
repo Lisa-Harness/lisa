@@ -25,8 +25,7 @@ Design constraints (mirroring the codebase conventions):
 - No compat: this is the hard cutover from the guard collage to one resolver.
   The guard constants (``stage_nudge_threshold``, ``stage_nudge_cap``,
   ``per_step_max_iterations``, ``per_step_max_tool_calls``,
-  ``narration_nudge_cap``, ``forced_fork_non_fork_tool_cap``,
-  ``forced_plan_non_transition_tool_cap``, ``duplicate_hint_limit``,
+  ``forced_fork_non_fork_tool_cap``, ``forced_plan_non_transition_tool_cap``, ``duplicate_hint_limit``,
   ``hint_cycle_min_len``, ``hint_override_limit``, ``max_handoffs_per_turn``)
   remain on ``kernel.config.Settings`` but their semantics flip from
   "force a silent final" to "force a :class:`YieldAction` or
@@ -140,7 +139,6 @@ class LifecycleResolverSettings:
     per_step_max_tool_calls: int = 12
     stage_nudge_threshold: int = 4
     stage_nudge_cap: int = 6
-    narration_nudge_cap: int = 3
 
 
 @runtime_checkable
@@ -302,7 +300,6 @@ def resolve_lifecycle_action(
     router_decision: _RouterDecisionLike | None = None,
     workflow_instance: _WorkflowInstanceLike | None = None,
     recovery_records: list[_RecoveryRecordLike] | None = None,
-    narration_nudge_count: int = 0,
     is_workflow: bool = False,
 ) -> LifecycleAction:
     """Decide the turn's next action for one iteration.

@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "_TRANSITION_TOOL_NAME",
+    "_YIELD_TOOL_NAME",
     "_build_in_process_tool_schemas",
     "_mode_bound_operation_ids",
     "_operation_allowed_for_mode",
@@ -41,6 +42,11 @@ __all__ = [
 # The tool name the model calls to request a workflow stage transition.
 # Intercepted by the turn loop before the operation/tool/MCP dispatch branches.
 _TRANSITION_TOOL_NAME = "transition_stage"
+
+# The tool name the model calls to yield (ask the user a question).
+# Intercepted by the turn loop alongside transition_stage — it is a terminal
+# action that breaks the loop and stamps CheckpointBundle.lifecycle_state.
+_YIELD_TOOL_NAME = "yield"
 
 
 def _build_in_process_tool_schemas(
@@ -168,6 +174,13 @@ def _prune_model_tool_schemas(
                 pruned.append(schema)
             else:
                 dropped_disallowed += 1
+            continue
+
+        # The yield tool is advertised by the turn runner based on the mode's
+        # yield_policy; it is not in the operation/tool catalog. Let it
+        # through so the model can call it.
+        if name == _YIELD_TOOL_NAME:
+            pruned.append(schema)
             continue
 
         op_def = operation_catalog.get(name)

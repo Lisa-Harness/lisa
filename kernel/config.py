@@ -131,11 +131,6 @@ class Settings(BaseSettings):
     # without editing kernel source. Each defaults to its historical
     # value (see the git-blame comments in ``turn_runner.py`` for the
     # incidents that motivated each cap).
-    # Cap for narration/chain-incomplete correction nudges. After this
-    # many nudges the guards give up and let the model's response through
-    # so the user sees something rather than a silent hang. Override via
-    # ``NARRATION_NUDGE_CAP``.
-    narration_nudge_cap: int = 3
     # Forced-fork enforcer: when a ``fork:`` routing hint is active and
     # the model refuses to call ``transition_stage`` — instead burning
     # iterations on read-only tools or returning empty completions — the
@@ -351,7 +346,6 @@ class Settings(BaseSettings):
         "declarative_completion_max_tokens",
         "max_tool_iterations",
         "fork_child_max_tool_iterations",
-        "narration_nudge_cap",
         "forced_fork_non_fork_tool_cap",
         "forced_plan_non_transition_tool_cap",
         "stage_nudge_threshold",

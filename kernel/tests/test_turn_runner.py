@@ -3497,6 +3497,53 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_turn_model_yield_tool_terminates_with_question() -> None:
+    """When the model calls the ``yield`` tool, the turn terminates with
+    the question as the response text and ``_yielded`` stamps the
+    checkpoint.
+
+    This is the core unified-lifecycle fix: the model can now *voluntarily*
+    ask the user a question by calling a tool, instead of the harness
+    guessing that "no tool calls" meant "ask" (which was indistinguishable
+    from "done").
+    """
+
+    async def yield_then_done(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_yield_1",
+                    "function": {
+                        "name": "yield",
+                        "arguments": json.dumps(
+                            {
+                                "question": "Which target audience should I focus on?",
+                                "context": "ambiguous request",
+                            }
+                        ),
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(yield_then_done)
+    hooks.execute_operation = _stub_execute_operation
+
+    result = await run_turn(
+        mode_id="default",
+        query="write a roadmap",
+        hooks=hooks,
+    )
+
+    assert result.response_text == "Which target audience should I focus on?"
+    # The yield tool is intercepted in-loop (like transition_stage) — it
+    # does not increment the dispatched-tool counter. The turn terminates
+    # with the question as content.
+    assert result.tool_call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_budget_briefing_injected_into_system_prompt() -> None:
     """The per-iteration budget briefing is injected into the system
     prompt (``messages[0]``) so the model can self-scope its work within

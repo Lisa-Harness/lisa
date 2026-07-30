@@ -1438,9 +1438,51 @@ def get_transition_tool_schema() -> list[dict[str, object]]:
                 "(3) a workflow stage id to advance the current mode's FSM. "
                 "When a Routing Hint is present in the system prompt, follow it "
                 "by calling this tool with the suggested target. If user input "
-                "is still missing, ask a question instead of calling this tool."
+                "is still missing, call `yield` to ask the user instead of "
+                "calling this tool."
             ),
             parameters_schema=WorkflowTransitionRequest,
+        )
+    ]
+
+
+_YIELD_TOOL_NAME = "yield"
+
+
+def get_yield_tool_schema() -> list[dict[str, object]]:
+    """Return the structured tool schema for the unified-lifecycle yield action.
+
+    ``yield`` is a first-class terminal action: it pauses the turn, checkpoints
+    durable state with ``lifecycle_state="yielded"``, and surfaces a question
+    to the user. The user's reply resumes the turn against the same
+    ``WorkflowInstance`` step. This makes "ask" distinguishable from "done"
+    (both used to be "no tool calls" — the core bug the unified lifecycle
+    fixes).
+
+    The tool is advertised to the model alongside ``transition_stage``. When
+    the model calls ``yield``, the turn loop treats it as terminal (like
+    ``finish``) — it breaks the loop with the question as the turn content
+    and stamps the checkpoint. The harness does NOT dispatch the tool to any
+    executor; it intercepts the call in the tool-dispatch loop (same pattern
+    as ``transition_stage``).
+    """
+    from kernel.models import YieldAction  # noqa: PLC0415
+
+    return [
+        build_strict_openai_function_tool(
+            name=_YIELD_TOOL_NAME,
+            description=(
+                "Pause the turn and ask the user a clarifying question. Use "
+                "this when you need information or a decision from the user "
+                "before you can continue — e.g. when a request is ambiguous, "
+                "when a step stalled and needs a retry/skip decision, or when "
+                "you have hit your iteration budget. The harness checkpoints "
+                "state and surfaces your question; the user's reply resumes "
+                "the turn. Do NOT use this to end the turn with a final "
+                "answer — just respond with text for that. Do NOT narrate "
+                "asking a question in prose — call this tool."
+            ),
+            parameters_schema=YieldAction,
         )
     ]
 

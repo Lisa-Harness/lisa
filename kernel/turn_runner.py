@@ -48,6 +48,7 @@ from kernel.ipsar_fsm import (
     get_routing_targets,
     get_transition_tool_schema,
     get_workflow_catalog,
+    get_yield_tool_schema,
     is_fork_target,
     is_routable_mode,
     is_terminal_stage,
@@ -212,7 +213,7 @@ def _build_budget_briefing(
     per_target_parts: list[str] = []
     for schema in tool_schemas:
         name = schema.get("function", {}).get("name", "")
-        if not name or name == _TRANSITION_TOOL_NAME:
+        if not name or name == _TRANSITION_TOOL_NAME or name == _YIELD_TOOL_NAME:
             continue
         target_def = resolve_capability_for_turn_limit(
             name,
@@ -1674,7 +1675,6 @@ async def _run_turn_inner(
     # the hot loop; the rest are read directly from ``_kernel_settings``
     # at their single use site. See the Settings fields for env-var
     # overrides and the incidents each cap guards against.
-    _narration_nudge_cap = _kernel_settings.narration_nudge_cap
     _max_handoffs_per_turn = _kernel_settings.max_handoffs_per_turn
     _hint_override_limit = _kernel_settings.hint_override_limit
 
@@ -2073,6 +2073,18 @@ async def _run_turn_inner(
     has_routing_targets = bool(get_routing_targets(mode_id)) if mode_config else False
     if is_workflow or has_routing_targets:
         tool_schemas.extend(get_transition_tool_schema())
+    # ── Unified turn lifecycle: advertise the yield tool ──────────────
+    # ``yield`` is a first-class terminal action the model calls to ask the
+    # user a question. It is advertised whenever the mode's ``yield_policy``
+    # allows it (``allowed=True``, the default for chat modes) OR when the
+    # mode has a ``fallback_mode`` (action modes that forbid inline asks but
+    # name a redirect target). When the model calls ``yield``, the dispatch
+    # loop intercepts it (same pattern as ``transition_stage``) — it does
+    # NOT dispatch to any executor; it breaks the loop with the question as
+    # the turn content and stamps ``CheckpointBundle.lifecycle_state="yielded"``.
+    _yield_policy_for_tools = _resolve_yield_policy(mode_config)
+    if _yield_policy_for_tools.allowed or _yield_policy_for_tools.fallback_mode:
+        tool_schemas.extend(get_yield_tool_schema())
 
     # Apply one final model-facing prune pass so the payload sent to the
     # provider cannot include stale/duplicate/disallowed tool schemas.
@@ -2394,7 +2406,6 @@ async def _run_turn_inner(
         )
 
     tools_dispatched_ever = False  # tracks if *any* tool was called this turn
-    _narration_nudge_count = 0  # guards against infinite narration retries
     # ── Unified turn lifecycle: pending yield ───────────────────────────
     # When the harness forces a yield (stuck-in-stage cap, iteration cap, or
     # recovery stall), it sets ``_pending_yield``. The loop checks this after
@@ -2914,134 +2925,6 @@ async def _run_turn_inner(
             content = completion_content(completion).strip()
 
             if not _synthesized_fork and not _synthesized_plan:
-                # ── Hallucinated-transition guard ──────────────────────────
-                # Models sometimes *narrate* a stage transition or handoff in
-                # their text output ("I have transitioned to the search stage…"
-                # / "I would go into coding mode…") instead of actually calling
-                # the ``transition_stage`` tool. When a routing hint is active,
-                # detect transition-like language and inject a correction nudge
-                # so the model retries with the actual tool call.
-                #
-                # The guard fires when:
-                #   - A routing hint is active (the model was told to hand off)
-                #   - The model has NOT yet called transition_stage this turn
-                #     (``transitioned_to`` is still None AND ``handoff_to`` is
-                #     None — either kind of transition counts)
-                #   - We haven't exhausted the retry cap (prevents infinite
-                #     loops with models that never learn to call the tool)
-                #
-                # NOTE: the ``tools_dispatched_ever`` condition was REMOVED.
-                # In a sequential chain the model does real work in each mode
-                # (e.g. web_search in search mode) and then needs to be told
-                # to call transition_stage to continue. The old condition
-                # suppressed the guard after the model did any tool work,
-                # which meant the chain stalled — the model summarized the
-                # search results, said "I would go into coding mode", and
-                # ended the turn without calling the tool.
-                #
-                # After the cap, the guard gives up and lets the narrated
-                # response through so the user sees something rather than a
-                # silent hang. The cap (``narration_nudge_cap`` in
-                # ``kernel.config.Settings``) is bound to the local
-                # ``_narration_nudge_cap`` so the write-tool guard below
-                # shares it without a repeated settings read.
-                if routing_hint and _narration_nudge_count < _narration_nudge_cap:
-                    lowered = content.lower()
-                    transition_markers = (
-                        "i have transitioned",
-                        "i'll transition",
-                        "i'll hand off",
-                        "i will now transition",
-                        "i am now transitioning",
-                        "i will now hand off",
-                        "i have moved to",
-                        "i am now in the",
-                        "moving to the",
-                        "transitioning to the",
-                        "i would go into",
-                        "i'd go into",
-                        "i would transition",
-                        "i'd transition",
-                        "i would hand off",
-                        "i'd hand off",
-                        "i would move to",
-                        "i'd move to",
-                        "next i would",
-                        "then i would",
-                        "i would then",
-                        "i would proceed",
-                        "i'd proceed",
-                        "i will proceed",
-                    )
-                    if any(m in lowered for m in transition_markers):
-                        _narration_nudge_count += 1
-                        _log.warning(
-                            "model narrated a transition without calling "
-                            "transition_stage; injecting correction nudge "
-                            "(mode=%s, iteration=%d, nudge=%d/%d)",
-                            mode_id,
-                            _state.iteration,
-                            _narration_nudge_count,
-                            _narration_nudge_cap,
-                        )
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "You wrote that you would transition or go "
-                                    "into another mode, but you did not actually "
-                                    "call the `transition_stage` tool. A "
-                                    "transition only happens when you call the "
-                                    "tool — writing about it does nothing. "
-                                    "Call `transition_stage` now with the "
-                                    "appropriate `target_stage_id`. If you "
-                                    "cannot or should not transition, respond "
-                                    "directly to the user without claiming a "
-                                    "transition."
-                                ),
-                            }
-                        )
-                        continue
-
-                    # ── Chain-incomplete guard (silent stop) ────────────────
-                    # After a handoff to an action mode, the mode naturally
-                    # "summarize and stop" once its entry work is done. When a
-                    # post-handoff hint is still active (the workflow is not
-                    # finished) but the model produced a final text response
-                    # WITHOUT calling ``transition_stage`` and WITHOUT narrating
-                    # a transition, the chain stalls. Inject a correction nudge
-                    # so the model calls ``transition_stage`` to continue.
-                    #
-                    # Detection: routing hint active, no transition markers in
-                    # the text, no transition occurred this turn, and we haven't
-                    # exhausted the retry cap. Mirrors the hallucinated-
-                    # transition guard's bounds so the model still gets to
-                    # produce a final response after the cap.
-                    if transitioned_to is None and handoff_to is None:
-                        _narration_nudge_count += 1
-                        _log.warning(
-                            "model ended the turn without calling "
-                            "transition_stage while a routing hint is active; "
-                            "injecting chain-incomplete nudge (mode=%s, "
-                            "iteration=%d, nudge=%d/%d)",
-                            mode_id,
-                            _state.iteration,
-                            _narration_nudge_count,
-                            _narration_nudge_cap,
-                        )
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "You completed this mode's work but the "
-                                    "workflow is not finished. Call "
-                                    "`transition_stage` to continue to the "
-                                    "next step. Do not end the turn here."
-                                ),
-                            }
-                        )
-                        continue
-
                 # ── Unified turn lifecycle: apply pending yield ──────────
                 # A forced yield (stuck-in-stage cap, iteration cap, or
                 # recovery stall) was set earlier in this iteration. The
@@ -3052,6 +2935,20 @@ async def _run_turn_inner(
                 # the yield's question as the turn content so the user can
                 # redirect. The checkpoint layer stamps
                 # ``lifecycle_state="yielded"``.
+                #
+                # The hallucinated-transition guard, chain-incomplete guard,
+                # and write-tool guard that lived here were removed in the
+                # unified-lifecycle cutover. They injected ``user`` messages
+                # to correct models that narrated transitions instead of
+                # calling ``transition_stage``, or stopped silently with a
+                # routing hint active. The unified lifecycle replaces that
+                # "beg via nudges" pattern: the harness either forces a
+                # ``TransitionAction`` (the forced-fork/plan enforcers
+                # below, which are kernel-takes-over, not nudge-and-beg) or
+                # forces a ``YieldAction`` (the cap paths). The model's
+                # narrated transition is now accepted as a final response —
+                # if the workflow is incomplete, the user can reply and the
+                # routing hint will re-fire on the next turn.
                 if _pending_yield is not None:
                     content = _pending_yield.question
                     _yielded = True
@@ -3071,93 +2968,6 @@ async def _run_turn_inner(
         for tool_call in tool_calls:
             tool_name, tool_arguments = openai_tool_call_to_mcp(tool_call)
             tool_call_id = str(tool_call.get("id") or "")
-
-            # ── Routing-hint write-tool guard (defense in depth) ───────
-            # When a routing hint was injected this turn (the kernel told the
-            # model to hand off because the current mode lacks the tools the
-            # query needs), a model that ignores the hint and instead calls a
-            # write-effect tool from the current mode is almost always wrong
-            # — e.g. a weak model in ``coding`` mode calling
-            # ``coding_create_worktree`` for a "write a roadmap" request
-            # instead of handing off to ``markdown``. Inject a correction
-            # nudge (mirroring the hallucinated-transition guard) and skip
-            # the dispatch so the model retries with ``transition_stage`` or
-            # a read-only tool. Bounded by ``narration_nudge_cap`` so a model
-            # that never learns still gets to produce a final response.
-            if (
-                routing_hint
-                and tool_name != _TRANSITION_TOOL_NAME
-                and _narration_nudge_count < _narration_nudge_cap
-            ):
-                _hint_effect = _tool_effect(
-                    tool_name,
-                    operation_catalog=operation_catalog,
-                    tool_catalog=tool_catalog,
-                )
-                if _hint_effect == "write" or _hint_effect == "external_write":
-                    tool_def = tool_catalog.get(tool_name)
-                    if getattr(tool_def, "approval_required", False):
-                        # Approval-backed effectful tools should be allowed through
-                        # the routing-hint guard so their host-side approval flow
-                        # can interrupt the turn instead of being silently replaced
-                        # by a nudge. This preserves the expected pause/approval
-                        # semantics for effectful calls such as file writes.
-                        pass
-                    else:
-                        _narration_nudge_count += 1
-                        _log.warning(
-                            "model called write-effect tool %r after a routing "
-                            "hint; injecting correction nudge (mode=%s, "
-                            "iteration=%d, nudge=%d/%d)",
-                            tool_name,
-                            mode_id,
-                            _state.iteration,
-                            _narration_nudge_count,
-                            _narration_nudge_cap,
-                        )
-                        # Resolve a concrete handoff target for the residual
-                        # intent gap so the nudge names the mode the model
-                        # should hand off to (e.g. ``markdown`` for a residual
-                        # ``write`` gap) instead of the generic "the suggested
-                        # target_stage_id" — which is useless when the active
-                        # hint is stale or has been suppressed by the
-                        # duplicate-hint dedup (the 2026-07-27 incident: the
-                        # nudge kept pointing back at ``plan`` after plan had
-                        # already run, so the model had no path to
-                        # ``markdown`` and reached for
-                        # ``coding_create_worktree`` instead). Pass the turn's
-                        # cumulative ``chain_satisfied`` as ``extra_satisfied``
-                        # so already-completed steps are not re-suggested.
-                        _nudge_target = _single_handoff_target_for_gap(
-                            query=query,
-                            routing_targets=get_routing_targets(mode_id) if mode_config else [],
-                            mode_config=mode_config,
-                            extra_satisfied=set(_state.chain_satisfied),
-                        )
-                        if _nudge_target:
-                            _nudge_content = (
-                                f"You called the write-effect tool `{tool_name}` "
-                                "but a routing hint told you this mode lacks "
-                                "the tools needed for this request. Do not "
-                                "write from this mode — call `transition_stage` "
-                                f"with target_stage_id `{_nudge_target}` to hand "
-                                "off, or use a read-only tool and respond "
-                                "directly to the user."
-                            )
-                        else:
-                            _nudge_content = (
-                                f"You called the write-effect tool `{tool_name}` "
-                                "but a routing hint told you this mode lacks "
-                                "the tools needed for this request. Do not "
-                                "write from this mode — call `transition_stage` "
-                                "with the suggested `target_stage_id` to hand "
-                                "off, or use a read-only tool and respond "
-                                "directly to the user."
-                            )
-                        messages.append(
-                            {"role": "user", "content": _nudge_content}
-                        )
-                        continue
 
             # ── Forced-fork enforcer ──────────────────────────────────
             # When the kernel has computed a deterministic ``fork:`` target
@@ -3355,6 +3165,8 @@ async def _run_turn_inner(
             # from a plain tool call.
             if tool_name == _TRANSITION_TOOL_NAME:
                 _tool_kind = "transition"
+            elif tool_name == _YIELD_TOOL_NAME:
+                _tool_kind = "yield"
             elif tool_name in operation_catalog:
                 _tool_kind = "operation"
             elif tool_name in tool_catalog:
@@ -3421,6 +3233,60 @@ async def _run_turn_inner(
                 except Exception as recovery_exc:  # pylint: disable=broad-except
                     _log.warning("recovery begin failed for %s: %s", tool_name, recovery_exc)
             try:
+                # ── Unified turn lifecycle: yield interception ─────────────
+                # The model called ``yield`` — a first-class terminal action.
+                # This is handled in-loop, not through the operation/tool/MCP
+                # dispatch branches (same pattern as ``transition_stage``).
+                # The kernel extracts the question/context/target, sets
+                # ``_pending_yield`` and ``_yielded``, appends a tool result
+                # so the message history stays well-formed, and breaks the
+                # loop. The checkpoint layer stamps
+                # ``lifecycle_state="yielded"`` with the question.
+                if tool_name == _YIELD_TOOL_NAME:
+                    _yield_question = str(tool_arguments.get("question") or "").strip()
+                    _yield_context = str(tool_arguments.get("context") or "").strip()
+                    _yield_target = str(tool_arguments.get("target_mode_id") or "").strip()
+                    if not _yield_question:
+                        # The model called yield with no question — degenerate.
+                        # Use the policy's default question rather than hanging.
+                        _yp = _resolve_yield_policy(mode_config)
+                        _yield_question = _yp.default_question or (
+                            "I need more information to proceed. "
+                            "What would you like me to focus on?"
+                        )
+                    _pending_yield = YieldAction(
+                        question=_yield_question,
+                        context=_yield_context or "model-emitted yield",
+                        target_mode_id=_yield_target,
+                    )
+                    content = _yield_question
+                    _yielded = True
+                    _log.info(
+                        "turn lifecycle: model emitted yield (mode=%s, "
+                        "iteration=%d, target=%s)",
+                        mode_id,
+                        _state.iteration,
+                        _yield_target or "(in-place)",
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "name": tool_name,
+                            "content": f"Yielded to user: {_yield_question}",
+                        }
+                    )
+                    await _emit_stage(
+                        "tool_dispatch_complete",
+                        {
+                            "tool": tool_name,
+                            "tool_kind": "yield",
+                            "_state.iteration": _state.iteration,
+                            "mode_id": mode_id,
+                        },
+                    )
+                    break
+
                 # Transition interception: the model called transition_stage.
                 # This is handled in-loop, not through the operation/tool/MCP
                 # dispatch branches. The kernel validates the transition
@@ -5018,6 +4884,7 @@ from kernel.turn_phases._routing_hint import (  # noqa: F401
 # Tool-schema cluster (extracted in Phase 3)
 from kernel.turn_phases._tool_schemas import (  # noqa: F401
     _TRANSITION_TOOL_NAME,
+    _YIELD_TOOL_NAME,
     _build_in_process_tool_schemas,
     _mode_bound_operation_ids,
     _operation_allowed_for_mode,
