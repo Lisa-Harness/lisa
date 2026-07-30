@@ -2407,6 +2407,7 @@ async def _run_turn_inner(
             )
             _synth_planned_call = {
                 "id": f"planned_handoff_{_state.iteration}",
+                "type": "function",
                 "function": {
                     "name": _TRANSITION_TOOL_NAME,
                     "arguments": json.dumps(
@@ -2553,6 +2554,7 @@ async def _run_turn_inner(
                 )
                 synth_call = {
                     "id": f"forced_fork_empty_{_state.iteration}",
+                    "type": "function",
                     "function": {
                         "name": _TRANSITION_TOOL_NAME,
                         "arguments": json.dumps(
@@ -2594,6 +2596,7 @@ async def _run_turn_inner(
                 )
                 synth_plan_call = {
                     "id": f"forced_plan_empty_{_state.iteration}",
+                    "type": "function",
                     "function": {
                         "name": _TRANSITION_TOOL_NAME,
                         "arguments": json.dumps(
