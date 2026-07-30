@@ -15,10 +15,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.status import Status
+from rich.spinner import Spinner
 from rich.text import Text
 
 logger = logging.getLogger(__name__)
@@ -30,9 +31,21 @@ STYLE_BORDER_ERROR = "indian_red"
 STYLE_STAGE = "grey58"
 STYLE_TEXT_MUTED = "grey58"
 
+#: Floor for the number of history lines kept visible in the Live region.
+#: Guarantees a usable play-by-play even on very short terminals / non-tty
+#: test consoles that report a height of 0 or 1.
+_HISTORY_MIN_LINES = 6
+
 
 class RichTransport:
     """TransportCallbacks implementation backed by a Rich Console.
+
+    Stage history is rendered through a Rich :class:`Live` region that
+    accumulates every ``on_stage`` line instead of overwriting a single
+    spinner line. The user sees a growing play-by-play (``model_call`` →
+    ``tool_dispatch`` → ``tool_dispatch_complete`` → next iteration → …)
+    that survives scrolling back, with a live spinner on the currently
+    active stage at the bottom.
 
     Attributes:
         console: The Rich Console to render to. Defaults to a shared
@@ -45,8 +58,22 @@ class RichTransport:
     def __init__(self, *, console: Console | None = None, debug: bool = False) -> None:
         self.console: Console = console or Console()
         self.debug = debug
-        self._status: Status | None = None
+        # ``_status`` is retained as a non-None sentinel while the Live
+        # region is active and ``None`` when stopped, preserving the
+        # ``transport._status is None`` contract used by REPL cancel
+        # handling and tests. The actual display is owned by ``_live``.
+        self._status: Live | None = None
+        self._live: Live | None = None
         self._thinking_stage: str = ""
+        # Accumulated play-by-play lines for the current turn. Each entry
+        # is the fully-rendered status-line text (already prefixed with the
+        # active mode, tool glyph, etc.). Cleared by ``start_thinking``.
+        self._stage_history: list[str] = []
+        # The label currently shown on the spinner line (the active stage).
+        # Updated by every ``on_stage`` call and rendered as the final,
+        # spinner-prefixed line of the Live region.
+        self._active_label: str = ""
+        self._thinking_spinner: str = "dots"
         # True once on_text_chunk fires during the current turn. Reset in
         # start_thinking so each turn starts clean. When True, on_response
         # skips the Rich Panel because the text is already on screen —
@@ -66,6 +93,47 @@ class RichTransport:
         # ``[mode]`` prefix on every status line so the user always knows
         # who owns their turn — including mid-turn handoffs.
         self._current_mode: str = ""
+
+    # ── Live region lifecycle ───────────────────────────────────────
+
+    def _history_limit(self) -> int:
+        """Max play-by-play lines kept in the Live window at once.
+
+        Sized to the terminal height minus a few lines of headroom for the
+        spinner line and the next prompt, with a floor so non-tty / test
+        consoles (which report a height of 0) still show a usable trail.
+        """
+        height = self.console.size.height or 0
+        if height <= 0:
+            return _HISTORY_MIN_LINES
+        return max(_HISTORY_MIN_LINES, height - 3)
+
+    def _render_live_display(self) -> Group:
+        """Build the Live renderable: history lines + active spinner line."""
+        limit = self._history_limit()
+        visible = self._stage_history[-limit:]
+        renderables: list[Any] = []
+        for line in visible:
+            renderables.append(Text(line, style=STYLE_TEXT_MUTED))
+        # Active stage line with a live spinner so the user can tell the
+        # turn is still running and which stage owns it right now.
+        spinner_label = self._active_label or self._thinking_stage or "thinking"
+        renderables.append(Spinner(self._thinking_spinner, spinner_label, style=STYLE_STAGE))
+        return Group(*renderables)
+
+    def _refresh_live(self) -> None:
+        """Re-render the Live region if it is active; otherwise print inline."""
+        if self._live is not None:
+            try:
+                self._live.update(self._render_live_display())
+            except Exception:  # pylint: disable=broad-except
+                pass
+        else:
+            # No Live region: fall back to printing the latest line inline
+            # (the pre-existing behavior for the no-spinner path used by
+            # tests and headless callers).
+            if self._stage_history:
+                self.console.print(Text(self._stage_history[-1], style=STYLE_STAGE))
 
     def start_thinking(self, stage: str = "dispatch") -> None:
         """Start a status spinner so the user sees the turn is active.
@@ -87,32 +155,80 @@ class RichTransport:
         self._fork_children = {}
         self._fork_total = 0
         self._current_mode = ""
+        # Clear the per-turn play-by-play so each turn starts with a fresh
+        # transcript. The history accumulates as on_stage fires.
+        self._stage_history = []
         is_dispatch = stage == "dispatch"
-        spinner = "dots2" if is_dispatch else "dots"
-        label = self._render_status_line(stage)
-        self._status = self.console.status(
-            label,
-            spinner=spinner,
-            spinner_style=STYLE_STAGE,
+        self._thinking_spinner = "dots2" if is_dispatch else "dots"
+        # Seed the active spinner line with the initial stage label so the
+        # Live region shows something immediately (before the first
+        # on_stage event arrives).
+        self._active_label = self._render_status_line(stage)
+        live: Live | None = Live(
+            self._render_live_display(),
+            console=self.console,
+            refresh_per_second=4,
+            transient=False,
         )
-        self._status.start()
+        if live is not None:
+            try:
+                live.start()
+            except Exception:  # pylint: disable=broad-except
+                # Non-tty / redirected consoles can reject Live; fall back to
+                # plain inline printing via _refresh_live so the turn still
+                # surfaces stage events.
+                live = None
+        self._live = live
+        # Preserve the sentinel contract: ``_status`` is non-None while the
+        # display is active so REPL cancel handling and tests can assert
+        # ``transport._status is None`` after stop_thinking.
+        self._status = live
 
     def stop_thinking(self) -> None:
-        """Stop the thinking spinner if it is running."""
+        """Stop the thinking display if it is running.
+
+        Before tearing down the Live region, print the accumulated
+        play-by-play as permanent console output so it survives in the
+        scrollback. Without this, Rich's Live region reclaims its lines on
+        stop and the user would lose the trajectory they just watched.
+        """
+        live = self._live
         status = self._status
+        self._live = None
         self._status = None
-        if status is not None:
+        # Flush the history as permanent lines before the Live region
+        # closes so the transcript is preserved in the scrollback.
+        if live is not None and self._stage_history:
+            try:
+                for line in self._stage_history:
+                    self.console.print(Text(line, style=STYLE_TEXT_MUTED))
+            except Exception:  # pylint: disable=broad-except
+                pass
+        if live is not None:
+            try:
+                live.stop()
+            except Exception:  # pylint: disable=broad-except
+                pass
+        if status is not None and status is not live:
             try:
                 status.stop()
             except Exception:  # pylint: disable=broad-except
                 pass
 
     async def on_stage(self, label: str, data: dict[str, Any] | None = None) -> None:
-        """Update the status spinner with the current stage.
+        """Append one stage line to the play-by-play and refresh the display.
 
-        Renders a single detailed line for normal stages. When a fork
-        fan-out is active, renders one line per child so the user sees
-        every parallel call progressing independently.
+        Every stage event (``model_call``, ``tool_dispatch``, …) is
+        appended to ``_stage_history`` and becomes a permanent line in
+        the Live region. The previously-active line scrolls up into the
+        history; the new line becomes the active spinner line at the
+        bottom. This means the user sees the full turn trajectory, not
+        just the current stage — and if they look away, the history is
+        still visible when they look back.
+
+        When a fork fan-out is active, one multi-line entry (header + one
+        line per child) is appended per fork event so the user sees every
+        parallel call progressing independently.
         """
         data = data or {}
 
@@ -131,7 +247,7 @@ class RichTransport:
         if label == "fork_start":
             self._fork_children = {}
             self._fork_total = int(data.get("children", 0)) or 0
-            self._update_status(self._render_fork_stage())
+            self._append_stage(self._render_fork_stage())
             return
         if label == "fork_child_start":
             idx = int(data.get("child_index", -1))
@@ -142,7 +258,7 @@ class RichTransport:
                     "status": "running",
                     "query_preview": data.get("query_preview", ""),
                 }
-            self._update_status(self._render_fork_stage())
+            self._append_stage(self._render_fork_stage())
             return
         if label == "fork_child_complete":
             idx = int(data.get("child_index", -1))
@@ -155,7 +271,7 @@ class RichTransport:
                     }
                 )
                 self._fork_children[idx] = existing
-            self._update_status(self._render_fork_stage())
+            self._append_stage(self._render_fork_stage())
             return
         if label == "fork_complete":
             # Keep the per-child table visible so the user sees *which*
@@ -165,12 +281,24 @@ class RichTransport:
             failed = int(data.get("failed", 0))
             self._fork_total = 0
             text = self._render_fork_stage(summary=(ok, failed))
-            self._update_status(text)
+            self._append_stage(text)
             return
 
         # ── Normal stage line (detailed) ───────────────────────────────
         text = self._render_status_line(label, data)
-        self._update_status(text)
+        self._append_stage(text)
+
+    def _append_stage(self, text: str) -> None:
+        """Append a rendered stage line to history and refresh the display.
+
+        The appended text becomes the new active (spinner) line; the
+        previous active line is now part of the scrollable history. When
+        no Live region is active, this falls back to printing the line
+        inline via ``_refresh_live``.
+        """
+        self._active_label = text
+        self._stage_history.append(text)
+        self._refresh_live()
 
     def _render_status_line(self, label: str, data: dict[str, Any] | None = None) -> str:
         """Render one status line, prefixed with the active mode.
@@ -191,11 +319,12 @@ class RichTransport:
         return f"{prefix}stage: {label}{suffix}"
 
     def _update_status(self, text: str) -> None:
-        """Push ``text`` to the spinner, or print it inline if no spinner."""
-        if self._status is not None:
-            self._status.update(text)
-        else:
-            self.console.print(Text(text, style=STYLE_STAGE))
+        """Append ``text`` to the play-by-play and refresh the Live display.
+
+        Kept for backward compatibility with callers/tests that drive the
+        # transport directly. New code should use ``_append_stage``.
+        """
+        self._append_stage(text)
 
     def _render_stage_suffix(self, data: dict[str, Any]) -> str:
         """Compact one-line rendering of stage metadata."""

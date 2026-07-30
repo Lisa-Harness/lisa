@@ -354,3 +354,72 @@ async def test_fork_complete_keeps_per_child_table() -> None:
     assert lines[0] == "stage: fork complete (1 ok, 1 failed)"
     assert "#0 coding · implement · ok · write · 42ms" in lines[1]
     assert "#1 markdown · no_tools · doc · 30ms" in lines[2]
+
+
+@pytest.mark.asyncio
+async def test_stage_history_accumulates_play_by_play() -> None:
+    """on_stage accumulates every stage line into _stage_history so the
+    user sees the full turn trajectory, not just the last stage.
+
+    Previously the transport overwrote a single spinner line; the user
+    missed earlier stages if they looked away. Now each event is appended
+    to a history list and the active line is the most recent entry.
+    """
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("dispatch")
+
+    await transport.on_stage(
+        "model_call",
+        {"mode_id": "default", "model_id": "glm-5.2:cloud", "iteration": 1},
+    )
+    await transport.on_stage(
+        "tool_dispatch",
+        {"tool": "search_web", "tool_kind": "mcp_tool", "iteration": 1, "tool_calls_so_far": 1},
+    )
+    await transport.on_stage(
+        "tool_dispatch_complete",
+        {"tool": "search_web", "duration_ms": 1200},
+    )
+    await transport.on_stage(
+        "model_call",
+        {"mode_id": "default", "model_id": "glm-5.2:cloud", "iteration": 2},
+    )
+
+    # All four stage events are retained in order — the user can scroll
+    # back and see the full play-by-play, not just the last line.
+    assert len(transport._stage_history) >= 4
+    history_text = "\n".join(transport._stage_history)
+    assert "iteration=1" in history_text
+    assert "search_web" in history_text
+    assert "iteration=2" in history_text
+    # The active spinner label is the most-recent stage.
+    assert "iteration=2" in transport._active_label
+
+
+@pytest.mark.asyncio
+async def test_start_thinking_clears_history() -> None:
+    """start_thinking resets _stage_history so a new turn starts clean."""
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("dispatch")
+    await transport.on_stage("model_call", {"mode_id": "default", "iteration": 1})
+    assert transport._stage_history != []
+
+    transport.start_thinking("dispatch")
+    assert transport._stage_history == []
+
+
+@pytest.mark.asyncio
+async def test_stop_thinking_clears_status_sentinel() -> None:
+    """stop_thinking leaves _status as None so REPL cancel handling and
+    the cancel tests' ``transport._status is None`` assertion still hold.
+    """
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("dispatch")
+    assert transport._status is not None
+
+    transport.stop_thinking()
+    assert transport._status is None
+    assert transport._live is None
