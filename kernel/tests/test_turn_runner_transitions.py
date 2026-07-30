@@ -587,7 +587,7 @@ def test_compute_fork_target_string_returns_none_when_no_gap() -> None:
 async def test_forced_fork_when_model_refuses_to_fork() -> None:
     """When a fork routing hint is active and the model calls non-fork
     tools instead of ``transition_stage``, the kernel forces the fork
-    after ``_FORCED_FORK_NON_FORK_TOOL_CAP`` non-fork dispatches.
+    after ``forced_fork_non_fork_tool_cap`` non-fork dispatches.
 
     Regression for the 2026-07-27 incident: the model burned 5
     ``fetch_page`` calls in ``plan`` mode with a ``fork:`` hint active and
@@ -615,7 +615,7 @@ async def test_forced_fork_when_model_refuses_to_fork() -> None:
             )
         if call_count == 2:
             # Second call: model does ANOTHER read-only fetch instead of
-            # forking. This hits the _FORCED_FORK_NON_FORK_TOOL_CAP=2.
+            # forking. This hits the forced_fork_non_fork_tool_cap=2.
             return _StubCompletion(
                 content="",
                 tool_calls=[
