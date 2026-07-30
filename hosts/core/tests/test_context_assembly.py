@@ -138,3 +138,56 @@ def test_assemble_dynamic_user_context_replay_includes_diagnostic_reflection_tog
     )
 
     assert "Diagnostic Reflection" not in context
+
+
+def test_recent_conversation_wins_history_budget_over_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recent conversation must be allocated before the digest in the history lane.
+
+    Both sections share the ``history`` lane. When the lane budget cannot
+    fit both, the recent-conversation excerpt (authoritative, carries the
+    assistant's last answer the user is replying to) must survive; the
+    prior-conversation digest (inferred, lossy summary of older turns) is
+    the one that gets dropped. Allocating the digest first amputates the
+    turn the user is responding to (e.g. an Option A/B offer), so the next
+    bare reply ("B") sees no record of the options and the model honestly
+    reports it lost the context.
+    """
+
+    monkeypatch.setattr(
+        context_assembly.settings,
+        "context_budget_history_max_tokens",
+        1500,  # production default: ~6000 chars — the digest alone exceeds it
+    )
+    monkeypatch.setattr(
+        context_assembly.settings,
+        "context_budget_token_char_ratio",
+        4,
+    )
+
+    recent_excerpt = "Recent thread context:\n- proceed with option B: pick B"
+    # ~6552 chars like the real thread_digest.md (1638 tokens > the 1500-token
+    # lane). With the digest allocated first it fills the lane and the recent
+    # excerpt is dropped with ``budget_exhausted`` — the exact production bug.
+    large_digest = "x" * 6552
+
+    context = context_assembly.assemble_dynamic_user_context(
+        "default",
+        "B",
+        "",
+        content_loader=lambda _path: "",
+        user_slug="adam",
+        timezone="UTC",
+        state=None,
+        session_context_loader=lambda: "",
+        thread_digest_loader=lambda: large_digest,
+        recent_thread_excerpt_builder=lambda _n: recent_excerpt,
+    )
+
+    # The recent-conversation excerpt (the Option A/B answer) must survive.
+    assert 'source="recent_conversation"' in context
+    assert "proceed with option B" in context
+    # The digest must be dropped (budget exhausted after the excerpt took
+    # the lane), NOT the other way around.
+    assert 'source="prior_conversation_digest"' not in context

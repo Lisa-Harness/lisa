@@ -443,13 +443,23 @@ def assemble_dynamic_user_context(
             )
         )
 
-    thread_digest = replay_policy.thread_digest_text
-    if replay_policy.include_prior_conversation_digest and thread_digest:
-        raw_sections.append(("prior_conversation_digest", "history", thread_digest))
-
+    # Allocate the recent-conversation excerpt BEFORE the digest so the
+    # most recent dialogue wins the history-lane budget. Both share the
+    # ``history`` lane; whichever is appended first consumes the lane and
+    # the other is dropped (``budget_exhausted``) or truncated. The recent
+    # excerpt is ``authoritative`` and time-sensitive — it carries the
+    # assistant's last answer (e.g. an Option A/B offer the user just saw
+    # and is replying to). The digest is ``inferred``/lossy and covers older
+    # turns already summarized. Dropping the recent excerpt while keeping
+    # the digest amputates the turn the user is responding to, so recent
+    # conversation must be allocated first; the digest takes the remainder.
     conversation_excerpt = recent_thread_excerpt_builder(6)
     if replay_policy.include_recent_conversation and conversation_excerpt:
         raw_sections.append(("recent_conversation", "history", conversation_excerpt))
+
+    thread_digest = replay_policy.thread_digest_text
+    if replay_policy.include_prior_conversation_digest and thread_digest:
+        raw_sections.append(("prior_conversation_digest", "history", thread_digest))
 
     if replay_policy.include_diagnostic_reflection:
         diagnostic_reflection = _build_diagnostic_reflection_block(
