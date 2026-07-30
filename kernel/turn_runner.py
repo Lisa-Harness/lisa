@@ -141,6 +141,93 @@ def _extract_hint_target(hint_text: str) -> str:
     return rest[:end].strip()
 
 
+def _build_budget_briefing(
+    *,
+    state: Any,
+    max_tool_iterations: int,
+    per_step_max_iterations: int,
+    per_step_max_tool_calls: int,
+    tool_schemas: list[dict[str, Any]],
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
+    execution_policy: Any,
+    budget_exhausted: bool,
+) -> str:
+    """Build a compact, per-iteration budget status block for the system prompt.
+
+    Only **discrete, actionable** budgets are surfaced: iterations remaining,
+    this step's iteration/tool-call sub-budget, and per-target call limits
+    for tools that declare a non-zero ``max_calls_per_turn``. Continuous
+    budgets (tokens, wall time) are deliberately omitted — the model cannot
+    reliably convert "50k tokens left" into a concrete decision, and
+    advertising a large token budget risks anchoring the model to *use* it.
+
+    The block is designed to be **super-brief** so it can be replaced in
+    the system prompt every iteration without token bloat. The full
+    contract (all per-target limits) is only emitted on iteration 1; later
+    iterations emit only the counts that changed. Callers handle the
+    full-vs-delta distinction by passing the right ``state`` snapshot.
+
+    Returns an empty string when there is nothing actionable to report
+    (e.g. unlimited everything, iteration 1 with no per-target limits).
+    """
+    lines: list[str] = []
+    # ── Iteration budget ──
+    remaining_iterations = max_tool_iterations - state.iteration
+    if remaining_iterations > 0:
+        lines.append(f"iters: {remaining_iterations}/{max_tool_iterations}")
+    # ── Per-step sub-budget (only when a WorkflowInstance is wired) ──
+    if per_step_max_iterations > 0 and state.step_iteration > 0:
+        step_remaining = per_step_max_iterations - state.step_iteration
+        lines.append(f"step: {step_remaining}/{per_step_max_iterations} iters")
+    if per_step_max_tool_calls > 0 and state.step_tool_calls > 0:
+        step_tc_remaining = per_step_max_tool_calls - state.step_tool_calls
+        lines.append(f"step: {step_tc_remaining}/{per_step_max_tool_calls} calls")
+    # ── Per-target call limits (only tools with a non-zero cap) ──
+    # Resolve the effective per-turn cap for each advertised tool. Only
+    # tools that declare a finite ``max_calls_per_turn`` (tightened by the
+    # execution policy) are surfaced — unlimited tools add noise. On
+    # iteration 1, emit the full contract (used/max); on later iterations,
+    # emit only tools that are *partially consumed* (used > 0 and remaining
+    # > 0) so the block stays super-brief.
+    from kernel.capability import resolve_capability_for_turn_limit
+
+    per_target_parts: list[str] = []
+    for schema in tool_schemas:
+        name = schema.get("function", {}).get("name", "")
+        if not name or name == _TRANSITION_TOOL_NAME:
+            continue
+        target_def = resolve_capability_for_turn_limit(
+            name,
+            operation_catalog=operation_catalog,
+            tool_catalog=tool_catalog,
+        )
+        if target_def is None:
+            continue
+        authored = int(getattr(target_def, "max_calls_per_turn", 0) or 0)
+        if authored <= 0:
+            continue
+        max_calls = resolve_capability_invocation_limit(
+            execution_policy, name, authored
+        )
+        if max_calls <= 0:
+            continue
+        used = state.call_ledger_counts.get(name, 0) if hasattr(state, "call_ledger_counts") else 0
+        remaining = max(0, max_calls - used)
+        # Iteration 1: emit the full contract (used=0 → remaining=max).
+        # Later iterations: emit only partially-consumed tools (used > 0).
+        if state.iteration <= 1 or used > 0:
+            per_target_parts.append(f"{name}:{remaining}/{max_calls}")
+    if per_target_parts:
+        lines.append("calls: " + ", ".join(per_target_parts))
+    # ── Budget-exhausted flag ──
+    if budget_exhausted:
+        lines.append("FINAL: budget exhausted — produce your answer now")
+    if not lines:
+        return ""
+    return "## Turn Budget\n\n" + " · ".join(lines)
+
+
 def _is_workflow_instance_complete(instance: Any) -> bool:
     """Return True when the workflow instance has no remaining steps.
 
@@ -1965,6 +2052,13 @@ async def _run_turn_inner(
             _log.warning("pre-turn memory recall failed: %s", exc)
 
     # ── Phase 2: Tool loop ────────────────────────────────────────────
+    # Save the base system prompt (without any budget briefing) so the
+    # per-iteration budget briefing can be swapped in/out without
+    # accumulating stale copies. The briefing is appended to the base
+    # prompt each iteration; the base is the stable contract (mode
+    # instruction, stage instruction, routing hint).
+    _base_system_prompt = system_prompt
+    _budget_briefing_marker = "\n\n## Turn Budget\n\n"
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
     # Build user message
@@ -2191,6 +2285,45 @@ async def _run_turn_inner(
                 _state.total_tool_calls,
                 _state.total_tokens,
             )
+
+        # ── Per-iteration budget briefing ───────────────────────────
+        # Inject a compact, per-iteration budget status block into the
+        # system prompt so the model can self-scope its work within the
+        # remaining iteration / tool-call / per-target envelope. Only
+        # discrete, actionable budgets are surfaced (iterations, tool
+        # calls, per-target call limits) — never continuous budgets
+        # (tokens, wall time) which the model cannot reliably convert
+        # into action and which risk anchoring the model to "use" the
+        # budget it sees. The base system prompt is preserved; the
+        # briefing is appended fresh each iteration (the previous
+        # iteration's briefing is stripped via the marker so it does not
+        # accumulate). Gated by ``budget_briefing_enabled`` (default
+        # True) so hosts can opt out. See ``_build_budget_briefing``.
+        if _kernel_settings.budget_briefing_enabled:
+            _briefing = _build_budget_briefing(
+                state=_state,
+                max_tool_iterations=max_tool_iterations,
+                per_step_max_iterations=per_step_max_iterations,
+                per_step_max_tool_calls=per_step_max_tool_calls,
+                tool_schemas=tool_schemas,
+                operation_catalog=operation_catalog,
+                tool_catalog=tool_catalog,
+                execution_policy=execution_policy,
+                budget_exhausted=budget_exhausted,
+            )
+            # Strip any previous briefing (by marker) and append the
+            # fresh one. The base prompt is the stable contract; the
+            # briefing is the per-iteration delta. The marker includes
+            # the leading ``\n\n`` separator so the split cleanly
+            # separates the base from the briefing.
+            _current_sys = str(messages[0].get("content", ""))
+            if _budget_briefing_marker in _current_sys:
+                _current_sys = _current_sys.split(_budget_briefing_marker, 1)[0]
+            if _briefing:
+                messages[0]["content"] = _current_sys + "\n\n" + _briefing
+            else:
+                messages[0]["content"] = _current_sys
+
         effective_model_def = _resolve_iteration_model(_state.iteration)
         # ── Router terminal actions ──────────────────────────────────
         # When the model router returns a ``finish`` or ``transition_to``
@@ -3801,9 +3934,18 @@ async def _run_turn_inner(
                                         )
                                         # Append to the system prompt so the guards
                                         # (hallucinated-transition, write-tool) key
-                                        # off the new hint.
+                                        # off the new hint. Strip any per-iteration
+                                        # budget briefing first (by marker) so the
+                                        # hint lands on the base prompt; the next
+                                        # iteration's briefing injection will
+                                        # append after the hint.
+                                        _pre_hint_sys = str(messages[0].get("content", ""))
+                                        if _budget_briefing_marker in _pre_hint_sys:
+                                            _pre_hint_sys = _pre_hint_sys.split(
+                                                _budget_briefing_marker, 1
+                                            )[0]
                                         messages[0]["content"] = (
-                                            str(messages[0].get("content", ""))
+                                            _pre_hint_sys
                                             + "\n\n"
                                             + post_handoff_hint
                                         )
@@ -4023,6 +4165,9 @@ async def _run_turn_inner(
                 _state.step_tool_calls += 1
                 _state.called_tool_names.add(tool_name)
                 ledger.record(tool_name)
+                # Sync the ledger counts to _state so the per-iteration
+                # budget briefing can report per-target remaining calls.
+                _state.call_ledger_counts = dict(ledger.counts)
                 if recovery_item_id and hooks.recovery_service is not None:
                     try:
                         await hooks.recovery_service.settle(

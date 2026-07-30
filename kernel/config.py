@@ -177,6 +177,17 @@ class Settings(BaseSettings):
     # layer stops injecting further hints for the rest of the turn.
     # Override via ``HINT_OVERRIDE_LIMIT``.
     hint_override_limit: int = 2
+    # Budget briefing: inject a compact, per-iteration budget status
+    # block into the system prompt so the model can self-scope its
+    # work within the remaining iteration / tool-call / per-target
+    # envelope. Only discrete, actionable budgets are surfaced
+    # (iterations, tool calls, per-target call limits) — never
+    # continuous budgets (tokens, wall time) which the model cannot
+    # reliably convert into action and which risk anchoring the model
+    # to "use" the budget it sees. The full contract is injected at
+    # turn start; each subsequent iteration replaces it with a
+    # super-brief delta. Override via ``BUDGET_BRIEFING_ENABLED``.
+    budget_briefing_enabled: bool = True
 
     # ── Context broker ──────────────────────────────────────────────────
     heartbeat_interval_seconds: int = 60
@@ -349,6 +360,7 @@ class Settings(BaseSettings):
         "duplicate_hint_limit",
         "hint_cycle_min_len",
         "hint_override_limit",
+        "budget_briefing_enabled",
         "heartbeat_interval_seconds",
         "repo_context_stale_after_hours",
         "reflection_cadence_minutes",

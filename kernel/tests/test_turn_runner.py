@@ -3055,3 +3055,102 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
         f"expected the forced-plan enforcer to fire early; got {call_count} "
         "model calls (the model burned the full iteration budget)"
     )
+
+
+@pytest.mark.asyncio
+async def test_budget_briefing_injected_into_system_prompt() -> None:
+    """The per-iteration budget briefing is injected into the system
+    prompt (``messages[0]``) so the model can self-scope its work within
+    the remaining iteration envelope.
+
+    The briefing is super-brief (a single ``## Turn Budget`` block with
+    dot-separated counts) and is replaced — not accumulated — each
+    iteration. Iteration 1 shows the full contract; later iterations
+    show only the delta (partially-consumed per-target limits).
+    """
+    captured_system_prompts: list[str] = []
+    call_count = 0
+
+    async def capture_and_finish(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        # Capture the system prompt each iteration.
+        captured_system_prompts.append(str(kwargs["messages"][0].get("content", "")))
+        # First call: return a tool call so we get a second iteration.
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"q": "test"}',
+                        },
+                    }
+                ],
+            )
+        # Second call: finish with text.
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(capture_and_finish)
+    hooks.execute_operation = _stub_execute_operation
+    result = await run_turn(
+        mode_id="default",
+        query="hello",
+        hooks=hooks,
+        max_tool_iterations=5,
+    )
+
+    assert result.response_text == "Done."
+    # Two model calls → two captured system prompts.
+    assert len(captured_system_prompts) == 2
+    # Iteration 1: the briefing must be present.
+    assert "## Turn Budget" in captured_system_prompts[0]
+    # The briefing reports iterations remaining (4/5 after iteration 1
+    # incremented to 1).
+    assert "iters: 4/5" in captured_system_prompts[0]
+    # Iteration 2: the briefing must still be present (replaced, not
+    # accumulated — only one ``## Turn Budget`` block).
+    assert "## Turn Budget" in captured_system_prompts[1]
+    assert captured_system_prompts[1].count("## Turn Budget") == 1
+    # Iteration 2: iterations remaining is now 3/5.
+    assert "iters: 3/5" in captured_system_prompts[1]
+    # The base system prompt content (mode intro) is preserved — the
+    # briefing is appended, not replacing the base.
+    assert captured_system_prompts[0].split("## Turn Budget")[0].strip() != ""
+
+
+@pytest.mark.asyncio
+async def test_budget_briefing_disabled_when_config_off() -> None:
+    """When ``budget_briefing_enabled`` is False, no budget briefing is
+    injected into the system prompt."""
+    from kernel.config import settings as kernel_settings
+
+    captured_system_prompts: list[str] = []
+    call_count = 0
+
+    async def capture_and_finish(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        captured_system_prompts.append(str(kwargs["messages"][0].get("content", "")))
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(capture_and_finish)
+    hooks.execute_operation = _stub_execute_operation
+    # Patch the kernel settings singleton to disable the briefing.
+    original = kernel_settings.budget_briefing_enabled
+    kernel_settings.budget_briefing_enabled = False
+    try:
+        result = await run_turn(
+            mode_id="default",
+            query="hello",
+            hooks=hooks,
+            max_tool_iterations=5,
+        )
+    finally:
+        kernel_settings.budget_briefing_enabled = original
+
+    assert result.response_text == "Done."
+    assert len(captured_system_prompts) == 1
+    assert "## Turn Budget" not in captured_system_prompts[0]

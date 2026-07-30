@@ -108,6 +108,11 @@ class _TurnState:
     """Tool calls dispatched during the current workflow step. Reset to 0
     on every ``transition_stage``; bounded by ``per_step_max_tool_calls``
     as a secondary guard against a model stuck in a tool-calling rut."""
+    call_ledger_counts: dict[str, int] = field(default_factory=dict)
+    """Snapshot of the per-target ``CallLedger.counts`` for the budget
+    briefing. Synced from the ledger after each ``ledger.record`` so the
+    per-iteration budget briefing can report per-target remaining calls
+    without holding a reference to the ledger itself."""
 
     # ── Chain routing accumulator ────────────────────────────────────
     chain_satisfied: set[str] = field(default_factory=set)
