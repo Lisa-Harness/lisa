@@ -76,6 +76,7 @@ from kernel.operations.registry import (
     execute_operation,
     get_operation_catalog,
 )
+from kernel.operations.structured_output import completion_content
 from kernel.provider_core import StreamedChunk, StreamedCompletion, _aggregate_streamed_chunks
 from kernel.recovery import RecoveryIdentity, RecoveryRecord
 from kernel.seams.protocols import (
@@ -2672,8 +2673,12 @@ async def _run_turn_inner(
         )
 
         assistant_msg: dict[str, Any] = {"role": "assistant"}
-        if getattr(completion, "content", None):
-            assistant_msg["content"] = completion.content
+        # Use the canonical extractor so a reasoning model that put its
+        # answer in ``reasoning_content`` (empty ``content``) still records
+        # the visible text in the message history for subsequent iterations.
+        _assistant_text = completion_content(completion)
+        if _assistant_text:
+            assistant_msg["content"] = _assistant_text
         tool_calls = getattr(completion, "tool_calls", None) or []
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
@@ -2768,8 +2773,13 @@ async def _run_turn_inner(
                 _state.non_plan_tool_dispatches = 0
                 _synthesized_plan = True
 
-            content = getattr(completion, "content", "") or ""
-            content = content.strip()
+            # Use the canonical extractor so reasoning models (gpt-5.x,
+            # glm-5.2, kimi-k2.6) that put the answer in ``reasoning_content``
+            # while leaving ``content`` empty still produce visible output.
+            # Reading ``completion.content`` raw was the 2026-07-30 zero-output
+            # bug: the turn loop saw empty content, forced a final no-tools
+            # completion that also read only ``.content``, and stayed empty.
+            content = completion_content(completion).strip()
 
             if not _synthesized_fork and not _synthesized_plan:
                 # ── Hallucinated-transition guard ──────────────────────────
@@ -4477,9 +4487,10 @@ async def _run_turn_inner(
             break
 
         if not tools_dispatched:
-            # No tool calls were dispatched — model returned text
-            content = getattr(completion, "content", "") or ""
-            content = content.strip()
+            # No tool calls were dispatched — model returned text. Use the
+            # canonical extractor so reasoning models that put the answer in
+            # ``reasoning_content`` (empty ``content``) still surface it.
+            content = completion_content(completion).strip()
             break
 
     if not content:
@@ -4516,7 +4527,10 @@ async def _run_turn_inner(
                 temperature=0.4,
                 tools=None,
             )
-            final_content = getattr(final_completion, "content", "") or ""
+            # Canonical extractor: a reasoning model may put the synthesis
+            # in ``reasoning_content``; reading only ``.content`` here would
+            # repeat the zero-output bug on the final forced completion.
+            final_content = completion_content(final_completion)
             if final_content.strip():
                 content = final_content.strip()
                 final_usage = _extract_completion_usage(final_completion)
