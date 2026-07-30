@@ -37,6 +37,14 @@ STYLE_PANE_MODEL = "dark_sea_green4"
 STYLE_PANE_TOOL = "cornflower_blue"
 STYLE_GRAPHIC = "grey58"
 
+#: Lines reserved below the Live region for post-turn content that must
+#: stay visible: the turn footer (1), the Rule separator (1), the
+#: powerline status line (1), and the input prompt line (1). The Live
+#: region's height is the terminal height minus this reserve so that
+#: when the panes are flushed and the footer/status/prompt are printed
+#: below, the top of the pane content is not scrolled off-screen.
+_RESERVED_BELOW_LINES = 4
+
 #: Floor for the number of history lines kept visible in a pane. Guarantees
 #: a usable pane even on very short terminals / non-tty test consoles that
 #: report a height of 0 or 1.
@@ -279,14 +287,17 @@ class RichTransport:
     def _live_height(self) -> int:
         """Total lines available for the three panes + their headers.
 
-        Sized to the terminal height minus a few lines of headroom for
-        the next prompt, with a floor so non-tty / test consoles (which
-        report a height of 0) still show a usable layout.
+        The terminal height minus ``_RESERVED_BELOW_LINES`` (the turn
+        footer, Rule separator, status line, and input prompt) so that
+        when the Live region is flushed and the post-turn content is
+        printed below it, the top of the pane content is not scrolled
+        off-screen. Floor at 3 panes × ``_PANE_MIN_LINES`` + 3 headers so
+        non-tty / test consoles (height 0) still show a usable layout.
         """
         height = self.console.size.height or 0
         if height <= 0:
             return 3 * _PANE_MIN_LINES + 3
-        return max(3 * _PANE_MIN_LINES + 3, height - 3)
+        return max(3 * _PANE_MIN_LINES + 3, height - _RESERVED_BELOW_LINES)
 
     def _render_pane(
         self,
