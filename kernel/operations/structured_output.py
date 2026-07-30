@@ -28,6 +28,7 @@ from pydantic import BaseModel, ValidationError
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "completion_content",
     "extract_json_object",
     "is_structured_output_unsupported",
     "json_only_instruction",
@@ -35,6 +36,52 @@ __all__ = [
     "parse_structured_payload",
     "run_structured_completion_with_retry",
 ]
+
+
+def completion_content(completion: Any) -> str:
+    """Extract the text payload from a completion object, safely.
+
+    This is the canonical content extractor for operations that call
+    ``ctx.complete_fn`` and need the model's text answer. It handles the
+    three shapes a host's ``complete_fn`` can return:
+
+    1. An object with a ``content`` attribute (the normal case —
+       ``StubCompletion``, ``CompletionResult``, etc.).
+    2. A reasoning model whose visible ``content`` is empty while the
+       substantive answer lives in ``reasoning_content`` (gpt-5.x,
+       glm-5.2, kimi-k2.6). The reasoning text is folded into the return
+       so structured-output parsers see the real answer instead of an
+       empty string.
+    3. A bare string (some test stubs and thin wrappers).
+
+    **Never** falls back to ``str(completion)``. That was the root cause
+    of the 2026-07-30 plan_workflow incident: when ``content`` was empty,
+    callers wrote ``getattr(c, "content", "") or str(c)``, which produced
+    the Python repr of the completion object (e.g.
+    ``"StubCompletion(content='', reasoning_content='')"``) and handed
+    that to ``parse_structured_payload``. The repr is never valid JSON, so
+    every model that returned empty content hit a spurious parse failure
+    and a misleading "be more clear" recovery prompt — the request was
+    fine, the parser was eating Python object reprs.
+
+    Returns an empty string only when both ``content`` and
+    ``reasoning_content`` are absent or blank; callers should treat that as
+    a genuine "provider returned nothing" condition (handled by
+    ``EmptyStructuredOutputError`` in ``parse_structured_payload``).
+    """
+    # Bare string (test stubs, thin wrappers).
+    if isinstance(completion, str):
+        return completion
+    content = getattr(completion, "content", "")
+    if not isinstance(content, str):
+        content = str(content or "")
+    if content.strip():
+        return content
+    # Visible answer empty — fold reasoning_content for reasoning models.
+    reasoning = getattr(completion, "reasoning_content", None)
+    if isinstance(reasoning, str) and reasoning.strip():
+        return reasoning
+    return ""
 
 
 def extract_json_object(text: str) -> str:
@@ -186,7 +233,7 @@ async def run_structured_completion_with_retry(
     def _content(result: Any) -> str:
         if completion_content_fn is not None:
             return completion_content_fn(result) or ""
-        return str(getattr(result, "content", "") or "")
+        return completion_content(result)
 
     try:
         completion = await complete_fn(

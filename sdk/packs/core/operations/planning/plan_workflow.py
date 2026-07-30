@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import OperationExecutionContext, OperationResult
 from kernel.operations.structured_output import (
+    completion_content,
     json_only_retry_messages,
     parse_structured_payload,
 )
@@ -262,7 +263,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             output_json={"target_stage_id": "", "rationale": f"model error: {exc}"},
         )
 
-    content = getattr(completion, "content", "") or str(completion)
+    content = completion_content(completion)
     try:
         parsed = cast(PlanWorkflowOutput, parse_structured_payload(PlanWorkflowOutput, content))
     except ValidationError:
@@ -275,7 +276,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                 temperature=0.1,
                 response_format=PlanWorkflowOutput,
             )
-            content = getattr(completion, "content", "") or str(completion)
+            content = completion_content(completion)
             parsed = cast(PlanWorkflowOutput, parse_structured_payload(PlanWorkflowOutput, content))
         except Exception as retry_exc:  # pylint: disable=broad-except
             logger.warning("plan_workflow JSON-only retry failed: %s", retry_exc)

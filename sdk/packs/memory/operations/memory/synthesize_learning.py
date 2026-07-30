@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
 from kernel.operations.structured_output import (
+    completion_content,
     json_only_retry_messages,
     parse_structured_payload,
 )
@@ -208,7 +209,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                 # the model emits free-form JSON per the appended instruction.
                 response_format=DistilledLearning if attempt_idx == 0 else None,
             )
-            distilled = _parse_distilled_learning(raw.content)
+            distilled = _parse_distilled_learning(completion_content(raw))
             distilled_text = " | ".join(distilled.facts)
             break
         except Exception as exc:  # pylint: disable=broad-exception-caught

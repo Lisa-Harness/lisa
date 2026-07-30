@@ -28,7 +28,7 @@ from typing import Any, cast
 from pydantic import BaseModel, Field, ValidationError
 
 from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
-from kernel.operations.structured_output import parse_structured_payload
+from kernel.operations.structured_output import completion_content, parse_structured_payload
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ async def _enrich_checkpoint(
             temperature=0.1,
             response_format=CheckpointEnrichment,
         )
-        content = getattr(raw, "content", "") or str(raw)
+        content = completion_content(raw)
         return cast(CheckpointEnrichment, parse_structured_payload(CheckpointEnrichment, content))
     except ValidationError as exc:
         raise RuntimeError(f"checkpoint enrichment structured output parse failed: {exc}") from exc

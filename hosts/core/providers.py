@@ -735,6 +735,8 @@ async def complete_live_openai_compatible(
 
     choice = response.choices[0]
     message = choice.message
+    raw_reasoning = getattr(message, "reasoning_content", None)
+    reasoning_content = raw_reasoning if isinstance(raw_reasoning, str) else ""
     content = _first_message_content(message)
     tool_calls = _extract_completion_tool_calls(getattr(message, "tool_calls", None))
     finish_reason = getattr(choice, "finish_reason", None)
@@ -759,6 +761,7 @@ async def complete_live_openai_compatible(
         reasoning_tokens=reasoning_tokens,
         duration_ms=elapsed_ms,
         finish_reason=finish_reason,
+        reasoning_content=reasoning_content,
     )
     log_completion_response(
         model_def=model_def,

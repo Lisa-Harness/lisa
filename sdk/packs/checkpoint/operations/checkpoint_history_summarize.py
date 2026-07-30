@@ -13,7 +13,7 @@ from typing import Any, cast
 from pydantic import BaseModel, Field, ValidationError
 
 from kernel.models import OperationExecutionContext, OperationResult
-from kernel.operations.structured_output import parse_structured_payload
+from kernel.operations.structured_output import completion_content, parse_structured_payload
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ async def _summarize_old_turns(
             temperature=0.1,
             response_format=HistorySummary,
         )
-        content = getattr(raw, "content", "") or str(raw)
+        content = completion_content(raw)
         return cast(HistorySummary, parse_structured_payload(HistorySummary, content))
     except ValidationError as exc:
         raise RuntimeError(
