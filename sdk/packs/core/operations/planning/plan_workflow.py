@@ -253,7 +253,15 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         completion = await ctx.complete_fn(
             messages=messages,
             model_def=model_def,
-            max_tokens=500,
+            # 4096, not 500: reasoning models routed through Ollama
+            # (kimi-k2.6, glm-5.2) spend their token budget on internal
+            # reasoning before emitting visible content. At max_tokens=500
+            # they hit finish_reason=length with EMPTY content (the
+            # 2026-07-30 plan-mode incident) — a probe showed the same
+            # prompt returns valid JSON at 4096 (836 completion_tokens,
+            # finish_reason=stop). The visible JSON answer is tiny (~2
+            # fields); the budget is for the model's thinking room.
+            max_tokens=4096,
             temperature=0.1,
             response_format=PlanWorkflowOutput,
         )
@@ -285,7 +293,11 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             completion = await ctx.complete_fn(
                 messages=json_only_retry_messages(messages, PlanWorkflowOutput),
                 model_def=model_def,
-                max_tokens=500,
+                # Same reasoning-model budget as the first attempt. The
+                # retry adds one user message (JSON-only instruction), so
+                # reasoning models need the same headroom or they truncate
+                # again with empty content.
+                max_tokens=4096,
                 temperature=0.1,
                 response_format=None,
             )
