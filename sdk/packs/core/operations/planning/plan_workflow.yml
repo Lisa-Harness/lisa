@@ -3,6 +3,6 @@ description: >
   Analyze a user query against the mode catalog's routing intent keywords,
   detect sequential connectors, and return a transition_stage target
   (single handoff, fork fan-out, or sequential first-target).
-timeout_seconds: 15
+timeout_seconds: 45
 max_calls_per_turn: 1
 preferred_model_id: default
