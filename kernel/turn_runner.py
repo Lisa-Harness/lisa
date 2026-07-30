@@ -104,57 +104,17 @@ from kernel.tools.schema_translator import mcp_tool_to_openai_function, openai_t
 
 logger = logging.getLogger(__name__)
 
-# Cap for narration/chain-incomplete correction nudges. After this many
-# nudges the guards give up and let the model's response through so the
-# user sees something rather than a silent hang. Defined at module scope
-# because the routing-hint write-tool guard runs in iterations that have
-# tool calls (and therefore skip the ``if not tool_calls`` block where the
-# constant was previously defined inline), which caused
-# ``UnboundLocalError`` when a routing hint was active and the model called
-# a write-effect tool.
-_NARRATION_NUDGE_CAP = 3
-
-# Forced-fork enforcer: when a ``fork:`` routing hint is active (the
-# kernel already computed the deterministic fork target from the query's
-# intent gap) and the model refuses to call ``transition_stage`` — instead
-# burning iterations on read-only tools (``fetch_page`` etc.) or returning
-# empty completions — the kernel forces the fork after this many non-fork
-# tool dispatches. The hint encodes the routing decision; the model is the
-# executor. When the executor won't execute a deterministic next step, the
-# kernel takes over rather than beg via nudges (the 2026-07-27 incident:
-# ``plan`` mode burned 5 ``fetch_page`` calls then returned empty, ending
-# the turn with no fork ever running). See
-# ``docs/lessons/lisa-fork-refusal-2026-07-27.md`` and the Forced-Fork
-# section of ``docs/ROUTER_DESIGN.md``.
-_FORCED_FORK_NON_FORK_TOOL_CAP = 2
-
-# Stuck-session guard: after this many turns in the same stage without a
-# transition, the loop injects a nudge message prompting the model to
-# transition or ask the user. After the cap, the loop forces a final
-# no-tools completion to stop burning tokens.
-_STAGE_NUDGE_THRESHOLD = 4
-_STAGE_NUDGE_CAP = 6
-
-# Hard backstop against routing-hint loops. The ``chain_satisfied``
-# accumulator is the primary loop-breaker, but it depends on every pack
-# declaring accurate ``routing_intent_tags`` and ``_detect_query_intents``
-# not over-detecting. When either assumption fails (a pack omits tags, a
-# query re-detects satisfied intents), the hint re-fires on every handoff
-# with no termination. This counter caps the total handoffs per turn and
-# forces a final completion. Per the user manual's "all on by default,
-# externalize later": ship as a module constant, externalize only if a
-# real workload needs more.
-_MAX_HANDOFFS_PER_TURN = 6
-# Consecutive identical routing hints before the duplicate-hint dedup
-# suppresses injection. Pairs with ``_MAX_HANDOFFS_PER_TURN`` as a
-# belt-and-suspenders guard: even before hitting the hop cap, repeating
-# the exact same hint is a strong signal the accumulator failed to
-# advance and the model is in a routing loop.
-_DUPLICATE_HINT_LIMIT = 2
-# Minimum hint-target history length that forms a detectable 2-cycle
-# (A, B, A). Used by the hint-cycle guard to suppress oscillating hints
-# that the byte-identical dedup misses.
-_HINT_CYCLE_MIN_LEN = 3
+# Turn-runner guard caps live in ``kernel.config.Settings`` (fields
+# ``narration_nudge_cap`` / ``forced_fork_non_fork_tool_cap`` /
+# ``stage_nudge_threshold`` / ``stage_nudge_cap`` / ``max_handoffs_per_turn``
+# / ``duplicate_hint_limit`` / ``hint_cycle_min_len`` / ``hint_override_limit``)
+# so hosts can tune them via env vars without editing kernel source. They
+# were previously module-level constants here; see the git-blame history
+# for the incidents that motivated each cap (the 2026-07-27 fork-refusal,
+# the 2026-07-30 plan→ponder→markdown bounce, etc.). ``_run_turn_inner``
+# reads them from the shared ``_kernel_settings`` singleton and, for the
+# few that are referenced multiple times per turn, binds a local alias
+# once at the top of the loop to avoid repeated attribute access.
 
 
 def _extract_hint_target(hint_text: str) -> str:
@@ -1474,6 +1434,16 @@ async def _run_turn_inner(
     _state = _TurnState()
     _on_stage_hook = hooks.on_stage
 
+    # Turn-runner guard caps, read once from the kernel settings singleton
+    # (``kernel.config.Settings``). The three referenced multiple times
+    # per turn are bound to locals to avoid repeated attribute lookups in
+    # the hot loop; the rest are read directly from ``_kernel_settings``
+    # at their single use site. See the Settings fields for env-var
+    # overrides and the incidents each cap guards against.
+    _narration_nudge_cap = _kernel_settings.narration_nudge_cap
+    _max_handoffs_per_turn = _kernel_settings.max_handoffs_per_turn
+    _hint_override_limit = _kernel_settings.hint_override_limit
+
     async def _emit_stage(label: str, data: dict[str, Any] | None = None) -> None:
         await _emit_stage_fn(_state, _on_stage_hook, _log, label, data)
 
@@ -1589,8 +1559,46 @@ async def _run_turn_inner(
                 logger_override=logger_override,
                 suppress_routing_hint=True,
             )
+        # ── Plan failure: hard stop with a structured recovery prompt ──
+        # When the planner returned an empty ``target_stage_id`` (parse
+        # failure, model error, no wiring), do NOT fall through to the
+        # raw error text and do NOT let the post-handoff hint generator
+        # re-hallucinate a target on the next turn (the 2026-07-30
+        # plan→ponder→markdown bounce: plan failed with ``StubCompletion``,
+        # the post-handoff hint re-fired telling the model to go to
+        # ``discuss``, and the model improvised to ``ponder``). The turn
+        # terminates with a deterministic recovery prompt that tells the
+        # user plan failed and offers concrete next steps. Mark the model
+        # unreliable for planning so the hint generator stops escalating
+        # to ``plan`` for it (see ``routing_vocabulary.is_plan_reliable``).
+        plan_reason = str(
+            (result.output_json or {}).get("rationale", "") or ""
+        ).strip() or "the planner returned no routing target"
+        plan_model_id = str(preferred_model_id or "")
+        from kernel.routing_vocabulary import mark_plan_unreliable_for_model  # noqa: PLC0415
+        mark_plan_unreliable_for_model(plan_model_id)
+        _log.warning(
+            "plan_workflow returned no target (mode=%s, model=%s, reason=%s); "
+            "marking model unreliable for planning and terminating turn with "
+            "recovery prompt",
+            mode_id,
+            plan_model_id,
+            plan_reason,
+        )
+        recovery = (
+            f"I attempted to plan this request in `{mode_id}` mode but could "
+            f"not produce a routing decision (reason: {plan_reason}). This is "
+            f"often a sign of a complex or ambiguous multi-step request.\n\n"
+            f"You can:\n"
+            f"  1. Rephrase the request with explicit sequential steps "
+            f"(e.g. \"search for X, then write a markdown report\").\n"
+            f"  2. Name the target mode directly (e.g. `/markdown ...`, "
+            f"`/ponder ...`) to bypass planning.\n"
+            f"  3. Ask me to discuss it first (`/discuss ...`) so I can "
+            f"clarify what you want before committing to a workflow."
+        )
         return TurnResult(
-            response_text=result.output_text.strip() or "Done",
+            response_text=recovery,
             tool_call_count=0,
             iteration_count=1,
         )
@@ -1834,6 +1842,7 @@ async def _run_turn_inner(
             # the turn-start hint re-suggests the first producer even when
             # the instance marks it complete (the glm-5.2 stall).
             extra_satisfied=_state.chain_satisfied,
+            planner_model_id=str(preferred_model_id or ""),
         )
     coordinator_hint = _coordinator_routing_hint(
         hooks=hooks,
@@ -2121,7 +2130,7 @@ async def _run_turn_inner(
                         "_state.iteration": _state.iteration,
                     },
                 )
-                if turns_in_stage >= _STAGE_NUDGE_CAP:
+                if turns_in_stage >= _kernel_settings.stage_nudge_cap:
                     _log.warning(
                         "workflow mode=%s stuck in stage=%s for %d turns; forcing final",
                         mode_id,
@@ -2129,7 +2138,7 @@ async def _run_turn_inner(
                         turns_in_stage,
                     )
                     budget_exhausted = True
-                elif turns_in_stage >= _STAGE_NUDGE_THRESHOLD:
+                elif turns_in_stage >= _kernel_settings.stage_nudge_threshold:
                     messages.append(
                         {
                             "role": "user",
@@ -2436,9 +2445,11 @@ async def _run_turn_inner(
                 #
                 # After the cap, the guard gives up and lets the narrated
                 # response through so the user sees something rather than a
-                # silent hang. The cap (``_NARRATION_NUDGE_CAP``) is defined at
-                # module scope so the write-tool guard below can share it.
-                if routing_hint and _narration_nudge_count < _NARRATION_NUDGE_CAP:
+                # silent hang. The cap (``narration_nudge_cap`` in
+                # ``kernel.config.Settings``) is bound to the local
+                # ``_narration_nudge_cap`` so the write-tool guard below
+                # shares it without a repeated settings read.
+                if routing_hint and _narration_nudge_count < _narration_nudge_cap:
                     lowered = content.lower()
                     transition_markers = (
                         "i have transitioned",
@@ -2475,7 +2486,7 @@ async def _run_turn_inner(
                             mode_id,
                             _state.iteration,
                             _narration_nudge_count,
-                            _NARRATION_NUDGE_CAP,
+                            _narration_nudge_cap,
                         )
                         messages.append(
                             {
@@ -2520,7 +2531,7 @@ async def _run_turn_inner(
                             mode_id,
                             _state.iteration,
                             _narration_nudge_count,
-                            _NARRATION_NUDGE_CAP,
+                            _narration_nudge_cap,
                         )
                         messages.append(
                             {
@@ -2553,12 +2564,12 @@ async def _run_turn_inner(
             # instead of handing off to ``markdown``. Inject a correction
             # nudge (mirroring the hallucinated-transition guard) and skip
             # the dispatch so the model retries with ``transition_stage`` or
-            # a read-only tool. Bounded by ``_NARRATION_NUDGE_CAP`` so a model
+            # a read-only tool. Bounded by ``narration_nudge_cap`` so a model
             # that never learns still gets to produce a final response.
             if (
                 routing_hint
                 and tool_name != _TRANSITION_TOOL_NAME
-                and _narration_nudge_count < _NARRATION_NUDGE_CAP
+                and _narration_nudge_count < _narration_nudge_cap
             ):
                 _hint_effect = _tool_effect(
                     tool_name,
@@ -2584,7 +2595,7 @@ async def _run_turn_inner(
                             mode_id,
                             _state.iteration,
                             _narration_nudge_count,
-                            _NARRATION_NUDGE_CAP,
+                            _narration_nudge_cap,
                         )
                         # Resolve a concrete handoff target for the residual
                         # intent gap so the nudge names the mode the model
@@ -2657,7 +2668,9 @@ async def _run_turn_inner(
                 and tool_name != _TRANSITION_TOOL_NAME
             ):
                 _state.non_fork_tool_dispatches += 1
-                if _state.non_fork_tool_dispatches >= _FORCED_FORK_NON_FORK_TOOL_CAP:
+                if _state.non_fork_tool_dispatches >= (
+                    _kernel_settings.forced_fork_non_fork_tool_cap
+                ):
                     _log.warning(
                         "model refused to fork (mode=%s, iteration=%d, "
                         "non_fork_tool_dispatches=%d); kernel forcing fork "
@@ -3107,6 +3120,32 @@ async def _run_turn_inner(
                         # new mode still leaves a fork gap.
                         _state.forced_fork_target = ""
                         _state.non_fork_tool_dispatches = 0
+                        # ── Hint-override tracking ──────────────────────
+                        # When the model hands off to a target that differs
+                        # from the routing hint's suggested target, it is
+                        # overriding the hint. After ``hint_override_limit``
+                        # overrides the model has demonstrated its own
+                        # routing judgment; continuing to inject hints is
+                        # noise the model rationally routes around (the
+                        # 2026-07-30 bounce: hint said ``discuss``, model
+                        # went to ``ponder`` twice). Track overrides so the
+                        # post-handoff hint recomputation can suppress
+                        # further hints once the limit is reached.
+                        _hint_suggested = _extract_hint_target(routing_hint)
+                        if (
+                            _hint_suggested
+                            and target_stage
+                            and target_stage != _hint_suggested
+                        ):
+                            _state.hint_override_count += 1
+                            _log.info(
+                                "routing hint override: hint suggested %s, "
+                                "model chose %s (override_count=%d, cap=%d)",
+                                _hint_suggested,
+                                target_stage,
+                                _state.hint_override_count,
+                                _hint_override_limit,
+                            )
                         # Hard backstop against routing-hint loops. The
                         # ``chain_satisfied`` accumulator is the primary
                         # breaker, but it depends on accurate pack-authored
@@ -3114,16 +3153,16 @@ async def _run_turn_inner(
                         # the hint re-fires on every handoff with no end.
                         # Cap total handoffs and force a final completion.
                         _state.handoff_count += 1
-                        if _state.handoff_count > _MAX_HANDOFFS_PER_TURN:
+                        if _state.handoff_count > _max_handoffs_per_turn:
                             _log.warning(
                                 "routing hint loop guard: %d handoffs in turn "
                                 "(cap=%d); forcing final completion",
                                 _state.handoff_count,
-                                _MAX_HANDOFFS_PER_TURN,
+                                _max_handoffs_per_turn,
                             )
                             tool_output = (
                                 f"Routing loop guard: reached "
-                                f"{_MAX_HANDOFFS_PER_TURN} mode handoffs in "
+                                f"{_max_handoffs_per_turn} mode handoffs in "
                                 f"this turn without completing the chain. "
                                 f"Forcing a final response."
                             )
@@ -3325,6 +3364,47 @@ async def _run_turn_inner(
                                                 target_stage,
                                                 _planned_next,
                                             )
+                                        else:
+                                            # ── Plan failure mid-turn ──
+                                            # The planner returned no
+                                            # ``target_stage_id`` (parse
+                                            # failure, model error). Do NOT
+                                            # continue in ``plan`` mode — the
+                                            # post-handoff hint generator
+                                            # would re-hallucinate a target
+                                            # and the model would improvise
+                                            # around it (the 2026-07-30
+                                            # bounce). Mark the model
+                                            # unreliable for planning and
+                                            # break the loop with a
+                                            # deterministic recovery prompt
+                                            # so the user re-issues or
+                                            # names a target directly.
+                                            _plan_fail_reason = str(
+                                                (entry_result.output_json or {}).get(
+                                                    "rationale", ""
+                                                )
+                                                or "the planner returned no routing target"
+                                            ).strip()
+                                            _state.plan_failed = True
+                                            _state.plan_failed_mode = target_stage
+                                            _state.plan_failed_reason = (
+                                                _plan_fail_reason
+                                            )
+                                            from kernel.routing_vocabulary import (  # noqa: PLC0415
+                                                mark_plan_unreliable_for_model,
+                                            )
+                                            mark_plan_unreliable_for_model(
+                                                str(preferred_model_id or "")
+                                            )
+                                            _log.warning(
+                                                "plan_workflow in mid-turn "
+                                                "handoff returned no target "
+                                                "(mode=%s, reason=%s); marking "
+                                                "model unreliable and breaking",
+                                                target_stage,
+                                                _plan_fail_reason,
+                                            )
                                     except Exception as entry_exc:  # pylint: disable=broad-except
                                         entry_output = (
                                             f"Entry operation failed: "
@@ -3447,6 +3527,7 @@ async def _run_turn_inner(
                                         routing_targets=get_routing_targets(target_stage),
                                         mode_config=target_mode_config,
                                         extra_satisfied=_state.chain_satisfied,
+                                        planner_model_id=str(preferred_model_id or ""),
                                     )
                                     # ── Durable instance advancement ──
                                     # Persist the handoff on the active
@@ -3480,15 +3561,37 @@ async def _run_turn_inner(
                                                     wi_exc,
                                                 )
                                 if post_handoff_hint:
-                                    # Duplicate-hint dedup: when the
-                                    # recomputed hint is byte-identical to the
-                                    # previous one, the accumulator failed to
-                                    # advance and the model is in a routing
-                                    # loop. Suppress injection after
-                                    # ``_DUPLICATE_HINT_LIMIT`` repeats so the
-                                    # max-hops guard can take over instead of
-                                    # re-injecting the same prose forever.
-                                    if post_handoff_hint == _state.last_hint_text:
+                                    # ── Hint-override suppression ──────
+                                    # After the model overrides the hint
+                                    # ``hint_override_limit`` times, stop
+                                    # injecting further hints — the model
+                                    # has its own routing judgment and the
+                                    # hint is noise (the 2026-07-30 bounce:
+                                    # model overrode ``discuss``→``ponder``
+                                    # twice). The hint stays suppressed for
+                                    # the rest of the turn; the handoff
+                                    # cap backstop fires if the model loops.
+                                    if _state.hint_override_count >= _hint_override_limit:
+                                        _log.warning(
+                                            "suppressing post-handoff hint: "
+                                            "model overrode %d hints this "
+                                            "turn (mode=%s)",
+                                            _state.hint_override_count,
+                                            target_stage,
+                                        )
+                                        post_handoff_hint = ""
+                                        routing_hint = ""
+                                    elif post_handoff_hint == _state.last_hint_text:
+                                        # Duplicate-hint dedup: when the
+                                        # recomputed hint is byte-identical
+                                        # to the previous one, the accumulator
+                                        # failed to advance and the model is
+                                        # in a routing loop. Suppress
+                                        # injection after
+                                        # ``duplicate_hint_limit`` repeats
+                                        # so the max-hops guard can take over
+                                        # instead of re-injecting the same
+                                        # prose forever.
                                         _state.duplicate_hint_count += 1
                                     else:
                                         _state.duplicate_hint_count = 0
@@ -3524,7 +3627,7 @@ async def _run_turn_inner(
                                         # previous (A, B, A).
                                         if (
                                             len(_state.hint_target_history)
-                                            >= _HINT_CYCLE_MIN_LEN
+                                            >= _kernel_settings.hint_cycle_min_len
                                             and _state.hint_target_history[-1]
                                             == _state.hint_target_history[-3]
                                         ):
@@ -3538,7 +3641,9 @@ async def _run_turn_inner(
                                         )
                                         post_handoff_hint = ""
                                         routing_hint = ""
-                                    elif _state.duplicate_hint_count >= _DUPLICATE_HINT_LIMIT:
+                                    elif _state.duplicate_hint_count >= (
+                                        _kernel_settings.duplicate_hint_limit
+                                    ):
                                         _log.warning(
                                             "suppressing duplicate routing hint "
                                             "(mode=%s, repeats=%d)",
@@ -3653,6 +3758,31 @@ async def _run_turn_inner(
                                 f"operation failed ({_state.entry_failed_reason}). "
                                 f"Reconfigure the failed provider and re-issue the "
                                 f"request."
+                            )
+                            break
+                        if _state.plan_failed:
+                            # The planner (e.g. ``plan``) returned no
+                            # routing target. Surface a structured recovery
+                            # prompt instead of continuing in the data-less
+                            # planner mode (the 2026-07-30 bounce).
+                            content = (
+                                f"I attempted to plan this request in "
+                                f"`{_state.plan_failed_mode}` mode but could "
+                                f"not produce a routing decision (reason: "
+                                f"{_state.plan_failed_reason}). This is often "
+                                f"a sign of a complex or ambiguous multi-step "
+                                f"request.\n\n"
+                                f"You can:\n"
+                                f"  1. Rephrase the request with explicit "
+                                f"sequential steps "
+                                f"(e.g. \"search for X, then write a markdown "
+                                f"report\").\n"
+                                f"  2. Name the target mode directly (e.g. "
+                                f"`/markdown ...`, `/ponder ...`) to bypass "
+                                f"planning.\n"
+                                f"  3. Ask me to discuss it first "
+                                f"(`/discuss ...`) so I can clarify what you "
+                                f"want before committing to a workflow."
                             )
                             break
                         continue
@@ -3839,9 +3969,14 @@ async def _run_turn_inner(
         # could drift / hallucinate. These guards set a terminal-failure
         # flag on ``_state``; honor it here by breaking the ``while`` so
         # the deterministic failure ``content`` reaches the output guard.
-        if _state.entry_failed or _state.handoff_count > _MAX_HANDOFFS_PER_TURN or (
-            _state.fork_results is not None
-            and any(r.status == "no_tools" for r in _state.fork_results)
+        if (
+            _state.entry_failed
+            or _state.plan_failed
+            or _state.handoff_count > _max_handoffs_per_turn
+            or (
+                _state.fork_results is not None
+                and any(r.status == "no_tools" for r in _state.fork_results)
+            )
         ):
             break
 
@@ -3972,7 +4107,7 @@ async def _run_turn_inner(
     # outputs emit a guardrail.audit event and skip the post-turn slice.
     output_guard_result = await hooks.context_seams.output_guard.validate(content, guard_surface)
     turn_blocked = False
-    if _state.entry_failed or (_state.fork_results and any(
+    if _state.entry_failed or _state.plan_failed or (_state.fork_results and any(
         r.status == "no_tools" for r in (_state.fork_results or [])
     )):
         # A handoff entry operation failed, or a fork child was marked

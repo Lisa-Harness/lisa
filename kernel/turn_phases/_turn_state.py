@@ -115,10 +115,10 @@ class _TurnState:
     surfaced to the user alongside the mode name."""
     handoff_count: int = 0
     """Number of mid-turn mode handoffs executed this turn. Bounded by
-    ``_MAX_HANDOFFS_PER_TURN`` as a hard backstop against routing-hint
-    loops that the ``chain_satisfied`` accumulator fails to break (e.g.
-    when a pack omits ``routing_intent_tags`` or ``_detect_query_intents``
-    over-detects)."""
+    ``max_handoffs_per_turn`` (``kernel.config.Settings``) as a hard
+    backstop against routing-hint loops that the ``chain_satisfied``
+    accumulator fails to break (e.g. when a pack omits
+    ``routing_intent_tags`` or ``_detect_query_intents`` over-detects)."""
     last_hint_text: str = ""
     """The most recently injected routing-hint text. Used by the
     duplicate-hint dedup guard: when the recomputed post-handoff hint is
@@ -126,8 +126,8 @@ class _TurnState:
     injection is suppressed and the max-hops guard takes over."""
     duplicate_hint_count: int = 0
     """Consecutive count of identical routing hints. Resets to 0 on a
-    distinct hint; when it reaches ``_DUPLICATE_HINT_LIMIT`` the hint is
-    suppressed."""
+    distinct hint; when it reaches ``duplicate_hint_limit``
+    (``kernel.config.Settings``) the hint is suppressed."""
     hint_target_history: list[str] = field(default_factory=list)
     """Ordered list of routing-hint target mode ids injected this turn
     (e.g. ``["ponder", "markdown", "ponder"]``). Used by the hint-cycle
@@ -152,11 +152,38 @@ class _TurnState:
     instead of begging the model to call ``transition_stage`` (the
     2026-07-28 stall: the model in ``plan`` mode read the plan result
     and stopped). Cleared after the synthesized dispatch."""
+    plan_failed: bool = False
+    """True when a planner action mode's entry operation returned an empty
+    ``target_stage_id`` (parse failure, model error, no wiring). Once set,
+    the turn loop must NOT continue routing — the post-handoff hint
+    generator would re-hallucinate a target and the model would improvise
+    around it (the 2026-07-30 plan→ponder→markdown bounce). The turn
+    terminates with a structured recovery prompt that tells the user plan
+    failed and offers concrete next steps. Distinct from ``entry_failed``
+    (which covers a *non-planner* entry op raising) — a planner that
+    returns cleanly with no target is not an exception, it is a routing
+    dead end."""
+    plan_failed_mode: str = ""
+    """The mode_id whose entry planner returned no target, for the
+    user-facing recovery prompt (e.g. ``"plan"``)."""
+    plan_failed_reason: str = ""
+    """Short human-readable failure reason from the planner's
+    ``output_text`` (e.g. ``"parse failure"``), surfaced to the user
+    alongside the mode name."""
+    hint_override_count: int = 0
+    """Number of times this turn the model called ``transition_stage`` to a
+    target that *differs* from the routing hint's suggested target. When
+    this reaches ``hint_override_limit`` (``kernel.config.Settings``) the
+    hint layer stops injecting
+    further hints for the rest of the turn — the model has demonstrated it
+    has its own routing judgment, and continuing to hint is noise the model
+    rationally routes around (the 2026-07-30 plan→ponder→markdown bounce:
+    the hint said ``discuss`` twice, the model went to ``ponder`` twice)."""
     non_fork_tool_dispatches: int = 0
     """Count of tool dispatches this turn that were NOT
     ``transition_stage`` with the expected ``fork:`` target, while a
     ``forced_fork_target`` is set. The enforcer fires when this reaches
-    ``_FORCED_FORK_NON_FORK_TOOL_CAP``."""
+    ``forced_fork_non_fork_tool_cap`` (``kernel.config.Settings``)."""
     called_tool_names: set[str] = field(default_factory=set)
     """Names of every tool actually dispatched this turn (operations,
     pack tools, MCP tools). Used by the fork-child validator to confirm

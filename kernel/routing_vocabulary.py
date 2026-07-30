@@ -36,13 +36,16 @@ from __future__ import annotations
 from typing import Final
 
 __all__ = [
-    "DEFAULT_SEQUENTIAL_CONNECTORS",
-    "DEFAULT_PRODUCER_INTENTS",
     "DEFAULT_CONSUMER_INTENTS",
-    "get_sequential_connectors",
-    "get_producer_intents",
+    "DEFAULT_PRODUCER_INTENTS",
+    "DEFAULT_SEQUENTIAL_CONNECTORS",
     "get_consumer_intents",
+    "get_producer_intents",
+    "get_sequential_connectors",
+    "is_plan_reliable_for_model",
+    "mark_plan_unreliable_for_model",
     "register_routing_vocabulary",
+    "reset_plan_reliability",
     "reset_routing_vocabulary",
 ]
 
@@ -94,6 +97,58 @@ DEFAULT_CONSUMER_INTENTS: Final[tuple[str, ...]] = (
 _sequential_connectors: tuple[str, ...] | None = None
 _producer_intents: frozenset[str] | None = None
 _consumer_intents: frozenset[str] | None = None
+
+# Per-model plan-reliability registry. When ``plan_workflow`` fails to
+# produce a parseable ``target_stage_id`` for a given model id, that model
+# is marked unreliable here so the routing-hint generator skips plan
+# escalation for it (see ``_routing_hint.py`` §3b). The hint generator
+# calls ``is_plan_reliable_for_model(model_id)`` before suggesting a
+# handoff to ``plan``; the turn runner's plan-failure path calls
+# ``mark_plan_unreliable_for_model(model_id)`` on the first failure.
+# Entries persist for the process lifetime (a model that returns a
+# ``StubCompletion`` once is empirically going to keep doing it on the
+# same structured-output contract); ``reset_plan_reliability`` clears the
+# registry for tests.
+_unreliable_plan_models: set[str] = set()
+
+
+def mark_plan_unreliable_for_model(model_id: str) -> None:
+    """Record that ``plan_workflow`` could not produce structured output for
+    ``model_id`` so the routing hint generator stops escalating to ``plan``
+    for that model.
+
+    Called from the turn runner's plan-failure path. Idempotent. The entry
+    persists for the process lifetime; a model returning ``StubCompletion``
+    once is empirically going to keep doing it on the same structured-output
+    contract, and re-escalating to ``plan`` would just waste a model
+    round-trip on a known-bad path.
+    """
+    key = (model_id or "").strip().lower()
+    if key:
+        _unreliable_plan_models.add(key)
+
+
+def is_plan_reliable_for_model(model_id: str) -> bool:
+    """Return False when ``model_id`` has been marked unreliable for planning.
+
+    The routing-hint generator calls this before suggesting a handoff to
+    ``plan`` (see ``_routing_hint.py`` §3b). Unknown models are assumed
+    reliable — the registry only records *observed* failures, not
+    speculation.
+    """
+    key = (model_id or "").strip().lower()
+    if not key:
+        return True
+    return key not in _unreliable_plan_models
+
+
+def reset_plan_reliability() -> None:
+    """Clear the per-model plan-reliability registry.
+
+    Primarily for tests that need a clean slate; production code never calls
+    this.
+    """
+    _unreliable_plan_models.clear()
 
 
 def _normalize_connectors(raw: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
@@ -164,6 +219,7 @@ def reset_routing_vocabulary() -> None:
     _sequential_connectors = None
     _producer_intents = None
     _consumer_intents = None
+    reset_plan_reliability()
 
 
 def get_sequential_connectors() -> tuple[str, ...]:

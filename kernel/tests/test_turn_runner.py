@@ -210,13 +210,24 @@ async def test_run_turn_planner_action_mode_drives_handoff_without_model_transit
 @pytest.mark.asyncio
 async def test_run_turn_planner_action_mode_empty_target_falls_back_to_text() -> None:
     """When a planner action mode's entry op returns an empty
-    ``target_stage_id`` (no routable mode matched), the kernel returns the
-    entry op's text to the user instead of recursing — the planner
-    legitimately reports it cannot route."""
+    ``target_stage_id`` (no routable mode matched), the kernel terminates
+    the turn with a structured recovery prompt (not the raw entry-op
+    text) and marks the model unreliable for planning so the hint
+    generator stops escalating to ``plan`` for it. The recovery prompt
+    names the failure reason and offers the user concrete next steps
+    (rephrase, name a target mode directly, or discuss first). This is
+    the 2026-07-30 hard-cutover from the old soft-fallthrough that
+    returned the raw error text and let the post-handoff hint
+    re-hallucinate a target on the next turn."""
     from unittest.mock import patch
 
     from kernel.models import OperationResult
+    from kernel.routing_vocabulary import (
+        is_plan_reliable_for_model,
+        reset_plan_reliability,
+    )
 
+    reset_plan_reliability()
     plan_cfg = WorkflowModeConfig(
         mode_id="plan",
         start_stage_id="none",
@@ -244,10 +255,20 @@ async def test_run_turn_planner_action_mode_empty_target_falls_back_to_text() ->
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
-        result = await run_turn(mode_id="plan", query="write a novel", hooks=hooks)
+        result = await run_turn(
+            mode_id="plan", query="write a novel", hooks=hooks,
+            preferred_model_id="test-planner-model",
+        )
 
-    assert result.response_text == "No installed mode provides a write capability."
+    # The recovery prompt incorporates the rationale and offers next steps.
+    assert "plan" in result.response_text
+    assert "no match" in result.response_text
+    assert "Rephrase" in result.response_text or "rephrase" in result.response_text
     assert result.tool_call_count == 0
+    # The model is now marked unreliable for planning so the hint generator
+    # stops escalating to ``plan`` for it.
+    assert not is_plan_reliable_for_model("test-planner-model")
+    reset_plan_reliability()
 
 
 @pytest.mark.asyncio
@@ -856,7 +877,7 @@ async def test_run_turn_workflow_transition_dispatches_apply_transition() -> Non
 
 @pytest.mark.asyncio
 async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
-    """After _STAGE_NUDGE_THRESHOLD turns in the same stage, the loop
+    """After stage_nudge_threshold turns in the same stage, the loop
     injects a nudge user-message prompting the model to transition.
     """
     from kernel.models import WorkflowSessionState
@@ -2845,29 +2866,32 @@ async def test_no_tools_fork_child_aborts_turn() -> None:
     assert result.response_text != "Done — wrote it to disk."
 
 
-def test_max_handoffs_per_turn_constant_is_bound() -> None:
-    """The hard backstop constant exists and is a sane bound. This guards
+def test_max_handoffs_per_turn_setting_is_bound() -> None:
+    """The hard backstop setting exists and is a sane bound. This guards
     against accidental removal — the loop guard depends on it."""
-    from kernel.turn_runner import _MAX_HANDOFFS_PER_TURN
+    from kernel.config import settings as kernel_settings
 
-    assert isinstance(_MAX_HANDOFFS_PER_TURN, int)
-    assert 3 <= _MAX_HANDOFFS_PER_TURN <= 20
+    value = kernel_settings.max_handoffs_per_turn
+    assert isinstance(value, int)
+    assert 3 <= value <= 20
 
 
-def test_duplicate_hint_limit_constant_is_bound() -> None:
+def test_duplicate_hint_limit_setting_is_bound() -> None:
     """The duplicate-hint dedup threshold exists and is small (1-3)."""
-    from kernel.turn_runner import _DUPLICATE_HINT_LIMIT
+    from kernel.config import settings as kernel_settings
 
-    assert isinstance(_DUPLICATE_HINT_LIMIT, int)
-    assert 1 <= _DUPLICATE_HINT_LIMIT <= 3
+    value = kernel_settings.duplicate_hint_limit
+    assert isinstance(value, int)
+    assert 1 <= value <= 3
 
 
-def test_hint_cycle_min_len_constant_is_bound() -> None:
+def test_hint_cycle_min_len_setting_is_bound() -> None:
     """The hint-cycle detection threshold exists and is 3 (A, B, A)."""
-    from kernel.turn_runner import _HINT_CYCLE_MIN_LEN
+    from kernel.config import settings as kernel_settings
 
-    assert isinstance(_HINT_CYCLE_MIN_LEN, int)
-    assert _HINT_CYCLE_MIN_LEN == 3
+    value = kernel_settings.hint_cycle_min_len
+    assert isinstance(value, int)
+    assert value == 3
 
 
 def test_extract_hint_target_parses_single_handoff() -> None:

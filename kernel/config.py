@@ -124,6 +124,48 @@ class Settings(BaseSettings):
     # Override via ``PER_STEP_MAX_TOOL_CALLS``.
     per_step_max_tool_calls: int = 12
 
+    # ── Turn-runner guard caps ──────────────────────────────────────────
+    # These bound the various correction-nudge and loop-backstop guards
+    # in ``kernel.turn_runner``. They were previously module-level
+    # constants; they now live here so hosts can tune them via env vars
+    # without editing kernel source. Each defaults to its historical
+    # value (see the git-blame comments in ``turn_runner.py`` for the
+    # incidents that motivated each cap).
+    # Cap for narration/chain-incomplete correction nudges. After this
+    # many nudges the guards give up and let the model's response through
+    # so the user sees something rather than a silent hang. Override via
+    # ``NARRATION_NUDGE_CAP``.
+    narration_nudge_cap: int = 3
+    # Forced-fork enforcer: when a ``fork:`` routing hint is active and
+    # the model refuses to call ``transition_stage`` — instead burning
+    # iterations on read-only tools or returning empty completions — the
+    # kernel forces the fork after this many non-fork tool dispatches.
+    # Override via ``FORCED_FORK_NON_FORK_TOOL_CAP``.
+    forced_fork_non_fork_tool_cap: int = 2
+    # Stuck-session guard: after this many turns in the same stage
+    # without a transition, the loop injects a nudge. Override via
+    # ``STAGE_NUDGE_THRESHOLD``.
+    stage_nudge_threshold: int = 4
+    # After this many turns in the same stage, the loop forces a final
+    # no-tools completion to stop burning tokens. Override via
+    # ``STAGE_NUDGE_CAP``.
+    stage_nudge_cap: int = 6
+    # Hard backstop against routing-hint loops: caps the total mode
+    # handoffs per turn and forces a final completion. Override via
+    # ``MAX_HANDOFFS_PER_TURN``.
+    max_handoffs_per_turn: int = 6
+    # Consecutive identical routing hints before the duplicate-hint dedup
+    # suppresses injection. Override via ``DUPLICATE_HINT_LIMIT``.
+    duplicate_hint_limit: int = 2
+    # Minimum hint-target history length that forms a detectable 2-cycle
+    # (A, B, A). Override via ``HINT_CYCLE_MIN_LEN``.
+    hint_cycle_min_len: int = 3
+    # Consecutive routing-hint overrides (model hands off to a target
+    # that differs from the hint's suggested target) before the hint
+    # layer stops injecting further hints for the rest of the turn.
+    # Override via ``HINT_OVERRIDE_LIMIT``.
+    hint_override_limit: int = 2
+
     # ── Context broker ──────────────────────────────────────────────────
     heartbeat_interval_seconds: int = 60
     repo_context_stale_after_hours: int = 6
@@ -286,6 +328,14 @@ class Settings(BaseSettings):
         "declarative_completion_max_tokens",
         "max_tool_iterations",
         "fork_child_max_tool_iterations",
+        "narration_nudge_cap",
+        "forced_fork_non_fork_tool_cap",
+        "stage_nudge_threshold",
+        "stage_nudge_cap",
+        "max_handoffs_per_turn",
+        "duplicate_hint_limit",
+        "hint_cycle_min_len",
+        "hint_override_limit",
         "heartbeat_interval_seconds",
         "repo_context_stale_after_hours",
         "reflection_cadence_minutes",

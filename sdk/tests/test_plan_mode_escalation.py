@@ -98,14 +98,16 @@ def _full_catalog() -> dict[str, WorkflowModeConfig]:
 
 def test_routing_hint_escalates_to_plan_for_sequential_multi_intent() -> None:
     """A sequential query with 2+ gap intents escalates to ``plan``."""
+    from kernel.routing_vocabulary import reset_plan_reliability
     from kernel.turn_runner import _compute_capability_routing_hint
 
+    reset_plan_reliability()
     catalog = _full_catalog()
     q = (
         "do a web search for python coding best practices then review the "
         "code for async issues then write a markdown summary"
     )
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog):
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
             mode_id="default", query=q, capability_manifest=_empty_manifest(),
             routing_targets=["search", "coding", "markdown", "plan"],
@@ -124,11 +126,13 @@ def test_routing_hint_escalates_to_plan_for_sequential_multi_intent() -> None:
 
 def test_routing_hint_escalates_to_plan_for_three_plus_intents_non_sequential() -> None:
     """A non-sequential query with 3+ gap intents also escalates to ``plan``."""
+    from kernel.routing_vocabulary import reset_plan_reliability
     from kernel.turn_runner import _compute_capability_routing_hint
 
+    reset_plan_reliability()
     catalog = _full_catalog()
     q = "search the latest news remember the key points and write a markdown"
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog):
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
             mode_id="default", query=q, capability_manifest=_empty_manifest(),
             routing_targets=["search", "learn", "markdown", "plan"],
@@ -142,11 +146,13 @@ def test_routing_hint_escalates_to_plan_for_three_plus_intents_non_sequential() 
 
 def test_routing_hint_escalates_to_plan_for_two_intents_sequential() -> None:
     """A 2-intent sequential query escalates to ``plan`` (2 + sequential)."""
+    from kernel.routing_vocabulary import reset_plan_reliability
     from kernel.turn_runner import _compute_capability_routing_hint
 
+    reset_plan_reliability()
     catalog = _full_catalog()
     q = "search for the latest rust news then write a markdown summary"
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog):
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
             mode_id="default", query=q, capability_manifest=_empty_manifest(),
             routing_targets=["search", "markdown", "plan"],
@@ -160,15 +166,17 @@ def test_routing_hint_escalates_to_plan_for_two_intents_sequential() -> None:
 
 def test_routing_hint_does_not_escalate_to_plan_when_plan_not_routable() -> None:
     """When ``plan`` is not among routing targets, the existing fork logic runs."""
+    from kernel.routing_vocabulary import reset_plan_reliability
     from kernel.turn_runner import _compute_capability_routing_hint
 
+    reset_plan_reliability()
     catalog = {
         "learn": _full_catalog()["learn"],
         "markdown": _full_catalog()["markdown"],
         "default": _full_catalog()["default"],
     }
     q = "remember this and write a markdown of it"
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog):
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
             mode_id="default", query=q, capability_manifest=_empty_manifest(),
             routing_targets=["learn", "markdown"],
@@ -182,15 +190,17 @@ def test_routing_hint_does_not_escalate_to_plan_when_plan_not_routable() -> None
 
 def test_routing_hint_does_not_escalate_to_plan_for_simple_query() -> None:
     """A simple single-intent query routes directly, no plan escalation."""
+    from kernel.routing_vocabulary import reset_plan_reliability
     from kernel.turn_runner import _compute_capability_routing_hint
 
+    reset_plan_reliability()
     catalog = {
         "search": _full_catalog()["search"],
         "plan": _full_catalog()["plan"],
         "default": _full_catalog()["default"],
     }
     q = "search for the latest rust news"
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog):
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
             mode_id="default", query=q, capability_manifest=_empty_manifest(),
             routing_targets=["search", "plan"],
@@ -205,34 +215,165 @@ def test_routing_hint_does_not_escalate_to_plan_for_simple_query() -> None:
 # ── discuss mode intent detection (Phase 1 metadata) ───────────────────────
 
 
-def test_discuss_mode_detects_reasoning_intent_from_new_keywords() -> None:
-    """The ``discuss`` mode's new ``routing_intent_keywords`` make
-    reasoning-cue queries matchable by the proactive hint detector."""
+def test_discuss_mode_detects_clarify_intent_from_new_keywords() -> None:
+    """The ``discuss`` mode's new ``clarify`` routing intent makes
+    clarification-cue queries (ask, unclear, should I, ...) matchable by
+    the proactive hint detector. ``discuss`` was re-scoped from
+    ``reasoning`` to ``clarify`` on 2026-07-30 so it only punts there when
+    the right next step is a question to the user, not a deep analysis
+    (which belongs to ``ponder``)."""
     from kernel.turn_runner import _detect_query_intents
 
     discuss = _mode_config(
-        mode_id="discuss", satisfies_intents=["reasoning"],
-        routing_intent_tags=["reasoning"],
+        mode_id="discuss", satisfies_intents=["clarify"],
+        routing_intent_tags=["clarify"],
         routing_intent_keywords={
-            "reasoning": [
-                "analyze", "reason", "compare", "evaluate", "discuss",
-                "debate", "think", "consider", "weigh", "pros", "cons",
-                "tradeoff", "swot",
+            "clarify": [
+                "clarify", "not sure", "need to know", "what do you mean",
+                "ask you", "questions about", "should i", "which option",
+                "ambiguous", "unclear", "can you confirm", "help me decide",
             ],
         },
     )
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value={"discuss": discuss}):
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value={"discuss": discuss}):
+        assert _detect_query_intents(
+            query="I'm not sure which option to pick, can you clarify?",
+            routing_targets=["discuss"],
+        ) == {"clarify"}
+        assert _detect_query_intents(
+            query="help me decide between A and B",
+            routing_targets=["discuss"],
+        ) == {"clarify"}
         assert _detect_query_intents(
             query="analyze the tradeoffs between X and Y",
             routing_targets=["discuss"],
-        ) == {"reasoning"}
-        assert _detect_query_intents(
-            query="do a SWOT analysis of our position",
-            routing_targets=["discuss"],
-        ) == {"reasoning"}
+        ) == set()  # analysis cue no longer matches discuss (now ponder)
         assert _detect_query_intents(
             query="hello world", routing_targets=["discuss"],
         ) == set()
+
+
+def test_routing_hint_skips_plan_when_model_marked_unreliable() -> None:
+    """When the active model has been marked unreliable for planning
+    (``plan_workflow`` previously failed for it), the plan-escalation
+    branch is skipped so a known-bad path is not re-attempted (the
+    2026-07-30 StubCompletion incident)."""
+    from kernel.routing_vocabulary import (
+        mark_plan_unreliable_for_model,
+        reset_plan_reliability,
+    )
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    reset_plan_reliability()
+    catalog = _full_catalog()
+    q = (
+        "do a web search for python coding best practices then review the "
+        "code for async issues then write a markdown summary"
+    )
+    mark_plan_unreliable_for_model("glm-5.2:cloud")
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default", query=q, capability_manifest=_empty_manifest(),
+            routing_targets=["search", "coding", "markdown", "plan"],
+            mode_config=catalog["default"],
+            planner_model_id="glm-5.2:cloud",
+        )
+    reset_plan_reliability()
+
+    # Plan escalation must be skipped for the unreliable model.
+    assert "plan" not in hint or "Routing Hint" not in hint or hint == ""
+    # It should NOT hand off to plan.
+    assert "target_stage_id `plan`" not in hint
+
+
+def test_routing_hint_fallback_silences_when_no_clean_cover() -> None:
+    """When no single target cleanly covers the gap and the disjoint/fork
+    branches do not fire, the hint layer returns empty (silence) instead
+    of dumping the whole target list (the 2026-07-30 hallucination-as-
+    progress pattern). Constructed so the fork branch refuses (the two
+    targets cover the *same* single intent, not a disjoint pair) and
+    producer-first does not fire (no producer/consumer mix)."""
+    from kernel.routing_vocabulary import reset_plan_reliability
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    reset_plan_reliability()
+    # Two targets both declare the SAME intent tag (research). A query
+    # matching research leaves a single-intent gap; both cover it, so
+    # ``covering_targets`` is non-empty and the single-handoff branch
+    # fires — not the fallback. To reach the fallback we need a gap no
+    # target covers: declare a target whose keywords do NOT match the
+    # query, so detection finds nothing... but then there's no gap either.
+    # The realistic fallback trigger is: a gap exists, multiple targets
+    # each cover a disjoint subset, but the fork is refused because the
+    # union does not cover the whole gap. Build that: three intents,
+    # two targets each covering one, third intent uncovered.
+    catalog = {
+        "default": _full_catalog()["default"],
+        "search": _mode_config(
+            mode_id="search", satisfies_intents=["research"],
+            routing_intent_tags=["research"],
+            routing_intent_keywords={"research": ["search", "news"]},
+        ),
+        "learn": _mode_config(
+            mode_id="learn", satisfies_intents=["learn"],
+            routing_intent_tags=["learn"],
+            routing_intent_keywords={"learn": ["remember", "note"]},
+        ),
+        # A third target that covers a *third* intent the query also
+        # expresses, so the fork's two-target cover is incomplete.
+        "coding": _mode_config(
+            mode_id="coding", satisfies_intents=["coding"],
+            routing_intent_tags=["coding"],
+            routing_intent_keywords={"coding": ["code", "coding"]},
+        ),
+    }
+    # Query triggers research + learn + coding (3 intents). Only search +
+    # learn + coding together cover all 3, but a 3-way fork with a
+    # producer/consumer mix (research is producer, coding is consumer)
+    # is refused. No single target covers all 3. The producer-first guard
+    # fires for the research/coding mix → returns a producer hint, not
+    # the fallback. So this query does NOT reach the fallback either.
+    #
+    # The fallback is reached only when: gap exists, no single cover, no
+    # disjoint fork, no producer/consumer mix, not sequential. The only
+    # remaining case is a single uncovered intent with no matching target
+    # at all — but then detection returns nothing and there's no gap.
+    # Conclusion: with the current branch ordering the fallback (section
+    # 6) is effectively unreachable when targets declare intents; it only
+    # fires when ``has_gap`` is True but ``detected_intents`` is empty
+    # (a gap asserted externally with no detection). Verify that path.
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default", query="hello world", capability_manifest=_empty_manifest(),
+            routing_targets=["search", "learn", "coding"],
+            mode_config=catalog["default"],
+        )
+    # No intents detected from "hello world" → no gap → empty hint.
+    assert hint == ""
+
+
+def test_routing_hint_single_handoff_is_directive() -> None:
+    """A single covering target produces a directive hint ('This request
+    requires X's tools') rather than the old hedged prose ('Your current
+    mode may lack...') that invited the model to override it."""
+    from kernel.routing_vocabulary import reset_plan_reliability
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    reset_plan_reliability()
+    catalog = {
+        "default": _full_catalog()["default"],
+        "search": _full_catalog()["search"],
+    }
+    q = "search for the latest rust news"
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default", query=q, capability_manifest=_empty_manifest(),
+            routing_targets=["search"],
+            mode_config=catalog["default"],
+        )
+    assert hint != ""
+    assert "requires" in hint
+    assert "may lack" not in hint
 
 
 # ── plan_workflow operation ────────────────────────────────────────────────

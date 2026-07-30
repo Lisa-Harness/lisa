@@ -506,9 +506,10 @@ def _producer_first_hint(
         return None
     return (
         "## Routing Hint\n\n"
-        f"Your current mode may lack the tools needed for this request. "
-        f"Hand off to `{producer_target}` by calling `transition_stage` "
-        f"with target_stage_id `{producer_target}`."
+        f"This request requires `{producer_target}`'s tools first (it "
+        f"produces evidence a later step consumes). Call "
+        f"`transition_stage` with target_stage_id `{producer_target}`. "
+        f"The post-handoff hint will chain the consumer step after."
     )
 
 
@@ -520,6 +521,7 @@ def _compute_capability_routing_hint(
     routing_targets: list[str],
     mode_config: WorkflowModeConfig | None = None,
     extra_satisfied: set[str] | None = None,
+    planner_model_id: str = "",
 ) -> str:
     """Compute a proactive routing hint when the current mode lacks tools.
 
@@ -637,9 +639,22 @@ def _compute_capability_routing_hint(
     # looping until the duplicate-hint dedup suppressed it and leaving the
     # model in ``coding`` with no path to ``markdown``). Gating on
     # ``"plan" not in current_satisfied`` trips exactly once per turn.
+    #
+    # Model-reliability guard: when the active model has been marked
+    # unreliable for planning (``plan_workflow`` previously failed to
+    # produce a parseable ``target_stage_id`` for it — e.g. a local
+    # backend returning ``StubCompletion`` instead of JSON), escalating
+    # to ``plan`` would waste a model round-trip on a known-bad path and
+    # then hard-fail the turn (the 2026-07-30 incident). Skip plan
+    # escalation for unreliable models and fall through to the
+    # single-handoff / fork branches instead. See
+    # ``kernel.routing_vocabulary.is_plan_reliable_for_model``.
+    from kernel.routing_vocabulary import is_plan_reliable_for_model  # noqa: PLC0415
+
     if (
         "plan" in routing_targets
         and "plan" not in current_satisfied
+        and is_plan_reliable_for_model(planner_model_id)
         and (len(gap_intents) >= 3 or (len(gap_intents) >= 2 and _query_is_sequential(query)))
     ):
         return (
@@ -680,13 +695,13 @@ def _compute_capability_routing_hint(
             if first_target:
                 hint = (
                     "## Routing Hint\n\n"
-                    f"Your current mode may lack the tools needed for this "
-                    f"request. Hand off to `{first_target}` by calling "
-                    f"`transition_stage` with target_stage_id "
-                    f"`{first_target}`."
+                    f"This request requires `{first_target}`'s tools as the "
+                    f"first step. Call `transition_stage` with "
+                    f"target_stage_id `{first_target}`. Subsequent steps "
+                    f"will be chained by post-handoff hints."
                 )
                 return hint
-            # No partial target found — fall through to the generic list.
+            # No partial target found — fall through (silence).
         else:
             # Delegate the disjoint-coverage decision to the pure helper so
             # the fork enforcer and the hint emitter share one truth. Pass
@@ -746,31 +761,30 @@ def _compute_capability_routing_hint(
     # ── 5. Single handoff to the covering target ──────────────────────
     if covering_targets:
         preferred = covering_targets[0]
-        # The kernel owns no routing prose. The handoff instruction is purely
-        # mechanical: name the tool (transition_stage) and the target id. Any
-        # semantic steering ("researches then reasons", "do not use the
-        # one-shot search action mode", ...) is pack-authored routing *input*
-        # — the target's routing_intent_tags / fast_path_patterns that drove
-        # the decision to pick this target — not kernel-authored routing
-        # *output*. The model reads the chosen mode's own _mode.md body after
-        # the handoff; the kernel does not narrate the mode's purpose here.
+        # Directive, not advisory: when exactly one target cleanly covers
+        # every remaining gap intent, the routing decision is unambiguous.
+        # The previous hedged prose ("Your current mode *may* lack the
+        # tools...") invited the model to override the hint and improvise a
+        # different target (the 2026-07-30 bounce: hint said ``discuss``,
+        # model went to ``ponder``). When the kernel knows the single
+        # covering target, it says so directly.
         hint = (
             "## Routing Hint\n\n"
-            f"Your current mode may lack the tools needed for this request. "
-            f"Hand off to `{preferred}` by calling `transition_stage` with "
-            f"target_stage_id `{preferred}`."
+            f"This request requires `{preferred}`'s tools. Call "
+            f"`transition_stage` with target_stage_id `{preferred}`."
         )
         return hint
 
-    # ── 6. Fallback: list all routing targets ──────────────────────────
+    # ── 6. Fallback: no clean cover → silence ──────────────────────────
+    # When no single target cleanly covers the gap (the disjoint-coverage
+    # and producer-first branches above did not fire), the hint layer does
+    # NOT know the right answer. Previously it dumped the whole target
+    # list and let the model guess — that guess is the hallucination-as-
+    # progress pattern (the 2026-07-30 bounce: the fallback listed
+    # ``discuss`` alongside others and the model picked one at random).
+    # Return empty so the model stays in the current mode and either
+    # asks the user for direction or proceeds with what it has. The hint
+    # is a signal, not a default.
     if not has_gap:
         return ""
-    targets_str = ", ".join(routing_targets)
-    hint = (
-        "## Routing Hint\n\n"
-        "Your current mode may lack the tools needed for this request. "
-        f"You can hand off to a better-suited mode by calling "
-        f"`transition_stage` with one of these target_stage_id values: "
-        f"{targets_str}."
-    )
-    return hint
+    return ""
