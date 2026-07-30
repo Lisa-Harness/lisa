@@ -36,7 +36,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from rich.console import Console, Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderResult, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -188,6 +188,13 @@ class _TrailingSpinner:
         self._line = line
         self._spinner = Spinner(spinner_name, style=style)
         self._style = style
+
+    def __rich_console__(
+        self, console: "Console", options: "ConsoleOptions"
+    ) -> "RenderResult":
+        # Live calls this on every refresh; delegate to ``render`` with the
+        # console's current time so the trailing frame animates.
+        yield self.render(console.get_time())
 
     def render(self, time: float) -> RenderableType:
         frame = self._spinner.render(time)
