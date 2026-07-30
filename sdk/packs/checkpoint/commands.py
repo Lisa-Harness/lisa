@@ -36,6 +36,7 @@ __all__ = [
     "get_host_commands",
     "handle_checkpoint",
     "handle_list_checkpoints",
+    "handle_proceed",
     "handle_restore",
     "handle_summarize_history",
 ]
@@ -156,6 +157,189 @@ async def handle_checkpoint(
         return result.output_text or "Checkpoint created."
     except Exception as exc:  # pylint: disable=broad-except
         return f"Checkpoint failed: {exc}"
+
+
+# ── /restore ─────────────────────────────────────────────────────────
+
+
+async def handle_proceed(
+    runtime: Any,
+    stripped: str,
+    message: str,
+) -> str:
+    """Handle ``/proceed`` — resume from the most recent yielded checkpoint.
+
+    The unified turn lifecycle stamps ``CheckpointBundle.lifecycle_state`` on
+    every checkpoint. When the harness forced a ``YieldAction`` (iteration cap,
+    stuck-in-stage, budget exhaustion, or the model called the ``yield`` tool),
+    the checkpoint is saved with ``lifecycle_state="yielded"`` and the question
+    in ``awaiting_input_question``.
+
+    ``/proceed`` finds the most recent yielded checkpoint, restores its state
+    (unified_state, workflow_session, workflow_instance, current_mode_id), and
+    surfaces the original question so the user can answer it. The user's next
+    message becomes the turn query; because ``current_mode_id`` was restored to
+    the workflow's current step, the turn resumes against the same step.
+
+    Also checks for stalled recovery records (``RecoveryRecord`` with
+    ``state="stalled"`` and ``retry_policy="confirm"``) and surfaces them
+    alongside the yield question so the user can retry/skip the stalled item.
+
+    Usage:
+        /proceed              — resume from the most recent yielded checkpoint
+        /proceed <reply>      — resume AND inject <reply> as the next turn query
+    """
+    pool = runtime.mcp_tool_pool
+    if pool is None:
+        return "No storage pool available to resume."
+
+    try:
+        list_result = await pool.call_tool("list_checkpoints", {}, server_id="lisa-storage")
+        result_text = getattr(list_result, "output_text", "") or ""
+        data = json.loads(result_text) if result_text.strip() else []
+        if not isinstance(data, list) or not data:
+            return "No checkpoints available to resume."
+    except Exception as exc:  # pylint: disable=broad-except
+        return f"Resume failed (list checkpoints): {exc}"
+
+    # Find the most recent yielded checkpoint. The list is newest-first.
+    # Each entry is a summary dict (checkpoint_id, label, created_at, ...).
+    # The lifecycle_state is on the full bundle, not the summary — so we
+    # load the most recent and check its lifecycle_state. To avoid loading
+    # every checkpoint, we check the label prefix "yielded:" that the
+    # checkpoint_create operation applies when lifecycle_state is "yielded".
+    # If the operation doesn't set that label, fall back to loading the
+    # most recent and inspecting lifecycle_state directly.
+    yielded_checkpoint_id = ""
+    for entry in data:
+        cid = entry.get("checkpoint_id", "")
+        label = entry.get("label", "") or ""
+        if label.startswith("yielded"):
+            yielded_checkpoint_id = cid
+            break
+
+    if not yielded_checkpoint_id:
+        # No yielded checkpoint found — check if the most recent one is
+        # yielded by loading its full bundle.
+        if not data:
+            return "No checkpoints available to resume."
+        # Load the most recent and inspect lifecycle_state.
+        try:
+            restore_result = await pool.call_tool(
+                "restore_checkpoint",
+                {"checkpoint_id": data[0].get("checkpoint_id", "")},
+                server_id="lisa-storage",
+            )
+            rt = getattr(restore_result, "output_text", "") or ""
+            bundle_dict = json.loads(rt) if rt.strip() else {}
+            if isinstance(bundle_dict, dict):
+                ls = bundle_dict.get("lifecycle_state", "")
+                if ls == "yielded":
+                    yielded_checkpoint_id = data[0].get("checkpoint_id", "")
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    if not yielded_checkpoint_id:
+        return (
+            "No yielded checkpoint to resume. "
+            "Use /restore <checkpoint_id> to restore any checkpoint manually."
+        )
+
+    # Restore the yielded checkpoint (same flow as handle_restore).
+    parts = stripped.split(None, 1)
+    user_reply = parts[1].strip() if len(parts) > 1 else ""
+
+    ctx = _build_context(
+        runtime,
+        message,
+        params={"checkpoint_id": yielded_checkpoint_id},
+        tool_executor=_checkpoint_tool_executor(runtime),
+    )
+
+    try:
+        result = await execute_operation("checkpoint_restore", ctx)
+    except Exception as exc:  # pylint: disable=broad-except
+        return f"Resume failed (restore): {exc}"
+
+    output_json = result.output_json or {}
+    if not isinstance(output_json, dict):
+        output_json = {}
+
+    # Extract the question from the restored bundle.
+    question = output_json.get("awaiting_input_question", "") or ""
+
+    # Restore unified_state, workflow_session, workflow_instance
+    # (mirrors handle_restore exactly).
+    unified_state_dict = output_json.get("unified_state") or {}
+    if isinstance(unified_state_dict, dict) and unified_state_dict:
+        runtime.state_snapshot = unified_state_dict
+
+    wf_session_dict = output_json.get("workflow_session_state") or {}
+    if isinstance(wf_session_dict, dict) and wf_session_dict:
+        try:
+            session = WorkflowSessionState.model_validate(wf_session_dict)
+            updater = getattr(runtime, "workflow_session_updater", None)
+            if callable(updater):
+                updater(session)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("proceed: workflow session restore failed: %s", exc)
+
+    wf_instance_dict = output_json.get("workflow_instance") or {}
+    if isinstance(wf_instance_dict, dict) and wf_instance_dict:
+        from kernel.workflow_instance import WorkflowInstance
+
+        try:
+            instance = WorkflowInstance.model_validate(wf_instance_dict)
+            instance_updater = getattr(runtime, "_set_workflow_instance", None)
+            if callable(instance_updater):
+                instance_updater(instance)
+                if instance.current_mode_id:
+                    runtime.current_mode_id = instance.current_mode_id
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("proceed: workflow instance restore failed: %s", exc)
+
+    # Check for stalled recovery records that block the workflow.
+    stall_summary = ""
+    recovery_service = getattr(runtime, "recovery_service", None)
+    if recovery_service is not None and hasattr(recovery_service, "list_open"):
+        try:
+            from kernel.recovery import RecoveryIdentity
+
+            identity = RecoveryIdentity(
+                workspace_id="lite-host",
+                user_id=str(runtime.config.user_slug or "lite-user"),
+                user_slug=str(runtime.config.user_slug or "default"),
+                surface_type=cast(ConversationSurface, runtime.config.surface_type),
+                surface_id=runtime.config.surface_id,
+                memory_scope="personal",
+            )
+            open_records = await recovery_service.list_open(identity)
+            stalled = [
+                r for r in open_records
+                if getattr(r, "state", "") == "stalled"
+                and getattr(r, "retry_policy", "") == "confirm"
+            ]
+            if stalled:
+                lines = ["Stalled work items needing your decision:"]
+                for r in stalled:
+                    lines.append(
+                        f"  • {r.target_id} ({r.target_kind}): {r.last_error or 'unknown'}"
+                    )
+                lines.append("Use /retry, /skip, or /cancel to resolve.")
+                stall_summary = "\n\n" + "\n".join(lines)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("proceed: recovery list_open failed: %s", exc)
+
+    # Build the resume prompt. If the user provided a reply via
+    # ``/proceed <reply>``, set it as the pending resume message so the host
+    # replays it as the next turn query (mirrors the CLI restart-resume seam).
+    if user_reply:
+        runtime.pending_resume_message = user_reply
+        return f"Resumed from checkpoint {yielded_checkpoint_id}. Your reply will be sent next."
+
+    if question:
+        return f"Resumed from checkpoint {yielded_checkpoint_id}.\n\nQuestion: {question}{stall_summary}"
+    return f"Resumed from checkpoint {yielded_checkpoint_id}.{stall_summary}"
 
 
 # ── /restore ─────────────────────────────────────────────────────────
@@ -354,6 +538,14 @@ def get_host_commands() -> list[HostCommandSpec]:
             prefix="/checkpoint",
             handler=handle_checkpoint,
             help_text="/checkpoint [label] saves a state+workflow checkpoint to lisa-storage.",
+        ),
+        HostCommandSpec(
+            prefix="/proceed",
+            handler=handle_proceed,
+            help_text=(
+                "/proceed [reply] resumes from the most recent yielded checkpoint. "
+                "Surfaces the question and optionally injects a reply."
+            ),
         ),
         HostCommandSpec(
             prefix="/restore",

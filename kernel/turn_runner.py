@@ -2421,6 +2421,59 @@ async def _run_turn_inner(
         _state.iteration += 1
         _state.step_iteration += 1
 
+        # ── Unified turn lifecycle: recovery-stall check ──────────────
+        # Before any other guard fires, check if a stalled ``RecoveryRecord``
+        # blocks the workflow (``state="stalled"``, ``retry_policy="confirm"``,
+        # ``blocks_workflow=True``). If so, force a yield naming the stall so
+        # the user can retry/skip. This is the resolver's "recovery-stall"
+        # priority branch made live in the loop — previously the turn loop
+        # created and settled records but never read them back.
+        if _pending_yield is None and hooks.recovery_service is not None:
+            try:
+                _open_records = await hooks.recovery_service.list_open(
+                    _build_recovery_identity(hooks)
+                )
+            except Exception:  # pylint: disable=broad-except
+                _open_records = []
+            _stall_record = next(
+                (
+                    r for r in _open_records
+                    if getattr(r, "state", "") == "stalled"
+                    and getattr(r, "retry_policy", "") == "confirm"
+                    and getattr(r, "blocks_workflow", False)
+                ),
+                None,
+            )
+            if _stall_record is not None:
+                _yield_policy = _resolve_yield_policy(mode_config)
+                _yield_target = _yield_policy.fallback_mode or (
+                    _next_remaining_step_mode_id(hooks) or "discuss"
+                    if not _yield_policy.allowed
+                    else ""
+                )
+                _stall_detail = (
+                    _stall_record.last_error
+                    or f"{_stall_record.target_kind} {_stall_record.target_id} stalled"
+                )
+                _pending_yield = YieldAction(
+                    question=(
+                        f"A previous step stalled and needs your input to continue. "
+                        f"Stall: {_stall_detail}. Retry, skip, or revise?"
+                    ),
+                    context=(
+                        f"Recovery record blocks workflow step "
+                        f"'{getattr(_stall_record, 'step_id', '')}'."
+                    ),
+                    target_mode_id=_yield_target,
+                )
+                _log.warning(
+                    "turn lifecycle: recovery stall blocks workflow "
+                    "(mode=%s, target=%s, step=%s); forcing yield",
+                    mode_id,
+                    _stall_record.target_id,
+                    getattr(_stall_record, "step_id", ""),
+                )
+
         # ── Per-step iteration sub-budget (Phase 3) ───────────────────
         # When the current workflow step has exhausted its per-step
         # iteration or tool-call budget but the global turn cap has not
