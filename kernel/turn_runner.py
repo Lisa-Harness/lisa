@@ -1812,10 +1812,27 @@ async def _run_turn_inner(
             plan_model_id,
             plan_reason,
         )
+        # If the planner produced partial steps before failing (e.g. a
+        # parse failure on a multi-step plan that partially populated),
+        # include them in the recovery message so the user has context on
+        # what was attempted. This is rare — most failures produce no
+        # steps at all — but when it happens the partial plan is useful
+        # diagnostic information for rephrasing.
+        partial_steps = (result.output_json or {}).get("steps") or []
+        partial_block = ""
+        if isinstance(partial_steps, list) and partial_steps:
+            partial_lines = ["The planner partially identified these steps before failing:"]
+            for idx, s in enumerate(partial_steps, start=1):
+                if isinstance(s, dict):
+                    partial_lines.append(
+                        f"  {idx}. {s.get('mode_id', '?')} — {s.get('description', '')}"
+                    )
+            partial_block = "\n\n" + "\n".join(partial_lines)
         recovery = (
             f"I attempted to plan this request in `{mode_id}` mode but could "
             f"not produce a routing decision (reason: {plan_reason}). This is "
-            f"often a sign of a complex or ambiguous multi-step request.\n\n"
+            f"often a sign of a complex or ambiguous multi-step request."
+            f"{partial_block}\n\n"
             f"You can:\n"
             f"  1. Rephrase the request with explicit sequential steps "
             f"(e.g. \"search for X, then write a markdown report\").\n"

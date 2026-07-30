@@ -272,6 +272,75 @@ async def test_run_turn_planner_action_mode_empty_target_falls_back_to_text() ->
 
 
 @pytest.mark.asyncio
+async def test_run_turn_planner_failure_with_partial_steps_includes_them_in_recovery() -> None:
+    """When plan_workflow fails (empty target) but produced partial steps
+    before failing, the recovery prompt includes the partial steps so the
+    user has diagnostic context for rephrasing. This is the Phase 4
+    fallback cleanup: the recovery message is not just a canned string —
+    it surfaces what the planner attempted."""
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+    from kernel.routing_vocabulary import (
+        is_plan_reliable_for_model,
+        reset_plan_reliability,
+    )
+
+    reset_plan_reliability()
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    patched_catalog = {"plan": plan_cfg}
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        # Partial steps with an empty target — the planner started
+        # building a plan but failed before producing a routing target.
+        return OperationResult(
+            output_text="parse failed",
+            output_json={
+                "target_stage_id": "",
+                "rationale": "parse failure",
+                "steps": [
+                    {"mode_id": "search", "description": "Search for info"},
+                    {"mode_id": "markdown", "description": "Draft a report"},
+                ],
+            },
+        )
+
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="should not reach model")
+
+    hooks = _build_minimal_hooks(complete)
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(
+            mode_id="plan",
+            query="research then write a report",
+            hooks=hooks,
+            preferred_model_id="test-planner-model",
+        )
+
+    # The recovery prompt includes the partial steps.
+    assert "search" in result.response_text
+    assert "markdown" in result.response_text
+    assert "Search for info" in result.response_text
+    # The standard recovery options are still present.
+    assert "Rephrase" in result.response_text or "rephrase" in result.response_text
+    assert result.tool_call_count == 0
+    assert not is_plan_reliable_for_model("test-planner-model")
+    reset_plan_reliability()
+
+
+@pytest.mark.asyncio
 async def test_run_turn_planner_with_steps_renders_visible_plan_and_persists_instance() -> None:
     """When plan_workflow returns a ``steps`` array (Option B visible plan),
     the turn runner:
