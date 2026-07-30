@@ -101,6 +101,11 @@ from kernel.slice import (
 from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
 from kernel.tools.registry import execute_tool, get_tool_catalog
 from kernel.tools.schema_translator import mcp_tool_to_openai_function, openai_tool_call_to_mcp
+from kernel.workflow_instance import (
+    WorkflowInstance,
+    WorkflowStep,
+    _step_id_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1132,6 +1137,36 @@ def _extract_pre_turn_briefing(result: OperationResult) -> str:
     return result.output_text.strip()
 
 
+def _plan_steps_to_workflow_steps(
+    plan_steps: list[dict[str, Any]],
+) -> tuple[WorkflowStep, ...]:
+    """Convert plan_workflow's ``steps`` dicts into ``WorkflowStep`` objects.
+
+    Each plan step has ``mode_id``, ``description``, and ``rationale``. The
+    ``WorkflowStep`` only carries ``mode_id`` and ``step_id`` (the
+    description/rationale are for the user-visible plan block, not the
+    instance). The last step is marked terminal. Step ids are deterministic
+    via ``_step_id_for`` so a recompiled plan preserves ``completed_steps``
+    by id intersection.
+    """
+    if not plan_steps:
+        return ()
+    steps: list[WorkflowStep] = []
+    for idx, step in enumerate(plan_steps):
+        mode_id = str(step.get("mode_id", "")).strip()
+        if not mode_id:
+            continue
+        steps.append(
+            WorkflowStep(
+                step_id=_step_id_for(mode_id, idx),
+                mode_id=mode_id,
+                is_terminal=(idx == len(plan_steps) - 1),
+                spawned_from="plan_workflow_op",
+            )
+        )
+    return tuple(steps)
+
+
 # ── Core turn runner ────────────────────────────────────────────────────────
 
 
@@ -1613,7 +1648,50 @@ async def _run_turn_inner(
         planned_target = str(
             (result.output_json or {}).get("target_stage_id", "") or ""
         ).strip()
+        # The visible plan block (rendered markdown) from plan_workflow's
+        # output_text. When the model returned a ``steps`` array, this is a
+        # ``## Plan`` block the user sees before the first step executes.
+        # When the model returned no steps (weak-model fallback), this is
+        # the single-target rationale (no plan block) — same as pre-steps.
+        plan_block = (result.output_text or "").strip()
+        plan_steps_raw = (result.output_json or {}).get("steps") or []
+        if not isinstance(plan_steps_raw, list):
+            plan_steps_raw = []
         if planned_target:
+            # ── Persist the plan as a WorkflowInstance ───────────────────
+            # When the model returned a steps array, create a
+            # WorkflowInstance with spawned_from="plan_workflow_op" so the
+            # plan survives across turns and is resumable with /proceed.
+            # The instance's declared_steps drive the chain (replacing the
+            # emergent post-handoff hint one-step-at-a-time chain). When
+            # no steps were returned (weak-model fallback), skip instance
+            # creation — the ad-hoc chain_satisfied path handles it.
+            workflow_steps = _plan_steps_to_workflow_steps(plan_steps_raw)
+            if workflow_steps and hooks.workflow_instance_updater is not None:
+                try:
+                    instance = WorkflowInstance(
+                        declared_steps=workflow_steps,
+                        current_step_id=workflow_steps[0].step_id,
+                        current_mode_id=workflow_steps[0].mode_id,
+                        spawned_from="plan_workflow_op",
+                    )
+                    # Persist via the updater hook (host owns lifecycle).
+                    # The existing mid-turn handoff path calls the updater
+                    # with just the instance (identity is host-internal);
+                    # match that contract.
+                    hooks.workflow_instance_updater(instance)
+                    _log.info(
+                        "persisted plan_workflow_op WorkflowInstance "
+                        "instance_id=%s steps=%d first=%s",
+                        instance.instance_id,
+                        len(workflow_steps),
+                        workflow_steps[0].mode_id,
+                    )
+                except Exception as wi_exc:  # pylint: disable=broad-except
+                    _log.warning(
+                        "WorkflowInstance creation/persist failed for plan: %s",
+                        wi_exc,
+                    )
             if hooks.route_coordinator is not None:
                 try:
                     hooks.route_coordinator.save(
@@ -1645,7 +1723,10 @@ async def _run_turn_inner(
                 mode_id,
                 planned_target,
             )
-            return await run_turn(
+            # Run the first step. The plan block is prepended to the
+            # recursive turn's response_text so the user sees the plan at
+            # the top, followed by the first step's output.
+            step_result = await run_turn(
                 mode_id=planned_target,
                 query=query,
                 hooks=hooks,
@@ -1658,6 +1739,17 @@ async def _run_turn_inner(
                 logger_override=logger_override,
                 suppress_routing_hint=True,
             )
+            # Prepend the plan block to the response so the user sees it
+            # before the first step's output. Only prepend when there is
+            # an actual plan block (steps were returned); otherwise the
+            # rationale is not useful as a prefix to the step output.
+            if plan_block and plan_steps_raw and step_result.response_text:
+                step_result.response_text = (
+                    f"{plan_block}\n\n{step_result.response_text}"
+                )
+            elif plan_block and plan_steps_raw and not step_result.response_text:
+                step_result.response_text = plan_block
+            return step_result
         # ── Plan failure: hard stop with a structured recovery prompt ──
         # When the planner returned an empty ``target_stage_id`` (parse
         # failure, model error, no wiring), do NOT fall through to the

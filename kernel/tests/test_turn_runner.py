@@ -272,6 +272,164 @@ async def test_run_turn_planner_action_mode_empty_target_falls_back_to_text() ->
 
 
 @pytest.mark.asyncio
+async def test_run_turn_planner_with_steps_renders_visible_plan_and_persists_instance() -> None:
+    """When plan_workflow returns a ``steps`` array (Option B visible plan),
+    the turn runner:
+    1. Prepends the rendered plan markdown block to the response_text so
+       the user sees the plan before the first step's output.
+    2. Creates a ``WorkflowInstance`` with ``spawned_from="plan_workflow_op"``
+       and persists it via ``workflow_instance_updater``.
+    3. Normalizes ``target_stage_id`` to ``steps[0].mode_id`` and recurses
+       into the first step.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+    from kernel.workflow_instance import WorkflowInstance
+
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    markdown_cfg = _mode_config(mode_id="markdown", satisfies_intents=["write"])
+    patched_catalog = {
+        "plan": plan_cfg,
+        "search": search_cfg,
+        "markdown": markdown_cfg,
+    }
+
+    plan_steps = [
+        {
+            "mode_id": "search",
+            "description": "Search for the latest rust async runtime news",
+            "rationale": "Provides web_search",
+        },
+        {
+            "mode_id": "markdown",
+            "description": "Draft a markdown summary",
+            "rationale": "Provides document drafting",
+        },
+    ]
+    plan_block = "## Plan\n\n1. **search** — Search for the latest rust async runtime news\n   _Provides web_search_\n2. **markdown** — Draft a markdown summary\n   _Provides document drafting_\n"
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        return OperationResult(
+            output_text=plan_block,
+            output_json={
+                "target_stage_id": "search",
+                "rationale": "Research then write",
+                "steps": plan_steps,
+            },
+        )
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Search results for rust async.")
+
+    saved_instances: list[WorkflowInstance] = []
+
+    def _wi_updater(instance: WorkflowInstance) -> None:
+        saved_instances.append(instance)
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow_instance_updater = _wi_updater
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(
+            mode_id="plan",
+            query="research the latest rust async runtime then draft a summary",
+            hooks=hooks,
+        )
+
+    # The plan block is prepended to the response, followed by the first
+    # step's output.
+    assert "## Plan" in result.response_text
+    assert "search" in result.response_text
+    assert "markdown" in result.response_text
+    assert "Search results for rust async." in result.response_text
+    # The plan block comes BEFORE the step output.
+    assert result.response_text.index("## Plan") < result.response_text.index("Search results")
+
+    # A WorkflowInstance was persisted with the correct steps.
+    assert len(saved_instances) == 1, "exactly one WorkflowInstance persisted"
+    instance = saved_instances[0]
+    assert instance.spawned_from == "plan_workflow_op"
+    assert len(instance.declared_steps) == 2
+    assert instance.declared_steps[0].mode_id == "search"
+    assert instance.declared_steps[1].mode_id == "markdown"
+    assert instance.declared_steps[1].is_terminal
+    assert instance.current_step_id == instance.declared_steps[0].step_id
+    assert instance.current_mode_id == "search"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_planner_without_steps_no_plan_block_no_instance() -> None:
+    """When plan_workflow returns no ``steps`` (weak-model fallback), the
+    turn runner does NOT create a WorkflowInstance and does NOT prepend a
+    plan block — same as the pre-Option-B behavior. No regression."""
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+    from kernel.workflow_instance import WorkflowInstance
+
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    patched_catalog = {"plan": plan_cfg, "search": search_cfg}
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        # No steps — the legacy single-target shape.
+        return OperationResult(
+            output_text="research intent detected",
+            output_json={
+                "target_stage_id": "search",
+                "rationale": "research intent detected",
+                "steps": [],
+            },
+        )
+
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Search results.")
+
+    saved_instances: list[WorkflowInstance] = []
+
+    def _wi_updater(instance: WorkflowInstance) -> None:
+        saved_instances.append(instance)
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow_instance_updater = _wi_updater
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(
+            mode_id="plan", query="search for rust news", hooks=hooks,
+        )
+
+    # No plan block — the response is just the step output.
+    assert "## Plan" not in result.response_text
+    assert result.response_text == "Search results."
+    # No WorkflowInstance created (no steps to persist).
+    assert len(saved_instances) == 0
+
+
+@pytest.mark.asyncio
 async def test_run_turn_mid_turn_handoff_to_planner_drives_next_handoff() -> None:
     """When a mid-turn handoff lands in a planner action mode (e.g.
     ``plan``) and the planner's entry op returns a ``target_stage_id``,

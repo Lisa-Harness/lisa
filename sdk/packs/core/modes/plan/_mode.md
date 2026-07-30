@@ -21,13 +21,16 @@ description: "Plan a multi-step workflow and hand off to the first target mode."
 
 # Plan Mode
 
-Analyze the user's request and determine the best routing target.
+Analyze the user's request and produce a visible multi-step plan.
 
-Call `plan_workflow` to produce the target. The kernel drives the handoff
-itself from the returned `target_stage_id` — do **not** call
-`transition_stage`; the framework hands off, fans out, or chains the next
-step automatically from the plan result.
+Call `plan_workflow` to produce the plan. The operation returns a `steps`
+array (one entry per detected step, in execution order) and a
+`target_stage_id` (the first step's `mode_id`). The kernel renders the
+plan as a markdown block shown to the user, persists it as a
+`WorkflowInstance`, and drives the handoff itself — do **not** call
+`transition_stage`; the framework hands off, fans out, or chains the
+next step automatically from the plan result.
 
-When `plan_workflow` returns an empty `target_stage_id` (no routable mode
-matched, no model wiring, or a parse failure), respond to the user
-directly.
+When `plan_workflow` returns an empty `target_stage_id` and no `steps`
+(no routable mode matched, no model wiring, or a parse failure), respond
+to the user directly.

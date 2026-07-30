@@ -542,3 +542,215 @@ def test_plan_workflow_retry_drops_response_format() -> None:
         "re-pinning causes Ollama reasoning models to return empty content again"
     )
     assert result.output_json["target_stage_id"] == "search"
+
+
+def test_plan_workflow_retries_when_first_call_raises_unsupported() -> None:
+    """Regression for the 2026-07-30 complex-prompt planning failure.
+
+    When the resolved model returns ``400 - The requested operation is
+    unsupported`` on the structured-output call (observed with
+    ``gpt-5.1-codex-max`` via Azure OpenAI — the model can't honor
+    ``response_format``), ``plan_workflow`` previously bailed immediately
+    with ``rationale: "model error: ..."`` and no retry. But a 400 on
+    ``response_format`` is exactly what the JSON-only retry (which clears
+    ``response_format``) is designed to recover from. The fix routes call
+    failures into the same retry path as parse failures instead of giving
+    up. This test asserts the retry fires and recovers a valid target.
+    """
+    from sdk.packs.core.operations.planning.plan_workflow import execute
+
+    payload = {"target_stage_id": "search", "rationale": "research intent detected"}
+    call_count = {"n": 0}
+
+    async def fake_complete(
+        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+    ):
+        call_count["n"] += 1
+        # First call (response_format pinned) raises the 400 unsupported
+        # error observed with gpt-5.1-codex-max. The retry must fire with
+        # response_format cleared and return valid JSON.
+        if call_count["n"] == 1:
+            raise RuntimeError("Error code: 400 - {'error': {'message': 'The requested operation is unsupported.'}}")
+        return _FakeCompletion(json.dumps(payload))
+
+    ctx = _make_ctx(query="research the latest rust async runtime then draft a summary", complete_fn=fake_complete)
+    catalog = _full_catalog()
+    with (
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch(
+            "sdk.packs.core.operations.planning.plan_workflow.get_workflow_catalog",
+            return_value=catalog,
+        ),
+    ):
+        result = asyncio.run(execute(ctx))
+
+    assert call_count["n"] == 2, "JSON-only retry must fire after a 400 on the first call"
+    assert result.output_json["target_stage_id"] == "search"
+    assert result.output_text == "research intent detected"
+
+
+# ── Phase 1: visible multi-step plan (Option B) ─────────────────────────────
+
+
+def test_plan_workflow_returns_steps_in_output_json() -> None:
+    """When the model returns a ``steps`` array, ``execute`` places it in
+    ``output_json`` and normalizes ``target_stage_id`` to the first step's
+    ``mode_id`` so existing consumers keep working."""
+    from sdk.packs.core.operations.planning.plan_workflow import execute
+
+    payload = {
+        "steps": [
+            {
+                "mode_id": "search",
+                "description": "Search for the latest rust async runtime news",
+                "rationale": "The search mode provides web_search for current info",
+            },
+            {
+                "mode_id": "markdown",
+                "description": "Draft a markdown summary of the findings",
+                "rationale": "The markdown mode provides document drafting tools",
+            },
+        ],
+        "target_stage_id": "search",
+        "rationale": "Research then write",
+    }
+
+    async def fake_complete(
+        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+    ):
+        return _FakeCompletion(json.dumps(payload))
+
+    ctx = _make_ctx(
+        query="research the latest rust async runtime then draft a summary",
+        complete_fn=fake_complete,
+    )
+    catalog = _full_catalog()
+    with (
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch(
+            "sdk.packs.core.operations.planning.plan_workflow.get_workflow_catalog",
+            return_value=catalog,
+        ),
+    ):
+        result = asyncio.run(execute(ctx))
+
+    steps = result.output_json.get("steps")
+    assert steps is not None, "steps must be present in output_json"
+    assert len(steps) == 2
+    assert steps[0]["mode_id"] == "search"
+    assert steps[1]["mode_id"] == "markdown"
+    # target_stage_id normalized to steps[0].mode_id
+    assert result.output_json["target_stage_id"] == "search"
+
+
+def test_plan_workflow_renders_visible_plan_markdown() -> None:
+    """When steps is non-empty, ``output_text`` is a rendered markdown plan
+    block (not just the rationale) so the turn runner can surface it to
+    the user before the first step executes."""
+    from sdk.packs.core.operations.planning.plan_workflow import execute
+
+    payload = {
+        "steps": [
+            {
+                "mode_id": "search",
+                "description": "Search for the latest rust async runtime news",
+                "rationale": "Provides web_search",
+            },
+            {
+                "mode_id": "markdown",
+                "description": "Draft a markdown summary",
+                "rationale": "Provides document drafting",
+            },
+        ],
+        "target_stage_id": "search",
+        "rationale": "Research then write",
+    }
+
+    async def fake_complete(
+        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+    ):
+        return _FakeCompletion(json.dumps(payload))
+
+    ctx = _make_ctx(
+        query="research the latest rust async runtime then draft a summary",
+        complete_fn=fake_complete,
+    )
+    catalog = _full_catalog()
+    with (
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch(
+            "sdk.packs.core.operations.planning.plan_workflow.get_workflow_catalog",
+            return_value=catalog,
+        ),
+    ):
+        result = asyncio.run(execute(ctx))
+
+    assert "## Plan" in result.output_text, "output_text must contain the plan header"
+    assert "search" in result.output_text
+    assert "markdown" in result.output_text
+    assert "Search for the latest" in result.output_text
+    assert "Draft a markdown summary" in result.output_text
+
+
+def test_plan_workflow_no_steps_falls_back_to_rationale_in_output_text() -> None:
+    """When the model returns no ``steps`` (weak-model fallback or
+    single-target legacy shape), ``output_text`` is the rationale (no plan
+    block) — same as the pre-steps behavior. No regression."""
+    from sdk.packs.core.operations.planning.plan_workflow import execute
+
+    payload = {"target_stage_id": "search", "rationale": "research intent detected"}
+
+    async def fake_complete(
+        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+    ):
+        return _FakeCompletion(json.dumps(payload))
+
+    ctx = _make_ctx(query="search for the latest rust news", complete_fn=fake_complete)
+    catalog = _full_catalog()
+    with (
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch(
+            "sdk.packs.core.operations.planning.plan_workflow.get_workflow_catalog",
+            return_value=catalog,
+        ),
+    ):
+        result = asyncio.run(execute(ctx))
+
+    assert result.output_json["steps"] == [], "empty steps list when model returns none"
+    assert "## Plan" not in result.output_text, "no plan block when steps is empty"
+    assert result.output_text == "research intent detected"
+
+
+def test_plan_workflow_empty_steps_and_empty_target_is_no_match() -> None:
+    """When the model returns empty steps AND empty target_stage_id, the
+    rationale (missing-capability message) is surfaced in output_text and
+    steps is an empty list — the no-match case that tells the framework to
+    surface the rationale to the user."""
+    from sdk.packs.core.operations.planning.plan_workflow import execute
+
+    payload = {
+        "steps": [],
+        "target_stage_id": "",
+        "rationale": "No installed mode provides a write/markdown capability",
+    }
+
+    async def fake_complete(
+        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+    ):
+        return _FakeCompletion(json.dumps(payload))
+
+    ctx = _make_ctx(query="draft a document about quantum computing", complete_fn=fake_complete)
+    catalog = _full_catalog()
+    with (
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        patch(
+            "sdk.packs.core.operations.planning.plan_workflow.get_workflow_catalog",
+            return_value=catalog,
+        ),
+    ):
+        result = asyncio.run(execute(ctx))
+
+    assert result.output_json["target_stage_id"] == ""
+    assert result.output_json["steps"] == []
+    assert "write/markdown" in result.output_text
+    assert "## Plan" not in result.output_text
