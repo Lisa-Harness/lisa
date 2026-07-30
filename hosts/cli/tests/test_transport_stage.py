@@ -256,7 +256,9 @@ async def test_tool_dispatch_renders_legible_kind_glyphs() -> None:
     transport.start_thinking("dispatch")
     await transport.on_stage("model_call", {"mode_id": "coding", "iteration": 1})
 
-    # operation
+    # operation — counts now render in the pane's right-aligned graphic
+    # column, not inline in the text. The text carries only the glyph +
+    # tool name.
     line = transport._render_tool_dispatch(
         {
             "tool": "write_file",
@@ -265,9 +267,9 @@ async def test_tool_dispatch_renders_legible_kind_glyphs() -> None:
             "tool_calls_so_far": 1,
         }
     )
-    assert line == "stage: tool_dispatch → op: write_file (iter=1, calls=1)"
+    assert line == "stage: tool_dispatch → op: write_file"
 
-    # mcp_tool
+    # mcp_tool — same: no inline pip counters in the text.
     line = transport._render_tool_dispatch(
         {
             "tool": "brave_search",
@@ -276,7 +278,7 @@ async def test_tool_dispatch_renders_legible_kind_glyphs() -> None:
             "tool_calls_so_far": 3,
         }
     )
-    assert "→ mcp: brave_search" in line
+    assert line == "stage: tool_dispatch → mcp: brave_search"
 
     # transition handoff — shows the target
     line = transport._render_tool_dispatch(
@@ -386,28 +388,40 @@ async def test_stage_history_accumulates_play_by_play() -> None:
         {"mode_id": "default", "model_id": "glm-5.2:cloud", "iteration": 2},
     )
 
-    # All four stage events are retained in order — the user can scroll
-    # back and see the full play-by-play, not just the last line.
-    assert len(transport._stage_history) >= 4
-    history_text = "\n".join(transport._stage_history)
-    assert "iteration=1" in history_text
-    assert "search_web" in history_text
-    assert "iteration=2" in history_text
-    # The active spinner label is the most-recent stage.
-    assert "iteration=2" in transport._active_label
+    # All four stage events are retained in their panes — the user can
+    # scroll back and see the full turn trajectory. model_call events go
+    # to the model-calls pane; tool_dispatch events go to the tools pane.
+    # The iteration counter is in the graphic column. With no
+    # max_iterations in the payload (cap=0 → unlimited), the graphic is
+    # a compact ``N{count}`` counter, not a saturating bar.
+    assert len(transport._model_calls) >= 2  # two model_call events
+    assert len(transport._tools) >= 1  # tool_dispatch event
+    model_text = "\n".join(row.text for row in transport._model_calls)
+    assert "model_call" in model_text
+    tools_text = "\n".join(row.text for row in transport._tools)
+    assert "search_web" in tools_text
+    # iteration=2, cap=0 (unlimited) → "N2"
+    assert transport._model_calls[-1].graphic == "N2"
+    # The active pane is the one that received the last event.
+    assert transport._active_pane == "model_calls"
 
 
 @pytest.mark.asyncio
 async def test_start_thinking_clears_history() -> None:
-    """start_thinking resets _stage_history so a new turn starts clean."""
+    """start_thinking resets all three panes so a new turn starts clean."""
     console = Console(quiet=True, force_terminal=False)
     transport = RichTransport(console=console, debug=False)
     transport.start_thinking("dispatch")
     await transport.on_stage("model_call", {"mode_id": "default", "iteration": 1})
-    assert transport._stage_history != []
+    assert transport._model_calls != []
 
     transport.start_thinking("dispatch")
-    assert transport._stage_history == []
+    assert transport._model_calls == []
+    assert transport._transitions == []
+    # The tools pane is seeded with the initial dispatch row, so it has
+    # exactly one entry (the seed), not the prior turn's tool rows.
+    assert len(transport._tools) == 1
+    assert transport._tools[0].text == "stage: dispatch"
 
 
 @pytest.mark.asyncio

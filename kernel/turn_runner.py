@@ -1432,6 +1432,18 @@ async def _run_turn_inner(
     )
 
     _state = _TurnState()
+    # Expose the budget caps on the turn state so ``emit_stage`` stamps
+    # them on every stage payload. The transport uses them to render
+    # graphical counters (pip rows / sparklines) against the correct
+    # denominator. ``max_tool_iterations`` is the global iteration cap;
+    # ``max_tool_calls`` comes from the per-turn ``TurnBudget`` (0 =
+    # unlimited, in which case the transport falls back to a saturating
+    # counter).
+    _state.max_iterations = max_tool_iterations
+    _state.max_tool_calls = (
+        turn_budget.max_tool_calls if turn_budget is not None else 0
+    )
+    _state.max_handoffs = _kernel_settings.max_handoffs_per_turn
     _on_stage_hook = hooks.on_stage
 
     # Turn-runner guard caps, read once from the kernel settings singleton

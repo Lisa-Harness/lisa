@@ -54,6 +54,19 @@ class _TurnState:
     total_tool_calls: int = 0
     per_model_usage: dict[str, dict[str, Any]] = field(default_factory=dict)
 
+    # ── Budget caps (stamped on every emitted stage payload) ───────────
+    # Set once at turn start from ``kernel.config.Settings`` and
+    # ``TurnBudget``. The transport reads them to render graphical
+    # counters (pip rows, sparklines) against the correct denominator.
+    # 0 means "unlimited" (``TurnBudget`` convention); the transport
+    # falls back to a saturating counter in that case.
+    max_iterations: int = 0
+    """Global per-turn iteration cap (``max_tool_iterations``). 0 = unlimited."""
+    max_tool_calls: int = 0
+    """Per-turn tool-call cap (``TurnBudget.max_tool_calls``). 0 = unlimited."""
+    max_handoffs: int = 0
+    """Per-turn mode-handoff cap (``max_handoffs_per_turn``). 0 = unlimited."""
+
     # ── Router-relevant state ────────────────────────────────────────
     last_tool_result_text: str | None = None
     required_capabilities: tuple[str, ...] = ()
@@ -213,6 +226,13 @@ async def emit_stage(
     payload = dict(data or {})
     payload.setdefault("iteration", state.iteration)
     payload.setdefault("_state.iteration", state.iteration)
+    # Stamp the budget caps so the transport can render graphical
+    # counters (pip rows / sparklines) against the correct denominator.
+    # Always present; 0 means unlimited (the transport falls back to a
+    # saturating counter in that case).
+    payload.setdefault("max_iterations", state.max_iterations)
+    payload.setdefault("max_tool_calls", state.max_tool_calls)
+    payload.setdefault("max_handoffs", state.max_handoffs)
     try:
         await on_stage_hook(label, payload)
     except Exception as stage_exc:  # pylint: disable=broad-except

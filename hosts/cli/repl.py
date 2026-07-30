@@ -174,7 +174,7 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
         ``True`` if a restart was requested (caller may re-exec), ``False``
         on clean exit.
     """
-    console = console or Console()
+    console = console or Console(legacy_windows=False)
     # Stash the runtime on the console so the status-line renderer can read
     # route preview + token counters without threading the runtime through
     # every status-segment call.

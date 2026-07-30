@@ -13,6 +13,7 @@ imports Rich; it only calls these methods on the injected transport.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from rich.console import Console, Group
@@ -30,22 +31,186 @@ STYLE_BORDER_CONTEXT = "gold3"
 STYLE_BORDER_ERROR = "indian_red"
 STYLE_STAGE = "grey58"
 STYLE_TEXT_MUTED = "grey58"
+STYLE_PANE_HEADER = "bold steel_blue3"
+STYLE_PANE_TRANSITION = "gold3"
+STYLE_PANE_MODEL = "dark_sea_green4"
+STYLE_PANE_TOOL = "cornflower_blue"
+STYLE_GRAPHIC = "grey58"
 
-#: Floor for the number of history lines kept visible in the Live region.
-#: Guarantees a usable play-by-play even on very short terminals / non-tty
-#: test consoles that report a height of 0 or 1.
-_HISTORY_MIN_LINES = 6
+#: Floor for the number of history lines kept visible in a pane. Guarantees
+#: a usable pane even on very short terminals / non-tty test consoles that
+#: report a height of 0 or 1.
+_PANE_MIN_LINES = 2
+
+#: Cap for how many rows a pane can claim before it starts donating its
+#: unused height to the other panes. A pane that has fewer rows than its
+#: proportional share gives the leftover to the panes that need it, so an
+#: empty transitions pane doesn't waste 1/6 of the screen.
+_PANE_MAX_LINES = 40
+
+#: Proportional height shares for the three panes (transitions, model calls,
+#: tools). Used as the *initial* allocation; the actual allocation is then
+#: trimmed so no pane gets more rows than it has content (plus a small
+#: overflow buffer), and the freed space goes to the panes that need it.
+_PANE_WEIGHTS = (1, 3, 2)
+_PANE_WEIGHT_TOTAL = sum(_PANE_WEIGHTS)
+
+#: Maximum width of the pip counter. When the cap exceeds this, the pip
+#: row is capped at this width and saturates with ``⁺``; when the cap is
+#: smaller, the row tracks the cap exactly so the user sees true fill.
+#: When the cap is 0 (unlimited), the pip row is replaced by a compact
+#: ``N`` counter (no bar) since a saturating bar against infinity is
+#: meaningless.
+_PIP_MAX_WIDTH = 16
+
+#: Width of the duration sparkline shown on ``model_call_complete``. Each
+#: cell is one unicode block character, so this is also the cell count.
+_SPARK_WIDTH = 8
+
+#: Block ramp used for both the duration bar and the sparkline. Index 0
+#: is the empty cell; index 7 is the full block. Unicode sub-blocks give
+#: 8 perceptually-even steps in a single terminal cell.
+_BLOCK_RAMP = " ▁▂▃▄▅▆▇█"
+
+#: Glyphs for tool-dispatch completion status shown in the tools pane.
+_TOOL_STATUS_GLYPH = {"ok": "✓", "error": "✗", "running": "…", "": "·"}
+
+
+def _pip_counter(count: int, cap: int) -> str:
+    """Render ``count`` as a pip row that tracks the cap exactly.
+
+    * ``cap > 0``: the row is ``cap`` cells wide — ``●`` per unit, ``○``
+      for the remaining capacity. When ``cap`` exceeds ``_PIP_MAX_WIDTH``,
+      the row is capped at ``_PIP_MAX_WIDTH`` and saturates with ``⁺``.
+      This means a 15-iteration cap draws 15 cells (not 8), so the user
+      sees true fill instead of premature saturation.
+    * ``cap <= 0`` (unlimited): no bar — just a compact ``N{count}``
+      counter, since a saturating bar against infinity is meaningless.
+    """
+    if cap <= 0:
+        return f"N{count}"
+    width = cap if cap <= _PIP_MAX_WIDTH else _PIP_MAX_WIDTH
+    if count >= width:
+        if count > width:
+            return "●" * width + "⁺"
+        return "●" * width
+    filled = "●" * count
+    empty = "○" * (width - count)
+    return filled + empty
+
+
+def _sparkline(values: list[float], width: int = _SPARK_WIDTH) -> str:
+    """Render a single-line unicode sparkline of ``values``.
+
+    Each value maps to one block-ramp cell, normalized against the max of
+    ``values`` (or 1.0 when all are zero so the first iteration still
+    shows a baseline cell). The most recent ``width`` values are kept;
+    older ones drop off the left. Returns an empty string when ``values``
+    is empty.
+    """
+    if not values:
+        return ""
+    recent = values[-width:]
+    peak = max(recent) if recent else 0.0
+    if peak <= 0:
+        peak = 1.0
+    cells: list[str] = []
+    for v in recent:
+        # Clamp to [0, 1] then scale to the ramp's 8 steps.
+        ratio = max(0.0, min(1.0, float(v) / peak))
+        idx = int(round(ratio * (len(_BLOCK_RAMP) - 1)))
+        cells.append(_BLOCK_RAMP[idx])
+    return "".join(cells)
+
+
+def _block_bar(value: float, reference: float = 0.0) -> str:
+    """Render a single block-ramp cell for ``value`` against ``reference``.
+
+    When ``reference <= 0`` (no known max yet) the value maps to itself
+    on a 0–1000ms heuristic scale so the first iteration still shows a
+    proportional cell rather than a full block. Used on stages where we
+    don't yet have a series for a sparkline.
+    """
+    if value <= 0:
+        return _BLOCK_RAMP[0]
+    scale = reference if reference > 0 else 1000.0
+    ratio = max(0.0, min(1.0, value / scale))
+    idx = int(round(ratio * (len(_BLOCK_RAMP) - 1)))
+    return _BLOCK_RAMP[idx]
+
+
+@dataclass
+class _PaneRow:
+    """One row in a pane: textual label on the left, graphic on the right.
+
+    The Live renderer right-aligns the graphic within the pane width so
+    the textual column stays readable while the graphical column forms a
+    fixed-width visual strip on the right edge of each pane.
+    """
+
+    text: str
+    graphic: str = ""
+    #: When True this row is the active (spinner-bearing) row of its pane.
+    active: bool = False
+
+
+def _pane_heights(
+    total: int, counts: tuple[int, int, int]
+) -> tuple[int, int, int]:
+    """Split ``total`` lines across the three panes, content-aware.
+
+    The 1:3:2 weights are the *initial* allocation. Each pane is then
+    trimmed to no more than ``min(_PANE_MAX_LINES, len(counts[i]) + 1)``
+    (its content plus one overflow row), and the freed space is
+    redistributed to the panes that have more content than their
+    allocation. This means an empty transitions pane donates its space
+    to the model-calls and tools panes instead of wasting 1/6 of the
+    screen.
+    """
+    if total <= 0:
+        return (_PANE_MIN_LINES, _PANE_MIN_LINES, _PANE_MIN_LINES)
+    body = max(0, total - 3)
+    # Initial proportional allocation.
+    base = [max(_PANE_MIN_LINES, body * w // _PANE_WEIGHT_TOTAL) for w in _PANE_WEIGHTS]
+    # Trim panes that have less content than their allocation, capped at
+    # _PANE_MAX_LINES so a very long pane doesn't eat the whole screen.
+    demand = [min(_PANE_MAX_LINES, max(_PANE_MIN_LINES, c + 1)) for c in counts]
+    freed = 0
+    for i in range(3):
+        if base[i] > demand[i]:
+            freed += base[i] - demand[i]
+            base[i] = demand[i]
+    # Redistribute freed space to panes that need more than they have.
+    if freed > 0:
+        needy = [i for i in range(3) if base[i] < demand[i]]
+        if needy:
+            share = freed // len(needy)
+            leftover = freed - share * len(needy)
+            for i in needy:
+                base[i] += share
+            base[needy[0]] += leftover  # model-calls pane gets the remainder
+        else:
+            # Nobody needs more — give it all to the model-calls pane.
+            base[1] += freed
+    return (base[0], base[1], base[2])
 
 
 class RichTransport:
     """TransportCallbacks implementation backed by a Rich Console.
 
-    Stage history is rendered through a Rich :class:`Live` region that
-    accumulates every ``on_stage`` line instead of overwriting a single
-    spinner line. The user sees a growing play-by-play (``model_call`` →
-    ``tool_dispatch`` → ``tool_dispatch_complete`` → next iteration → …)
-    that survives scrolling back, with a live spinner on the currently
-    active stage at the bottom.
+    The Live region is split into three stacked, fixed-height panes that
+    scroll independently within their own window:
+
+    * **Transitions** (1 part) — mode handoffs (``default → coding``).
+    * **Model calls** (3 parts) — ``model_call`` / ``model_call_complete``
+      with the iteration pip counter and duration sparkline.
+    * **Tools** (2 parts) — ``tool_dispatch`` / ``tool_dispatch_complete``
+      and fork fan-out rows, with the tool-call pip counter.
+
+    Each row carries a textual label on the left and a graphical
+    representation on the right (pip row, sparkline, or status glyph).
+    The pane that owns the currently-active stage shows a live spinner
+    on its last row; the other two panes show only completed entries.
 
     Attributes:
         console: The Rich Console to render to. Defaults to a shared
@@ -65,14 +230,6 @@ class RichTransport:
         self._status: Live | None = None
         self._live: Live | None = None
         self._thinking_stage: str = ""
-        # Accumulated play-by-play lines for the current turn. Each entry
-        # is the fully-rendered status-line text (already prefixed with the
-        # active mode, tool glyph, etc.). Cleared by ``start_thinking``.
-        self._stage_history: list[str] = []
-        # The label currently shown on the spinner line (the active stage).
-        # Updated by every ``on_stage`` call and rendered as the final,
-        # spinner-prefixed line of the Live region.
-        self._active_label: str = ""
         self._thinking_spinner: str = "dots"
         # True once on_text_chunk fires during the current turn. Reset in
         # start_thinking so each turn starts clean. When True, on_response
@@ -81,7 +238,7 @@ class RichTransport:
         # with a misaligned header.
         self._streamed_during_turn: bool = False
         # Fork fan-out live state. Populated by ``on_stage("fork_*")`` so the
-        # stage line can render one line per active child instead of a single
+        # tools pane can render one row per active child instead of a single
         # coarse "fork" label. Reset by ``fork_start`` / ``fork_complete`` /
         # ``start_thinking``.
         self._fork_children: dict[int, dict[str, Any]] = {}
@@ -93,32 +250,97 @@ class RichTransport:
         # ``[mode]`` prefix on every status line so the user always knows
         # who owns their turn — including mid-turn handoffs.
         self._current_mode: str = ""
+        # ── Three categorized, scrolling row buffers ───────────────────
+        # Each pane owns its own list of ``_PaneRow`` entries. Every
+        # ``on_stage`` event is routed to exactly one pane based on its
+        # label; the panes scroll independently within their proportional
+        # height share of the Live region. Cleared by ``start_thinking``.
+        self._transitions: list[_PaneRow] = []
+        self._model_calls: list[_PaneRow] = []
+        self._tools: list[_PaneRow] = []
+        # Which pane owns the currently-active (spinner) row. One of
+        # ``"transitions"``, ``"model_calls"``, ``"tools"``, or ``""`` when
+        # no stage is active yet (the initial dispatch seed).
+        self._active_pane: str = ""
+        # Per-iteration durations for the current turn, used to draw the
+        # duration sparkline on ``model_call_complete``. Reset in
+        # ``start_thinking`` so each turn starts with a fresh series.
+        self._iteration_durations: list[float] = []
+        # Counters for the graphical right-edge strips. These track the
+        # running totals the kernel also reports, but we keep our own copy
+        # so a pane row can render its graphic even when the incoming
+        # payload omits the count (e.g. a ``tool_dispatch_complete`` that
+        # carries no ``tool_calls_so_far``).
+        self._handoff_count: int = 0
+        self._tool_call_count: int = 0
 
     # ── Live region lifecycle ───────────────────────────────────────
 
-    def _history_limit(self) -> int:
-        """Max play-by-play lines kept in the Live window at once.
+    def _live_height(self) -> int:
+        """Total lines available for the three panes + their headers.
 
-        Sized to the terminal height minus a few lines of headroom for the
-        spinner line and the next prompt, with a floor so non-tty / test
-        consoles (which report a height of 0) still show a usable trail.
+        Sized to the terminal height minus a few lines of headroom for
+        the next prompt, with a floor so non-tty / test consoles (which
+        report a height of 0) still show a usable layout.
         """
         height = self.console.size.height or 0
         if height <= 0:
-            return _HISTORY_MIN_LINES
-        return max(_HISTORY_MIN_LINES, height - 3)
+            return 3 * _PANE_MIN_LINES + 3
+        return max(3 * _PANE_MIN_LINES + 3, height - 3)
+
+    def _render_pane(
+        self,
+        title: str,
+        rows: list[_PaneRow],
+        height: int,
+        style: str,
+    ) -> list[Any]:
+        """Render one pane: a plain header line followed by up to ``height`` rows.
+
+        The most recent ``height`` rows are kept (the pane scrolls from
+        the top). The active row — if this pane owns it — gets a live
+        spinner on its last line instead of a plain ``Text``. The graphic
+        is appended after a single-space gap (no right-alignment, no
+        box-drawing borders) so the layout is terminal-agnostic and
+        resizes cleanly on Windows consoles.
+        """
+        renderables: list[Any] = []
+        renderables.append(Text(title, style=STYLE_PANE_HEADER))
+        visible = rows[-height:] if height > 0 else []
+        for i, row in enumerate(visible):
+            is_last = i == len(visible) - 1
+            is_active = is_last and row.active and self._live is not None
+            line = Text()
+            line.append(row.text, style=style)
+            if row.graphic:
+                line.append(" ")
+                line.append(row.graphic, style=STYLE_GRAPHIC)
+            if is_active:
+                renderables.append(
+                    Spinner(self._thinking_spinner, line, style=style)
+                )
+            else:
+                renderables.append(line)
+        return renderables
 
     def _render_live_display(self) -> Group:
-        """Build the Live renderable: history lines + active spinner line."""
-        limit = self._history_limit()
-        visible = self._stage_history[-limit:]
+        """Build the Live renderable: three stacked panes (1:3:2, content-aware)."""
+        counts = (
+            len(self._transitions),
+            len(self._model_calls),
+            len(self._tools),
+        )
+        th, mh, wh = _pane_heights(self._live_height(), counts)
         renderables: list[Any] = []
-        for line in visible:
-            renderables.append(Text(line, style=STYLE_TEXT_MUTED))
-        # Active stage line with a live spinner so the user can tell the
-        # turn is still running and which stage owns it right now.
-        spinner_label = self._active_label or self._thinking_stage or "thinking"
-        renderables.append(Spinner(self._thinking_spinner, spinner_label, style=STYLE_STAGE))
+        renderables.extend(
+            self._render_pane("Transitions", self._transitions, th, STYLE_PANE_TRANSITION)
+        )
+        renderables.extend(
+            self._render_pane("Model calls", self._model_calls, mh, STYLE_PANE_MODEL)
+        )
+        renderables.extend(
+            self._render_pane("Tools", self._tools, wh, STYLE_PANE_TOOL)
+        )
         return Group(*renderables)
 
     def _refresh_live(self) -> None:
@@ -129,14 +351,33 @@ class RichTransport:
             except Exception:  # pylint: disable=broad-except
                 pass
         else:
-            # No Live region: fall back to printing the latest line inline
+            # No Live region: fall back to printing the latest row inline
             # (the pre-existing behavior for the no-spinner path used by
-            # tests and headless callers).
-            if self._stage_history:
-                self.console.print(Text(self._stage_history[-1], style=STYLE_STAGE))
+            # tests and headless callers). Print from whichever pane got
+            # the most recent row.
+            row = self._last_row()
+            if row is not None:
+                self.console.print(Text(row.text, style=STYLE_STAGE))
+
+    def _last_row(self) -> _PaneRow | None:
+        """Return the most-recently appended row across all three panes."""
+        candidates: list[_PaneRow] = []
+        for pane in (self._transitions, self._model_calls, self._tools):
+            if pane:
+                candidates.append(pane[-1])
+        if not candidates:
+            return None
+        # The active pane's last row is the most recent by definition.
+        if self._active_pane == "transitions" and self._transitions:
+            return self._transitions[-1]
+        if self._active_pane == "model_calls" and self._model_calls:
+            return self._model_calls[-1]
+        if self._active_pane == "tools" and self._tools:
+            return self._tools[-1]
+        return candidates[-1]
 
     def start_thinking(self, stage: str = "dispatch") -> None:
-        """Start a status spinner so the user sees the turn is active.
+        """Start the three-pane Live display so the user sees the turn is active.
 
         The default stage is ``dispatch`` — the pre-pipeline phase where
         ``handle_message`` parses commands, resolves the ``start_mode``
@@ -155,15 +396,22 @@ class RichTransport:
         self._fork_children = {}
         self._fork_total = 0
         self._current_mode = ""
-        # Clear the per-turn play-by-play so each turn starts with a fresh
-        # transcript. The history accumulates as on_stage fires.
-        self._stage_history = []
+        # Clear the three panes so each turn starts fresh.
+        self._transitions = []
+        self._model_calls = []
+        self._tools = []
+        self._active_pane = ""
+        self._iteration_durations = []
+        self._handoff_count = 0
+        self._tool_call_count = 0
         is_dispatch = stage == "dispatch"
         self._thinking_spinner = "dots2" if is_dispatch else "dots"
-        # Seed the active spinner line with the initial stage label so the
-        # Live region shows something immediately (before the first
-        # on_stage event arrives).
-        self._active_label = self._render_status_line(stage)
+        # Seed the tools pane with the initial dispatch label so the Live
+        # region shows something immediately (before the first on_stage
+        # event arrives). Mark it active so the spinner lands here.
+        seed = _PaneRow(text=self._render_status_line(stage), active=True)
+        self._tools.append(seed)
+        self._active_pane = "tools"
         live: Live | None = Live(
             self._render_live_display(),
             console=self.console,
@@ -187,8 +435,8 @@ class RichTransport:
     def stop_thinking(self) -> None:
         """Stop the thinking display if it is running.
 
-        Before tearing down the Live region, print the accumulated
-        play-by-play as permanent console output so it survives in the
+        Before tearing down the Live region, print the accumulated pane
+        rows as permanent console output so they survive in the
         scrollback. Without this, Rich's Live region reclaims its lines on
         stop and the user would lose the trajectory they just watched.
         """
@@ -196,14 +444,22 @@ class RichTransport:
         status = self._status
         self._live = None
         self._status = None
-        # Flush the history as permanent lines before the Live region
-        # closes so the transcript is preserved in the scrollback.
-        if live is not None and self._stage_history:
-            try:
-                for line in self._stage_history:
-                    self.console.print(Text(line, style=STYLE_TEXT_MUTED))
-            except Exception:  # pylint: disable=broad-except
-                pass
+        # Flush the three panes in order (transitions, model calls, tools)
+        # so the scrollback matches the on-screen layout.
+        if live is not None:
+            for pane, style in (
+                (self._transitions, STYLE_PANE_TRANSITION),
+                (self._model_calls, STYLE_PANE_MODEL),
+                (self._tools, STYLE_PANE_TOOL),
+            ):
+                for row in pane:
+                    try:
+                        line = Text(row.text, style=style)
+                        if row.graphic:
+                            line.append("  " + row.graphic, style=STYLE_GRAPHIC)
+                        self.console.print(line)
+                    except Exception:  # pylint: disable=broad-except
+                        pass
         if live is not None:
             try:
                 live.stop()
@@ -216,19 +472,19 @@ class RichTransport:
                 pass
 
     async def on_stage(self, label: str, data: dict[str, Any] | None = None) -> None:
-        """Append one stage line to the play-by-play and refresh the display.
+        """Route one stage event to the appropriate pane and refresh.
 
-        Every stage event (``model_call``, ``tool_dispatch``, …) is
-        appended to ``_stage_history`` and becomes a permanent line in
-        the Live region. The previously-active line scrolls up into the
-        history; the new line becomes the active spinner line at the
-        bottom. This means the user sees the full turn trajectory, not
-        just the current stage — and if they look away, the history is
-        still visible when they look back.
+        Each stage event is classified into one of the three panes:
 
-        When a fork fan-out is active, one multi-line entry (header + one
-        line per child) is appended per fork event so the user sees every
-        parallel call progressing independently.
+        * ``model_call`` / ``model_call_complete`` → model-calls pane.
+        * ``tool_dispatch`` / ``tool_dispatch_complete`` → tools pane.
+        * Fork events (``fork_*``) → tools pane, one row per child.
+        * Mode transitions (detected from ``model_call`` /
+          ``tool_dispatch_complete`` handoffs) → transitions pane.
+
+        The pane that received the event becomes the active pane; its
+        last row carries the live spinner. All other panes show only
+        completed (non-spinner) rows.
         """
         data = data or {}
 
@@ -236,18 +492,40 @@ class RichTransport:
         # model_call carries the entry mode; a mid-turn handoff surfaces
         # via tool_dispatch_complete with transition="handoff" and
         # handoff_to. Update _current_mode so the [mode] prefix on every
-        # subsequent status line reflects who owns the turn now.
+        # subsequent status line reflects who owns the turn now. Each
+        # change is appended to the transitions pane.
+        prev_mode = self._current_mode
         if label == "model_call" and data.get("mode_id"):
             self._current_mode = str(data["mode_id"])
         elif label == "tool_dispatch_complete":
             if data.get("transition") == "handoff" and data.get("handoff_to"):
                 self._current_mode = str(data["handoff_to"])
+        if self._current_mode and self._current_mode != prev_mode:
+            self._handoff_count += 1
+            self._append_transition(prev_mode, self._current_mode, data)
+
+        # ── Per-iteration duration sampling ────────────────────────────
+        # ``model_call_complete`` carries the wall-clock duration of the
+        # model call. Accumulate it so the model-calls pane can draw a
+        # duration sparkline. We sample here (not in the row renderer) so
+        # the series stays in arrival order.
+        if label == "model_call_complete":
+            d_raw = data.get("duration_ms")
+            if d_raw is not None and d_raw != "" and d_raw != 0:
+                try:
+                    self._iteration_durations.append(float(d_raw))
+                except (TypeError, ValueError):
+                    pass
 
         # ── Fork fan-out tracking ──────────────────────────────────────
+        # Forks live in the tools pane: one row per child, plus a header
+        # row and a complete-summary row. The per-child table is kept
+        # visible after fork_complete so the user sees which children
+        # succeeded/failed.
         if label == "fork_start":
             self._fork_children = {}
             self._fork_total = int(data.get("children", 0)) or 0
-            self._append_stage(self._render_fork_stage())
+            self._append_tool_row(self._render_fork_stage())
             return
         if label == "fork_child_start":
             idx = int(data.get("child_index", -1))
@@ -258,7 +536,7 @@ class RichTransport:
                     "status": "running",
                     "query_preview": data.get("query_preview", ""),
                 }
-            self._append_stage(self._render_fork_stage())
+            self._append_tool_row(self._render_fork_stage())
             return
         if label == "fork_child_complete":
             idx = int(data.get("child_index", -1))
@@ -271,34 +549,102 @@ class RichTransport:
                     }
                 )
                 self._fork_children[idx] = existing
-            self._append_stage(self._render_fork_stage())
+            self._append_tool_row(self._render_fork_stage())
             return
         if label == "fork_complete":
-            # Keep the per-child table visible so the user sees *which*
-            # children succeeded/failed, not just counts. The table is
-            # cleared on the next start_thinking.
             ok = int(data.get("ok", 0))
             failed = int(data.get("failed", 0))
             self._fork_total = 0
             text = self._render_fork_stage(summary=(ok, failed))
-            self._append_stage(text)
+            self._append_tool_row(text)
             return
 
-        # ── Normal stage line (detailed) ───────────────────────────────
-        text = self._render_status_line(label, data)
-        self._append_stage(text)
+        # ── Route normal stage events to their pane ────────────────────
+        if label in ("model_call", "model_call_complete"):
+            self._append_model_row(label, data)
+        elif label in ("tool_dispatch", "tool_dispatch_complete"):
+            if label == "tool_dispatch":
+                self._tool_call_count += 1
+            max_calls = int(data.get("max_tool_calls") or 0)
+            graphic = _pip_counter(self._tool_call_count, max_calls)
+            self._append_tool_row(
+                self._render_status_line(label, data), graphic=graphic
+            )
+        else:
+            # Any other stage label (e.g. the initial "dispatch" seed,
+            # "workflow_stage") goes to the tools pane as a catch-all so
+            # it is visible without dropping on the floor.
+            self._append_tool_row(self._render_status_line(label, data))
 
-    def _append_stage(self, text: str) -> None:
-        """Append a rendered stage line to history and refresh the display.
+    def _append_transition(
+        self, from_mode: str, to_mode: str, data: dict[str, Any]
+    ) -> None:
+        """Append a mode-transition row to the transitions pane.
 
-        The appended text becomes the new active (spinner) line; the
-        previous active line is now part of the scrollable history. When
-        no Live region is active, this falls back to printing the line
-        inline via ``_refresh_live``.
+        The graphic is a pip counter of handoffs against the
+        kernel-supplied ``max_handoffs`` cap. The pane scrolls within its
+        proportional height share; once the window fills, the oldest
+        transition drops off the top.
         """
-        self._active_label = text
-        self._stage_history.append(text)
+        arrow = "→" if from_mode else "⇥"
+        text = f"{from_mode or 'start'} {arrow} {to_mode}"
+        max_handoffs = int(data.get("max_handoffs") or 0)
+        graphic = _pip_counter(self._handoff_count, max_handoffs)
+        self._transitions.append(_PaneRow(text=text, graphic=graphic))
+        self._mark_active("transitions")
         self._refresh_live()
+
+    def _append_model_row(self, label: str, data: dict[str, Any]) -> None:
+        """Append a model-call row to the model-calls pane.
+
+        ``model_call`` carries the iteration pip counter; ``model_call_complete``
+        carries the duration sparkline. Both keep the iteration pip so the
+        user can see how far through the budget the turn has progressed.
+        """
+        text = self._render_status_line(label, data)
+        max_iter = int(data.get("max_iterations") or 0)
+        iter_raw = data.get("iteration")
+        iter_count = int(iter_raw) if iter_raw is not None and iter_raw != "" and iter_raw != 0 else 0
+        graphic = _pip_counter(iter_count, max_iter)
+        if label == "model_call_complete":
+            spark = _sparkline(self._iteration_durations)
+            dur_raw = data.get("duration_ms")
+            if dur_raw is not None and dur_raw != "" and dur_raw != 0:
+                dur_str = f"{spark or _block_bar(float(dur_raw))} {dur_raw}ms"
+                graphic = f"{graphic}  {dur_str}"
+        self._model_calls.append(_PaneRow(text=text, graphic=graphic))
+        self._mark_active("model_calls")
+        self._refresh_live()
+
+    def _append_tool_row(self, text: str, graphic: str = "") -> None:
+        """Append a row to the tools pane.
+
+        Fork rows carry their own multi-line text (header + per-child
+        lines); the graphic is left empty for those. Normal tool rows get
+        a tool-call pip counter graphic when the caller supplies one.
+        """
+        self._tools.append(_PaneRow(text=text, graphic=graphic))
+        self._mark_active("tools")
+        self._refresh_live()
+
+    def _mark_active(self, pane: str) -> None:
+        """Mark ``pane`` as the active pane and move the spinner to its last row.
+
+        Clears the ``active`` flag on all rows in all panes, then sets it
+        on the last row of the named pane so the Live renderer puts the
+        spinner there.
+        """
+        self._active_pane = pane
+        for p in (self._transitions, self._model_calls, self._tools):
+            for row in p:
+                row.active = False
+        target = {
+            "transitions": self._transitions,
+            "model_calls": self._model_calls,
+            "tools": self._tools,
+        }.get(pane)
+        if target:
+            target[-1].active = True
 
     def _render_status_line(self, label: str, data: dict[str, Any] | None = None) -> str:
         """Render one status line, prefixed with the active mode.
@@ -319,26 +665,24 @@ class RichTransport:
         return f"{prefix}stage: {label}{suffix}"
 
     def _update_status(self, text: str) -> None:
-        """Append ``text`` to the play-by-play and refresh the Live display.
+        """Append ``text`` to the tools pane and refresh the Live display.
 
         Kept for backward compatibility with callers/tests that drive the
-        # transport directly. New code should use ``_append_stage``.
+        transport directly. New code should use ``_append_tool_row``.
         """
-        self._append_stage(text)
+        self._append_tool_row(text)
 
     def _render_stage_suffix(self, data: dict[str, Any]) -> str:
-        """Compact one-line rendering of stage metadata."""
+        """Compact one-line rendering of the textual stage metadata.
+
+        Graphical quantities (iteration pip, tool-call pip, duration
+        sparkline) are rendered in the pane's right-aligned graphic
+        column by ``_append_model_row`` / ``_append_tool_row``; this
+        suffix carries only the remaining textual metadata
+        (``provider``, ``model_id``, token counts, etc.).
+        """
         parts: list[str] = []
-        for key in (
-            "provider",
-            "model_id",
-            "iteration",
-            "tool_calls_so_far",
-            "tool_calls",
-            "duration_ms",
-            "stage_id",
-            "turn_count",
-        ):
+        for key in ("provider", "model_id", "stage_id", "turn_count"):
             value = data.get(key)
             if value in (None, "", 0):
                 continue
@@ -385,13 +729,6 @@ class RichTransport:
             body = " ".join(suffix_parts)
         else:
             body = f"{glyph}: {tool}"
-        meta: list[str] = []
-        if data.get("iteration"):
-            meta.append(f"iter={data['iteration']}")
-        if data.get("tool_calls_so_far"):
-            meta.append(f"calls={data['tool_calls_so_far']}")
-        if meta:
-            body += f" ({', '.join(meta)})"
         return f"stage: tool_dispatch {body}"
 
     def _render_fork_stage(self, summary: tuple[int, int] | None = None) -> str:
