@@ -144,6 +144,17 @@ class TestOllamaEnrichment:
         )
         assert "vision" in model.capabilities
 
+    def test_reasoning_model_gets_reasoning_capability(self) -> None:
+        # ollama's probe never adds "reasoning" itself, but _model derives
+        # it from is_reasoning_model so the router rule
+        # '"reasoning" in route.required_capabilities' can match.
+        model = _enrich_ollama_model(
+            "deepseek-r1:7b",
+            {"details": {"parameter_size": "7B", "family": "deepseek"}},
+        )
+        assert model.reasoning_model is True
+        assert "reasoning" in model.capabilities
+
 
 class TestBuildManifestPayloadEnrichment:
     def test_enrichment_fields_written_to_yaml(self) -> None:

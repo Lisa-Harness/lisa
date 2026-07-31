@@ -107,12 +107,24 @@ def _model(
     ``is_reasoning_model`` substring heuristic for consistency. The
     enrichment fields are optional and populated by each probe from the
     metadata the provider's list endpoint returns.
+
+    The ``"reasoning"`` capability is derived from ``reasoning_model`` so a
+    model the heuristic flags as reasoning-capable is always routable via
+    ``'"reasoning" in route.required_capabilities'`` — even when a probe
+    (e.g. ollama) does not explicitly add it. Probes that already include
+    ``"reasoning"`` are unaffected; the static registry override in
+    ``known_models.yaml`` still wins because each probe applies it before
+    calling this constructor.
     """
+
+    reasoning = is_reasoning_model(model_id)
+    if reasoning and "reasoning" not in capabilities:
+        capabilities = (*capabilities, "reasoning")
 
     return DiscoveredModel(
         model_id=model_id,
         provider=provider,
-        reasoning_model=is_reasoning_model(model_id),
+        reasoning_model=reasoning,
         thinking_model=thinking_model,
         display_name=display_name,
         capabilities=capabilities,
