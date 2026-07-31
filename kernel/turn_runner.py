@@ -2289,6 +2289,52 @@ async def _run_turn_inner(
     )
     model_def = resolve_model(preferred_model_id)
 
+    # required_capabilities are derived once from the mode config. They
+    # default to empty — a router that does not need them ignores them.
+    # Initialized before the capability gate so the router's iteration-1
+    # selection (below) can read them off ``_state``.
+    required_capabilities: tuple[str, ...] = ()
+    if mode_config is not None:
+        required_capabilities = tuple(getattr(mode_config, "required_capabilities", ()) or ())
+    _state.required_capabilities = required_capabilities
+
+    # ── Pre-gate router escalation (iteration 1) ───────────────────────
+    # Run the model router once for iteration 1 *before* the capability
+    # gate. The gate is documented as the safety net behind the router:
+    # the router's ``"code" in route.required_capabilities → <model>``
+    # rule should escalate to a capable model first, and the gate catches
+    # the cases where the router declined or returned None. Running the
+    # gate on the static preferred model before the router (the previous
+    # ordering) hard-blocked turns the router would have rescued — e.g.
+    # a default model lacking ``code`` entering coding mode with a router
+    # rule that re-routes to a code-capable model. The gate now validates
+    # the router-resolved model; if the router is absent or declines,
+    # ``resolve_iteration_model`` falls back to ``model_def`` and the
+    # gate retains its original advisory/hard-block semantics.
+    _state.iteration = 1
+    _resolved_for_gate = _resolve_iteration_model_fn(
+        _state,
+        1,
+        hooks,
+        preferred_model_id,
+        resolve_model,
+        model_def,
+        query,
+        mode_id,
+        turn_budget,
+        _log,
+    )
+    if _resolved_for_gate is not None:
+        model_def = _resolved_for_gate
+    # Cache the pre-gate iteration-1 resolution so the tool loop reuses it
+    # instead of re-invoking the router (which would double-run the CEL
+    # rules and could re-emit a terminal action). ``_pregate_decision``
+    # carries any ``finish``/``transition_to`` decision the router made.
+    _pregate_iteration1_model = model_def
+    _pregate_decision = _state.pending_router_decision
+    _state.iteration = 0
+    _state.effective_model = model_def
+
     # ── Capability gate ────────────────────────────────────────────────
     # When the mode declares ``required_capabilities`` (pack-authored
     # ``ModelCapability`` strings) and a model router is wired, validate the
@@ -2349,14 +2395,11 @@ async def _run_turn_inner(
     _state.step_iteration = 0
     _state.step_tool_calls = 0
 
-    # required_capabilities are derived once from the mode config. They
-    # default to empty — a router that does not need them ignores them.
-    required_capabilities: tuple[str, ...] = ()
-    if mode_config is not None:
-        required_capabilities = tuple(getattr(mode_config, "required_capabilities", ()) or ())
-    # Mutable turn-state fields now live on _state (_TurnState).
-    # Initialize the router-relevant fields from the mode config.
-    _state.required_capabilities = required_capabilities
+    # ``required_capabilities`` and ``_state.required_capabilities`` were
+    # initialized before the pre-gate router escalation (above). The
+    # router-relevant ``_state.effective_model`` was seeded there with the
+    # router-resolved iteration-1 model so subsequent iterations observe
+    # the correct preceding-model metadata.
 
     def _record_model_usage(
         model_def: Any,
@@ -2383,6 +2426,12 @@ async def _run_turn_inner(
         return _budget_forces_final_fn(_state, turn_budget, turn_start_mono)
 
     def _resolve_iteration_model(iteration_num: int) -> Any:
+        # Reuse the pre-gate iteration-1 resolution so the router runs once
+        # per iteration, not twice. The pre-gate pass already evaluated the
+        # CEL rules for iteration 1 and captured any terminal action.
+        if iteration_num == 1 and _pregate_iteration1_model is not None:
+            _state.pending_router_decision = _pregate_decision
+            return _pregate_iteration1_model
         return _resolve_iteration_model_fn(
             _state,
             iteration_num,

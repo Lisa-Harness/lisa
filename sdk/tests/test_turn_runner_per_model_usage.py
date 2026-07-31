@@ -314,3 +314,107 @@ async def test_fork_child_output_text_populated() -> None:
         assert child.status in ("ok", "error", "timeout", "cancelled", "no_tools")
         if child.status == "ok":
             assert child.output_text != ""
+
+
+# ── Capability gate vs. router ordering ───────────────────────────────
+
+
+class _StubModelDefWithCaps:
+    """Model def carrying capabilities for gate/router interaction tests."""
+
+    def __init__(self, model_id: str, capabilities: tuple[str, ...]) -> None:
+        self.model_id = model_id
+        self.provider = "test"
+        self.capabilities = capabilities
+        self.cost_tier = "standard"
+        self.latency_tier = "medium"
+        self.reasoning_model = False
+        self.thinking_model = False
+
+
+class _StubRouter:
+    """A ModelRouter that escalates to a code-capable model when the mode
+    requires the ``code`` capability — mirrors the canonical
+    ``"code" in route.required_capabilities → glm-5.2:cloud`` rule."""
+
+    def __init__(self, escalate_to: str = "code-model") -> None:
+        self.escalate_to = escalate_to
+        self.calls = 0
+
+    def choose(self, req: Any) -> Any:
+        from kernel.seams.protocols import RouterDecision
+
+        self.calls += 1
+        if "code" in req.required_capabilities:
+            return RouterDecision(model_id=self.escalate_to, routed_by="stub-router")
+        return None
+
+
+@pytest.mark.asyncio
+async def test_router_escalates_past_capability_gate() -> None:
+    """A mode requiring ``code`` with a default model lacking ``code`` must
+    NOT be blocked when a router is wired and its rule escalates to a
+    code-capable model.
+
+    Regression for the gate-before-router ordering bug: the capability gate
+    previously ran on the static preferred model before the router's first
+    ``choose()``, hard-blocking turns the router would have rescued. With
+    pre-gate router escalation (Option A), the gate validates the
+    router-resolved model instead.
+    """
+    from kernel.turn_runner import ContextSeams
+
+    completion = _StubCompletion("done", "code-model", prompt=10, completion=5)
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        return completion
+
+    # Default model lacks the ``code`` capability the coding mode requires.
+    models = {
+        "default-model": _StubModelDefWithCaps("default-model", ("text", "tools")),
+        "code-model": _StubModelDefWithCaps("code-model", ("text", "tools", "code")),
+    }
+    router = _StubRouter(escalate_to="code-model")
+
+    def _mode_catalog():
+        return {
+            "default": _default_mode_config(),
+            "coding": WorkflowModeConfig(
+                mode_id="coding",
+                start_stage_id="none",
+                mode_kind="chat",
+                routable=False,
+                satisfies_intents=["coding"],
+                required_capabilities=["tools", "code"],
+                routing_intent_tags=[],
+                routing_intent_keywords={},
+            ),
+        }
+
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(patch("kernel.turn_runner.get_workflow_catalog", return_value=_mode_catalog()))
+    stack.enter_context(patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=_mode_catalog()))
+    try:
+        hooks = TurnHooks(
+            complete=complete,
+            resolve_model=lambda mid: models.get(mid, models["default-model"]),
+            context_seams=ContextSeams(model_router=router),
+        )
+        result = await run_turn(
+            mode_id="coding",
+            query="implement a thing",
+            hooks=hooks,
+        )
+    finally:
+        stack.close()
+
+    # The gate must NOT have blocked — the router escalated to code-model
+    # before the gate ran, so the turn proceeded.
+    assert not result.blocked, f"gate blocked: {result.response_text}"
+    # The router was consulted for iteration 1 (pre-gate).
+    assert router.calls >= 1
+    # The completion ran on the router-escalated model.
+    assert result.per_model_usage, "expected per-model usage"
+    assert any(e["model_id"] == "code-model" for e in result.per_model_usage)
