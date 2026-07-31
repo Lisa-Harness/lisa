@@ -14,7 +14,6 @@ import pytest
 from sdk.content import (
     CustomizationBundle,
     InstructionFile,
-    SkillFile,
     discover_copilot_customizations,
     matches_any_instruction,
     matches_apply_to,
@@ -24,7 +23,6 @@ from sdk.content import (
     parse_prompt_file,
     parse_skill_file,
 )
-
 
 # --------------------------------------------------------------------------- #
 # Instruction files
@@ -498,6 +496,32 @@ class TestDiscoverCopilotCustomizations:
         bundle = discover_copilot_customizations(tmp_path)
         names = sorted(i.name for i in bundle.instructions)
         assert names == ["API", "React"]
+
+    def test_repository_corpus_discovers_taxonomy_files(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+
+        bundle = discover_copilot_customizations(repo_root)
+
+        assert len(bundle.always_on) >= 1
+        expected_instruction_suffixes = (
+            "engineering/debugging.instructions.md",
+            "engineering/pack-content.instructions.md",
+            "engineering/workflow.instructions.md",
+            "architecture/hosts.instructions.md",
+            "architecture/kernel.instructions.md",
+            "architecture/mcp.instructions.md",
+            "architecture/packs.instructions.md",
+            "architecture/sdk.instructions.md",
+        )
+        discovered_paths = tuple(inst.path for inst in bundle.instructions)
+        assert all(
+            any(path.endswith(suffix) for path in discovered_paths)
+            for suffix in expected_instruction_suffixes
+        )
+        assert all(
+            diag is None or diag.kind != "instructions"
+            for diag in bundle.diagnostics
+        )
 
     def test_deduplicates_when_seen_twice(self, tmp_path: Path) -> None:
         # include_parents walks up to repo root; if workspace_root IS the
