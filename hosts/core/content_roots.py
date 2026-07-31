@@ -621,7 +621,9 @@ def resolve_pack_session_path(
     session_name = session.strip()
     if not session_name:
         raise SessionPlanError("from: directive has an empty session identifier")
-    session_file_name = session_name if session_name.lower().endswith(".md") else f"{session_name}.md"
+    session_file_name = (
+        session_name if session_name.lower().endswith(".md") else f"{session_name}.md"
+    )
 
     matched_root: Path | None = None
     for root in pack_roots:
@@ -639,9 +641,7 @@ def resolve_pack_session_path(
 
     session_path = matched_root / "sessions" / session_file_name
     if not session_path.is_file():
-        raise SessionPlanError(
-            f"from: pack '{pack}' has no session '{session}' at {session_path}"
-        )
+        raise SessionPlanError(f"from: pack '{pack}' has no session '{session}' at {session_path}")
     return session_path
 
 

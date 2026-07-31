@@ -525,9 +525,7 @@ def test_mapper_reads_provenance_authority_and_conflict_penalty_from_settings() 
         result = ContextMapper().map(_request((candidate,)))
 
         decision = next(
-            decision
-            for decision in result.trace.decisions
-            if decision.candidate_id == "provenance"
+            decision for decision in result.trace.decisions if decision.candidate_id == "provenance"
         )
         assert decision.component_scores["authority"] == pytest.approx(
             candidate.authority * candidate.confidence * 0.1

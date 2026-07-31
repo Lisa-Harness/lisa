@@ -12,8 +12,6 @@ Covers:
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from kernel.recovery import RecoveryIdentity, RecoveryRecord
@@ -86,9 +84,7 @@ class _FakeService:
 
     async def list_open(self, identity: RecoveryIdentity) -> list[RecoveryRecord]:
         return [
-            r
-            for r in self.records.values()
-            if r.identity == identity and r.open_for_operator()
+            r for r in self.records.values() if r.identity == identity and r.open_for_operator()
         ]
 
 
@@ -175,7 +171,9 @@ async def test_stall_shows_detail_for_existing_item() -> None:
     record = await service.begin(_make_record(target_id="op_b"))
     runtime = _FakeRuntime(service)
 
-    result = await handle_stall(runtime, f"/stall {record.work_item_id}", f"/stall {record.work_item_id}")
+    result = await handle_stall(
+        runtime, f"/stall {record.work_item_id}", f"/stall {record.work_item_id}"
+    )
 
     assert "Work item:" in result
     assert "op_b" in result
@@ -201,7 +199,9 @@ async def test_retry_safe_item_settles_as_succeeded() -> None:
     record = await service.begin(_make_record(target_id="op_c", retry_policy="safe"))
     runtime = _FakeRuntime(service)
 
-    result = await handle_retry(runtime, f"/retry {record.work_item_id}", f"/retry {record.work_item_id}")
+    result = await handle_retry(
+        runtime, f"/retry {record.work_item_id}", f"/retry {record.work_item_id}"
+    )
 
     assert "Retried work item" in result
     settled = await service.get(record.work_item_id, _identity())
@@ -217,7 +217,9 @@ async def test_retry_confirm_item_prompts_for_approval() -> None:
     )
     runtime = _FakeRuntime(service)
 
-    result = await handle_retry(runtime, f"/retry {record.work_item_id}", f"/retry {record.work_item_id}")
+    result = await handle_retry(
+        runtime, f"/retry {record.work_item_id}", f"/retry {record.work_item_id}"
+    )
 
     assert "requires explicit approval" in result
     settled = await service.get(record.work_item_id, _identity())
@@ -231,7 +233,9 @@ async def test_retry_never_item_is_rejected() -> None:
     record = await service.begin(_make_record(target_id="op_e", retry_policy="never"))
     runtime = _FakeRuntime(service)
 
-    result = await handle_retry(runtime, f"/retry {record.work_item_id}", f"/retry {record.work_item_id}")
+    result = await handle_retry(
+        runtime, f"/retry {record.work_item_id}", f"/retry {record.work_item_id}"
+    )
 
     assert "retry_policy='never'" in result
 
@@ -276,7 +280,9 @@ async def test_skip_settles_as_skipped() -> None:
     record = await service.begin(_make_record(target_id="op_f"))
     runtime = _FakeRuntime(service)
 
-    result = await handle_skip(runtime, f"/skip {record.work_item_id}", f"/skip {record.work_item_id}")
+    result = await handle_skip(
+        runtime, f"/skip {record.work_item_id}", f"/skip {record.work_item_id}"
+    )
 
     assert "Skipped work item" in result
     settled = await service.get(record.work_item_id, _identity())
@@ -293,7 +299,9 @@ async def test_cancel_settles_as_cancelled() -> None:
     record = await service.begin(_make_record(target_id="op_g"))
     runtime = _FakeRuntime(service)
 
-    result = await handle_cancel(runtime, f"/cancel {record.work_item_id}", f"/cancel {record.work_item_id}")
+    result = await handle_cancel(
+        runtime, f"/cancel {record.work_item_id}", f"/cancel {record.work_item_id}"
+    )
 
     assert "Cancelled work item" in result
     settled = await service.get(record.work_item_id, _identity())

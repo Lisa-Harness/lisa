@@ -179,9 +179,8 @@ def _find_pending_for_action(
             continue
         if is_expired(record.invocation, now=now):
             continue
-        if (
-            record.invocation.action_digest == invocation.action_digest
-            and _identity_matches(record.invocation.identity, invocation.identity)
+        if record.invocation.action_digest == invocation.action_digest and _identity_matches(
+            record.invocation.identity, invocation.identity
         ):
             return record
     return None
@@ -297,14 +296,10 @@ class InMemoryApprovalService:
 
     async def request(self, invocation: ApprovalInvocation) -> ApprovalInvocation:
         async with self._lock:
-            existing = _find_pending_for_action(
-                self._records, invocation, now=datetime.now(UTC)
-            )
+            existing = _find_pending_for_action(self._records, invocation, now=datetime.now(UTC))
             if existing is not None:
                 return existing.invocation
-            self._records.setdefault(
-                invocation.request_id, ApprovalRecord(invocation=invocation)
-            )
+            self._records.setdefault(invocation.request_id, ApprovalRecord(invocation=invocation))
             return self._records[invocation.request_id].invocation
 
     async def approve(

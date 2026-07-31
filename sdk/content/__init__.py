@@ -66,8 +66,8 @@ from sdk.content._copilot_discovery import discover_copilot_customizations
 from sdk.content._diagnostics import build_catalog_diagnostics_json
 from sdk.content._fetcher import (
     ContentFetcher,
-    FetchPolicy,
     FetchedResult,
+    FetchPolicy,
     validate_url,
 )
 from sdk.content._loader_strict import (
@@ -81,9 +81,9 @@ from sdk.content._roots import resolve_content_roots, roots_fingerprint
 __all__ = [
     "AgentFile",
     "CatalogCollisionError",
-    "CopilotInstructionsFile",
     "ContentFetcher",
     "ContentReader",
+    "CopilotInstructionsFile",
     "CustomizationBundle",
     "CustomizationDiagnostic",
     "FetchPolicy",
@@ -92,7 +92,6 @@ __all__ = [
     "MissingAuthoredContentError",
     "PromptFile",
     "SkillFile",
-    "validate_url",
     "build_catalog_diagnostics_json",
     "build_mode_catalog_json",
     "build_operation_catalog_json",
@@ -114,4 +113,5 @@ __all__ = [
     "resolve_tool_roots",
     "roots_fingerprint",
     "validate_required_content",
+    "validate_url",
 ]

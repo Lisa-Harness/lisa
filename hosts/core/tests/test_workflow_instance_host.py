@@ -10,11 +10,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from kernel.recovery import RecoveryIdentity
+from kernel.workflow_instance import WorkflowInstance, WorkflowStep
 
 from hosts.core import HostConfig, HostRuntime
 from hosts.core.turn_hooks_builder import build_turn_hooks
-from kernel.recovery import RecoveryIdentity
-from kernel.workflow_instance import WorkflowInstance, WorkflowStep
 from hosts.core.workflow_instance_store import FileWorkflowInstanceStore
 
 

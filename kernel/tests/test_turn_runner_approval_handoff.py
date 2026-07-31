@@ -149,9 +149,7 @@ async def test_run_turn_approval_after_mid_turn_handoff_propagates_owning_mode(
     )
 
     with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
-        result = await run_turn(
-            mode_id="default", query="patch the file", hooks=hooks
-        )
+        result = await run_turn(mode_id="default", query="patch the file", hooks=hooks)
 
     # The tool paused before the side effect.
     assert executed is False

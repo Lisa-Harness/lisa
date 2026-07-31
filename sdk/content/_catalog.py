@@ -170,15 +170,11 @@ def build_mode_catalog_json(
         )
         for mode_id, candidates in candidates_by_id.items()
     }
-    if (
-        operation_catalog_json is not None
-        or tool_catalog_json is not None
-        or default_mcp_tool_ids
-    ):
+    if operation_catalog_json is not None or tool_catalog_json is not None or default_mcp_tool_ids:
         _merge_default_capabilities(
             modes=merged,
             operation_catalog=_decode_optional_catalog(operation_catalog_json),
- tool_catalog=_decode_optional_catalog(tool_catalog_json),
+            tool_catalog=_decode_optional_catalog(tool_catalog_json),
             default_mcp_tool_ids=set(default_mcp_tool_ids or ()),
         )
     result = json.dumps(merged)

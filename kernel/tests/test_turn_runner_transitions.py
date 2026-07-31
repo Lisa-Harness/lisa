@@ -404,8 +404,7 @@ async def test_handoff_to_terminal_mode_instructs_completion_not_handoff() -> No
         f"got: {post_handoff_prompt!r}"
     )
     assert "do NOT call `transition_stage`" in post_handoff_prompt, (
-        "terminal handoff must explicitly forbid transition_stage; "
-        f"got: {post_handoff_prompt!r}"
+        f"terminal handoff must explicitly forbid transition_stage; got: {post_handoff_prompt!r}"
     )
     # The unconditional hand-off directive must NOT appear on the terminal step.
     assert "After you complete your work, hand off to the next step" not in post_handoff_prompt, (
@@ -767,9 +766,7 @@ async def test_forced_fork_tool_call_id_matches_assistant_message() -> None:
         for i, msg in enumerate(msgs):
             if msg.get("role") != "assistant" or not msg.get("tool_calls"):
                 continue
-            assistant_ids = {
-                str(tc.get("id") or "") for tc in msg["tool_calls"]
-            }
+            assistant_ids = {str(tc.get("id") or "") for tc in msg["tool_calls"]}
             # The next message(s) should be tool results for these calls.
             for j in range(i + 1, len(msgs)):
                 tool_msg = msgs[j]

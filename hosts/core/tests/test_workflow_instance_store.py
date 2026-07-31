@@ -12,10 +12,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-from hosts.core.workflow_instance_store import FileWorkflowInstanceStore
 from kernel.recovery import RecoveryIdentity
 from kernel.workflow_instance import WorkflowInstance, WorkflowStep
+
+from hosts.core.workflow_instance_store import FileWorkflowInstanceStore
 
 
 def _identity() -> RecoveryIdentity:

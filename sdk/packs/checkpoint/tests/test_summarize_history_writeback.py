@@ -126,7 +126,7 @@ async def test_handle_summarize_history_writes_back_compacted_history(
 
 
 async def test_handle_summarize_history_reports_when_no_write_back_available(
-    monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When no writer and no thread path, the command reports the result was not persisted."""
     runtime = _runtime_stub(thread_path=None, write_turn_history_fn=None)

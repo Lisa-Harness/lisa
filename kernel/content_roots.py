@@ -81,7 +81,7 @@ def discover_installed_content_roots(
     return _dedupe_paths(roots)
 
 
-def discover_packs_venv_content_roots(  # noqa: C901,PLR0912
+def discover_packs_venv_content_roots(
     data_dir: Path | None = None,
     *,
     excluded_packs: set[str] | None = None,

@@ -19,7 +19,6 @@ import hashlib
 import json
 import logging
 import os
-import urllib.parse
 from pathlib import Path
 
 from sdk.content import ContentFetcher, FetchPolicy

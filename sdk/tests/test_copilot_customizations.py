@@ -50,12 +50,7 @@ class TestParseInstructionFile:
         assert "PEP 8" in parsed.body
 
     def test_parses_comma_separated_apply_to(self) -> None:
-        text = (
-            "---\n"
-            "applyTo: '**/operations/**/*.py,**/modes/**/*.py'\n"
-            "---\n"
-            "body\n"
-        )
+        text = "---\napplyTo: '**/operations/**/*.py,**/modes/**/*.py'\n---\nbody\n"
         parsed, _ = parse_instruction_file(".github/instructions/pack.md", text)
         assert parsed is not None
         assert parsed.apply_to == (
@@ -65,18 +60,14 @@ class TestParseInstructionFile:
 
     def test_parses_claude_format_paths_array(self) -> None:
         text = "---\npaths: ['**/*.ts']\n---\nbody\n"
-        parsed, _ = parse_instruction_file(
-            ".claude/rules/typescript.md", text, fmt="claude"
-        )
+        parsed, _ = parse_instruction_file(".claude/rules/typescript.md", text, fmt="claude")
         assert parsed is not None
         assert parsed.format == "claude"
         assert parsed.apply_to == ("**/*.ts",)
 
     def test_claude_format_defaults_to_all_when_paths_missing(self) -> None:
         text = "---\nname: notes\n---\nbody\n"
-        parsed, _ = parse_instruction_file(
-            ".claude/rules/notes.md", text, fmt="claude"
-        )
+        parsed, _ = parse_instruction_file(".claude/rules/notes.md", text, fmt="claude")
         assert parsed is not None
         assert parsed.apply_to == ("**",)
 
@@ -102,9 +93,7 @@ class TestParseInstructionFile:
 
     def test_derives_name_from_path_when_missing(self) -> None:
         text = "---\napplyTo: '**/*.py'\n---\nbody\n"
-        parsed, _ = parse_instruction_file(
-            ".github/instructions/python.instructions.md", text
-        )
+        parsed, _ = parse_instruction_file(".github/instructions/python.instructions.md", text)
         assert parsed is not None
         assert parsed.name == "python"
 
@@ -138,9 +127,7 @@ class TestParseAgentFile:
 
     def test_parses_claude_format_with_comma_string_tools(self) -> None:
         text = "---\ntools: 'Read, Grep, Glob, Bash'\n---\nbody\n"
-        parsed, _ = parse_agent_file(
-            ".claude/agents/researcher.md", text, fmt="claude"
-        )
+        parsed, _ = parse_agent_file(".claude/agents/researcher.md", text, fmt="claude")
         assert parsed is not None
         assert parsed.format == "claude"
         assert parsed.tools == ("Read", "Grep", "Glob", "Bash")
@@ -224,9 +211,7 @@ class TestParseSkillFile:
             "# Webapp testing\n"
             "Steps.\n"
         )
-        parsed, diag = parse_skill_file(
-            ".github/skills/webapp-testing/SKILL.md", text
-        )
+        parsed, diag = parse_skill_file(".github/skills/webapp-testing/SKILL.md", text)
         assert parsed is not None
         assert diag is None
         assert parsed.name == "webapp-testing"
@@ -269,9 +254,7 @@ class TestParseSkillFile:
 
     def test_name_dir_mismatch_emits_diagnostic_but_parses(self) -> None:
         text = "---\nname: right-name\ndescription: 'd'\n---\nbody\n"
-        parsed, diag = parse_skill_file(
-            ".github/skills/wrong-dir/SKILL.md", text
-        )
+        parsed, diag = parse_skill_file(".github/skills/wrong-dir/SKILL.md", text)
         # The skill still parses (we keep the data) but a diagnostic is emitted.
         assert parsed is not None
         assert diag is not None
@@ -366,7 +349,9 @@ def _write(workspace: Path, rel: str, content: str = "") -> Path:
     """Write a file relative to ``workspace`` and return the full path."""
     full = workspace / rel
     full.parent.mkdir(parents=True, exist_ok=True)
-    full.write_text(content if content else f"---\nname: {full.stem}\n---\nbody\n", encoding="utf-8")
+    full.write_text(
+        content if content else f"---\nname: {full.stem}\n---\nbody\n", encoding="utf-8"
+    )
     return full
 
 
@@ -467,9 +452,7 @@ class TestDiscoverCopilotCustomizations:
         bundle = discover_copilot_customizations(tmp_path, nested_agents_md=True)
         assert len(bundle.always_on) == 2
 
-    def test_skill_with_name_dir_mismatch_collects_diagnostic(
-        self, tmp_path: Path
-    ) -> None:
+    def test_skill_with_name_dir_mismatch_collects_diagnostic(self, tmp_path: Path) -> None:
         _write(
             tmp_path,
             ".github/skills/wrong-dir/SKILL.md",
@@ -480,9 +463,7 @@ class TestDiscoverCopilotCustomizations:
         assert len(bundle.diagnostics) == 1
         assert "wrong-dir" in bundle.diagnostics[0].message
 
-    def test_recursively_discovers_instructions_in_subfolders(
-        self, tmp_path: Path
-    ) -> None:
+    def test_recursively_discovers_instructions_in_subfolders(self, tmp_path: Path) -> None:
         _write(
             tmp_path,
             ".github/instructions/frontend/react.instructions.md",
@@ -518,10 +499,7 @@ class TestDiscoverCopilotCustomizations:
             any(path.endswith(suffix) for path in discovered_paths)
             for suffix in expected_instruction_suffixes
         )
-        assert all(
-            diag is None or diag.kind != "instructions"
-            for diag in bundle.diagnostics
-        )
+        assert all(diag is None or diag.kind != "instructions" for diag in bundle.diagnostics)
 
     def test_deduplicates_when_seen_twice(self, tmp_path: Path) -> None:
         # include_parents walks up to repo root; if workspace_root IS the

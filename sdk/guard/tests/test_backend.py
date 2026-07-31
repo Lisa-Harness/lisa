@@ -12,6 +12,7 @@ import logging
 
 import pytest
 
+from kernel.seams.protocols import GuardResult
 from sdk.guard import (
     GuardBackend,
     PassthroughGuardBackend,
@@ -19,7 +20,6 @@ from sdk.guard import (
     get_backend,
     log_blocked_guard,
 )
-from kernel.seams.protocols import GuardResult
 
 
 def test_passthrough_is_guard_backend() -> None:

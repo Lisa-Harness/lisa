@@ -11,11 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from unittest.mock import patch
 
-import pytest
-
-from kernel.models import CheckpointBundle, UnifiedState
+from kernel.models import CheckpointBundle
 from kernel.recovery import RecoveryIdentity, RecoveryRecord, step_blocks_instance
 from kernel.turn_runner import TurnHooks, _build_checkpoint_bundle
 from kernel.workflow_instance import WorkflowInstance, WorkflowStep

@@ -68,9 +68,7 @@ def should_auto_capture(  # noqa: C901,PLR0912
             continue
         tool_calls = msg.get("tool_calls") or []
         for tc in tool_calls:
-            fn_name = str(
-                (tc.get("function") or {}).get("name", "")
-            ).strip()
+            fn_name = str((tc.get("function") or {}).get("name", "")).strip()
             if fn_name in ("synthesize_and_store_learning", "dispute_memory"):
                 return False, 0.0
 
@@ -89,9 +87,7 @@ def should_auto_capture(  # noqa: C901,PLR0912
             continue
         tool_calls = msg.get("tool_calls") or []
         for tc in tool_calls:
-            fn_name = str(
-                (tc.get("function") or {}).get("name", "")
-            ).strip()
+            fn_name = str((tc.get("function") or {}).get("name", "")).strip()
             if not fn_name:
                 continue
             if fn_name.startswith(WRITE_EFFECT_TOOL_PREFIXES) or fn_name.endswith(

@@ -70,8 +70,11 @@ async def validate_input(
     "sanitized_text": str|null, "annotations": {}}``.
     """
     result = _backend_instance().validate_input(
-        query, surface_type=surface_type, surface_id=surface_id,
-        memory_scope=memory_scope, thread_owner_id=thread_owner_id,
+        query,
+        surface_type=surface_type,
+        surface_id=surface_id,
+        memory_scope=memory_scope,
+        thread_owner_id=thread_owner_id,
     )
     if not result.allowed:
         log_blocked_guard(
@@ -98,8 +101,11 @@ async def validate_output(
     Returns the same JSON shape as ``validate_input``.
     """
     result = _backend_instance().validate_output(
-        text, surface_type=surface_type, surface_id=surface_id,
-        memory_scope=memory_scope, thread_owner_id=thread_owner_id,
+        text,
+        surface_type=surface_type,
+        surface_id=surface_id,
+        memory_scope=memory_scope,
+        thread_owner_id=thread_owner_id,
     )
     if not result.allowed:
         log_blocked_guard(

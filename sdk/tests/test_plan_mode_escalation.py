@@ -58,13 +58,15 @@ def _full_catalog() -> dict[str, WorkflowModeConfig]:
     return {
         "default": _mode_config(mode_id="default"),
         "search": _mode_config(
-            mode_id="search", satisfies_intents=["research"],
+            mode_id="search",
+            satisfies_intents=["research"],
             routing_intent_tags=["research"],
             routing_intent_keywords={"research": ["search", "latest", "news"]},
             description="Web research mode.",
         ),
         "coding": _mode_config(
-            mode_id="coding", satisfies_intents=["coding", "review"],
+            mode_id="coding",
+            satisfies_intents=["coding", "review"],
             routing_intent_tags=["coding", "review"],
             routing_intent_keywords={
                 "coding": ["code", "coding", "codebase"],
@@ -73,19 +75,22 @@ def _full_catalog() -> dict[str, WorkflowModeConfig]:
             description="Coding workflow mode.",
         ),
         "markdown": _mode_config(
-            mode_id="markdown", satisfies_intents=["write"],
+            mode_id="markdown",
+            satisfies_intents=["write"],
             routing_intent_tags=["write"],
             routing_intent_keywords={"write": ["write", "markdown", "document", "report"]},
             description="Markdown document mode.",
         ),
         "learn": _mode_config(
-            mode_id="learn", satisfies_intents=["learn"],
+            mode_id="learn",
+            satisfies_intents=["learn"],
             routing_intent_tags=["learn"],
             routing_intent_keywords={"learn": ["remember", "note", "capture"]},
             description="Memory capture mode.",
         ),
         "plan": _mode_config(
-            mode_id="plan", satisfies_intents=["plan"],
+            mode_id="plan",
+            satisfies_intents=["plan"],
             routing_intent_tags=["plan"],
             routing_intent_keywords={"plan": ["plan", "workflow", "multi-step", "chain"]},
             description="Workflow planner mode.",
@@ -109,7 +114,9 @@ def test_routing_hint_escalates_to_plan_for_sequential_multi_intent() -> None:
     )
     with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
-            mode_id="default", query=q, capability_manifest=_empty_manifest(),
+            mode_id="default",
+            query=q,
+            capability_manifest=_empty_manifest(),
             routing_targets=["search", "coding", "markdown", "plan"],
             mode_config=catalog["default"],
         )
@@ -134,7 +141,9 @@ def test_routing_hint_escalates_to_plan_for_three_plus_intents_non_sequential() 
     q = "search the latest news remember the key points and write a markdown"
     with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
-            mode_id="default", query=q, capability_manifest=_empty_manifest(),
+            mode_id="default",
+            query=q,
+            capability_manifest=_empty_manifest(),
             routing_targets=["search", "learn", "markdown", "plan"],
             mode_config=catalog["default"],
         )
@@ -154,7 +163,9 @@ def test_routing_hint_escalates_to_plan_for_two_intents_sequential() -> None:
     q = "search for the latest rust news then write a markdown summary"
     with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
-            mode_id="default", query=q, capability_manifest=_empty_manifest(),
+            mode_id="default",
+            query=q,
+            capability_manifest=_empty_manifest(),
             routing_targets=["search", "markdown", "plan"],
             mode_config=catalog["default"],
         )
@@ -178,7 +189,9 @@ def test_routing_hint_does_not_escalate_to_plan_when_plan_not_routable() -> None
     q = "remember this and write a markdown of it"
     with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
-            mode_id="default", query=q, capability_manifest=_empty_manifest(),
+            mode_id="default",
+            query=q,
+            capability_manifest=_empty_manifest(),
             routing_targets=["learn", "markdown"],
             mode_config=catalog["default"],
         )
@@ -202,7 +215,9 @@ def test_routing_hint_does_not_escalate_to_plan_for_simple_query() -> None:
     q = "search for the latest rust news"
     with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
-            mode_id="default", query=q, capability_manifest=_empty_manifest(),
+            mode_id="default",
+            query=q,
+            capability_manifest=_empty_manifest(),
             routing_targets=["search", "plan"],
             mode_config=catalog["default"],
         )
@@ -225,17 +240,29 @@ def test_discuss_mode_detects_clarify_intent_from_new_keywords() -> None:
     from kernel.turn_runner import _detect_query_intents
 
     discuss = _mode_config(
-        mode_id="discuss", satisfies_intents=["clarify"],
+        mode_id="discuss",
+        satisfies_intents=["clarify"],
         routing_intent_tags=["clarify"],
         routing_intent_keywords={
             "clarify": [
-                "clarify", "not sure", "need to know", "what do you mean",
-                "ask you", "questions about", "should i", "which option",
-                "ambiguous", "unclear", "can you confirm", "help me decide",
+                "clarify",
+                "not sure",
+                "need to know",
+                "what do you mean",
+                "ask you",
+                "questions about",
+                "should i",
+                "which option",
+                "ambiguous",
+                "unclear",
+                "can you confirm",
+                "help me decide",
             ],
         },
     )
-    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value={"discuss": discuss}):
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value={"discuss": discuss}
+    ):
         assert _detect_query_intents(
             query="I'm not sure which option to pick, can you clarify?",
             routing_targets=["discuss"],
@@ -244,13 +271,20 @@ def test_discuss_mode_detects_clarify_intent_from_new_keywords() -> None:
             query="help me decide between A and B",
             routing_targets=["discuss"],
         ) == {"clarify"}
-        assert _detect_query_intents(
-            query="analyze the tradeoffs between X and Y",
-            routing_targets=["discuss"],
-        ) == set()  # analysis cue no longer matches discuss (now ponder)
-        assert _detect_query_intents(
-            query="hello world", routing_targets=["discuss"],
-        ) == set()
+        assert (
+            _detect_query_intents(
+                query="analyze the tradeoffs between X and Y",
+                routing_targets=["discuss"],
+            )
+            == set()
+        )  # analysis cue no longer matches discuss (now ponder)
+        assert (
+            _detect_query_intents(
+                query="hello world",
+                routing_targets=["discuss"],
+            )
+            == set()
+        )
 
 
 def test_routing_hint_skips_plan_when_model_marked_unreliable() -> None:
@@ -273,7 +307,9 @@ def test_routing_hint_skips_plan_when_model_marked_unreliable() -> None:
     mark_plan_unreliable_for_model("glm-5.2:cloud")
     with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
-            mode_id="default", query=q, capability_manifest=_empty_manifest(),
+            mode_id="default",
+            query=q,
+            capability_manifest=_empty_manifest(),
             routing_targets=["search", "coding", "markdown", "plan"],
             mode_config=catalog["default"],
             planner_model_id="glm-5.2:cloud",
@@ -310,19 +346,22 @@ def test_routing_hint_fallback_silences_when_no_clean_cover() -> None:
     catalog = {
         "default": _full_catalog()["default"],
         "search": _mode_config(
-            mode_id="search", satisfies_intents=["research"],
+            mode_id="search",
+            satisfies_intents=["research"],
             routing_intent_tags=["research"],
             routing_intent_keywords={"research": ["search", "news"]},
         ),
         "learn": _mode_config(
-            mode_id="learn", satisfies_intents=["learn"],
+            mode_id="learn",
+            satisfies_intents=["learn"],
             routing_intent_tags=["learn"],
             routing_intent_keywords={"learn": ["remember", "note"]},
         ),
         # A third target that covers a *third* intent the query also
         # expresses, so the fork's two-target cover is incomplete.
         "coding": _mode_config(
-            mode_id="coding", satisfies_intents=["coding"],
+            mode_id="coding",
+            satisfies_intents=["coding"],
             routing_intent_tags=["coding"],
             routing_intent_keywords={"coding": ["code", "coding"]},
         ),
@@ -344,7 +383,9 @@ def test_routing_hint_fallback_silences_when_no_clean_cover() -> None:
     # (a gap asserted externally with no detection). Verify that path.
     with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
-            mode_id="default", query="hello world", capability_manifest=_empty_manifest(),
+            mode_id="default",
+            query="hello world",
+            capability_manifest=_empty_manifest(),
             routing_targets=["search", "learn", "coding"],
             mode_config=catalog["default"],
         )
@@ -367,7 +408,9 @@ def test_routing_hint_single_handoff_is_directive() -> None:
     q = "search for the latest rust news"
     with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
         hint = _compute_capability_routing_hint(
-            mode_id="default", query=q, capability_manifest=_empty_manifest(),
+            mode_id="default",
+            query=q,
+            capability_manifest=_empty_manifest(),
             routing_targets=["search"],
             mode_config=catalog["default"],
         )
@@ -408,7 +451,12 @@ def test_plan_workflow_returns_structured_target() -> None:
     payload = {"target_stage_id": "search", "rationale": "research intent detected"}
 
     async def fake_complete(
-        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+        messages,
+        model_def,
+        max_tokens,
+        temperature,
+        response_format=None,
+        tools=None,
     ):
         return _FakeCompletion(json.dumps(payload))
 
@@ -466,7 +514,12 @@ def test_plan_workflow_retries_when_first_completion_is_empty() -> None:
     call_count = {"n": 0}
 
     async def fake_complete(
-        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+        messages,
+        model_def,
+        max_tokens,
+        temperature,
+        response_format=None,
+        tools=None,
     ):
         call_count["n"] += 1
         # First call returns empty content (the incident). The retry must
@@ -513,7 +566,12 @@ def test_plan_workflow_retry_drops_response_format() -> None:
     calls: list[dict[str, Any]] = []
 
     async def fake_complete(
-        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+        messages,
+        model_def,
+        max_tokens,
+        temperature,
+        response_format=None,
+        tools=None,
     ):
         calls.append({"response_format": response_format, "n": len(calls) + 1})
         # First call (response_format pinned) returns empty — the incident.
@@ -563,17 +621,27 @@ def test_plan_workflow_retries_when_first_call_raises_unsupported() -> None:
     call_count = {"n": 0}
 
     async def fake_complete(
-        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+        messages,
+        model_def,
+        max_tokens,
+        temperature,
+        response_format=None,
+        tools=None,
     ):
         call_count["n"] += 1
         # First call (response_format pinned) raises the 400 unsupported
         # error observed with gpt-5.1-codex-max. The retry must fire with
         # response_format cleared and return valid JSON.
         if call_count["n"] == 1:
-            raise RuntimeError("Error code: 400 - {'error': {'message': 'The requested operation is unsupported.'}}")
+            raise RuntimeError(
+                "Error code: 400 - {'error': {'message': 'The requested operation is unsupported.'}}"
+            )
         return _FakeCompletion(json.dumps(payload))
 
-    ctx = _make_ctx(query="research the latest rust async runtime then draft a summary", complete_fn=fake_complete)
+    ctx = _make_ctx(
+        query="research the latest rust async runtime then draft a summary",
+        complete_fn=fake_complete,
+    )
     catalog = _full_catalog()
     with (
         patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
@@ -616,7 +684,12 @@ def test_plan_workflow_returns_steps_in_output_json() -> None:
     }
 
     async def fake_complete(
-        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+        messages,
+        model_def,
+        max_tokens,
+        temperature,
+        response_format=None,
+        tools=None,
     ):
         return _FakeCompletion(json.dumps(payload))
 
@@ -667,7 +740,12 @@ def test_plan_workflow_renders_visible_plan_markdown() -> None:
     }
 
     async def fake_complete(
-        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+        messages,
+        model_def,
+        max_tokens,
+        temperature,
+        response_format=None,
+        tools=None,
     ):
         return _FakeCompletion(json.dumps(payload))
 
@@ -701,7 +779,12 @@ def test_plan_workflow_no_steps_falls_back_to_rationale_in_output_text() -> None
     payload = {"target_stage_id": "search", "rationale": "research intent detected"}
 
     async def fake_complete(
-        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+        messages,
+        model_def,
+        max_tokens,
+        temperature,
+        response_format=None,
+        tools=None,
     ):
         return _FakeCompletion(json.dumps(payload))
 
@@ -735,7 +818,12 @@ def test_plan_workflow_empty_steps_and_empty_target_is_no_match() -> None:
     }
 
     async def fake_complete(
-        messages, model_def, max_tokens, temperature, response_format=None, tools=None,
+        messages,
+        model_def,
+        max_tokens,
+        temperature,
+        response_format=None,
+        tools=None,
     ):
         return _FakeCompletion(json.dumps(payload))
 

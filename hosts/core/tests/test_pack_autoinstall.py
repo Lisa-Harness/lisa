@@ -11,12 +11,10 @@ Verifies that ``hosts.core.pack_autoinstall.auto_install_required_packs``:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
-from kernel.session_plan import PackInstallSpec, compile_session_plan
+from kernel.session_plan import PackInstallSpec
 
-from hosts.core import commands
 from hosts.core.commands import _packs
 from hosts.core.config import HostConfig
 from hosts.core.pack_autoinstall import (
@@ -65,9 +63,7 @@ def _make_runtime(
     required: list[str],
     auto_install: dict[str, dict[str, str]] | None = None,
 ) -> HostRuntime:
-    session = _session_with_required(
-        tmp_path, required=required, auto_install=auto_install
-    )
+    session = _session_with_required(tmp_path, required=required, auto_install=auto_install)
     config = HostConfig.from_env(data_dir=str(tmp_path), session_context=str(session))
     return HostRuntime(config)
 
@@ -81,9 +77,7 @@ def test_resolve_auto_install_spec_prefers_explicit_source() -> None:
         source="git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0",
         pin="v0.2.0",
     )
-    result = _resolve_auto_install_spec(
-        "lisa-pack-cloudflare", {"lisa-pack-cloudflare": spec}
-    )
+    result = _resolve_auto_install_spec("lisa-pack-cloudflare", {"lisa-pack-cloudflare": spec})
     assert result == (
         "git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0",
         "auto_install.source",
@@ -92,13 +86,9 @@ def test_resolve_auto_install_spec_prefers_explicit_source() -> None:
 
 def test_resolve_auto_install_spec_rejects_unpinned_git() -> None:
     """An unpinned git+ source raises ValueError (pin is mandatory)."""
-    spec = PackInstallSpec(
-        source="git+https://github.com/lisa-framework/lisa-pack-cloudflare.git"
-    )
+    spec = PackInstallSpec(source="git+https://github.com/lisa-framework/lisa-pack-cloudflare.git")
     with pytest.raises(ValueError, match="unpinned"):
-        _resolve_auto_install_spec(
-            "lisa-pack-cloudflare", {"lisa-pack-cloudflare": spec}
-        )
+        _resolve_auto_install_spec("lisa-pack-cloudflare", {"lisa-pack-cloudflare": spec})
 
 
 def test_resolve_auto_install_spec_falls_back_to_bare_name() -> None:
@@ -110,9 +100,7 @@ def test_resolve_auto_install_spec_falls_back_to_bare_name() -> None:
 def test_resolve_auto_install_spec_allows_local_path() -> None:
     """A local-path source doesn't require a git ref pin."""
     spec = PackInstallSpec(source="C:/Code/lisa-pack-cloudflare")
-    result = _resolve_auto_install_spec(
-        "lisa-pack-cloudflare", {"lisa-pack-cloudflare": spec}
-    )
+    result = _resolve_auto_install_spec("lisa-pack-cloudflare", {"lisa-pack-cloudflare": spec})
     assert result == ("C:/Code/lisa-pack-cloudflare", "auto_install.source")
 
 
@@ -174,9 +162,7 @@ def test_auto_install_installs_missing_required_pack(
 
     installed = auto_install_required_packs(runtime)
     assert installed == ["lisa-pack-cloudflare"]
-    assert call_log == [
-        "git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0"
-    ]
+    assert call_log == ["git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0"]
     # The caller (discover_framework) requests the restart, not this function.
     assert runtime.restart_required is False
 

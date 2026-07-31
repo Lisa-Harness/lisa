@@ -94,32 +94,24 @@ def discover_copilot_customizations(
         # Always-on: copilot-instructions.md (root of each scan root only).
         copilot_instr = root / ".github" / "copilot-instructions.md"
         if copilot_instr.is_file():
-            _add_always_on(
-                copilot_instr, _rel(copilot_instr), always_on, diagnostics, seen_paths
-            )
+            _add_always_on(copilot_instr, _rel(copilot_instr), always_on, diagnostics, seen_paths)
 
         # Always-on: AGENTS.md at scan root.
         agents_md = root / "AGENTS.md"
         if agents_md.is_file():
-            _add_always_on(
-                agents_md, _rel(agents_md), always_on, diagnostics, seen_paths
-            )
+            _add_always_on(agents_md, _rel(agents_md), always_on, diagnostics, seen_paths)
 
         # Always-on: CLAUDE.md variants.
         for claude_md in _iter_claude_md_files(root):
             if claude_md.is_file():
-                _add_always_on(
-                    claude_md, _rel(claude_md), always_on, diagnostics, seen_paths
-                )
+                _add_always_on(claude_md, _rel(claude_md), always_on, diagnostics, seen_paths)
 
         # Nested AGENTS.md (experimental).
         if nested_agents_md:
             for candidate in root.rglob("AGENTS.md"):
                 if candidate == agents_md:
                     continue
-                _add_always_on(
-                    candidate, _rel(candidate), always_on, diagnostics, seen_paths
-                )
+                _add_always_on(candidate, _rel(candidate), always_on, diagnostics, seen_paths)
 
         # File-based instructions: .github/instructions/**.instructions.md
         instructions_dir = root / ".github" / "instructions"
@@ -187,9 +179,7 @@ def discover_copilot_customizations(
         ):
             if skills_dir.is_dir():
                 for skill_md in skills_dir.rglob("SKILL.md"):
-                    _add_skill(
-                        skill_md, _rel(skill_md), skills, diagnostics, seen_paths
-                    )
+                    _add_skill(skill_md, _rel(skill_md), skills, diagnostics, seen_paths)
 
     return CustomizationBundle(
         always_on=tuple(always_on),
@@ -206,9 +196,7 @@ def discover_copilot_customizations(
 # --------------------------------------------------------------------------- #
 
 
-def _collect_scan_roots(
-    workspace_root: Path, *, include_parents: bool
-) -> list[Path]:
+def _collect_scan_roots(workspace_root: Path, *, include_parents: bool) -> list[Path]:
     """Return the ordered list of folders to scan.
 
     ``workspace_root`` is always first. When ``include_parents`` is True, we
@@ -337,9 +325,7 @@ def _add_agent(
         text = file_path.read_text(encoding="utf-8")
     except OSError as exc:
         diagnostics.append(
-            CustomizationDiagnostic(
-                path=rel, message=f"Could not read file: {exc}", kind="agents"
-            )
+            CustomizationDiagnostic(path=rel, message=f"Could not read file: {exc}", kind="agents")
         )
         return
     parsed, diag = parse_agent_file(rel, text, fmt=fmt)  # type: ignore[arg-type]
@@ -363,9 +349,7 @@ def _add_prompt(
         text = file_path.read_text(encoding="utf-8")
     except OSError as exc:
         diagnostics.append(
-            CustomizationDiagnostic(
-                path=rel, message=f"Could not read file: {exc}", kind="prompts"
-            )
+            CustomizationDiagnostic(path=rel, message=f"Could not read file: {exc}", kind="prompts")
         )
         return
     parsed, diag = parse_prompt_file(rel, text)
@@ -389,9 +373,7 @@ def _add_skill(
         text = file_path.read_text(encoding="utf-8")
     except OSError as exc:
         diagnostics.append(
-            CustomizationDiagnostic(
-                path=rel, message=f"Could not read file: {exc}", kind="skills"
-            )
+            CustomizationDiagnostic(path=rel, message=f"Could not read file: {exc}", kind="skills")
         )
         return
     parsed, diag = parse_skill_file(rel, text)

@@ -113,6 +113,11 @@ extend-exclude = ["vulture_allowlist.py"]
 select = ["E", "F", "I", "UP", "B", "SIM", "PL", "C90", "RET", "RUF"]
 ignore = ["PLR0913"]
 
+[tool.ruff.lint.per-file-ignores]
+# Test files use function-local imports (lazy dep loading) and literal
+# values in assertions — both are intentional and noisy under PLC0415/PLR2004.
+"**/tests/**" = ["PLC0415", "PLR2004"]
+
 [tool.ruff.lint.mccabe]
 max-complexity = 10
 

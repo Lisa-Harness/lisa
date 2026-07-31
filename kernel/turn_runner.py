@@ -123,7 +123,7 @@ def _extract_hint_target(hint_text: str) -> str:
     idx = hint_text.rfind(marker)
     if idx < 0:
         return ""
-    rest = hint_text[idx + len(marker):]
+    rest = hint_text[idx + len(marker) :]
     end = rest.find("`")
     if end < 0:
         return ""
@@ -205,9 +205,7 @@ def _build_budget_briefing(
         authored = int(getattr(target_def, "max_calls_per_turn", 0) or 0)
         if authored <= 0:
             continue
-        max_calls = resolve_capability_invocation_limit(
-            execution_policy, name, authored
-        )
+        max_calls = resolve_capability_invocation_limit(execution_policy, name, authored)
         if max_calls <= 0:
             continue
         used = state.call_ledger_counts.get(name, 0) if hasattr(state, "call_ledger_counts") else 0
@@ -1348,9 +1346,7 @@ async def run_turn(
 
     if hooks.recovery_service is not None:
         try:
-            await hooks.recovery_service.mark_running_indeterminate(
-                _build_recovery_identity(hooks)
-            )
+            await hooks.recovery_service.mark_running_indeterminate(_build_recovery_identity(hooks))
         except Exception as exc:  # pylint: disable=broad-except
             _log.warning("recovery startup reconciliation failed: %s", exc)
 
@@ -1652,9 +1648,7 @@ async def _run_turn_inner(
     # unlimited, in which case the transport falls back to a saturating
     # counter).
     _state.max_iterations = max_tool_iterations
-    _state.max_tool_calls = (
-        turn_budget.max_tool_calls if turn_budget is not None else 0
-    )
+    _state.max_tool_calls = turn_budget.max_tool_calls if turn_budget is not None else 0
     _state.max_handoffs = _kernel_settings.max_handoffs_per_turn
     _on_stage_hook = hooks.on_stage
 
@@ -1734,9 +1728,7 @@ async def _run_turn_inner(
         # An empty ``target_stage_id`` (no routable mode matched, no model
         # wiring, or a parse failure) falls through to the user-facing
         # text return — the planner legitimately reports it cannot route.
-        planned_target = str(
-            (result.output_json or {}).get("target_stage_id", "") or ""
-        ).strip()
+        planned_target = str((result.output_json or {}).get("target_stage_id", "") or "").strip()
         # The visible plan block (rendered markdown) from plan_workflow's
         # output_text. When the model returned a ``steps`` array, this is a
         # ``## Plan`` block the user sees before the first step executes.
@@ -1833,9 +1825,7 @@ async def _run_turn_inner(
             # an actual plan block (steps were returned); otherwise the
             # rationale is not useful as a prefix to the step output.
             if plan_block and plan_steps_raw and step_result.response_text:
-                step_result.response_text = (
-                    f"{plan_block}\n\n{step_result.response_text}"
-                )
+                step_result.response_text = f"{plan_block}\n\n{step_result.response_text}"
             elif plan_block and plan_steps_raw and not step_result.response_text:
                 step_result.response_text = plan_block
             return step_result
@@ -1851,11 +1841,13 @@ async def _run_turn_inner(
         # user plan failed and offers concrete next steps. Mark the model
         # unreliable for planning so the hint generator stops escalating
         # to ``plan`` for it (see ``routing_vocabulary.is_plan_reliable``).
-        plan_reason = str(
-            (result.output_json or {}).get("rationale", "") or ""
-        ).strip() or "the planner returned no routing target"
+        plan_reason = (
+            str((result.output_json or {}).get("rationale", "") or "").strip()
+            or "the planner returned no routing target"
+        )
         plan_model_id = str(preferred_model_id or "")
         from kernel.routing_vocabulary import mark_plan_unreliable_for_model  # noqa: PLC0415
+
         mark_plan_unreliable_for_model(plan_model_id)
         _log.warning(
             "plan_workflow returned no target (mode=%s, model=%s, reason=%s); "
@@ -1888,7 +1880,7 @@ async def _run_turn_inner(
             f"{partial_block}\n\n"
             f"You can:\n"
             f"  1. Rephrase the request with explicit sequential steps "
-            f"(e.g. \"search for X, then write a markdown report\").\n"
+            f'(e.g. "search for X, then write a markdown report").\n'
             f"  2. Name the target mode directly (e.g. `/markdown ...`, "
             f"`/ponder ...`) to bypass planning.\n"
             f"  3. Ask me to discuss it first (`/discuss ...`) so I can "
@@ -2176,11 +2168,14 @@ async def _run_turn_inner(
         # the turn loop forces the fork itself rather than begging via
         # nudges. Stored on ``_state`` and consumed in the tool-dispatch
         # branch; re-computed after each handoff by the chained-hint block.
-        _state.forced_fork_target = _compute_fork_target_string(
-            query=query,
-            routing_targets=get_routing_targets(mode_id) if mode_config else [],
-            mode_config=mode_config,
-        ) or ""
+        _state.forced_fork_target = (
+            _compute_fork_target_string(
+                query=query,
+                routing_targets=get_routing_targets(mode_id) if mode_config else [],
+                mode_config=mode_config,
+            )
+            or ""
+        )
         _state.non_fork_tool_dispatches = 0
         # ── Forced-plan enforcer: precompute the plan-escalation target.
         # When the routing hint names ``plan`` as the target (3+ gap
@@ -2195,9 +2190,7 @@ async def _run_turn_inner(
         # token burn to roughly ``cap × per-iteration-tokens`` instead
         # of the full ``max_tool_iterations`` budget. Mirrors the
         # forced-fork enforcer for the plan-escalation path.
-        _state.forced_plan_target = (
-            "plan" if _extract_hint_target(routing_hint) == "plan" else ""
-        )
+        _state.forced_plan_target = "plan" if _extract_hint_target(routing_hint) == "plan" else ""
         _state.non_plan_tool_dispatches = 0
     else:
         _log.info(
@@ -2432,7 +2425,8 @@ async def _run_turn_inner(
                 _open_records = []
             _stall_record = next(
                 (
-                    r for r in _open_records
+                    r
+                    for r in _open_records
                     if getattr(r, "state", "") == "stalled"
                     and getattr(r, "retry_policy", "") == "confirm"
                     and getattr(r, "blocks_workflow", False)
@@ -2559,13 +2553,10 @@ async def _run_turn_inner(
                         if not _yield_policy.allowed
                         else ""
                     )
-                    _yield_question = (
-                        _yield_policy.default_question
-                        or (
-                            f"I've been working in the '{wf_session.stage_id}' stage "
-                            f"for {turns_in_stage} turns and haven't converged. "
-                            f"Can you clarify what you need?"
-                        )
+                    _yield_question = _yield_policy.default_question or (
+                        f"I've been working in the '{wf_session.stage_id}' stage "
+                        f"for {turns_in_stage} turns and haven't converged. "
+                        f"Can you clarify what you need?"
                     )
                     _pending_yield = YieldAction(
                         question=_yield_question,
@@ -2709,14 +2700,10 @@ async def _run_turn_inner(
                             )
                     else:
                         _log.warning(
-                            "router transition_to action but no active workflow "
-                            "session; ignoring"
+                            "router transition_to action but no active workflow session; ignoring"
                         )
                 else:
-                    _log.warning(
-                        "router transition_to action but not in a workflow "
-                        "mode; ignoring"
-                    )
+                    _log.warning("router transition_to action but not in a workflow mode; ignoring")
                 effective_tools = None
 
         # ── Kernel-driven planned handoff synthesis ───────────────────
@@ -2736,8 +2723,7 @@ async def _run_turn_inner(
         _state.pending_planned_handoff = ""
         if _planned_handoff_target:
             _log.info(
-                "kernel synthesizing planned transition_stage target=%s "
-                "(mode=%s, iteration=%d)",
+                "kernel synthesizing planned transition_stage target=%s (mode=%s, iteration=%d)",
                 _planned_handoff_target,
                 mode_id,
                 _state.iteration,
@@ -2775,9 +2761,7 @@ async def _run_turn_inner(
                     "mode_id": mode_id,
                     "model_id": getattr(effective_model_def, "model_id", ""),
                     "provider": getattr(effective_model_def, "provider", ""),
-                    "reasoning_model": bool(
-                        getattr(effective_model_def, "reasoning_model", False)
-                    ),
+                    "reasoning_model": bool(getattr(effective_model_def, "reasoning_model", False)),
                     "_state.iteration": _state.iteration,
                     "max_iterations": max_tool_iterations,
                     "tool_calls_so_far": _state.total_tool_calls,
@@ -2852,9 +2836,7 @@ async def _run_turn_inner(
             {
                 "mode_id": mode_id,
                 "model_id": getattr(effective_model_def, "model_id", ""),
-                "reasoning_model": bool(
-                    getattr(effective_model_def, "reasoning_model", False)
-                ),
+                "reasoning_model": bool(getattr(effective_model_def, "reasoning_model", False)),
                 "_state.iteration": _state.iteration,
                 "max_iterations": max_tool_iterations,
                 "tool_calls": len(getattr(completion, "tool_calls", None) or []),
@@ -3003,8 +2985,7 @@ async def _run_turn_inner(
                     content = _pending_yield.question
                     _yielded = True
                     _log.info(
-                        "turn lifecycle: applying forced yield (mode=%s, "
-                        "iteration=%d, target=%s)",
+                        "turn lifecycle: applying forced yield (mode=%s, iteration=%d, target=%s)",
                         mode_id,
                         _state.iteration,
                         _pending_yield.target_mode_id or "(in-place)",
@@ -3041,10 +3022,7 @@ async def _run_turn_inner(
             # the existing transition interception handle the fan-out.
             # ``transition_stage`` calls (fork or otherwise) reset the
             # counter and never trigger the enforcer.
-            if (
-                _state.forced_fork_target
-                and tool_name != _TRANSITION_TOOL_NAME
-            ):
+            if _state.forced_fork_target and tool_name != _TRANSITION_TOOL_NAME:
                 _state.non_fork_tool_dispatches += 1
                 if _state.non_fork_tool_dispatches >= (
                     _kernel_settings.forced_fork_non_fork_tool_cap
@@ -3122,10 +3100,7 @@ async def _run_turn_inner(
             # dispatch increments ``non_plan_tool_dispatches``; at the
             # cap, the kernel synthesizes the
             # ``transition_stage(plan)`` call itself.
-            if (
-                _state.forced_plan_target
-                and tool_name != _TRANSITION_TOOL_NAME
-            ):
+            if _state.forced_plan_target and tool_name != _TRANSITION_TOOL_NAME:
                 _state.non_plan_tool_dispatches += 1
                 if _state.non_plan_tool_dispatches >= (
                     _kernel_settings.forced_plan_non_transition_tool_cap
@@ -3241,7 +3216,9 @@ async def _run_turn_inner(
                 try:
                     effect = "read"
                     if tool_name in operation_catalog:
-                        effect = str(getattr(operation_catalog[tool_name], "effect", "read") or "read")
+                        effect = str(
+                            getattr(operation_catalog[tool_name], "effect", "read") or "read"
+                        )
                     elif tool_name in tool_catalog:
                         effect = str(getattr(tool_catalog[tool_name], "effect", "read") or "read")
                     elif _tool_kind == "mcp_tool":
@@ -3313,8 +3290,7 @@ async def _run_turn_inner(
                     content = _yield_question
                     _yielded = True
                     _log.info(
-                        "turn lifecycle: model emitted yield (mode=%s, "
-                        "iteration=%d, target=%s)",
+                        "turn lifecycle: model emitted yield (mode=%s, iteration=%d, target=%s)",
                         mode_id,
                         _state.iteration,
                         _yield_target or "(in-place)",
@@ -3401,8 +3377,7 @@ async def _run_turn_inner(
                             "re-issuing once the provider is reconfigured."
                         )
                         _log.warning(
-                            "rejected coding handoff after entry failure "
-                            "(failed_mode=%s)",
+                            "rejected coding handoff after entry failure (failed_mode=%s)",
                             _state.entry_failed_mode,
                         )
                         messages.append(
@@ -3501,9 +3476,7 @@ async def _run_turn_inner(
                                 # with a deterministic failure instead of
                                 # ``continue``-ing. The model cannot be
                                 # trusted to surface it honestly.
-                                has_no_tools = any(
-                                    r.status == "no_tools" for r in failed_children
-                                )
+                                has_no_tools = any(r.status == "no_tools" for r in failed_children)
                                 if failed_children:
                                     failure_parts: list[str] = []
                                     for r in failed_children:
@@ -3640,11 +3613,7 @@ async def _run_turn_inner(
                         # post-handoff hint recomputation can suppress
                         # further hints once the limit is reached.
                         _hint_suggested = _extract_hint_target(routing_hint)
-                        if (
-                            _hint_suggested
-                            and target_stage
-                            and target_stage != _hint_suggested
-                        ):
+                        if _hint_suggested and target_stage and target_stage != _hint_suggested:
                             _state.hint_override_count += 1
                             _log.info(
                                 "routing hint override: hint suggested %s, "
@@ -3867,7 +3836,8 @@ async def _run_turn_inner(
                                         # that returns routing decisions).
                                         _is_planner_handoff = (
                                             target_stage == "plan"
-                                            or "plan_workflow" in (target_mode_config.entry_operation_ids or [])
+                                            or "plan_workflow"
+                                            in (target_mode_config.entry_operation_ids or [])
                                         )
                                         _planned_next = ""
                                         if _is_planner_handoff:
@@ -3878,9 +3848,7 @@ async def _run_turn_inner(
                                                 or ""
                                             ).strip()
                                         if _planned_next:
-                                            _state.pending_planned_handoff = (
-                                                _planned_next
-                                            )
+                                            _state.pending_planned_handoff = _planned_next
                                             if hooks.route_coordinator is not None:
                                                 try:
                                                     hooks.route_coordinator.save(
@@ -3949,12 +3917,11 @@ async def _run_turn_inner(
                                             ).strip()
                                             _state.plan_failed = True
                                             _state.plan_failed_mode = target_stage
-                                            _state.plan_failed_reason = (
-                                                _plan_fail_reason
-                                            )
+                                            _state.plan_failed_reason = _plan_fail_reason
                                             from kernel.routing_vocabulary import (  # noqa: PLC0415
                                                 mark_plan_unreliable_for_model,
                                             )
+
                                             mark_plan_unreliable_for_model(
                                                 str(preferred_model_id or "")
                                             )
@@ -4073,7 +4040,9 @@ async def _run_turn_inner(
                                     # steps that already ran. The entry
                                     # mode's intents were added at init; each
                                     # handoff adds its target's intents here.
-                                    _state.chain_satisfied.update(target_mode_config.satisfies_intents)
+                                    _state.chain_satisfied.update(
+                                        target_mode_config.satisfies_intents
+                                    )
                                     # Reset the per-step iteration sub-budget
                                     # counters so the new step gets its own
                                     # full budget. Placed before the durable
@@ -4102,7 +4071,10 @@ async def _run_turn_inner(
                                     # repeated handoff to the same target is
                                     # a no-op. Runs after the hint recomputation
                                     # so a failure here never suppresses it.
-                                    if hooks.workflow_instance is not None and hooks.workflow_instance_updater is not None:
+                                    if (
+                                        hooks.workflow_instance is not None
+                                        and hooks.workflow_instance_updater is not None
+                                    ):
                                         try:
                                             _wi = hooks.workflow_instance()
                                         except Exception:  # pylint: disable=broad-except
@@ -4112,6 +4084,7 @@ async def _run_turn_inner(
                                                 from kernel.workflow_instance import (
                                                     advance_step,
                                                 )
+
                                                 _advanced = advance_step(_wi, _wi.current_step_id)
                                                 hooks.workflow_instance_updater(_advanced)
                                                 # ── Plan-driven next-step hint ──
@@ -4219,14 +4192,10 @@ async def _run_turn_inner(
                                     # the A→B→A signature. Suppress the hint
                                     # so the ``handoff_count`` backstop
                                     # completes the turn immediately.
-                                    _hint_target = _extract_hint_target(
-                                        post_handoff_hint
-                                    )
+                                    _hint_target = _extract_hint_target(post_handoff_hint)
                                     _cycle_detected = False
                                     if _hint_target:
-                                        _state.hint_target_history.append(
-                                            _hint_target
-                                        )
+                                        _state.hint_target_history.append(_hint_target)
                                         # A 2-cycle: the latest target
                                         # matches the one before the
                                         # previous (A, B, A).
@@ -4277,9 +4246,7 @@ async def _run_turn_inner(
                                                 _budget_briefing_marker, 1
                                             )[0]
                                         messages[0]["content"] = (
-                                            _pre_hint_sys
-                                            + "\n\n"
-                                            + post_handoff_hint
+                                            _pre_hint_sys + "\n\n" + post_handoff_hint
                                         )
                                         routing_hint = post_handoff_hint
                                         # Refresh the forced-fork target for the
@@ -4404,8 +4371,8 @@ async def _run_turn_inner(
                                 f"You can:\n"
                                 f"  1. Rephrase the request with explicit "
                                 f"sequential steps "
-                                f"(e.g. \"search for X, then write a markdown "
-                                f"report\").\n"
+                                f'(e.g. "search for X, then write a markdown '
+                                f'report").\n'
                                 f"  2. Name the target mode directly (e.g. "
                                 f"`/markdown ...`, `/ponder ...`) to bypass "
                                 f"planning.\n"
@@ -4663,7 +4630,10 @@ async def _run_turn_inner(
                 _state.total_tool_calls,
                 _state.handoff_count,
                 _state.entry_failed,
-                bool(_state.fork_results is not None and any(r.status == "no_tools" for r in _state.fork_results)),
+                bool(
+                    _state.fork_results is not None
+                    and any(r.status == "no_tools" for r in _state.fork_results)
+                ),
                 transitioned_to,
                 bool(routing_hint),
             )
@@ -4770,9 +4740,13 @@ async def _run_turn_inner(
     # outputs emit a guardrail.audit event and skip the post-turn slice.
     output_guard_result = await hooks.context_seams.output_guard.validate(content, guard_surface)
     turn_blocked = False
-    if _state.entry_failed or _state.plan_failed or (_state.fork_results and any(
-        r.status == "no_tools" for r in (_state.fork_results or [])
-    )):
+    if (
+        _state.entry_failed
+        or _state.plan_failed
+        or (
+            _state.fork_results and any(r.status == "no_tools" for r in (_state.fork_results or []))
+        )
+    ):
         # A handoff entry operation failed, or a fork child was marked
         # ``no_tools`` (hallucinated success). Either way the turn broke
         # with a deterministic failure message. Mark blocked so the host
@@ -4880,6 +4854,7 @@ async def _run_turn_inner(
                 from kernel.workflow_instance import (
                     render_workflow_progress,
                 )
+
                 _progress = render_workflow_progress(_progress_instance)
                 if _progress:
                     content = f"{content}\n\n{_progress}"
@@ -4907,6 +4882,7 @@ async def _run_turn_inner(
         per_model_usage=list(_state.per_model_usage.values()),
         per_mode_usage=list(_state.per_mode_usage.values()),
     )
+
 
 # ---------------------------------------------------------------------------
 # Re-exports from extracted turn_phases submodules.

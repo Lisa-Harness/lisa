@@ -140,9 +140,7 @@ async def test_request_mints_new_id_after_consume() -> None:
     invocation = _invocation()
     first = await service.request(invocation)
     assert await service.approve(first.request_id, _identity()) is not None
-    assert (
-        await service.consume(first.request_id, invocation) is not None
-    )
+    assert await service.consume(first.request_id, invocation) is not None
 
     second = await service.request(_invocation())
     assert second.request_id != first.request_id

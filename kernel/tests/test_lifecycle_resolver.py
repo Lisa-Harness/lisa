@@ -142,9 +142,7 @@ def test_safe_retry_record_does_not_block() -> None:
         mode_id="search",
         mode_yield_policy=YieldPolicy(),
         settings=LifecycleResolverSettings(),
-        recovery_records=[
-            _Record(state="stalled", blocks_workflow=True, retry_policy="safe")
-        ],
+        recovery_records=[_Record(state="stalled", blocks_workflow=True, retry_policy="safe")],
     )
     assert isinstance(action, ContinueAction)
 
@@ -179,9 +177,7 @@ def test_iteration_cap_uses_policy_default_question() -> None:
     action = resolve_lifecycle_action(
         state=_State(iteration=15),
         mode_id="default",
-        mode_yield_policy=YieldPolicy(
-            allowed=True, default_question="What should I focus on?"
-        ),
+        mode_yield_policy=YieldPolicy(allowed=True, default_question="What should I focus on?"),
         settings=LifecycleResolverSettings(max_tool_iterations=15),
     )
     assert isinstance(action, YieldAction)

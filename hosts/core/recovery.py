@@ -127,8 +127,7 @@ class FileRecoveryService:
     def _store_records(self, records: dict[str, RecoveryRecord]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            work_item_id: record.model_dump(mode="json")
-            for work_item_id, record in records.items()
+            work_item_id: record.model_dump(mode="json") for work_item_id, record in records.items()
         }
         temp_path = self._path.with_suffix(self._path.suffix + ".tmp")
         temp_path.write_text(

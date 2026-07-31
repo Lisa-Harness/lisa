@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import pytest
 from rich.console import Console
 
 from hosts.core.config import HostConfig
@@ -128,9 +127,7 @@ def test_models_discover_delegates_to_core(tmp_path: Path) -> None:
 def test_models_discover_force_passes_flag(tmp_path: Path) -> None:
     """'discover --force' builds the '/models discover --force' slash string."""
     captured: dict[str, Any] = {}
-    stripped = _invoke_models(
-        tmp_path, action="discover", force=True, captured=captured
-    )
+    stripped = _invoke_models(tmp_path, action="discover", force=True, captured=captured)
     assert stripped == "/models discover --force"
 
 
@@ -204,9 +201,7 @@ def _invoke_rejected_models(
             streaming="none",
             host_log="",
         )
-    assert handler_calls == [], (
-        f"{action!r} must NOT delegate to handle_models_command"
-    )
+    assert handler_calls == [], f"{action!r} must NOT delegate to handle_models_command"
     return printed
 
 

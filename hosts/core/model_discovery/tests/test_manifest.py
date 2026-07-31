@@ -108,7 +108,6 @@ class TestBuildManifestPayload:
         # Two local models, even count, lower median = small:7b.
         assert payload["mode_models"] == {"default": "small:7b"}
 
-
     def test_emits_mode_models_no_designations(self) -> None:
         """Output shape: mode_models at top level; no per-model designations."""
         models = (
@@ -441,10 +440,7 @@ class TestRouterPresetAnnotations:
 
         models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
         assert (
-            _router_preset_annotations(
-                {}, models, router_block=self._resolved_router_block()
-            )
-            == ""
+            _router_preset_annotations({}, models, router_block=self._resolved_router_block()) == ""
         )
 
     def test_no_active_config_section_in_annotations(self) -> None:
@@ -475,9 +471,7 @@ class TestRouterPresetAnnotations:
 
     def test_render_manifest_yaml_injects_before_models(self) -> None:
         """Annotations are injected before the ``models:`` list, not at the end."""
-        payload = build_manifest_payload(
-            (DiscoveredModel(model_id="gpt-5", provider="openai"),)
-        )
+        payload = build_manifest_payload((DiscoveredModel(model_id="gpt-5", provider="openai"),))
         annotations = "# MARKER\n"
         rendered = render_manifest_yaml(payload, annotations=annotations)
         marker_idx = rendered.index("# MARKER")
@@ -491,9 +485,7 @@ class TestRouterPresetAnnotations:
 
     def test_render_manifest_yaml_annotates_router_inline(self) -> None:
         """The active router block is rendered with per-rule inline comments."""
-        payload = build_manifest_payload(
-            (DiscoveredModel(model_id="gpt-5", provider="openai"),)
-        )
+        payload = build_manifest_payload((DiscoveredModel(model_id="gpt-5", provider="openai"),))
         router_block = payload.get("router")
         assert router_block is not None
         rendered = render_manifest_yaml(payload, router_block=router_block)
@@ -509,9 +501,7 @@ class TestRouterPresetAnnotations:
 
     def test_render_manifest_yaml_no_duplicate_router_block(self) -> None:
         """When router_block is passed, the dumper's plain block is replaced."""
-        payload = build_manifest_payload(
-            (DiscoveredModel(model_id="gpt-5", provider="openai"),)
-        )
+        payload = build_manifest_payload((DiscoveredModel(model_id="gpt-5", provider="openai"),))
         router_block = payload.get("router")
         rendered = render_manifest_yaml(payload, router_block=router_block)
         # Exactly one ``router:`` top-level key (the annotated one).
@@ -526,9 +516,7 @@ class TestRouterPresetAnnotations:
     def test_write_manifest_yaml_with_annotations(self, tmp_path: Path) -> None:
         """Annotations are written to the proposal file."""
         path = tmp_path / "models.proposed.yaml"
-        payload = build_manifest_payload(
-            (DiscoveredModel(model_id="gpt-5", provider="openai"),)
-        )
+        payload = build_manifest_payload((DiscoveredModel(model_id="gpt-5", provider="openai"),))
         annotations = "# preset annotations\n"
         write_manifest_yaml(path, payload, annotations=annotations)
         content = path.read_text(encoding="utf-8")

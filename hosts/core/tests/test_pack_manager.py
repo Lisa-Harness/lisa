@@ -1385,7 +1385,7 @@ def test_resolve_default_mcp_tool_ids_host_and_pack_namespacing(tmp_path: Path) 
                 "servers:",
                 "  - server_id: lisa-storage",
                 "    runtime_kind: venv_bin",
-                "    venv_dir: \"${FRAMEWORK_ROOT}\"",
+                '    venv_dir: "${FRAMEWORK_ROOT}"',
                 "    default_available_tools:",
                 "      - read_file",
             ]
@@ -1402,7 +1402,7 @@ def test_resolve_default_mcp_tool_ids_host_and_pack_namespacing(tmp_path: Path) 
                 "servers:",
                 "  - server_id: lisa-memory",
                 "    runtime_kind: venv_bin",
-                "    venv_dir: \"${FRAMEWORK_ROOT}\"",
+                '    venv_dir: "${FRAMEWORK_ROOT}"',
                 "    default_available_tools:",
                 "      - search_memory",
             ]
@@ -1428,7 +1428,7 @@ def test_resolve_default_mcp_tool_ids_ignores_disabled(tmp_path: Path) -> None:
                 "servers:",
                 "  - server_id: lisa-storage",
                 "    runtime_kind: venv_bin",
-                "    venv_dir: \"${FRAMEWORK_ROOT}\"",
+                '    venv_dir: "${FRAMEWORK_ROOT}"',
                 "    disabled: true",
                 "    default_available_tools:",
                 "      - read_file",
@@ -1454,7 +1454,7 @@ def test_resolve_default_mcp_tool_ids_empty_when_undeclared(tmp_path: Path) -> N
                 "servers:",
                 "  - server_id: lisa-storage",
                 "    runtime_kind: venv_bin",
-                "    venv_dir: \"${FRAMEWORK_ROOT}\"",
+                '    venv_dir: "${FRAMEWORK_ROOT}"',
             ]
         )
         + "\n",

@@ -55,6 +55,7 @@ from hosts.core.token_accounting import apply_turn_usage, format_session_exit_su
 
 handle_message_mod = sys.modules["hosts.core.handle_message"]
 
+
 def _make_runtime(tmp_path: Path, **config_kwargs) -> HostRuntime:
     """Build a HostRuntime whose data_dir is tmp_path.
 
@@ -1121,9 +1122,7 @@ def test_resolve_model_supports_mode_models_and_concrete_ids(tmp_path: Path) -> 
 
     assert default_model_id
     assert default_model.context_window == 65536
-    resolved_default = resolve_model(
-        default_model_id, runtime_state={}, data_dir=tmp_path
-    ).model_id
+    resolved_default = resolve_model(default_model_id, runtime_state={}, data_dir=tmp_path).model_id
     assert resolved_default == default_model_id
 
 
@@ -1994,4 +1993,3 @@ def test_little_lisa_discovers_and_runs_hello_world_pack_from_sdk_content_roots(
 
 def test_verify_command_respects_data_dir_override(tmp_path: Path) -> None:
     pytest.skip("migrated: _verify_command now in hosts/cli (CLI verify command)")
-

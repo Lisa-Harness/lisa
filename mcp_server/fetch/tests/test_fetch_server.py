@@ -34,7 +34,7 @@ def test_init_fetch_constructs_fetcher(tmp_path: Path) -> None:
     from mcp_server.fetch.server import _fetcher
 
     assert _fetcher is not None
-    assert _fetcher._data_dir == tmp_path  # noqa: SLF001
+    assert _fetcher._data_dir == tmp_path
     reset_fetch_state()
 
 

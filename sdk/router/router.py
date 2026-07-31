@@ -100,8 +100,7 @@ class LisaRouter(ModelRouter):
                     program = env.program(ast)
                 except Exception as exc:  # pylint: disable=broad-except
                     raise ValueError(
-                        f"lisa-router: failed to compile CEL expression "
-                        f"{rule.when!r}: {exc}"
+                        f"lisa-router: failed to compile CEL expression {rule.when!r}: {exc}"
                     ) from exc
                 compiled.append((rule, program))
             self._rules = tuple(compiled)

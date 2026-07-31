@@ -88,9 +88,7 @@ def resolve_session_from_directives(
     try:
         front_matter, body = parse_front_matter(text)
     except Exception as exc:  # pragma: no cover - parser-specific exception
-        raise SessionPlanError(
-            f"invalid session front matter in {source_uri}: {exc}"
-        ) from exc
+        raise SessionPlanError(f"invalid session front matter in {source_uri}: {exc}") from exc
 
     if not front_matter:
         # No front matter at all — let the kernel compiler raise its own
@@ -222,9 +220,7 @@ def _resolve_body(
         return user_body.strip(), "write"
 
     if not isinstance(body_directive, dict):
-        raise SessionPlanError(
-            f"session {source_uri!r}: 'body:' directive must be a mapping"
-        )
+        raise SessionPlanError(f"session {source_uri!r}: 'body:' directive must be a mapping")
     mode = body_directive.get("mode", "write")
     if mode not in ("write", "pull", "context"):
         raise SessionPlanError(
@@ -246,8 +242,7 @@ def _resolve_body(
     session = spec.get("session")
     if not isinstance(pack, str) or not isinstance(session, str):
         raise SessionPlanError(
-            f"session {source_uri!r}: 'body: from:' requires string 'pack' "
-            f"and 'session' values"
+            f"session {source_uri!r}: 'body: from:' requires string 'pack' and 'session' values"
         )
     pack_plan = _load_pack_session(pack=pack, session=session, lookup=pack_session_lookup)
     pack_body = pack_plan.instructions.primary_body
@@ -299,9 +294,7 @@ def _load_pack_session(
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise SessionPlanError(
-            f"from: could not read pack session {path}: {exc}"
-        ) from exc
+        raise SessionPlanError(f"from: could not read pack session {path}: {exc}") from exc
     # Compiling through the strict kernel schema enforces "packs are leaves":
     # a pack session containing `from:` or `body:` fails here because the
     # schema's `extra="forbid"` rejects unknown keys.
@@ -310,9 +303,7 @@ def _load_pack_session(
     return plan
 
 
-def _emit_text(
-    front_matter: dict[str, Any], body: str, mode: str
-) -> str:
+def _emit_text(front_matter: dict[str, Any], body: str, mode: str) -> str:
     """Re-emit front matter + body as a single Markdown string.
 
     ``mode`` is informational here; the body has already been assembled by
@@ -330,4 +321,4 @@ def _emit_text(
     return f"---\n{fm_yaml}---\n{body}\n"
 
 
-__all__ = ["resolve_session_from_directives", "PackSessionLookup"]
+__all__ = ["PackSessionLookup", "resolve_session_from_directives"]

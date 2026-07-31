@@ -561,7 +561,9 @@ class TestHandleMessage:
                             ),
                             is_error=False,
                         )
-                    return SimpleNamespace(output_text=path.read_text(encoding="utf-8"), is_error=False)
+                    return SimpleNamespace(
+                        output_text=path.read_text(encoding="utf-8"), is_error=False
+                    )
 
                 if tool_id == "write_model_manifest":
                     content = str(arguments.get("content") or "")
@@ -583,8 +585,8 @@ class TestHandleMessage:
                     is_error=False,
                 )
 
-        runtime._mcp_tool_pool = _FakeStoragePool()  # noqa: SLF001
-        runtime._mcp_started = True  # noqa: SLF001
+        runtime._mcp_tool_pool = _FakeStoragePool()
+        runtime._mcp_started = True
 
         discover_result = await handle_message(runtime, "/models discover")
         assert "proposal_written" in discover_result.text

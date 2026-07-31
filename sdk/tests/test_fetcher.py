@@ -7,7 +7,6 @@ clamping by the absolute ceiling, and cache=False bypass.
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -15,8 +14,7 @@ from typing import Any
 import httpx
 import pytest
 
-from sdk.content import ContentFetcher, FetchPolicy, FetchedResult, validate_url
-
+from sdk.content import ContentFetcher, FetchPolicy, validate_url
 
 # ── URL validation ──────────────────────────────────────────────────────────
 
@@ -117,7 +115,10 @@ async def test_fetch_success_caches_and_returns_body(
         assert req_url == url
         assert kw["headers"].get("User-Agent") == "lisa_framework"
         return _mock_response(
-            req_url, content=b"Hello World", etag="W/123", last_modified="Wed, 21 Oct 2015 07:28:00 GMT"
+            req_url,
+            content=b"Hello World",
+            etag="W/123",
+            last_modified="Wed, 21 Oct 2015 07:28:00 GMT",
         )
 
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
@@ -181,10 +182,10 @@ async def test_fetch_expired_cache_refetches(
     await fetcher.fetch(url)
 
     # Manually backdate the L1 entry so it's expired under a 1s TTL.
-    stale = fetcher._l1[url].model_copy(  # noqa: SLF001
+    stale = fetcher._l1[url].model_copy(
         update={"fetched_at": (datetime.now(UTC) - timedelta(seconds=10)).isoformat()}
     )
-    fetcher._l1[url] = stale  # noqa: SLF001
+    fetcher._l1[url] = stale
 
     async def _fake_get_v2(self: httpx.AsyncClient, req_url: str, **kw: Any) -> httpx.Response:
         return _mock_response(req_url, content=b"V2")
@@ -214,19 +215,17 @@ async def test_fetch_304_returns_cached_when_revalidate_enabled(
     await fetcher.fetch(url)
 
     # Backdate L1 so the entry is expired under the 1s TTL.
-    stale = fetcher._l1[url].model_copy(  # noqa: SLF001
+    stale = fetcher._l1[url].model_copy(
         update={"fetched_at": (datetime.now(UTC) - timedelta(seconds=10)).isoformat()}
     )
-    fetcher._l1[url] = stale  # noqa: SLF001
+    fetcher._l1[url] = stale
 
     async def _fake_304(self: httpx.AsyncClient, req_url: str, **kw: Any) -> httpx.Response:
         assert kw["headers"].get("If-None-Match") == "W/abc"
         return httpx.Response(304, request=httpx.Request("GET", req_url))
 
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_304)
-    result = await fetcher.fetch(
-        url, policy=FetchPolicy(revalidate_etag=True, ttl_seconds=1.0)
-    )
+    result = await fetcher.fetch(url, policy=FetchPolicy(revalidate_etag=True, ttl_seconds=1.0))
     assert result.text == "Original"
     assert result.from_cache is False  # refreshed via 304, not a stale L1 hit
 
@@ -272,9 +271,7 @@ async def test_fetch_network_error_raises_when_no_cache(
 
 
 @pytest.mark.asyncio
-async def test_fetch_cache_disabled(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_fetch_cache_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fetcher = ContentFetcher(tmp_path)
     url = "https://github.com/foo.md"
     calls = {"n": 0}
@@ -305,9 +302,7 @@ async def test_fetch_max_bytes_clamped_by_absolute_ceiling(
 
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
     # Request an absurd max_bytes; the primitive clamps to _ABSOLUTE_MAX_BYTES.
-    result = await fetcher.fetch(
-        url, policy=FetchPolicy(max_bytes=100_000_000, cache=False)
-    )
+    result = await fetcher.fetch(url, policy=FetchPolicy(max_bytes=100_000_000, cache=False))
     # body must be <= the absolute ceiling (1_000_000)
     from sdk.content._fetcher import _ABSOLUTE_MAX_BYTES
 
@@ -335,9 +330,7 @@ async def test_fetch_rejects_ssrf_before_network(
 
 
 @pytest.mark.asyncio
-async def test_invalidate_clears_one_url(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_invalidate_clears_one_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fetcher = ContentFetcher(tmp_path)
     url = "https://github.com/foo.md"
 
@@ -346,10 +339,10 @@ async def test_invalidate_clears_one_url(
 
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
     await fetcher.fetch(url)
-    assert url in fetcher._l1  # noqa: SLF001
+    assert url in fetcher._l1
 
     fetcher.invalidate(url)
-    assert url not in fetcher._l1  # noqa: SLF001
+    assert url not in fetcher._l1
 
 
 @pytest.mark.asyncio
@@ -364,10 +357,10 @@ async def test_invalidate_all_clears_everything(
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
     await fetcher.fetch("https://github.com/a.md")
     await fetcher.fetch("https://github.com/b.md")
-    assert len(fetcher._l1) == 2  # noqa: SLF001
+    assert len(fetcher._l1) == 2
 
     fetcher.invalidate()
-    assert len(fetcher._l1) == 0  # noqa: SLF001
+    assert len(fetcher._l1) == 0
 
 
 # ── L2 disk cache persistence ───────────────────────────────────────────────
@@ -418,6 +411,6 @@ async def test_with_policy_shares_cache_and_overrides_default(
     await base.fetch(url)
 
     child = base.with_policy(cache=False)
-    assert child._default_policy.cache is False  # noqa: SLF001
+    assert child._default_policy.cache is False
     # Same L1 dict — cache populated by the base fetch is visible to child.
-    assert url in child._l1  # noqa: SLF001
+    assert url in child._l1

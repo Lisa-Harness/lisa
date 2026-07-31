@@ -53,7 +53,9 @@ def resolve_execution_policy(
     )
 
     return ExecutionPolicy(
-        max_model_calls=tighten_limit(default_policy.max_model_calls, session_request.max_model_calls),
+        max_model_calls=tighten_limit(
+            default_policy.max_model_calls, session_request.max_model_calls
+        ),
         max_capability_calls=tighten_limit(
             default_policy.max_capability_calls,
             session_request.max_capability_calls,

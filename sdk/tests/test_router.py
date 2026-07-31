@@ -246,7 +246,10 @@ def test_model_cost_tier_condition() -> None:
 
     manifest = _manifest(
         rules=(
-            RouterRule(when='model.cost_tier == "frontier" && turn.tool_calls_so_far >= 4', use="gemma4:cloud"),
+            RouterRule(
+                when='model.cost_tier == "frontier" && turn.tool_calls_so_far >= 4',
+                use="gemma4:cloud",
+            ),
         ),
         fallback="gpt-5.4",
     )
@@ -352,11 +355,12 @@ def test_cel_evaluation_error_treated_as_no_match() -> None:
 
 def test_router_rule_requires_an_action() -> None:
     """A rule with no action (use/finish/transition_to) is rejected."""
+    import tempfile
+
+    import yaml
+
     from kernel.model_manifest import load_model_manifest
     from kernel.seams.protocols import RouterRequest  # noqa: F401
-
-    import tempfile
-    import yaml
 
     payload = {
         "version": 1,
@@ -375,11 +379,12 @@ def test_router_rule_requires_an_action() -> None:
 
 def test_router_rule_rejects_multiple_actions() -> None:
     """A rule with more than one action is rejected."""
-    from kernel.model_manifest import load_model_manifest
-
     import pathlib
     import tempfile
+
     import yaml
+
+    from kernel.model_manifest import load_model_manifest
 
     payload = {
         "version": 1,

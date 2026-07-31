@@ -39,7 +39,7 @@ cutover.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from kernel.models import YieldAction, YieldPolicy
 
@@ -345,7 +345,7 @@ def resolve_lifecycle_action(
         if target:
             return TransitionAction(
                 target_mode_id=target,
-                rationale=f"router transition_to",
+                rationale="router transition_to",
                 forced=False,
             )
 
@@ -388,7 +388,11 @@ def resolve_lifecycle_action(
         state.step_iteration > settings.per_step_max_iterations
         or state.step_tool_calls >= settings.per_step_max_tool_calls
     )
-    if step_budget_exhausted and workflow_instance is not None and _has_next_step(workflow_instance):
+    if (
+        step_budget_exhausted
+        and workflow_instance is not None
+        and _has_next_step(workflow_instance)
+    ):
         next_mode = _next_step_mode_id(workflow_instance)
         if next_mode:
             return TransitionAction(
@@ -407,12 +411,9 @@ def resolve_lifecycle_action(
     if is_workflow and state.turns_in_stage >= settings.stage_nudge_cap:
         if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
             target = _resolve_yield_target(mode_yield_policy, instance=workflow_instance)
-            question = (
-                mode_yield_policy.default_question
-                or (
-                    f"I've been working in this stage for {state.turns_in_stage} turns "
-                    f"and haven't converged. Can you clarify what you need?"
-                )
+            question = mode_yield_policy.default_question or (
+                f"I've been working in this stage for {state.turns_in_stage} turns "
+                f"and haven't converged. Can you clarify what you need?"
             )
             return YieldAction(
                 question=question,

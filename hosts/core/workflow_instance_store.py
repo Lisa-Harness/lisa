@@ -58,9 +58,7 @@ class FileWorkflowInstanceStore:
             self._store_records(records)
             return instance
 
-    async def load(
-        self, instance_id: str, identity: RecoveryIdentity
-    ) -> WorkflowInstance | None:
+    async def load(self, instance_id: str, identity: RecoveryIdentity) -> WorkflowInstance | None:
         async with self._lock:
             instance = self._load_records().get(instance_id)
             if instance is None:

@@ -194,9 +194,7 @@ def compile_selected_session_plan(
         pack_session_lookup=_make_pack_session_lookup(data_dir=data_dir),
     )
     plan = compile_session_plan(text=resolved_text, source_uri=source.source_uri)
-    return plan.model_copy(
-        update={"source_dir": str(source.cached_path.parent.resolve())}
-    )
+    return plan.model_copy(update={"source_dir": str(source.cached_path.parent.resolve())})
 
 
 def _make_pack_session_lookup(*, data_dir: Path) -> Callable[..., Path]:

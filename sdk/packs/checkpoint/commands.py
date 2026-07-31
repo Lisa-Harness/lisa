@@ -315,7 +315,8 @@ async def handle_proceed(
             )
             open_records = await recovery_service.list_open(identity)
             stalled = [
-                r for r in open_records
+                r
+                for r in open_records
                 if getattr(r, "state", "") == "stalled"
                 and getattr(r, "retry_policy", "") == "confirm"
             ]

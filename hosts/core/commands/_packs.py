@@ -679,9 +679,7 @@ async def run_pack_install(
     spec: str,
 ) -> tuple[bool, str]:
     """Install one pack ref using uv pip and persist provenance metadata."""
-    return await asyncio.to_thread(
-        run_pack_install_sync, runtime, spec, request_restart=True
-    )
+    return await asyncio.to_thread(run_pack_install_sync, runtime, spec, request_restart=True)
 
 
 def run_pack_install_sync(
@@ -716,11 +714,7 @@ def run_pack_install_sync(
         return False, reason
 
     is_local = _is_local_pack_spec(normalized_spec)
-    install_target = (
-        normalized_spec.strip().strip('"')
-        if is_local
-        else normalized_spec
-    )
+    install_target = normalized_spec.strip().strip('"') if is_local else normalized_spec
     packs_venv = _packs_venv_for(runtime.data_dir)
     ensured, ensure_err = _ensure_packs_venv_sync(packs_venv)
     if not ensured:
@@ -751,9 +745,7 @@ def run_pack_install_sync(
             f"Install succeeded for '{normalized_spec}' but package name could not be inferred.",
         )
     source_kind = (
-        "local"
-        if is_local
-        else ("git" if _is_git_pack_spec(normalized_spec) else "package")
+        "local" if is_local else ("git" if _is_git_pack_spec(normalized_spec) else "package")
     )
     lock = _load_installed_packs_lock(runtime)
     entries = [entry for entry in lock.get("packs", []) if isinstance(entry, dict)]

@@ -32,10 +32,9 @@ warnings.filterwarnings(
     category=RuntimeWarning,
 )
 
-import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
-
 from mcp.server.fastmcp import FastMCP
 
+import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
 from sdk.content import ContentReader
 
 logger = logging.getLogger(__name__)

@@ -83,8 +83,7 @@ def test_packs_venv_site_packages_uses_venv_version_not_host(tmp_path: Path) -> 
 
     # The bug would have produced python3.13 (host version) instead.
     host_dir = (
-        venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}"
-        / "site-packages"
+        venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
     )
     assert result != host_dir or sys.version_info[:2] == (3, 11)
 

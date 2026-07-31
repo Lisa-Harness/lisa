@@ -58,9 +58,7 @@ class ExecutionLedger:
 
         capability_policy = self.policy.capability_limits.get(capability_id)
         per_cap = (
-            capability_policy.max_invocations_per_turn
-            if capability_policy is not None
-            else None
+            capability_policy.max_invocations_per_turn if capability_policy is not None else None
         )
         used = self._capability_counts.get(capability_id, 0)
         if per_cap is not None and used >= per_cap:

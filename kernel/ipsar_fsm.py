@@ -796,15 +796,11 @@ def load_catalog_from_disk(
         # with ``allowed: false`` + a ``fallback_mode`` (typically ``discuss``).
         yield_policy_raw = mode_front_matter.get("yield_policy") or {}
         if not isinstance(yield_policy_raw, dict):
-            raise WorkflowValidationError(
-                f"yield_policy must be a mapping in {mode_config_path}"
-            )
+            raise WorkflowValidationError(f"yield_policy must be a mapping in {mode_config_path}")
         yield_policy = YieldPolicy(
             allowed=bool(yield_policy_raw.get("allowed", True)),
             fallback_mode=str(yield_policy_raw.get("fallback_mode", "") or ""),
-            is_default_yield_target=bool(
-                yield_policy_raw.get("is_default_yield_target", False)
-            ),
+            is_default_yield_target=bool(yield_policy_raw.get("is_default_yield_target", False)),
             default_question=str(yield_policy_raw.get("default_question", "") or ""),
         )
 

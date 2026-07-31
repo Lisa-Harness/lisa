@@ -521,8 +521,7 @@ def _parse_default_available_tools(
         return ()
     if not isinstance(raw, list):
         raise MCPServerManifestError(
-            f"servers[{index}] '{server_id}' in {path}: "
-            "'default_available_tools' must be a list"
+            f"servers[{index}] '{server_id}' in {path}: 'default_available_tools' must be a list"
         )
     seen: set[str] = set()
     names: list[str] = []
@@ -541,8 +540,7 @@ def _parse_default_available_tools(
             )
         if name in seen:
             raise MCPServerManifestError(
-                f"servers[{index}] '{server_id}': "
-                f"duplicate default_available_tools entry {name!r}"
+                f"servers[{index}] '{server_id}': duplicate default_available_tools entry {name!r}"
             )
         seen.add(name)
         names.append(name)

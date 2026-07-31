@@ -31,7 +31,9 @@ class _WebSearchStructuredOutput(BaseModel):
 class _StubCompletion:
     """Minimal completion shape matching what ``execute_declarative_operation`` reads."""
 
-    def __init__(self, *, content: str = "", tool_calls: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self, *, content: str = "", tool_calls: list[dict[str, Any]] | None = None
+    ) -> None:
         self.content = content
         self.tool_calls = tool_calls
 

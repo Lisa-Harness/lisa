@@ -28,11 +28,7 @@ def _write_session(tmp_path: Path, *, models_path: str | None) -> Path:
     session = tmp_path / "session_context.md"
     models_block = ""
     if models_path is not None:
-        models_block = (
-            "context:\n"
-            f"  models:\n"
-            f"    path: {models_path}\n"
-        )
+        models_block = f"context:\n  models:\n    path: {models_path}\n"
     session.write_text(
         "---\n"
         "schema_version: 2\n"
@@ -178,9 +174,7 @@ def test_compile_selected_session_plan_threads_source_dir(tmp_path: Path) -> Non
     roster = tmp_path / "roster.yaml"
     roster.write_text("models: []\n", encoding="utf-8")
     session = _write_session(tmp_path, models_path="./roster.yaml")
-    plan = compile_selected_session_plan(
-        session_context=str(session), data_dir=tmp_path
-    )
+    plan = compile_selected_session_plan(session_context=str(session), data_dir=tmp_path)
     assert plan.source_dir == str(tmp_path.resolve())
     assert plan.manifest.context.models is not None
     assert plan.manifest.context.models.path == "./roster.yaml"

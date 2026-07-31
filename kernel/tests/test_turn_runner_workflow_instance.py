@@ -127,9 +127,11 @@ async def test_chain_satisfied_hydrates_from_instance_completed_steps() -> None:
     # No updater wired — we only test hydration here.
 
     catalog = _catalog_with_chain()
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog), patch(
-        "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog
-    ), patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
         result = await run_turn(
             mode_id="coding",
             query="search the web then read your code then write a markdown",
@@ -190,9 +192,11 @@ async def test_instance_advanced_on_successful_handoff() -> None:
     hooks.workflow_instance_updater = updater
 
     catalog = _catalog_with_chain()
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog), patch(
-        "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog
-    ), patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
         result = await run_turn(
             mode_id="coding",
             query="search the web then read your code then write a markdown",

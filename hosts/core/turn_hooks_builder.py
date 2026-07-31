@@ -20,7 +20,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
-from hosts.core.introspect import gather_introspection
 from kernel.model_router_discovery import discover_model_router_factories
 from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from kernel.operations.registry import execute_operation
@@ -33,6 +32,7 @@ from hosts.core.context_assembly import (
     assemble_dynamic_user_context,
     assemble_system_prompt,
 )
+from hosts.core.introspect import gather_introspection
 from hosts.core.model_runtime import StubModelDefinition, load_manifest, resolve_model
 from hosts.core.state_provider import FileBackedStateProvider, build_unified_state
 from hosts.core.thread import build_recent_thread_excerpt, load_thread_digest
@@ -403,9 +403,7 @@ def build_turn_hooks(
         # to memory. A down memory backend or failed distillation is logged
         # and swallowed — it never blocks turn completion.
         if runtime.config.memory_auto_capture_enabled:
-            should_capture, trigger_salience = _should_auto_capture(
-                query, response_text, messages
-            )
+            should_capture, trigger_salience = _should_auto_capture(query, response_text, messages)
             if (
                 should_capture
                 and trigger_salience >= runtime.config.memory_auto_capture_min_salience
@@ -434,16 +432,12 @@ def build_turn_hooks(
                         execute_tool_fn=_execute_tool,
                         execute_operation_fn=_execute_operation,
                         params={
-                            "content": (
-                                f"User asked:\n{query}\n\nLisa answered:\n{response_text}"
-                            ),
+                            "content": (f"User asked:\n{query}\n\nLisa answered:\n{response_text}"),
                             "salience": trigger_salience,
                             "memory_tier": "long_term",
                         },
                     )
-                    await _execute_operation(
-                        "synthesize_and_store_learning", capture_ctx
-                    )
+                    await _execute_operation("synthesize_and_store_learning", capture_ctx)
                     logger.debug(
                         "auto-capture stored learning salience=%.1f mode=%s",
                         trigger_salience,
@@ -773,4 +767,3 @@ def build_turn_hooks(
         workflow_session_updater=runtime._set_workflow_session,
         on_checkpoint=runtime._on_checkpoint,
     )
-

@@ -136,9 +136,7 @@ def _render_models_manifest_from_manifest(runtime: HostRuntime, manifest: Any) -
     ]
     for model in manifest.models:
         reasoning = "yes" if model.reasoning_model else "no"
-        lines.append(
-            f"- {model.model_id} (provider={model.provider}, reasoning={reasoning})"
-        )
+        lines.append(f"- {model.model_id} (provider={model.provider}, reasoning={reasoning})")
     if manifest.mode_models:
         mode_map = ", ".join(
             f"{mode_id}->{model_id}" for mode_id, model_id in sorted(manifest.mode_models.items())
@@ -153,7 +151,9 @@ async def _render_models_manifest(runtime: HostRuntime) -> str:
     try:
         manifest = runtime.manifest
         if manifest is None:
-            active_text, active_error = await _read_manifest_text_from_storage(runtime, which="active")
+            active_text, active_error = await _read_manifest_text_from_storage(
+                runtime, which="active"
+            )
             if active_error is not None:
                 raise ValueError(active_error)
             if active_text is None:
@@ -274,8 +274,7 @@ async def _handle_models_discover(
     )
     if write_error is not None:
         response_text = (
-            "Model discovery failed while writing proposal via lisa-storage: "
-            f"{write_error}"
+            f"Model discovery failed while writing proposal via lisa-storage: {write_error}"
         )
         return handle_simple_command(runtime, message, "models", response_text)
 

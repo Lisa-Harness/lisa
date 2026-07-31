@@ -328,7 +328,9 @@ async def execute_declarative_operation(
                 detail = _empty_content_detail(
                     operation_id, finish_reason, completion_tokens, completion_max_tokens
                 )
-                logger.warning("declarative operation '%s' empty after retry: %s", operation_id, detail)
+                logger.warning(
+                    "declarative operation '%s' empty after retry: %s", operation_id, detail
+                )
                 raise OperationExecutionError(
                     f"Declarative operation '{operation_id}' returned no content "
                     f"after JSON-only retry; cannot parse structured output. {detail}"

@@ -27,10 +27,9 @@ warnings.filterwarnings(
 
 from dataclasses import replace as _policy_replace
 
-import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
-
 from mcp.server.fastmcp import FastMCP
 
+import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
 from sdk.content import ContentFetcher, FetchPolicy
 
 logger = logging.getLogger(__name__)
@@ -92,7 +91,7 @@ async def fetch_url(
     ``ValueError`` surfaced as an MCP error. On a network failure with a
     valid stale cache, the stale content is returned.
     """
-    base = _fetcher_instance()._default_policy  # noqa: SLF001
+    base = _fetcher_instance()._default_policy
     overrides: dict[str, object] = {}
     if ttl_seconds is not None:
         overrides["ttl_seconds"] = ttl_seconds

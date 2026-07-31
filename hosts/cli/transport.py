@@ -189,9 +189,7 @@ class _TrailingSpinner:
         self._spinner = Spinner(spinner_name, style=style)
         self._style = style
 
-    def __rich_console__(
-        self, console: Console, options: ConsoleOptions
-    ) -> RenderResult:
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         # Live calls this on every refresh; delegate to ``render`` with the
         # console's current time so the trailing frame animates.
         yield self.render(console.get_time())
@@ -224,9 +222,7 @@ class _PaneRow:
     active: bool = False
 
 
-def _pane_heights(
-    total: int, counts: tuple[int, int, int]
-) -> tuple[int, int, int]:
+def _pane_heights(total: int, counts: tuple[int, int, int]) -> tuple[int, int, int]:
     """Split ``total`` lines across the three panes, content-aware.
 
     The 1:3:2 weights are the *initial* allocation. Each pane is then
@@ -401,9 +397,7 @@ class RichTransport:
                 # the spinner frame is appended after a one-space gap so
                 # it reads as an activity indicator without offsetting the
                 # row's leading column.
-                renderables.append(
-                    _TrailingSpinner(line, self._thinking_spinner, STYLE_GRAPHIC)
-                )
+                renderables.append(_TrailingSpinner(line, self._thinking_spinner, STYLE_GRAPHIC))
             else:
                 renderables.append(line)
         return renderables
@@ -423,9 +417,7 @@ class RichTransport:
         renderables.extend(
             self._render_pane("Model calls", self._model_calls, mh, STYLE_PANE_MODEL)
         )
-        renderables.extend(
-            self._render_pane("Tools", self._tools, wh, STYLE_PANE_TOOL)
-        )
+        renderables.extend(self._render_pane("Tools", self._tools, wh, STYLE_PANE_TOOL))
         return Group(*renderables)
 
     def _refresh_live(self) -> None:
@@ -652,18 +644,14 @@ class RichTransport:
                 self._tool_call_count += 1
             max_calls = int(data.get("max_tool_calls") or 0)
             graphic = _pip_counter(self._tool_call_count, max_calls)
-            self._append_tool_row(
-                self._render_status_line(label, data), graphic=graphic
-            )
+            self._append_tool_row(self._render_status_line(label, data), graphic=graphic)
         else:
             # Any other stage label (e.g. the initial "dispatch" seed,
             # "workflow_stage") goes to the tools pane as a catch-all so
             # it is visible without dropping on the floor.
             self._append_tool_row(self._render_status_line(label, data))
 
-    def _append_transition(
-        self, from_mode: str, to_mode: str, data: dict[str, Any]
-    ) -> None:
+    def _append_transition(self, from_mode: str, to_mode: str, data: dict[str, Any]) -> None:
         """Append a mode-transition row to the transitions pane.
 
         The graphic is a pip counter of handoffs against the
@@ -695,7 +683,9 @@ class RichTransport:
         iter_raw = data.get("iteration")
         if iter_raw is None or iter_raw == "" or iter_raw == 0:
             iter_raw = data.get("_state.iteration")
-        iter_count = int(iter_raw) if iter_raw is not None and iter_raw != "" and iter_raw != 0 else 0
+        iter_count = (
+            int(iter_raw) if iter_raw is not None and iter_raw != "" and iter_raw != 0 else 0
+        )
         graphic = _pip_counter(iter_count, max_iter)
         if label == "model_call_complete":
             spark = _sparkline(self._iteration_durations)

@@ -398,7 +398,10 @@ async def test_non_affirmative_message_is_not_consumed_as_resume(
     from hosts.core.handle_message import _try_affirmative_approval_resume
 
     resume_result = await _try_affirmative_approval_resume(
-        runtime, "can you explain what this will do?", "can you explain what this will do?", NullTransport()
+        runtime,
+        "can you explain what this will do?",
+        "can you explain what this will do?",
+        NullTransport(),
     )
     assert resume_result is None
     assert (await runtime.approval_service.get(invocation.request_id)).state == "pending"

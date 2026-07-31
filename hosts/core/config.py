@@ -289,9 +289,7 @@ class HostConfig:
         # ── Debug-module overrides (LISA_LOG_DEBUG) ────────────────────
         from sdk.logging_setup import _parse_debug_modules
 
-        resolved_debug_modules = tuple(
-            _parse_debug_modules(_resolve_env(LISA_LOG_DEBUG_ENV))
-        )
+        resolved_debug_modules = tuple(_parse_debug_modules(_resolve_env(LISA_LOG_DEBUG_ENV)))
 
         resolved_mcp_manifest: Path | None = None
         raw_mcp = mcp_manifest_path.strip()

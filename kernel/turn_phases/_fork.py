@@ -206,10 +206,7 @@ async def _run_fork_child_turn(
         # landed on disk yet the ``tool_call_count == 0`` guard passed it
         # as ``ok``. Catch it here.
         action_tool_ids = _fork_mode_action_tool_ids(target.mode_id)
-        if (
-            action_tool_ids
-            and not (child_result.called_tool_names & action_tool_ids)
-        ):
+        if action_tool_ids and not (child_result.called_tool_names & action_tool_ids):
             _flog.warning(
                 "fork child %s made %d tool call(s) but none were its "
                 "mode's authored action tools %s (called: %s); marking "

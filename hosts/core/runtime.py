@@ -475,9 +475,7 @@ class HostRuntime:
         otherwise falls back to the current working directory.
         """
         try:
-            pack_config = (
-                self.session_plan.manifest.resources.packs.configuration
-            )
+            pack_config = self.session_plan.manifest.resources.packs.configuration
             coding_config = pack_config.get("lisa-pack-coding", {})
             raw = coding_config.get("workspace_root")
             if raw:

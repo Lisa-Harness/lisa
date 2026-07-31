@@ -131,9 +131,7 @@ class PackSelection(ResourceSelection):
         extras = set(self.auto_install) - required
         if extras:
             extras_sorted = ", ".join(sorted(extras))
-            raise ValueError(
-                f"auto_install keys must also appear in required: {extras_sorted}"
-            )
+            raise ValueError(f"auto_install keys must also appear in required: {extras_sorted}")
         return self
 
 

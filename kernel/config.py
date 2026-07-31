@@ -296,7 +296,7 @@ class Settings(BaseSettings):
     passive_intelligence_default_chat_min_overlap: float = 0.25
 
     @model_validator(mode="after")
-    def _validate_mapper_scoring_keys(self) -> "Settings":
+    def _validate_mapper_scoring_keys(self) -> Settings:
         """Ensure context-mapper scoring dicts cover exactly the Literal keys."""
         required_provenance = {
             "authoritative",

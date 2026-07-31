@@ -12,7 +12,6 @@ from kernel.session_plan import SessionPlanError, compile_session_plan
 from hosts.core.content_roots import resolve_pack_session_path
 from hosts.core.session_from_resolver import resolve_session_from_directives
 
-
 # ── Fixtures ─────────────────────────────────────────────────────────
 
 
@@ -30,24 +29,32 @@ def _core_pack_session_text(*, with_routing: bool = True, with_context: bool = T
     """A representative pack session manifest used across the tests."""
 
     routing = (
-        "routing:\n"
-        "  start_mode: default\n"
-        "  sequential_connectors:\n"
-        "    - then\n"
-        "    - and then\n"
-        "    - after that\n"
-        "    - next\n"
-        "    - followed by\n"
-        "    - based on\n"
-        "    - once\n"
-    ) if with_routing else ""
+        (
+            "routing:\n"
+            "  start_mode: default\n"
+            "  sequential_connectors:\n"
+            "    - then\n"
+            "    - and then\n"
+            "    - after that\n"
+            "    - next\n"
+            "    - followed by\n"
+            "    - based on\n"
+            "    - once\n"
+        )
+        if with_routing
+        else ""
+    )
     context_block = (
-        "context:\n"
-        "  sources:\n"
-        "    - rule_id: default\n"
-        "      lane_id: operational\n"
-        "      fallback: true\n"
-    ) if with_context else ""
+        (
+            "context:\n"
+            "  sources:\n"
+            "    - rule_id: default\n"
+            "      lane_id: operational\n"
+            "      fallback: true\n"
+        )
+        if with_context
+        else ""
+    )
     return dedent(
         f"""\
         ---
@@ -556,18 +563,14 @@ def test_resolve_pack_session_path_alias_match(core_pack_root: Path) -> None:
     full = resolve_pack_session_path(
         pack="lisa-pack-core", session="default", pack_roots=[core_pack_root]
     )
-    bare = resolve_pack_session_path(
-        pack="core", session="default", pack_roots=[core_pack_root]
-    )
+    bare = resolve_pack_session_path(pack="core", session="default", pack_roots=[core_pack_root])
     assert full == bare
     assert full.is_file()
 
 
 def test_resolve_pack_session_path_pack_missing() -> None:
     with pytest.raises(SessionPlanError):
-        resolve_pack_session_path(
-            pack="lisa-pack-ghost", session="default", pack_roots=[]
-        )
+        resolve_pack_session_path(pack="lisa-pack-ghost", session="default", pack_roots=[])
 
 
 def test_resolve_pack_session_path_session_missing(core_pack_root: Path) -> None:

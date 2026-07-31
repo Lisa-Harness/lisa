@@ -53,5 +53,3 @@ class WorkflowInstanceStore(Protocol):
 
     async def clear(self, instance_id: str, identity: RecoveryIdentity) -> bool:
         """Remove one instance. Return True when an instance was removed."""
-
-

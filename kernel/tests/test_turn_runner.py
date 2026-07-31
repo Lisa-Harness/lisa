@@ -256,7 +256,9 @@ async def test_run_turn_planner_action_mode_empty_target_falls_back_to_text() ->
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
-            mode_id="plan", query="write a novel", hooks=hooks,
+            mode_id="plan",
+            query="write a novel",
+            hooks=hooks,
             preferred_model_id="test-planner-model",
         )
 
@@ -352,7 +354,6 @@ async def test_run_turn_non_planner_action_mode_entry_op_no_target_not_plan_fail
     it surfaces what the planner attempted."""
     from unittest.mock import patch
 
-    from kernel.models import OperationResult
     from kernel.routing_vocabulary import (
         is_plan_reliable_for_model,
         reset_plan_reliability,
@@ -560,7 +561,9 @@ async def test_run_turn_planner_without_steps_no_plan_block_no_instance() -> Non
         patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
     ):
         result = await run_turn(
-            mode_id="plan", query="search for rust news", hooks=hooks,
+            mode_id="plan",
+            query="search for rust news",
+            hooks=hooks,
         )
 
     # No plan block — the response is just the step output.
@@ -643,9 +646,9 @@ async def test_coordinator_routing_hint_uses_plan_instance_current_step_on_proce
     )
     # None of the captured hints should point ONLY at search (the stale
     # coordinator target) without also mentioning markdown.
-    assert not any(
-        "search" in h and "markdown" not in h for h in captured_hints
-    ), "routing hint must NOT point at the stale coordinator target (search)"
+    assert not any("search" in h and "markdown" not in h for h in captured_hints), (
+        "routing hint must NOT point at the stale coordinator target (search)"
+    )
 
 
 @pytest.mark.asyncio
@@ -729,7 +732,9 @@ async def test_run_turn_mid_turn_handoff_to_planner_drives_next_handoff() -> Non
     )
     search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
     patched_catalog = {
-        "default": default_cfg, "plan": plan_cfg, "search": search_cfg,
+        "default": default_cfg,
+        "plan": plan_cfg,
+        "search": search_cfg,
     }
 
     call_log: list[str] = []
@@ -750,11 +755,9 @@ async def test_run_turn_mid_turn_handoff_to_planner_drives_next_handoff() -> Non
         # catalog — so detect by the absence of the plan routing hint
         # AND the absence of the transition_stage handoff-context block.
         is_plan_mode = "## Handoff Context" in sys_content and "`plan`" in sys_content
-        is_search_mode = (
-            "## Handoff Context" in sys_content and "`search`" in sys_content
-        ) or ("Handed off to mode: search" in str(
-            [m.get("content", "") for m in kwargs["messages"]]
-        ))
+        is_search_mode = ("## Handoff Context" in sys_content and "`search`" in sys_content) or (
+            "Handed off to mode: search" in str([m.get("content", "") for m in kwargs["messages"]])
+        )
         if is_search_mode:
             call_log.append("model_call:search")
             return _StubCompletion(content="Search results from web_search.")
@@ -908,7 +911,9 @@ async def test_run_turn_max_tool_iterations_capped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_turn_max_tool_iterations_defaults_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_run_turn_max_tool_iterations_defaults_from_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """When max_tool_iterations is None, the cap comes from kernel.config.Settings."""
     from kernel import config
 
@@ -1667,9 +1672,7 @@ async def test_run_turn_fork_marks_no_tools_child_when_action_tool_skipped() -> 
         )
 
     hooks = _build_minimal_hooks(two_step)
-    result = await run_turn(
-        mode_id="default", query="write a markdown guide", hooks=hooks
-    )
+    result = await run_turn(mode_id="default", query="write a markdown guide", hooks=hooks)
 
     assert result.fork_results is not None
     assert len(result.fork_results) == 1
@@ -2161,32 +2164,41 @@ def test_routing_hint_sequential_query_does_not_fork() -> None:
     from kernel.turn_runner import _compute_capability_routing_hint
 
     search_cfg = _mode_config(
-        mode_id="search", satisfies_intents=["research"],
+        mode_id="search",
+        satisfies_intents=["research"],
         routing_intent_tags=["research"],
         routing_intent_keywords={"research": ["search", "latest", "news"]},
     )
     coding_cfg = _mode_config(
-        mode_id="coding", satisfies_intents=["coding"],
+        mode_id="coding",
+        satisfies_intents=["coding"],
         routing_intent_tags=["coding"],
         routing_intent_keywords={"coding": ["code", "coding", "codebase", "gap analysis"]},
     )
     markdown_cfg = _mode_config(
-        mode_id="markdown", satisfies_intents=["write"],
+        mode_id="markdown",
+        satisfies_intents=["write"],
         routing_intent_tags=["write"],
         routing_intent_keywords={"write": ["write", "markdown", "document", "report"]},
     )
     default_cfg = _mode_config(mode_id="default")
     patched_catalog = {
-        "search": search_cfg, "coding": coding_cfg, "markdown": markdown_cfg,
+        "search": search_cfg,
+        "coding": coding_cfg,
+        "markdown": markdown_cfg,
         "default": default_cfg,
     }
 
-    q = ("do a web search for python coding best practices then go into "
-         "coding mode and use it as input for a code-level gap analysis "
-         "then write a markdown of it.")
+    q = (
+        "do a web search for python coding best practices then go into "
+        "coding mode and use it as input for a code-level gap analysis "
+        "then write a markdown of it."
+    )
     with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
         hint = _compute_capability_routing_hint(
-            mode_id="default", query=q, capability_manifest=_empty_manifest(),
+            mode_id="default",
+            query=q,
+            capability_manifest=_empty_manifest(),
             routing_targets=["search", "coding", "markdown"],
             mode_config=default_cfg,
         )
@@ -2208,12 +2220,14 @@ def test_routing_hint_concurrent_query_still_forks() -> None:
     from kernel.turn_runner import _compute_capability_routing_hint
 
     learn_cfg = _mode_config(
-        mode_id="learn", satisfies_intents=["learn"],
+        mode_id="learn",
+        satisfies_intents=["learn"],
         routing_intent_tags=["learn"],
         routing_intent_keywords={"learn": ["remember", "note", "capture"]},
     )
     markdown_cfg = _mode_config(
-        mode_id="markdown", satisfies_intents=["write"],
+        mode_id="markdown",
+        satisfies_intents=["write"],
         routing_intent_tags=["write"],
         routing_intent_keywords={"write": ["write", "markdown", "document"]},
     )
@@ -2254,7 +2268,8 @@ def test_routing_hint_refuses_fork_for_producer_consumer_mix() -> None:
     # ponder = producer (satisfies research/reasoning), markdown = consumer
     # (satisfies write). A fork mixing them is sequential-wrong.
     ponder_cfg = _mode_config(
-        mode_id="ponder", satisfies_intents=["research", "reasoning"],
+        mode_id="ponder",
+        satisfies_intents=["research", "reasoning"],
         routing_intent_tags=["research", "reasoning"],
         routing_intent_keywords={
             "research": ["search", "latest", "framework"],
@@ -2262,7 +2277,8 @@ def test_routing_hint_refuses_fork_for_producer_consumer_mix() -> None:
         },
     )
     markdown_cfg = _mode_config(
-        mode_id="markdown", satisfies_intents=["write"],
+        mode_id="markdown",
+        satisfies_intents=["write"],
         routing_intent_tags=["write"],
         routing_intent_keywords={"write": ["write", "markdown", "document"]},
     )
@@ -2337,7 +2353,9 @@ def test_routing_hint_does_not_re_escalate_to_plan_after_plan_ran() -> None:
     )
     patched_catalog = {"plan": plan_cfg, "coding": coding_cfg, "markdown": markdown_cfg}
 
-    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog):
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog
+    ):
         # Simulate the post-plan → coding handoff: chain_satisfied has
         # "plan" (plan ran) and "coding" is the current mode. The residual
         # gap is {write} (markdown covers it).
@@ -2392,7 +2410,9 @@ def test_single_handoff_target_for_gap_names_markdown_for_write_gap() -> None:
     )
     patched_catalog = {"coding": coding_cfg, "markdown": markdown_cfg}
 
-    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog):
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog
+    ):
         target = _single_handoff_target_for_gap(
             query="research the latest frameworks then write a markdown report",
             routing_targets=["markdown"],
@@ -2421,7 +2441,9 @@ def test_single_handoff_target_for_gap_returns_none_when_no_gap() -> None:
     )
     patched_catalog = {"markdown": markdown_cfg}
 
-    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog):
+    with patch(
+        "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog
+    ):
         target = _single_handoff_target_for_gap(
             query="write a markdown document",
             routing_targets=["markdown"],
@@ -2485,18 +2507,22 @@ def test_routing_hint_sequential_via_session_vocabulary_does_not_fork() -> None:
     from kernel.turn_runner import _compute_capability_routing_hint
 
     search_cfg = _mode_config(
-        mode_id="search", satisfies_intents=["research"],
+        mode_id="search",
+        satisfies_intents=["research"],
         routing_intent_tags=["research"],
         routing_intent_keywords={"research": ["search", "latest", "news"]},
     )
     markdown_cfg = _mode_config(
-        mode_id="markdown", satisfies_intents=["write"],
+        mode_id="markdown",
+        satisfies_intents=["write"],
         routing_intent_tags=["write"],
         routing_intent_keywords={"write": ["write", "markdown", "document", "report"]},
     )
     default_cfg = _mode_config(mode_id="default")
     patched_catalog = {
-        "search": search_cfg, "markdown": markdown_cfg, "default": default_cfg,
+        "search": search_cfg,
+        "markdown": markdown_cfg,
+        "default": default_cfg,
     }
 
     register_routing_vocabulary(
@@ -2506,7 +2532,9 @@ def test_routing_hint_sequential_via_session_vocabulary_does_not_fork() -> None:
         q = "search for python news and write a markdown based on the results"
         with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
             hint = _compute_capability_routing_hint(
-                mode_id="default", query=q, capability_manifest=_empty_manifest(),
+                mode_id="default",
+                query=q,
+                capability_manifest=_empty_manifest(),
                 routing_targets=["search", "markdown"],
                 mode_config=default_cfg,
             )
@@ -2535,32 +2563,41 @@ def test_routing_hint_chain_memory_skips_completed_steps() -> None:
     from kernel.turn_runner import _compute_capability_routing_hint
 
     search_cfg = _mode_config(
-        mode_id="search", satisfies_intents=["research"],
+        mode_id="search",
+        satisfies_intents=["research"],
         routing_intent_tags=["research"],
         routing_intent_keywords={"research": ["search", "latest", "news"]},
     )
     coding_cfg = _mode_config(
-        mode_id="coding", satisfies_intents=["coding"],
+        mode_id="coding",
+        satisfies_intents=["coding"],
         routing_intent_tags=["coding"],
         routing_intent_keywords={"coding": ["coding", "code", "codebase", "gap analysis"]},
     )
     markdown_cfg = _mode_config(
-        mode_id="markdown", satisfies_intents=["write"],
+        mode_id="markdown",
+        satisfies_intents=["write"],
         routing_intent_tags=["write"],
         routing_intent_keywords={"write": ["write", "markdown", "document", "report"]},
     )
     patched_catalog = {
-        "search": search_cfg, "coding": coding_cfg, "markdown": markdown_cfg,
+        "search": search_cfg,
+        "coding": coding_cfg,
+        "markdown": markdown_cfg,
     }
-    q = ("do a web search for python coding best practices then go into "
-         "coding mode and use it as input for a code-level gap analysis "
-         "then write a markdown of it.")
+    q = (
+        "do a web search for python coding best practices then go into "
+        "coding mode and use it as input for a code-level gap analysis "
+        "then write a markdown of it."
+    )
 
     # After search + coding: chain_satisfied = {research, coding}.
     # Gap = {write}. Hint must name markdown, NOT search.
     with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
         hint = _compute_capability_routing_hint(
-            mode_id="coding", query=q, capability_manifest=_empty_manifest(),
+            mode_id="coding",
+            query=q,
+            capability_manifest=_empty_manifest(),
             routing_targets=["search", "markdown"],
             mode_config=coding_cfg,
             extra_satisfied={"research", "coding"},
@@ -3225,7 +3262,9 @@ async def test_handoff_entry_op_failure_blocks_turn() -> None:
         # here. The fix must prevent reaching this completion.
         return _StubCompletion(content="I will create a crew directory.")
 
-    async def failing_entry_operation(operation_id: str, _ctx: OperationExecutionContext) -> OperationResult:
+    async def failing_entry_operation(
+        operation_id: str, _ctx: OperationExecutionContext
+    ) -> OperationResult:
         # Only the ``web_search`` entry operation (the search mode's entry
         # action) fails. Other operations (e.g. pre-turn memory recall) use
         # the default stub so they don't trip the guard prematurely.
@@ -3414,7 +3453,9 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
     )
     search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
     patched_catalog = {
-        "default": default_cfg, "plan": plan_cfg, "search": search_cfg,
+        "default": default_cfg,
+        "plan": plan_cfg,
+        "search": search_cfg,
     }
 
     call_count = 0
@@ -3429,11 +3470,9 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
         # In default mode with a plan-escalation hint: the model does
         # read-only fetches instead of calling transition_stage.
         is_plan_mode = "## Handoff Context" in sys_content and "`plan`" in sys_content
-        is_search_mode = (
-            "## Handoff Context" in sys_content and "`search`" in sys_content
-        ) or ("Handed off to mode: search" in str(
-            [m.get("content", "") for m in kwargs["messages"]]
-        ))
+        is_search_mode = ("## Handoff Context" in sys_content and "`search`" in sys_content) or (
+            "Handed off to mode: search" in str([m.get("content", "") for m in kwargs["messages"]])
+        )
         if is_search_mode:
             return _StubCompletion(content="Search results from web_search.")
         if is_plan_mode:

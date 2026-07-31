@@ -123,11 +123,7 @@ def test_compile_session_plan_rejects_conflicting_resource_selection() -> None:
 def test_compile_session_plan_accepts_sequential_connectors() -> None:
     """The ``routing.sequential_connectors`` list compiles into the plan."""
     text = _manifest(
-        extra=(
-            "routing:\n"
-            "  start_mode: default\n"
-            "  sequential_connectors: [then, based on, once]\n"
-        )
+        extra=("routing:\n  start_mode: default\n  sequential_connectors: [then, based on, once]\n")
     )
 
     plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
@@ -163,18 +159,11 @@ def test_compile_session_plan_accepts_execution_request_block() -> None:
     assert plan.manifest.execution.max_capability_calls == 20
     assert plan.manifest.execution.max_total_tokens == 40_000
     assert plan.manifest.execution.max_wall_ms == 180_000
-    assert (
-        plan.manifest.execution.capabilities["fetch_page"].max_invocations_per_turn == 6
-    )
+    assert plan.manifest.execution.capabilities["fetch_page"].max_invocations_per_turn == 6
 
 
 def test_compile_session_plan_rejects_non_positive_execution_limits() -> None:
-    text = _manifest(
-        extra=(
-            "execution:\n"
-            "  max_model_calls: 0\n"
-        )
-    )
+    text = _manifest(extra=("execution:\n  max_model_calls: 0\n"))
 
     with pytest.raises(SessionPlanError, match="greater than or equal to 1"):
         compile_session_plan(text=text, source_uri="workspace:session_context.md")
@@ -400,7 +389,7 @@ def test_compile_session_plan_rejects_empty_auto_install_source() -> None:
             "    required: [lisa-pack-core, lisa-pack-cloudflare]\n"
             "    auto_install:\n"
             "      lisa-pack-cloudflare:\n"
-            "        source: \"\"\n"
+            '        source: ""\n'
         )
     )
     with pytest.raises(SessionPlanError):
@@ -429,13 +418,7 @@ def test_compile_session_plan_rejects_unknown_auto_install_key() -> None:
 
 def test_compile_session_plan_accepts_context_models_path() -> None:
     """context.models.path compiles when set to a non-empty string."""
-    text = _manifest(
-        extra=(
-            "context:\n"
-            "  models:\n"
-            "    path: ./roster.yaml\n"
-        )
-    )
+    text = _manifest(extra=("context:\n  models:\n    path: ./roster.yaml\n"))
     plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
     assert plan.manifest.context.models is not None
     assert plan.manifest.context.models.path == "./roster.yaml"
@@ -449,26 +432,13 @@ def test_compile_session_plan_defaults_context_models_to_none() -> None:
 
 def test_compile_session_plan_rejects_empty_context_models_path() -> None:
     """context.models.path must be non-empty."""
-    text = _manifest(
-        extra=(
-            "context:\n"
-            "  models:\n"
-            "    path: \"\"\n"
-        )
-    )
+    text = _manifest(extra=('context:\n  models:\n    path: ""\n'))
     with pytest.raises(SessionPlanError):
         compile_session_plan(text=text, source_uri="workspace:session_context.md")
 
 
 def test_compile_session_plan_rejects_unknown_context_models_key() -> None:
     """Strict extra=forbid applies inside context.models."""
-    text = _manifest(
-        extra=(
-            "context:\n"
-            "  models:\n"
-            "    path: ./roster.yaml\n"
-            "    bogus: true\n"
-        )
-    )
+    text = _manifest(extra=("context:\n  models:\n    path: ./roster.yaml\n    bogus: true\n"))
     with pytest.raises(SessionPlanError, match="Extra inputs are not permitted"):
         compile_session_plan(text=text, source_uri="workspace:session_context.md")

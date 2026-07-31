@@ -243,9 +243,7 @@ def main() -> None:
     data_dir = resolve_data_dir(args.data_dir)
 
     env_globs = [
-        g.strip()
-        for g in os.getenv("LISA_STORAGE_DENY_GLOBS", "").split(",")
-        if g.strip()
+        g.strip() for g in os.getenv("LISA_STORAGE_DENY_GLOBS", "").split(",") if g.strip()
     ]
     deny_globs = (*args.deny_glob, *env_globs)
     log.info(

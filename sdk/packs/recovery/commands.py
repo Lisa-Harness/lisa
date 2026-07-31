@@ -177,10 +177,7 @@ async def handle_retry(runtime: Any, stripped: str, message: str) -> str:
         return f"No work item found with id '{work_item_id}' for this session."
 
     if not record.open_for_operator():
-        return (
-            f"Work item {work_item_id} is in state '{record.state}' "
-            "and is not open for retry."
-        )
+        return f"Work item {work_item_id} is in state '{record.state}' and is not open for retry."
 
     if record.retry_policy == "never":
         return (

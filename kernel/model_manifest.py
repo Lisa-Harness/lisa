@@ -301,7 +301,9 @@ def _parse_router_config(
                 f"router.rules entry #{index} must set exactly one of "
                 f"'use', 'finish', or 'transition_to' (got {len(actions)})."
             )
-        rules.append(RouterRule(when=condition, use=use, finish=finish, transition_to=transition_to))
+        rules.append(
+            RouterRule(when=condition, use=use, finish=finish, transition_to=transition_to)
+        )
 
     # Validate that ``fallback`` and every ``rules[].use`` reference a known model.
     for rule in rules:

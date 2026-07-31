@@ -8,11 +8,11 @@ save/load/load_active/clear semantics.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
 
+from kernel.models import WorkflowModeConfig
 from kernel.recovery import RecoveryIdentity
 from kernel.routing_vocabulary import reset_routing_vocabulary
 from kernel.workflow_instance import (
@@ -23,7 +23,6 @@ from kernel.workflow_instance import (
     is_complete,
     remaining_steps,
 )
-from kernel.models import WorkflowModeConfig
 
 
 def _identity() -> RecoveryIdentity:
@@ -130,7 +129,7 @@ def test_workflow_instance_is_frozen() -> None:
         declared_steps=(WorkflowStep(step_id="s_0", mode_id="search"),),
         current_step_id="s_0",
     )
-    with pytest.raises(Exception):  # noqa: PT011, B017
+    with pytest.raises(Exception):  # noqa: B017
         instance.current_step_id = "other"  # type: ignore[misc]
 
 
@@ -333,4 +332,3 @@ def test_compile_steps_spawned_from_propagated() -> None:
             spawned_from="plan_workflow_op",
         )
     assert all(s.spawned_from == "plan_workflow_op" for s in steps)
-

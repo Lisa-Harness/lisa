@@ -234,9 +234,7 @@ async def handle_message(
     # The kernel-side idempotency (``_find_pending_for_action``) prevents the
     # duplicate mint even if this check is bypassed; this host check keeps
     # the user-facing experience stable for conversational resumes.
-    resume_result = await _try_affirmative_approval_resume(
-        runtime, stripped, lowered, tport
-    )
+    resume_result = await _try_affirmative_approval_resume(runtime, stripped, lowered, tport)
     if resume_result is not None:
         return resume_result
 
@@ -616,9 +614,7 @@ async def _execute_mode_turn(
     if runtime.manifest is None:
         from hosts.core.model_runtime import load_manifest as _load_manifest
 
-        runtime.manifest = _load_manifest(
-            {}, data_dir=runtime.data_dir, path=runtime.models_path
-        )
+        runtime.manifest = _load_manifest({}, data_dir=runtime.data_dir, path=runtime.models_path)
 
     preferred_model_id = preferred_model_id_for_route(
         raw_message=message,

@@ -303,17 +303,13 @@ def _build_web_app(*, runtime: HostRuntime, token: str) -> web.Application:
 
     # ── Token auth middleware ────────────────────────────────────────
     @web.middleware
-    async def _token_middleware(
-        request: web.Request, handler: Any
-    ) -> web.StreamResponse:
+    async def _token_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
         # Skip auth for /health and static files.
         if request.path == "/health" or request.path.startswith("/static/"):
             return await handler(request)
         expected = str(request.app["web_token"])
         if not _is_token_valid(request, expected):
-            logger.warning(
-                "web %s unauthorized request from %s", request.path, request.remote
-            )
+            logger.warning("web %s unauthorized request from %s", request.path, request.remote)
             raise web.HTTPUnauthorized(text="Unauthorized")
         return await handler(request)
 
@@ -556,9 +552,7 @@ async def _handle_turn_stream_request(request: web.Request) -> web.StreamRespons
             await handle_message(rt, message, transport)
         except Exception as exc:  # pylint: disable=broad-except
             logger.error("web turn stream failed: %s: %s", type(exc).__name__, exc)
-            await queue.put(
-                {"event": "error", "data": {"message": f"{type(exc).__name__}: {exc}"}}
-            )
+            await queue.put({"event": "error", "data": {"message": f"{type(exc).__name__}: {exc}"}})
         finally:
             await queue.put({"event": "__sentinel__", "data": {}})
 

@@ -1,5 +1,4 @@
-"""Runtime-neutral extension hooks for context-evidence injection.
-"""
+"""Runtime-neutral extension hooks for context-evidence injection."""
 
 from __future__ import annotations
 

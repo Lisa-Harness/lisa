@@ -142,9 +142,11 @@ async def test_per_step_cap_forces_handoff_before_global_cap() -> None:
     hooks.workflow_instance_updater = updater
 
     catalog = _catalog_with_chain()
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog), patch(
-        "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog
-    ), patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
         result = await run_turn(
             mode_id="search",
             query="search the web then read your code",
@@ -199,9 +201,11 @@ async def test_global_cap_still_runs_final_completion() -> None:
     # No workflow_instance wired.
 
     catalog = _catalog_with_chain()
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog), patch(
-        "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog
-    ), patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
         result = await run_turn(
             mode_id="default",
             query="hello",
@@ -264,9 +268,11 @@ async def test_step_counter_resets_on_handoff() -> None:
     hooks.workflow_instance_updater = updater
 
     catalog = _catalog_with_chain()
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog), patch(
-        "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog
-    ), patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
         result = await run_turn(
             mode_id="search",
             query="search the web then read your code",
@@ -331,9 +337,11 @@ async def test_per_step_tool_call_cap_forces_handoff() -> None:
     hooks.workflow_instance_updater = updater
 
     catalog = _catalog_with_chain()
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog), patch(
-        "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog
-    ), patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
         result = await run_turn(
             mode_id="search",
             query="search the web then read your code",
@@ -382,9 +390,11 @@ async def test_no_instance_per_step_cap_degrades_to_global() -> None:
     # No workflow_instance wired.
 
     catalog = _catalog_with_chain()
-    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog), patch(
-        "kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog
-    ), patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog):
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
         result = await run_turn(
             mode_id="default",
             query="hello",

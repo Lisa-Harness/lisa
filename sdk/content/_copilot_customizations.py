@@ -22,7 +22,7 @@ The Copilot specification is documented at:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
@@ -37,8 +37,8 @@ __all__ = [
     "InstructionFile",
     "PromptFile",
     "SkillFile",
-    "matches_apply_to",
     "matches_any_instruction",
+    "matches_apply_to",
     "parse_agent_file",
     "parse_always_on_file",
     "parse_instruction_file",
@@ -266,9 +266,7 @@ def matches_any_instruction(
 ) -> tuple[InstructionFile, ...]:
     """Return all instructions in ``bundle`` whose ``apply_to`` matches ``file_path``."""
     return tuple(
-        inst
-        for inst in bundle.instructions
-        if matches_apply_to(list(inst.apply_to), file_path)
+        inst for inst in bundle.instructions if matches_apply_to(list(inst.apply_to), file_path)
     )
 
 
@@ -344,9 +342,7 @@ def parse_agent_file(
     model = _coerce_str(fm.get("model"))
     argument_hint = _coerce_str(fm.get("argument-hint"))
     user_invocable = _coerce_bool(fm.get("user-invocable"), default=True)
-    disable_model_invocation = _coerce_bool(
-        fm.get("disable-model-invocation"), default=False
-    )
+    disable_model_invocation = _coerce_bool(fm.get("disable-model-invocation"), default=False)
 
     return (
         AgentFile(
@@ -420,8 +416,7 @@ def parse_skill_file(
         return None, CustomizationDiagnostic(
             path=path,
             message=(
-                f"Skill name {name!r} must be lowercase letters, numbers, and "
-                f"hyphens, <=64 chars."
+                f"Skill name {name!r} must be lowercase letters, numbers, and hyphens, <=64 chars."
             ),
             kind="skills",
         )
@@ -445,13 +440,9 @@ def parse_skill_file(
 
     argument_hint = _coerce_str(fm.get("argument-hint"))
     user_invocable = _coerce_bool(fm.get("user-invocable"), default=True)
-    disable_model_invocation = _coerce_bool(
-        fm.get("disable-model-invocation"), default=False
-    )
+    disable_model_invocation = _coerce_bool(fm.get("disable-model-invocation"), default=False)
     context_raw = _coerce_str(fm.get("context")) or "inline"
-    context: Literal["inline", "fork"] = (
-        "fork" if context_raw == "fork" else "inline"
-    )
+    context: Literal["inline", "fork"] = "fork" if context_raw == "fork" else "inline"
 
     expected_dir_name = _expected_skill_dir_name(path)
     diagnostic: CustomizationDiagnostic | None = None

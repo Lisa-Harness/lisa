@@ -38,9 +38,7 @@ def build_capability_snapshot(runtime: HostRuntime) -> dict[str, Any]:
     """Build a capability snapshot dict for diagnostics and help rendering."""
     catalog = get_workflow_catalog()
     if runtime.manifest is None:
-        runtime.manifest = load_manifest(
-            {}, data_dir=runtime.data_dir, path=runtime.models_path
-        )
+        runtime.manifest = load_manifest({}, data_dir=runtime.data_dir, path=runtime.models_path)
     manifest = runtime.manifest
     operations = get_operation_catalog()
     tools = get_tool_catalog()

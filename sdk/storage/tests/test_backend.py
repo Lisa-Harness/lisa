@@ -16,11 +16,12 @@ import pytest
 
 from sdk.storage import PathRejected, StorageBackend
 
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _backend(tmp_path: Path, *, readonly: bool = False, deny_globs: tuple[str, ...] = ()) -> StorageBackend:
+def _backend(
+    tmp_path: Path, *, readonly: bool = False, deny_globs: tuple[str, ...] = ()
+) -> StorageBackend:
     return StorageBackend(tmp_path, readonly=readonly, deny_globs=deny_globs)
 
 
@@ -148,9 +149,7 @@ def test_readonly_rejects_writes(tmp_path: Path) -> None:
 
 
 def _denied_backend(tmp_path: Path) -> StorageBackend:
-    return StorageBackend(
-        tmp_path, deny_globs=("*.db", "threads/**", "repl_history.txt")
-    )
+    return StorageBackend(tmp_path, deny_globs=("*.db", "threads/**", "repl_history.txt"))
 
 
 def test_resolve_raises_path_rejected(tmp_path: Path) -> None:

@@ -186,9 +186,7 @@ def _resolve_router_rule(
     if not actions or len(actions) > 1:
         return None
     if use:
-        resolved_use = _resolve_router_ref(
-            use, model_ids=model_ids, mode_models=mode_models
-        )
+        resolved_use = _resolve_router_ref(use, model_ids=model_ids, mode_models=mode_models)
         if not resolved_use:
             return None
         return {"when": when, "use": resolved_use}
@@ -234,9 +232,7 @@ def _build_router_block(
 
     resolved_rules: list[dict[str, str]] = []
     for raw_rule in raw_rules:
-        resolved = _resolve_router_rule(
-            raw_rule, model_ids=model_ids, mode_models=mode_models
-        )
+        resolved = _resolve_router_rule(raw_rule, model_ids=model_ids, mode_models=mode_models)
         if resolved is not None:
             resolved_rules.append(resolved)
 
@@ -419,9 +415,7 @@ def _annotated_router_block(router_block: dict[str, Any]) -> str:
     if rules:
         out.append("  rules:")
         for rule in rules:
-            action_target = (
-                rule.get("use") or rule.get("finish") or rule.get("transition_to") or ""
-            )
+            action_target = rule.get("use") or rule.get("finish") or rule.get("transition_to") or ""
             reason = _explain_predicate(rule["when"])
             out.append(f"  - {_rule_yaml_line(rule)}  # → {action_target} when {reason}")
     if fallback:

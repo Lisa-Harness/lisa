@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from kernel.recovery import RecoveryIdentity, RecoveryRecord
 
 from hosts.core import HostConfig, HostRuntime, NullTransport
 from hosts.core.handle_message import handle_message
 from hosts.core.recovery import FileRecoveryService
-from kernel.recovery import RecoveryIdentity, RecoveryRecord
 
 
 def _identity() -> RecoveryIdentity:

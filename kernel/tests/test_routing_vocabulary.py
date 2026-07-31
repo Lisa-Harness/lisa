@@ -37,9 +37,7 @@ def test_register_routing_vocabulary_replaces_default() -> None:
 
 def test_register_routing_vocabulary_normalizes_entries() -> None:
     """Entries are stripped, lowercased, padded, de-duplicated."""
-    register_routing_vocabulary(
-        sequential_connectors=["  Then  ", "BASED ON", "then", "", "  "]
-    )
+    register_routing_vocabulary(sequential_connectors=["  Then  ", "BASED ON", "then", "", "  "])
     assert get_sequential_connectors() == (" then ", " based on ")
 
 

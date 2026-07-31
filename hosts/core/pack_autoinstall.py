@@ -162,7 +162,11 @@ def _resolve_local_source(source: str, session_source_dir: Path | None) -> str:
     if not raw:
         return source
     lowered = raw.lower()
-    if lowered.startswith("git+") or lowered.startswith("https://") or lowered.startswith("http://"):
+    if (
+        lowered.startswith("git+")
+        or lowered.startswith("https://")
+        or lowered.startswith("http://")
+    ):
         return source
     # Bare package names (no path separators, no version operators) are left
     # for _normalize_pack_install_spec to expand via LISA_PACK_GIT_ROOT.
@@ -235,9 +239,7 @@ def auto_install_required_packs(runtime: HostRuntime) -> list[str]:
             source_label,
             editable,
         )
-        ok, detail = run_pack_install_sync(
-            runtime, spec, request_restart=False, editable=editable
-        )
+        ok, detail = run_pack_install_sync(runtime, spec, request_restart=False, editable=editable)
         if ok:
             installed_now.append(pack_name)
         else:

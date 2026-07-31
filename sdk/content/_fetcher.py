@@ -156,21 +156,15 @@ def validate_url(
     if scheme not in _ALLOWED_SCHEMES:
         return None, f"URL must be http or https, got '{cleaned}'."
     if scheme == "http" and not allow_http:
-        return None, (
-            f"Blocked HTTP URL '{cleaned}'. HTTPS is required by default."
-        )
+        return None, (f"Blocked HTTP URL '{cleaned}'. HTTPS is required by default.")
     host = (parsed.hostname or "").lower()
     if not host:
         return None, f"URL has no host: {cleaned}"
     if allowed_hosts is not None and host not in allowed_hosts:
         allowed_str = ", ".join(sorted(allowed_hosts)) or "(none)"
-        return None, (
-            f"Blocked URL from host '{host}'. Allowed hosts are: {allowed_str}."
-        )
+        return None, (f"Blocked URL from host '{host}'. Allowed hosts are: {allowed_str}.")
     if _is_private_ip(host, private_ip_blocks):
-        return None, (
-            f"Blocked URL to private/loopback host '{host}' (SSRF guard)."
-        )
+        return None, (f"Blocked URL to private/loopback host '{host}' (SSRF guard).")
     return cleaned, None
 
 
@@ -296,9 +290,7 @@ class ContentFetcher:
             if cached is not None:
                 return cached
 
-        result = await self._fetch_from_network(
-            cleaned, policy=effective, max_bytes=max_bytes
-        )
+        result = await self._fetch_from_network(cleaned, policy=effective, max_bytes=max_bytes)
 
         if effective.cache:
             self._store(result)
@@ -356,9 +348,7 @@ class ContentFetcher:
 
     def _store(self, result: FetchedResult) -> None:
         # Store a from_cache=False copy in L1 so future hits re-flag True.
-        fresh = result if not result.from_cache else result.model_copy(
-            update={"from_cache": False}
-        )
+        fresh = result if not result.from_cache else result.model_copy(update={"from_cache": False})
         self._l1[result.url] = fresh
         l2 = self._l2_cache()
         if l2 is not None:
@@ -440,8 +430,7 @@ class ContentFetcher:
             stale = self._peek_raw(url)
             if stale is not None:
                 logger.warning(
-                    "Network error fetching %s, falling back to stale cache. "
-                    "Error: %s",
+                    "Network error fetching %s, falling back to stale cache. Error: %s",
                     url,
                     exc,
                 )
@@ -478,6 +467,6 @@ class ContentFetcher:
             private_ip_blocks=self._private_ip_blocks,
         )
         # Share cache state (L1 dict + L2 diskcache) with the original.
-        clone._l1 = self._l1  # noqa: SLF001
-        clone._l2 = self._l2  # noqa: SLF001
+        clone._l1 = self._l1
+        clone._l2 = self._l2
         return clone
