@@ -80,8 +80,15 @@ def _external_pack_roots() -> list[Path]:
     return roots
 
 
-def _make_catalog_mcp_config() -> MCPClientConfig:
-    """Build an MCPClientConfig that spawns lisa-catalog with the core pack."""
+def _make_catalog_mcp_config(*, log_path: Path) -> MCPClientConfig:
+    """Build an MCPClientConfig that spawns lisa-catalog with the core pack.
+
+    ``log_path`` routes the child's JSONL log out of the repo root (the
+    ``configure_logging`` fallback writes ``<cwd>/lisa-catalog.jsonl`` when
+    ``LISA_MCP_LOG_PATH`` is unset, and these configs leave cwd=None so the
+    subprocess inherits the pytest cwd). Mirrors the env injection that
+    ``hosts.core.mcp_pool.build_catalog_mcp_config`` does in production.
+    """
     content_roots = [_CORE_ROOT, _LEARNING_ROOT, *_external_pack_roots()]
     return MCPClientConfig(
         server_id="lisa-catalog-test",
@@ -98,12 +105,13 @@ def _make_catalog_mcp_config() -> MCPClientConfig:
                 '{"modes":{"default":"lisa-pack-core"},'
                 '"tools":{"web_search":"lisa-pack-brave-search"}}'
             ),
+            "LISA_MCP_LOG_PATH": str(log_path),
         },
     )
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _mcp_catalog_setup() -> None:
+def _mcp_catalog_setup(tmp_path_factory: pytest.TempPathFactory) -> None:
     """Wire the catalog MCP and operation callbacks so the kernel can load catalogs.
 
     Order matters: operation MCP first, then operation callbacks, then content MCP.
@@ -113,7 +121,8 @@ def _mcp_catalog_setup() -> None:
     The catalog is eagerly loaded here during module setup (sync context) so async
     tests don't need to call ``asyncio.run()`` from inside a running event loop.
     """
-    config = _make_catalog_mcp_config()
+    log_dir = tmp_path_factory.mktemp("lisa-catalog")
+    config = _make_catalog_mcp_config(log_path=log_dir / "lisa-catalog.jsonl")
     register_operation_mcp(config)
     register_operation_callbacks(get_operation_catalog, execute_operation)
     register_content_mcp(config)
