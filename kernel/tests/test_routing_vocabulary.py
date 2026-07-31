@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from kernel.routing_vocabulary import (
+    DEFAULT_RESUME_PHRASES,
     DEFAULT_SEQUENTIAL_CONNECTORS,
+    get_resume_phrases,
     get_sequential_connectors,
     register_routing_vocabulary,
     reset_routing_vocabulary,
@@ -59,3 +61,47 @@ def test_reset_routing_vocabulary_clears_session_list() -> None:
     register_routing_vocabulary(sequential_connectors=["based on"])
     reset_routing_vocabulary()
     assert get_sequential_connectors() == DEFAULT_SEQUENTIAL_CONNECTORS
+
+
+# ── Resume-phrase vocabulary ───────────────────────────────────────────
+
+
+def test_get_resume_phrases_returns_default_when_unwired() -> None:
+    """With no session vocabulary registered, the historical default is used."""
+    assert get_resume_phrases() == DEFAULT_RESUME_PHRASES
+
+
+def test_register_resume_phrases_replaces_default() -> None:
+    """A registered resume-phrase list replaces the default list."""
+    register_routing_vocabulary(resume_phrases=["proceed", "keep going"])
+    phrases = get_resume_phrases()
+    assert "proceed" in phrases
+    assert "keep going" in phrases
+    # The historical default is NOT mixed in — the session list is authoritative.
+    assert "continue" not in phrases
+
+
+def test_register_resume_phrases_normalizes_entries() -> None:
+    """Entries are stripped, lowercased, de-duplicated (no space padding)."""
+    register_routing_vocabulary(resume_phrases=["  Proceed  ", "KEEP GOING", "proceed", "", "  "])
+    assert get_resume_phrases() == ("proceed", "keep going")
+
+
+def test_register_resume_phrases_none_resets_to_default() -> None:
+    """Passing ``None`` (or empty) resets to the historical default."""
+    register_routing_vocabulary(resume_phrases=["keep going"])
+    assert "keep going" in get_resume_phrases()
+
+    register_routing_vocabulary(resume_phrases=None)
+    assert get_resume_phrases() == DEFAULT_RESUME_PHRASES
+
+    register_routing_vocabulary(resume_phrases=["keep going"])
+    register_routing_vocabulary(resume_phrases=[])
+    assert get_resume_phrases() == DEFAULT_RESUME_PHRASES
+
+
+def test_reset_routing_vocabulary_clears_resume_phrases() -> None:
+    """``reset_routing_vocabulary`` returns resume phrases to the default list."""
+    register_routing_vocabulary(resume_phrases=["keep going"])
+    reset_routing_vocabulary()
+    assert get_resume_phrases() == DEFAULT_RESUME_PHRASES

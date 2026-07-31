@@ -154,6 +154,7 @@ class HostRuntime:
 
         register_routing_vocabulary(
             sequential_connectors=self.session_plan.manifest.routing.sequential_connectors,
+            resume_phrases=self.session_plan.manifest.routing.resume_phrases,
         )
 
         # ── Cached provider clients ───────────────────────────────────

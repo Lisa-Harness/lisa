@@ -405,3 +405,92 @@ async def test_non_affirmative_message_is_not_consumed_as_resume(
     )
     assert resume_result is None
     assert (await runtime.approval_service.get(invocation.request_id)).state == "pending"
+
+
+# ── Prefix-matching affirmative resume (option 2) ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_affirmative_resume_prefix_matches_proceed_with_suffix(
+    tmp_path: Path,
+) -> None:
+    """``"proceed with the current step in the plan"`` matches ``"proceed"``.
+
+    Reproduces the 2026-07-31 incident: the user typed a longer resume
+    phrase that the old exact-match detector missed. The loosened
+    prefix-match detector treats it as an affirmative resume when an
+    approval is pending.
+    """
+    from kernel.routing_vocabulary import reset_routing_vocabulary
+
+    runtime = _make_runtime(tmp_path)
+    identity = _identity(runtime)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_apply_patch",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={"patch": "diff --git a/a b/a"},
+        identity=identity,
+        pack_config={"workspace_root": "."},
+        safe_preview="apply the patch",
+    )
+    await runtime.approval_service.request(invocation)
+
+    from hosts.core.handle_message import _is_affirmative_resume
+
+    try:
+        assert _is_affirmative_resume("proceed with the current step in the plan")
+        assert _is_affirmative_resume("continue with the current step in the current plan")
+        assert _is_affirmative_resume("go ahead and run it")
+    finally:
+        reset_routing_vocabulary()
+
+
+def test_affirmative_resume_exact_match_still_works() -> None:
+    """Conversational affirmatives (``"ok"``, ``"yes"``) still match exactly."""
+    from kernel.routing_vocabulary import reset_routing_vocabulary
+
+    from hosts.core.handle_message import _is_affirmative_resume
+
+    try:
+        assert _is_affirmative_resume("ok")
+        assert _is_affirmative_resume("yes")
+        assert _is_affirmative_resume("approved")
+        assert _is_affirmative_resume("yep")
+    finally:
+        reset_routing_vocabulary()
+
+
+def test_affirmative_resume_rejects_non_prefix_non_exact() -> None:
+    """A message that does not start with a resume phrase and isn't exact is rejected."""
+    from kernel.routing_vocabulary import reset_routing_vocabulary
+
+    from hosts.core.handle_message import _is_affirmative_resume
+
+    try:
+        assert not _is_affirmative_resume("can you explain what this will do?")
+        assert not _is_affirmative_resume("ok but let me think")
+        assert not _is_affirmative_resume("yes that sounds risky")
+    finally:
+        reset_routing_vocabulary()
+
+
+def test_affirmative_resume_uses_session_resume_phrases() -> None:
+    """A session-authored resume phrase is honored by the prefix detector."""
+    from kernel.routing_vocabulary import (
+        register_routing_vocabulary,
+        reset_routing_vocabulary,
+    )
+
+    from hosts.core.handle_message import _is_affirmative_resume
+
+    try:
+        register_routing_vocabulary(resume_phrases=["onward", "carry forward"])
+        assert _is_affirmative_resume("onward with the plan")
+        assert _is_affirmative_resume("carry forward from step 3")
+        # The historical default ``"proceed"`` is NOT mixed in — the session
+        # list is authoritative.
+        assert not _is_affirmative_resume("proceed with the plan")
+    finally:
+        reset_routing_vocabulary()

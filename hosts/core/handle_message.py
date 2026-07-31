@@ -412,16 +412,22 @@ def _approval_identity(runtime: HostRuntime) -> ApprovalIdentity:
 # deliberately small and unambiguous — anything longer or question-like is
 # routed to the model so the user can still hold a normal conversation
 # while an approval is pending.
-_AFFIRMATIVE_RESUME_PHRASES = frozenset(
+#
+# This set has two tiers:
+# - ``_AFFIRMATIVE_EXACT``: conversational affirmatives (``"ok"``, ``"yes"``)
+#   that must match the *whole* message. They would false-positive as
+#   prefixes (``"ok but…"`` is not a resume).
+# - Imperative resume phrases (``"proceed"``, ``"continue"``) live in the
+#   shared registry (:func:`kernel.routing_vocabulary.get_resume_phrases`)
+#   and are matched as **prefixes** so ``"proceed with the current step in
+#   the plan"`` matches ``"proceed"``. The registry is session-authored via
+#   ``routing.resume_phrases`` in ``session_context.md``; the historical
+#   default is used when no session vocabulary is wired.
+_AFFIRMATIVE_EXACT = frozenset(
     {
-        "proceed",
-        "continue",
         "approved",
         "approve",
         "approve it",
-        "go ahead",
-        "go for it",
-        "do it",
         "ok",
         "okay",
         "yes",
@@ -431,16 +437,28 @@ _AFFIRMATIVE_RESUME_PHRASES = frozenset(
         "sure",
         "confirm",
         "confirmed",
-        "continue anyway",
-        "proceed anyway",
     }
 )
 
 
 def _is_affirmative_resume(lowered: str) -> bool:
-    """Return True when ``lowered`` is a short affirmative resume phrase."""
+    """Return True when ``lowered`` is a short affirmative resume phrase.
 
-    return lowered in _AFFIRMATIVE_RESUME_PHRASES
+    Matches the whole message against the exact-affirmative set, or the
+    message's start against any registered resume phrase (prefix match).
+    The resume-phrase vocabulary is session-authored and shared with the
+    kernel's continuation-query detector via
+    :func:`kernel.routing_vocabulary.get_resume_phrases`.
+    """
+    if lowered in _AFFIRMATIVE_EXACT:
+        return True
+    # Prefix match against the shared resume-phrase registry. ``"proceed
+    # anyway"`` and ``"continue anyway"`` are historically affirmative —
+    # the registry's default list includes ``"proceed"`` and ``"continue"``,
+    # so the prefix match covers them without a dedicated entry.
+    from kernel.routing_vocabulary import get_resume_phrases  # noqa: PLC0415
+
+    return any(lowered.startswith(phrase) for phrase in get_resume_phrases())
 
 
 async def _try_affirmative_approval_resume(

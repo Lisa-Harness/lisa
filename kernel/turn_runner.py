@@ -882,20 +882,23 @@ async def _default_slice(_policy: SlicePolicy) -> SliceOutcome:
 
 
 def _looks_like_continuation_query(query: str) -> bool:
-    """Return True for continuation-style prompts such as ``proceed``."""
+    """Return True for continuation-style prompts such as ``proceed``.
+
+    Matches the lowered query as a prefix against the shared resume-phrase
+    vocabulary (:func:`kernel.routing_vocabulary.get_resume_phrases`), so
+    ``"proceed with the current step in the plan"`` matches ``"proceed"``.
+    The vocabulary is session-authored via ``routing.resume_phrases`` in
+    ``session_context.md``; the historical default is used when no session
+    vocabulary is wired. This keeps the detector in lock-step with the
+    host's affirmative-resume path (``hosts.core.handle_message``), which
+    reads the same registry.
+    """
     lowered = (query or "").strip().lower()
     if not lowered:
         return False
-    tokens = (
-        "proceed",
-        "continue",
-        "go ahead",
-        "carry on",
-        "pick up",
-        "resume",
-        "next step",
-    )
-    return any(token in lowered for token in tokens)
+    from kernel.routing_vocabulary import get_resume_phrases  # noqa: PLC0415
+
+    return any(lowered.startswith(phrase) for phrase in get_resume_phrases())
 
 
 def _coordinator_routing_hint(

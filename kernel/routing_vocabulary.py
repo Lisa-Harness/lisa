@@ -38,9 +38,11 @@ from typing import Final
 __all__ = [
     "DEFAULT_CONSUMER_INTENTS",
     "DEFAULT_PRODUCER_INTENTS",
+    "DEFAULT_RESUME_PHRASES",
     "DEFAULT_SEQUENTIAL_CONNECTORS",
     "get_consumer_intents",
     "get_producer_intents",
+    "get_resume_phrases",
     "get_sequential_connectors",
     "is_plan_reliable_for_model",
     "mark_plan_unreliable_for_model",
@@ -92,11 +94,39 @@ DEFAULT_CONSUMER_INTENTS: Final[tuple[str, ...]] = (
 )
 
 
+# Resume-phrase vocabulary for the affirmative-resume and continuation-query
+# detectors. The host's ``handle_message`` treats a short message that
+# starts with one of these phrases as an implicit workflow/approval resume
+# rather than a fresh model turn; the kernel's ``_looks_like_continuation_query``
+# treats a message containing one as a continuation prompt. Both sites read
+# this registry so the vocabulary stays in one place.
+#
+# Sessions override via ``routing.resume_phrases`` in
+# ``session_context.md``. Keep the list to unambiguous imperatives —
+# ``"proceed"``, ``"continue"``, ``"go ahead"`` — and avoid common words
+# that would false-positive on normal conversation (``"ok"``, ``"yes"``).
+# The detectors apply these as **prefix** matches on the lowered message,
+# so ``"proceed with the current step in the plan"`` matches ``"proceed"``.
+DEFAULT_RESUME_PHRASES: Final[tuple[str, ...]] = (
+    "proceed",
+    "continue",
+    "go ahead",
+    "go for it",
+    "do it",
+    "carry on",
+    "pick up",
+    "resume",
+    "next step",
+    "keep going",
+)
+
+
 # Process-global registry, injected by the host at boot. ``None`` means
 # "no session plan wired — use the historical default".
 _sequential_connectors: tuple[str, ...] | None = None
 _producer_intents: frozenset[str] | None = None
 _consumer_intents: frozenset[str] | None = None
+_resume_phrases: tuple[str, ...] | None = None
 
 # Per-model plan-reliability registry. When ``plan_workflow`` fails to
 # produce a parseable ``target_stage_id`` for a given model id, that model
@@ -180,6 +210,7 @@ def register_routing_vocabulary(
     sequential_connectors: list[str] | tuple[str, ...] | None = None,
     producer_intents: list[str] | tuple[str, ...] | None = None,
     consumer_intents: list[str] | tuple[str, ...] | None = None,
+    resume_phrases: list[str] | tuple[str, ...] | None = None,
 ) -> None:
     """Inject routing vocabulary compiled from the session plan.
 
@@ -188,14 +219,16 @@ def register_routing_vocabulary(
     historical default, matching pre-vocabulary behavior. The host is
     responsible for compiling the session plan's
     ``routing.sequential_connectors`` / ``routing.producer_intents`` /
-    ``routing.consumer_intents`` lists and passing them here; the kernel
-    never reads the session plan directly.
+    ``routing.consumer_intents`` / ``routing.resume_phrases`` lists and
+    passing them here; the kernel never reads the session plan directly.
     """
-    global _sequential_connectors, _producer_intents, _consumer_intents  # noqa: PLW0603
+    global _sequential_connectors, _producer_intents, _consumer_intents, _resume_phrases  # noqa: PLW0603
     normalized = _normalize_connectors(sequential_connectors)
     _sequential_connectors = normalized if normalized else None
     _producer_intents = _normalize_intent_roles(producer_intents, DEFAULT_PRODUCER_INTENTS)
     _consumer_intents = _normalize_intent_roles(consumer_intents, DEFAULT_CONSUMER_INTENTS)
+    normalized_resume = _normalize_resume_phrases(resume_phrases)
+    _resume_phrases = normalized_resume if normalized_resume else None
 
 
 def _normalize_intent_roles(
@@ -209,16 +242,41 @@ def _normalize_intent_roles(
     return frozenset(roles) if roles else None
 
 
+def _normalize_resume_phrases(
+    raw: list[str] | tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    """Normalize author-supplied resume phrases to lowercased, stripped tokens.
+
+    Unlike sequential connectors, resume phrases are NOT space-padded: the
+    detectors apply them as **prefix** matches on the lowered message, so
+    ``"proceed"`` must match ``"proceed with the current step"`` without
+    requiring surrounding spaces. Empty entries are dropped; duplicates are
+    removed, preserving first-seen order so test assertions stay stable.
+    """
+    if not raw:
+        return ()
+    seen: set[str] = set()
+    out: list[str] = []
+    for entry in raw:
+        token = (entry or "").strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return tuple(out)
+
+
 def reset_routing_vocabulary() -> None:
     """Clear any session-injected vocabulary, returning to the historical default.
 
     Primarily for tests that construct a ``TurnHooks`` without a host boot
     path and need a clean slate. Production code never calls this.
     """
-    global _sequential_connectors, _producer_intents, _consumer_intents  # noqa: PLW0603
+    global _sequential_connectors, _producer_intents, _consumer_intents, _resume_phrases  # noqa: PLW0603
     _sequential_connectors = None
     _producer_intents = None
     _consumer_intents = None
+    _resume_phrases = None
     reset_plan_reliability()
 
 
@@ -257,3 +315,17 @@ def get_consumer_intents() -> frozenset[str]:
     if _consumer_intents is not None:
         return _consumer_intents
     return frozenset(DEFAULT_CONSUMER_INTENTS)
+
+
+def get_resume_phrases() -> tuple[str, ...]:
+    """Return the active resume-phrase vocabulary.
+
+    Returns the session-injected list when one has been registered, else
+    the historical default. The detectors in ``hosts.core.handle_message``
+    (affirmative resume) and ``kernel.turn_runner`` (continuation query)
+    read this so the vocabulary stays in one place. Entries are lowercased,
+    stripped, and applied as prefix matches on the lowered message.
+    """
+    if _resume_phrases is not None:
+        return _resume_phrases
+    return DEFAULT_RESUME_PHRASES

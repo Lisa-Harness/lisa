@@ -196,6 +196,23 @@ class SessionRouting(_StrictSessionModel):
     detection; avoid common words like ``"after"`` or ``"from"`` which
     produce false positives on concurrent requests."""
 
+    resume_phrases: tuple[str, ...] = ()
+    """Lowercased imperatives that mark a short user message as a
+    workflow/approval resume rather than a fresh query (e.g.
+    ``"proceed"``, ``"continue"``, ``"go ahead"``). The host's
+    ``handle_message`` affirmative-resume path and the kernel's
+    ``_looks_like_continuation_query`` detector both read this list via
+    :func:`kernel.routing_vocabulary.get_resume_phrases` so the vocabulary
+    stays in one place. The detectors apply entries as **prefix** matches
+    on the lowered message, so ``"proceed with the current step in the
+    plan"`` matches ``"proceed"``.
+
+    The list is **session-authored vocabulary**. Empty (the default)
+    preserves the historical built-in phrase set so existing sessions
+    behave unchanged. Keep entries to unambiguous imperatives; avoid
+    common words like ``"ok"`` or ``"yes"`` that would false-positive on
+    normal conversation."""
+
 
 class InstructionFragment(_StrictSessionModel):
     """An explicit authored instruction fragment resolved at plan compilation."""

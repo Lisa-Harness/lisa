@@ -2496,6 +2496,43 @@ def test_query_is_sequential_uses_session_vocabulary() -> None:
         register_routing_vocabulary(sequential_connectors=None)
 
 
+def test_looks_like_continuation_query_uses_session_resume_phrases() -> None:
+    """``_looks_like_continuation_query`` reads the shared resume-phrase
+    registry, so a session-authored phrase (``"onward"``) is recognized
+    and a phrase only in the historical default (``"proceed"``) is not,
+    once the session list is wired. Prefix-matching lets
+    ``"proceed with the current step in the plan"`` match ``"proceed"``.
+
+    Regression for the 2026-07-31 incident: the user typed a longer resume
+    phrase that the old exact-match affirmative detector missed, and the
+    continuation detector's hardcoded token list was not session-tunable.
+    """
+    from kernel.routing_vocabulary import (
+        register_routing_vocabulary,
+        reset_routing_vocabulary,
+    )
+    from kernel.turn_runner import _looks_like_continuation_query
+
+    reset_routing_vocabulary()
+    try:
+        # Historical default: "proceed" and its longer form both match.
+        assert _looks_like_continuation_query("proceed")
+        assert _looks_like_continuation_query("proceed with the current step in the plan")
+        assert _looks_like_continuation_query("continue with the current step in the current plan")
+        assert not _looks_like_continuation_query(
+            "tell me the current plan and how much is complete"
+        )
+
+        # Session-authored vocabulary replaces the default list.
+        register_routing_vocabulary(resume_phrases=["onward", "carry forward"])
+        assert _looks_like_continuation_query("onward with the plan")
+        assert _looks_like_continuation_query("carry forward from step 3")
+        # The historical default "proceed" is NOT mixed in.
+        assert not _looks_like_continuation_query("proceed with the plan")
+    finally:
+        reset_routing_vocabulary()
+
+
 def test_routing_hint_sequential_via_session_vocabulary_does_not_fork() -> None:
     """A 'based on the results' query with the session vocabulary wired
     produces a single handoff to the first step, NOT a fork — the

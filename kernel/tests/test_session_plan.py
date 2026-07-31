@@ -139,6 +139,27 @@ def test_compile_session_plan_defaults_sequential_connectors_empty() -> None:
     assert plan.manifest.routing.sequential_connectors == ()
 
 
+def test_compile_session_plan_accepts_resume_phrases() -> None:
+    """The ``routing.resume_phrases`` list compiles into the plan."""
+    text = _manifest(
+        extra=(
+            "routing:\n  start_mode: default\n  resume_phrases: [proceed, onward, carry forward]\n"
+        )
+    )
+
+    plan = compile_session_plan(text=text, source_uri="workspace:session_context.md")
+
+    assert plan.manifest.routing.resume_phrases == ("proceed", "onward", "carry forward")
+
+
+def test_compile_session_plan_defaults_resume_phrases_empty() -> None:
+    """Omitting ``routing.resume_phrases`` yields an empty tuple (the kernel
+    falls back to its built-in list at runtime)."""
+    plan = compile_session_plan(text=_manifest(), source_uri="workspace:session_context.md")
+
+    assert plan.manifest.routing.resume_phrases == ()
+
+
 def test_compile_session_plan_accepts_execution_request_block() -> None:
     text = _manifest(
         extra=(
