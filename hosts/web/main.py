@@ -1,16 +1,8 @@
-"""hosts.web.main â€” Typer app and entry points for the localhost web host.
+"""hosts.web.main — Typer app and entry points for the localhost web host.
 
 This is the web-transport entry point for the Lisa framework. It wraps the
 transport-neutral :mod:`hosts.core` runtime with an aiohttp web server and
-a minimal Typer CLI. It replaces ``hosts/little_lisa/desktop.py`` and the
-desktop-launch paths in ``hosts/little_lisa/main.py``.
-
-Key differences from Little Lisa:
-- Builds a :class:`hosts.core.runtime.HostRuntime` (not a ``_RUNTIME_STATE`` dict).
-- Delegates turn execution to :func:`hosts.core.handle_message`.
-- Binds ``runtime.start()`` / ``runtime.aclose()`` to the aiohttp server's
-  ``on_startup`` / ``on_cleanup`` hooks (not a separate ``asyncio.run``).
-- Entry point is ``lisa-web`` (not ``little-lisa desktop``).
+a minimal Typer CLI.
 """
 
 from __future__ import annotations
@@ -224,7 +216,7 @@ def _configure_root_logging(config: HostConfig) -> None:
     The web host defaults the stderr mirror on (overridable via
     ``LISA_LOG_STDERR=0``).
     """
-    from sdk.logging_setup import configure_logging  # noqa: PLC0415
+    from sdk.logging_setup import configure_logging
 
     configure_logging(
         log_path=config.resolved_host_log_path,

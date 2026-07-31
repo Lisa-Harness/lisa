@@ -11,9 +11,8 @@ the per-user conversation thread JSONL file and its digest sidecar:
 
 All functions are transport-neutral: they take explicit ``thread_path`` and
 ``user_slug`` parameters rather than reading global runtime state. A
-transport host (Little Lisa, web host) wires its own
-``HostRuntime.thread_path`` and ``HostConfig.user_slug`` into these
-functions at startup.
+transport host wires its ``HostRuntime.thread_path`` and
+``HostConfig.user_slug`` into these functions at startup.
 
 Dependency direction
 --------------------

@@ -177,7 +177,6 @@ def _normalize_timezone_name(value: str) -> str | None:
 
     Note: ``/``-containing values are accepted without a ZoneInfo lookup
     because the target runtime may have different tzdata availability.
-    This matches the original Little Lisa behavior.
     """
     configured = value.strip()
     if not configured:

@@ -14,8 +14,8 @@ This module consolidates the pure, stateless logic for:
 
 All functions are transport-neutral: they take explicit ``data_dir`` and
 ``host_manifest_path`` parameters rather than reading global runtime state.
-A transport host (Little Lisa, web host) wires its own
-``HostConfig``-derived paths into these functions at startup.
+A transport host wires its ``HostConfig``-derived paths into these functions at
+startup.
 """
 
 from __future__ import annotations
@@ -411,14 +411,17 @@ def active_installed_pack_roots(
     # installed in the separate packs venv). Entry-point discovery cannot
     # find packs venv packages because ``importlib.metadata`` does not
     # re-scan after ``sys.path`` is modified at startup.
+    from kernel.content_roots import (  # noqa: PLC0415
+        discover_installed_content_roots as _discover_entry_point_roots,
+    )
+    from kernel.content_roots import (
+        discover_packs_venv_content_roots as _discover_packs_venv_roots,
+    )
+
     from hosts.core.paths import (  # noqa: PLC0415
         default_packs_venv,
         packs_venv_for,
         packs_venv_site_packages,
-    )
-    from kernel.content_roots import (  # noqa: PLC0415
-        discover_installed_content_roots as _discover_entry_point_roots,
-        discover_packs_venv_content_roots as _discover_packs_venv_roots,
     )
 
     def _venv_resolver(data_dir: Path | None) -> Path:
@@ -653,6 +656,7 @@ __all__ = [
     "load_pack_policy_dict",
     "pack_aliases",
     "pack_is_active",
+    "resolve_pack_session_path",
     "runtime_enabled_pack_map",
     "runtime_installed_pack_names",
     "runtime_pack_lock_path",
@@ -662,5 +666,4 @@ __all__ = [
     "sdk_operation_roots",
     "seed_bundled_packs_lock",
     "unique_paths",
-    "resolve_pack_session_path",
 ]

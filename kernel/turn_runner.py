@@ -1,28 +1,8 @@
 """Kernel turn runner — the single model+tool loop.
 
 This module provides `run_turn()` and `TurnHooks`, the core conversational turn
-loop that executes one mode's pipeline: pre-turn operations, model completion with
-tool dispatch, and post-turn side effects.
-
-DESIGN — Extension via TurnHooks, not replacement:
-    Little Lisa and the production app both call `run_turn()`. They differ only
-    in which `TurnHooks` they provide. Every hook defaults to a sensible no-op or
-    stub, so a minimal host participates with zero overrides.
-
-    The full app (`app/agent.py`) can eventually delegate its chat and workflow
-    completion paths to `run_turn()` by registering `AppTurnRunnerHooks` that
-    override model resolution, context assembly, tool dispatch, and post-turn
-    persistence — without duplicating the tool loop.
-
-Gaps (use the full `app/agent.py` turn loop when you need):
-    - FSM stage transitions (transition_stage, session state machines)
-    - Mode delegation (delegate_mode tool dispatch)
-    - Live system state, passive intelligence, reflection context
-    - Self-model, architecture atlas, capability vibes
-    - Thread persistence, handoff artifacts, conversation digest refresh
-    - Model restrict/unavailable gating, provider fallback
-    - Proactive/autopilot surface reflection
-    - Deterministic intent handling (notes, reminders, memory recall/disputes)
+loop that executes one mode's pipeline: pre-turn operations, model completion
+with tool dispatch, and post-turn side effects.
 """
 
 from __future__ import annotations

@@ -1,16 +1,8 @@
-"""hosts.cli.main â€” Typer app and CLI entry points for the terminal host.
+"""hosts.cli.main — Typer app and CLI entry points for the terminal host.
 
 This is the terminal-transport entry point for the Lisa framework. It
 wraps the transport-neutral :mod:`hosts.core` runtime with Typer commands
-and Rich/prompt_toolkit rendering. It replaces the CLI-specific code in
-``hosts/little_lisa/main.py``.
-
-Key differences from Little Lisa:
-- Builds a :class:`hosts.core.runtime.HostRuntime` (not a ``_RUNTIME_STATE`` dict).
-- Delegates turn execution to :func:`hosts.core.handle_message`.
-- The Typer app is named "lisa" (not "little-lisa"); entry point is ``lisa``.
-- The default no-args mode launches the REPL (tray-first desktop is a
-  future ``hosts/web`` concern).
+and Rich/prompt_toolkit rendering.
 """
 
 from __future__ import annotations
@@ -22,7 +14,7 @@ import os
 import platform
 import sys
 from pathlib import Path
-from typing import Annotated, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from rich.console import Console
@@ -71,9 +63,9 @@ from hosts.core.paths import (
 _inject_packs_venv_site_packages()
 
 from hosts.cli.render import (
+    render_mcp_tools,
     render_models,
     render_modes,
-    render_mcp_tools,
     render_operations,
     render_pack_list_panel,
     render_tools,
@@ -347,14 +339,14 @@ def _initialize_runtime(
     # ``hosts.core.runtime`` import chain. ``HostRuntime`` is also imported
     # here for the ``HostRuntime(config)`` construction; elsewhere it is a
     # stringified annotation satisfied by the ``TYPE_CHECKING`` import.
-    from hosts.core.mcp_pool import (  # noqa: PLC0415
+    from hosts.core.mcp_pool import (
         compile_mcp_configs,
         configure_runtime,
         discover_framework,
         setup_framework,
     )
-    from hosts.core.runtime import HostRuntime  # noqa: PLC0415, F811
-    from hosts.core.state_provider import load_state_snapshot  # noqa: PLC0415
+    from hosts.core.runtime import HostRuntime
+    from hosts.core.state_provider import load_state_snapshot
 
     _ = no_log  # honored via HostConfig.log_path resolution below
     config = HostConfig.from_env(
@@ -398,7 +390,7 @@ def _configure_root_logging(config: HostConfig) -> None:
     stderr only when ``LISA_LOG_STDERR=1`` (the CLI host reserves stderr
     for the Rich UI).
     """
-    from sdk.logging_setup import configure_logging  # noqa: PLC0415
+    from sdk.logging_setup import configure_logging
 
     configure_logging(
         log_path=config.resolved_host_log_path,
@@ -468,7 +460,7 @@ def _run_default_no_args_mode(
     if runtime is None:
         return
     _consume_restart_resume_message(runtime)
-    from hosts.cli.repl import run_repl  # noqa: PLC0415 â€” deferred to keep
+    from hosts.cli.repl import run_repl
 
     #                                   --version/modes/verify fast
     restart_requested = asyncio.run(run_repl(runtime, console=console))
@@ -603,7 +595,7 @@ def _cli_command(
     if runtime is None:
         return
     _consume_restart_resume_message(runtime)
-    from hosts.cli.repl import run_repl  # noqa: PLC0415 â€” deferred to keep
+    from hosts.cli.repl import run_repl
 
     #                                   --version/modes/verify fast
     restart_requested = asyncio.run(run_repl(runtime, console=console))
@@ -690,7 +682,7 @@ def _verify_check_pack_catalog() -> tuple[str, str]:
 def _verify_check_ollama() -> tuple[str, str]:
     import os
 
-    import httpx  # noqa: PLC0415 â€” deferred to keep --version/modes fast
+    import httpx
 
     configured_host = (
         os.getenv("LISA_OLLAMA_HOST", "").strip()
@@ -987,8 +979,9 @@ def _models_command(
     # command uses), so behavior stays identical across hosts. We
     # synthesize the equivalent '/models <sub> [--force]' slash string
     # and print the returned Markdown text in a Rich panel.
-    from hosts.core.commands import handle_models_command  # noqa: PLC0415
-    from rich.markdown import Markdown  # noqa: PLC0415
+    from rich.markdown import Markdown
+
+    from hosts.core.commands import handle_models_command
 
     if normalized == "discover" and force:
         stripped = "/models discover --force"
@@ -1336,8 +1329,8 @@ async def _run_once_with_teardown(runtime: HostRuntime, message: str) -> bool:
     a pack lifecycle command), so the caller can exit with a restart
     notice instead of a clean exit.
     """
-    from hosts.cli.transport import RichTransport  # noqa: PLC0415
-    from hosts.core.handle_message import handle_message  # noqa: PLC0415
+    from hosts.cli.transport import RichTransport
+    from hosts.core.handle_message import handle_message
 
     transport = RichTransport(console=console, debug=runtime.config.debug)
     try:
@@ -1460,7 +1453,7 @@ def _intake_command(
     """
     resolved_data_dir = Path(data_dir).expanduser() if data_dir else default_data_dir()
     try:
-        from hosts.core.intake import run_intake  # noqa: PLC0415
+        from hosts.core.intake import run_intake
     except ImportError:
         console.print("[red]intake module not available in this host.[/red]")
         raise typer.Exit(code=2)

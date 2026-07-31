@@ -36,7 +36,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from rich.console import Console, ConsoleOptions, Group, RenderResult, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -45,7 +45,7 @@ from rich.text import Text
 
 logger = logging.getLogger(__name__)
 
-# ── Visual style constants (kept in sync with the Little Lisa palette) ──
+# ── Visual style constants (kept in sync with the Lisa palette) ──
 STYLE_BORDER_RESPONSE = "dark_sea_green4"
 STYLE_BORDER_CONTEXT = "gold3"
 STYLE_BORDER_ERROR = "indian_red"
@@ -117,7 +117,7 @@ def _pip_counter(count: int, cap: int) -> str:
     """
     if cap <= 0:
         return f"N{count}"
-    width = cap if cap <= _PIP_MAX_WIDTH else _PIP_MAX_WIDTH
+    width = min(cap, _PIP_MAX_WIDTH)
     if count >= width:
         if count > width:
             return "●" * width + "⁺"
@@ -190,8 +190,8 @@ class _TrailingSpinner:
         self._style = style
 
     def __rich_console__(
-        self, console: "Console", options: "ConsoleOptions"
-    ) -> "RenderResult":
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
         # Live calls this on every refresh; delegate to ``render`` with the
         # console's current time so the trailing frame animates.
         yield self.render(console.get_time())

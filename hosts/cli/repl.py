@@ -150,6 +150,7 @@ class _SurrogateSafeFileHistory(History):
 def _repl_command_hints() -> tuple[str, ...]:
     """Build REPL completion hints from host shortcuts plus catalog mode commands."""
     from kernel.ipsar_fsm import get_workflow_catalog
+
     from hosts.core.commands import mode_support_gap
 
     catalog = get_workflow_catalog()
@@ -184,8 +185,7 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
     # Set the initial route preview so the status line shows the
     # resolved model before the first turn is executed. When start_mode
     # is set in the session context, use it instead of "default".
-    from hosts.core.commands import set_runtime_route_preview
-    from hosts.core.commands import model_alias_for_mode
+    from hosts.core.commands import model_alias_for_mode, set_runtime_route_preview
 
     initial_mode = runtime.start_mode_id
     initial_model_alias = (
@@ -429,7 +429,7 @@ async def _process_repl_turn(
 
     # Debug context is delivered via transport.on_debug_context during the
     # turn; render the last-turn context here too when debug is on, to
-    # match the Little Lisa post-turn panel.
+    # match the post-turn panel.
     if runtime.config.debug and runtime.last_turn_context is not None:
         _render_turn_context(console, runtime.last_turn_context)
 
