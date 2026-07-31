@@ -303,6 +303,17 @@ class MCPServerSpec:
     the model sees a stable name (e.g. ``cloudflare.search``) instead of
     the namespaced server id."""
 
+    default_available_tools: tuple[str, ...] = field(default_factory=tuple)
+    """Bare native tool names on this server that should be ambient-available
+    to every mode, mirroring the ``default_available: true`` flag pack
+    ``.tool.yml`` tools declare. The SDK catalog loader merges their
+    namespaced ids (``server_id.tool``) into each mode's
+    ``allowed_tool_ids`` unless the mode opts out via
+    ``accept_default_capabilities: false`` or lists the namespaced id in
+    ``excluded_tool_ids``. Use this to ship ambient MCP-native capabilities
+    (e.g. ``lisa-storage.read_file``) without a delegate pack tool and
+    without forcing every mode author to re-list the id."""
+
 
 @dataclass(frozen=True, slots=True)
 class MCPServerRegistry:

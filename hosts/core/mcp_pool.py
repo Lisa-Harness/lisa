@@ -311,6 +311,56 @@ def build_catalog_mcp_config(*, content_config: MCPClientConfig, data_dir: Path)
     )
 
 
+def resolve_default_mcp_tool_ids(
+    *,
+    host_manifest_path: Path,
+    pack_roots: list[Path],
+) -> set[str]:
+    """Resolve the namespaced ambient MCP-native tool id set.
+
+    Walks the host manifest plus every pack-contributed ``mcp_servers.yaml``
+    and collects ``default_available_tools`` entries from each spec, namespacing
+    them as ``server_id.tool``. Pack-contributed servers are registered under
+    namespaced ids (``<pack_slug>.<server_id>``) at compile time, so the
+    ambient id the model sees is the same namespaced form the catalog merge
+    and the turn-runner filter use; this helper emits that compile-time
+    namespacing here too (using the pack slug derived the same way as
+    :func:`compile_mcp_configs`). Malformed pack manifests are skipped
+    defensively, mirroring :func:`compile_mcp_configs`.
+    """
+    from kernel.tools.mcp_client import namespaced_tool_name  # noqa: PLC0415
+
+    ids: set[str] = set()
+    used_pack_slugs: set[str] = set()
+    # Host manifest first (first-party servers keep their bare server_id).
+    try:
+        host_specs, _ = load_mcp_server_manifest(host_manifest_path)
+    except MCPServerManifestError:
+        host_specs = []
+    for spec in host_specs:
+        if spec.disabled or not spec.default_available_tools:
+            continue
+        for tool_name in spec.default_available_tools:
+            ids.add(namespaced_tool_name(spec.server_id, tool_name))
+    # Pack manifests (namespaced as <pack_slug>.<server_id> at compile time).
+    for root in pack_roots:
+        pack_manifest_path = root / "mcp_servers.yaml"
+        if not pack_manifest_path.exists():
+            continue
+        try:
+            pack_specs, _ = load_mcp_server_manifest(pack_manifest_path)
+        except MCPServerManifestError:
+            continue
+        pack_slug = unique_pack_slug_for_root(root, used_pack_slugs)
+        for spec in pack_specs:
+            if spec.disabled or not spec.default_available_tools:
+                continue
+            namespaced_server_id = f"{pack_slug}.{spec.server_id}"
+            for tool_name in spec.default_available_tools:
+                ids.add(namespaced_tool_name(namespaced_server_id, tool_name))
+    return ids
+
+
 # ── Framework wiring ─────────────────────────────────────────────────
 
 
@@ -350,7 +400,18 @@ def setup_framework(
         disabled_packs=disabled_packs,
         provider_selections=runtime.session_plan.manifest.providers,
     )
+    default_mcp_tool_ids = resolve_default_mcp_tool_ids(
+        host_manifest_path=discovery.host_manifest_path,
+        pack_roots=roots,
+    )
     catalog_config = build_catalog_mcp_config(content_config=content_config, data_dir=data_dir)
+    if default_mcp_tool_ids:
+        # build_catalog_mcp_config always returns a populated env dict, but
+        # MCPClientConfig.env is typed dict|None, so normalize defensively
+        # before mutating (the empty-default case is skipped above).
+        if catalog_config.env is None:
+            catalog_config = dataclasses.replace(catalog_config, env={})
+        catalog_config.env["LISA_DEFAULT_MCP_TOOLS"] = ",".join(sorted(default_mcp_tool_ids))
 
     from kernel.ipsar_fsm import register_content_mcp, register_operation_callbacks  # noqa: PLC0415
     from kernel.operations.registry import (  # noqa: PLC0415

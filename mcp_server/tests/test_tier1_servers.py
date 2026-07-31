@@ -267,6 +267,22 @@ async def test_catalog_list_modes_returns_json(catalog_setup: None) -> None:
     assert isinstance(data, dict)
 
 
+def test_catalog_default_mcp_tools_env_reader(monkeypatch) -> None:
+    """_read_default_mcp_tools_env parses LISA_DEFAULT_MCP_TOOLS into a set."""
+    from mcp_server.catalog import server
+
+    monkeypatch.setenv("LISA_DEFAULT_MCP_TOOLS", "lisa-storage.read_file, b.search")
+    assert server._read_default_mcp_tools_env() == {"lisa-storage.read_file", "b.search"}
+
+
+def test_catalog_default_mcp_tools_env_reader_empty(monkeypatch) -> None:
+    """An unset/empty LISA_DEFAULT_MCP_TOOLS yields an empty set."""
+    from mcp_server.catalog import server
+
+    monkeypatch.delenv("LISA_DEFAULT_MCP_TOOLS", raising=False)
+    assert server._read_default_mcp_tools_env() == set()
+
+
 @pytest.mark.asyncio
 async def test_catalog_list_operations_returns_json(catalog_setup: None) -> None:
     from mcp_server.catalog.server import mcp

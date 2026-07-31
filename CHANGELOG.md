@@ -4,6 +4,30 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### `default_available_tools` for MCP-native tools
+
+- **MCP-native tools can now be ambient-available to every mode**, mirroring
+  the `default_available: true` flag pack `.tool.yml` tools declare. MCP-native
+  tools have no pack YAML front matter (they're discovered at runtime from
+  server subprocesses and keyed namespaced as `server_id.tool`), so the flag
+  lives on the host manifest instead: `default_available_tools:` on each
+  server entry in `mcp_servers.yaml`.
+- **The host resolves the namespaced ids** (`server_id.tool`, or
+  `<pack_slug>.<server_id>.tool` for pack-contributed servers) and passes
+  them to the `lisa-catalog` subprocess via the `LISA_DEFAULT_MCP_TOOLS` env
+  var. The SDK catalog loader (`_merge_default_capabilities`) unions them
+  into every mode's `allowed_tool_ids` with the same opt-out and idempotent
+  semantics as pack `default_available: true` tools. The turn-runner's
+  existing MCP-tool filter admits them with no further change.
+- **`lisa-storage.read_file` is now ambient-available** by default, declared
+  in `hosts/core/mcp_servers.yaml`. Modes can read persisted artifacts
+  without re-listing the tool or paying the cold-server spawn cost unless
+  they actually call it. The previous delegate pack tool under
+  `sdk/packs/core/tools/read_file/` is removed — `lisa-storage` stays the
+  sole storage owner.
+
 ### Changed
 
 #### `FileWorkflowInstanceStore` moved from `kernel/` to `hosts/core/`

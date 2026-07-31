@@ -104,6 +104,7 @@ def build_mode_catalog_json(
     *,
     operation_catalog_json: str | None = None,
     tool_catalog_json: str | None = None,
+    default_mcp_tool_ids: set[str] | None = None,
     strict: bool = False,
 ) -> str:
     """Scan mode roots and return a JSON-serializable mode catalog.
@@ -116,16 +117,29 @@ def build_mode_catalog_json(
     :class:`CatalogCollisionError` instead of being logged and skipped. Used
     at host startup so a broken pack install fails fast.
 
-    When ``operation_catalog_json`` and/or ``tool_catalog_json`` are provided,
-    each mode's ``allowed_operation_ids`` / ``allowed_tool_ids`` are augmented
-    with the ids of operations/tools flagged ``default_available: true`` in
-    those catalogs (unless the mode opts out via
-    ``accept_default_capabilities: false`` or lists an id in
-    ``excluded_operation_ids`` / ``excluded_tool_ids``). This keeps the
-    ambient-capability merge entirely in the SDK catalog layer so the kernel
-    only ever sees the already-merged allowlists.
+    Three ambient-capability sources feed the merge (all optional, all in the
+    SDK catalog layer so the kernel only ever sees the already-merged
+    allowlists):
+
+    * ``operation_catalog_json`` / ``tool_catalog_json``: ids flagged
+      ``default_available: true`` in their YAML front matter (pack ops/tools).
+    * ``default_mcp_tool_ids``: fully namespaced MCP-native tool ids
+      (``server_id.tool``) the host declared ambient in ``mcp_servers.yaml``
+      via ``default_available_tools``. These are not in the pack tool catalog
+      (MCP-native tools are discovered at runtime from subprocesses), so the
+      host passes the resolved set in directly.
+
+    Every source is unioned into each mode's allowlists unless the mode opts
+    out via ``accept_default_capabilities: false`` or lists an id in
+    ``excluded_operation_ids`` / ``excluded_tool_ids``.
     """
-    cache_key = "modes:" + _roots_fingerprint(mode_roots) + _provider_selection_cache_key()
+    cache_key = (
+        "modes:"
+        + _roots_fingerprint(mode_roots)
+        + _provider_selection_cache_key()
+        + ":mcp_defaults="
+        + ",".join(sorted(default_mcp_tool_ids or ()))
+    )
     cached = _catalog_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -156,11 +170,16 @@ def build_mode_catalog_json(
         )
         for mode_id, candidates in candidates_by_id.items()
     }
-    if operation_catalog_json is not None or tool_catalog_json is not None:
+    if (
+        operation_catalog_json is not None
+        or tool_catalog_json is not None
+        or default_mcp_tool_ids
+    ):
         _merge_default_capabilities(
             modes=merged,
             operation_catalog=_decode_optional_catalog(operation_catalog_json),
-            tool_catalog=_decode_optional_catalog(tool_catalog_json),
+ tool_catalog=_decode_optional_catalog(tool_catalog_json),
+            default_mcp_tool_ids=set(default_mcp_tool_ids or ()),
         )
     result = json.dumps(merged)
     _catalog_cache[cache_key] = result
@@ -183,15 +202,24 @@ def _merge_default_capabilities(
     modes: dict[str, dict[str, Any]],
     operation_catalog: dict[str, dict[str, Any]],
     tool_catalog: dict[str, dict[str, Any]],
+    default_mcp_tool_ids: set[str] | None = None,
 ) -> None:
     """Merge ``default_available`` ops/tools into each mode's allowlists in place.
 
     For every mode that has ``accept_default_capabilities`` truthy (default
     True), union its ``allowed_operation_ids`` with the ids of operations
     flagged ``default_available: true`` in ``operation_catalog``, then
-    subtract the mode's ``excluded_operation_ids``. Symmetric for tools. The
-    merge is idempotent (set union) so modes that already list an ambient id
-    are unaffected. Modes with ``accept_default_capabilities: false`` keep
+    subtract the mode's ``excluded_operation_ids``. Symmetric for tools.
+
+    ``default_mcp_tool_ids`` (namespaced ``server_id.tool`` ids declared
+    ambient in ``mcp_servers.yaml``) are unioned into ``allowed_tool_ids``
+    alongside the pack-tool defaults, with the same opt-out and idempotent
+    semantics. MCP-native tools have no pack YAML front matter, so their
+    ambient set is sourced from the host manifest and passed in by the
+    caller.
+
+    The merge is idempotent (set union) so modes that already list an ambient
+    id are unaffected. Modes with ``accept_default_capabilities: false`` keep
     their explicit allowlists untouched. The kernel never names ids; it only
     filters on the merged allowlists it receives.
     """
@@ -203,7 +231,8 @@ def _merge_default_capabilities(
         for tool_id, tool in tool_catalog.items()
         if bool(tool.get("default_available", False))
     }
-    if not default_op_ids and not default_tool_ids:
+    mcp_tool_ids = set(default_mcp_tool_ids or ())
+    if not default_op_ids and not default_tool_ids and not mcp_tool_ids:
         return
     for mode in modes.values():
         if not mode.get("accept_default_capabilities", True):
@@ -219,7 +248,7 @@ def _merge_default_capabilities(
                 existing_ops.append(op_id)
                 seen_ops.add(op_id)
         seen_tools = set(existing_tools)
-        for tool_id in sorted(default_tool_ids - excluded_tools):
+        for tool_id in sorted((default_tool_ids | mcp_tool_ids) - excluded_tools):
             if tool_id not in seen_tools:
                 existing_tools.append(tool_id)
                 seen_tools.add(tool_id)

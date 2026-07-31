@@ -436,3 +436,106 @@ servers:
     assert mem.default_backend == "lisa_memory"
     backend = mem.backends[0]
     assert backend.result_maps == {}
+
+
+# ── default_available_tools ─────────────────────────────────────────────────
+
+
+def test_default_available_tools_parsed(tmp_path: Path) -> None:
+    """default_available_tools parses to a tuple of bare tool names."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-storage
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+    default_available_tools:
+      - read_file
+      - stat_file
+""",
+        encoding="utf-8",
+    )
+    specs, _ = load_mcp_server_manifest(manifest)
+    assert specs[0].default_available_tools == ("read_file", "stat_file")
+
+
+def test_default_available_tools_defaults_empty(tmp_path: Path) -> None:
+    """Omitting default_available_tools yields an empty tuple."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-storage
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+""",
+        encoding="utf-8",
+    )
+    specs, _ = load_mcp_server_manifest(manifest)
+    assert specs[0].default_available_tools == ()
+
+
+def test_default_available_tools_rejects_namespaced_id(tmp_path: Path) -> None:
+    """A namespaced id in default_available_tools is rejected (bare names only)."""
+    from kernel.mcp_launch.server_manifest import MCPServerManifestError
+
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-storage
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+    default_available_tools:
+      - lisa-storage.read_file
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(MCPServerManifestError, match="must be a bare tool name"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_default_available_tools_rejects_duplicate(tmp_path: Path) -> None:
+    """Duplicate bare tool names in default_available_tools are rejected."""
+    from kernel.mcp_launch.server_manifest import MCPServerManifestError
+
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-storage
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+    default_available_tools:
+      - read_file
+      - read_file
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(MCPServerManifestError, match="duplicate default_available_tools"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_default_available_tools_rejects_non_list(tmp_path: Path) -> None:
+    """default_available_tools must be a list, not a scalar/mapping."""
+    from kernel.mcp_launch.server_manifest import MCPServerManifestError
+
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+servers:
+  - server_id: lisa-storage
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+    default_available_tools: read_file
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(MCPServerManifestError, match="'default_available_tools' must be a list"):
+        load_mcp_server_manifest(manifest)

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import warnings
 from pathlib import Path
 
@@ -104,17 +105,41 @@ async def list_modes() -> str:
     front-matter from ``_mode.md`` and stage files, and returns a JSON object
     mapping ``mode_id`` to a serializable mode config dict with nested
     ``stages``.
+
+    Ambient MCP-native tool ids declared in the host manifest
+    (``default_available_tools`` on each server in ``mcp_servers.yaml``)
+    are merged into every mode's ``allowed_tool_ids`` here, alongside the
+    pack-tool ``default_available: true`` ids. The host passes the resolved
+    namespaced set via the ``LISA_DEFAULT_MCP_TOOLS`` env var (comma-separated
+    ``server_id.tool`` ids); this is the only channel for MCP-native ambient
+    ids because those tools are not in the pack tool catalog the catalog
+    server scans.
     """
     mode_roots = resolve_mode_roots(_all_roots())
     operation_roots = resolve_operation_roots(_all_roots())
     tool_roots = resolve_tool_roots(_all_roots())
     operation_catalog_json = build_operation_catalog_json(operation_roots)
     tool_catalog_json = build_tool_catalog_json(tool_roots)
+    default_mcp_tool_ids = _read_default_mcp_tools_env()
     return build_mode_catalog_json(
         mode_roots,
         operation_catalog_json=operation_catalog_json,
         tool_catalog_json=tool_catalog_json,
+        default_mcp_tool_ids=default_mcp_tool_ids,
     )
+
+
+def _read_default_mcp_tools_env() -> set[str]:
+    """Read ambient MCP-native tool ids from ``LISA_DEFAULT_MCP_TOOLS``.
+
+    The host compiles its ``mcp_servers.yaml`` into a namespaced id set
+    (``server_id.tool``) and passes it via this comma-separated env var so
+    the catalog subprocess can merge them into mode allowlists without
+    importing host-only policy modules. Empty/absent → no MCP-native
+    ambient tools.
+    """
+    raw = os.getenv("LISA_DEFAULT_MCP_TOOLS", "")
+    return {part.strip() for part in raw.split(",") if part.strip()}
 
 
 @mcp.tool()

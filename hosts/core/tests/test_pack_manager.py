@@ -1366,3 +1366,111 @@ def test_render_pack_list_excludes_lisa_sdk(
 
     assert "lisa-sdk" not in rendered
     assert "lisa-pack-cloudflare" in rendered
+
+
+# ── resolve_default_mcp_tool_ids ────────────────────────────────────────────
+
+
+def test_resolve_default_mcp_tool_ids_host_and_pack_namespacing(tmp_path: Path) -> None:
+    """Host servers keep bare server_id; pack servers get <pack_slug>.<server_id>.
+
+    The ambient tool id the model sees is the namespaced form the catalog
+    merge and turn-runner filter use, so the resolver emits that exact form.
+    """
+    host_manifest = tmp_path / "mcp_servers.yaml"
+    host_manifest.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "servers:",
+                "  - server_id: lisa-storage",
+                "    runtime_kind: venv_bin",
+                "    venv_dir: \"${FRAMEWORK_ROOT}\"",
+                "    default_available_tools:",
+                "      - read_file",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    pack_root = tmp_path / "pack-memory"
+    pack_root.mkdir(parents=True, exist_ok=True)
+    (pack_root / "mcp_servers.yaml").write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "servers:",
+                "  - server_id: lisa-memory",
+                "    runtime_kind: venv_bin",
+                "    venv_dir: \"${FRAMEWORK_ROOT}\"",
+                "    default_available_tools:",
+                "      - search_memory",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    ids = mcp_pool.resolve_default_mcp_tool_ids(
+        host_manifest_path=host_manifest,
+        pack_roots=[pack_root],
+    )
+    assert ids == {"lisa-storage.read_file", "pack-memory.lisa-memory.search_memory"}
+
+
+def test_resolve_default_mcp_tool_ids_ignores_disabled(tmp_path: Path) -> None:
+    """A disabled server contributes no ambient tool ids."""
+    host_manifest = tmp_path / "mcp_servers.yaml"
+    host_manifest.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "servers:",
+                "  - server_id: lisa-storage",
+                "    runtime_kind: venv_bin",
+                "    venv_dir: \"${FRAMEWORK_ROOT}\"",
+                "    disabled: true",
+                "    default_available_tools:",
+                "      - read_file",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    ids = mcp_pool.resolve_default_mcp_tool_ids(
+        host_manifest_path=host_manifest,
+        pack_roots=[],
+    )
+    assert ids == set()
+
+
+def test_resolve_default_mcp_tool_ids_empty_when_undeclared(tmp_path: Path) -> None:
+    """No default_available_tools on any server → empty set."""
+    host_manifest = tmp_path / "mcp_servers.yaml"
+    host_manifest.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "servers:",
+                "  - server_id: lisa-storage",
+                "    runtime_kind: venv_bin",
+                "    venv_dir: \"${FRAMEWORK_ROOT}\"",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    ids = mcp_pool.resolve_default_mcp_tool_ids(
+        host_manifest_path=host_manifest,
+        pack_roots=[],
+    )
+    assert ids == set()
+
+
+def test_resolve_default_mcp_tool_ids_missing_manifest(tmp_path: Path) -> None:
+    """A missing host manifest yields an empty set (defensive)."""
+    ids = mcp_pool.resolve_default_mcp_tool_ids(
+        host_manifest_path=tmp_path / "nope.yaml",
+        pack_roots=[],
+    )
+    assert ids == set()

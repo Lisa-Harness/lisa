@@ -151,6 +151,21 @@ exportable: true
 
 Modes opt out of the ambient merge via `accept_default_capabilities: false` (disables all defaults) or `excluded_operation_ids` / `excluded_tool_ids` (subtracts specific ids). The kernel distinguishes the authored allowlists from the merged effective ones so that `_fork_mode_requires_tools` checks only the authored set.
 
+#### MCP-native ambient tools
+
+MCP-native tools (discovered at runtime from server subprocesses) have no pack `.tool.yml`, so they cannot declare `default_available` in front matter. Instead, the host manifest (`mcp_servers.yaml`) declares ambient MCP-native tools per server:
+
+```yaml
+# hosts/core/mcp_servers.yaml
+- server_id: lisa-storage
+  runtime_kind: venv_bin
+  venv_dir: "${FRAMEWORK_ROOT}"
+  default_available_tools:
+    - read_file      # bare name; merged as lisa-storage.read_file
+```
+
+The host resolves these into namespaced ids (`server_id.tool`, or `<pack_slug>.<server_id>.tool` for pack-contributed servers) and passes them to the catalog server via the `LISA_DEFAULT_MCP_TOOLS` env var. The SDK catalog loader unions them into every mode's `allowed_tool_ids` with the same opt-out / idempotent semantics as pack `default_available: true` tools. The turn-runner's existing MCP-tool filter (which keys on namespaced ids) then admits them with no further change.
+
 Kernel-owned keys that overrides **may** replace (read into typed fields but not security-sensitive): `description`, `default_model`.
 
 List values from overrides replace (not concatenate) list values from the base front matter, so extension sets stay deterministic.

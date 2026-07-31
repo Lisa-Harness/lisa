@@ -111,3 +111,12 @@ servers:
     venv_dir: "${FRAMEWORK_ROOT}"
     warm: false
     data_dir_subdir: "."
+    # Ambient MCP-native tool: ``lisa-storage.read_file`` is merged into
+    # every mode's allowed_tool_ids by the SDK catalog loader (same ambient
+    # contract as ``recall_memory`` / ``fetch_page``), so modes can read
+    # persisted artifacts without re-listing the tool. The bare tool name
+    # is namespaced to ``lisa-storage.read_file`` at merge time; list bare
+    # names here only. Modes opt out via ``excluded_tool_ids`` or
+    # ``accept_default_capabilities: false``.
+    default_available_tools:
+      - read_file

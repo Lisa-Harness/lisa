@@ -245,6 +245,112 @@ def test_explicit_allowlist_preserved_with_defaults_appended(tmp_path: Path) -> 
     assert modes["chat"]["allowed_operation_ids"] == ["native_op", "recall_memory"]
 
 
+# ── MCP-native default-available merge ──────────────────────────────────────
+#
+# MCP-native tools (declared ambient via ``default_available_tools`` in
+# ``mcp_servers.yaml``) are not in the pack tool catalog, so the host passes
+# their namespaced ids (``server_id.tool``) into ``build_mode_catalog_json``
+# via ``default_mcp_tool_ids``. These tests cover that merge path directly.
+
+
+def _build_catalogs_with_mcp_defaults(
+    *roots: Path,
+    default_mcp_tool_ids: set[str],
+) -> tuple[dict, dict, dict]:
+    """Like ``_build_catalogs`` but threads ``default_mcp_tool_ids`` through."""
+    from sdk.content import invalidate_catalog_cache
+
+    invalidate_catalog_cache()
+    mode_roots = resolve_mode_roots(list(roots))
+    op_roots = resolve_operation_roots(list(roots))
+    tool_roots = resolve_tool_roots(list(roots))
+    op_json = build_operation_catalog_json(op_roots)
+    tool_json = build_tool_catalog_json(tool_roots)
+    mode_json = build_mode_catalog_json(
+        mode_roots,
+        operation_catalog_json=op_json,
+        tool_catalog_json=tool_json,
+        default_mcp_tool_ids=default_mcp_tool_ids,
+    )
+    return json.loads(mode_json), json.loads(op_json), json.loads(tool_json)
+
+
+def test_mcp_native_default_tool_merged_into_empty_allowlist(tmp_path: Path) -> None:
+    """A namespaced MCP-native ambient tool appears in a mode's tool allowlist."""
+    pack_a = tmp_path / "pack_a"
+    _write_mode(pack_a, mode_id="chat", provider_id="lisa-pack-a")
+    modes, _ops, _tools = _build_catalogs_with_mcp_defaults(
+        pack_a,
+        default_mcp_tool_ids={"lisa-storage.read_file"},
+    )
+    assert "lisa-storage.read_file" in modes["chat"]["allowed_tool_ids"]
+
+
+def test_mcp_native_default_tool_absent_when_opted_out(tmp_path: Path) -> None:
+    """MCP-native ambient tool is absent when accept_default_capabilities is False."""
+    pack_a = tmp_path / "pack_a"
+    _write_mode(
+        pack_a,
+        mode_id="chat",
+        provider_id="lisa-pack-a",
+        accept_default_capabilities=False,
+    )
+    modes, _ops, _tools = _build_catalogs_with_mcp_defaults(
+        pack_a,
+        default_mcp_tool_ids={"lisa-storage.read_file"},
+    )
+    assert "lisa-storage.read_file" not in modes["chat"]["allowed_tool_ids"]
+
+
+def test_excluded_tool_ids_removes_mcp_native_default(tmp_path: Path) -> None:
+    """excluded_tool_ids removes a namespaced MCP-native ambient tool."""
+    pack_a = tmp_path / "pack_a"
+    _write_mode(
+        pack_a,
+        mode_id="chat",
+        provider_id="lisa-pack-a",
+        excluded_tool_ids=["lisa-storage.read_file"],
+    )
+    modes, _ops, _tools = _build_catalogs_with_mcp_defaults(
+        pack_a,
+        default_mcp_tool_ids={"lisa-storage.read_file"},
+    )
+    assert "lisa-storage.read_file" not in modes["chat"]["allowed_tool_ids"]
+
+
+def test_mcp_native_default_merged_alongside_pack_default_tool(tmp_path: Path) -> None:
+    """MCP-native and pack-default ambient tools both merge into the allowlist."""
+    pack_a = tmp_path / "pack_a"
+    pack_b = tmp_path / "pack_b"
+    _write_mode(pack_a, mode_id="chat", provider_id="lisa-pack-a")
+    _write_tool(
+        pack_b,
+        tool_id="ambient_tool",
+        provider_id="lisa-pack-b",
+        exportable=True,
+        default_available=True,
+    )
+    modes, _ops, _tools = _build_catalogs_with_mcp_defaults(
+        pack_a,
+        pack_b,
+        default_mcp_tool_ids={"lisa-storage.read_file"},
+    )
+    allowed = modes["chat"]["allowed_tool_ids"]
+    assert "ambient_tool" in allowed
+    assert "lisa-storage.read_file" in allowed
+
+
+def test_empty_mcp_tool_ids_noop(tmp_path: Path) -> None:
+    """An empty default_mcp_tool_ids set does not alter the mode allowlist."""
+    pack_a = tmp_path / "pack_a"
+    _write_mode(pack_a, mode_id="chat", provider_id="lisa-pack-a")
+    modes, _ops, _tools = _build_catalogs_with_mcp_defaults(
+        pack_a,
+        default_mcp_tool_ids=set(),
+    )
+    assert modes["chat"]["allowed_tool_ids"] == []
+
+
 def test_non_default_available_operation_not_merged(tmp_path: Path) -> None:
     """An op without default_available is not merged into the allowlist."""
     pack_a = tmp_path / "pack_a"

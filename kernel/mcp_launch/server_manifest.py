@@ -381,6 +381,9 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         headers = {str(k): _expand_env_value(v) for k, v in headers_raw.items()}
 
     aliases = _parse_aliases(entry.get("aliases"), server_id, index, path)
+    default_available_tools = _parse_default_available_tools(
+        entry.get("default_available_tools"), server_id, index, path
+    )
 
     return MCPServerSpec(
         server_id=server_id,
@@ -414,6 +417,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         required=bool(entry.get("required", False)),
         disabled=False,
         aliases=aliases,
+        default_available_tools=default_available_tools,
     )
 
 
@@ -492,6 +496,57 @@ def _parse_aliases(raw: Any, server_id: str, index: int, path: Path) -> tuple[Al
             )
         )
     return tuple(specs)
+
+
+def _parse_default_available_tools(
+    raw: Any,
+    server_id: str,
+    index: int,
+    path: Path,
+) -> tuple[str, ...]:
+    """Parse the optional ``default_available_tools`` list on a server entry.
+
+    Each entry is a bare native tool name on the server (e.g. ``read_file``).
+    The host namespaces them to ``server_id.tool`` when merging into mode
+    allowlists, so authors list bare names here and never repeat the
+    ``server_id.`` prefix. Format::
+
+        default_available_tools:
+          - read_file
+          - stat_file
+
+    Returns an empty tuple when absent. Duplicates are rejected.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}' in {path}: "
+            "'default_available_tools' must be a list"
+        )
+    seen: set[str] = set()
+    names: list[str] = []
+    for pos, item in enumerate(raw):
+        name = str(item or "").strip()
+        if not name:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': "
+                f"default_available_tools[{pos}] must be a non-empty string"
+            )
+        if "." in name:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': "
+                f"default_available_tools[{pos}] {name!r} must be a bare tool name, "
+                "not a namespaced id (omit the server_id prefix)"
+            )
+        if name in seen:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': "
+                f"duplicate default_available_tools entry {name!r}"
+            )
+        seen.add(name)
+        names.append(name)
+    return tuple(names)
 
 
 def _parse_proxy_policy(raw: Any, server_id: str, index: int, path: Path) -> ProxyPolicy:
