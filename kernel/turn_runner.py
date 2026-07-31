@@ -3755,6 +3755,26 @@ async def _run_turn_inner(
                                             ):
                                                 remaining_steps.append(rid)
                                     chain_position = len(_state.chain_satisfied) + 1
+                                    # Terminal-step directive: when there are no
+                                    # remaining steps, tell the model to COMPLETE
+                                    # and respond, not to hand off. The previous
+                                    # unconditional "hand off to the next step"
+                                    # line contradicted the "(none — this is the
+                                    # final step)" sentinel and left the terminal
+                                    # mode (e.g. markdown) flailing with no
+                                    # completion signal (2026-07-30 incident).
+                                    if remaining_steps:
+                                        next_directive = (
+                                            "- After you complete your work, hand off to "
+                                            "the next step by calling "
+                                            "`transition_stage`.\n"
+                                        )
+                                    else:
+                                        next_directive = (
+                                            "- You are the final step in this chain. "
+                                            "Complete your work and respond to the user "
+                                            "directly — do NOT call `transition_stage`.\n"
+                                        )
                                     handoff_context = (
                                         "\n\n## Handoff Context\n"
                                         f"- You were handed off from: `{mode_id}`\n"
@@ -3762,9 +3782,7 @@ async def _run_turn_inner(
                                         f"{chain_position + len(remaining_steps)}\n"
                                         f"- Remaining steps after this one: "
                                         f"{_format_remaining_steps(remaining_steps)}\n"
-                                        "- After you complete your work, hand off to "
-                                        "the next step by calling "
-                                        "`transition_stage`.\n"
+                                        f"{next_directive}"
                                     )
                                     messages[0]["content"] = (
                                         str(messages[0].get("content", "")) + handoff_context

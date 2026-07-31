@@ -359,6 +359,62 @@ async def test_handoff_swaps_system_prompt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_handoff_to_terminal_mode_instructs_completion_not_handoff() -> None:
+    """Regression (2026-07-30): when the handoff target is the final step in
+    the chain (no remaining gap intents), the Handoff Context block must
+    tell the model to COMPLETE and respond, not to hand off again.
+
+    Before the fix, the "After you complete your work, hand off to the
+    next step by calling ``transition_stage``" line was unconditional —
+    it fired even when ``remaining_steps`` was empty, contradicting the
+    "(none — this is the final step)" sentinel. The terminal mode (e.g.
+    ``markdown``) then flailed with no clean completion signal, burning
+    round-trips until the handoff cap force-ended the turn.
+
+    This test hands off ``default → markdown`` for a ``write``-only query
+    (markdown satisfies ``write`` fully, so the chain is terminal) and
+    asserts the system prompt after handoff contains the completion
+    directive and NOT the hand-off directive.
+    """
+    captured_system_prompts: list[str] = []
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        msgs = kwargs.get("messages", [])
+        if msgs and msgs[0].get("role") == "system":
+            captured_system_prompts.append(str(msgs[0].get("content", "")))
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[_transition_call("call_1", "markdown")],
+            )
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_hooks(two_step)
+    result = await run_turn(mode_id="default", query="write a doc", hooks=hooks)
+
+    assert result.handoff_to == "markdown"
+    # The post-handoff system prompt (second capture) is the one carrying
+    # the Handoff Context block for the terminal markdown step.
+    post_handoff_prompt = captured_system_prompts[1]
+    assert "You are the final step in this chain" in post_handoff_prompt, (
+        "terminal handoff must instruct completion, not further handoff; "
+        f"got: {post_handoff_prompt!r}"
+    )
+    assert "do NOT call `transition_stage`" in post_handoff_prompt, (
+        "terminal handoff must explicitly forbid transition_stage; "
+        f"got: {post_handoff_prompt!r}"
+    )
+    # The unconditional hand-off directive must NOT appear on the terminal step.
+    assert "After you complete your work, hand off to the next step" not in post_handoff_prompt, (
+        "terminal handoff must not emit the next-step hand-off directive; "
+        f"got: {post_handoff_prompt!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_handoff_updates_ctx_mode_id_for_post_handoff_dispatch() -> None:
     """Regression: after a mid-turn mode handoff, subsequent operation/tool
     dispatches must authorize against the *new* mode, not the entry mode.
