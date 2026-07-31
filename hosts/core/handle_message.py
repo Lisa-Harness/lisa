@@ -172,6 +172,7 @@ def _apply_turn_usage(
     """Apply turn usage via the dict-based token_accounting module."""
     state = _token_state_dict(runtime)
     per_model = getattr(result, "per_model_usage", None)
+    per_mode = getattr(result, "per_mode_usage", None)
     apply_turn_usage(
         state,
         result,
@@ -179,6 +180,7 @@ def _apply_turn_usage(
         mode_id=mode_id,
         stage_id=stage_id,
         per_model_usage=per_model if isinstance(per_model, list) else None,
+        per_mode_usage=per_mode if isinstance(per_mode, list) else None,
     )
     _sync_token_state(runtime, state)
 
@@ -688,6 +690,14 @@ async def _execute_mode_turn(
         return response_text
 
     # Apply token usage accounting.
+    # Sync the runtime's stage from the result's terminal transition so the
+    # per-stage breakdown reflects where the turn actually ended (workflow
+    # FSM advancements) rather than the entry stage set by
+    # set_runtime_route_preview at dispatch. Without this, every turn's
+    # stage_token_totals row is the entry stage regardless of how many
+    # stages the model advanced through.
+    if result.transitioned_to:
+        runtime.current_stage_id = result.transitioned_to
     _apply_turn_usage(
         runtime,
         result,

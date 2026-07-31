@@ -856,6 +856,100 @@ def test_apply_turn_usage_falls_back_to_single_model_id_when_per_model_empty() -
     assert model_totals["gpt-4o"]["total_tokens"] == 150
 
 
+def test_apply_turn_usage_per_mode_overrides_single_mode_id() -> None:
+    """When per_mode_usage is supplied, mode_token_totals reflects every
+    mode that actually ran rather than the single entry mode_id kwarg.
+
+    This is the fix for /tokens misattributing kernel-driven recursive
+    handoffs (plan → search → coding) to the entry mode.
+    """
+    state: dict[str, object] = {
+        "session_token_ledger": [],
+        "model_token_totals": {},
+        "mode_token_totals": {},
+        "stage_token_totals": {},
+        "session_prompt_tokens": 0,
+        "session_completion_tokens": 0,
+        "session_total_tokens": 0,
+    }
+
+    result = TurnResult(
+        response_text="ok",
+        prompt_tokens=120,
+        completion_tokens=70,
+        total_tokens=190,
+    )
+    apply_turn_usage(
+        state,
+        result,
+        model_id="gpt-4o",
+        mode_id="plan",  # entry mode; should NOT own the whole breakdown
+        stage_id="plan",
+        per_mode_usage=[
+            {
+                "mode_id": "plan",
+                "prompt_tokens": 40,
+                "completion_tokens": 20,
+                "total_tokens": 60,
+                "cached_tokens": 0,
+                "reasoning_tokens": 0,
+                "duration_ms": 200.0,
+                "latency_ms": 0,
+            },
+            {
+                "mode_id": "search",
+                "prompt_tokens": 80,
+                "completion_tokens": 50,
+                "total_tokens": 130,
+                "cached_tokens": 0,
+                "reasoning_tokens": 0,
+                "duration_ms": 400.0,
+                "latency_ms": 0,
+            },
+        ],
+    )
+
+    mode_totals = state["mode_token_totals"]
+    assert isinstance(mode_totals, dict)
+    # Both modes appear with their own counts, not collapsed onto plan.
+    assert mode_totals["plan"]["total_tokens"] == 60
+    assert mode_totals["search"]["total_tokens"] == 130
+    # The entry mode_id is NOT double-counted as the whole turn.
+    assert mode_totals["plan"]["total_tokens"] != 190
+
+
+def test_apply_turn_usage_falls_back_to_single_mode_id_when_per_mode_empty() -> None:
+    """When per_mode_usage is None/empty, the single mode_id kwarg owns
+    the breakdown (legacy behavior preserved)."""
+    state: dict[str, object] = {
+        "session_token_ledger": [],
+        "model_token_totals": {},
+        "mode_token_totals": {},
+        "stage_token_totals": {},
+        "session_prompt_tokens": 0,
+        "session_completion_tokens": 0,
+        "session_total_tokens": 0,
+    }
+
+    result = TurnResult(
+        response_text="ok",
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+    )
+    apply_turn_usage(
+        state,
+        result,
+        model_id="gpt-4o",
+        mode_id="search",
+        stage_id="search",
+        per_mode_usage=None,
+    )
+
+    mode_totals = state["mode_token_totals"]
+    assert mode_totals["search"]["total_tokens"] == 150
+
+
 def test_apply_turn_usage_threads_cached_reasoning_duration_latency() -> None:
     state: dict[str, object] = {
         "session_token_ledger": [],

@@ -392,6 +392,15 @@ class TurnResult:
     so ``/tokens`` reports per-model usage rather than attributing the whole
     turn to the default mode's resolved model. Empty when no model was
     called (e.g. input-guard block, pure operation mode)."""
+    per_mode_usage: list[dict[str, Any]] = field(default_factory=list)
+    """Per-mode token breakdown for every mode that actually ran during this
+    turn. Mirrors ``per_model_usage`` but keyed by ``mode_id``. The host's
+    token accounting reads this to populate ``mode_token_totals`` so
+    ``/tokens`` reports the actual mode(s) that did the work rather than
+    attributing the whole turn to the entry mode — the previous behavior
+    misattributed kernel-driven recursive handoffs (plan → search → coding)
+    to the entry mode. Empty when ``record_model_usage`` was never called
+    with a mode_id, or no model was called this turn."""
 
 
 def _lazy_model_policy() -> ModelPolicy:
@@ -2384,8 +2393,14 @@ async def _run_turn_inner(
         d: float,
         lat: int,
     ) -> None:
-        """Merge one completion's counters into the per-model accumulator."""
-        _record_model_usage_fn(_state, model_def, p=p, c=c, t=t, ct=ct, rt=rt, d=d, lat=lat)
+        """Merge one completion's counters into the per-model accumulator.
+
+        Also accumulates into ``per_mode_usage`` keyed by this turn's
+        ``mode_id`` so the host can attribute tokens to the mode that
+        actually ran the completion (not the entry mode)."""
+        _record_model_usage_fn(
+            _state, model_def, p=p, c=c, t=t, ct=ct, rt=rt, d=d, lat=lat, mode_id=mode_id
+        )
 
     def _budget_forces_final() -> bool:
         """Return True when the turn budget is exhausted."""
@@ -4910,6 +4925,7 @@ async def _run_turn_inner(
         fork_results=fork_results,
         workflow_terminated=workflow_terminated,
         per_model_usage=list(_state.per_model_usage.values()),
+        per_mode_usage=list(_state.per_mode_usage.values()),
     )
 
 # ---------------------------------------------------------------------------

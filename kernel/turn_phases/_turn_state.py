@@ -53,6 +53,7 @@ class _TurnState:
     total_latency_ms: int = 0
     total_tool_calls: int = 0
     per_model_usage: dict[str, dict[str, Any]] = field(default_factory=dict)
+    per_mode_usage: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # ── Budget caps (stamped on every emitted stage payload) ───────────
     # Set once at turn start from ``kernel.config.Settings`` and
@@ -298,8 +299,18 @@ def record_model_usage(
     rt: int,
     d: float,
     lat: int,
+    mode_id: str = "",
 ) -> None:
-    """Merge one completion's counters into the per-model accumulator."""
+    """Merge one completion's counters into the per-model accumulator.
+
+    When ``mode_id`` is non-empty, also accumulate the same counters into
+    ``per_mode_usage`` so the host's token accounting can attribute each
+    model call to the mode that actually ran it — not just the turn's
+    entry mode. This mirrors ``per_model_usage``; without it, a kernel-
+    driven recursive handoff (plan → search → coding) merges every inner
+    turn's tokens into the outer result and the host attributes them to
+    the entry mode.
+    """
     mid = (getattr(model_def, "model_id", "") or "-").strip()
     entry = state.per_model_usage.setdefault(mid, {"model_id": mid})
     entry["prompt_tokens"] = entry.get("prompt_tokens", 0) + p
@@ -309,6 +320,17 @@ def record_model_usage(
     entry["reasoning_tokens"] = entry.get("reasoning_tokens", 0) + rt
     entry["duration_ms"] = entry.get("duration_ms", 0.0) + d
     entry["latency_ms"] = entry.get("latency_ms", 0) + lat
+
+    mid_mode = (mode_id or "").strip()
+    if mid_mode:
+        mode_entry = state.per_mode_usage.setdefault(mid_mode, {"mode_id": mid_mode})
+        mode_entry["prompt_tokens"] = mode_entry.get("prompt_tokens", 0) + p
+        mode_entry["completion_tokens"] = mode_entry.get("completion_tokens", 0) + c
+        mode_entry["total_tokens"] = mode_entry.get("total_tokens", 0) + t
+        mode_entry["cached_tokens"] = mode_entry.get("cached_tokens", 0) + ct
+        mode_entry["reasoning_tokens"] = mode_entry.get("reasoning_tokens", 0) + rt
+        mode_entry["duration_ms"] = mode_entry.get("duration_ms", 0.0) + d
+        mode_entry["latency_ms"] = mode_entry.get("latency_ms", 0) + lat
 
 
 def budget_forces_final(

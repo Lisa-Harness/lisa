@@ -155,6 +155,44 @@ def test_turn_result_per_model_usage_defaults_empty() -> None:
     assert result.per_model_usage == []
 
 
+def test_turn_result_per_mode_usage_defaults_empty() -> None:
+    """TurnResult.per_mode_usage defaults to an empty list."""
+    result = TurnResult(response_text="ok")
+    assert result.per_mode_usage == []
+
+
+@pytest.mark.asyncio
+async def test_run_turn_populates_per_mode_usage_for_entry_mode() -> None:
+    """A single-model turn attributes tokens to the entry mode_id.
+
+    Without per_mode_usage the host's mode_token_totals would attribute the
+    whole turn to the entry mode by default — but a kernel-driven recursive
+    handoff (plan → search → coding) merges every inner turn's tokens into
+    the outer result. per_mode_usage lets the host see the actual mode(s)
+    that ran the completions.
+    """
+    completion = _StubCompletion("Hello", "default-model", prompt=100, completion=50)
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        return completion
+
+    hooks = TurnHooks(
+        complete=complete,
+        resolve_model=lambda mid: _StubModelDef("default-model"),
+    )
+
+    with _patched_catalog():
+        result = await run_turn(mode_id="search", query="hello", hooks=hooks)
+
+    assert isinstance(result, TurnResult)
+    assert len(result.per_mode_usage) == 1
+    entry = result.per_mode_usage[0]
+    assert entry["mode_id"] == "search"
+    assert entry["prompt_tokens"] == 100
+    assert entry["completion_tokens"] == 50
+    assert entry["total_tokens"] == 150
+
+
 # ── Fork output_text visibility tests ─────────────────────────────────
 
 

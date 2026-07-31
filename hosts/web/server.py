@@ -388,6 +388,7 @@ def _build_web_app(*, runtime: HostRuntime, token: str) -> web.Application:
                     "error_count": counters.session_error_count,
                     "model_token_totals": counters.model_token_totals,
                     "mode_token_totals": counters.mode_token_totals,
+                    "stage_token_totals": counters.stage_token_totals,
                 },
                 "turn": {
                     "prompt_tokens": counters.turn_prompt_tokens,

@@ -144,6 +144,7 @@ def apply_turn_usage(
     mode_id: str = "",
     stage_id: str = "",
     per_model_usage: list[dict[str, Any]] | None = None,
+    per_mode_usage: list[dict[str, Any]] | None = None,
 ) -> None:
     """Persist turn and session token counters from one completed turn result.
 
@@ -152,6 +153,14 @@ def apply_turn_usage(
     during the turn rather than the single resolved default model. When it
     is None/empty the legacy single-``model_id`` path is preserved for hosts
     and tests that do not populate it.
+
+    ``per_mode_usage`` mirrors that for the per-mode breakdown: when the
+    turn runner supplies a per-mode list, ``mode_token_totals`` reflects
+    every mode that actually ran the completions (the entry mode AND any
+    kernel-driven recursive handoff targets) rather than attributing the
+    whole turn to the single entry ``mode_id``. When absent/empty, the
+    legacy single-``mode_id`` path applies (the whole turn attributes to
+    the entry mode).
     """
     main_tokens = _extract_main_tokens(result)
 
@@ -171,6 +180,7 @@ def apply_turn_usage(
         mode_id,
         stage_id,
         skip_model_breakdown=bool(per_model_usage),
+        skip_mode_breakdown=bool(per_mode_usage),
     )
 
     # Per-model breakdown. When the turn runner supplies a per-model list,
@@ -183,6 +193,15 @@ def apply_turn_usage(
     if per_model_usage:
         _accumulate_per_model_breakdown(state, per_model_usage)
 
+    # Per-mode breakdown. When the turn runner supplies a per-mode list,
+    # accumulate each entry into mode_token_totals so /tokens reports every
+    # mode that actually ran (entry mode + any kernel-driven recursive
+    # handoff targets) rather than attributing the whole turn to the entry
+    # mode. When absent, _record_main_ledger already attributed the whole
+    # turn to ``mode_id`` (legacy single-mode behavior).
+    if per_mode_usage:
+        _accumulate_per_mode_breakdown(state, per_mode_usage)
+
 
 def _accumulate_per_model_breakdown(
     state: dict[str, Any],
@@ -194,6 +213,27 @@ def _accumulate_per_model_breakdown(
         _accumulate_breakdown(
             state,
             "model_token_totals",
+            mid,
+            prompt=coerce_non_negative_int(entry.get("prompt_tokens", 0)),
+            completion=coerce_non_negative_int(entry.get("completion_tokens", 0)),
+            total=coerce_non_negative_int(entry.get("total_tokens", 0)),
+            cached=coerce_non_negative_int(entry.get("cached_tokens", 0)),
+            reasoning=coerce_non_negative_int(entry.get("reasoning_tokens", 0)),
+            duration_ms=coerce_non_negative_float(entry.get("duration_ms", 0.0)),
+            latency_ms=coerce_non_negative_int(entry.get("latency_ms", 0)),
+        )
+
+
+def _accumulate_per_mode_breakdown(
+    state: dict[str, Any],
+    per_mode_usage: list[dict[str, Any]],
+) -> None:
+    """Merge each per-mode entry into ``mode_token_totals``."""
+    for entry in per_mode_usage:
+        mid = str(entry.get("mode_id", "") or "-").strip()
+        _accumulate_breakdown(
+            state,
+            "mode_token_totals",
             mid,
             prompt=coerce_non_negative_int(entry.get("prompt_tokens", 0)),
             completion=coerce_non_negative_int(entry.get("completion_tokens", 0)),
@@ -282,6 +322,7 @@ def _record_main_ledger(
     stage_id: str,
     *,
     skip_model_breakdown: bool = False,
+    skip_mode_breakdown: bool = False,
 ) -> None:
     """Record the main execution ledger entry and per-model/mode/stage breakdowns.
 
@@ -289,7 +330,12 @@ def _record_main_ledger(
     ``model_token_totals`` is NOT accumulated here — the caller owns it (used
     by ``apply_turn_usage`` when a per-model list is supplied so the
     breakdown reflects every model called, not just the resolved default).
-    Mode and stage breakdowns are always accumulated.
+    When ``skip_mode_breakdown`` is True the per-mode row in
+    ``mode_token_totals`` is NOT accumulated here — the caller owns it (used
+    by ``apply_turn_usage`` when a per-mode list is supplied so the breakdown
+    reflects every mode that actually ran, not just the entry mode).
+    The stage breakdown is always accumulated here (the host owns stage
+    attribution; there is no per-stage list on TurnResult).
     """
     clean_model = (model_id or "-").strip()
     clean_mode = (mode_id or "-").strip()
@@ -319,7 +365,8 @@ def _record_main_ledger(
     main_kwargs = _main_breakdown_kwargs(main)
     if not skip_model_breakdown:
         _accumulate_breakdown(state, "model_token_totals", clean_model, **main_kwargs)
-    _accumulate_breakdown(state, "mode_token_totals", clean_mode, **main_kwargs)
+    if not skip_mode_breakdown:
+        _accumulate_breakdown(state, "mode_token_totals", clean_mode, **main_kwargs)
     _accumulate_breakdown(state, "stage_token_totals", clean_stage, **main_kwargs)
 
 
