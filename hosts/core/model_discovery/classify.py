@@ -40,6 +40,14 @@ _REASONING_MARKERS = (
 # deprecated. mini/nano variants count as gpt-5+ (they share the family).
 _GPT_5_FAMILY_MARKERS = ("gpt-5",)
 
+# Coding-specialized model markers. Substring match against the lower-cased
+# model id. Conservative by design: only well-known coding model families /
+# naming conventions. ``glm`` is included because GLM models (glm-4.5+ /
+# glm-5) are strong code-capable general assistants and routinely serve as
+# the coding default on Ollama. Over-matching is avoided by not using bare
+# tokens like "code" or "gpt".
+_CODE_MODEL_MARKERS = ("codex", "coder", "glm", "code-")
+
 #: Providers treated as local (everything else is cloud). Single source of
 #: truth for the local/cloud split — the discovery algorithm and any
 #: pack-contributed role defaults consult this.
@@ -68,6 +76,22 @@ def is_reasoning_model(model_id: str) -> bool:
 
     value = model_id.strip().lower()
     return any(marker in value for marker in _REASONING_MARKERS)
+
+
+def is_code_model(model_id: str) -> bool:
+    """Heuristic: does ``model_id`` look like a coding-specialized model?
+
+    Mirrors :func:`is_reasoning_model`: conservative substring markers for
+    well-known coding model families/naming conventions. Providers without
+    capability metadata (notably Ollama) use this to advertise the ``code``
+    capability so the router rule ``'"code" in route.required_capabilities'``
+    and ``_pick_code_model`` can select a coding model. Overrides in
+    ``known_models.yaml`` still win because each probe applies the registry
+    after this heuristic.
+    """
+
+    value = model_id.strip().lower()
+    return any(marker in value for marker in _CODE_MODEL_MARKERS)
 
 
 def is_gpt_5_family(model_id: str) -> bool:

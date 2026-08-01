@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import httpx
 
-from ..classify import apply_known_override, env_any
+from ..classify import apply_known_override, env_any, is_code_model
 from ..types import DiscoveredModel
 from .base import ProviderProbe, _extract_rows, _model
 
@@ -62,6 +62,14 @@ def _enrich_ollama_model(model_id: str, item: dict) -> DiscoveredModel:
     capabilities: list[str] = ["text", "tools", "structured_output"]
     if family in {"clip", "llava"} or "vision" in model_id.lower():
         capabilities.append("vision")
+    # Ollama tags carry no capability metadata beyond family/size, so the
+    # ``code`` capability is derived from the model-id heuristic — same as
+    # ``reasoning`` (which ``_model`` appends). This lets the router rule
+    # ``'"code" in route.required_capabilities'`` and ``_pick_code_model``
+    # select a coding model (e.g. glm-5.2:cloud) instead of silently
+    # defaulting. ``known_models.yaml`` can still override per model.
+    if is_code_model(model_id):
+        capabilities.append("code")
 
     cost_tier = ""
     latency_tier = ""

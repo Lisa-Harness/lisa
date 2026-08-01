@@ -155,6 +155,31 @@ class TestOllamaEnrichment:
         assert model.reasoning_model is True
         assert "reasoning" in model.capabilities
 
+    def test_coding_model_family_gets_code_capability(self) -> None:
+        # ollama's probe derives "code" from is_code_model so the router rule
+        # '"code" in route.required_capabilities' and _pick_code_model can
+        # select a coding model instead of silently defaulting.
+        model = _enrich_ollama_model(
+            "glm-5.2:cloud",
+            {"details": {"parameter_size": "756B", "family": "glm"}},
+        )
+        assert "code" in model.capabilities
+
+    def test_coder_suffix_gets_code_capability(self) -> None:
+        model = _enrich_ollama_model(
+            "qwen2.5-coder:14b",
+            {"details": {"parameter_size": "14B", "family": "qwen"}},
+        )
+        assert "code" in model.capabilities
+
+    def test_non_coding_model_has_no_code_capability(self) -> None:
+        # A plain chat model (no coding markers) must not advertise "code".
+        model = _enrich_ollama_model(
+            "llama3.2:3b",
+            {"details": {"parameter_size": "3B", "family": "llama"}},
+        )
+        assert "code" not in model.capabilities
+
     def test_tiny_local_model_low_structured_reliability(self) -> None:
         # Small local Ollama models ignore response_format — the probe must
         # NOT claim reliability for them (the root cause of the search-mode

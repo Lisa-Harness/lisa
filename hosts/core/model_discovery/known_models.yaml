@@ -62,6 +62,12 @@ azure_openai:gpt-chat-latest:
   latency_tier: low
   context_window: 128000
 
+ollama:glm-5.2:cloud:
+  display_name: Glm 5.2:Cloud
+  capabilities: [text, tools, structured_output, code]
+  cost_tier: standard
+  latency_tier: medium
+
 azure_openai:gpt-5.4:
   display_name: GPT-5.4 (Azure)
   capabilities: [text, tools, structured_output, code, vision]
