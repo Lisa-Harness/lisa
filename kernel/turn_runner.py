@@ -934,8 +934,18 @@ def _coordinator_routing_hint(
     and goes stale after advancement). The instance's ``current_step_id``
     was advanced by ``advance_step`` when the previous step completed, so
     it names the step that should run next on a ``/proceed`` resume.
+
+    The plan-instance resume branch fires whenever ``workflow_instance`` is
+    wired — independent of ``route_coordinator``. The host wires
+    ``workflow_instance`` (the durable cross-turn plan store) but never
+    wires ``route_coordinator`` (a legacy single-target persistence). Gating
+    the whole function on ``route_coordinator is None`` (the 2026-08-01 bug)
+    left the plan-resume branch dead in production: a continuation query
+    ("proceed with P0") got no resume hint, re-entered ``plan`` mode, and
+    ``plan_workflow`` refused to route an execution request. Only the
+    legacy coordinator-driven branch requires ``route_coordinator``.
     """
-    if hooks.route_coordinator is None or not _looks_like_continuation_query(query):
+    if not _looks_like_continuation_query(query):
         return ""
     # ── Plan-instance-driven resume ──────────────────────────────────
     # When a plan_workflow_op instance is active, read the next target
@@ -965,6 +975,10 @@ def _coordinator_routing_hint(
                     f"`{_step.mode_id}`."
                 )
     # ── Coordinator-driven resume (legacy / non-plan) ────────────────
+    # Requires a wired coordinator. When it is None (production host), the
+    # only resume source is the durable plan instance handled above.
+    if hooks.route_coordinator is None:
+        return ""
     request = {
         "mode_id": mode_id,
         "query": query,

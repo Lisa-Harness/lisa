@@ -208,6 +208,69 @@ async def test_run_turn_planner_action_mode_drives_handoff_without_model_transit
 
 
 @pytest.mark.asyncio
+async def test_plan_action_mode_propagates_handoff_to_advance_host_mode() -> None:
+    """A kernel-driven plan handoff propagates the planned target as
+    ``handoff_to`` when the recursive first step completes without a
+    further ``transition_stage``.
+
+    Regression for the 2026-08-01 plan→markdown→re-plan→discuss→failure
+    loop: the recursive first-step turn runs in the planned target mode
+    (e.g. ``markdown``) and returns ``handoff_to=None`` when that step
+    finishes. The host only advances ``current_mode_id`` from
+    ``result.handoff_to``, so the session was left stuck in ``plan`` mode
+    and the next message re-ran ``plan_workflow`` — re-planning a
+    "proceed" into a fresh (wrong) target or failing on a resume query.
+    The kernel must propagate the planned target so the host stops
+    re-entering the planner.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    markdown_cfg = _mode_config(mode_id="markdown", satisfies_intents=["write"])
+    patched_catalog = {"plan": plan_cfg, "markdown": markdown_cfg}
+
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Drafted the document.")
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        # Simulate plan_workflow returning a single-step plan to markdown.
+        return OperationResult(
+            output_text="## Plan\n\n1. **markdown** — draft the document",
+            output_json={
+                "target_stage_id": "markdown",
+                "rationale": "write intent",
+                "steps": [
+                    {"mode_id": "markdown", "description": "draft", "rationale": "write"},
+                ],
+            },
+        )
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow_instance_updater = lambda _instance: None
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(mode_id="plan", query="draft a doc", hooks=hooks)
+
+    # The planned target is propagated as handoff_to so the host advances
+    # current_mode_id out of ``plan`` and does not re-run the planner.
+    assert "Drafted the document." in result.response_text
+    assert result.handoff_to == "markdown"
+
+
+@pytest.mark.asyncio
 async def test_run_turn_planner_action_mode_empty_target_falls_back_to_text() -> None:
     """When a planner action mode's entry op returns an empty
     ``target_stage_id`` (no routable mode matched), the kernel terminates
@@ -648,6 +711,65 @@ async def test_coordinator_routing_hint_uses_plan_instance_current_step_on_proce
     # coordinator target) without also mentioning markdown.
     assert not any("search" in h and "markdown" not in h for h in captured_hints), (
         "routing hint must NOT point at the stale coordinator target (search)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_plan_instance_resume_hint_fires_without_route_coordinator() -> None:
+    """A continuation query resumes an active ``plan_workflow_op`` instance
+    even when ``route_coordinator`` is NOT wired.
+
+    Regression for the 2026-08-01 incident: the host wires
+    ``workflow_instance`` (the durable cross-turn plan store) but never
+    wires ``route_coordinator`` (a legacy single-target persistence). The
+    old guard ``if hooks.route_coordinator is None ... return ""`` short-
+    circuited the whole resume path, so a continuation query like "proceed
+    with P0" got no resume hint, re-entered ``plan`` mode, and
+    ``plan_workflow`` refused to route an execution request ("No installed
+    mode provides a 'proceed with P0' capability").
+    """
+    from kernel.workflow_instance import WorkflowInstance, WorkflowStep
+
+    steps = (
+        WorkflowStep(
+            step_id="search_0",
+            mode_id="search",
+            satisfies_intents=("research",),
+            spawned_from="plan_workflow_op",
+        ),
+        WorkflowStep(
+            step_id="markdown_1",
+            mode_id="markdown",
+            satisfies_intents=("write",),
+            is_terminal=True,
+            spawned_from="plan_workflow_op",
+        ),
+    )
+    active_instance = WorkflowInstance(
+        declared_steps=steps,
+        completed_steps=("search_0",),
+        current_step_id="markdown_1",
+        current_mode_id="markdown",
+        spawned_from="plan_workflow_op",
+    )
+
+    captured_hints: list[str] = []
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        captured_hints.append(sys_content)
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(complete)
+    # Production wiring: workflow_instance is set, route_coordinator is NOT.
+    hooks.workflow_instance = lambda: active_instance
+    assert hooks.route_coordinator is None
+
+    result = await run_turn(mode_id="default", query="proceed with P0", hooks=hooks)
+
+    assert "Done." in result.response_text
+    assert any("markdown" in h for h in captured_hints), (
+        "plan-instance resume hint must fire without route_coordinator wired"
     )
 
 
