@@ -27,6 +27,15 @@ class StubModelDefinition:
 
     context_window: int = 0
 
+    completion_api: str = "chat_completions"
+
+    """Which OpenAI-compatible endpoint family this model uses: ``"chat_completions"``
+    or ``"responses"``. Forwarded from ``ManifestModelEntry.completion_api`` so the
+    host's provider dispatch can route Responses-only models (e.g. Codex on Azure)
+    to ``client.responses.create`` instead of the unsupported
+    ``chat.completions.create``. Default ``"chat_completions"`` for backward
+    compatibility with stubs that do not carry the field."""
+
     capabilities: tuple[str, ...] = ()
 
     """``ModelCapability`` strings (``text``, ``tools``, ``code``, ...) the
@@ -308,6 +317,7 @@ def resolve_model(
         provider=resolved.provider,
         reasoning_model=resolved.reasoning_model,
         context_window=resolved.context_window,
+        completion_api=resolved.completion_api,
         capabilities=tuple(resolved.capabilities),
         structured_reliability=resolved.structured_reliability,
     )

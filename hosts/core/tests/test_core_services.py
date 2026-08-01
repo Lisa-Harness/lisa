@@ -2119,3 +2119,180 @@ def test_little_lisa_discovers_and_runs_hello_world_pack_from_sdk_content_roots(
 
 def test_verify_command_respects_data_dir_override(tmp_path: Path) -> None:
     pytest.skip("migrated: _verify_command now in hosts/cli (CLI verify command)")
+
+
+# ── Responses API dispatch (Codex on Azure) ──────────────────────────
+
+
+def test_uses_openai_responses_api_defaults_to_chat_completions() -> None:
+    """A model without completion_api uses the chat-completions endpoint."""
+    model_def = StubModelDefinition(model_id="gpt-5.4", provider="azure_openai")
+    assert providers._uses_openai_responses_api(model_def) is False
+
+
+def test_uses_openai_responses_api_honors_completion_api_field() -> None:
+    """A model with completion_api='responses' opts into the Responses API."""
+    model_def = StubModelDefinition(
+        model_id="gpt-5.2-codex", provider="azure_openai", completion_api="responses"
+    )
+    assert providers._uses_openai_responses_api(model_def) is True
+
+
+@pytest.mark.asyncio
+async def test_complete_live_responses_builds_and_parses_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """complete_live_responses calls responses.create and parses the response."""
+    runtime = _make_runtime(tmp_path)
+    transport = _CapturingTransport()
+    captured: dict[str, object] = {}
+    created = False
+
+    class _StubResponsesClient:
+        async def create(self, **kwargs: object) -> object:
+            nonlocal created
+            created = True
+            captured.update(kwargs)
+            return SimpleNamespace(
+                status="completed",
+                output_text="Codex answer",
+                output=[
+                    SimpleNamespace(
+                        type="function_call",
+                        id="call_abc",
+                        name="my_tool",
+                        arguments='{"q":"x"}',
+                    )
+                ],
+                usage=SimpleNamespace(
+                    input_tokens=10, output_tokens=20, total_tokens=30
+                ),
+            )
+
+    class _StubAzureClient:
+        responses = _StubResponsesClient()
+
+    monkeypatch.setattr(providers, "azure_client_instance", lambda runtime: _StubAzureClient())
+
+    model_def = StubModelDefinition(
+        model_id="gpt-5.2-codex", provider="azure_openai", completion_api="responses"
+    )
+    result = await providers.complete_live_responses(
+        runtime=runtime,
+        transport=transport,
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=model_def,
+        max_tokens=200,
+        temperature=0.0,
+        tools=[{"type": "function", "function": {"name": "my_tool", "parameters": {}}}],
+        response_format=None,
+        stream_stage=False,
+        stage_label="azure_openai:gpt-5.2-codex",
+        started_at=time.time(),
+        response_format_name="none",
+    )
+
+    assert created is True
+    # Responses API payload: model + input items + max_output_tokens.
+    assert captured["model"] == "gpt-5.2-codex"
+    assert captured["max_output_tokens"] == 200
+    assert captured["input"] == [
+        {"type": "message", "role": "user", "content": "hi"}
+    ]
+    # Tool translated into Responses function shape.
+    tool_payloads = captured["tools"]
+    assert tool_payloads[0]["type"] == "function"
+    assert tool_payloads[0]["name"] == "my_tool"
+    # Response parsed into StubCompletion.
+    assert result.content == "Codex answer"
+    assert result.tool_calls == [
+        {"id": "call_abc", "type": "function", "name": "my_tool", "arguments": '{"q":"x"}'}
+    ]
+    assert result.prompt_tokens == 10
+    assert result.completion_tokens == 20
+    assert result.total_tokens == 30
+    assert transport.stages == []
+
+
+@pytest.mark.asyncio
+async def test_complete_live_responses_emits_stage_callbacks_for_hybrid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hybrid mode fires model_call stage callbacks around the Responses call."""
+    runtime = _make_runtime(tmp_path, streaming="hybrid")
+    transport = _CapturingTransport()
+
+    class _StubResponsesClient:
+        async def create(self, **kwargs: object) -> object:
+            return SimpleNamespace(
+                status="completed",
+                output_text="answer",
+                output=[],
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+            )
+
+    class _StubAzureClient:
+        responses = _StubResponsesClient()
+
+    monkeypatch.setattr(providers, "azure_client_instance", lambda runtime: _StubAzureClient())
+
+    model_def = StubModelDefinition(
+        model_id="gpt-5.2-codex", provider="azure_openai", completion_api="responses"
+    )
+    await providers.complete_live_responses(
+        runtime=runtime,
+        transport=transport,
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=model_def,
+        max_tokens=200,
+        temperature=0.0,
+        tools=None,
+        response_format=None,
+        stream_stage=True,
+        stage_label="azure_openai:gpt-5.2-codex",
+        started_at=time.time(),
+        response_format_name="none",
+    )
+    assert "model_call" in transport.stages
+    assert "model_call_complete" in transport.stages
+
+
+@pytest.mark.asyncio
+async def test_complete_live_dispatches_codex_to_responses_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """complete_live routes a completion_api='responses' model to responses.create."""
+    runtime = _make_runtime(tmp_path)
+    created = False
+
+    class _StubResponsesClient:
+        async def create(self, **kwargs: object) -> object:
+            nonlocal created
+            created = True
+            return SimpleNamespace(
+                status="completed",
+                output_text="Codex answer",
+                output=[],
+                usage=SimpleNamespace(input_tokens=2, output_tokens=3, total_tokens=5),
+            )
+
+    class _StubAzureClient:
+        responses = _StubResponsesClient()
+
+    monkeypatch.setattr(providers, "azure_client_instance", lambda runtime: _StubAzureClient())
+
+    model_def = StubModelDefinition(
+        model_id="gpt-5.2-codex", provider="azure_openai", completion_api="responses"
+    )
+    result = await providers.complete_live(
+        runtime=runtime,
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=model_def,
+        max_tokens=200,
+        temperature=0.0,
+    )
+    assert created is True
+    assert result.content == "Codex answer"

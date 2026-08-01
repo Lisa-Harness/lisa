@@ -614,6 +614,22 @@ async def complete_live(
             response_format_name=response_format_name,
         )
 
+    if _uses_openai_responses_api(model_def):
+        return await complete_live_responses(
+            runtime=runtime,
+            transport=tport,
+            messages=messages,
+            model_def=model_def,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+            response_format=response_format,
+            stream_stage=stream_stage,
+            stage_label=stage_label,
+            started_at=started_at,
+            response_format_name=response_format_name,
+        )
+
     return await complete_live_openai_compatible(
         runtime=runtime,
         transport=tport,
@@ -690,6 +706,141 @@ async def complete_live_anthropic(
         call_site="complete_live.anthropic",
     )
     return final_result
+
+
+def _uses_openai_responses_api(model_def: StubModelDefinition) -> bool:
+    """Return True when this model must be called via the Responses API.
+
+    Codex-family models on Azure OpenAI only expose the Responses API; the
+    chat-completions endpoint rejects them with ``The requested operation is
+    unsupported.`` The field is forwarded from the model manifest's
+    ``completion_api`` (default ``chat_completions``), so only Responses-only
+    models opt in.
+    """
+    completion_api = str(getattr(model_def, "completion_api", "chat_completions") or "")
+    return completion_api.strip().lower() == "responses"
+
+
+def _build_responses_payload(
+    *,
+    model_def: StubModelDefinition,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None,
+    response_format: type[Any] | None,
+) -> dict[str, Any]:
+    """Build the kwargs dict for one OpenAI Responses API call.
+
+    Translates chat-completions history into Responses ``input`` items and
+    tool definitions into Responses function tools. Structured-output hints
+    become ``text.format``. Codex models use ``max_output_tokens``.
+    """
+    from kernel.provider_core import (
+        _normalize_openai_response_format,
+        _normalize_openai_response_tool,
+        build_openai_responses_input,
+    )
+
+    payload: dict[str, Any] = {
+        "model": model_def.model_id,
+        "input": build_openai_responses_input(list(messages)),
+        "max_output_tokens": max_tokens,
+    }
+    if not model_def.reasoning_model and not getattr(model_def, "thinking_model", False):
+        payload["temperature"] = temperature
+    if tools:
+        payload["tools"] = [_normalize_openai_response_tool(tool) for tool in tools]
+    normalized_format = _normalize_openai_response_format(response_format)
+    if normalized_format is not None:
+        payload["text"] = {"format": normalized_format}
+    return payload
+
+
+async def complete_live_responses(
+    *,
+    runtime: HostRuntime,
+    transport: TransportCallbacks | None = None,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None = None,
+    response_format: type[Any] | None = None,
+    stream_stage: bool,
+    stage_label: str,
+    started_at: float,
+    response_format_name: str,
+) -> StubCompletion:
+    """Execute a Responses-API provider completion (e.g. Codex on Azure)."""
+    from kernel.provider_core import (
+        extract_responses_content,
+        extract_responses_tool_calls,
+        extract_responses_usage,
+    )
+
+    tport = transport or NullTransport()
+    payload = _build_responses_payload(
+        model_def=model_def,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        tools=tools,
+        response_format=response_format,
+    )
+    try:
+        if stream_stage:
+            await tport.on_stage("model_call", {"label": stage_label})
+        client = azure_client_instance(runtime)
+        response = await client.responses.create(**payload)
+        if stream_stage:
+            await tport.on_stage("model_call_complete", {"label": stage_label})
+    except Exception as exc:  # pylint: disable=broad-except
+        if stream_stage:
+            await tport.on_stage("model_call_failed", {"label": stage_label})
+        elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+        log_completion_error(
+            exc=exc,
+            model_def=model_def,
+            response_format_name=response_format_name,
+            elapsed_ms=elapsed_ms,
+            messages=messages,
+            tools=tools,
+        )
+        raise
+
+    content = extract_responses_content(response)
+    tool_calls = extract_responses_tool_calls(response)
+    usage = extract_responses_usage(response)
+    finish_reason = getattr(response, "status", None)
+    elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+
+    result = StubCompletion(
+        content=content,
+        tool_calls=tool_calls,
+        prompt_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+        completion_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+        total_tokens=getattr(usage, "total_tokens", 0) if usage else 0,
+        cached_tokens=getattr(usage, "cached_tokens", 0) if usage else 0,
+        reasoning_tokens=getattr(usage, "reasoning_tokens", 0) if usage else 0,
+        duration_ms=elapsed_ms,
+        finish_reason=finish_reason,
+        reasoning_content="",
+    )
+    log_completion_response(
+        model_def=model_def,
+        response_format_name=response_format_name,
+        elapsed_ms=elapsed_ms,
+        result=result,
+    )
+    await publish_completion_usage(
+        runtime=runtime,
+        model_def=model_def,
+        result=result,
+        elapsed_ms=elapsed_ms,
+        call_site="complete_live.responses",
+    )
+    return result
 
 
 async def complete_live_openai_compatible(
