@@ -180,6 +180,41 @@ class TestOllamaEnrichment:
         )
         assert "code" not in model.capabilities
 
+    def test_show_payload_overrides_vision_and_context(self) -> None:
+        # /api/show is authoritative for vision and context window.
+        model = _enrich_ollama_model(
+            "qwen3:8b",
+            {"details": {"parameter_size": "8B", "family": "qwen"}},
+            show_payload={
+                "capabilities": ["completion", "tools", "vision", "thinking"],
+                "model_info": {"general.context_length": 65536},
+            },
+        )
+        assert "vision" in model.capabilities
+        assert "reasoning" in model.capabilities
+        assert "tools" in model.capabilities
+        assert model.context_window == 65536
+
+    def test_show_payload_missing_fields_fall_back_to_heuristic(self) -> None:
+        # A bare /api/show (no capabilities/model_info) degrades to the
+        # tag-based heuristic and never fails enrichment.
+        model = _enrich_ollama_model(
+            "llava:7b",
+            {"details": {"parameter_size": "7B", "family": "llava"}},
+            show_payload={},
+        )
+        assert "vision" in model.capabilities  # from family heuristic
+        assert model.context_window == 0
+
+    def test_show_payload_embedding_only(self) -> None:
+        # An embedding-only model surfaces the embedding capability.
+        model = _enrich_ollama_model(
+            "all-minilm:latest",
+            {"details": {"parameter_size": "0.02B", "family": "bert"}},
+            show_payload={"capabilities": ["embedding"], "model_info": {}},
+        )
+        assert "embedding" in model.capabilities
+
     def test_tiny_local_model_low_structured_reliability(self) -> None:
         # Small local Ollama models ignore response_format — the probe must
         # NOT claim reliability for them (the root cause of the search-mode

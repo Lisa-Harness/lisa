@@ -135,6 +135,54 @@ class TestOllamaProbe:
         assert result.error is not None
         assert "connection" in result.error.safe_message.lower()
 
+    @pytest.mark.asyncio
+    async def test_show_enrichment_applied_per_model(self) -> None:
+        # /api/show is consulted once per model and its capabilities and
+        # context length are merged into the discovered model.
+        calls: list[str] = []
+
+        def _handler(req: httpx.Request) -> httpx.Response:
+            if req.url.path == "/api/tags":
+                return httpx.Response(
+                    200,
+                    json={"models": [{"name": "qwen3:8b"}]},
+                )
+            calls.append(req.url.path)
+            assert req.url.path == "/api/show"
+            return httpx.Response(
+                200,
+                json={
+                    "capabilities": ["completion", "tools", "thinking"],
+                    "model_info": {"general.context_length": 65536},
+                },
+            )
+
+        transport = httpx.MockTransport(_handler)
+        result = await OllamaProbe().probe(_client(transport), timeout=5.0)
+        assert result.status is ProbeStatus.OK
+        assert calls == ["/api/show"]
+        model = result.models[0]
+        assert "reasoning" in model.capabilities
+        assert model.context_window == 65536
+
+    @pytest.mark.asyncio
+    async def test_show_failure_degrades_to_heuristic(self) -> None:
+        # A failed /api/show must not fail discovery; the model still
+        # enriches from tag metadata.
+        def _handler(req: httpx.Request) -> httpx.Response:
+            if req.url.path == "/api/tags":
+                return httpx.Response(
+                    200,
+                    json={"models": [{"name": "gemma3:latest"}]},
+                )
+            raise httpx.ConnectError("show refused")
+
+        transport = httpx.MockTransport(_handler)
+        result = await OllamaProbe().probe(_client(transport), timeout=5.0)
+        assert result.status is ProbeStatus.OK
+        assert len(result.models) == 1
+        assert result.models[0].model_id == "gemma3:latest"
+
 
 # ── OpenAI probe ──────────────────────────────────────────────────────
 
