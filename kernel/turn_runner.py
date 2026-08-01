@@ -2192,51 +2192,64 @@ async def _run_turn_inner(
         #   - the updater is wired (the host owns the lifecycle).
         # Suppressed for fork children (``suppress_routing_hint``) — a fork
         # child already runs in its target mode and never starts a chain.
+        # Suppressed for plan-escalation hints: when the routing hint is a
+        # plan-escalation ("hand off to `plan`"), the ``plan`` mode's
+        # ``plan_workflow`` entry op owns instance creation
+        # (``spawned_from="plan_workflow_op"``). Creating an ad-hoc instance
+        # here would be orphaned — the plan instance overwrites it via the
+        # updater moments later (the 2026-08-01 overlap bug).
         if (
             not suppress_routing_hint
             and hooks.workflow_instance_updater is not None
             and hooks.workflow_instance is not None
         ):
             try:
-                _existing_wi = hooks.workflow_instance()
+                from kernel.turn_phases._routing_hint import (  # noqa: PLC0415
+                    is_plan_escalation_hint,
+                )
             except Exception:  # pylint: disable=broad-except
-                _existing_wi = None
-            if _existing_wi is None:
+                is_plan_escalation_hint = lambda _h: False  # noqa: E731
+            if not is_plan_escalation_hint(routing_hint):
                 try:
-                    from kernel.workflow_instance import (  # noqa: PLC0415
-                        compile_steps_from_routing_targets,
-                    )
-
-                    _adhoc_steps = compile_steps_from_routing_targets(
-                        query=query,
-                        routing_targets=get_routing_targets(mode_id) if mode_config else [],
-                        catalog=get_workflow_catalog(),
-                        spawned_from="adhoc",
-                    )
-                except Exception as adhoc_exc:  # pylint: disable=broad-except
-                    _adhoc_steps = ()
-                    _log.debug("ad-hoc chain compile failed: %s", adhoc_exc)
-                if len(_adhoc_steps) >= 2:
+                    _existing_wi = hooks.workflow_instance()
+                except Exception:  # pylint: disable=broad-except
+                    _existing_wi = None
+                if _existing_wi is None:
                     try:
-                        _adhoc_instance = WorkflowInstance(
-                            declared_steps=_adhoc_steps,
-                            current_step_id=_adhoc_steps[0].step_id,
-                            current_mode_id=_adhoc_steps[0].mode_id,
+                        from kernel.workflow_instance import (  # noqa: PLC0415
+                            compile_steps_from_routing_targets,
+                        )
+
+                        _adhoc_steps = compile_steps_from_routing_targets(
+                            query=query,
+                            routing_targets=get_routing_targets(mode_id) if mode_config else [],
+                            catalog=get_workflow_catalog(),
                             spawned_from="adhoc",
                         )
-                        hooks.workflow_instance_updater(_adhoc_instance)
-                        _log.info(
-                            "persisted ad-hoc WorkflowInstance instance_id=%s "
-                            "steps=%d first=%s (chain survives yield→resume)",
-                            _adhoc_instance.instance_id,
-                            len(_adhoc_steps),
-                            _adhoc_steps[0].mode_id,
-                        )
-                    except Exception as wi_exc:  # pylint: disable=broad-except
-                        _log.warning(
-                            "ad-hoc WorkflowInstance creation/persist failed: %s",
-                            wi_exc,
-                        )
+                    except Exception as adhoc_exc:  # pylint: disable=broad-except
+                        _adhoc_steps = ()
+                        _log.debug("ad-hoc chain compile failed: %s", adhoc_exc)
+                    if len(_adhoc_steps) >= 2:
+                        try:
+                            _adhoc_instance = WorkflowInstance(
+                                declared_steps=_adhoc_steps,
+                                current_step_id=_adhoc_steps[0].step_id,
+                                current_mode_id=_adhoc_steps[0].mode_id,
+                                spawned_from="adhoc",
+                            )
+                            hooks.workflow_instance_updater(_adhoc_instance)
+                            _log.info(
+                                "persisted ad-hoc WorkflowInstance instance_id=%s "
+                                "steps=%d first=%s (chain survives yield→resume)",
+                                _adhoc_instance.instance_id,
+                                len(_adhoc_steps),
+                                _adhoc_steps[0].mode_id,
+                            )
+                        except Exception as wi_exc:  # pylint: disable=broad-except
+                            _log.warning(
+                                "ad-hoc WorkflowInstance creation/persist failed: %s",
+                                wi_exc,
+                            )
         # ── Forced-fork enforcer: precompute the deterministic fork target.
         # When the routing hint names a ``fork:`` target, the kernel already
         # decided the routing. The model is the executor. If it refuses to

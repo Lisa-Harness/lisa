@@ -314,3 +314,75 @@ async def test_adhoc_no_chain_does_not_create_instance() -> None:
         await run_turn(mode_id="default", query="hello", hooks=hooks)
 
     assert not saved_instances, "no WorkflowInstance should be created for a trivial query"
+
+
+def _catalog_with_plan() -> dict[str, WorkflowModeConfig]:
+    """A catalog with the search → coding → markdown chain plus plan mode.
+
+    Used by the plan-escalation guard test: the 3-intent sequential query
+    triggers plan escalation (``plan`` is a routable target), so the ad-hoc
+    block must skip — ``plan`` owns the instance.
+    """
+    catalog = _catalog_with_chain()
+    catalog["plan"] = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    return catalog
+
+
+@pytest.mark.asyncio
+async def test_adhoc_skipped_when_plan_escalation_fires() -> None:
+    """When the routing hint is a plan-escalation, no ad-hoc instance is created.
+
+    The 2026-08-01 overlap bug: a 3-intent sequential query triggers both
+    plan escalation (the hint says "hand off to `plan`") AND the ad-hoc
+    instance creation block. The ad-hoc instance is orphaned — the plan
+    instance overwrites it via the updater moments later. The fix guards
+    the ad-hoc block with ``is_plan_escalation_hint`` so it skips when
+    plan owns the instance.
+    """
+    from kernel.routing_vocabulary import reset_plan_reliability
+
+    active_instance: list[WorkflowInstance | None] = [None]
+    saved_instances: list[WorkflowInstance] = []
+
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow_instance = lambda: active_instance[0]
+
+    def _wi_updater(instance: WorkflowInstance) -> None:
+        saved_instances.append(instance)
+        active_instance[0] = instance
+
+    hooks.workflow_instance_updater = _wi_updater
+
+    catalog = _catalog_with_plan()
+    reset_plan_reliability()
+    try:
+        with (
+            patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+            patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+            patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+        ):
+            await run_turn(
+                mode_id="default",
+                query="search the web then read your code then write a markdown",
+                hooks=hooks,
+            )
+    finally:
+        reset_plan_reliability()
+
+    # No ad-hoc instance: plan escalation owns the instance. The ad-hoc
+    # block must have skipped (the hint was a plan-escalation hint).
+    adhoc_instances = [i for i in saved_instances if i.spawned_from == "adhoc"]
+    assert not adhoc_instances, (
+        "ad-hoc instance must not be created when plan escalation fires "
+        f"(got {len(adhoc_instances)} ad-hoc instance(s))"
+    )

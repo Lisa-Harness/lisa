@@ -20,6 +20,33 @@ from typing import Any
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.models import CapabilityManifest, WorkflowModeConfig
 
+# The stable plan-escalation hint text. Authored once here so the
+# ad-hoc instance guard (``is_plan_escalation_hint``) can detect it
+# without coupling to prose that lives in a branch deep in
+# ``_compute_capability_routing_hint``. When the hint is a plan-escalation,
+# the ``plan`` mode owns instance creation (``spawned_from="plan_workflow_op"``);
+# the ad-hoc block must skip to avoid creating an orphaned instance that
+# the plan instance overwrites moments later (the 2026-08-01 overlap bug).
+_PLAN_ESCALATION_HINT = (
+    "## Routing Hint\n\n"
+    "This is a complex multi-step request. Hand off to `plan` by "
+    "calling `transition_stage` with target_stage_id `plan`. "
+    "The plan mode will analyze the query and determine the best "
+    "routing target."
+)
+
+
+def is_plan_escalation_hint(hint: str) -> bool:
+    """Return True when ``hint`` is a plan-escalation routing hint.
+
+    The ad-hoc instance creation block in ``turn_runner.py`` calls this to
+    skip when ``plan`` mode is about to own the instance. Without this guard
+    the ad-hoc block creates an instance that the plan instance overwrites
+    via the updater — a wasted compile and a silent ordering dependency.
+    """
+    return bool(hint) and hint == _PLAN_ESCALATION_HINT
+
+
 __all__ = [
     "_compute_capability_routing_hint",
     "_detect_query_intents",
@@ -27,6 +54,7 @@ __all__ = [
     "_format_remaining_steps",
     "_query_is_sequential",
     "_tool_effect",
+    "is_plan_escalation_hint",
 ]
 
 
@@ -657,13 +685,9 @@ def _compute_capability_routing_hint(
         and is_plan_reliable_for_model(planner_model_id)
         and (len(gap_intents) >= 3 or (len(gap_intents) >= 2 and _query_is_sequential(query)))
     ):
-        return (
-            "## Routing Hint\n\n"
-            "This is a complex multi-step request. Hand off to `plan` by "
-            "calling `transition_stage` with target_stage_id `plan`. "
-            "The plan mode will analyze the query and determine the best "
-            "routing target."
-        )
+        return _PLAN_ESCALATION_HINT
+
+    # ── 4. Multi-intent fork detection
 
     # ── 4. Multi-intent fork detection ─────────────────────────────────
     # When no single target covers all remaining gap intents but multiple
