@@ -60,6 +60,7 @@ class DiscoveredModel:
     latency_tier: str = ""
     context_window: int = 0
     description: str = ""
+    structured_reliability: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

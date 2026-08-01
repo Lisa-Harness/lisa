@@ -100,6 +100,7 @@ def _model(
     latency_tier: str = "",
     context_window: int = 0,
     description: str = "",
+    structured_reliability: float = 0.0,
 ) -> DiscoveredModel:
     """Construct a :class:`DiscoveredModel` with the shared heuristic.
 
@@ -132,6 +133,7 @@ def _model(
         latency_tier=latency_tier,
         context_window=context_window,
         description=description,
+        structured_reliability=structured_reliability,
     )
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import httpx
 
-from ..classify import env_any
+from ..classify import apply_known_override, env_any
 from ..types import DiscoveredModel
 from .base import ProviderProbe, _extract_rows, _model
 
@@ -66,12 +66,21 @@ def _enrich_ollama_model(model_id: str, item: dict) -> DiscoveredModel:
     cost_tier = ""
     latency_tier = ""
     context_window = 0
+    # Local Ollama models treat ``response_format`` as a *soft hint*: small
+    # models routinely ignore the declared schema and emit prose, while larger
+    # models honor it more reliably. Default the confidence to a conservative
+    # floor for small models and only raise it as parameter count grows. Cloud
+    # (``:cloud``) models are served by Ollama's infrastructure and are more
+    # dependable, so they get a higher default. ``known_models.yaml`` can
+    # override this per model where measured.
+    structured_reliability = 0.0
 
     lowered = model_id.lower()
     if lowered.endswith(":cloud"):
         # Cloud-hosted models — billing is opaque, assume standard.
         cost_tier = "standard"
         latency_tier = "medium"
+        structured_reliability = 0.8
     elif parameter_size:
         # Parse "7B", "13B", "70B" etc.
         size_str = parameter_size.lower().rstrip("b").strip()
@@ -84,28 +93,46 @@ def _enrich_ollama_model(model_id: str, item: dict) -> DiscoveredModel:
         elif size_b <= 3:
             cost_tier = "budget"
             latency_tier = "low"
+            structured_reliability = 0.0
         elif size_b <= 13:
             cost_tier = "standard"
             latency_tier = "medium"
+            structured_reliability = 0.4
         elif size_b <= 35:
             cost_tier = "premium"
             latency_tier = "high"
+            structured_reliability = 0.7
         else:
             cost_tier = "frontier"
             latency_tier = "high"
+            structured_reliability = 0.85
 
     display_name = model_id.replace("-", " ").title()
     description = ""
     if family:
         description = f"Ollama {family} model ({parameter_size or 'unknown size'})"
 
+    enrichment = apply_known_override(
+        "ollama",
+        model_id,
+        {
+            "capabilities": tuple(capabilities),
+            "cost_tier": cost_tier,
+            "latency_tier": latency_tier,
+            "description": description,
+            "structured_reliability": structured_reliability,
+        },
+    )
     return _model(
         model_id,
         "ollama",
         display_name=display_name,
-        capabilities=tuple(capabilities),
-        cost_tier=cost_tier,
-        latency_tier=latency_tier,
+        capabilities=tuple(enrichment.get("capabilities", tuple(capabilities))),
+        cost_tier=str(enrichment.get("cost_tier", cost_tier)),
+        latency_tier=str(enrichment.get("latency_tier", latency_tier)),
         context_window=context_window,
-        description=description,
+        description=str(enrichment.get("description", description)),
+        structured_reliability=float(
+            enrichment.get("structured_reliability", structured_reliability)
+        ),
     )

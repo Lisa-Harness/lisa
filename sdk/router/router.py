@@ -30,7 +30,8 @@ Supported CEL bindings (see ``router/README.md`` for the full guide):
 - ``route.required_capabilities`` — a list of required capability names.
 - ``model.model_id`` / ``model.provider`` / ``model.cost_tier`` /
   ``model.latency_tier`` / ``model.capabilities`` /
-  ``model.reasoning_model`` / ``model.thinking_model`` — the metadata of
+  ``model.reasoning_model`` / ``model.thinking_model`` /
+  ``model.structured_reliability`` — the metadata of
   the model effective in the preceding iteration (or the static preferred
   model on iteration 1).
 
@@ -193,6 +194,7 @@ def _build_activation(req: RouterRequest) -> dict[str, Any]:
             "capabilities": list(m.capabilities),
             "reasoning_model": m.reasoning_model,
             "thinking_model": m.thinking_model,
+            "structured_reliability": float(getattr(m, "structured_reliability", 0.0) or 0.0),
         }
     else:
         model_ctx = {
@@ -203,6 +205,7 @@ def _build_activation(req: RouterRequest) -> dict[str, Any]:
             "capabilities": [],
             "reasoning_model": False,
             "thinking_model": False,
+            "structured_reliability": 0.0,
         }
 
     return {

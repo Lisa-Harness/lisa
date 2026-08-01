@@ -278,6 +278,8 @@ def _model_entry(model: DiscoveredModel) -> dict[str, Any]:
         entry["context_window"] = model.context_window
     if model.description:
         entry["description"] = model.description
+    if model.structured_reliability:
+        entry["structured_reliability"] = model.structured_reliability
     return entry
 
 
@@ -415,11 +417,9 @@ def _annotated_router_block(router_block: dict[str, Any]) -> str:
     if rules:
         out.append("  rules:")
         for rule in rules:
-            action_target = rule.get("use") or rule.get("finish") or rule.get("transition_to") or ""
-            reason = _explain_predicate(rule["when"])
-            out.append(f"  - {_rule_yaml_line(rule)}  # → {action_target} when {reason}")
+            out.append(f"  - {_rule_yaml_line(rule)}")
     if fallback:
-        out.append(f"  fallback: {fallback}  # if no rule matches")
+        out.append(f"  fallback: {fallback}")
     return "\n".join(out)
 
 

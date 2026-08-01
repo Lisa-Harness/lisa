@@ -222,4 +222,5 @@ def _enrich_google_model(model_id: str, row: dict) -> DiscoveredModel:
         latency_tier=str(enrichment.get("latency_tier", latency_tier)),
         context_window=int(enrichment.get("context_window", context_window)),
         description=str(enrichment.get("description", description)),
+        structured_reliability=1.0,
     )

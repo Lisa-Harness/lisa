@@ -280,6 +280,35 @@ def test_model_capabilities_condition() -> None:
     assert router.choose(_req(effective_model=effective_no_vision)).model_id == "gemma4:cloud"
 
 
+def test_model_structured_reliability_condition() -> None:
+    """model.structured_reliability reflects the effective model and lets a
+    rule escalate JSON-bound work away from models that ignore
+    ``response_format``."""
+    from kernel.seams.protocols import RouterModelRef
+
+    manifest = _manifest(
+        rules=(RouterRule(when="model.structured_reliability < 0.8", use="deepseek-v4-pro:cloud"),),
+        fallback="deepseek-v4-flash:0731-cloud",
+    )
+    router = LisaRouter(manifest)
+    unreliable = RouterModelRef(
+        model_id="deepseek-v4-flash:0731-cloud",
+        structured_reliability=0.0,
+    )
+    reliable = RouterModelRef(
+        model_id="deepseek-v4-pro:cloud",
+        structured_reliability=0.8,
+    )
+    # Unreliable effective model → escalate.
+    decision = router.choose(_req(effective_model=unreliable))
+    assert decision is not None
+    assert decision.model_id == "deepseek-v4-pro:cloud"
+    # Reliable effective model → fallback.
+    decision = router.choose(_req(effective_model=reliable))
+    assert decision is not None
+    assert decision.model_id == "deepseek-v4-flash:0731-cloud"
+
+
 # ── Terminal action tests ───────────────────────────────────────────────────
 
 
@@ -400,4 +429,54 @@ def test_router_rule_rejects_multiple_actions() -> None:
         yaml.dump(payload, f)
         f.flush()
         with pytest.raises(ValueError, match="exactly one"):
+            load_model_manifest(pathlib.Path(f.name))
+
+
+def test_manifest_parses_structured_reliability() -> None:
+    """``structured_reliability`` flows from the manifest into the model entry."""
+    import pathlib
+    import tempfile
+
+    import yaml
+
+    from kernel.model_manifest import load_model_manifest
+
+    payload = {
+        "version": 1,
+        "models": [
+            {"model_id": "m1", "provider": "openai", "structured_reliability": 1.0},
+            {"model_id": "m2", "provider": "ollama", "structured_reliability": 0.4},
+            {"model_id": "m3", "provider": "ollama"},  # omitted → 0.0
+        ],
+        "mode_models": {"default": "m1"},
+    }
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        yaml.dump(payload, f)
+        f.flush()
+        manifest = load_model_manifest(pathlib.Path(f.name))
+    by_id = {model.model_id: model for model in manifest.models}
+    assert by_id["m1"].structured_reliability == 1.0
+    assert by_id["m2"].structured_reliability == 0.4
+    assert by_id["m3"].structured_reliability == 0.0
+
+
+def test_manifest_rejects_out_of_range_structured_reliability() -> None:
+    """Values outside [0.0, 1.0] are rejected so a malformed manifest cannot
+    silently over-claim a model's structured-output reliability."""
+    import pathlib
+    import tempfile
+
+    import yaml
+
+    from kernel.model_manifest import load_model_manifest
+
+    payload = {
+        "version": 1,
+        "models": [{"model_id": "m1", "provider": "openai", "structured_reliability": 1.5}],
+        "mode_models": {"default": "m1"},
+    }
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        yaml.dump(payload, f)
+        f.flush()
+        with pytest.raises(ValueError, match="range"):
             load_model_manifest(pathlib.Path(f.name))

@@ -488,4 +488,18 @@ def _effective_model_ref(
         capabilities=tuple(getattr(source, "capabilities", ()) or ()),
         reasoning_model=bool(getattr(source, "reasoning_model", False)),
         thinking_model=bool(getattr(source, "thinking_model", False)),
+        structured_reliability=_coerce_float(getattr(source, "structured_reliability", 0.0)),
     )
+
+
+def _coerce_float(value: Any) -> float:
+    """Coerce a possibly-missing reliability value to a bounded float."""
+    try:
+        number = float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if number < 0.0:
+        return 0.0
+    if number > 1.0:
+        return 1.0
+    return number

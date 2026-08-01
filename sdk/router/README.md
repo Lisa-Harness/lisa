@@ -258,6 +258,7 @@ This lets rules inspect what ran last without coupling to the manifest:
 | `model.capabilities` | list of string | capability names advertised by the model |
 | `model.reasoning_model` | bool | `true` if the model is a reasoning model |
 | `model.thinking_model` | bool | `true` if the model is a thinking model |
+| `model.structured_reliability` | double | confidence (0.0–1.0) the effective model reliably honors structured output; 0.0 = untrusted (e.g. small local Ollama models), 1.0 = provider-enforced (API models) |
 
 When no effective model is available (e.g. iteration 1 with no static
 preferred model), `model.*` is populated with empty defaults
@@ -308,6 +309,17 @@ Effective-model gate — downgrade only when the *current* model is frontier
 rules:
   - when: 'model.cost_tier == "frontier" && turn.tool_calls_so_far >= 4'
     use: gemma4:cloud
+```
+
+Structured-output gate — when the current model is not reliable at honoring
+`response_format` (e.g. a small local Ollama model), escalate to one that is,
+so JSON-bound entry operations (like `web_search`) get a schema-compliant
+reply instead of prose:
+
+```yaml
+rules:
+  - when: 'model.structured_reliability < 0.8'
+    use: deepseek-v4-pro:cloud
 ```
 
 Effective-model capability gate — escalate when the current model lacks

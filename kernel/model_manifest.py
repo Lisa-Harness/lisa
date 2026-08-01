@@ -34,6 +34,12 @@ class ManifestModelEntry:
     base_url_env: str = ""
     model_id_from_config: str = ""
     azure_deploy: dict[str, Any] = field(default_factory=dict)
+    #: Confidence (0.0-1.0) that this model reliably honors structured-output
+    #: ``response_format`` constraints. 0.0 = unknown/untrusted (e.g. small
+    #: local Ollama models), 1.0 = provider-enforced and known to comply.
+    #: Routers may read this (via ``model.structured_reliability``) to route
+    #: JSON-bound work to a model that returns the declared schema.
+    structured_reliability: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,6 +398,11 @@ def _parse_model_entry(
         base_url_env=str(raw_model.get("base_url_env") or "").strip(),
         model_id_from_config=model_id_from_config,
         azure_deploy=dict(raw_azure_deploy),
+        structured_reliability=_parse_unit_float(
+            raw_model.get("structured_reliability"),
+            field_name="structured_reliability",
+            model_id=key,
+        ),
     )
 
 
@@ -428,6 +439,40 @@ def _parse_nonnegative_int(raw_value: Any, *, field_name: str, model_id: str) ->
     if value < 0:
         raise ValueError(
             f"Manifest model entry for '{model_id}' {field_name} must be a non-negative integer."
+        )
+    return value
+
+
+def _parse_unit_float(raw_value: Any, *, field_name: str, model_id: str) -> float:
+    """Parse an optional 0.0-1.0 confidence field, defaulting to 0.0.
+
+    Accepts a number or a numeric string. Values outside ``[0.0, 1.0]`` are
+    rejected so a malformed manifest cannot silently claim a model is more
+    reliable than it is.
+    """
+
+    if raw_value is None:
+        return 0.0
+    if isinstance(raw_value, bool):
+        raise ValueError(
+            f"Manifest model entry for '{model_id}' {field_name} must be a float in [0.0, 1.0]."
+        )
+    if isinstance(raw_value, (int, float)):
+        value = float(raw_value)
+    elif isinstance(raw_value, str) and raw_value.strip():
+        try:
+            value = float(raw_value.strip())
+        except ValueError as exc:
+            raise ValueError(
+                f"Manifest model entry for '{model_id}' {field_name} must be a float in [0.0, 1.0]."
+            ) from exc
+    else:
+        raise ValueError(
+            f"Manifest model entry for '{model_id}' {field_name} must be a float in [0.0, 1.0]."
+        )
+    if value < 0.0 or value > 1.0:
+        raise ValueError(
+            f"Manifest model entry for '{model_id}' {field_name} must be in the range [0.0, 1.0]."
         )
     return value
 

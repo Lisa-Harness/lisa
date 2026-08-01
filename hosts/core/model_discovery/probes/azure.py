@@ -201,4 +201,5 @@ def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
         capabilities=tuple(enrichment.get("capabilities", tuple(capabilities_list))),
         cost_tier=str(enrichment.get("cost_tier", cost_tier)),
         latency_tier=str(enrichment.get("latency_tier", latency_tier)),
+        structured_reliability=1.0,
     )

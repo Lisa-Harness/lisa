@@ -155,6 +155,24 @@ class TestOllamaEnrichment:
         assert model.reasoning_model is True
         assert "reasoning" in model.capabilities
 
+    def test_tiny_local_model_low_structured_reliability(self) -> None:
+        # Small local Ollama models ignore response_format — the probe must
+        # NOT claim reliability for them (the root cause of the search-mode
+        # web_search prose failure).
+        model = _enrich_ollama_model(
+            "llama3.2:3b",
+            {"details": {"parameter_size": "3B", "family": "llama"}},
+        )
+        assert model.structured_reliability == 0.0
+
+    def test_cloud_model_high_structured_reliability(self) -> None:
+        # Cloud-hosted Ollama models are more dependable at structured output.
+        model = _enrich_ollama_model(
+            "deepseek-v4-pro:cloud",
+            {"details": {"parameter_size": "70B", "family": "deepseek"}},
+        )
+        assert model.structured_reliability >= 0.8
+
 
 class TestBuildManifestPayloadEnrichment:
     def test_enrichment_fields_written_to_yaml(self) -> None:
@@ -177,6 +195,25 @@ class TestBuildManifestPayloadEnrichment:
         assert row["latency_tier"] == "medium"
         assert row["context_window"] == 256000
         assert "text" in row["capabilities"]
+
+    def test_structured_reliability_written_to_yaml(self) -> None:
+        models = (
+            DiscoveredModel(
+                model_id="deepseek-v4-pro:cloud",
+                provider="ollama",
+                capabilities=("text", "tools", "structured_output"),
+                structured_reliability=0.8,
+            ),
+        )
+        payload = build_manifest_payload(models)
+        row = payload["models"][0]
+        assert row["structured_reliability"] == 0.8
+
+    def test_zero_structured_reliability_omitted(self) -> None:
+        # 0.0 is the default/unknown value and should not bloat the YAML.
+        models = (DiscoveredModel(model_id="bare-model", provider="ollama"),)
+        payload = build_manifest_payload(models)
+        assert "structured_reliability" not in payload["models"][0]
 
     def test_empty_enrichment_fields_omitted(self) -> None:
         models = (DiscoveredModel(model_id="bare-model", provider="ollama"),)

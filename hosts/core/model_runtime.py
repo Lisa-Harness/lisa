@@ -41,6 +41,16 @@ class StubModelDefinition:
 
     empty for backward compatibility with stubs that do not carry caps."""
 
+    structured_reliability: float = 0.0
+
+    """Confidence (0.0-1.0) the resolved model reliably honors structured
+
+    output. Forwarded from ``ManifestModelEntry.structured_reliability`` so
+
+    the router activation (``model.structured_reliability``) can gate
+
+    JSON-bound work. Default 0.0 for backward compatibility."""
+
 
 @dataclass(frozen=True, slots=True)
 class StubCompletion:
@@ -299,4 +309,5 @@ def resolve_model(
         reasoning_model=resolved.reasoning_model,
         context_window=resolved.context_window,
         capabilities=tuple(resolved.capabilities),
+        structured_reliability=resolved.structured_reliability,
     )

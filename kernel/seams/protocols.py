@@ -35,6 +35,10 @@ class RouterModelRef:
     capabilities: tuple[str, ...] = ()
     reasoning_model: bool = False
     thinking_model: bool = False
+    #: Confidence (0.0-1.0) the effective model reliably honors structured
+    #: output. Routers can gate JSON-bound work on this, e.g. via
+    #: ``model.structured_reliability`` in a ``when`` rule.
+    structured_reliability: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

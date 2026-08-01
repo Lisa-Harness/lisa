@@ -145,6 +145,7 @@ def _enrich_openai_model(model_id: str) -> DiscoveredModel:
         capabilities=tuple(enrichment.get("capabilities", tuple(capabilities))),
         cost_tier=str(enrichment.get("cost_tier", cost_tier)),
         latency_tier=str(enrichment.get("latency_tier", latency_tier)),
+        structured_reliability=1.0,
     )
 
 
