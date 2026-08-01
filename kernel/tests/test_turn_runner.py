@@ -3331,6 +3331,90 @@ async def test_handoff_entry_op_failure_blocks_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_plan_entry_op_timeout_marks_model_unreliable() -> None:
+    """When ``plan_workflow`` raises during a mid-turn handoff to ``plan``
+    (e.g. the operation timed out), the turn must mark the model
+    unreliable for planning so the routing-hint generator stops
+    re-escalating to ``plan`` on subsequent turns.
+
+    Regression for the 2026-07-31 incident: ``plan_workflow`` timed out,
+    the entry-op exception branch set ``entry_failed`` but did NOT call
+    ``mark_plan_unreliable_for_model``, so the hint generator re-escalated
+    to ``plan`` on the next turn and timed out again identically. The
+    "no target" branch already marked unreliable; the exception path
+    must mirror it.
+    """
+    from unittest.mock import patch
+
+    from kernel.operations.registry import OperationExecutionError
+    from kernel.routing_vocabulary import (
+        is_plan_reliable_for_model,
+        reset_plan_reliability,
+    )
+
+    reset_plan_reliability()
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    patched_catalog = {"plan": plan_cfg}
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        # First completion: the model hands off to ``plan`` (mid-turn
+        # handoff, not Phase 1 pre-turn). The routing hint told it to.
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": '{"target_stage_id": "plan", "rationale": "complex"}',
+                    },
+                }
+            ],
+        )
+
+    async def failing_plan_entry_operation(
+        operation_id: str, _ctx: OperationExecutionContext
+    ) -> OperationResult:
+        # Simulate ``plan_workflow`` timing out: the registry wraps the
+        # operation in ``asyncio.wait_for`` and raises
+        # ``OperationExecutionError`` on expiry.
+        if operation_id == "plan_workflow":
+            raise OperationExecutionError("Operation 'plan_workflow' timed out")
+        return OperationResult(output_text=f"Executed {operation_id}")
+
+    hooks = _build_minimal_hooks(two_step)
+    hooks.execute_operation = failing_plan_entry_operation
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=failing_plan_entry_operation),
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="read docs, consolidate, find gaps, web search, write narrative",
+            hooks=hooks,
+            preferred_model_id="test-planner-model",
+        )
+
+    # The turn hard-stops with a deterministic failure (the entry-op
+    # exception path sets ``entry_failed`` and breaks the loop).
+    assert result.blocked is True
+    assert "plan" in result.response_text.lower()
+    # The model is now marked unreliable for planning so the hint
+    # generator stops escalating to ``plan`` for it on subsequent turns.
+    assert not is_plan_reliable_for_model("test-planner-model")
+    reset_plan_reliability()
+
+
+@pytest.mark.asyncio
 async def test_no_tools_fork_child_aborts_turn() -> None:
     """A fork child marked ``no_tools`` (hallucinated success) must abort
     the user-facing turn with a deterministic failure, not be handed to

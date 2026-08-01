@@ -358,6 +358,18 @@ class TurnResult:
     """True when the transition moved the session to a terminal stage. The
     loop forces one final no-tools completion using the terminal stage's
     instruction as the system prompt so the model produces a closing summary."""
+    yielded: YieldAction | None = None
+    """The unified-lifecycle ``YieldAction`` when this turn terminated by
+    yielding (asking the user a question), ``None`` when it finished cleanly.
+
+    Surfaced to the host so the transport can distinguish a yield from a
+    finish and render the question with its context — ``YieldAction.context``
+    carries the reason ("model-emitted yield", "turn budget exhausted …",
+    "stuck in stage …", "recovery record blocks …") and ``target_mode_id``
+    names the mode the yield routes to. The checkpoint layer stamps the
+    same fields on ``CheckpointBundle``; ``TurnResult.yielded`` is the
+    non-durable mirror for in-process transports. See
+    :class:`kernel.models.YieldAction`."""
     pending_approval: ApprovalInvocation | None = None
     """The exact action that paused this turn, when an approval is required."""
     per_model_usage: list[dict[str, Any]] = field(default_factory=list)
@@ -3255,6 +3267,7 @@ async def _run_turn_inner(
                 {
                     "tool": tool_name,
                     "tool_kind": _tool_kind,
+                    "arguments": tool_arguments if isinstance(tool_arguments, dict) else {},
                     "_state.iteration": _state.iteration,
                     "tool_calls_so_far": _state.total_tool_calls + 1,
                     "max_tool_calls": max_tool_iterations,
@@ -3995,6 +4008,42 @@ async def _run_turn_inner(
                                             target_stage,
                                             entry_exc,
                                         )
+                                        # When the failed mode is ``plan``
+                                        # (e.g. ``plan_workflow`` timed out),
+                                        # mark the model unreliable for
+                                        # planning so the routing-hint
+                                        # generator stops re-escalating to
+                                        # ``plan`` on subsequent turns. The
+                                        # 2026-07-31 incident: ``plan_workflow``
+                                        # timed out, this branch set
+                                        # ``entry_failed`` but did NOT mark the
+                                        # model unreliable, so the hint
+                                        # generator re-escalated to ``plan``
+                                        # on the next turn and timed out again
+                                        # identically. The "no target" branch
+                                        # above already marks unreliable; this
+                                        # mirrors it for the exception path.
+                                        if (
+                                            target_stage == "plan"
+                                            or "plan_workflow"
+                                            in (target_mode_config.entry_operation_ids or [])
+                                        ):
+                                            from kernel.routing_vocabulary import (  # noqa: PLC0415
+                                                mark_plan_unreliable_for_model,
+                                            )
+
+                                            mark_plan_unreliable_for_model(
+                                                str(preferred_model_id or "")
+                                            )
+                                            _log.warning(
+                                                "plan entry operation in mid-turn "
+                                                "handoff raised (mode=%s, exc=%s); "
+                                                "marking model %s unreliable for "
+                                                "planning and breaking",
+                                                target_stage,
+                                                type(entry_exc).__name__,
+                                                preferred_model_id,
+                                            )
                                         # Mark the turn as hard-failed. An
                                         # action mode (e.g. ``search``) whose
                                         # entry operation produced no data
@@ -4584,6 +4633,7 @@ async def _run_turn_inner(
                     "tool_calls_so_far": _state.total_tool_calls,
                     "ok": not tool_output.startswith("Tool execution failed:"),
                     "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
+                    "result_preview": str(tool_output)[:200],
                 },
             )
 
@@ -4931,6 +4981,7 @@ async def _run_turn_inner(
         handoff_to=handoff_to,
         fork_results=fork_results,
         workflow_terminated=workflow_terminated,
+        yielded=_pending_yield if _yielded else None,
         per_model_usage=list(_state.per_model_usage.values()),
         per_mode_usage=list(_state.per_mode_usage.values()),
     )
