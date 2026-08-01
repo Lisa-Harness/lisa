@@ -16,7 +16,7 @@ routing_intent_keywords:
     - orchestrate
 entry_operation_ids: [plan_workflow]
 command_pattern: '^(?:/)?plan(?:[\s,:;]+(?P<query>.+))?$'
-required_capabilities: [tools]
+required_capabilities: [reasoning, tools]
 yield_policy:
   allowed: false
   fallback_mode: discuss
