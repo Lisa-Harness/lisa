@@ -192,7 +192,27 @@ def normalize_openai_messages(messages: ChatMessages) -> ChatMessages:
     but strict OpenAI-compatible backends (notably Ollama) reject
     ``content: <nil>`` with ``invalid message content type: <nil>``. Defaulting
     to ``""`` keeps the payload acceptable to both lenient and strict backends.
+
+    Prunes orphaned ``tool_calls``: an assistant message that declares a
+    tool call with no later ``role: tool`` message answering that
+    ``tool_call_id`` is malformed. This arises when the turn loop breaks
+    mid-tool-loop (forced plan/fork handoff, ``entry_failed``,
+    ``plan_failed``, iteration-cap yield) after appending the assistant
+    message but before attaching its tool result. Strict OpenAI backends
+    reject such history with ``An assistant message with 'tool_calls' must
+    be followed by tool messages responding to each 'tool_call_id'`` (a
+    400 that previously killed the whole turn). Pruning the orphaned calls
+    here, at the single chokepoint every OpenAI-compatible request passes
+    through, keeps the payload well-formed regardless of which break path
+    left the history dangling.
     """
+
+    # Collect every tool_call_id that has a matching tool-result message.
+    answered_ids = {
+        str(message.get("tool_call_id", "") or "")
+        for message in messages
+        if str(message.get("role", "") or "") == "tool"
+    }
 
     normalized_messages: ChatMessages = []
     for message in messages:
@@ -202,10 +222,24 @@ def normalize_openai_messages(messages: ChatMessages) -> ChatMessages:
                 normalized_message["content"] = ""
         raw_tool_calls = normalized_message.get("tool_calls")
         if isinstance(raw_tool_calls, list):
-            normalized_message["tool_calls"] = [
-                _normalize_openai_tool_call(tool_call) if isinstance(tool_call, dict) else tool_call
+            pruned = [
+                tool_call
                 for tool_call in raw_tool_calls
+                if not isinstance(tool_call, dict)
+                or str(tool_call.get("id", "") or "") in answered_ids
             ]
+            # Only normalize the tool-call payloads we keep; drop the key
+            # entirely when nothing remains so the message is a plain text
+            # assistant turn (valid) instead of an empty ``tool_calls: []``.
+            if pruned:
+                normalized_message["tool_calls"] = [
+                    _normalize_openai_tool_call(tool_call)
+                    if isinstance(tool_call, dict)
+                    else tool_call
+                    for tool_call in pruned
+                ]
+            else:
+                normalized_message.pop("tool_calls", None)
         normalized_messages.append(normalized_message)
     return normalized_messages
 

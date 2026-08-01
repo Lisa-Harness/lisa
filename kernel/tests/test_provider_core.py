@@ -315,6 +315,101 @@ def test_normalize_preserves_assistant_text_content() -> None:
     assert normalized[0]["content"] == "hello"
 
 
+# ── normalize_openai_messages: orphaned tool_calls pruning ───────────
+
+
+def test_normalize_prunes_orphaned_tool_calls_without_tool_result() -> None:
+    """An assistant tool_call with no matching tool result is dropped.
+
+    When the turn loop breaks mid-tool-loop (forced plan/fork handoff,
+    entry failure, iteration-cap yield), it can leave an assistant message
+    declaring ``tool_calls`` with no following ``role: tool`` message for
+    that id. Strict OpenAI backends reject this with a 400
+    ("...must be followed by tool messages responding to each
+    'tool_call_id'"). The normalization chokepoint must prune the orphan so
+    the payload stays well-formed.
+    """
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "do a multi-step thing"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_orphan",
+                    "type": "function",
+                    "function": {"name": "transition_stage", "arguments": "{}"},
+                }
+            ],
+        },
+        # No tool result for call_orphan — history is dangling.
+    ]
+    normalized = normalize_openai_messages(messages)
+    assistant = normalized[1]
+    assert "tool_calls" not in assistant
+    assert assistant["content"] == ""
+    # The user message is untouched.
+    assert normalized[0]["content"] == "do a multi-step thing"
+
+
+def test_normalize_keeps_answered_tool_calls() -> None:
+    """A tool_call paired with a matching tool result is preserved."""
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_ok",
+                    "type": "function",
+                    "function": {"name": "memory.search", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_ok", "content": "results"},
+    ]
+    normalized = normalize_openai_messages(messages)
+    assistant = normalized[1]
+    assert "tool_calls" in assistant
+    assert assistant["tool_calls"][0]["id"] == "call_ok"
+
+
+def test_normalize_prunes_orphan_among_answered_calls() -> None:
+    """An orphaned call is dropped while answered calls survive."""
+
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "call_ok", "type": "function", "function": {"name": "a", "arguments": "{}"}},
+                {
+                    "id": "call_orphan",
+                    "type": "function",
+                    "function": {"name": "transition_stage", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_ok", "content": "ok"},
+    ]
+    normalized = normalize_openai_messages(messages)
+    assistant = normalized[0]
+    assert assistant["tool_calls"] == [
+        {"id": "call_ok", "type": "function", "function": {"name": "a", "arguments": "{}"}}
+    ]
+
+
+def test_normalize_drops_empty_tool_calls_list() -> None:
+    """A tool_calls list that prunes to nothing removes the key entirely."""
+
+    messages: list[dict[str, Any]] = [
+        {"role": "assistant", "tool_calls": [{"id": "gone", "type": "function", "function": {}}]},
+    ]
+    normalized = normalize_openai_messages(messages)
+    assert "tool_calls" not in normalized[0]
+    assert normalized[0]["content"] == ""
+
+
 # ── Temperature passed through ─────────────────────────────────────────
 
 
