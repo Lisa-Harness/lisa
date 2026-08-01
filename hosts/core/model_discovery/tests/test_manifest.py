@@ -372,7 +372,13 @@ class TestRouterPresetAnnotations:
         assert "terminal-actions" in annotations
 
     def test_render_annotates_active_router_inline(self) -> None:
-        """The active router block is rendered with per-rule inline explanations."""
+        """The active router block is rendered without inline rule comments.
+
+        Inline per-rule explanation trailers were removed from the rendered
+        YAML (the annotation comments duplicated the rule predicates and
+        complicated downstream parsing). The active block still appears
+        with its rules and fallback.
+        """
         payload = build_manifest_payload(
             (
                 DiscoveredModel(model_id="gpt-5", provider="openai"),
@@ -382,10 +388,11 @@ class TestRouterPresetAnnotations:
         router_block = payload.get("router")
         assert router_block is not None
         rendered = render_manifest_yaml(payload, router_block=router_block)
-        # Per-rule explanation trailers are present on the active block.
-        assert "→ gpt-5 when" in rendered
-        # The fallback line is annotated too.
-        assert "gpt-5" in rendered
+        # The active block is present with its rules and fallback.
+        assert "rules:" in rendered
+        assert "fallback:" in rendered
+        # No inline explanation trailers remain on rule lines.
+        assert "→" not in rendered
 
     def test_includes_best_for_lines(self) -> None:
         """Each preset carries a 'Best for:' guidance line."""
@@ -484,14 +491,19 @@ class TestRouterPresetAnnotations:
         assert marker_idx < models_char_idx, "annotations must appear before the models: list"
 
     def test_render_manifest_yaml_annotates_router_inline(self) -> None:
-        """The active router block is rendered with per-rule inline comments."""
+        """The active router block is rendered without inline rule comments.
+
+        Inline per-rule comments were removed; the block still appears at
+        the top with rules and fallback, before the models list.
+        """
         payload = build_manifest_payload((DiscoveredModel(model_id="gpt-5", provider="openai"),))
         router_block = payload.get("router")
         assert router_block is not None
         rendered = render_manifest_yaml(payload, router_block=router_block)
-        # The active block appears at the top, with inline trailers.
+        # The active block appears at the top.
         assert "router:" in rendered
-        assert "→" in rendered  # inline comment marker
+        # No inline comment markers remain on rule lines.
+        assert "→" not in rendered
         # The annotated block sits before the models list. Match the whole
         # ``models:`` line so we don't hit the substring in ``mode_models:``.
         lines = rendered.split("\n")
