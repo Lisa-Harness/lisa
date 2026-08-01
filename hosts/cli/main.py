@@ -988,7 +988,21 @@ def _models_command(
     else:
         stripped = f"/models {normalized}".strip()
 
-    response_text = asyncio.run(handle_models_command(runtime, stripped, stripped))
+    # The discover/apply/reload/show subcommands read or write model
+    # manifests via the lisa-storage MCP server, which requires a live
+    # MCP tool pool. _initialize_runtime only compiles configs; the pool
+    # is started inside the host's event loop. Start it here, run the
+    # handler, and tear the pool down in finally — all within one
+    # asyncio.run loop so anyio cancel scopes are entered and exited in
+    # the same task (per hosts.core.runtime invariants).
+    async def _run_models_command() -> str:
+        try:
+            await runtime.start()
+            return await handle_models_command(runtime, stripped, stripped)
+        finally:
+            await runtime.aclose()
+
+    response_text = asyncio.run(_run_models_command())
     console.print(Panel(Markdown(response_text), title="Models", border_style="cyan"))
 
 
