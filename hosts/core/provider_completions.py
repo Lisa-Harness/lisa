@@ -103,6 +103,18 @@ def _extract_usage_counts(
         A 5-tuple ``(prompt_tokens, completion_tokens, total_tokens,
         cached_tokens, reasoning_tokens)``. Sub-counters default to 0 when
         the provider did not surface them.
+
+    Sub-counters come from two places, read defensively so a missing field
+    never raises:
+
+    * Some providers (Ollama native OpenAI-compatible, older OpenAI shapes)
+      surface ``cached_tokens`` / ``reasoning_tokens`` at the top level of
+      the usage object.
+    * OpenAI reasoning models nest cache hits under
+      ``prompt_tokens_details.cached_tokens`` and reasoning under
+      ``completion_tokens_details.reasoning_tokens``. Reading only the
+      top-level keys silently reports 0 for every gpt-5.x call, which makes
+      the durable ledger bill cache/reasoning at full "live" weight.
     """
 
     prompt_tokens = 0
@@ -125,6 +137,15 @@ def _extract_usage_counts(
             usage_payload.get("reasoning_tokens")
             or usage_payload.get("cache_creation_input_tokens")
         )
+        # OpenAI nests cache/reasoning under *_tokens_details sub-objects.
+        if cached_tokens <= 0:
+            prompt_details = usage_payload.get("prompt_tokens_details")
+            if isinstance(prompt_details, dict):
+                cached_tokens = coerce_int(prompt_details.get("cached_tokens"))
+        if reasoning_tokens <= 0:
+            completion_details = usage_payload.get("completion_tokens_details")
+            if isinstance(completion_details, dict):
+                reasoning_tokens = coerce_int(completion_details.get("reasoning_tokens"))
     elif usage_payload is not None:
         prompt_tokens = coerce_int(
             getattr(usage_payload, "prompt_tokens", None)
@@ -143,6 +164,23 @@ def _extract_usage_counts(
             getattr(usage_payload, "reasoning_tokens", None)
             or getattr(usage_payload, "cache_creation_input_tokens", None)
         )
+        # OpenAI nests cache/reasoning under *_tokens_details sub-objects.
+        if cached_tokens <= 0:
+            prompt_details = getattr(usage_payload, "prompt_tokens_details", None)
+            if prompt_details is not None:
+                cached_tokens = coerce_int(
+                    getattr(prompt_details, "cached_tokens", None)
+                    if not isinstance(prompt_details, dict)
+                    else prompt_details.get("cached_tokens")
+                )
+        if reasoning_tokens <= 0:
+            completion_details = getattr(usage_payload, "completion_tokens_details", None)
+            if completion_details is not None:
+                reasoning_tokens = coerce_int(
+                    getattr(completion_details, "reasoning_tokens", None)
+                    if not isinstance(completion_details, dict)
+                    else completion_details.get("reasoning_tokens")
+                )
 
     if total_tokens <= 0:
         total_tokens = prompt_tokens + completion_tokens

@@ -1189,6 +1189,76 @@ def test_extract_completion_tool_calls_falls_back_to_function_thought_signature(
     assert calls[0]["thought_signature"] == "SIGFN"
 
 
+def test_extract_usage_counts_reads_nested_openai_token_details() -> None:
+    """Cache/reasoning nested under *_tokens_details are captured, not zeroed.
+
+    OpenAI reasoning models (gpt-5.x) surface cache hits under
+    ``prompt_tokens_details.cached_tokens`` and reasoning under
+    ``completion_tokens_details.reasoning_tokens`` — not at the top level.
+    Reading only top-level keys silently reports 0 for every call, which
+    makes the ledger bill cache/reasoning at full weight.
+    """
+    from hosts.core.provider_completions import _extract_usage_counts
+
+    # Object-shaped usage (what the OpenAI SDK returns).
+    usage = SimpleNamespace(
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+        cached_tokens=0,
+        reasoning_tokens=0,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=70),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=20),
+    )
+    result = _extract_usage_counts(usage, _coerce_int)
+    assert result == (100, 50, 150, 70, 20)
+
+    # Dict-shaped usage.
+    usage_dict = {
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "total_tokens": 150,
+        "prompt_tokens_details": {"cached_tokens": 70},
+        "completion_tokens_details": {"reasoning_tokens": 20},
+    }
+    result_dict = _extract_usage_counts(usage_dict, _coerce_int)
+    assert result_dict == (100, 50, 150, 70, 20)
+
+
+def test_extract_usage_counts_prefers_top_level_subcounters() -> None:
+    """Top-level cached/reasoning win over nested details when both present."""
+    from hosts.core.provider_completions import _extract_usage_counts
+
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "total_tokens": 150,
+        "cached_tokens": 90,
+        "reasoning_tokens": 30,
+        "prompt_tokens_details": {"cached_tokens": 70},
+        "completion_tokens_details": {"reasoning_tokens": 20},
+    }
+    result = _extract_usage_counts(usage, _coerce_int)
+    assert result == (100, 50, 150, 90, 30)
+
+
+def test_extract_usage_counts_defaults_subcounters_to_zero_when_missing() -> None:
+    """Providers without sub-counter details still return a valid 5-tuple."""
+    from hosts.core.provider_completions import _extract_usage_counts
+
+    usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    result = _extract_usage_counts(usage, _coerce_int)
+    assert result == (10, 5, 15, 0, 0)
+
+
+def _coerce_int(value: object) -> int:
+    """Minimal non-negative int coercion used by the extraction tests."""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 # ── Anthropic tool name sanitization round-trip ───────────────────────
 
 
@@ -1837,9 +1907,13 @@ def test_format_session_exit_summary_lines_includes_useful_stats() -> None:
         "turn_prompt_tokens": 140,
         "turn_completion_tokens": 60,
         "turn_total_tokens": 200,
+        "turn_cached_tokens": 40,
+        "turn_reasoning_tokens": 10,
         "session_prompt_tokens": 420,
         "session_completion_tokens": 180,
         "session_total_tokens": 600,
+        "session_cached_tokens": 120,
+        "session_reasoning_tokens": 30,
         "model_token_totals": {
             "deepseek-v4": {"prompt_tokens": 300, "completion_tokens": 120, "total_tokens": 420},
             "claude-haiku-4-5": {
@@ -1864,8 +1938,8 @@ def test_format_session_exit_summary_lines_includes_useful_stats() -> None:
     assert "Turns: 3 (ok: 2, errors: 1)" in summary
     assert "Avg turn latency: 300 ms" in summary
     assert "### Token Totals" in summary
-    assert "| Session | 420 | 180 | 600 |" in summary
-    assert "| Last turn | 140 | 60 | 200 |" in summary
+    assert "| Session | 420 | 180 | 600 | 120 | 30 | 480 |" in summary
+    assert "| Last turn | 140 | 60 | 200 | 40 | 10 | 160 |" in summary
     assert "| Avg/turn | 140 | 60 | 200 |" in summary
     assert "### By Model" in summary
     assert "| claude-haiku-4-5 | 120 | 60 | 180 |" in summary

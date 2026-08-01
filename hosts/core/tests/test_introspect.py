@@ -55,12 +55,14 @@ async def test_gather_introspection_reads_token_usage_file() -> None:
             {
                 "model_id": "gpt-4.1-mini",
                 "total_tokens": 500,
+                "cached_tokens": 200,
                 "cost_usd": 0.01,
                 "emitted_at": "2026-07-09T10:00:00Z",
             },
             {
                 "model_id": "gpt-4.1-mini",
                 "total_tokens": 300,
+                "cached_tokens": 100,
                 "cost_usd": 0.006,
                 "emitted_at": "2026-07-09T11:00:00Z",
             },
@@ -79,6 +81,8 @@ async def test_gather_introspection_reads_token_usage_file() -> None:
         assert snapshot.token_usage_24h is not None
         assert snapshot.token_usage_24h.event_count == 3
         assert snapshot.token_usage_24h.total_tokens == 1800
+        # billed = total - cached: (500-200) + (300-100) + (1000-0) = 1500
+        assert snapshot.token_usage_24h.billed_tokens == 1500
         assert snapshot.token_usage_24h.total_cost_estimate == pytest.approx(0.019, rel=0.01)
         # gpt-4.1-mini has 800 tokens (500+300), deepseek has 1000 — deepseek is top
         assert snapshot.token_usage_24h.top_model == "deepseek-chat"

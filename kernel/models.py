@@ -456,6 +456,7 @@ class TokenUsageSummary(BaseModel):
 
     total_cost_estimate: float = 0.0
     total_tokens: int = 0
+    billed_tokens: int = 0
     top_model: str = ""
     top_model_tokens: int = 0
     spike_at: str = ""  # ISO timestamp of the highest-cost event, or empty

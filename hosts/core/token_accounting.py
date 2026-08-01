@@ -474,6 +474,13 @@ def format_session_exit_summary_lines(
     avg_total_tokens = (session_total / turn_count) if turn_count else 0.0
     avg_duration_ms = (session_duration_ms / turn_count) if turn_count else 0.0
 
+    # Billed view = provider-reported total minus cache-hit tokens, which are
+    # billed at a much lower rate (or excluded) by the provider meter. This is
+    # the number that reconciles the session ledger against the dashboard.
+    session_billed = max(0, session_total - session_cached)
+    turn_billed = max(0, turn_total - turn_cached)
+    avg_billed = (session_billed / turn_count) if turn_count else 0.0
+
     cancelled_line = f" (cancelled: {cancelled_count})" if cancelled_count else ""
     lines = [
         "## Session Summary",
@@ -483,15 +490,16 @@ def format_session_exit_summary_lines(
         f"- Provider time: {session_duration_ms:.0f} ms (avg {avg_duration_ms:.0f} ms/turn)",
         "",
         "### Token Totals",
-        "| Category | Prompt | Completion | Total | Cached | Reasoning |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Category | Prompt | Completion | Total | Cached | Reasoning | Billed (total-cached) |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
         f"| Session | {session_prompt} | {session_completion} | {session_total} | "
-        f"{session_cached} | {session_reasoning} |",
+        f"{session_cached} | {session_reasoning} | {session_billed} |",
         f"| Last turn | {turn_prompt} | {turn_completion} | {turn_total} | "
-        f"{turn_cached} | {turn_reasoning} |",
+        f"{turn_cached} | {turn_reasoning} | {turn_billed} |",
         f"| Avg/turn | {avg_prompt:.0f} | {avg_completion:.0f} | {avg_total_tokens:.0f} | "
         f"{(session_cached / turn_count) if turn_count else 0:.0f} | "
-        f"{(session_reasoning / turn_count) if turn_count else 0:.0f} |",
+        f"{(session_reasoning / turn_count) if turn_count else 0:.0f} | "
+        f"{avg_billed:.0f} |",
     ]
 
     # ── Per-model breakdown ────────────────────────────────────────
@@ -501,16 +509,20 @@ def format_session_exit_summary_lines(
             [
                 "",
                 "### By Model",
-                "| Model | Prompt | Completion | Total | Cached | Reasoning | Duration ms |",
-                "| --- | --- | --- | --- | --- | --- | --- |",
+                "| Model | Prompt | Completion | Total | Cached | Reasoning | "
+                "Billed (total-cached) | Duration ms |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for model_key in sorted(model_totals):
             entry = model_totals[model_key]
+            total = int(entry.get('total_tokens', 0))
+            cached = int(entry.get('cached_tokens', 0))
             lines.append(
                 f"| {model_key} | {entry.get('prompt_tokens', 0)} | "
-                f"{entry.get('completion_tokens', 0)} | {entry.get('total_tokens', 0)} | "
-                f"{entry.get('cached_tokens', 0)} | {entry.get('reasoning_tokens', 0)} | "
+                f"{entry.get('completion_tokens', 0)} | {total} | "
+                f"{cached} | {entry.get('reasoning_tokens', 0)} | "
+                f"{max(0, total - cached)} | "
                 f"{entry.get('duration_ms', 0.0):.0f} |"
             )
 
@@ -521,16 +533,20 @@ def format_session_exit_summary_lines(
             [
                 "",
                 "### By Mode",
-                "| Mode | Prompt | Completion | Total | Cached | Reasoning | Duration ms |",
-                "| --- | --- | --- | --- | --- | --- | --- |",
+                "| Mode | Prompt | Completion | Total | Cached | Reasoning | "
+                "Billed (total-cached) | Duration ms |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for mode_key in sorted(mode_totals):
             entry = mode_totals[mode_key]
+            total = int(entry.get('total_tokens', 0))
+            cached = int(entry.get('cached_tokens', 0))
             lines.append(
                 f"| {mode_key} | {entry.get('prompt_tokens', 0)} | "
-                f"{entry.get('completion_tokens', 0)} | {entry.get('total_tokens', 0)} | "
-                f"{entry.get('cached_tokens', 0)} | {entry.get('reasoning_tokens', 0)} | "
+                f"{entry.get('completion_tokens', 0)} | {total} | "
+                f"{cached} | {entry.get('reasoning_tokens', 0)} | "
+                f"{max(0, total - cached)} | "
                 f"{entry.get('duration_ms', 0.0):.0f} |"
             )
 
@@ -541,16 +557,20 @@ def format_session_exit_summary_lines(
             [
                 "",
                 "### By Stage",
-                "| Stage | Prompt | Completion | Total | Cached | Reasoning | Duration ms |",
-                "| --- | --- | --- | --- | --- | --- | --- |",
+                "| Stage | Prompt | Completion | Total | Cached | Reasoning | "
+                "Billed (total-cached) | Duration ms |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for stage_key in sorted(stage_totals):
             entry = stage_totals[stage_key]
+            total = int(entry.get('total_tokens', 0))
+            cached = int(entry.get('cached_tokens', 0))
             lines.append(
                 f"| {stage_key} | {entry.get('prompt_tokens', 0)} | "
-                f"{entry.get('completion_tokens', 0)} | {entry.get('total_tokens', 0)} | "
-                f"{entry.get('cached_tokens', 0)} | {entry.get('reasoning_tokens', 0)} | "
+                f"{entry.get('completion_tokens', 0)} | {total} | "
+                f"{cached} | {entry.get('reasoning_tokens', 0)} | "
+                f"{max(0, total - cached)} | "
                 f"{entry.get('duration_ms', 0.0):.0f} |"
             )
 
