@@ -48,11 +48,17 @@ def reset_fetch_state() -> None:
 
 
 def _fetcher_instance() -> ContentFetcher:
-    global _fetcher
+    """Return the active fetcher, raising if uninitialized.
+
+    Mirrors ``mcp_server.storage._backend_instance``: the server requires an
+    explicit ``--data-dir`` via the CLI contract. There is deliberately NO
+    CWD-relative ``Path("artifacts")`` fallback — that resolves differently
+    depending on the process working directory and re-nests caches under a
+    subdirectory (the 2026-07-30 ``artifacts/files/artifacts/files``
+    incident). ``init_fetch`` must be called first (as ``main()`` does).
+    """
     if _fetcher is None:
-        # init_fetch() should have been called by main(); construct a
-        # default as a fallback so direct tool calls still work.
-        _fetcher = ContentFetcher(Path("artifacts"))
+        raise RuntimeError("lisa-fetch is not initialized. Call init_fetch(data_dir).")
     f: ContentFetcher = _fetcher
     return f
 

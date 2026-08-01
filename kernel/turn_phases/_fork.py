@@ -453,6 +453,7 @@ def _build_minimal_context(
     surface_id: str = "lite-host-console",
     memory_scope: str = "personal",
     session_plan_digest: str = "",
+    data_dir: str = "",
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for the turn runner."""
     return OperationExecutionContext(
@@ -478,4 +479,5 @@ def _build_minimal_context(
         approval_service=approval_service,
         session_plan_digest=session_plan_digest,
         code_change_artifact_store=code_change_artifact_store,
+        data_dir=data_dir,
     )

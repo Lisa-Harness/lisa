@@ -121,6 +121,11 @@ class ToolExecutionContext(BaseModel):
     code_change_artifact_store: Any = Field(default=None, exclude=True)
     event_bus: Any = Field(default=None, exclude=True)
     state_provider: Any = Field(default=None, exclude=True)
+    # Canonical host data root. Hosts inject their resolved ``data_dir`` so
+    # pack tools (e.g. ``fetch_page``) can persist caches without resolving
+    # a relative path against the process CWD. There is deliberately NO
+    # fallback — the host always injects a resolved, absolute data dir.
+    data_dir: str = Field(default="", exclude=True)
 
 
 class ToolResult(BaseModel):
@@ -228,6 +233,10 @@ class OperationExecutionContext(BaseModel):
     state_provider: Any = Field(default=None, exclude=True)
     introspect_fn: Any = Field(default=None, exclude=True)
     preferred_model_id: str | None = Field(default=None, exclude=True)
+    # Canonical host data root. See ``ToolExecutionContext.data_dir`` — the
+    # same no-fallback contract applies to operations that write/persist
+    # caches (e.g. ``fetch_page``) or need the host data root.
+    data_dir: str = Field(default="", exclude=True)
 
 
 class OperationResult(BaseModel):

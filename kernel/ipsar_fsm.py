@@ -1716,6 +1716,7 @@ async def _execute_mode_target_ids(
                     code_change_artifact_store=ctx.code_change_artifact_store,
                     event_bus=ctx.event_bus,
                     state_provider=ctx.state_provider,
+                    data_dir=ctx.data_dir,
                 )
                 tool_result = await execute_tool(target_id, tool_ctx)
                 result = OperationResult(

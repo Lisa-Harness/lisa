@@ -75,15 +75,24 @@ def _get_max_bytes() -> int:
         return _DEFAULT_MAX_BYTES
 
 
-def _get_data_dir() -> Path:
-    """Return the data dir for the fetcher cache.
+def _get_data_dir(ctx: ToolExecutionContext) -> Path:
+    """Return the data dir for the fetcher cache from the injected context.
 
-    Defaults to ``./artifacts`` (the conventional Lisa data root) but can be
-    overridden via ``LISA_DATA_DIR``. The fetcher creates the cache subdir
-    lazily.
+    The host threads its resolved ``data_dir`` onto ``ToolExecutionContext``
+    (via ``TurnHooks.data_dir``). There is deliberately NO fallback — a
+    CWD-relative ``Path("artifacts")`` resolves differently depending on the
+    process working directory and re-nests under ``data_dir/files`` (the
+    2026-07-30 ``artifacts/files/artifacts/files`` incident). If the context
+    carries no data dir, the tool fails loudly rather than silently writing
+    to an ambiguous location.
     """
-    raw = os.environ.get("LISA_DATA_DIR", "").strip()
-    return Path(raw) if raw else Path("artifacts")
+    raw = (getattr(ctx, "data_dir", "") or "").strip()
+    if not raw:
+        raise RuntimeError(
+            "fetch_page: no data_dir injected on the tool context; the host "
+            "must wire a resolved data dir before this tool can cache."
+        )
+    return Path(raw).expanduser().resolve()
 
 
 def _build_policy(*, force_refresh: bool = False) -> FetchPolicy:
@@ -102,17 +111,28 @@ def _build_policy(*, force_refresh: bool = False) -> FetchPolicy:
 # Mirrors the ``_reader_instance()`` pattern in ``mcp_server/content/server.py``:
 # one ContentFetcher per process, shared across all fetch_page calls so the L1
 # cache is reused within a turn and across turns. Tests call ``reset_fetcher``
-# for isolation.
+# for isolation. The cache root is bound to the host's injected data dir at
+# first use; a later data dir change rebuilds the singleton.
 
 _fetcher: ContentFetcher | None = None
 
 
-def get_fetcher() -> ContentFetcher:
-    """Return the module-level :class:`ContentFetcher`, creating it lazily."""
+def get_fetcher(data_dir: Path | None = None) -> ContentFetcher:
+    """Return the module-level :class:`ContentFetcher`, creating it lazily.
+
+    ``data_dir`` must come from the caller (the host-injected context). There
+    is no fallback — callers that cannot supply one must raise instead of
+    guessing a CWD-relative path.
+    """
     global _fetcher
     if _fetcher is None:
+        if data_dir is None:
+            raise RuntimeError(
+                "fetch_page: no data_dir provided to get_fetcher; the host must "
+                "inject its resolved data dir before the fetcher cache is used."
+            )
         _fetcher = ContentFetcher(
-            _get_data_dir(),
+            data_dir,
             default_policy=_build_policy(),
         )
     return _fetcher
@@ -158,13 +178,16 @@ async def fetch(
     *,
     force_refresh: bool = False,
     fetcher: ContentFetcher | None = None,
+    data_dir: Path | None = None,
 ) -> FetchedPage:
     """Fetch one URL via :class:`ContentFetcher` and return extracted text.
 
     Raises:
         ValueError: on SSRF rejection or network failure with no cache.
+        RuntimeError: if no ``fetcher`` or ``data_dir`` is supplied and the
+            module singleton was never initialized with a data dir.
     """
-    f = fetcher if fetcher is not None else get_fetcher()
+    f = fetcher if fetcher is not None else get_fetcher(data_dir=data_dir)
     result = await f.fetch(url, policy=_build_policy(force_refresh=force_refresh))
     text, title = _strip_html(result.text, max_chars=_MAX_TEXT_CHARS)
     return FetchedPage(
@@ -194,7 +217,7 @@ async def execute(ctx: ToolExecutionContext) -> ToolResult:
         return ToolResult(tool_id=ctx.tool_id or "fetch_page", error=reason)
 
     try:
-        page = await fetch(url)
+        page = await fetch(url, data_dir=_get_data_dir(ctx))
     except Exception as exc:  # pylint: disable=broad-except
         return ToolResult(
             tool_id=ctx.tool_id or "fetch_page",

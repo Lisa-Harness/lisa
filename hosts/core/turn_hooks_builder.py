@@ -704,6 +704,7 @@ def build_turn_hooks(
         approval_service=approval_service,
         recovery_service=getattr(runtime, "recovery_service", None),
         code_change_artifact_store=runtime.code_change_artifact_store,
+        data_dir=str(runtime.data_dir),
         workspace_id=runtime.session_plan.manifest.name,
         user_id=runtime.config.user_slug,
         user_slug=runtime.config.user_slug,

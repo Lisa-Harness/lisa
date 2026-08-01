@@ -174,6 +174,7 @@ def _to_tool_context(tool_id: str, ctx: Any) -> ToolExecutionContext:
         code_change_artifact_store=getattr(ctx, "code_change_artifact_store", None),
         event_bus=getattr(ctx, "event_bus", None),
         state_provider=getattr(ctx, "state_provider", None),
+        data_dir=getattr(ctx, "data_dir", ""),
     )
 
 

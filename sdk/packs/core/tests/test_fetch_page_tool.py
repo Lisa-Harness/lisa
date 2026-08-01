@@ -7,6 +7,8 @@ calls.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -41,7 +43,7 @@ async def test_fetch_page_rejects_non_http_scheme() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_page_returns_extracted_text(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """A successful fetch returns the stripped page text and structured payload."""
     from typing import Any
@@ -61,6 +63,7 @@ async def test_fetch_page_returns_extracted_text(
 
     ctx = ToolExecutionContext(
         tool_id="fetch_page",
+        data_dir=str(tmp_path),
         parameters={"url": "https://example.com/guide"},
     )
     result = await fp.execute(ctx)
@@ -73,8 +76,20 @@ async def test_fetch_page_returns_extracted_text(
 
 
 @pytest.mark.asyncio
+async def test_fetch_page_requires_injected_data_dir() -> None:
+    """A tool context without a data_dir fails loudly, never CWD-guesses."""
+    from sdk.packs.core.tools.fetch_page import fetch_page as fp
+
+    ctx = ToolExecutionContext(tool_id="fetch_page", parameters={"url": "https://example.com/x"})
+    result = await fp.execute(ctx)
+
+    assert result.error.startswith("Fetch failed:")
+    assert "no data_dir" in result.error
+
+
+@pytest.mark.asyncio
 async def test_fetch_page_surfaces_transport_error(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """A transport failure is reported as a tool error, not raised."""
     from typing import Any
@@ -88,6 +103,7 @@ async def test_fetch_page_surfaces_transport_error(
 
     ctx = ToolExecutionContext(
         tool_id="fetch_page",
+        data_dir=str(tmp_path),
         parameters={"url": "https://example.com/down"},
     )
     result = await fp.execute(ctx)

@@ -411,6 +411,7 @@ async def execute_declarative_operation(
                             code_change_artifact_store=ctx.code_change_artifact_store,
                             event_bus=ctx.event_bus,
                             state_provider=ctx.state_provider,
+                            data_dir=ctx.data_dir,
                         ),
                     )
                     if tool_name and tool_name not in used_tools:
