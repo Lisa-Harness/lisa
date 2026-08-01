@@ -948,6 +948,120 @@ async def test_run_turn_mid_turn_handoff_to_planner_drives_next_handoff() -> Non
 
 
 @pytest.mark.asyncio
+async def test_plan_mid_turn_handoff_resumes_active_instance() -> None:
+    """A mid-turn handoff to ``plan`` while a broader ``plan_workflow_op``
+    instance is still in flight resumes that instance's next step instead
+    of blindly re-running ``plan_workflow`` against a continuation query.
+
+    Regression for the 2026-08-01 plan→markdown→learn→re-plan failure: the
+    user led a session down a chained step, then asked to "continue the
+    overall plan / what phase are we on?". Re-entering ``plan`` ran
+    ``plan_workflow`` with zero awareness of the existing instance, and the
+    planner refused to route a continuation/status query ("No installed
+    mode provides a continue plan/phase status capability"). The mid-turn
+    plan handoff must resolve the resume target from the active instance's
+    current step instead of re-planning.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+    from kernel.workflow_instance import WorkflowInstance, WorkflowStep
+
+    default_cfg = _mode_config(mode_id="default")
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    markdown_cfg = _mode_config(mode_id="markdown", satisfies_intents=["write"])
+    patched_catalog = {
+        "default": default_cfg,
+        "plan": plan_cfg,
+        "search": search_cfg,
+        "markdown": markdown_cfg,
+    }
+
+    # Active plan: search (done) → markdown (current, the next step).
+    steps = (
+        WorkflowStep(
+            step_id="search_0",
+            mode_id="search",
+            satisfies_intents=("research",),
+            spawned_from="plan_workflow_op",
+        ),
+        WorkflowStep(
+            step_id="markdown_1",
+            mode_id="markdown",
+            satisfies_intents=("write",),
+            is_terminal=True,
+            spawned_from="plan_workflow_op",
+        ),
+    )
+    active_instance = WorkflowInstance(
+        declared_steps=steps,
+        completed_steps=("search_0",),
+        current_step_id="markdown_1",
+        current_mode_id="markdown",
+        spawned_from="plan_workflow_op",
+    )
+
+    plan_entry_calls = 0
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        nonlocal plan_entry_calls
+        plan_entry_calls += 1
+        # The planner would refuse a continuation query, but this path must
+        # NOT be reached for a resume — the active instance drives the target.
+        return OperationResult(
+            output_text="No installed mode provides a continue plan capability.",
+            output_json={"target_stage_id": "", "rationale": "refused"},
+        )
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        is_plan_mode = "## Handoff Context" in sys_content and "`plan`" in sys_content
+        if is_plan_mode:
+            return _StubCompletion(content="Planning...")
+        # default mode → transition_stage to plan.
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_default_to_plan",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": json.dumps(
+                            {"target_stage_id": "plan", "rationale": "resume the plan"}
+                        ),
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow_instance = lambda: active_instance
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        await run_turn(
+            mode_id="default",
+            query="continue with the overall plan; what phase are we on?",
+            hooks=hooks,
+        )
+
+    # The active instance drove the resume target — the planner must NOT have
+    # been re-run against the continuation query.
+    assert plan_entry_calls == 0, "mid-turn plan handoff must resume, not re-plan"
+
+
+@pytest.mark.asyncio
 async def test_run_turn_missing_complete_raises_not_implemented() -> None:
     """A search (action) mode with entry ops needs complete_fn, and the
     operation fails with an OperationExecutionError wrapping the

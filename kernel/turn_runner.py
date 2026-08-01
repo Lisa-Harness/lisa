@@ -308,6 +308,34 @@ def _next_remaining_step_mode_id(hooks: Any) -> str:
     return step.mode_id if step is not None else ""
 
 
+def _active_plan_resume_target(hooks: Any) -> str:
+    """Return the resume target mode from an active plan instance, or "".
+
+    Reads the active ``WorkflowInstance`` (when wired) and, if it is a
+    non-complete ``plan_workflow_op`` chain, returns the mode_id of the
+    next uncompleted step. Used by the mid-turn ``plan`` handoff path so
+    re-entering ``plan`` while a broader plan is in flight resumes that
+    plan instead of blindly re-running ``plan_workflow`` against a
+    continuation/status query (the 2026-08-01 plan→markdown→learn→re-plan
+    failure). Returns "" when no resumable plan instance is active, so the
+    caller falls through to the normal planner path.
+    """
+    if hooks.workflow_instance is None:
+        return ""
+    try:
+        instance = hooks.workflow_instance()
+    except Exception:  # pylint: disable=broad-except
+        return ""
+    if instance is None:
+        return ""
+    if getattr(instance, "spawned_from", "") != "plan_workflow_op":
+        return ""
+    if _is_workflow_instance_complete(instance):
+        return ""
+    step = _next_remaining_step(instance)
+    return step.mode_id if step is not None else ""
+
+
 # ── Public types ───────────────────────────────────────────────────────────
 
 
@@ -1866,6 +1894,21 @@ async def _run_turn_inner(
                 step_result.response_text = f"{plan_block}\n\n{step_result.response_text}"
             elif plan_block and plan_steps_raw and not step_result.response_text:
                 step_result.response_text = plan_block
+            # Advance the host's ``current_mode_id`` out of ``plan`` so the
+            # next message does not re-enter the planner. The recursive
+            # first-step turn runs in ``planned_target`` (e.g. ``markdown``)
+            # and returns ``handoff_to=None`` when that step completes without
+            # a further ``transition_stage``. The host only updates
+            # ``current_mode_id`` from ``result.handoff_to``, so leaving it
+            # None strands the session in ``plan`` mode and the next message
+            # re-runs ``plan_workflow`` — re-planning a "proceed" into a
+            # fresh (wrong) target or failing on a resume query (the
+            # 2026-08-01 plan→markdown→re-plan→discuss→failure loop). The
+            # durable ``WorkflowInstance`` remains the source of truth for
+            # the *actual* next step; this only points the host at the step
+            # that just ran so it stops re-entering the planner.
+            if not step_result.handoff_to:
+                step_result.handoff_to = planned_target
             return step_result
         # ── Plan failure: hard stop with a structured recovery prompt ──
         # When the planner returned an empty ``target_stage_id`` (parse
@@ -3952,7 +3995,46 @@ async def _run_turn_inner(
                                 # inject their output as a tool result so the
                                 # model has the data to work with.
                                 entry_output = ""
-                                if (
+                                # ── Plan resume-awareness ──────────────
+                                # When the handoff target is ``plan`` while a
+                                # broader ``plan_workflow_op`` instance is
+                                # still in flight, resume that instance's next
+                                # step instead of blindly re-running
+                                # ``plan_workflow`` against a continuation/
+                                # status query. The planner has no awareness
+                                # of the existing plan and fails with "No
+                                # installed mode provides a continue/status
+                                # capability" (the 2026-08-01
+                                # plan→markdown→learn→re-plan failure). This
+                                # mirrors the turn-start resume path
+                                # (``_coordinator_routing_hint``) for the
+                                # mid-turn handoff case.
+                                _is_planner_handoff = (
+                                    target_stage == "plan"
+                                    or "plan_workflow"
+                                    in (target_mode_config.entry_operation_ids or [])
+                                )
+                                _plan_resume_target = (
+                                    _active_plan_resume_target(hooks)
+                                    if _is_planner_handoff
+                                    else ""
+                                )
+                                if _plan_resume_target:
+                                    # Resuming an active plan: do NOT run the
+                                    # planner entry op (it would refuse the
+                                    # continuation query). Drive the handoff
+                                    # to the instance's next step directly.
+                                    entry_output = (
+                                        f"Resuming the active plan; next step "
+                                        f"`{_plan_resume_target}`."
+                                    )
+                                    _state.pending_planned_handoff = _plan_resume_target
+                                    _log.info(
+                                        "plan mid-turn handoff resuming active "
+                                        "instance; target=%s (skip re-planning)",
+                                        _plan_resume_target,
+                                    )
+                                elif (
                                     target_mode_config.mode_kind == "action"
                                     and target_mode_config.entry_operation_ids
                                 ):
@@ -4004,11 +4086,6 @@ async def _run_turn_inner(
                                         # ``plan`` (or, more generally, on
                                         # the entry op being a planner op
                                         # that returns routing decisions).
-                                        _is_planner_handoff = (
-                                            target_stage == "plan"
-                                            or "plan_workflow"
-                                            in (target_mode_config.entry_operation_ids or [])
-                                        )
                                         _planned_next = ""
                                         if _is_planner_handoff:
                                             _planned_next = str(
