@@ -339,6 +339,32 @@ def _load_one_mode(
     if not mode_provider_id:
         mode_provider_id = inferred_provider_id
 
+    # Parse routing_intent_keywords defensively. The schema requires a dict
+    # mapping each intent tag to a list of substring keywords, but malformed
+    # pack files have shipped a flat list instead. An unguarded ``.items()``
+    # here raises ``'list' object has no attribute 'items'`` inside the
+    # catalog subprocess, which surfaces as an opaque startup failure. Mirror
+    # the kernel's validation (``kernel/ipsar_fsm.py``): raise in strict mode
+    # (host startup fails fast on a broken pack install), skip the mode with a
+    # warning otherwise.
+    routing_intent_keywords_raw = front_matter.get("routing_intent_keywords") or {}
+    if not isinstance(routing_intent_keywords_raw, dict):
+        if strict:
+            raise CatalogCollisionError(
+                f"Mode '{mode_id}' has invalid routing_intent_keywords: "
+                "must be a mapping of intent tag to keyword list, "
+                f"got {type(routing_intent_keywords_raw).__name__} in {mode_config_path}"
+            )
+        logger.warning(
+            "Skipping mode '%s': routing_intent_keywords must be a dict in %s",
+            mode_id,
+            mode_config_path,
+        )
+        return None
+    routing_intent_keywords: dict[str, list[str]] = {}
+    for tag, keywords in routing_intent_keywords_raw.items():
+        routing_intent_keywords[str(tag)] = [str(k) for k in keywords]
+
     return {
         "mode_id": mode_id,
         "mode_provider_id": mode_provider_id,
@@ -356,10 +382,7 @@ def _load_one_mode(
         "priority": int(front_matter.get("priority", 0) or 0),
         "fast_path_patterns": [str(p) for p in (front_matter.get("fast_path_patterns") or [])],
         "routing_intent_tags": [str(t) for t in (front_matter.get("routing_intent_tags") or [])],
-        "routing_intent_keywords": {
-            str(tag): [str(k) for k in keywords]
-            for tag, keywords in (front_matter.get("routing_intent_keywords") or {}).items()
-        },
+        "routing_intent_keywords": routing_intent_keywords,
         "satisfies_intents": [str(t) for t in (front_matter.get("satisfies_intents") or [])],
         "required_capabilities": [
             str(t) for t in (front_matter.get("required_capabilities") or [])
