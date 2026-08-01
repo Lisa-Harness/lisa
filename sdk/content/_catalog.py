@@ -887,12 +887,43 @@ def _load_runtime_operation(
     }
 
 
+def _is_package_dir(path: Path) -> bool:
+    """Return True if ``path`` is importable as a package.
+
+    Recognizes both regular packages (with ``__init__.py``) and PEP 420
+    namespace packages, which install as a directory on ``sys.path`` with
+    no ``__init__.py``. External packs ship under the ``lisa_packs`` namespace
+    package; the namespace ``__init__.py`` is not always present on disk
+    (it is shared across pack wheels and can be dropped during install), so
+    relying solely on ``__init__.py`` would mis-infer bare module paths like
+    ``coding.tools.status.status`` for namespace-pack contents.
+    """
+
+    if (path / "__init__.py").is_file():
+        return True
+    # PEP 420 namespace package: resolvable via the import system even
+    # without an __init__.py when an ancestor is on sys.path.
+    import importlib.util
+
+    spec = importlib.util.find_spec(path.name)
+    if spec is None or spec.submodule_search_locations is None:
+        return False
+    resolved = {Path(p).resolve() for p in spec.submodule_search_locations}
+    return path.resolve() in resolved
+
+
 def _infer_module_path(py_path: Path, root: Path) -> str:
     """Infer a dotted Python module path from the file path relative to root.
 
     The ``operations`` directory name is included in the path so that
     ``sdk/packs/introspect/operations/self_model/self_model.py`` resolves to
     ``sdk.packs.introspect.operations.self_model``.
+
+    The package base is discovered by walking up from ``root``'s parent while
+    each directory is importable as a package (regular or PEP 420 namespace),
+    so namespace-pack contents under ``lisa_packs`` resolve to
+    ``lisa_packs.<pack>.operations.<op>`` even when the shared namespace
+    ``__init__.py`` is absent from site-packages.
     """
 
     relative = py_path.relative_to(root).with_suffix("")
@@ -900,7 +931,7 @@ def _infer_module_path(py_path: Path, root: Path) -> str:
     # Walk up from root's parent to find the package base
     package_dir = root.parent
     pkg_parts: list[str] = []
-    while (package_dir / "__init__.py").is_file():
+    while _is_package_dir(package_dir):
         pkg_parts.insert(0, package_dir.name)
         package_dir = package_dir.parent
     # Include the operations directory name itself
