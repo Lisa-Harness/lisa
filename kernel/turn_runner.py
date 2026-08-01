@@ -3363,7 +3363,12 @@ async def _run_turn_inner(
             _tool_dispatch_started = time.monotonic()
             recovery_item_id = ""
             recovery_retry_policy = "safe"
-            if hooks.recovery_service is not None and _tool_kind != "transition":
+            # Skip recovery records for first-class terminal/routing actions
+            # (``transition`` and ``yield``). Their target kinds are not part
+            # of ``RecoveryTargetKind`` (recovery.py), so constructing a
+            # ``RecoveryRecord`` for them raises a pydantic ``literal_error``
+            # and only logs a misleading "recovery begin failed" warning.
+            if hooks.recovery_service is not None and _tool_kind not in ("transition", "yield"):
                 try:
                     effect = "read"
                     if tool_name in operation_catalog:

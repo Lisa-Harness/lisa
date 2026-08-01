@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, cast
 
 from pydantic import BaseModel, Field, ValidationError
@@ -28,6 +29,69 @@ logger = logging.getLogger(__name__)
 
 # Authored-text path — loaded via ctx.read_authored_text_fn (SDK loader).
 _SYSTEM_PROMPT_PATH = "operations/memory/prompts/synthesize_learning_system.md"
+
+# Fallback default for the distillation LLM token budget. The authoritative
+# source is the session manifest's
+# ``resources.packs.configuration.lisa-pack-memory.<key>`` block, surfaced to
+# the op at runtime as ``ctx.pack_config``. This constant is only the
+# last-resort fallback when no manifest config is supplied so the op still
+# works in a bare host.
+#
+# Manifest key (under ``resources.packs.configuration.lisa-pack-memory``):
+#   memory_distill_max_tokens.
+#
+# Local OpenAI-compatible providers (Ollama) frequently truncate the JSON
+# envelope + 3 facts mid-array when the budget is too small, which the
+# ``_looks_like_json`` guard correctly refuses to fall back to prose.
+_DISTILL_MAX_TOKENS = 512
+
+
+@dataclass(frozen=True)
+class _ResolvedSettings:
+    """Resolved operation budgets: ``ctx.pack_config`` overrides module fallbacks.
+
+    The authoritative source is the session manifest's
+    ``resources.packs.configuration.lisa-pack-memory`` block, surfaced at
+    runtime as ``ctx.pack_config`` (an immutable MappingProxyType populated
+    by ``kernel/operations/registry._resolve_execution_configuration`` before
+    ``execute`` runs). The module ``_*`` constant is the last-resort fallback
+    used only when the manifest supplies no value.
+    """
+
+    distill_max_tokens: int
+
+
+def _cfg_int(pack_config: Any, key: str, default: int) -> int:
+    """Read an int from ``ctx.pack_config`` with a module-constant fallback.
+
+    Coerces non-int values to the default rather than raising, since pack
+    config is session-authored and a malformed value should not crash the
+    op mid-turn.
+    """
+    if pack_config is None:
+        return default
+    raw = pack_config.get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "synthesize_learning: pack_config[%r]=%r is not an int; using default %d",
+            key,
+            raw,
+            default,
+        )
+        return default
+
+
+def _resolve_settings(ctx: OperationExecutionContext) -> _ResolvedSettings:
+    """Resolve operation budgets from ``ctx.pack_config`` with fallbacks."""
+    return _ResolvedSettings(
+        distill_max_tokens=_cfg_int(
+            ctx.pack_config, "memory_distill_max_tokens", _DISTILL_MAX_TOKENS
+        ),
+    )
 
 
 def _load_system_prompt(ctx: OperationExecutionContext) -> str:
@@ -189,10 +253,14 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": raw_content},
     ]
-    # 512 tokens leaves headroom for the JSON envelope + 3 durable facts; 300
-    # truncated the array mid-fact on 2026-07-18, producing invalid JSON that
-    # the _looks_like_json guard correctly refused to fall back to prose.
-    distill_max_tokens = 512
+    # Token budget for the distillation call, resolved from ``ctx.pack_config``
+    # (key ``memory_distill_max_tokens`` under
+    # ``resources.packs.configuration.lisa-pack-memory``) with a module
+    # fallback of 512. 512 leaves headroom for the JSON envelope + 3 durable
+    # facts; 300 truncated the array mid-fact on 2026-07-18, producing invalid
+    # JSON that the _looks_like_json guard correctly refused to fall back to
+    # prose.
+    distill_max_tokens = _resolve_settings(ctx).distill_max_tokens
     distilled_text: str | None = None
     last_exc: Exception | None = None
     for attempt_idx, attempt_messages in enumerate(
