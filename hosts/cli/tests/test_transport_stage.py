@@ -11,6 +11,7 @@ import io
 
 import pytest
 from rich.console import Console
+from rich.text import Text
 
 from hosts.cli.transport import RichTransport
 
@@ -441,58 +442,97 @@ async def test_stop_thinking_clears_status_sentinel() -> None:
     assert transport._live is None
 
 
-# ── thinking block streaming (on_text_chunk) ─────────────────────────
+# ── stream pane streaming (on_text_chunk) ────────────────────────────
 
 
-def _make_stringio_transport(hide_thinking: bool = False) -> tuple[RichTransport, io.StringIO]:
-    """Build a RichTransport writing to a StringIO so tests can assert on the raw stream."""
+def _make_stream_transport(hide_thinking: bool = False) -> RichTransport:
+    """Build a RichTransport writing to a quiet StringIO console."""
     sink = io.StringIO()
     console = Console(file=sink, force_terminal=False, width=100)
-    transport = RichTransport(console=console, debug=False, hide_thinking=hide_thinking)
-    return transport, sink
+    return RichTransport(console=console, debug=False, hide_thinking=hide_thinking)
 
 
 @pytest.mark.asyncio
-async def test_on_text_chunk_renders_thinking_block() -> None:
-    """Reasoning deltas render a dim thinking block that closes on the first visible text."""
-    transport, sink = _make_stringio_transport()
+async def test_on_text_chunk_accumulates_into_stream_pane() -> None:
+    """Visible and reasoning deltas accumulate in the stream pane without
+    tearing down the Live region (the window stays fixed)."""
+    transport = _make_stream_transport()
     transport.start_thinking("model_call")
+    live = transport._live
 
-    # Reasoning-only deltas open the block and stream the reasoning text.
     await transport.on_text_chunk("", reasoning="Let me think")
-    await transport.on_text_chunk("", reasoning=" about it")
-    assert "▸ Thinking… Let me think about it" in sink.getvalue()
-
-    # The first visible text delta closes the block.
+    await transport.on_text_chunk("", reasoning=" more")
     await transport.on_text_chunk("The answer")
-    assert "▸ Thinking… Let me think about it\n" in sink.getvalue()
-    assert "The answer" in sink.getvalue()
+
+    # All deltas buffered in arrival order into the single flowing stream.
+    assert transport._stream_text.plain == "Let me think moreThe answer"
+    # The Live region must NOT have been torn down by streaming.
+    assert transport._live is live
+    assert transport._status is not None
 
 
 @pytest.mark.asyncio
 async def test_on_text_chunk_hide_thinking_suppresses_reasoning() -> None:
     """hide_thinking=True drops reasoning deltas but keeps the visible answer."""
-    transport, sink = _make_stringio_transport(hide_thinking=True)
+    transport = _make_stream_transport(hide_thinking=True)
     transport.start_thinking("model_call")
 
     await transport.on_text_chunk("", reasoning="secret thinking")
     await transport.on_text_chunk("visible answer")
 
-    out = sink.getvalue()
-    assert "secret thinking" not in out
-    assert "visible answer" in out
+    # Only the visible answer is buffered; reasoning suppressed.
+    assert transport._stream_text.plain == "visible answer"
 
 
 @pytest.mark.asyncio
-async def test_on_text_chunk_start_thinking_resets_thinking_state() -> None:
-    """start_thinking clears the thinking-open flag so a new turn starts fresh."""
-    transport, _sink = _make_stringio_transport()
+async def test_start_thinking_resets_stream_pane() -> None:
+    """start_thinking clears the stream pane so a new turn starts fresh."""
+    transport = _make_stream_transport()
     transport.start_thinking("model_call")
-    await transport.on_text_chunk("", reasoning="half open")
-    assert transport._thinking_open is True
+    await transport.on_text_chunk("some streamed text")
+    assert transport._stream_text != Text()
 
     transport.start_thinking("model_call")
-    assert transport._thinking_open is False
+    assert transport._stream_text == Text()
+
+
+@pytest.mark.asyncio
+async def test_on_response_discards_stream_and_renders_panel() -> None:
+    """on_response stops the Live region, clears the stream pane, and renders
+    the fully formatted answer panel — the streamed version is gone."""
+    transport = _make_stream_transport()
+    transport.start_thinking("model_call")
+    await transport.on_text_chunk("", reasoning="think")
+    await transport.on_text_chunk("draft answer")
+
+    await transport.on_response("# Final Answer")
+
+    # Stream pane discarded, Live region stopped.
+    assert transport._stream_text == Text()
+    assert transport._live is None
+    assert transport._status is None
+    # The formatted Markdown panel was rendered (panel title in output).
+    assert "Final Answer" in transport.console.file.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_stream_pane_wraps_to_full_width() -> None:
+    """The stream buffer wraps across the console width instead of each delta
+    rendering as its own short line."""
+    sink = io.StringIO()
+    console = Console(file=sink, force_terminal=False, width=20)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("model_call")
+
+    await transport.on_text_chunk("hello world")
+    await transport.on_text_chunk(" hello again")
+
+    # A single flowing buffer wraps into multiple full-width lines.
+    wrapped = transport._stream_wrapped_lines()
+    # 22 chars at width 20 → 2 wrapped lines.
+    assert len(wrapped) >= 2
+    # Concatenated wrapped text equals the full buffered content.
+    assert "".join(line.plain for line in wrapped) == "hello world hello again"
 
 
 # ── compact (short-terminal) layout ──────────────────────────────────

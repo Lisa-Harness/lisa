@@ -56,6 +56,7 @@ STYLE_PANE_HEADER = "bold steel_blue3"
 STYLE_PANE_TRANSITION = "gold3"
 STYLE_PANE_MODEL = "dark_sea_green4"
 STYLE_PANE_TOOL = "cornflower_blue"
+STYLE_PANE_STREAM = "bright_white"
 STYLE_GRAPHIC = "grey58"
 
 #: Lines reserved below the Live region for post-turn content that must
@@ -84,11 +85,11 @@ _PANE_MIN_LINES = 2
 #: empty transitions pane doesn't waste 1/6 of the screen.
 _PANE_MAX_LINES = 40
 
-#: Proportional height shares for the three panes (transitions, model calls,
-#: tools). Used as the *initial* allocation; the actual allocation is then
-#: trimmed so no pane gets more rows than it has content (plus a small
+#: Proportional height shares for the four panes (transitions, model calls,
+#: tools, stream). Used as the *initial* allocation; the actual allocation is
+#: then trimmed so no pane gets more rows than it has content (plus a small
 #: overflow buffer), and the freed space goes to the panes that need it.
-_PANE_WEIGHTS = (1, 3, 2)
+_PANE_WEIGHTS = (1, 2, 2, 3)
 _PANE_WEIGHT_TOTAL = sum(_PANE_WEIGHTS)
 
 #: Maximum width of the pip counter. When the cap exceeds this, the pip
@@ -230,63 +231,70 @@ class _PaneRow:
     active: bool = False
 
 
-def _pane_heights(total: int, counts: tuple[int, int, int]) -> tuple[int, int, int]:
-    """Split ``total`` lines across the three panes, content-aware.
+def _pane_heights(total: int, counts: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """Split ``total`` lines across the four panes, content-aware.
 
-    The 1:3:2 weights are the *initial* allocation. Each pane is then
+    The 1:2:2:3 weights are the *initial* allocation. Each pane is then
     trimmed to no more than ``min(_PANE_MAX_LINES, len(counts[i]) + 1)``
     (its content plus one overflow row), and the freed space is
     redistributed to the panes that have more content than their
     allocation. This means an empty transitions pane donates its space
-    to the model-calls and tools panes instead of wasting 1/6 of the
-    screen.
+    to the panes that need it instead of wasting a proportional share of
+    the screen.
     """
     if total <= 0:
-        return (_PANE_MIN_LINES, _PANE_MIN_LINES, _PANE_MIN_LINES)
-    body = max(0, total - 3)
+        return (_PANE_MIN_LINES, _PANE_MIN_LINES, _PANE_MIN_LINES, _PANE_MIN_LINES)
+    body = max(0, total - 4)
     # Initial proportional allocation.
     base = [max(_PANE_MIN_LINES, body * w // _PANE_WEIGHT_TOTAL) for w in _PANE_WEIGHTS]
     # Trim panes that have less content than their allocation, capped at
     # _PANE_MAX_LINES so a very long pane doesn't eat the whole screen.
     demand = [min(_PANE_MAX_LINES, max(_PANE_MIN_LINES, c + 1)) for c in counts]
     freed = 0
-    for i in range(3):
+    for i in range(4):
         if base[i] > demand[i]:
             freed += base[i] - demand[i]
             base[i] = demand[i]
     # Redistribute freed space to panes that need more than they have.
     if freed > 0:
-        needy = [i for i in range(3) if base[i] < demand[i]]
+        needy = [i for i in range(4) if base[i] < demand[i]]
         if needy:
             share = freed // len(needy)
             leftover = freed - share * len(needy)
             for i in needy:
                 base[i] += share
-            base[needy[0]] += leftover  # model-calls pane gets the remainder
+            base[needy[0]] += leftover  # first needy pane gets the remainder
         else:
             # Nobody needs more — give it all to the model-calls pane.
             base[1] += freed
-    return (base[0], base[1], base[2])
+    return (base[0], base[1], base[2], base[3])
 
 
 class RichTransport:
     """TransportCallbacks implementation backed by a Rich Console.
 
-    The Live region is split into three stacked, fixed-height panes that
+    The Live region is split into four stacked, fixed-height panes that
     scroll independently within their own window:
 
     * **Transitions** (1 part) — mode handoffs (``default → coding``).
-    * **Model calls** (3 parts) — ``model_call`` / ``model_call_complete``
+    * **Model calls** (2 parts) — ``model_call`` / ``model_call_complete``
       with the iteration pip counter and duration sparkline.
     * **Tools** (2 parts) — ``tool_dispatch`` / ``tool_dispatch_complete``
       and fork fan-out rows, with the tool-call pip counter.
+    * **Stream** (3 parts) — the streamed model output (visible answer
+      plus, when present, the dimmed ``reasoning_content`` thinking).
 
     Each row is a single left-aligned line with the graphical strip
     (pip-counter dots and, when present, the duration sparkline) on the
     left and the status words after it, so the per-iteration dots line
     up vertically when the pane is scrolled back. The pane that owns the
     currently-active stage shows a live spinner on its last row; the
-    other two panes show only completed entries.
+    other panes show only completed entries.
+
+    On turn completion the Live region is stopped. The three telemetry
+    panes flush to scrollback as a de-facto summary; the stream pane is
+    discarded (the fully formatted answer replaces it, rendered by
+    ``on_response``). See :func:`stop_thinking` and :func:`on_response`.
 
     Attributes:
         console: The Rich Console to render to. Defaults to a shared
@@ -294,6 +302,8 @@ class RichTransport:
             for testing or file redirection).
         debug: When True, ``on_debug_context`` renders a panel. When
             False, it is a no-op (matches the ``--debug`` flag).
+        hide_thinking: When True, the streamed ``reasoning_content``
+            deltas are not rendered. The visible answer is unaffected.
     """
 
     def __init__(
@@ -309,10 +319,6 @@ class RichTransport:
         # rendered. The visible answer is unaffected. Default False —
         # "show the work" (see ``--hide-thinking`` in the CLI host).
         self.hide_thinking = hide_thinking
-        # True while the streamed model output is in the "thinking" phase
-        # (only reasoning deltas seen so far, no visible content yet).
-        # Reset in ``start_thinking`` so each turn starts clean.
-        self._thinking_open: bool = False
         # ``_status`` is retained as a non-None sentinel while the Live
         # region is active and ``None`` when stopped, preserving the
         # ``transport._status is None`` contract used by REPL cancel
@@ -340,7 +346,7 @@ class RichTransport:
         # ``[mode]`` prefix on every status line so the user always knows
         # who owns their turn — including mid-turn handoffs.
         self._current_mode: str = ""
-        # ── Three categorized, scrolling row buffers ───────────────────
+        # ── Four categorized, scrolling row buffers ───────────────────
         # Each pane owns its own list of ``_PaneRow`` entries. Every
         # ``on_stage`` event is routed to exactly one pane based on its
         # label; the panes scroll independently within their proportional
@@ -348,9 +354,17 @@ class RichTransport:
         self._transitions: list[_PaneRow] = []
         self._model_calls: list[_PaneRow] = []
         self._tools: list[_PaneRow] = []
+        # The stream pane holds the raw streamed model output as a single
+        # flowing ``Text``. Deltas are appended in arrival order (visible
+        # answer bright; ``reasoning_content`` dimmed), so Rich wraps the
+        # whole buffer across the full terminal width instead of rendering
+        # each tiny chunk as its own short line. Unlike the telemetry panes,
+        # this buffer is discarded (not flushed to scrollback) on turn
+        # completion — the formatted answer replaces it.
+        self._stream_text: Text = Text()
         # Which pane owns the currently-active (spinner) row. One of
-        # ``"transitions"``, ``"model_calls"``, ``"tools"``, or ``""`` when
-        # no stage is active yet (the initial dispatch seed).
+        # ``"transitions"``, ``"model_calls"``, ``"tools"``, ``"stream"``,
+        # or ``""`` when no stage is active yet (the initial dispatch seed).
         self._active_pane: str = ""
         # Per-iteration durations for the current turn, used to draw the
         # duration sparkline on ``model_call_complete``. Reset in
@@ -374,13 +388,13 @@ class RichTransport:
     # ── Live region lifecycle ───────────────────────────────────────
 
     def _live_height(self) -> int:
-        """Total lines available for the three panes + their headers.
+        """Total lines available for the four panes + their headers.
 
         The terminal height minus ``_RESERVED_BELOW_LINES`` (the turn
         footer, Rule separator, status line, and input prompt) so that
         when the Live region is flushed and the post-turn content is
         printed below it, the top of the pane content is not scrolled
-        off-screen. Floor at 3 panes × ``_PANE_MIN_LINES`` + 3 headers so
+        off-screen. Floor at 4 panes × ``_PANE_MIN_LINES`` + 4 headers so
         non-tty / test consoles (height 0) still show a usable layout.
 
         Returns ``0`` on short terminals (below ``_COMPACT_HEIGHT_THRESHOLD``)
@@ -389,10 +403,10 @@ class RichTransport:
         """
         height = self.console.size.height or 0
         if height <= 0:
-            return 3 * _PANE_MIN_LINES + 3
+            return 4 * _PANE_MIN_LINES + 4
         if height < _COMPACT_HEIGHT_THRESHOLD:
             return 0
-        return max(3 * _PANE_MIN_LINES + 3, height - _RESERVED_BELOW_LINES)
+        return max(4 * _PANE_MIN_LINES + 4, height - _RESERVED_BELOW_LINES)
 
     def _render_pane(
         self,
@@ -438,12 +452,12 @@ class RichTransport:
         return renderables
 
     def _render_live_display(self) -> Group:
-        """Build the Live renderable: three stacked panes (1:3:2, content-aware).
+        """Build the Live renderable: four stacked panes (1:2:2:3, content-aware).
 
-        On short terminals (``_live_height()`` returns 0) the three-pane
-        view is replaced by a single merged status line — the resize
-        fallback — so the Live region stays usable instead of forcing three
-        headers onto a crushed screen.
+        On short terminals (``_live_height()`` returns 0) the pane view is
+        replaced by a single merged status line — the resize fallback — so
+        the Live region stays usable instead of forcing four headers onto a
+        crushed screen.
         """
         height = self._live_height()
         if height <= 0:
@@ -452,8 +466,9 @@ class RichTransport:
             len(self._transitions),
             len(self._model_calls),
             len(self._tools),
+            self._stream_line_count(),
         )
-        th, mh, wh = _pane_heights(height, counts)
+        th, mh, wh, sh = _pane_heights(height, counts)
         renderables: list[Any] = []
         renderables.extend(
             self._render_pane("Transitions", self._transitions, th, STYLE_PANE_TRANSITION)
@@ -462,7 +477,38 @@ class RichTransport:
             self._render_pane("Model calls", self._model_calls, mh, STYLE_PANE_MODEL)
         )
         renderables.extend(self._render_pane("Tools", self._tools, wh, STYLE_PANE_TOOL))
+        renderables.extend(self._render_stream_pane(sh))
         return Group(*renderables)
+
+    def _stream_wrapped_lines(self) -> list[Text]:
+        """Return the stream buffer wrapped into full-width ``Text`` lines.
+
+        Uses the console's current width so the streamed output flows across
+        the whole terminal instead of rendering each delta as a short line.
+        """
+        if not self._stream_text:
+            return []
+        width = max(1, self.console.width or 1)
+        return list(self._stream_text.wrap(self.console, width=width))
+
+    def _stream_line_count(self) -> int:
+        """Number of wrapped lines the stream buffer currently occupies."""
+        return len(self._stream_wrapped_lines())
+
+    def _render_stream_pane(self, height: int) -> list[Any]:
+        """Render the stream pane: a header plus the most recent wrapped lines.
+
+        The single flowing buffer is wrapped to the full terminal width, so
+        the streamed answer takes up the whole pane. Reasoning segments are
+        dimmed. Only the most recent ``height`` wrapped lines are shown (the
+        pane scrolls from the top).
+        """
+        renderables: list[Any] = []
+        renderables.append(Text("Thinking / Streaming", style=STYLE_PANE_HEADER))
+        wrapped = self._stream_wrapped_lines()
+        visible = wrapped[-height:] if height > 0 else wrapped
+        renderables.extend(visible)
+        return renderables
 
     def _render_compact_line(self) -> Text:
         """Render a single merged status line for short terminals.
@@ -508,7 +554,7 @@ class RichTransport:
                 self.console.print(Text(row.text, style=STYLE_STAGE))
 
     def _last_row(self) -> _PaneRow | None:
-        """Return the most-recently appended row across all three panes."""
+        """Return the most-recently appended row across all four panes."""
         candidates: list[_PaneRow] = []
         for pane in (self._transitions, self._model_calls, self._tools):
             if pane:
@@ -541,14 +587,14 @@ class RichTransport:
         self.stop_thinking()
         self._thinking_stage = stage
         self._streamed_during_turn = False
-        self._thinking_open = False
         self._fork_children = {}
         self._fork_total = 0
         self._current_mode = ""
-        # Clear the three panes so each turn starts fresh.
+        # Clear the four panes so each turn starts fresh.
         self._transitions = []
         self._model_calls = []
         self._tools = []
+        self._stream_text = Text()
         self._active_pane = ""
         self._iteration_durations = []
         self._handoff_count = 0
@@ -607,13 +653,20 @@ class RichTransport:
                 # Non-interactive / unsupported platform: ignore resize.
                 self._prev_winch = None
 
-    def stop_thinking(self) -> None:
+    def stop_thinking(self, *, flush_stream: bool = False) -> None:
         """Stop the thinking display if it is running.
 
-        Before tearing down the Live region, print the accumulated pane
-        rows as permanent console output so they survive in the
-        scrollback. Without this, Rich's Live region reclaims its lines on
-        stop and the user would lose the trajectory they just watched.
+        Before tearing down the Live region, print the accumulated telemetry
+        pane rows (transitions, model calls, tools) as permanent console
+        output so they survive in the scrollback as a de-facto summary.
+        Without this, Rich's Live region reclaims its lines on stop and the
+        user would lose the trajectory they just watched.
+
+        The stream pane is handled separately: by default (``flush_stream``
+        False) it is discarded — the fully formatted answer rendered by
+        ``on_response`` takes over, and the streamed version is gone. When
+        ``flush_stream`` is True (e.g. on a mid-turn error) the buffered
+        stream lines are flushed to scrollback so partial work isn't lost.
         """
         # Restore any prior SIGWINCH handler before tearing down the Live
         # region so we don't leave a dangling callback.
@@ -632,8 +685,8 @@ class RichTransport:
         status = self._status
         self._live = None
         self._status = None
-        # Flush the three panes in order (transitions, model calls, tools)
-        # so the scrollback matches the on-screen layout.
+        # Flush the three telemetry panes in order (transitions, model calls,
+        # tools) so the scrollback matches the on-screen layout.
         if live is not None:
             for pane, style in (
                 (self._transitions, STYLE_PANE_TRANSITION),
@@ -645,6 +698,13 @@ class RichTransport:
                         line = Text(row.text, style=style)
                         if row.graphic:
                             line.append("  " + row.graphic, style=STYLE_GRAPHIC)
+                        self.console.print(line)
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+            # Flush the stream pane only when requested (default: discard).
+            if flush_stream:
+                for line in self._stream_wrapped_lines():
+                    try:
                         self.console.print(line)
                     except Exception:  # pylint: disable=broad-except
                         pass
@@ -986,55 +1046,41 @@ class RichTransport:
         return "\n".join(lines)
 
     async def on_text_chunk(self, text: str, reasoning: str = "") -> None:
-        """Print streamed model output inline (no panel, no newline).
+        """Accumulate a streamed model output delta into the stream pane.
 
-        ``text`` is the visible-answer delta. ``reasoning``, when non-empty,
-        is the model's hidden thinking delta. Reasoning is rendered as a
-        dim, collapsed ``▸ Thinking…`` block that closes (``◂``) the moment
-        the first visible ``text`` delta arrives, so the user sees the
-        model's work without it polluting the final answer. Suppressed
-        entirely when ``hide_thinking`` is set.
+        ``text`` is the visible-answer delta; ``reasoning``, when non-empty,
+        is the model's hidden thinking delta. Both are appended to the stream
+        pane's scrolling buffer (reasoning dimmed). This does NOT tear down
+        the Live region — the window stays fixed and the stream pane scrolls
+        in place. ``hide_thinking`` suppresses reasoning deltas.
         """
-        self.stop_thinking()
         self._streamed_during_turn = True
-        # ── Thinking block ───────────────────────────────────────────
-        # Reasoning-only deltas open the block; the first visible text
-        # delta closes it. Both streams may arrive on separate chunks, so
-        # handle the open/close boundary on each call.
-        if not self.hide_thinking and reasoning:
-            if not self._thinking_open:
-                self.console.file.write("▸ Thinking… ")
-                self._thinking_open = True
-            self.console.file.write(reasoning)
-            self.console.file.flush()
+        if reasoning and not self.hide_thinking:
+            # Append a reasoning (thinking) delta, dimmed.
+            self._stream_text.append(reasoning, style="grey42")
+            self._refresh_live()
             return
-        if self._thinking_open:
-            self.console.file.write("\n")
-            self._thinking_open = False
         if text:
-            self.console.file.write(text)
-        self.console.file.flush()
+            self._stream_text.append(text, style=STYLE_PANE_STREAM)
+            self._refresh_live()
 
     async def on_response(self, text: str, data: dict[str, Any] | None = None) -> None:
         """Render the final response in a Rich Panel.
 
-        When text was already streamed inline via ``on_text_chunk`` during
-        this turn, skip the panel (the response is already visible) and just
-        emit a trailing newline to separate the streamed text from the next
-        prompt. The per-turn flag is reset in ``start_thinking``.
+        Stops the Live region with the stream pane discarded (the streamed
+        version is gone), then renders the fully formatted Markdown panel.
+        ``data`` is unused by the CLI renderer.
         """
-        self.stop_thinking()
-        if self._streamed_during_turn:
-            self.console.file.write("\n")
-            self.console.file.flush()
-            return
-        self.console.print(
-            Panel(
-                Markdown(text),
-                title="Response",
-                border_style=STYLE_BORDER_RESPONSE,
+        self.stop_thinking(flush_stream=False)
+        self._stream_text = Text()
+        if text:
+            self.console.print(
+                Panel(
+                    Markdown(text),
+                    title="Response",
+                    border_style=STYLE_BORDER_RESPONSE,
+                )
             )
-        )
 
     async def on_debug_context(self, context: dict[str, Any]) -> None:
         """Render turn context in a Rich Panel (only when debug is on)."""
@@ -1052,11 +1098,13 @@ class RichTransport:
         )
 
     async def on_error(self, message: str, exc: Exception | None = None) -> None:
-        """Render an error in a red Rich Panel."""
-        self.stop_thinking()
-        if self._streamed_during_turn:
-            self.console.file.write("\n")
-            self.console.file.flush()
+        """Render an error in a red Rich Panel.
+
+        Flushes the stream pane to scrollback first so partial work isn't
+        silently lost before the error panel shows.
+        """
+        self.stop_thinking(flush_stream=True)
+        self._stream_text = Text()
         body = message
         if exc is not None:
             body = f"{type(exc).__name__}: {exc}\n\n{message}"
