@@ -27,6 +27,7 @@ routing_intent_keywords:
     - memory
     - store
 allowed_tool_ids: [memory.add, memory.search, memory.list]
+allowed_operation_ids: [synthesize_and_store_learning, recall_memory]
 command_pattern: '^(?:(?:/)?(?:learn|reflect|note)(?:[\s,:;]+|(?=$))|(?:please\s+)?(?:take\s+a\s+note\s+of|note\s+that)\s+)(?P<query>.*)$'
 required_capabilities: [tools]
 yield_policy:

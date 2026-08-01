@@ -1851,6 +1851,13 @@ def test_fork_mode_action_tool_ids_returns_authored_action_tools() -> None:
     # markdown declares markdown_forge_document / markdown_generate as
     # authored operations/tools — at least one must be present.
     assert "markdown_forge_document" in markdown_actions or "markdown_generate" in markdown_actions
+    # learn declares synthesize_and_store_learning (write-effect) as an
+    # authored action operation — a child that persists learning via that
+    # op must NOT be flagged no_tools (the 2026-08-01 fork:learn,markdown
+    # regression: learn told to use synthesize_and_store_learning was
+    # wrongly flagged because only the memory.* tools were recognized).
+    learn_actions = _fork_mode_action_tool_ids("learn")
+    assert "synthesize_and_store_learning" in learn_actions
     # ponder's only authored operation is web_search (read-effect) — it
     # must be excluded because ponder's output is its response text, not a
     # side-effect. A child that gathers evidence via fetch_page and
