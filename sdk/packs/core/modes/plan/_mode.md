@@ -22,7 +22,6 @@ yield_policy:
   fallback_mode: discuss
 description: "Plan a multi-step workflow and hand off to the first target mode."
 ---
-
 # Plan Mode
 
 Analyze the user's request and produce a visible multi-step plan.
