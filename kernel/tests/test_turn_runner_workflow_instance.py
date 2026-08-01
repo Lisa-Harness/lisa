@@ -230,3 +230,87 @@ def _make_stub(text: str) -> Any:
         return _StubCompletion(content=text)
 
     return _complete
+
+
+@pytest.mark.asyncio
+async def test_adhoc_multistep_chain_creates_durable_instance() -> None:
+    """A turn-1 multi-step ad-hoc chain persists a ``WorkflowInstance``.
+
+    The fix for the 2026-08-01 yield-then-continue skip: when the routing
+    hint detects a multi-step chain at turn 1 (search → coding → markdown)
+    and no instance is already active, the turn runner compiles the chain
+    into an ad-hoc ``WorkflowInstance`` (``spawned_from="adhoc"``) and
+    persists it via ``workflow_instance_updater``. Without this, the
+    ephemeral ``chain_satisfied`` set resets on the next turn and a
+    yield → "continue" resume skips the middle step.
+    """
+    active_instance: list[WorkflowInstance | None] = [None]
+    saved_instances: list[WorkflowInstance] = []
+
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(complete)
+    # Mirror the host wiring: ``workflow_instance`` returns the live active
+    # ref (None at turn 1); the updater persists the advanced instance and
+    # swaps the active ref in place.
+    hooks.workflow_instance = lambda: active_instance[0]
+
+    def _wi_updater(instance: WorkflowInstance) -> None:
+        saved_instances.append(instance)
+        active_instance[0] = instance
+
+    hooks.workflow_instance_updater = _wi_updater
+
+    catalog = _catalog_with_chain()
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
+        await run_turn(
+            mode_id="default",
+            query="search the web then read your code then write a markdown",
+            hooks=hooks,
+        )
+
+    assert saved_instances, "an ad-hoc WorkflowInstance must be created for a multi-step chain"
+    instance = saved_instances[0]
+    assert instance.spawned_from == "adhoc"
+    mode_ids = [s.mode_id for s in instance.declared_steps]
+    assert mode_ids == ["search", "coding", "markdown"]
+    assert instance.current_step_id == instance.declared_steps[0].step_id
+    assert instance.current_mode_id == "search"
+
+
+@pytest.mark.asyncio
+async def test_adhoc_no_chain_does_not_create_instance() -> None:
+    """A single-step request (no multi-step chain) creates no instance.
+
+    Guards against over-eager instance creation for trivial queries that
+    the current mode handles in-place. No routing gap → no instance.
+    """
+    active_instance: list[WorkflowInstance | None] = [None]
+    saved_instances: list[WorkflowInstance] = []
+
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Hello.")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow_instance = lambda: active_instance[0]
+
+    def _wi_updater(instance: WorkflowInstance) -> None:
+        saved_instances.append(instance)
+        active_instance[0] = instance
+
+    hooks.workflow_instance_updater = _wi_updater
+
+    catalog = _catalog_with_chain()
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
+        await run_turn(mode_id="default", query="hello", hooks=hooks)
+
+    assert not saved_instances, "no WorkflowInstance should be created for a trivial query"

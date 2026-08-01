@@ -2175,6 +2175,68 @@ async def _run_turn_inner(
             routing_hint[:200],
         )
         system_prompt = system_prompt + "\n\n" + routing_hint
+        # ── Ad-hoc chain → durable instance (the 2026-08-01 skip-on-resume fix) ──
+        # When the routing hint detected a multi-step chain at turn 1 (no
+        # active ``WorkflowInstance`` yet), compile the chain into an ad-hoc
+        # instance and persist it via ``workflow_instance_updater``. The
+        # ephemeral ``chain_satisfied`` set resets to ``set()`` every turn
+        # (line ~L2398), so without a durable instance a yield → "continue"
+        # resume loses the chain memory and the routing hint recomputes
+        # from scratch — skipping the middle step (the 2026-08-01 incident:
+        # search → [code review skipped] → GAP/SWOT). The instance is the
+        # durable form of ``chain_satisfied``; it is hydrated at turn start
+        # by the block above. Gated on:
+        #   - no active instance (turn 1, not a resume),
+        #   - a routing hint was produced (the gap is non-empty),
+        #   - the compiled chain has 2+ steps (a real multi-step request),
+        #   - the updater is wired (the host owns the lifecycle).
+        # Suppressed for fork children (``suppress_routing_hint``) — a fork
+        # child already runs in its target mode and never starts a chain.
+        if (
+            not suppress_routing_hint
+            and hooks.workflow_instance_updater is not None
+            and hooks.workflow_instance is not None
+        ):
+            try:
+                _existing_wi = hooks.workflow_instance()
+            except Exception:  # pylint: disable=broad-except
+                _existing_wi = None
+            if _existing_wi is None:
+                try:
+                    from kernel.workflow_instance import (  # noqa: PLC0415
+                        compile_steps_from_routing_targets,
+                    )
+
+                    _adhoc_steps = compile_steps_from_routing_targets(
+                        query=query,
+                        routing_targets=get_routing_targets(mode_id) if mode_config else [],
+                        catalog=get_workflow_catalog(),
+                        spawned_from="adhoc",
+                    )
+                except Exception as adhoc_exc:  # pylint: disable=broad-except
+                    _adhoc_steps = ()
+                    _log.debug("ad-hoc chain compile failed: %s", adhoc_exc)
+                if len(_adhoc_steps) >= 2:
+                    try:
+                        _adhoc_instance = WorkflowInstance(
+                            declared_steps=_adhoc_steps,
+                            current_step_id=_adhoc_steps[0].step_id,
+                            current_mode_id=_adhoc_steps[0].mode_id,
+                            spawned_from="adhoc",
+                        )
+                        hooks.workflow_instance_updater(_adhoc_instance)
+                        _log.info(
+                            "persisted ad-hoc WorkflowInstance instance_id=%s "
+                            "steps=%d first=%s (chain survives yield→resume)",
+                            _adhoc_instance.instance_id,
+                            len(_adhoc_steps),
+                            _adhoc_steps[0].mode_id,
+                        )
+                    except Exception as wi_exc:  # pylint: disable=broad-except
+                        _log.warning(
+                            "ad-hoc WorkflowInstance creation/persist failed: %s",
+                            wi_exc,
+                        )
         # ── Forced-fork enforcer: precompute the deterministic fork target.
         # When the routing hint names a ``fork:`` target, the kernel already
         # decided the routing. The model is the executor. If it refuses to
