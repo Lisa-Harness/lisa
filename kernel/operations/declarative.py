@@ -305,24 +305,35 @@ async def execute_declarative_operation(
                 tools=ctx.tool_schemas or None,
             )
             content_text = completion_content(completion)
-            # Guard empty retry content the same way the first attempt does.
-            # Without this, a JSON-only retry that returns no text (e.g. a
-            # tool-call-only turn, a provider that drops ``response_format``,
-            # or a reasoning model that exhausted its token budget on internal
-            # reasoning before emitting visible content) feeds
-            # ``model_validate_json("")`` and leaks an opaque Pydonic
-            # "Invalid JSON: EOF" ValidationError to callers — the
-            # 2026-07-25 and 2026-07-30 ``web_search`` incidents. Surface a
-            # typed ``OperationExecutionError`` with diagnostics instead so
-            # the turn runner can treat an empty upstream result as a hard
-            # failure and the operator can distinguish truncation from a
-            # genuine provider-empty response.
-            if response_format_model is not None and content_text:
-                parsed_payload = _parse_structured_payload(
-                    response_format_model,
-                    content_text,
-                )
+            # A JSON-only retry may legitimately answer with a tool-call-only
+            # turn. The web_search operation must dispatch its web_search tool
+            # before it can return the final JSON envelope, so a tool-call turn
+            # has empty visible content by design. Firing the empty-content
+            # guard for it hard-fails the operation exactly when the model
+            # correctly wants to keep searching — the 2026-08-01 ``web_search``
+            # incidents surfaced this as ``finish_reason=tool_calls`` followed
+            # by "returned no content after JSON-only retry". Defer parsing and
+            # fall through to the shared tool-execution loop below instead.
+            if completion.tool_calls:
+                parsed_payload = None
+            elif content_text:
+                try:
+                    parsed_payload = _parse_structured_payload(
+                        response_format_model,
+                        content_text,
+                    )
+                except ValidationError:
+                    # Retry returned non-empty prose again (the model ignored
+                    # the JSON-only instruction). Degrade gracefully to the
+                    # raw content rather than leaking a second ValidationError.
+                    parsed_payload = None
             else:
+                # No tool dispatch and no text -> genuine provider-empty
+                # response or token-budget truncation. Surface a typed
+                # ``OperationExecutionError`` with diagnostics so the turn
+                # runner can treat an empty upstream result as a hard failure
+                # and the operator can distinguish truncation from a genuine
+                # provider-empty response.
                 finish_reason = getattr(completion, "finish_reason", None)
                 completion_tokens = getattr(completion, "completion_tokens", None)
                 detail = _empty_content_detail(

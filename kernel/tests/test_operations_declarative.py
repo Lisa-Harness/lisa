@@ -164,3 +164,93 @@ async def test_declarative_valid_retry_succeeds() -> None:
     )
     # The structured payload's JSON is returned in output_json.
     assert result.output_json.get("query") == "agent frameworks"
+
+
+def _make_tool_execute_fn(*, tool_output: str = "no results"):
+    """Return an async tool-execution stub that records dispatched tools."""
+
+    async def execute(tool_name: str, ctx: Any) -> str:
+        return tool_output
+
+    return execute
+
+
+@pytest.mark.asyncio
+async def test_declarative_retry_tool_call_turn_deferred_not_failed() -> None:
+    """A JSON-only retry that returns a tool-call-only turn must NOT hard-fail.
+
+    This is the 2026-08-01 ``web_search`` incident: the retry came back with
+    ``finish_reason=tool_calls`` and empty visible content because the model
+    wanted to dispatch the ``web_search`` tool before emitting its final JSON
+    envelope. Before the fix the retry's empty-content guard raised
+    ``OperationExecutionError`` ("returned no content after JSON-only retry").
+    Now a tool-call turn defers parsing, executes the tool, and lets the loop
+    continue to a real JSON answer.
+    """
+    completions = [
+        _StubCompletion(content="I'll research that now."),  # prose -> retry
+        _StubCompletion(  # retry: tool-call-only turn (empty content)
+            content="",
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"query": "agent frameworks"}',
+                    },
+                }
+            ],
+        ),
+        _StubCompletion(content='{"query": "agent frameworks", "results": []}'),
+    ]
+    ctx = _build_ctx(
+        complete_fn=_make_complete_fn(completions),
+    )
+    ctx.execute_tool_fn = _make_tool_execute_fn()
+
+    result = await execute_declarative_operation(
+        ctx,
+        operation_id="web_search",
+        instruction_markdown_path=_INSTRUCTION_PATH,
+        instruction_body=_INSTRUCTION_BODY,
+        max_calls_per_turn=2,
+        response_format_model=_WebSearchStructuredOutput,
+        response_output_text_field="output_text",
+        response_output_json_passthrough={},
+        completion_max_tokens=1500,
+        completion_temperature=0.2,
+    )
+    assert result.output_json.get("query") == "agent frameworks"
+
+
+@pytest.mark.asyncio
+async def test_declarative_retry_prose_degrades_gracefully() -> None:
+    """A JSON-only retry that returns prose again must not leak a
+    ``ValidationError``; it degrades to the raw content.
+
+    This is the other 2026-08-01 ``web_search`` signature: the retry response
+    was a prose sentence (``input_value="I'll research the latest..."``) that
+    the retry path fed to ``_parse_structured_payload`` unguarded. Before the
+    fix the raw Pydantic ``ValidationError`` escaped to the operation registry.
+    """
+    completions = [
+        _StubCompletion(content="Let me search for that."),  # prose -> retry
+        _StubCompletion(content="I'll research the latest frameworks."),  # prose again
+    ]
+    ctx = _build_ctx(complete_fn=_make_complete_fn(completions))
+
+    result = await execute_declarative_operation(
+        ctx,
+        operation_id="web_search",
+        instruction_markdown_path=_INSTRUCTION_PATH,
+        instruction_body=_INSTRUCTION_BODY,
+        max_calls_per_turn=1,
+        response_format_model=_WebSearchStructuredOutput,
+        response_output_text_field="output_text",
+        response_output_json_passthrough={},
+        completion_max_tokens=1500,
+        completion_temperature=0.2,
+    )
+    # No ValidationError raised; the raw prose is surfaced as output_text.
+    assert "I'll research the latest frameworks." in result.output_text
