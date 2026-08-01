@@ -51,12 +51,19 @@ class TransportCallbacks(Protocol):
         """
         ...
 
-    async def on_text_chunk(self, text: str) -> None:
+    async def on_text_chunk(self, text: str, reasoning: str = "") -> None:
         """Deliver one streamed text chunk from the model.
 
         Only fires when the runtime has text streaming enabled. Transports
         that do not stream can ignore this; they will receive the full
         response via ``on_response``.
+
+        ``text`` is the delta of the model's visible answer. ``reasoning``,
+        when non-empty, is the corresponding delta of the model's hidden
+        "thinking" text (OpenAI reasoning models emit
+        ``delta.reasoning_content`` separately from ``delta.content``). A
+        transport may render reasoning as a collapsed/dim thinking block
+        distinct from the visible answer, or ignore it.
         """
         ...
 
@@ -100,7 +107,7 @@ class NullTransport:
     async def on_stage(self, label: str, data: dict[str, Any] | None = None) -> None:
         pass
 
-    async def on_text_chunk(self, text: str) -> None:
+    async def on_text_chunk(self, text: str, reasoning: str = "") -> None:
         pass
 
     async def on_response(self, text: str, data: dict[str, Any] | None = None) -> None:
@@ -131,9 +138,9 @@ class DelegatingTransport:
         for t in self.transports:
             await t.on_stage(label, data)
 
-    async def on_text_chunk(self, text: str) -> None:
+    async def on_text_chunk(self, text: str, reasoning: str = "") -> None:
         for t in self.transports:
-            await t.on_text_chunk(text)
+            await t.on_text_chunk(text, reasoning)
 
     async def on_response(self, text: str, data: dict[str, Any] | None = None) -> None:
         for t in self.transports:

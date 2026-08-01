@@ -281,6 +281,13 @@ StreamingOption = Annotated[
         ),
     ),
 ]
+HideThinkingOption = Annotated[
+    bool,
+    typer.Option(
+        "--hide-thinking",
+        help="Do not render streamed reasoning (thinking) text. The visible answer is unaffected.",
+    ),
+]
 WithMcpOption = Annotated[
     bool,
     typer.Option(
@@ -436,6 +443,7 @@ def _run_default_no_args_mode(
     state_snapshot: str,
     streaming: str,
     host_log: str,
+    hide_thinking: bool = False,
 ) -> None:
     """Launch the REPL when no subcommand is given.
 
@@ -463,7 +471,7 @@ def _run_default_no_args_mode(
     from hosts.cli.repl import run_repl
 
     #                                   --version/modes/verify fast
-    restart_requested = asyncio.run(run_repl(runtime, console=console))
+    restart_requested = asyncio.run(run_repl(runtime, console=console, hide_thinking=hide_thinking))
     if restart_requested:
         _restart_current_process()
 
@@ -533,6 +541,7 @@ def _cli_callback(
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
     host_log: HostLogOption = "",
+    hide_thinking: HideThinkingOption = False,
 ) -> None:
     if version:
         console.print(f"lisa v{_get_version()}")
@@ -553,6 +562,7 @@ def _cli_callback(
         state_snapshot=state_snapshot,
         streaming=streaming,
         host_log=host_log,
+        hide_thinking=hide_thinking,
     )
 
 
@@ -576,6 +586,7 @@ def _cli_command(
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
     host_log: HostLogOption = "",
+    hide_thinking: HideThinkingOption = False,
 ) -> None:
     runtime = _initialize_runtime_or_exit(
         debug=debug,
@@ -598,7 +609,7 @@ def _cli_command(
     from hosts.cli.repl import run_repl
 
     #                                   --version/modes/verify fast
-    restart_requested = asyncio.run(run_repl(runtime, console=console))
+    restart_requested = asyncio.run(run_repl(runtime, console=console, hide_thinking=hide_thinking))
     if restart_requested:
         _restart_current_process()
 
@@ -1313,6 +1324,7 @@ def _once_command(
     state_snapshot: StateSnapshotOption = "",
     streaming: StreamingOption = "none",
     host_log: HostLogOption = "",
+    hide_thinking: HideThinkingOption = False,
 ) -> None:
     runtime = _initialize_runtime_or_exit(
         debug=debug,
@@ -1331,12 +1343,16 @@ def _once_command(
     )
     if runtime is None:
         return
-    restart_required = asyncio.run(_run_once_with_teardown(runtime, message))
+    restart_required = asyncio.run(
+        _run_once_with_teardown(runtime, message, hide_thinking=hide_thinking)
+    )
     if restart_required:
         _exit_restart_required()
 
 
-async def _run_once_with_teardown(runtime: HostRuntime, message: str) -> bool:
+async def _run_once_with_teardown(
+    runtime: HostRuntime, message: str, *, hide_thinking: bool = False
+) -> bool:
     """Run one turn, then close the MCP pool.
 
     Returns ``True`` if the runtime flagged a restart as required (e.g.
@@ -1346,7 +1362,11 @@ async def _run_once_with_teardown(runtime: HostRuntime, message: str) -> bool:
     from hosts.cli.transport import RichTransport
     from hosts.core.handle_message import handle_message
 
-    transport = RichTransport(console=console, debug=runtime.config.debug)
+    transport = RichTransport(
+        console=console,
+        debug=runtime.config.debug,
+        hide_thinking=hide_thinking,
+    )
     try:
         await runtime.start()
         await handle_message(runtime, message, transport)

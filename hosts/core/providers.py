@@ -846,8 +846,10 @@ async def complete_live_stream(
             ):
                 if chunk.usage is not None:
                     final_usage = chunk.usage
-                if chunk.content:
-                    await tport.on_text_chunk(chunk.content)
+                if chunk.content or chunk.reasoning_content:
+                    await tport.on_text_chunk(
+                        chunk.content, reasoning=chunk.reasoning_content
+                    )
                     if char_delay_ms > 0:
                         await asyncio.sleep(char_delay_ms / 1000.0)
                 yield chunk
@@ -863,8 +865,10 @@ async def complete_live_stream(
             ):
                 if chunk.usage is not None:
                     final_usage = chunk.usage
-                if chunk.content:
-                    await tport.on_text_chunk(chunk.content)
+                if chunk.content or chunk.reasoning_content:
+                    await tport.on_text_chunk(
+                        chunk.content, reasoning=chunk.reasoning_content
+                    )
                     if char_delay_ms > 0:
                         await asyncio.sleep(char_delay_ms / 1000.0)
                 yield chunk

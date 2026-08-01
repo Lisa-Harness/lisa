@@ -1518,15 +1518,23 @@ async def test_complete_live_preserves_non_json_structured_output_for_fallback(
 class _StubStreamEvent:
     """One SSE event from an OpenAI-compatible streaming response."""
 
-    def __init__(self, delta_content: str = "", finish_reason: str | None = None) -> None:
+    def __init__(
+        self,
+        delta_content: str = "",
+        delta_reasoning: str = "",
+        finish_reason: str | None = None,
+    ) -> None:
         self.choices = (
             [
                 SimpleNamespace(
-                    delta=SimpleNamespace(content=delta_content or None),
+                    delta=SimpleNamespace(
+                        content=delta_content or None,
+                        reasoning_content=delta_reasoning or None,
+                    ),
                     finish_reason=finish_reason,
                 )
             ]
-            if (delta_content or finish_reason)
+            if (delta_content or delta_reasoning or finish_reason)
             else []
         )
         self.usage = None
@@ -1561,13 +1569,16 @@ class _CapturingTransport:
 
     def __init__(self) -> None:
         self.chunks: list[str] = []
+        self.reasoning: list[str] = []
         self.stages: list[str] = []
 
     async def on_stage(self, label: str, data: dict[str, object] | None = None) -> None:
         self.stages.append(label)
 
-    async def on_text_chunk(self, text: str) -> None:
+    async def on_text_chunk(self, text: str, reasoning: str = "") -> None:
         self.chunks.append(text)
+        if reasoning:
+            self.reasoning.append(reasoning)
 
     async def on_response(self, text: str, data: dict[str, object] | None = None) -> None:
         pass
@@ -1606,6 +1617,47 @@ async def test_complete_live_stream_yields_chunks_and_calls_transport(
     assert chunks[2].finish_reason == "stop"
     # Transport received each text delta via on_text_chunk.
     assert transport.chunks == ["Hello", " world"]
+
+
+@pytest.mark.asyncio
+async def test_complete_live_stream_forwards_reasoning_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """complete_live_stream forwards reasoning_content deltas to the transport."""
+
+    async def _stub_dispatch_openai_reasoning(**kwargs: object) -> _StubAsyncStream:
+        return _StubAsyncStream(
+            [
+                _StubStreamEvent(delta_reasoning="Let me think"),
+                _StubStreamEvent(delta_reasoning=" about this carefully"),
+                _StubStreamEvent(delta_content="The answer"),
+                _StubStreamEvent(finish_reason="stop"),
+            ]
+        )
+
+    runtime = _make_runtime(tmp_path, streaming="text")
+    monkeypatch.setattr(
+        providers, "dispatch_openai_compatible_provider", _stub_dispatch_openai_reasoning
+    )
+    transport = _CapturingTransport()
+    model_def = StubModelDefinition(model_id="test-model", provider="openai")
+    chunks = []
+    async for chunk in providers.complete_live_stream(
+        runtime=runtime,
+        transport=transport,
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=model_def,
+        max_tokens=100,
+        temperature=0.0,
+    ):
+        chunks.append(chunk)
+    # Reasoning deltas forwarded alongside content deltas.
+    assert transport.reasoning == ["Let me think", " about this carefully"]
+    assert transport.chunks == ["", "", "The answer"]
+    # The aggregated StreamedChunks carry the reasoning too.
+    assert chunks[0].reasoning_content == "Let me think"
+    assert chunks[1].reasoning_content == " about this carefully"
 
 
 @pytest.mark.asyncio

@@ -163,13 +163,20 @@ def _repl_command_hints() -> tuple[str, ...]:
     return (*_HOST_REPL_SHORTCUTS, *mode_hints)
 
 
-async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> bool:
+async def run_repl(
+    runtime: HostRuntime,
+    *,
+    console: Console | None = None,
+    hide_thinking: bool = False,
+) -> bool:
     """Run the interactive REPL loop.
 
     Args:
         runtime: A constructed ``HostRuntime`` whose ``start()`` has not
             yet been called (this function calls ``start()`` and ``aclose()``).
         console: Optional Rich Console. Defaults to a new ``Console()``.
+        hide_thinking: When True, suppress the streamed reasoning (thinking)
+            text. The visible answer is unaffected.
 
     Returns:
         ``True`` if a restart was requested (caller may re-exec), ``False``
@@ -180,7 +187,11 @@ async def run_repl(runtime: HostRuntime, *, console: Console | None = None) -> b
     # route preview + token counters without threading the runtime through
     # every status-segment call.
     console._lisa_runtime = runtime  # type: ignore[attr-defined]
-    transport = RichTransport(console=console, debug=runtime.config.debug)
+    transport = RichTransport(
+        console=console,
+        debug=runtime.config.debug,
+        hide_thinking=hide_thinking,
+    )
 
     # Set the initial route preview so the status line shows the
     # resolved model before the first turn is executed. When start_mode

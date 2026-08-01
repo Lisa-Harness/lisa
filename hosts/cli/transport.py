@@ -33,6 +33,7 @@ Each pane row is one left-aligned line: ``<graphic>  <words>``.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,6 +65,13 @@ STYLE_GRAPHIC = "grey58"
 #: when the panes are flushed and the footer/status/prompt are printed
 #: below, the top of the pane content is not scrolled off-screen.
 _RESERVED_BELOW_LINES = 4
+
+#: Terminal height (lines) below which the three-pane Live layout collapses
+#: to a single merged status line. This is a resize fallback: the rich
+#: pane view is the default on workable terminals, and only very short
+#: consoles (or a live shrink past this threshold) degrade to the compact
+#: one-liner so content is never crushed under three forced headers.
+_COMPACT_HEIGHT_THRESHOLD = 12
 
 #: Floor for the number of history lines kept visible in a pane. Guarantees
 #: a usable pane even on very short terminals / non-tty test consoles that
@@ -288,9 +296,23 @@ class RichTransport:
             False, it is a no-op (matches the ``--debug`` flag).
     """
 
-    def __init__(self, *, console: Console | None = None, debug: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        console: Console | None = None,
+        debug: bool = False,
+        hide_thinking: bool = False,
+    ) -> None:
         self.console: Console = console or Console()
         self.debug = debug
+        # When True, the streaming ``reasoning_content`` deltas are not
+        # rendered. The visible answer is unaffected. Default False —
+        # "show the work" (see ``--hide-thinking`` in the CLI host).
+        self.hide_thinking = hide_thinking
+        # True while the streamed model output is in the "thinking" phase
+        # (only reasoning deltas seen so far, no visible content yet).
+        # Reset in ``start_thinking`` so each turn starts clean.
+        self._thinking_open: bool = False
         # ``_status`` is retained as a non-None sentinel while the Live
         # region is active and ``None`` when stopped, preserving the
         # ``transport._status is None`` contract used by REPL cancel
@@ -341,6 +363,13 @@ class RichTransport:
         # carries no ``tool_calls_so_far``).
         self._handoff_count: int = 0
         self._tool_call_count: int = 0
+        # Last-known terminal height, used to detect a resize while the Live
+        # region is active so the panes can reflow immediately instead of
+        # waiting for the next stage event. Seeded on the first live start.
+        self._last_live_height: int = 0
+        # Previous SIGWINCH handler to restore on stop_thinking (None when
+        # no handler was registered or the platform has no SIGWINCH).
+        self._prev_winch: Any = None
 
     # ── Live region lifecycle ───────────────────────────────────────
 
@@ -353,10 +382,16 @@ class RichTransport:
         printed below it, the top of the pane content is not scrolled
         off-screen. Floor at 3 panes × ``_PANE_MIN_LINES`` + 3 headers so
         non-tty / test consoles (height 0) still show a usable layout.
+
+        Returns ``0`` on short terminals (below ``_COMPACT_HEIGHT_THRESHOLD``)
+        as a signal to ``_render_live_display`` that the pane view would be
+        crushed and the compact single-line layout should be used instead.
         """
         height = self.console.size.height or 0
         if height <= 0:
             return 3 * _PANE_MIN_LINES + 3
+        if height < _COMPACT_HEIGHT_THRESHOLD:
+            return 0
         return max(3 * _PANE_MIN_LINES + 3, height - _RESERVED_BELOW_LINES)
 
     def _render_pane(
@@ -403,13 +438,22 @@ class RichTransport:
         return renderables
 
     def _render_live_display(self) -> Group:
-        """Build the Live renderable: three stacked panes (1:3:2, content-aware)."""
+        """Build the Live renderable: three stacked panes (1:3:2, content-aware).
+
+        On short terminals (``_live_height()`` returns 0) the three-pane
+        view is replaced by a single merged status line — the resize
+        fallback — so the Live region stays usable instead of forcing three
+        headers onto a crushed screen.
+        """
+        height = self._live_height()
+        if height <= 0:
+            return Group(self._render_compact_line())
         counts = (
             len(self._transitions),
             len(self._model_calls),
             len(self._tools),
         )
-        th, mh, wh = _pane_heights(self._live_height(), counts)
+        th, mh, wh = _pane_heights(height, counts)
         renderables: list[Any] = []
         renderables.extend(
             self._render_pane("Transitions", self._transitions, th, STYLE_PANE_TRANSITION)
@@ -420,10 +464,37 @@ class RichTransport:
         renderables.extend(self._render_pane("Tools", self._tools, wh, STYLE_PANE_TOOL))
         return Group(*renderables)
 
+    def _render_compact_line(self) -> Text:
+        """Render a single merged status line for short terminals.
+
+        Joins the most recent row of each pane into one line, prefixed with
+        a compact header so the user still sees the live stage at a glance.
+        """
+        parts: list[str] = []
+        for rows, _style in (
+            (self._transitions, STYLE_PANE_TRANSITION),
+            (self._model_calls, STYLE_PANE_MODEL),
+            (self._tools, STYLE_PANE_TOOL),
+        ):
+            if rows:
+                last = rows[-1]
+                parts.append(f"{last.graphic + ' ' if last.graphic else ''}{last.text}")
+        body = " │ ".join(parts) if parts else self._render_status_line(self._thinking_stage)
+        line = Text()
+        line.append("⤷ ", style=STYLE_PANE_HEADER)
+        line.append(body, style=STYLE_STAGE)
+        return line
+
     def _refresh_live(self) -> None:
         """Re-render the Live region if it is active; otherwise print inline."""
         if self._live is not None:
             try:
+                # Detect a terminal resize since the last render and reflow
+                # the panes immediately (they are content-aware, so a change
+                # in available height reallocates the rows).
+                height = self.console.size.height or 0
+                if height and height != self._last_live_height:
+                    self._last_live_height = height
                 self._live.update(self._render_live_display())
             except Exception:  # pylint: disable=broad-except
                 pass
@@ -470,6 +541,7 @@ class RichTransport:
         self.stop_thinking()
         self._thinking_stage = stage
         self._streamed_during_turn = False
+        self._thinking_open = False
         self._fork_children = {}
         self._fork_total = 0
         self._current_mode = ""
@@ -508,6 +580,32 @@ class RichTransport:
         # display is active so REPL cancel handling and tests can assert
         # ``transport._status is None`` after stop_thinking.
         self._status = live
+        # Register a SIGWINCH handler (POSIX only) so a terminal resize
+        # reflows the panes immediately instead of waiting for the next
+        # stage event. On Windows there is no SIGWINCH; the compact/compact
+        # reflow still responds on the next _refresh_live height change.
+        self._last_live_height = self.console.size.height or 0
+        if live is not None and os.name != "nt":
+            try:
+                import signal
+
+                # SIGWINCH is POSIX-only; guard the access so pyright/pyright
+                # on Windows (where the constant is undefined) doesn't flag it.
+                winch = getattr(signal, "SIGWINCH", None)
+                if winch is None:
+                    raise AttributeError("SIGWINCH unavailable on this platform")
+                self._prev_winch = signal.getsignal(winch)
+
+                def _on_resize(signum: int, frame: Any) -> None:
+                    # Reflow synchronously; Rich's Live handles repainting
+                    # the new renderable on the next refresh tick.
+                    _ = (signum, frame)
+                    self._refresh_live()
+
+                signal.signal(winch, _on_resize)
+            except Exception:  # pylint: disable=broad-except
+                # Non-interactive / unsupported platform: ignore resize.
+                self._prev_winch = None
 
     def stop_thinking(self) -> None:
         """Stop the thinking display if it is running.
@@ -517,6 +615,19 @@ class RichTransport:
         scrollback. Without this, Rich's Live region reclaims its lines on
         stop and the user would lose the trajectory they just watched.
         """
+        # Restore any prior SIGWINCH handler before tearing down the Live
+        # region so we don't leave a dangling callback.
+        prev_winch = getattr(self, "_prev_winch", None)
+        if prev_winch is not None and os.name != "nt":
+            try:
+                import signal
+
+                winch = getattr(signal, "SIGWINCH", None)
+                if winch is not None:
+                    signal.signal(winch, prev_winch)
+            except Exception:  # pylint: disable=broad-except
+                pass
+            self._prev_winch = None
         live = self._live
         status = self._status
         self._live = None
@@ -874,11 +985,34 @@ class RichTransport:
             lines.append(line)
         return "\n".join(lines)
 
-    async def on_text_chunk(self, text: str) -> None:
-        """Print a streamed text chunk inline (no panel, no newline)."""
+    async def on_text_chunk(self, text: str, reasoning: str = "") -> None:
+        """Print streamed model output inline (no panel, no newline).
+
+        ``text`` is the visible-answer delta. ``reasoning``, when non-empty,
+        is the model's hidden thinking delta. Reasoning is rendered as a
+        dim, collapsed ``▸ Thinking…`` block that closes (``◂``) the moment
+        the first visible ``text`` delta arrives, so the user sees the
+        model's work without it polluting the final answer. Suppressed
+        entirely when ``hide_thinking`` is set.
+        """
         self.stop_thinking()
         self._streamed_during_turn = True
-        self.console.file.write(text)
+        # ── Thinking block ───────────────────────────────────────────
+        # Reasoning-only deltas open the block; the first visible text
+        # delta closes it. Both streams may arrive on separate chunks, so
+        # handle the open/close boundary on each call.
+        if not self.hide_thinking and reasoning:
+            if not self._thinking_open:
+                self.console.file.write("▸ Thinking… ")
+                self._thinking_open = True
+            self.console.file.write(reasoning)
+            self.console.file.flush()
+            return
+        if self._thinking_open:
+            self.console.file.write("\n")
+            self._thinking_open = False
+        if text:
+            self.console.file.write(text)
         self.console.file.flush()
 
     async def on_response(self, text: str, data: dict[str, Any] | None = None) -> None:

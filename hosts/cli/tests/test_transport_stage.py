@@ -7,6 +7,8 @@ that the kernel's ``on_stage`` telemetry hook drives.
 from __future__ import annotations
 
 
+import io
+
 import pytest
 from rich.console import Console
 
@@ -437,3 +439,73 @@ async def test_stop_thinking_clears_status_sentinel() -> None:
     transport.stop_thinking()
     assert transport._status is None
     assert transport._live is None
+
+
+# ── thinking block streaming (on_text_chunk) ─────────────────────────
+
+
+def _make_stringio_transport(hide_thinking: bool = False) -> tuple[RichTransport, io.StringIO]:
+    """Build a RichTransport writing to a StringIO so tests can assert on the raw stream."""
+    sink = io.StringIO()
+    console = Console(file=sink, force_terminal=False, width=100)
+    transport = RichTransport(console=console, debug=False, hide_thinking=hide_thinking)
+    return transport, sink
+
+
+@pytest.mark.asyncio
+async def test_on_text_chunk_renders_thinking_block() -> None:
+    """Reasoning deltas render a dim thinking block that closes on the first visible text."""
+    transport, sink = _make_stringio_transport()
+    transport.start_thinking("model_call")
+
+    # Reasoning-only deltas open the block and stream the reasoning text.
+    await transport.on_text_chunk("", reasoning="Let me think")
+    await transport.on_text_chunk("", reasoning=" about it")
+    assert "▸ Thinking… Let me think about it" in sink.getvalue()
+
+    # The first visible text delta closes the block.
+    await transport.on_text_chunk("The answer")
+    assert "▸ Thinking… Let me think about it\n" in sink.getvalue()
+    assert "The answer" in sink.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_on_text_chunk_hide_thinking_suppresses_reasoning() -> None:
+    """hide_thinking=True drops reasoning deltas but keeps the visible answer."""
+    transport, sink = _make_stringio_transport(hide_thinking=True)
+    transport.start_thinking("model_call")
+
+    await transport.on_text_chunk("", reasoning="secret thinking")
+    await transport.on_text_chunk("visible answer")
+
+    out = sink.getvalue()
+    assert "secret thinking" not in out
+    assert "visible answer" in out
+
+
+@pytest.mark.asyncio
+async def test_on_text_chunk_start_thinking_resets_thinking_state() -> None:
+    """start_thinking clears the thinking-open flag so a new turn starts fresh."""
+    transport, _sink = _make_stringio_transport()
+    transport.start_thinking("model_call")
+    await transport.on_text_chunk("", reasoning="half open")
+    assert transport._thinking_open is True
+
+    transport.start_thinking("model_call")
+    assert transport._thinking_open is False
+
+
+# ── compact (short-terminal) layout ──────────────────────────────────
+
+
+def test_live_height_compact_threshold() -> None:
+    """Short terminals (below the threshold) collapse to a compact layout."""
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    # Rich's console.size setter takes a (width, height) tuple. A height of
+    # 8 lines is below _COMPACT_HEIGHT_THRESHOLD (12) → compact.
+    transport.console.size = (80, 8)
+    assert transport._live_height() == 0
+    # A normal height (24) keeps the three-pane layout.
+    transport.console.size = (80, 24)
+    assert transport._live_height() > 0
