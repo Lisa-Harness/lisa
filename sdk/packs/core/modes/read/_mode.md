@@ -10,25 +10,21 @@ routing_intent_tags: [read, list]
 satisfies_intents: [read, list]
 routing_intent_keywords:
   list:
-    - list files
-    - list contents
-    - list documents
+    - list
+    - files
+    - contents
   read:
-    - read documents
-    - read files
-    - read text
-    - read content
+    - read
+    - file
+    - content
   review:
-    - review documents
     - review files
-    - review reports
     - review content
-allowed_tool_ids: [read_file, list_files]
-command_pattern: '^(?:(?:/)?(?:read|review)(?:[\s,:;]+|(?=$))?$'
+command_pattern: '^(?:(?:/)?(?:read|review|list)(?:[\s,:;]+|(?=$))?$'
 description: "List files and read them."
 fast_path_patterns:
   - "^(?:read|review)\\b"
 ---
-# Read Mode
+# List and Read Mode
 
 Read for comprehension and analysis unless the user explicitly asks you to read for a different purpose.
