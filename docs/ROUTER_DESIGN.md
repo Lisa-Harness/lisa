@@ -345,6 +345,163 @@ This is **proactive** — the model knows before it tries. And it's **zero-cost*
 when the current mode can handle the request (no hint is injected, no extra
 tokens).
 
+### 5b. Plan-mode escalation
+
+When the gap is complex (3+ remaining gap intents, or 2+ gap intents in a
+sequential query — "search … then code … then write"), the hint escalates to
+the `plan` action mode instead of routing directly to the first target:
+
+```text
+## Routing Hint
+
+This is a complex multi-step request. Hand off to `plan` by calling
+`transition_stage` with target_stage_id `plan`. The plan mode will analyze
+the query and determine the best routing target.
+```
+
+`plan` mode's `plan_workflow` entry operation makes one cheap model call that
+returns a `target_stage_id` and an optional `steps` array. The kernel then
+synthesizes a `transition_stage` handoff to the first step (kernel-driven, not
+model-driven — weak models that stop after planning without calling the tool
+were the 2026-07-28 stall). See §5c for how the `steps` array becomes a durable
+`WorkflowInstance`.
+
+The escalation gate is tag-blind and prose-blind:
+
+```python
+# kernel/turn_phases/_routing_hint.py
+if (
+    "plan" in routing_targets
+    and "plan" not in current_satisfied               # not already planned
+    and is_plan_reliable_for_model(planner_model_id)  # not blocklisted
+    and (len(gap_intents) >= 3 or (len(gap_intents) >= 2 and _query_is_sequential(query)))
+):
+    return _PLAN_ESCALATION_HINT
+```
+
+A model is marked unreliable for planning when `plan_workflow` previously
+failed to produce a parseable `target_stage_id` (e.g. a local backend
+returning `StubCompletion` instead of JSON). The registry
+(`kernel.routing_vocabulary._unreliable_plan_models`) is per-model and cleared
+on process restart. Unknown models are assumed reliable.
+
+---
+
+## 5c. Durable Workflow Chains (ad-hoc vs planned)
+
+Multi-step queries (search → code review → write report) need chain memory
+that survives across turns. A turn that hits the iteration limit **yields**
+(asks the user "how would you like me to proceed?"); the user replies
+"continue" and the next turn must resume from the right step, not restart.
+
+The chain memory has two forms:
+
+| Form | Scope | Reset behavior |
+| --- | --- | --- |
+| `chain_satisfied` (set on `_TurnState`) | One turn | Reset to `set()` at the start of every turn |
+| `WorkflowInstance.completed_steps` | Cross-turn, cross-restart | Persisted to disk via the host's store; hydrated at turn start |
+
+The ephemeral `chain_satisfied` set accumulates which intents each mode
+satisfied during this turn's handoffs (entry mode + each handoff target). It
+prevents the post-handoff hint from re-suggesting a step that already ran
+within the same turn. But it resets every turn — so a yield → "continue"
+resume wipes it.
+
+The durable `WorkflowInstance` is the cross-turn form. It carries
+`declared_steps`, `completed_steps`, `current_step_id`, and
+`current_mode_id`. At turn start, the hydration block reads
+`completed_steps` and populates `chain_satisfied` from each completed step's
+`satisfies_intents` **before** the routing hint is computed, so the hint sees
+the remaining gap (not the full original query).
+
+### Two creation paths
+
+```mermaid
+flowchart TD
+    Q[User query at turn 1] --> RH[Routing hint computed]
+    RH --> PE{Plan escalation hint?<br/>is_plan_escalation_hint}
+    PE -- Yes --> PLAN[plan mode runs plan_workflow op]
+    PE -- No --> AH{No active instance AND<br/>2+ compiled steps?}
+    PLAN --> PS{plan_workflow returned<br/>steps array?}
+    PS -- Yes --> PI[Create plan_workflow_op instance]
+    PS -- No, weak-model fallback --> AH
+    AH -- Yes --> AI[Create adhoc instance]
+    AH -- No --> NONE[No instance — ephemeral only]
+    PI --> HYD[Both hydrate chain_satisfied at turn start]
+    AI --> HYD
+    NONE --> EPH[Ephemeral — lost on yield/resume]
+```
+
+**Planned** (`spawned_from="plan_workflow_op"`): Created when the `plan`
+mode's `plan_workflow` entry op returns a `steps` array. The steps are
+model-authored (each has `mode_id`, `description`, `rationale`). The kernel
+converts them to `WorkflowStep` objects via `_plan_steps_to_workflow_steps`
+and persists the instance via `workflow_instance_updater`.
+
+**Ad-hoc** (`spawned_from="adhoc"`): Created at turn 1 when the routing hint
+detects a multi-step chain and no instance is already active. The kernel
+compiles the chain via `compile_steps_from_routing_targets`
+(`kernel/workflow_instance.py`), which reuses the same routing helpers as the
+hint: detects intents, orders producers before consumers, picks the
+earliest-keyword target for each intent, marks the last step terminal. The
+ad-hoc block is gated on:
+
+- No active instance (turn 1, not a resume).
+- The routing hint is not a plan-escalation hint (`is_plan_escalation_hint`
+  returns `False`) — plan mode owns the instance when escalation fires.
+- The compiled chain has 2+ steps (a real multi-step request).
+- The updater is wired (the host owns the lifecycle).
+- Suppressed for fork children (`suppress_routing_hint`).
+
+The ad-hoc path is the fallback for when `plan` is not available, the model is
+unreliable for planning, or `plan_workflow` returned no `steps` (weak-model
+fallback). Without it, those cases have no durable chain and a yield → resume
+skips the middle step (the 2026-08-01 incident).
+
+### Advancement and completion
+
+Both instance types advance the same way: when the model calls
+`transition_stage` with a new `mode_id` target, the handoff path calls
+`advance_step(instance, instance.current_step_id)`, which marks the current
+step as completed and moves the pointer to the next remaining step. The
+advanced instance is persisted via `workflow_instance_updater`.
+
+When the last step completes, `is_complete` returns `True` and the host clears
+the active ref so the next turn starts fresh.
+
+### Per-step budget exhaustion
+
+When the current step exhausts its per-step iteration or tool-call budget but
+the global cap has not fired, the kernel synthesizes a handoff to the next
+remaining step instead of letting the model keep looping in the same mode.
+This prevents a 6-step chain from starving its final step because earlier
+steps consumed the whole shared 15-iteration budget. The per-step budget is
+configured via `per_step_max_iterations` / `per_step_max_tool_calls` on
+`run_turn`.
+
+### Host wiring
+
+The host (`hosts/core/runtime.py`) owns the instance lifecycle:
+
+- `workflow_instance` hook: returns the active `WorkflowInstance` (or `None`).
+- `workflow_instance_updater` hook: persists an advanced instance and swaps
+  the in-memory active ref. When the instance is complete, clears the ref.
+- `FileWorkflowInstanceStore` (`hosts/core/workflow_instance_store.py`):
+  atomically persists instances to `<data-dir>/workflow-instances.json`,
+  scoped by `RecoveryIdentity` (one active instance per user/surface).
+- Boot-load: `_boot_load_active_workflow_instance` resumes a mid-flight
+  instance on host restart and overrides `current_mode_id` from the
+  instance's current step's mode.
+
+### Coordinator resume
+
+When a `plan_workflow_op` instance is active and the user sends a
+continuation query ("proceed", "continue"), the `_coordinator_routing_hint`
+helper reads the next target from the instance's `current_step_id` (which
+was advanced when the previous step completed), not from the route
+coordinator's saved `next_target` (which points at the first step and goes
+stale after advancement). This is the cross-turn plan resume path.
+
 ---
 
 ## 6. What the Model Sees

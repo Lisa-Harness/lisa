@@ -134,6 +134,12 @@ addressed before any new feature work.
   injected. This is proactive (zero wasted iterations) and costs no model
   calls. The hint also escalates complex multi-step queries (3+ gap intents or
   2+ sequential) to a `plan` action mode that runs `plan_workflow`.
+- **Durable chain instances:** ✅ Both planned (`plan_workflow_op`) and
+  ad-hoc (`adhoc`) multi-step queries now persist a `WorkflowInstance`
+  so the chain survives a yield → "continue" resume. The ad-hoc path
+  compiles steps via `compile_steps_from_routing_targets` and is guarded
+  by `is_plan_escalation_hint` so it skips when plan mode owns the chain.
+  See [docs/ROUTER_DESIGN.md §5c](ROUTER_DESIGN.md#5c-durable-workflow-chains-ad-hoc-vs-planned).
 
 ### 2.2 Slice-driven pre-computed routing context
 
