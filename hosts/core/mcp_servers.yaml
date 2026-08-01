@@ -120,3 +120,4 @@ servers:
     # ``accept_default_capabilities: false``.
     default_available_tools:
       - read_file
+      - list_files
