@@ -1,7 +1,7 @@
 """Lisa Fetch MCP server — fetch-and-cache remote http(s) content.
 
 Thin wrapper over :class:`sdk.content.ContentFetcher` (the SDK fetch-and-cache
-primitive). The server owns transport and ``FastMCP`` wiring; all fetch/cache
+primitive). The server owns transport and ``MCPServer`` wiring; all fetch/cache
 logic lives in the SDK class.
 
 Tools:

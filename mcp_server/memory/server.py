@@ -22,7 +22,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from kernel.models import MemoryWriteRequest
 from sdk.memory.store import SqliteMemoryStore
@@ -31,7 +31,7 @@ __all__ = ["get_store", "init_store", "main", "mcp"]
 
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("Lisa Memory Server")
+mcp = MCPServer("Lisa Memory Server")
 _store: Any | None = None
 
 

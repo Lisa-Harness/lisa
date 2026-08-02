@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, Field
 
 from kernel.models import (
@@ -37,7 +37,7 @@ __all__ = ["BrokerContextRequest", "main", "mcp"]
 
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("Lisa Context Server")
+mcp = MCPServer("Lisa Context Server")
 _SERVER_TIMEZONE = "UTC"
 
 
@@ -45,7 +45,7 @@ class BrokerContextRequest(BaseModel):
     """Typed MCP request schema for ``broker_context``.
 
     Mirrors the kernel-level :class:`ContextBrokerRequest` fields plus the
-    ``state`` payload needed to build a :class:`UnifiedState`. FastMCP uses
+    ``state`` payload needed to build a :class:`UnifiedState`. MCPServer uses
     this model's fields as the tool's input schema — each field becomes a
     top-level tool argument.
     """

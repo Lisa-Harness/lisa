@@ -46,7 +46,7 @@ warnings.filterwarnings(
     category=RuntimeWarning,
 )
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
 from sdk.content import (
@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["init_catalog", "main", "mcp"]
 
-mcp = FastMCP("Lisa Catalog Server")
+mcp = MCPServer("Lisa Catalog Server")
 
 _extra_roots: list[Path] = []
 

@@ -883,7 +883,7 @@ class MCPToolPool:
                     server_id=config.server_id,
                     name=tool.name,
                     description=tool.description or "",
-                    input_schema=tool.inputSchema or {"type": "object", "properties": {}},
+                    input_schema=tool.input_schema or {"type": "object", "properties": {}},
                 )
                 for tool in result.tools
             ]

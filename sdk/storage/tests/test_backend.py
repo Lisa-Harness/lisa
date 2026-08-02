@@ -2,7 +2,7 @@
 checkpoint persistence, and model-manifest read/write.
 
 Covers the same behaviors the lisa-storage MCP server exposes, but
-exercised directly against the SDK backend without FastMCP. These are
+exercised directly against the SDK backend without MCPServer. These are
 the in-process contract hosts and tools depend on when they use storage
 without spawning the MCP server.
 """

@@ -2,7 +2,7 @@
 formatting, blocked-audit logging, and backend resolution.
 
 Covers the same behaviors the lisa-guard MCP server exposes, but
-exercised directly against the SDK backend without FastMCP.
+exercised directly against the SDK backend without MCPServer.
 """
 
 from __future__ import annotations

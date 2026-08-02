@@ -1,7 +1,7 @@
 """Tests for the four Kernel-as-MCP servers (Part 4).
 
 Covers tool registration and dispatch for lisa-context, lisa-memory,
-and lisa-guard using FastMCP's in-process ``call_tool`` API.
+and lisa-guard using MCPServer's in-process ``call_tool`` API.
 """
 
 from __future__ import annotations
@@ -14,11 +14,19 @@ import pytest
 
 
 def _tool_text(result: Any) -> str:
-    """Extract text from FastMCP call_tool result.
+    """Extract text from MCPServer call_tool result.
 
-    ``call_tool`` returns ``(content_blocks, result_dict)``. The text is in
-    the first content block's ``.text`` attribute, or in ``result[1]['result']``.
+    MCP 2.0.0 returns a ``CallToolResult`` with a ``.content`` list of
+    ``TextContent`` blocks. Older versions returned a
+    ``(content_blocks, result_dict)`` tuple. Both shapes are handled.
     """
+    # MCP 2.0.0: CallToolResult object with .content list
+    if hasattr(result, "content") and result.content:
+        blocks = result.content
+        if hasattr(blocks[0], "text"):
+            return blocks[0].text
+        return str(blocks[0])
+    # Legacy tuple: (content_blocks, result_dict)
     if isinstance(result, tuple) and len(result) >= 1:
         blocks = result[0]
         if blocks and hasattr(blocks[0], "text"):
@@ -178,7 +186,7 @@ async def test_context_broker_context_malformed_state_raises(context_setup: None
         "query": "hello",
         "state": {"compiled_at": 12345, "context_markdown": "", "bogus_field": object()},
     }
-    # FastMCP wraps tool errors; the call should raise rather than return
+    # MCPServer wraps tool errors; the call should raise rather than return
     # an empty-state response.
     with pytest.raises(Exception):
         await mcp.call_tool("broker_context", payload)

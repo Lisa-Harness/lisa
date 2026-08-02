@@ -11,7 +11,7 @@ Public API (import from :mod:`sdk.storage`, not the ``_backend`` module):
   from the ``None`` returned for unsafe / escaping paths).
 
 The SDK owns the policy (sandbox resolution, denylist, manifest paths).
-The MCP server owns transport, ``FastMCP`` wiring, ``--readonly`` /
+The MCP server owns transport, ``MCPServer`` wiring, ``--readonly`` /
 ``--deny-glob`` arg parsing, and the process entrypoint.
 """
 

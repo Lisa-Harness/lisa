@@ -47,7 +47,7 @@ class _FakeTool:
     ) -> None:
         self.name = name
         self.description = description
-        self.inputSchema = schema or {"type": "object", "properties": {}}
+        self.input_schema = schema or {"type": "object", "properties": {}}
 
 
 class _FakeSession:

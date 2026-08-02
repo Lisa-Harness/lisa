@@ -20,7 +20,7 @@ dependencies = [
     "opentelemetry-sdk>=1.40.0,<2.0.0",
     "openai>=1.59.0",
     "python-dotenv>=1.0.0",
-    "mcp>=1.28.0",
+    "mcp>=2.0.0",
     # On Windows, Python's zoneinfo has no system tz database, so the
     # tzdata package is required for IANA timezone resolution.
     "tzdata>=2024.1; platform_system == 'Windows'",

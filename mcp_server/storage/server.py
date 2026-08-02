@@ -35,7 +35,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from mcp_server.config.cli import build_parser, configure_logging, resolve_data_dir
 from sdk.storage import StorageBackend
@@ -44,7 +44,7 @@ __all__ = ["init_storage", "main", "mcp"]
 
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("Lisa Storage Server")
+mcp = MCPServer("Lisa Storage Server")
 
 _backend: StorageBackend | None = None
 

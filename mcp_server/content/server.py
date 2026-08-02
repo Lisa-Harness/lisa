@@ -32,7 +32,7 @@ warnings.filterwarnings(
     category=RuntimeWarning,
 )
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
 from sdk.content import ContentReader
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["init_content", "main", "mcp"]
 
-mcp = FastMCP("Lisa Content Server")
+mcp = MCPServer("Lisa Content Server")
 
 _reader: ContentReader | None = None
 

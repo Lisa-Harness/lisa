@@ -393,7 +393,7 @@ async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.Mo
             return SimpleNamespace(
                 tools=[
                     type(
-                        "T", (), {"name": "add_memory", "description": "cloud", "inputSchema": {}}
+                        "T", (), {"name": "add_memory", "description": "cloud", "input_schema": {}}
                     )()
                 ]
             )
@@ -416,7 +416,7 @@ async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.Mo
                     server_id=config.server_id,
                     name=tool.name,
                     description=tool.description or "",
-                    input_schema=tool.inputSchema or {},
+                    input_schema=tool.input_schema or {},
                 )
                 server_index[tool.name] = bare_spec
                 namespaced = namespaced_tool_name(config.server_id, tool.name)
@@ -424,7 +424,7 @@ async def test_call_tool_scoped_lazily_starts_cold_server(monkeypatch: pytest.Mo
                     server_id=config.server_id,
                     name=namespaced,
                     description=tool.description or "",
-                    input_schema=tool.inputSchema or {},
+                    input_schema=tool.input_schema or {},
                 )
                 if namespaced not in self._tool_index:
                     self._tool_index[namespaced] = (config.server_id, namespaced_spec)
@@ -547,7 +547,7 @@ async def test_denied_tool_hidden_from_catalog_but_dispatchable_scoped(
         def __init__(self, name: str, description: str, schema: dict[str, Any]) -> None:
             self.name = name
             self.description = description
-            self.inputSchema = schema
+            self.input_schema = schema
 
     class _FakeSession:
         async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> _FakeResult:

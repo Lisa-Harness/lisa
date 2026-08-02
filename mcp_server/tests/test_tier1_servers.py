@@ -1,6 +1,6 @@
 """Tests for the three Tier 1 MCP servers (guard, storage, content).
 
-Covers tool registration, dispatch, and behavioral contracts using FastMCP's
+Covers tool registration, dispatch, and behavioral contracts using MCPServer's
 in-process ``call_tool`` API.
 """
 
@@ -14,7 +14,19 @@ import pytest
 
 
 def _tool_text(result: Any) -> str:
-    """Extract text from FastMCP call_tool result."""
+    """Extract text from MCPServer call_tool result.
+
+    MCP 2.0.0 returns a ``CallToolResult`` with a ``.content`` list of
+    ``TextContent`` blocks. Older versions returned a
+    ``(content_blocks, result_dict)`` tuple. Both shapes are handled.
+    """
+    # MCP 2.0.0: CallToolResult object with .content list
+    if hasattr(result, "content") and result.content:
+        blocks = result.content
+        if hasattr(blocks[0], "text"):
+            return blocks[0].text
+        return str(blocks[0])
+    # Legacy tuple: (content_blocks, result_dict)
     if isinstance(result, tuple) and len(result) >= 1:
         blocks = result[0]
         if blocks and hasattr(blocks[0], "text"):

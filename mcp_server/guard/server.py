@@ -6,7 +6,7 @@ Tools:
 - ``guard_configured`` — report backend configuration
 
 This is a transport-only wrapper. The SDK owns backend selection, the
-result shape, and the blocked-audit logger; the server owns ``FastMCP``
+result shape, and the blocked-audit logger; the server owns ``MCPServer``
 wiring, ``--backend`` arg parsing, and the process entrypoint. Hosts or
 tools that want in-process guard validation can use a backend directly
 without spawning this server.
@@ -24,7 +24,7 @@ import json
 import logging
 import os
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from sdk.guard import GuardBackend, format_guard_result, get_backend, log_blocked_guard
 
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["init_backend", "main", "mcp"]
 
-mcp = FastMCP("Lisa Guard Server")
+mcp = MCPServer("Lisa Guard Server")
 
 _backend_name: str = "passthrough"
 _backend: GuardBackend | None = None

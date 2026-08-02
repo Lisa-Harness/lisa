@@ -13,6 +13,6 @@ description: Architecture boundaries for the SDK package.
 
 ## SDK and server boundary
 
-- First-party MCP servers are transport facades. Put domain logic and protocols in the SDK; keep `FastMCP`, tool decorators, CLI entry points, and server-local backend state in `mcp_server`.
+- First-party MCP servers are transport facades. Put domain logic and protocols in the SDK; keep `MCPServer`, tool decorators, CLI entry points, and server-local backend state in `mcp_server`.
 - File I/O must use the storage sandbox unless an integration has an explicit equivalent. Reject absolute paths and parent traversal; tool paths remain relative to the sandbox.
 - Fetch policy is caller-owned, but SSRF protections and the absolute response-size ceiling are non-bypassable. Keep environment translation in host or tool adapters, not in the fetch primitive.

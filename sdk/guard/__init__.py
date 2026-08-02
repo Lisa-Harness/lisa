@@ -11,7 +11,7 @@ Public API (import from :mod:`sdk.guard`, not the ``_backend`` module):
   blocked guard check
 
 The SDK owns backend selection and the result/audit shape. The MCP
-server owns transport, ``FastMCP`` wiring, ``--backend`` arg parsing,
+server owns transport, ``MCPServer`` wiring, ``--backend`` arg parsing,
 and the process entrypoint. Hosts or tools that want in-process guard
 validation can use a backend directly without spawning the MCP server.
 """

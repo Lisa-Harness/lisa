@@ -1,7 +1,7 @@
 """Lisa Fetch MCP server — fetch-and-cache remote http(s) content.
 
 Thin wrapper over :class:`sdk.content.ContentFetcher`, mirroring the
-``mcp_server/content/server.py`` pattern: module-level ``FastMCP`` instance,
+``mcp_server/content/server.py`` pattern: module-level ``MCPServer`` instance,
 lazy singleton holding the SDK fetcher, one ``@mcp.tool()`` per operation,
 ``init_fetch()`` for setup, ``reset_fetch_state()`` for test isolation, and
 ``main()`` using the shared CLI helpers.
@@ -27,7 +27,7 @@ warnings.filterwarnings(
 
 from dataclasses import replace as _policy_replace
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
 from sdk.content import ContentFetcher, FetchPolicy
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["init_fetch", "main", "mcp", "reset_fetch_state"]
 
-mcp = FastMCP("Lisa Fetch Server")
+mcp = MCPServer("Lisa Fetch Server")
 
 _fetcher: ContentFetcher | None = None
 
