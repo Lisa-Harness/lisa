@@ -6,10 +6,13 @@ resolution, deny-glob policy, checkpoint persistence, and model-manifest
 read/write. Hosts or tools that want in-process storage access can use
 :class:`sdk.storage.StorageBackend` directly without spawning this server.
 
-Tools (11 total):
+Tools (13 total):
 
-- File I/O (6): ``read_file``, ``write_file``, ``list_files``, ``delete_file``,
-  ``stat_file``, ``make_dir`` — scoped to ``data_dir / "files"``.
+- File I/O (8): ``read_file``, ``read_file_range``, ``write_file``,
+  ``append_file``, ``list_files``, ``delete_file``, ``stat_file``,
+  ``make_dir`` — scoped to ``data_dir / "files"``. ``read_file_range``
+  returns a char-bounded slice (never splits multibyte codepoints);
+  ``append_file`` creates parent dirs and the file if absent.
 - Checkpoints (3): ``save_checkpoint``, ``restore_checkpoint``, ``list_checkpoints``
   — serialized checkpoint bundles as JSON under ``data_dir / "checkpoints"``.
 - Model manifests (2): ``read_model_manifest``, ``write_model_manifest`` —
@@ -100,6 +103,32 @@ async def read_file(path: str, encoding: str = "utf-8") -> str:
 
 
 @mcp.tool()
+async def read_file_range(
+    path: str,
+    start: int = 0,
+    length: int = 4096,
+    encoding: str = "utf-8",
+) -> str:
+    """Read a char-bounded slice of a text file from the files sandbox.
+
+    Useful for chunked ingestion of large files without loading the whole
+    file into a single model context. Slicing is char-based so multibyte
+    codepoints are never split.
+
+    Args:
+        path: Relative path within the files sandbox (no ``..`` or absolute).
+        start: Char offset to begin reading (0-based). Negative coerced to 0.
+        length: Max chars to return.
+        encoding: Text encoding (default ``utf-8``).
+
+    Returns:
+        JSON object ``{"content", "start", "length", "total", "eof"}``,
+        or a JSON error object if the path is unsafe or the file is missing.
+    """
+    return _backend_instance().read_file_range(path, start=start, length=length, encoding=encoding)
+
+
+@mcp.tool()
 async def write_file(path: str, content: str) -> str:
     """Write text content to a file in the files sandbox.
 
@@ -109,6 +138,21 @@ async def write_file(path: str, content: str) -> str:
         JSON object with ``ok``, ``path``, and ``bytes``.
     """
     return _backend_instance().write_file(path, content)
+
+
+@mcp.tool()
+async def append_file(path: str, content: str) -> str:
+    """Append text content to a file in the files sandbox.
+
+    Creates parent directories and the file if absent. Respects
+    ``--readonly``. Useful for incremental/segmented document persistence
+    where read-modify-write of the whole file is wasteful.
+
+    Returns:
+        JSON object with ``ok``, ``path``, and ``bytes`` (the new total
+        file size).
+    """
+    return _backend_instance().append_file(path, content)
 
 
 @mcp.tool()

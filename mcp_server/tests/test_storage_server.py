@@ -54,7 +54,9 @@ async def test_storage_lists_eleven_tools(storage_setup: None) -> None:
     names = {t.name for t in tools}
     assert {
         "read_file",
+        "read_file_range",
         "write_file",
+        "append_file",
         "list_files",
         "delete_file",
         "stat_file",
@@ -84,6 +86,39 @@ async def test_write_read_roundtrip(storage_setup: None) -> None:
     read_result = await mcp.call_tool("read_file", {"path": "reports/daily.md"})
     text = _tool_text(read_result)
     assert "# Hello" in text
+
+
+@pytest.mark.asyncio
+async def test_read_file_range_roundtrip(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    await mcp.call_tool("write_file", {"path": "range.txt", "content": "0123456789"})
+    result = await mcp.call_tool(
+        "read_file_range", {"path": "range.txt", "start": 2, "length": 4}
+    )
+    data = json.loads(_tool_text(result))
+    assert data["content"] == "2345"
+    assert data["start"] == 2
+    assert data["length"] == 4
+    assert data["total"] == 10
+    assert data["eof"] is False
+
+
+@pytest.mark.asyncio
+async def test_append_file_roundtrip(storage_setup: None) -> None:
+    from mcp_server.storage.server import mcp
+
+    first = await mcp.call_tool("append_file", {"path": "log.txt", "content": "a\n"})
+    data = json.loads(_tool_text(first))
+    assert data["ok"] is True
+    assert data["bytes"] == 2
+
+    second = await mcp.call_tool("append_file", {"path": "log.txt", "content": "b\n"})
+    data = json.loads(_tool_text(second))
+    assert data["bytes"] == 4
+
+    read_result = await mcp.call_tool("read_file", {"path": "log.txt"})
+    assert _tool_text(read_result) == "a\nb\n"
 
 
 @pytest.mark.asyncio

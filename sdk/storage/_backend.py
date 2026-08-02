@@ -318,6 +318,87 @@ class StorageBackend:
         except OSError as exc:
             return json.dumps({"error": f"make_dir failed: {exc}"})
 
+    def read_file_range(
+        self,
+        path: str,
+        start: int = 0,
+        length: int = 4096,
+        encoding: str = "utf-8",
+    ) -> str:
+        """Read a char-bounded slice of a text file from the files sandbox.
+
+        Returns a JSON object: ``{"content", "start", "length", "total",
+        "eof"}``. ``total`` is the full char length of the file; ``length``
+        is the chars actually returned (may be less than requested near
+        EOF); ``eof`` is True when the slice reaches or passes the end.
+
+        Slicing is char-based, not byte-based, so multibyte codepoints are
+        never split. This requires decoding the whole file to slice safely;
+        acceptable for text consolidation. Byte-range / lease semantics
+        are intentionally out of scope (see module docstring).
+
+        Args:
+            start: Char offset to begin reading (0-based). Negative values
+                and non-ints are coerced to 0.
+            length: Max chars to return. Coerced to >= 0.
+            encoding: Text encoding (default ``utf-8``).
+        """
+        resolved, err = self.resolve_or_error(path)
+        if err is not None:
+            return err
+        assert resolved is not None
+        if not resolved.is_file():
+            return json.dumps({"error": f"file not found: {path}"})
+        try:
+            text = resolved.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            return json.dumps({"error": "file is not valid text for the requested encoding"})
+        except OSError as exc:
+            return json.dumps({"error": f"read failed: {exc}"})
+
+        total = len(text)
+        s = max(0, int(start))
+        n = max(0, int(length))
+        end = min(total, s + n)
+        content = text[s:end]
+        return json.dumps(
+            {
+                "content": content,
+                "start": s,
+                "length": len(content),
+                "total": total,
+                "eof": end >= total,
+            }
+        )
+
+    def append_file(self, path: str, content: str) -> str:
+        """Append text content to a file in the files sandbox.
+
+        Creates parent directories as needed. Creates the file if it does
+        not exist. Respects ``readonly``. Returns a JSON object with
+        ``ok``, ``path``, and ``bytes`` (the new total file size in bytes).
+        """
+        if self._readonly:
+            return json.dumps({"error": "server is read-only"})
+        resolved, err = self.resolve_or_error(path)
+        if err is not None:
+            return err
+        assert resolved is not None
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            # newline="" disables platform newline translation so disk bytes
+            # match the input exactly (a storage primitive should be
+            # byte-faithful; ``write_file`` has the same property via
+            # ``write_text``'s default, which also needs guarding — but
+            # that's an existing concern out of scope here).
+            with resolved.open("a", encoding="utf-8", newline="") as handle:
+                handle.write(content)
+            return json.dumps(
+                {"ok": True, "path": path, "bytes": resolved.stat().st_size}
+            )
+        except OSError as exc:
+            return json.dumps({"error": f"append failed: {exc}"})
+
     # ── Checkpoints ─────────────────────────────────────────────────────────
 
     def _checkpoint_path(self, checkpoint_id: str) -> Path:

@@ -138,6 +138,105 @@ def test_make_dir(tmp_path: Path) -> None:
     assert (b.files_root() / "new" / "dir").is_dir()
 
 
+def test_read_file_range_roundtrip(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("range.txt", "0123456789")
+    data = json.loads(b.read_file_range("range.txt", start=2, length=4))
+    assert data["content"] == "2345"
+    assert data["start"] == 2
+    assert data["length"] == 4
+    assert data["total"] == 10
+    assert data["eof"] is False
+
+
+def test_read_file_range_eof(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("range.txt", "0123456789")
+    data = json.loads(b.read_file_range("range.txt", start=8, length=10))
+    assert data["content"] == "89"
+    assert data["length"] == 2
+    assert data["eof"] is True
+
+
+def test_read_file_range_start_past_end(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("range.txt", "abc")
+    data = json.loads(b.read_file_range("range.txt", start=50, length=10))
+    assert data["content"] == ""
+    assert data["length"] == 0
+    assert data["total"] == 3
+    assert data["eof"] is True
+
+
+def test_read_file_range_char_safe_multibyte(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    # "á" is one codepoint but 2 UTF-8 bytes; char slicing must not split it.
+    text = "xáy"
+    b.write_file("multi.txt", text)
+    data = json.loads(b.read_file_range("multi.txt", start=1, length=1))
+    assert data["content"] == "á"
+    assert data["total"] == 3
+
+
+def test_read_file_range_defaults_from_zero(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("range.txt", "hello")
+    data = json.loads(b.read_file_range("range.txt"))
+    assert data["start"] == 0
+    assert data["content"] == "hello"
+    assert data["eof"] is True
+
+
+def test_read_file_range_negative_start_coerced(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    b.write_file("range.txt", "hello")
+    data = json.loads(b.read_file_range("range.txt", start=-5, length=3))
+    assert data["start"] == 0
+    assert data["content"] == "hel"
+
+
+def test_read_file_range_absent_returns_error(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    data = json.loads(b.read_file_range("nonexistent.txt"))
+    assert "error" in data
+
+
+def test_read_file_range_traversal_rejected(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    data = json.loads(b.read_file_range("../../../etc/passwd"))
+    assert "error" in data
+
+
+def test_append_file_creates_and_appends(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    first = json.loads(b.append_file("log.txt", "line1\n"))
+    assert first["ok"] is True
+    assert first["bytes"] == len("line1\n".encode("utf-8"))
+    second = json.loads(b.append_file("log.txt", "line2\n"))
+    assert second["ok"] is True
+    assert second["bytes"] == len("line1\nline2\n".encode("utf-8"))
+    assert b.read_file("log.txt") == "line1\nline2\n"
+
+
+def test_append_file_creates_parent_dirs(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    data = json.loads(b.append_file("sub/dir/log.txt", "x"))
+    assert data["ok"] is True
+    assert b.read_file("sub/dir/log.txt") == "x"
+
+
+def test_append_file_readonly_rejected(tmp_path: Path) -> None:
+    b = _readonly_backend(tmp_path)
+    data = json.loads(b.append_file("log.txt", "x"))
+    assert data["error"] == "server is read-only"
+
+
+def test_append_file_traversal_rejected(tmp_path: Path) -> None:
+    b = _backend(tmp_path)
+    data = json.loads(b.append_file("../escape.txt", "x"))
+    assert "error" in data
+
+
 def test_readonly_rejects_writes(tmp_path: Path) -> None:
     b = _readonly_backend(tmp_path)
     assert json.loads(b.write_file("a.txt", "a"))["error"] == "server is read-only"
