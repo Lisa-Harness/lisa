@@ -445,11 +445,11 @@ async def test_stop_thinking_clears_status_sentinel() -> None:
 # ── stream pane streaming (on_text_chunk) ────────────────────────────
 
 
-def _make_stream_transport(hide_thinking: bool = False) -> RichTransport:
+def _make_stream_transport() -> RichTransport:
     """Build a RichTransport writing to a quiet StringIO console."""
     sink = io.StringIO()
     console = Console(file=sink, force_terminal=False, width=100)
-    return RichTransport(console=console, debug=False, hide_thinking=hide_thinking)
+    return RichTransport(console=console, debug=False)
 
 
 @pytest.mark.asyncio
@@ -472,16 +472,16 @@ async def test_on_text_chunk_accumulates_into_stream_pane() -> None:
 
 
 @pytest.mark.asyncio
-async def test_on_text_chunk_hide_thinking_suppresses_reasoning() -> None:
-    """hide_thinking=True drops reasoning deltas but keeps the visible answer."""
-    transport = _make_stream_transport(hide_thinking=True)
+async def test_on_text_chunk_reasoning_dimmed_but_shown() -> None:
+    """Reasoning deltas are rendered (dimmed) alongside the visible answer."""
+    transport = _make_stream_transport()
     transport.start_thinking("model_call")
 
     await transport.on_text_chunk("", reasoning="secret thinking")
     await transport.on_text_chunk("visible answer")
 
-    # Only the visible answer is buffered; reasoning suppressed.
-    assert transport._stream_text.plain == "visible answer"
+    # Both reasoning and visible answer are buffered in arrival order.
+    assert transport._stream_text.plain == "secret thinkingvisible answer"
 
 
 @pytest.mark.asyncio

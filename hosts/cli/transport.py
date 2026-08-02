@@ -302,8 +302,6 @@ class RichTransport:
             for testing or file redirection).
         debug: When True, ``on_debug_context`` renders a panel. When
             False, it is a no-op (matches the ``--debug`` flag).
-        hide_thinking: When True, the streamed ``reasoning_content``
-            deltas are not rendered. The visible answer is unaffected.
     """
 
     def __init__(
@@ -311,14 +309,9 @@ class RichTransport:
         *,
         console: Console | None = None,
         debug: bool = False,
-        hide_thinking: bool = False,
     ) -> None:
         self.console: Console = console or Console()
         self.debug = debug
-        # When True, the streaming ``reasoning_content`` deltas are not
-        # rendered. The visible answer is unaffected. Default False —
-        # "show the work" (see ``--hide-thinking`` in the CLI host).
-        self.hide_thinking = hide_thinking
         # ``_status`` is retained as a non-None sentinel while the Live
         # region is active and ``None`` when stopped, preserving the
         # ``transport._status is None`` contract used by REPL cancel
@@ -1052,10 +1045,10 @@ class RichTransport:
         is the model's hidden thinking delta. Both are appended to the stream
         pane's scrolling buffer (reasoning dimmed). This does NOT tear down
         the Live region — the window stays fixed and the stream pane scrolls
-        in place. ``hide_thinking`` suppresses reasoning deltas.
+        in place.
         """
         self._streamed_during_turn = True
-        if reasoning and not self.hide_thinking:
+        if reasoning:
             # Append a reasoning (thinking) delta, dimmed.
             self._stream_text.append(reasoning, style="grey42")
             self._refresh_live()

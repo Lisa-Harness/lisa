@@ -50,8 +50,8 @@ def test_host_config_applies_streaming_mode_and_delay() -> None:
     assert config.streaming.enabled is True
 
 
-def test_streaming_config_default_is_none() -> None:
+def test_streaming_config_default_is_hybrid() -> None:
+    """The CLI default is hybrid streaming (the thinking/streaming pane)."""
     config = HostConfig.from_env()
-    assert config.streaming == StreamingConfig()
-    assert config.streaming.mode == "none"
-    assert config.streaming.enabled is False
+    assert config.streaming.mode == "hybrid"
+    assert config.streaming.enabled is True

@@ -235,7 +235,7 @@ class HostConfig:
         user_slug: str = "",
         state_snapshot: str = "",
         mcp_manifest_path: str = "",
-        streaming: str = "none",
+        streaming: str = "hybrid",
         surface_type: str = "",
         surface_id: str = "",
     ) -> HostConfig:

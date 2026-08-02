@@ -28,7 +28,7 @@ class TestHostConfig:
         assert config.debug is False
         assert config.effective_log_level == "info"
         assert config.timezone in {"UTC", "America/New_York"} or "/" in config.timezone
-        assert config.streaming.mode == "none"
+        assert config.streaming.mode == "hybrid"
         assert config.slice_config.explicit_budget_ms == 2000
         assert config.execution_policy.max_model_calls == 20
         assert config.execution_policy.max_capability_calls == 30
@@ -113,7 +113,7 @@ class TestConfigResolver:
 
     def test_parse_streaming_empty(self) -> None:
         mode, _ = parse_streaming_option("")
-        assert mode == "none"
+        assert mode == "hybrid"
 
 
 # ── HostRuntime ─────────────────────────────────────────────────────

@@ -331,11 +331,13 @@ def parse_streaming_option(raw_value: str) -> tuple[str, int]:
 
     Accepts ``none``, ``stage``, ``text``, ``hybrid``, optionally suffixed
     with ``:N`` for per-character delay in milliseconds (e.g. ``hybrid:50``).
-    Invalid values default to ``("none", 0)``.
+    Invalid values default to ``("none", 0)``. An empty value defaults to
+    ``("hybrid", 0)`` — the CLI host's default is hybrid streaming (the
+    thinking/streaming pane).
     """
     cleaned = (raw_value or "").strip().lower()
     if not cleaned:
-        return "none", 0
+        return "hybrid", 0
 
     parts = cleaned.split(":", 1)
     mode = parts[0]
