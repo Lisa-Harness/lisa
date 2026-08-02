@@ -1295,23 +1295,35 @@ def _plan_steps_to_workflow_steps(
     """Convert plan_workflow's ``steps`` dicts into ``WorkflowStep`` objects.
 
     Each plan step has ``mode_id``, ``description``, and ``rationale``. The
-    ``WorkflowStep`` only carries ``mode_id`` and ``step_id`` (the
+    ``WorkflowStep`` carries ``mode_id`` and ``step_id`` (the
     description/rationale are for the user-visible plan block, not the
-    instance). The last step is marked terminal. Step ids are deterministic
+    instance). To keep the planned path shape-identical to the ad-hoc
+    compiler's output (``compile_steps_from_routing_targets``), the
+    converter enriches each step with ``satisfies_intents`` and
+    ``depends_on`` looked up from the workflow catalog. This makes every
+    downstream consumer (``chain_satisfied`` hydration, resume hints,
+    progress rendering) origin-blind — no branch needs to special-case
+    ``spawned_from == "plan_workflow_op"`` to compensate for missing
+    fields. The last step is marked terminal. Step ids are deterministic
     via ``_step_id_for`` so a recompiled plan preserves ``completed_steps``
     by id intersection.
     """
     if not plan_steps:
         return ()
+    catalog = get_workflow_catalog()
     steps: list[WorkflowStep] = []
     for idx, step in enumerate(plan_steps):
         mode_id = str(step.get("mode_id", "")).strip()
         if not mode_id:
             continue
+        mode_cfg = catalog.get(mode_id)
+        satisfies = tuple(getattr(mode_cfg, "satisfies_intents", []) or []) if mode_cfg else ()
         steps.append(
             WorkflowStep(
                 step_id=_step_id_for(mode_id, idx),
                 mode_id=mode_id,
+                satisfies_intents=satisfies,
+                depends_on=tuple(s.step_id for s in steps),
                 is_terminal=(idx == len(plan_steps) - 1),
                 spawned_from="plan_workflow_op",
             )

@@ -332,3 +332,58 @@ def test_compile_steps_spawned_from_propagated() -> None:
             spawned_from="plan_workflow_op",
         )
     assert all(s.spawned_from == "plan_workflow_op" for s in steps)
+
+
+def test_plan_steps_to_workflow_steps_shape_matches_ad_hoc_compiler() -> None:
+    """``_plan_steps_to_workflow_steps`` produces the same field shape as
+    ``compile_steps_from_routing_targets`` so downstream consumers can be
+    origin-blind.
+
+    Both paths must populate ``satisfies_intents`` (from the catalog) and
+    ``depends_on`` (the linear prefix of prior step ids), mark the last
+    step ``is_terminal``, and use the same ``_step_id_for`` scheme. The
+    only legitimate difference is ``spawned_from``. This is the
+    foundation for dropping the ``spawned_from`` gates in the turn loop
+    (Phase 2 of the unification plan).
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_runner import _plan_steps_to_workflow_steps
+
+    catalog = _catalog()
+    plan_steps = [
+        {"mode_id": "search", "description": "Search the web", "rationale": "research"},
+        {"mode_id": "markdown", "description": "Write a summary", "rationale": "write"},
+    ]
+    with patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog):
+        planned = _plan_steps_to_workflow_steps(plan_steps)
+
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
+        adhoc = compile_steps_from_routing_targets(
+            query="search the web then write a markdown",
+            routing_targets=["search", "markdown"],
+            catalog=catalog,
+            spawned_from="adhoc",
+        )
+
+    assert len(planned) == len(adhoc) == 2
+    for planned_step, adhoc_step in zip(planned, adhoc, strict=True):
+        # step_id uses the same _step_id_for scheme (mode + index).
+        assert planned_step.step_id == adhoc_step.step_id, (
+            f"step_id mismatch: {planned_step.step_id} vs {adhoc_step.step_id}"
+        )
+        assert planned_step.mode_id == adhoc_step.mode_id
+        # satisfies_intents populated from the catalog in both paths.
+        assert planned_step.satisfies_intents == adhoc_step.satisfies_intents, (
+            f"satisfies_intents mismatch for {planned_step.mode_id}: "
+            f"{planned_step.satisfies_intents} vs {adhoc_step.satisfies_intents}"
+        )
+        # depends_on is the linear prefix of prior step ids in both paths.
+        assert planned_step.depends_on == adhoc_step.depends_on, (
+            f"depends_on mismatch for {planned_step.mode_id}: "
+            f"{planned_step.depends_on} vs {adhoc_step.depends_on}"
+        )
+        assert planned_step.is_terminal == adhoc_step.is_terminal
+    # The only legitimate difference is spawned_from.
+    assert all(s.spawned_from == "plan_workflow_op" for s in planned)
+    assert all(s.spawned_from == "adhoc" for s in adhoc)
