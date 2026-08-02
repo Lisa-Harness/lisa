@@ -138,7 +138,11 @@ async def test_chain_satisfied_hydrates_from_instance_completed_steps() -> None:
             hooks=hooks,
         )
 
-    assert result.response_text == "Done coding."
+    assert result.response_text.startswith("Done coding.")
+    # Origin-blind progress rendering now appends a workflow-progress block
+    # for ad-hoc instances too (Phase 2 unification). The test's purpose is
+    # the chain_satisfied hydration (verified via the routing hint below),
+    # not the exact response text, so we only assert the prefix.
     # The routing hint in the system prompt must NOT suggest `search` — the
     # `research` intent is already satisfied (hydrated from the instance's
     # completed search_0 step). It should name the remaining consumer gap.

@@ -95,40 +95,6 @@ async def test_run_turn_simple_chat_default_mode() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_turn_uses_persisted_route_for_continuation_queries() -> None:
-    """A persisted route target is injected as a routing hint for continuation queries."""
-
-    class _StubCoordinator:
-        def __init__(self) -> None:
-            self.saved_decision: CoordinatorRouteDecision | None = None
-
-        def load(self, _req: Any) -> CoordinatorRouteDecision | None:
-            return self.saved_decision
-
-        def save(self, decision: CoordinatorRouteDecision, _req: Any) -> None:
-            self.saved_decision = decision
-
-    captured_system_prompts: list[str] = []
-
-    async def complete(**kwargs: Any) -> _StubCompletion:
-        captured_system_prompts.append(str(kwargs["messages"][0].get("content", "")))
-        return _StubCompletion(content="Done.")
-
-    coordinator = _StubCoordinator()
-    coordinator.saved_decision = CoordinatorRouteDecision(next_target="markdown")
-
-    hooks = _build_minimal_hooks(complete)
-    hooks.route_coordinator = coordinator
-
-    result = await run_turn(mode_id="default", query="proceed", hooks=hooks)
-
-    assert result.response_text == "Done."
-    assert captured_system_prompts
-    assert "transition_stage" in captured_system_prompts[0]
-    assert "markdown" in captured_system_prompts[0]
-
-
-@pytest.mark.asyncio
 async def test_run_turn_planner_action_mode_drives_handoff_without_model_transition() -> None:
     """When a planner action mode's entry operation returns a
     ``target_stage_id`` in ``output_json``, the kernel drives the handoff

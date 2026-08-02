@@ -308,17 +308,17 @@ def _next_remaining_step_mode_id(hooks: Any) -> str:
     return step.mode_id if step is not None else ""
 
 
-def _active_plan_resume_target(hooks: Any) -> str:
-    """Return the resume target mode from an active plan instance, or "".
+def _active_instance_resume_target(hooks: Any) -> str:
+    """Return the resume target mode from an active workflow instance, or "".
 
-    Reads the active ``WorkflowInstance`` (when wired) and, if it is a
-    non-complete ``plan_workflow_op`` chain, returns the mode_id of the
-    next uncompleted step. Used by the mid-turn ``plan`` handoff path so
-    re-entering ``plan`` while a broader plan is in flight resumes that
-    plan instead of blindly re-running ``plan_workflow`` against a
-    continuation/status query (the 2026-08-01 plan→markdown→learn→re-plan
-    failure). Returns "" when no resumable plan instance is active, so the
-    caller falls through to the normal planner path.
+    Origin-blind: reads the active ``WorkflowInstance`` (when wired) and,
+    if it is non-complete with a remaining step, returns that step's
+    ``mode_id``. Used by the mid-turn handoff path so re-entering the
+    originating mode of a chain (e.g. ``plan``) while a broader instance
+    is in flight resumes that instance instead of blindly re-running the
+    entry op against a continuation/status query (the 2026-08-01
+    plan→markdown→learn→re-plan failure). Returns "" when no resumable
+    instance is active, so the caller falls through to the normal path.
     """
     if hooks.workflow_instance is None:
         return ""
@@ -327,8 +327,6 @@ def _active_plan_resume_target(hooks: Any) -> str:
     except Exception:  # pylint: disable=broad-except
         return ""
     if instance is None:
-        return ""
-    if getattr(instance, "spawned_from", "") != "plan_workflow_op":
         return ""
     if _is_workflow_instance_complete(instance):
         return ""
@@ -951,82 +949,51 @@ def _looks_like_continuation_query(query: str) -> bool:
 def _coordinator_routing_hint(
     *,
     hooks: TurnHooks,
-    mode_id: str,
+    mode_id: str,  # noqa: ARG001  — kept for call-site compatibility
     query: str,
 ) -> str:
-    """Return a handoff hint from a persisted route coordinator when applicable.
+    """Return a handoff hint from an active workflow instance on a resume.
 
-    When a ``plan_workflow_op`` WorkflowInstance is active and has a
-    current step, the instance is the source of truth for the next target
-    (not the coordinator's saved decision, which points at the first step
-    and goes stale after advancement). The instance's ``current_step_id``
-    was advanced by ``advance_step`` when the previous step completed, so
-    it names the step that should run next on a ``/proceed`` resume.
+    Origin-blind: when a ``WorkflowInstance`` is active and has a current
+    step, the instance is the source of truth for the next target. The
+    instance's ``current_step_id`` was advanced by ``advance_step`` when
+    the previous step completed, so it names the step that should run
+    next on a ``/proceed`` resume.
 
-    The plan-instance resume branch fires whenever ``workflow_instance`` is
-    wired — independent of ``route_coordinator``. The host wires
-    ``workflow_instance`` (the durable cross-turn plan store) but never
-    wires ``route_coordinator`` (a legacy single-target persistence). Gating
-    the whole function on ``route_coordinator is None`` (the 2026-08-01 bug)
-    left the plan-resume branch dead in production: a continuation query
-    ("proceed with P0") got no resume hint, re-entered ``plan`` mode, and
-    ``plan_workflow`` refused to route an execution request. Only the
-    legacy coordinator-driven branch requires ``route_coordinator``.
+    The legacy ``route_coordinator``-driven branch was deleted: the
+    production host never wires ``route_coordinator`` (a legacy
+    single-target persistence whose ``next_target`` pointed at the first
+    step and went stale after advancement). The durable instance is the
+    sole resume source. Tests that exercised the coordinator branch are
+    removed alongside it (hard cutover).
     """
     if not _looks_like_continuation_query(query):
         return ""
-    # ── Plan-instance-driven resume ──────────────────────────────────
-    # When a plan_workflow_op instance is active, read the next target
-    # from the instance's current step (the coordinator's saved
-    # next_target is the FIRST step and goes stale after advancement).
-    if hooks.workflow_instance is not None:
-        try:
-            _instance = hooks.workflow_instance()
-        except Exception:  # pylint: disable=broad-except
-            _instance = None
-        if (
-            _instance is not None
-            and getattr(_instance, "spawned_from", "") == "plan_workflow_op"
-            and getattr(_instance, "current_step_id", "")
-        ):
-            _step = (
-                _instance.step_by_id(_instance.current_step_id)
-                if hasattr(_instance, "step_by_id")
-                else None
-            )
-            if _step is not None and _step.mode_id:
-                return (
-                    "## Routing Hint\n\n"
-                    f"Continue with the next step in the planned workflow. "
-                    f"Hand off to `{_step.mode_id}` by calling "
-                    f"`transition_stage` with target_stage_id "
-                    f"`{_step.mode_id}`."
-                )
-    # ── Coordinator-driven resume (legacy / non-plan) ────────────────
-    # Requires a wired coordinator. When it is None (production host), the
-    # only resume source is the durable plan instance handled above.
-    if hooks.route_coordinator is None:
+    # ── Instance-driven resume (origin-blind) ─────────────────────────
+    # Read the next target from the instance's current step. Applies to
+    # any active non-complete instance (ad-hoc, session_plan, or
+    # plan_workflow_op) — the chain's declared order is authoritative.
+    if hooks.workflow_instance is None:
         return ""
-    request = {
-        "mode_id": mode_id,
-        "query": query,
-        "surface_id": hooks.surface_id,
-        "conversation_id": hooks.conversation_id,
-        "user_id": hooks.user_id,
-        "session_plan_digest": hooks.session_plan_digest,
-    }
     try:
-        decision = hooks.route_coordinator.load(request)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("route_coordinator.load failed: %s", exc)
+        _instance = hooks.workflow_instance()
+    except Exception:  # pylint: disable=broad-except
         return ""
-    target = (getattr(decision, "next_target", "") or "").strip()
-    if not target:
+    if _instance is None or not getattr(_instance, "current_step_id", ""):
+        return ""
+    _step = (
+        _instance.step_by_id(_instance.current_step_id)
+        if hasattr(_instance, "step_by_id")
+        else None
+    )
+    if _step is None or not _step.mode_id:
         return ""
     return (
         "## Routing Hint\n\n"
-        f"Continue with the previously planned next step. Hand off to `{target}` by "
-        f"calling `transition_stage` with target_stage_id `{target}`."
+        f"Continue with the next step in the workflow. "
+        f"Hand off to `{_step.mode_id}` by calling "
+        f"`transition_stage` with target_stage_id "
+        f"`{_step.mode_id}`."
     )
 
 
@@ -4028,7 +3995,7 @@ async def _run_turn_inner(
                                     in (target_mode_config.entry_operation_ids or [])
                                 )
                                 _plan_resume_target = (
-                                    _active_plan_resume_target(hooks)
+                                    _active_instance_resume_target(hooks)
                                     if _is_planner_handoff
                                     else ""
                                 )
@@ -4383,24 +4350,26 @@ async def _run_turn_inner(
 
                                                 _advanced = advance_step(_wi, _wi.current_step_id)
                                                 hooks.workflow_instance_updater(_advanced)
-                                                # ── Plan-driven next-step hint ──
-                                                # When a plan_workflow_op
-                                                # instance is active and has
-                                                # a remaining step after
-                                                # advancement, override the
-                                                # emergent routing hint with
-                                                # a directive hint naming the
-                                                # next step's mode from the
-                                                # precomputed plan. This
+                                                # ── Declared next-step hint ──
+                                                # When an instance is active
+                                                # and has a remaining step
+                                                # after advancement, override
+                                                # the emergent routing hint
+                                                # with a directive hint naming
+                                                # the next step's mode from
+                                                # the declared sequence. This
                                                 # replaces the one-step-at-a-
                                                 # time emergent hint chain
-                                                # with the declared plan
-                                                # sequence. The plan is the
+                                                # with the instance's declared
+                                                # order. The instance is the
                                                 # source of truth, not the
                                                 # gap-intent recompute.
+                                                # Origin-blind: applies to
+                                                # ad-hoc, session_plan, and
+                                                # plan_workflow_op instances
+                                                # alike.
                                                 if (
                                                     _advanced is not None
-                                                    and _advanced.spawned_from == "plan_workflow_op"
                                                     and _advanced.current_step_id
                                                 ):
                                                     _next_step = (
@@ -5132,30 +5101,32 @@ async def _run_turn_inner(
             except Exception as exc:  # pylint: disable=broad-except
                 _log.warning("on_checkpoint hook failed: %s", exc)
 
-    # ── Plan progress rendering ──────────────────────────────────────
-    # When a plan_workflow_op instance is active and has remaining steps,
-    # append a short progress summary so the user sees which step just
-    # finished and what's next. Only appended when there is visible
-    # content (don't append to an empty error response).
+    # ── Workflow progress rendering ───────────────────────────────
+    # When an instance is active and has remaining steps, append a short
+    # progress summary so the user sees which step just finished and
+    # what's next. Origin-blind: applies to ad-hoc, session_plan, and
+    # plan_workflow_op instances alike — ``render_workflow_progress`` is
+    # already origin-blind. Only appended when there is visible content
+    # (don't append to an empty error response).
     if content and hooks.workflow_instance is not None:
         try:
             _progress_instance = hooks.workflow_instance()
         except Exception:  # pylint: disable=broad-except
             _progress_instance = None
-        if (
-            _progress_instance is not None
-            and getattr(_progress_instance, "spawned_from", "") == "plan_workflow_op"
-            and getattr(_progress_instance, "declared_steps", ())
+        if _progress_instance is not None and getattr(
+            _progress_instance, "declared_steps", ()
         ):
             try:
                 from kernel.workflow_instance import (
+                    is_complete as _wi_is_complete,
                     render_workflow_progress,
                 )
 
-                _progress = render_workflow_progress(_progress_instance)
-                if _progress:
-                    content = f"{content}\n\n{_progress}"
-            except Exception:  # pylint: disable=broad-except
+                if not _wi_is_complete(_progress_instance):
+                    _progress = render_workflow_progress(_progress_instance)
+                    if _progress:
+                        content = f"{content}\n\n{_progress}"
+            except Exception as exc:  # pylint: disable=broad-except
                 _log.warning("render_workflow_progress failed: %s", exc)
 
     return TurnResult(
