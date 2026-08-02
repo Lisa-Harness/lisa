@@ -128,57 +128,93 @@ _producer_intents: frozenset[str] | None = None
 _consumer_intents: frozenset[str] | None = None
 _resume_phrases: tuple[str, ...] | None = None
 
-# Per-model plan-reliability registry. When ``plan_workflow`` fails to
-# produce a parseable ``target_stage_id`` for a given model id, that model
-# is marked unreliable here so the routing-hint generator skips plan
-# escalation for it (see ``_routing_hint.py`` §3b). The hint generator
-# calls ``is_plan_reliable_for_model(model_id)`` before suggesting a
-# handoff to ``plan``; the turn runner's plan-failure path calls
-# ``mark_plan_unreliable_for_model(model_id)`` on the first failure.
-# Entries persist for the process lifetime (a model that returns a
-# ``StubCompletion`` once is empirically going to keep doing it on the
-# same structured-output contract); ``reset_plan_reliability`` clears the
-# registry for tests.
-_unreliable_plan_models: set[str] = set()
+# Per-(model, op) entry-op reliability registry. When a routing-capable
+# entry operation (``plan_workflow`` today; ``delegate`` in the future)
+# fails to produce a parseable ``target_stage_id`` for a given model id,
+# that model is marked unreliable *for that op* here so the routing-hint
+# generator skips escalation to the op's mode for it. The hint generator
+# calls ``is_entry_op_reliable_for_model(model_id, op_id)`` before
+# suggesting a handoff to a routing-entry-op mode; the turn runner's
+# entry-op-failure path calls
+# ``mark_entry_op_unreliable_for_model(model_id, op_id)`` on the first
+# failure. Entries persist for the process lifetime (a model that returns
+# a ``StubCompletion`` once is empirically going to keep doing it on the
+# same structured-output contract); ``reset_entry_op_reliability`` clears
+# the registry for tests.
+#
+# Thin wrappers ``mark_plan_unreliable_for_model`` /
+# ``is_plan_reliable_for_model`` are kept for the ``plan_workflow`` op so
+# the routing-hint generator and the turn runner's call sites stay stable
+# while the registry itself is generalized. When a second routing entry
+# op (e.g. ``delegate``) is added, it gets its own wrapper pair with its
+# op id, and the hint generator's plan-escalation branch generalizes to a
+# routing-entry-op-escalation branch.
+_unreliable_entry_op_models: set[tuple[str, str]] = set()
+
+#: The op id for ``plan_workflow`` — the sole routing entry op today.
+PLAN_WORKFLOW_OP_ID = "plan_workflow"
+
+
+def mark_entry_op_unreliable_for_model(model_id: str, op_id: str) -> None:
+    """Record that ``op_id`` could not produce structured output for
+    ``model_id`` so the routing hint generator stops escalating to that
+    op's mode for that model.
+
+    Called from the turn runner's entry-op-failure path. Idempotent. The
+    entry persists for the process lifetime; a model returning
+    ``StubCompletion`` once is empirically going to keep doing it on the
+    same structured-output contract, and re-escalating would just waste a
+    model round-trip on a known-bad path.
+    """
+    model_key = (model_id or "").strip().lower()
+    op_key = (op_id or "").strip().lower()
+    if model_key and op_key:
+        _unreliable_entry_op_models.add((model_key, op_key))
+
+
+def is_entry_op_reliable_for_model(model_id: str, op_id: str) -> bool:
+    """Return False when ``model_id`` has been marked unreliable for ``op_id``.
+
+    The routing-hint generator calls this before suggesting a handoff to a
+    routing-entry-op mode. Unknown models are assumed reliable — the
+    registry only records *observed* failures, not speculation.
+    """
+    model_key = (model_id or "").strip().lower()
+    op_key = (op_id or "").strip().lower()
+    if not model_key or not op_key:
+        return True
+    return (model_key, op_key) not in _unreliable_entry_op_models
+
+
+def reset_entry_op_reliability() -> None:
+    """Clear the per-(model, op) entry-op reliability registry.
+
+    Primarily for tests that need a clean slate; production code never
+    calls this.
+    """
+    _unreliable_entry_op_models.clear()
+
+
+# ── plan_workflow wrappers (sole routing entry op today) ──────────────
 
 
 def mark_plan_unreliable_for_model(model_id: str) -> None:
-    """Record that ``plan_workflow`` could not produce structured output for
-    ``model_id`` so the routing hint generator stops escalating to ``plan``
-    for that model.
-
-    Called from the turn runner's plan-failure path. Idempotent. The entry
-    persists for the process lifetime; a model returning ``StubCompletion``
-    once is empirically going to keep doing it on the same structured-output
-    contract, and re-escalating to ``plan`` would just waste a model
-    round-trip on a known-bad path.
-    """
-    key = (model_id or "").strip().lower()
-    if key:
-        _unreliable_plan_models.add(key)
+    """Thin wrapper: mark ``model_id`` unreliable for ``plan_workflow``."""
+    mark_entry_op_unreliable_for_model(model_id, PLAN_WORKFLOW_OP_ID)
 
 
 def is_plan_reliable_for_model(model_id: str) -> bool:
-    """Return False when ``model_id`` has been marked unreliable for planning.
-
-    The routing-hint generator calls this before suggesting a handoff to
-    ``plan`` (see ``_routing_hint.py`` §3b). Unknown models are assumed
-    reliable — the registry only records *observed* failures, not
-    speculation.
-    """
-    key = (model_id or "").strip().lower()
-    if not key:
-        return True
-    return key not in _unreliable_plan_models
+    """Thin wrapper: check ``model_id`` reliability for ``plan_workflow``."""
+    return is_entry_op_reliable_for_model(model_id, PLAN_WORKFLOW_OP_ID)
 
 
 def reset_plan_reliability() -> None:
-    """Clear the per-model plan-reliability registry.
+    """Clear the per-(model, op) entry-op reliability registry.
 
     Primarily for tests that need a clean slate; production code never calls
     this.
     """
-    _unreliable_plan_models.clear()
+    reset_entry_op_reliability()
 
 
 def _normalize_connectors(raw: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:

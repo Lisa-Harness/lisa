@@ -308,6 +308,32 @@ def _next_remaining_step_mode_id(hooks: Any) -> str:
     return step.mode_id if step is not None else ""
 
 
+#: The set of operation ids whose ``output_json`` carries a routing
+#: contract (``target_stage_id`` + optional ``steps``). ``plan_workflow``
+#: is the sole member today; ``delegate`` will join this set when it lands.
+#: Used by ``is_routing_entry_op`` to generalize the planner-specific
+#: defensive branches to any routing-capable action-mode entry op.
+_ROUTING_ENTRY_OP_IDS: frozenset[str] = frozenset({"plan_workflow"})
+
+
+def is_routing_entry_op(mode_config: Any) -> bool:
+    """Return True when ``mode_config`` declares a routing-capable entry op.
+
+    A routing entry op returns ``output_json["target_stage_id"]`` (and
+    optionally ``output_json["steps"]``) so the kernel can drive the
+    handoff itself instead of waiting for the model to call
+    ``transition_stage``. ``plan_workflow`` is the sole implementor today;
+    ``delegate`` will join when it lands. Non-routing action modes (e.g.
+    ``search``/``web_search``) return their own output shape (search
+    results) with no routing target — this predicate correctly excludes
+    them so the kernel does not misread their output as a failed plan.
+    """
+    if mode_config is None:
+        return False
+    entry_op_ids = getattr(mode_config, "entry_operation_ids", None) or []
+    return any(op_id in _ROUTING_ENTRY_OP_IDS for op_id in entry_op_ids)
+
+
 def _active_instance_resume_target(hooks: Any) -> str:
     """Return the resume target mode from an active workflow instance, or "".
 
@@ -3989,14 +4015,10 @@ async def _run_turn_inner(
                                 # mirrors the turn-start resume path
                                 # (``_coordinator_routing_hint``) for the
                                 # mid-turn handoff case.
-                                _is_planner_handoff = (
-                                    target_stage == "plan"
-                                    or "plan_workflow"
-                                    in (target_mode_config.entry_operation_ids or [])
-                                )
+                                _is_routing_entry_op = is_routing_entry_op(target_mode_config)
                                 _plan_resume_target = (
                                     _active_instance_resume_target(hooks)
-                                    if _is_planner_handoff
+                                    if _is_routing_entry_op
                                     else ""
                                 )
                                 if _plan_resume_target:
@@ -4061,13 +4083,13 @@ async def _run_turn_inner(
                                         # 2026-07-30 ``search`` incident
                                         # (``plan_workflow in mid-turn
                                         # handoff returned no target
-                                        # (mode=search)``). Gate the planner
-                                        # logic on the target actually being
-                                        # ``plan`` (or, more generally, on
-                                        # the entry op being a planner op
-                                        # that returns routing decisions).
+                                        # (mode=search)``). Gate the
+                                        # routing-entry-op logic on
+                                        # ``is_routing_entry_op`` so only
+                                        # ops that return routing decisions
+                                        # are affected.
                                         _planned_next = ""
-                                        if _is_planner_handoff:
+                                        if _is_routing_entry_op:
                                             _planned_next = str(
                                                 (entry_result.output_json or {}).get(
                                                     "target_stage_id", ""
@@ -4112,7 +4134,7 @@ async def _run_turn_inner(
                                                 target_stage,
                                                 _planned_next,
                                             )
-                                        elif _is_planner_handoff:
+                                        elif _is_routing_entry_op:
                                             # ── Plan failure mid-turn ──
                                             # The planner returned no
                                             # ``target_stage_id`` (parse
@@ -4170,26 +4192,23 @@ async def _run_turn_inner(
                                             target_stage,
                                             entry_exc,
                                         )
-                                        # When the failed mode is ``plan``
-                                        # (e.g. ``plan_workflow`` timed out),
-                                        # mark the model unreliable for
-                                        # planning so the routing-hint
-                                        # generator stops re-escalating to
-                                        # ``plan`` on subsequent turns. The
-                                        # 2026-07-31 incident: ``plan_workflow``
-                                        # timed out, this branch set
-                                        # ``entry_failed`` but did NOT mark the
-                                        # model unreliable, so the hint
-                                        # generator re-escalated to ``plan``
-                                        # on the next turn and timed out again
-                                        # identically. The "no target" branch
-                                        # above already marks unreliable; this
-                                        # mirrors it for the exception path.
-                                        if (
-                                            target_stage == "plan"
-                                            or "plan_workflow"
-                                            in (target_mode_config.entry_operation_ids or [])
-                                        ):
+                                        # When the failed mode is a routing
+                                        # entry op (e.g. ``plan_workflow``
+                                        # timed out), mark the model
+                                        # unreliable for that op so the
+                                        # routing-hint generator stops
+                                        # re-escalating to it on subsequent
+                                        # turns. The 2026-07-31 incident:
+                                        # ``plan_workflow`` timed out, this
+                                        # branch set ``entry_failed`` but
+                                        # did NOT mark the model unreliable,
+                                        # so the hint generator re-escalated
+                                        # to ``plan`` on the next turn and
+                                        # timed out again identically. The
+                                        # "no target" branch above already
+                                        # marks unreliable; this mirrors it
+                                        # for the exception path.
+                                        if _is_routing_entry_op:
                                             from kernel.routing_vocabulary import (  # noqa: PLC0415
                                                 mark_plan_unreliable_for_model,
                                             )
