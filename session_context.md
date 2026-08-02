@@ -30,11 +30,11 @@ resources:
       lisa-pack-github:
         base_branch: main
       lisa-pack-markdown:
-        forge_max_completion_tokens: 10000
-        forge_max_document_chars: 750000
-        forge_max_document_chars_with_sources: 1000000
+        forge_max_completion_tokens: 50000
+        forge_max_document_chars: 1750000
+        forge_max_document_chars_with_sources: 2000000
       lisa-pack-memory:
-        memory_distill_max_tokens: 7500
+        memory_distill_max_tokens: 10000
     include:
       - lisa-pack-brave-search
       - lisa-pack-markdown
@@ -48,11 +48,11 @@ providers:
     memory: lisa-pack-memory
   modes:
     default: lisa-pack-memory
+    read: lisa-pack-core
   tools:
     web_search: lisa-pack-brave-search
 routing: { from: { pack: lisa-pack-core, session: default } }
-execution:
-  max_total_tokens: 1000000
+execution: { from: { pack: lisa-pack-core, session: default } }
 context:
   lanes:
     - {lane_id: operational, max_tokens: 1000, render_order: 0}

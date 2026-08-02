@@ -31,3 +31,5 @@ coverage/
 htmlcov/
 
 artifacts/
+
+lisa-catalog.jsonl
