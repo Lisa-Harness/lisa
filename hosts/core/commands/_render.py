@@ -23,7 +23,6 @@ from kernel.tools.registry import get_tool_catalog
 
 from hosts.core.commands._log import _last_capability_manifest, _last_turn_context_dict
 from hosts.core.commands._routing import mode_support_gap
-from hosts.core.model_runtime import load_manifest
 from hosts.core.runtime import HostRuntime
 from hosts.core.thread import load_recent_thread_entries
 from hosts.core.token_accounting import format_session_exit_summary_lines
@@ -37,8 +36,6 @@ logger = logging.getLogger(__name__)
 def build_capability_snapshot(runtime: HostRuntime) -> dict[str, Any]:
     """Build a capability snapshot dict for diagnostics and help rendering."""
     catalog = get_workflow_catalog()
-    if runtime.manifest is None:
-        runtime.manifest = load_manifest({}, data_dir=runtime.data_dir, path=runtime.models_path)
     manifest = runtime.manifest
     operations = get_operation_catalog()
     tools = get_tool_catalog()
@@ -65,12 +62,12 @@ def build_capability_snapshot(runtime: HostRuntime) -> dict[str, Any]:
                 "provider": model.provider,
                 "roles": sorted(
                     role_name
-                    for role_name, model_ref in manifest.roles.items()
+                    for role_name, model_ref in (manifest.roles.items() if manifest is not None else [])
                     if model_ref == model.model_id
                 ),
                 "reasoning_model": model.reasoning_model,
             }
-            for model in manifest.models
+            for model in (manifest.models if manifest is not None else [])
         ],
     }
 

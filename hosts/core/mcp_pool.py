@@ -485,6 +485,18 @@ def setup_framework(
     # ``HostRuntime.__init__`` so construction stays side-effect-free.
     runtime._boot_load_active_workflow_instance()  # pylint: disable=protected-access
 
+    # ── Model manifest pre-load ──────────────────────────────────────
+    # Load the model manifest once at startup so mode_models overrides
+    # are honored from the first turn and the turn path never does file
+    # I/O to fetch it. Moved here from four scattered lazy-init blocks in
+    # handle_message.py / _log.py / _render.py that each did
+    # ``if runtime.manifest is None: runtime.manifest = load_manifest(...)``.
+    # The ``/models reload`` command still reassigns ``runtime.manifest``
+    # directly after re-reading from disk.
+    from hosts.core.model_runtime import load_manifest as _load_manifest  # noqa: PLC0415
+
+    runtime.manifest = _load_manifest({}, data_dir=runtime.data_dir, path=runtime.models_path)
+
 
 def configure_runtime(runtime: HostRuntime) -> None:
     """Reset cached provider clients on the runtime."""

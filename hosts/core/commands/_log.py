@@ -25,7 +25,6 @@ from sdk.logging_setup import emit_structured_event
 
 from hosts.core.model_runtime import (
     StubModelDefinition,
-    load_manifest,
     resolve_model,
 )
 from hosts.core.runtime import HostRuntime, TurnContext
@@ -135,8 +134,6 @@ def _resolve_int_env(env_var: str, default: int) -> int:
 
 def _resolve_model(runtime: HostRuntime, model_id: str) -> StubModelDefinition:
     """Resolve one model identifier against the runtime's manifest cache."""
-    if runtime.manifest is None:
-        runtime.manifest = load_manifest({}, data_dir=runtime.data_dir, path=runtime.models_path)
     return resolve_model(
         model_id,
         runtime_state={"manifest": runtime.manifest},

@@ -48,6 +48,7 @@ from hosts.core.commands import (
     handle_debug_command,
     handle_help_command,
     handle_intake_command,
+    handle_mcp_command,
     handle_models_command,
     handle_pack_command,
     handle_simple_command,
@@ -283,6 +284,7 @@ register_host_command_prefixes(
         "/approve",
         "/deny",
         "/debug",
+        "/mcp",
     )
 )
 register_host_command_exacts(
@@ -295,6 +297,7 @@ register_host_command_exacts(
         "modes",
         "operations",
         "tools",
+        "mcp",
     )
 )
 
@@ -352,6 +355,8 @@ async def _dispatch_host_command(
         )
     elif lowered in {"/tools", "tools"}:
         response_text = handle_simple_command(runtime, message, "tools", render_tools_list(runtime))
+    elif lowered.startswith("/mcp"):
+        response_text = await handle_mcp_command(runtime, stripped, message)
     elif lowered == "/approve" or lowered.startswith("/approve "):
         response_text = await _handle_approval_command(
             runtime,
@@ -627,12 +632,6 @@ async def _execute_mode_turn(
     """
     catalog = get_workflow_catalog()
     mode = catalog.get(mode_id) or catalog["default"]
-
-    # Ensure the model manifest is loaded so mode_models overrides are honored.
-    if runtime.manifest is None:
-        from hosts.core.model_runtime import load_manifest as _load_manifest
-
-        runtime.manifest = _load_manifest({}, data_dir=runtime.data_dir, path=runtime.models_path)
 
     preferred_model_id = preferred_model_id_for_route(
         raw_message=message,
