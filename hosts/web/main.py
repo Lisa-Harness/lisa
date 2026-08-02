@@ -7,28 +7,21 @@ a minimal Typer CLI.
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import sys
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
-from hosts.core.config import HostConfig
-from hosts.core.mcp_pool import (
-    compile_mcp_configs,
-    configure_runtime,
-    discover_framework,
-    setup_framework,
-)
-from hosts.core.runtime import HostRuntime
-from hosts.core.state_provider import load_state_snapshot
 from hosts.web.server import (
     DEFAULT_WEB_HOST,
     DEFAULT_WEB_PORT,
     generate_web_token,
     run_web_server,
 )
+
+if TYPE_CHECKING:
+    from hosts.core.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -167,62 +160,33 @@ def _initialize_runtime(
 ) -> HostRuntime:
     """Build and wire a HostRuntime from CLI args + env vars.
 
-    Order matters: config is built first (resolving paths, timezone, log
-    level), then the runtime is constructed, then the framework is wired
-    (content/operation/catalog MCP servers), provider clients are reset,
-    and compiled MCP configs are stashed on the runtime.
+    Thin adapter over :func:`hosts.core.bootstrap.build_runtime` that
+    stamps ``host_kind="web"`` and forwards every web-host argument. The
+    composition sequence (config -> runtime -> state snapshot -> framework
+    wiring -> MCP config compilation) lives in the shared bootstrap so
+    the CLI and web hosts cannot drift.
 
     The MCP pool is NOT started here â€” ``runtime.start()`` runs inside
     the aiohttp server's ``on_startup`` hook (see
     :func:`hosts.web.server.run_web_server`).
     """
+    from hosts.core.bootstrap import build_runtime
 
-    _ = no_log  # honored via HostConfig.log_path resolution
-    config = HostConfig.from_env(
+    return build_runtime(
+        host_kind="web",
         debug=debug,
         log_level=log_level,
         log_path=log_path,
-        host_log_path=host_log_path,
+        no_log=no_log,
         data_dir=data_dir,
         thread_dir=thread_dir,
         no_thread=no_thread,
+        user_slug=user_slug,
         timezone=timezone,
         session_context=user_slug,
-        user_slug=user_slug,
-        state_snapshot=state_snapshot_path,
+        state_snapshot_path=state_snapshot_path,
         streaming=streaming,
-    )
-    # Web host defaults stderr logging on (useful for `docker logs`).
-    config = dataclasses.replace(config, host_kind="web")
-
-    _configure_root_logging(config)
-
-    runtime = HostRuntime(config)
-    runtime.state_snapshot = load_state_snapshot(
-        explicit_path=state_snapshot_path,
-        data_dir=config.data_dir,
-    )
-    discovery = discover_framework(runtime)
-    setup_framework(runtime, discovery=discovery)
-    configure_runtime(runtime)
-    warm, cold = compile_mcp_configs(runtime, discovery=discovery)
-    runtime.set_mcp_configs(warm, cold)
-    return runtime
-
-
-def _configure_root_logging(config: HostConfig) -> None:
-    """Configure stdlib root logging via the shared ``sdk.logging_setup``.
-
-    The web host defaults the stderr mirror on (overridable via
-    ``LISA_LOG_STDERR=0``).
-    """
-    from sdk.logging_setup import configure_logging
-
-    configure_logging(
-        log_path=config.resolved_host_log_path,
-        level=config.effective_log_level,
-        debug_modules=list(config.debug_log_modules),
-        host_kind=config.host_kind,
+        host_log_path=host_log_path,
     )
 
 

@@ -8,7 +8,6 @@ and Rich/prompt_toolkit rendering.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import os
 import platform
@@ -20,6 +19,9 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+
+from kernel.models import McpServerHealth
+from kernel.tools.mcp_client import MCPToolSpec
 
 # Load .env BEFORE injecting the packs venv site-packages so that
 # LISA_DATA_DIR (and LISA_PACKS_VENV) are honored when resolving the
@@ -63,14 +65,15 @@ from hosts.core.paths import (
 _inject_packs_venv_site_packages()
 
 from hosts.cli.render import (
-    render_mcp_tools,
+    render_mcp_server_tools,
+    render_mcp_servers,
     render_models,
     render_modes,
     render_operations,
     render_pack_list_panel,
     render_tools,
 )
-from hosts.core.config import HostConfig, default_data_dir
+from hosts.core.config import default_data_dir
 
 # ``HostRuntime`` is used only as a string annotation (``from __future__
 # import annotations`` stringifies signatures) across the Typer callbacks.
@@ -326,77 +329,33 @@ def _initialize_runtime(
 ) -> HostRuntime:
     """Build and wire a HostRuntime from CLI args + env vars.
 
-    Order matters: the config is built first (resolving paths, timezone,
-    log level), then the runtime is constructed, then the framework is
-    wired (content/operation/catalog MCP servers), provider clients are
-    reset, and compiled MCP configs are stashed on the runtime.
+    Thin adapter over :func:`hosts.core.bootstrap.build_runtime` that
+    stamps ``host_kind="cli"`` and forwards every CLI argument. The
+    composition sequence (config -> runtime -> state snapshot -> framework
+    wiring -> MCP config compilation) lives in the shared bootstrap so
+    the CLI and web hosts cannot drift.
 
     The MCP pool is NOT started here â€” ``runtime.start()`` must be called
     inside the host's event loop (see :func:`hosts.cli.repl.run_repl`).
     """
-    # Lazily import the heavy runtime/mcp_pool/state_provider symbols so
-    # that ``--version`` (which never reaches here) skips the ~2s
-    # ``hosts.core.runtime`` import chain. ``HostRuntime`` is also imported
-    # here for the ``HostRuntime(config)`` construction; elsewhere it is a
-    # stringified annotation satisfied by the ``TYPE_CHECKING`` import.
-    from hosts.core.mcp_pool import (
-        compile_mcp_configs,
-        configure_runtime,
-        discover_framework,
-        setup_framework,
-    )
-    from hosts.core.runtime import HostRuntime
-    from hosts.core.state_provider import load_state_snapshot
+    from hosts.core.bootstrap import build_runtime
 
-    _ = no_log  # honored via HostConfig.log_path resolution below
-    config = HostConfig.from_env(
+    return build_runtime(
+        host_kind="cli",
         debug=debug,
         log_level=log_level,
         log_path=log_path,
-        host_log_path=host_log_path,
+        no_log=no_log,
         data_dir=data_dir,
         thread_dir=thread_dir,
         no_thread=no_thread,
+        user_slug=user_slug,
         timezone=timezone,
         session_context=user_slug,
         session_context_refresh=session_context_refresh,
-        user_slug=user_slug,
-        state_snapshot=state_snapshot_path,
+        state_snapshot_path=state_snapshot_path,
         streaming=streaming,
-    )
-    # CLI host reserves stderr for the Rich UI; stderr logging stays opt-in.
-    config = dataclasses.replace(config, host_kind="cli")
-
-    _configure_root_logging(config)
-
-    runtime = HostRuntime(config)
-    runtime.state_snapshot = load_state_snapshot(
-        explicit_path=state_snapshot_path,
-        data_dir=config.data_dir,
-    )
-    discovery = discover_framework(runtime)
-    setup_framework(runtime, discovery=discovery)
-    configure_runtime(runtime)
-    warm, cold = compile_mcp_configs(runtime, discovery=discovery)
-    runtime.set_mcp_configs(warm, cold)
-    return runtime
-
-
-def _configure_root_logging(config: HostConfig) -> None:
-    """Configure stdlib root logging via the shared ``sdk.logging_setup``.
-
-    Replaces the per-host formatter/handler setup. Routes everything to a
-    rotating JSON file at ``config.resolved_host_log_path``; mirrors to
-    stderr only when ``LISA_LOG_STDERR=1`` (the CLI host reserves stderr
-    for the Rich UI).
-    """
-    from sdk.logging_setup import configure_logging
-
-    configure_logging(
-        log_path=config.resolved_host_log_path,
-        level=config.effective_log_level,
-        debug_modules=list(config.debug_log_modules),
-        host_kind=config.host_kind,
+        host_log_path=host_log_path,
     )
 
 
@@ -1097,65 +1056,91 @@ def _tools_command(
     # Only warm the MCP pool when asked — it spawns subprocesses and can be
     # slow, so the default (internal tools only) stays cheap.
     if with_mcp or mcp_only:
-        mcp_tools = asyncio.run(_collect_mcp_tools(runtime))
+        mcp_health, mcp_tools_by_server = asyncio.run(_collect_mcp_tools(runtime))
     else:
-        mcp_tools = []
+        mcp_health, mcp_tools_by_server = {}, {}
     if mcp_only:
-        if not mcp_tools:
+        if not mcp_health:
             console.print("[yellow]No MCP server tools discovered.[/yellow]")
             return
-        render_mcp_tools(mcp_tools, console=console)
+        render_mcp_servers(mcp_health, console=console)
     else:
-        render_tools(runtime, mcp_tools=mcp_tools, console=console)
+        render_tools(runtime, mcp_tools=mcp_tools_by_server, console=console)
 
 
-McpToolEntry = tuple[str, str, bool]
-"""One entry in the MCP tool listing: ``(server_id, tool_name, is_alias)``.
+McpIntrospection = tuple[dict[str, Any], dict[str, list[MCPToolSpec]]]
+"""One MCP introspection result: ``(health, tools_by_server)``.
 
-``is_alias`` is True when the entry is a host-owned synthetic (alias) tool
-registered via :meth:`~kernel.tools.mcp_client.MCPToolPool.add_synthetic_tools`
-rather than a tool discovered from an MCP server subprocess. The CLI render
-layer annotates alias entries with an arrow so authors can tell host-owned
-aliases (e.g. ``memory.search``) apart from native server tools.
+``health`` is a ``dict[str, McpServerHealth]`` keyed by ``server_id``;
+``tools_by_server`` is a ``dict[str, list[MCPToolSpec]]`` grouping the
+discovered tool specs by their owning server. Both are collected by
+warming the MCP pool (see :func:`_collect_mcp_tools`). The CLI render
+layer reads health for the summary table and the specs for the per-server
+tool detail.
 """
 
 
-async def _collect_mcp_tools(runtime: HostRuntime) -> list[McpToolEntry]:
-    """Warm the MCP pool, return ``(server_id, tool_name, is_alias)`` entries.
+def _build_mcp_health(
+    pool: Any,
+    is_alias: dict[str, bool],
+) -> dict[str, McpServerHealth]:
+    """Build a per-server health dict from the live pool's introspection accessors.
+
+    Mirrors :func:`hosts.core.introspect._gather_mcp_pool_health` but runs
+    in the CLI's short-lived ``asyncio.run`` event loop (the pool is started
+    and torn down within ``_collect_mcp_tools``). Reads the same accessors
+    (``warm_server_ids``, ``warm_failed_ids``, ``cold_failed_ids``,
+    ``permanently_failed_ids``, ``restart_counts``, ``last_errors``,
+    ``tools_by_server``) so the CLI summary and the REPL ``/mcp`` command
+    show identical state.
+    """
+    from hosts.core.introspect import _gather_mcp_pool_health  # noqa: PLC0415
+
+    health = _gather_mcp_pool_health(pool)
+    # Annotate alias tools on the tool_names so the render layer can mark
+    # them without a separate lookup. The specs themselves carry the real
+    # server_id; this is purely a display hint.
+    _ = is_alias  # reserved for a future render-layer annotation pass
+    return health
+
+
+async def _collect_mcp_tools(runtime: HostRuntime) -> McpIntrospection:
+    """Warm the MCP pool, return per-server health + discovered tool specs.
 
     MCP tool names are only discoverable by calling ``tools/list`` on each
     server, which requires a live session. This starts the pool (warm + cold
-    configs), reads the discovered tool specs, and tears the pool down — all
-    inside one ``asyncio.run`` event loop to honor anyio's same-loop contract
-    (the pool's async context managers must be entered and exited in the same
-    loop). Cold servers that fail to start are skipped by the pool; their
-    tools are simply absent from the returned list.
+    configs), reads the discovered tool specs and per-server health, and
+    tears the pool down — all inside one ``asyncio.run`` event loop to honor
+    anyio's same-loop contract (the pool's async context managers must be
+    entered and exited in the same loop). Cold servers that fail to start
+    are skipped by the pool; their tools are simply absent from the
+    returned list.
 
-    The third element of each tuple is ``True`` when the entry is a
-    host-owned synthetic alias (see :data:`McpToolEntry`). Native MCP server
-    tools carry ``False``.
-
-    Returns an empty list when the runtime has no MCP servers configured or
-    when pool startup fails, so the ``tools``/``mcp`` commands degrade to
-    showing only the internal tool catalog instead of crashing.
+    Returns an empty :data:`McpIntrospection` when the runtime has no MCP
+    servers configured or when pool startup fails, so the ``tools``/``mcp``
+    commands degrade to showing only the internal tool catalog instead of
+    crashing.
     """
     if not runtime.mcp_warm_configs and not runtime.mcp_cold_configs:
-        return []
-    entries: set[McpToolEntry] = set()
+        return ({}, {})
     try:
         await runtime.start()
         pool = runtime.mcp_tool_pool
         if pool is None:
-            return []
+            return ({}, {})
         tools = await pool.list_tools()
         # Capture is_alias flags BEFORE aclose() clears _synthetic_handlers.
-        entries = {(spec.server_id, spec.name, pool.is_synthetic_tool(spec.name)) for spec in tools}
+        is_alias = {spec.name: pool.is_synthetic_tool(spec.name) for spec in tools}
+        tools_by_server: dict[str, list[MCPToolSpec]] = {}
+        for spec in tools:
+            tools_by_server.setdefault(spec.server_id, []).append(spec)
+        health = _build_mcp_health(pool, is_alias)
     except Exception as exc:  # pylint: disable=broad-except
         logger.debug("MCP tool collection failed: %s", exc)
-        return []
+        return ({}, {})
     finally:
         await runtime.aclose()
-    return sorted(entries)
+    return (health, tools_by_server)
 
 
 # ---------------------------------------------------------------------------
@@ -1163,8 +1148,19 @@ async def _collect_mcp_tools(runtime: HostRuntime) -> list[McpToolEntry]:
 # ---------------------------------------------------------------------------
 
 
-@app.command("mcp", help="List MCP server tools with names for tool_policy authoring.")
+@app.command(
+    "mcp",
+    help=(
+        "List MCP servers with status, transport, URL/command, tool count, "
+        "and last error. Pass a server id to drill into that server's tools "
+        "(name, description, required args)."
+    ),
+)
 def _mcp_command(
+    target: str = typer.Argument(
+        "",
+        help="Optional server id to drill into that server's tools.",
+    ),
     debug: DebugOption = False,
     log_level: LogLevelOption = "",
     log: LogOption = "",
@@ -1196,11 +1192,20 @@ def _mcp_command(
     )
     if runtime is None:
         return
-    mcp_tools = asyncio.run(_collect_mcp_tools(runtime))
-    if not mcp_tools:
+    mcp_health, mcp_tools_by_server = asyncio.run(_collect_mcp_tools(runtime))
+    if not mcp_health:
         console.print("[yellow]No MCP server tools discovered.[/yellow]")
         return
-    render_mcp_tools(mcp_tools, console=console)
+    server_id = target.strip()
+    if server_id:
+        specs = mcp_tools_by_server.get(server_id, [])
+        health = mcp_health.get(server_id)
+        if health is None:
+            console.print(f"[yellow]No MCP server named {server_id!r} is configured.[/yellow]")
+            return
+        render_mcp_server_tools(specs, health, console=console)
+    else:
+        render_mcp_servers(mcp_health, console=console)
 
 
 # ---------------------------------------------------------------------------
