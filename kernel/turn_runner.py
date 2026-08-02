@@ -94,9 +94,11 @@ from kernel.workflow_instance import (
 logger = logging.getLogger(__name__)
 
 # Turn-runner guard caps live in ``kernel.config.Settings`` (fields
-# ``narration_nudge_cap`` / ``forced_fork_non_fork_tool_cap`` /
-# ``stage_nudge_threshold`` / ``stage_nudge_cap`` / ``max_handoffs_per_turn``
-# / ``duplicate_hint_limit`` / ``hint_cycle_min_len`` / ``hint_override_limit``)
+# ``max_tool_iterations`` / ``fork_child_max_tool_iterations`` /
+# ``per_step_max_iterations`` / ``per_step_max_tool_calls`` /
+# ``forced_fork_non_fork_tool_cap`` / ``forced_plan_non_transition_tool_cap`` /
+# ``stage_nudge_threshold`` / ``stage_nudge_cap`` / ``max_handoffs_per_turn`` /
+# ``duplicate_hint_limit`` / ``hint_cycle_min_len`` / ``hint_override_limit``)
 # so hosts can tune them via env vars without editing kernel source. They
 # were previously module-level constants here; see the git-blame history
 # for the incidents that motivated each cap (the 2026-07-27 fork-refusal,
@@ -4476,8 +4478,8 @@ async def _run_turn_inner(
                                             len(post_handoff_hint),
                                             post_handoff_hint[:200],
                                         )
-                                        # Append to the system prompt so the guards
-                                        # (hallucinated-transition, write-tool) key
+                                        # Append to the system prompt so the
+                                        # forced-fork/forced-plan enforcers key
                                         # off the new hint. Strip any per-iteration
                                         # budget briefing first (by marker) so the
                                         # hint lands on the base prompt; the next
