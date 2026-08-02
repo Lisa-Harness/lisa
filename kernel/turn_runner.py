@@ -2622,210 +2622,169 @@ async def _run_turn_inner(
         _state.iteration += 1
         _state.step_iteration += 1
 
-        # ── Unified turn lifecycle: recovery-stall check ──────────────
-        # Before any other guard fires, check if a stalled ``RecoveryRecord``
-        # blocks the workflow (``state="stalled"``, ``retry_policy="confirm"``,
-        # ``blocks_workflow=True``). If so, force a yield naming the stall so
-        # the user can retry/skip. This is the resolver's "recovery-stall"
-        # priority branch made live in the loop — previously the turn loop
-        # created and settled records but never read them back.
-        if _pending_yield is None and hooks.recovery_service is not None:
+        # ── Unified turn lifecycle: resolver-driven decisions ──────────
+        # The pure ``resolve_lifecycle_action()`` resolver owns every
+        # iteration-level decision: recovery stall, handoff-loop backstop,
+        # forced-fork/plan enforcers, iteration cap, resource-budget
+        # exhaustion, per-step budget, stuck-in-stage cap/threshold. The
+        # loop builds the resolver inputs from ``_state`` / ``hooks``,
+        # calls the resolver, and applies the returned action. This
+        # replaces the ~10 scattered in-loop guards (Phases 1-4 of the
+        # cutover) with one decision point.
+
+        # Fetch recovery records once per iteration (the resolver needs them).
+        _open_records: list[Any] = []
+        if hooks.recovery_service is not None:
             try:
                 _open_records = await hooks.recovery_service.list_open(
                     _build_recovery_identity(hooks)
                 )
             except Exception:  # pylint: disable=broad-except
                 _open_records = []
-            _stall_record = next(
-                (
-                    r
-                    for r in _open_records
-                    if getattr(r, "state", "") == "stalled"
-                    and getattr(r, "retry_policy", "") == "confirm"
-                    and getattr(r, "blocks_workflow", False)
-                ),
-                None,
-            )
-            if _stall_record is not None:
-                _yield_policy = _resolve_yield_policy(mode_config)
-                _yield_target = _yield_policy.fallback_mode or (
-                    _next_remaining_step_mode_id(hooks) or "discuss"
-                    if not _yield_policy.allowed
-                    else ""
-                )
-                _stall_detail = (
-                    _stall_record.last_error
-                    or f"{_stall_record.target_kind} {_stall_record.target_id} stalled"
-                )
-                _pending_yield = YieldAction(
-                    question=(
-                        f"A previous step stalled and needs your input to continue. "
-                        f"Stall: {_stall_detail}. Retry, skip, or revise?"
-                    ),
-                    context=(
-                        f"Recovery record blocks workflow step "
-                        f"'{getattr(_stall_record, 'step_id', '')}'."
-                    ),
-                    target_mode_id=_yield_target,
-                )
-                _log.warning(
-                    "turn lifecycle: recovery stall blocks workflow "
-                    "(mode=%s, target=%s, step=%s); forcing yield",
-                    mode_id,
-                    _stall_record.target_id,
-                    getattr(_stall_record, "step_id", ""),
-                )
 
-        # ── Per-step iteration sub-budget (Phase 3) ───────────────────
-        # When the current workflow step has exhausted its per-step
-        # iteration or tool-call budget but the global turn cap has not
-        # fired, synthesize a handoff to the next remaining step instead
-        # of letting the model keep looping in the same mode (the
-        # 2026-07-28 glm-5.2 stall: a 6-step chain starved its final
-        # ``markdown`` step because earlier steps consumed the whole
-        # shared 15-iteration budget). We reuse the existing
-        # ``pending_planned_handoff`` synthesis block below: set the next
-        # step's mode_id and ``continue`` so the synth fires on the next
-        # loop iteration. When there is no active ``WorkflowInstance`` or
-        # no remaining step (the instance is complete), fall through to
-        # the existing empty-content final-completion fallback — the
-        # per-step cap then behaves as a tighter global cap, which is
-        # acceptable for a complete workflow (it should produce an
-        # answer, not loop forever; the global cap is the backstop).
-        _step_budget_exhausted = (
-            _state.step_iteration > per_step_max_iterations
-            or _state.step_tool_calls >= per_step_max_tool_calls
-        )
-        if _step_budget_exhausted and hooks.workflow_instance is not None:
-            try:
-                _wi = hooks.workflow_instance()
-            except Exception:  # pylint: disable=broad-except
-                _wi = None
-            if _wi is not None and not _is_workflow_instance_complete(_wi):
-                _next_step = _next_remaining_step(_wi)
-                if _next_step is not None:
-                    _log.info(
-                        "per-step budget exhausted (step_iteration=%d, "
-                        "step_tool_calls=%d, mode=%s, global_iteration=%d/%d); "
-                        "synthesizing handoff to next step %s",
-                        _state.step_iteration,
-                        _state.step_tool_calls,
-                        mode_id,
-                        _state.iteration,
-                        max_tool_iterations,
-                        _next_step.mode_id,
-                    )
-                    _state.pending_planned_handoff = _next_step.mode_id
-                    # Reset the per-step counters now (rather than waiting
-                    # for the post-handoff block) so the cap check does not
-                    # re-fire on the next iteration before the synth block
-                    # below can process the pending handoff.
-                    _state.step_iteration = 0
-                    _state.step_tool_calls = 0
-                    continue
-                # No remaining step but instance not complete — fall
-                # through to final completion (decision: B).
-            _wi = None  # explicit fall-through
-
-        # Stuck-session guard: if the session has been in the same stage
-        # for too many turns, inject a nudge. After the cap, strip tools to
-        # force a final response and stop burning tokens.
+        # Build the turn-state view for the resolver.
+        _turns_in_stage = 0
         if is_workflow and hooks.workflow_session is not None:
-            wf_session = hooks.workflow_session()
-            if wf_session is not None:
-                turns_in_stage = wf_session.turn_count
+            _wf_sess = hooks.workflow_session()
+            if _wf_sess is not None:
+                _turns_in_stage = _wf_sess.turn_count
                 await _emit_stage(
                     "workflow_stage",
                     {
                         "mode_id": mode_id,
-                        "stage_id": wf_session.stage_id,
-                        "turn_count": turns_in_stage,
+                        "stage_id": _wf_sess.stage_id,
+                        "turn_count": _turns_in_stage,
                         "_state.iteration": _state.iteration,
                     },
                 )
-                if turns_in_stage >= _kernel_settings.stage_nudge_cap:
-                    # ── Unified turn lifecycle: cap forces a yield, not a silent final ──
-                    # The 2026-07-30 fix: hitting the stuck-in-stage cap used to set
-                    # ``budget_exhausted = True`` (strip tools → force a truncated final
-                    # that cut off the user's experience). The unified lifecycle makes
-                    # "ask" distinguishable from "done": the cap now forces a
-                    # :class:`kernel.models.YieldAction` so the user gets a question
-                    # they can answer to redirect, instead of a truncated response.
-                    # The resolver (``resolve_lifecycle_action``) owns this decision in
-                    # the full design; this branch is the in-loop application of its
-                    # "stuck-in-stage cap" priority until the full cutover lands.
-                    _log.warning(
-                        "workflow mode=%s stuck in stage=%s for %d turns; forcing yield",
-                        mode_id,
-                        wf_session.stage_id,
-                        turns_in_stage,
-                    )
-                    _yield_policy = _resolve_yield_policy(mode_config)
-                    _yield_target = _yield_policy.fallback_mode or (
-                        _next_remaining_step_mode_id(hooks) or "discuss"
-                        if not _yield_policy.allowed
-                        else ""
-                    )
-                    _yield_question = _yield_policy.default_question or (
-                        f"I've been working in the '{wf_session.stage_id}' stage "
-                        f"for {turns_in_stage} turns and haven't converged. "
-                        f"Can you clarify what you need?"
-                    )
-                    _pending_yield = YieldAction(
-                        question=_yield_question,
-                        context=f"stuck in stage '{wf_session.stage_id}' for {turns_in_stage} turns (cap)",
-                        target_mode_id=_yield_target,
-                    )
-                    # ``budget_exhausted`` is NOT set here: the ``_pending_yield``
-                    # takes over at the loop break and surfaces the question. The
-                    # old strip-tools path was redundant with the yield.
-                elif turns_in_stage >= _kernel_settings.stage_nudge_threshold:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"You have been in the '{wf_session.stage_id}' stage "
-                                f"for {turns_in_stage} turns. If you have enough evidence, "
-                                f"call transition_stage to advance. Otherwise, call yield "
-                                f"with a clarifying question for the user."
-                            ),
-                        }
-                    )
 
-        # ── Unified turn lifecycle: resource-budget exhaustion forces a yield ──
-        # The old ``_budget_forces_final()`` path stripped tools to force a silent
-        # final when ``TurnBudget`` limits (tool calls, tokens, wall time) were
-        # exhausted. The unified lifecycle makes this consistent with the
-        # iteration cap: exhaustion forces a ``YieldAction`` so the user can
-        # redirect, instead of a truncated response. When no ``TurnBudget`` is
-        # wired (the common case — ``turn_budget`` is None), this is a no-op and
-        # the loop runs under ``max_tool_iterations`` alone.
-        budget_exhausted = False
-        if _budget_forces_final() and _pending_yield is None:
+        from kernel.turn_phases._lifecycle import (  # noqa: PLC0415
+            ContinueAction as _ContinueAction,
+            FinishAction as _FinishAction,
+            LifecycleResolverSettings as _LRS,
+            TransitionAction as _TransitionAction,
+            _TurnStateView as _TSV,
+            resolve_lifecycle_action as _resolve_lifecycle,
+        )
+
+        _resolver_settings = _LRS(
+            max_tool_iterations=max_tool_iterations,
+            per_step_max_iterations=per_step_max_iterations,
+            per_step_max_tool_calls=per_step_max_tool_calls,
+            stage_nudge_threshold=_kernel_settings.stage_nudge_threshold,
+            stage_nudge_cap=_kernel_settings.stage_nudge_cap,
+            forced_fork_non_fork_tool_cap=_kernel_settings.forced_fork_non_fork_tool_cap,
+            forced_plan_non_transition_tool_cap=_kernel_settings.forced_plan_non_transition_tool_cap,
+            max_handoffs_per_turn=_max_handoffs_per_turn,
+        )
+        _resolver_state = _TSV(
+            iteration=_state.iteration,
+            step_iteration=_state.step_iteration,
+            step_tool_calls=_state.step_tool_calls,
+            total_tool_calls=_state.total_tool_calls,
+            turns_in_stage=_turns_in_stage,
+            budget_exhausted=_budget_forces_final() if _pending_yield is None else False,
+            forced_fork_target=_state.forced_fork_target,
+            non_fork_tool_dispatches=_state.non_fork_tool_dispatches,
+            forced_plan_target=_state.forced_plan_target,
+            non_plan_tool_dispatches=_state.non_plan_tool_dispatches,
+            handoff_count=_state.handoff_count,
+        )
+        _active_instance_for_resolver: Any = None
+        if hooks.workflow_instance is not None:
+            try:
+                _active_instance_for_resolver = hooks.workflow_instance()
+            except Exception:  # pylint: disable=broad-except
+                _active_instance_for_resolver = None
+
+        _lifecycle_action = _resolve_lifecycle(
+            state=_resolver_state,
+            mode_id=mode_id,
+            mode_yield_policy=_resolve_yield_policy(mode_config),
+            settings=_resolver_settings,
+            router_decision=_state.pending_router_decision,
+            workflow_instance=_active_instance_for_resolver,
+            recovery_records=_open_records,
+            is_workflow=is_workflow,
+        )
+
+        # ── Apply the lifecycle action ───────────────────────────────
+        # The resolver returns a tagged union; the loop applies the
+        # side effects. This is the single application point that replaces
+        # the ~10 scattered in-loop guards.
+
+        if isinstance(_lifecycle_action, _FinishAction):
+            if _lifecycle_action.strip_tools:
+                effective_tools = None
+            # If the finish is due to a handoff-loop backstop, set content
+            # so the post-loop break path surfaces it.
+            if "handoff" in _lifecycle_action.reason:
+                content = (
+                    f"Routing loop guard: reached {_max_handoffs_per_turn} "
+                    f"mode handoffs in this turn without completing the chain. "
+                    f"Forcing a final response."
+                )
+            break
+
+        if isinstance(_lifecycle_action, YieldAction):
+            _pending_yield = _lifecycle_action
             _log.info(
-                "turn budget exhausted (mode=%s, tool_calls=%d, tokens=%d); forcing yield",
+                "turn lifecycle: resolver forced yield (mode=%s, iteration=%d, target=%s)",
                 mode_id,
-                _state.total_tool_calls,
-                _state.total_tokens,
+                _state.iteration,
+                _lifecycle_action.target_mode_id or "(in-place)",
             )
-            _yield_policy = _resolve_yield_policy(mode_config)
-            _yield_target = _yield_policy.fallback_mode or (
-                _next_remaining_step_mode_id(hooks) or "discuss"
-                if not _yield_policy.allowed
-                else ""
-            )
-            _pending_yield = YieldAction(
-                question=(
-                    _yield_policy.default_question
-                    or "I've hit a resource budget for this turn. How would you like me to proceed?"
-                ),
-                context="turn budget exhausted (tool calls / tokens / wall time)",
-                target_mode_id=_yield_target,
-            )
-            # Strip tools on the final completion so the model produces the
-            # yield question text (the break applies ``_pending_yield``).
-            budget_exhausted = True
-        effective_tools = None if budget_exhausted else (tool_schemas if tool_schemas else None)
+            # Strip tools on the final completion so the model produces
+            # the yield question text.
+            effective_tools = None
+            # Fall through to the model call — the yield is applied after
+            # the model produces its completion (the existing break path).
+
+        if isinstance(_lifecycle_action, _TransitionAction):
+            if _lifecycle_action.forced:
+                # Forced transition (per-step budget, forced-fork/plan
+                # enforcer): set ``pending_planned_handoff`` so the
+                # existing synthesis block below builds the tool call.
+                _state.pending_planned_handoff = _lifecycle_action.target_mode_id
+                # Reset per-step counters for the new step.
+                _state.step_iteration = 0
+                _state.step_tool_calls = 0
+                _log.info(
+                    "turn lifecycle: resolver forced transition target=%s (mode=%s, iteration=%d, reason=%s)",
+                    _lifecycle_action.target_mode_id,
+                    mode_id,
+                    _state.iteration,
+                    _lifecycle_action.rationale,
+                )
+                # Clear the forced-fork/plan enforcer state so it does
+                # not re-fire after the forced transition is applied.
+                _state.forced_fork_target = ""
+                _state.non_fork_tool_dispatches = 0
+                _state.forced_plan_target = ""
+                _state.non_plan_tool_dispatches = 0
+            # Non-forced transitions (router transition_to) are handled
+            # below in the router terminal-actions block (they need the
+            # workflow session side effect).
+
+        if isinstance(_lifecycle_action, _ContinueAction):
+            if _lifecycle_action.nudge:
+                # Append the nudge as a system-prompt section (NOT a
+                # ``user`` message — that was the old collage's mistake).
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _lifecycle_action.nudge,
+                    }
+                )
+
+        # Determine effective_tools from the budget/yield state.
+        if _pending_yield is not None:
+            effective_tools = None
+        elif not isinstance(_lifecycle_action, _FinishAction):
+            effective_tools = tool_schemas if tool_schemas else None
+
+        # Derive budget_exhausted for the budget-briefing block below.
+        budget_exhausted = _pending_yield is not None
 
         # ── Per-iteration budget briefing ───────────────────────────
         # Inject a compact, per-iteration budget status block into the

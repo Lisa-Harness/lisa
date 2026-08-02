@@ -1555,7 +1555,7 @@ async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
     assert result.response_text == "Done."
     # The nudge message should be present in the messages sent to the model.
     nudge_found = any(
-        "been in the" in str(msg.get("content", ""))
+        "been in this stage" in str(msg.get("content", ""))
         for msg in captured_messages
         if msg.get("role") == "user"
     )
