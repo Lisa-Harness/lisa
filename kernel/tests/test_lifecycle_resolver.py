@@ -32,6 +32,13 @@ class _State:
     step_tool_calls: int = 0
     total_tool_calls: int = 0
     turns_in_stage: int = 0
+    # Phase 4 extension fields (defaults match _TurnStateView).
+    budget_exhausted: bool = False
+    forced_fork_target: str = ""
+    non_fork_tool_dispatches: int = 0
+    forced_plan_target: str = ""
+    non_plan_tool_dispatches: int = 0
+    handoff_count: int = 0
 
 
 @dataclass
@@ -299,3 +306,135 @@ def test_yield_in_place_when_policy_allows_inline() -> None:
     )
     assert isinstance(action, YieldAction)
     assert action.target_mode_id == ""
+
+
+# ── Phase 4: Handoff-loop backstop ───────────────────────────────────────────
+
+
+def test_handoff_loop_backstop_forces_finish() -> None:
+    """When handoff_count exceeds max_handoffs_per_turn, finish immediately."""
+    action = resolve_lifecycle_action(
+        state=_State(handoff_count=6),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(max_handoffs_per_turn=5),
+    )
+    assert isinstance(action, FinishAction)
+    assert action.strip_tools
+    assert "handoff" in action.reason
+
+
+def test_handoff_loop_backstop_not_triggered_within_cap() -> None:
+    """At exactly the cap, the backstop does not fire (>)."""
+    action = resolve_lifecycle_action(
+        state=_State(handoff_count=5),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(max_handoffs_per_turn=5),
+    )
+    assert isinstance(action, ContinueAction)
+
+
+# ── Phase 4: Forced-fork enforcer ───────────────────────────────────────────
+
+
+def test_forced_fork_enforcer_fires_at_cap() -> None:
+    """When the forced-fork target is set and non-fork dispatches hit the cap,
+    force a TransitionAction to the fork target."""
+    action = resolve_lifecycle_action(
+        state=_State(forced_fork_target="fork:search,markdown", non_fork_tool_dispatches=3),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(forced_fork_non_fork_tool_cap=3),
+    )
+    assert isinstance(action, TransitionAction)
+    assert action.forced
+    assert action.target_mode_id == "fork:search,markdown"
+
+
+def test_forced_fork_enforcer_not_triggered_below_cap() -> None:
+    """Below the cap, the enforcer does not fire."""
+    action = resolve_lifecycle_action(
+        state=_State(forced_fork_target="fork:search,markdown", non_fork_tool_dispatches=2),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(forced_fork_non_fork_tool_cap=3),
+    )
+    assert isinstance(action, ContinueAction)
+
+
+def test_forced_fork_enforcer_not_triggered_without_target() -> None:
+    """No forced-fork target means no enforcer."""
+    action = resolve_lifecycle_action(
+        state=_State(forced_fork_target="", non_fork_tool_dispatches=10),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(forced_fork_non_fork_tool_cap=3),
+    )
+    assert isinstance(action, ContinueAction)
+
+
+# ── Phase 4: Forced-plan enforcer ───────────────────────────────────────────
+
+
+def test_forced_plan_enforcer_fires_at_cap() -> None:
+    """When the forced-plan target is set and non-plan dispatches hit the cap,
+    force a TransitionAction to plan."""
+    action = resolve_lifecycle_action(
+        state=_State(forced_plan_target="plan", non_plan_tool_dispatches=3),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(forced_plan_non_transition_tool_cap=3),
+    )
+    assert isinstance(action, TransitionAction)
+    assert action.forced
+    assert action.target_mode_id == "plan"
+
+
+def test_forced_plan_enforcer_not_triggered_below_cap() -> None:
+    """Below the cap, the enforcer does not fire."""
+    action = resolve_lifecycle_action(
+        state=_State(forced_plan_target="plan", non_plan_tool_dispatches=2),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(forced_plan_non_transition_tool_cap=3),
+    )
+    assert isinstance(action, ContinueAction)
+
+
+# ── Phase 4: Resource-budget exhaustion ─────────────────────────────────────
+
+
+def test_budget_exhausted_forces_yield_for_chat_mode() -> None:
+    """When budget_exhausted is True and the mode allows yields, force a yield."""
+    action = resolve_lifecycle_action(
+        state=_State(budget_exhausted=True),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(allowed=True),
+        settings=LifecycleResolverSettings(),
+    )
+    assert isinstance(action, YieldAction)
+    assert "budget" in action.context
+
+
+def test_budget_exhausted_forces_finish_for_action_mode() -> None:
+    """When budget_exhausted is True and the mode forbids yields, finish."""
+    action = resolve_lifecycle_action(
+        state=_State(budget_exhausted=True),
+        mode_id="search",
+        mode_yield_policy=YieldPolicy(allowed=False),
+        settings=LifecycleResolverSettings(),
+    )
+    assert isinstance(action, FinishAction)
+    assert action.strip_tools
+
+
+def test_budget_exhausted_not_triggered_when_false() -> None:
+    """When budget_exhausted is False, the branch is a no-op."""
+    action = resolve_lifecycle_action(
+        state=_State(budget_exhausted=False),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(),
+    )
+    assert isinstance(action, ContinueAction)

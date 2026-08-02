@@ -139,6 +139,10 @@ class LifecycleResolverSettings:
     per_step_max_tool_calls: int = 12
     stage_nudge_threshold: int = 4
     stage_nudge_cap: int = 6
+    # Forced-fork/plan enforcer caps (Phase 4 extension).
+    forced_fork_non_fork_tool_cap: int = 3
+    forced_plan_non_transition_tool_cap: int = 3
+    max_handoffs_per_turn: int = 5
 
 
 @runtime_checkable
@@ -190,6 +194,24 @@ class _TurnStateView:
     step_tool_calls: int
     total_tool_calls: int
     turns_in_stage: int
+    # ── Phase 4 extensions ───────────────────────────────────────────
+    # Resource-budget exhaustion flag (computed by the loop's
+    # ``_budget_forces_final()`` — the resolver stays pure and just reads
+    # the boolean). True when TurnBudget tool-call / token / wall-time
+    # limits are exceeded.
+    budget_exhausted: bool = False
+    # Forced-fork enforcer state: when non-empty, the kernel has a
+    # deterministic ``fork:`` target the model refused to call
+    # ``transition_stage`` for. ``non_fork_tool_dispatches`` counts
+    # consecutive non-transition tool dispatches since the target was set.
+    forced_fork_target: str = ""
+    non_fork_tool_dispatches: int = 0
+    # Forced-plan enforcer state: mirrors forced-fork for the ``plan``
+    # routing-escalation target.
+    forced_plan_target: str = ""
+    non_plan_tool_dispatches: int = 0
+    # Handoff-loop backstop: total mid-turn mode handoffs this turn.
+    handoff_count: int = 0
 
 
 def _has_next_step(instance: _WorkflowInstanceLike | None) -> bool:
@@ -312,10 +334,20 @@ def resolve_lifecycle_action(
     2. **Recovery stall blocks workflow** — a stalled ``RecoveryRecord`` with
        ``retry_policy="confirm"`` blocks the instance. Yield with the stall
        detail so the user can retry/skip. (Phase 3 wiring.)
+    2b. **Handoff-loop backstop** — ``max_handoffs_per_turn`` exceeded. Finish
+       to prevent infinite routing-hint cycles. (Phase 4.)
+    2c. **Forced-fork enforcer** — the kernel has a deterministic ``fork:``
+       target the model refused to call ``transition_stage`` for. After the
+       cap of non-transition dispatches, force a ``TransitionAction``. (Phase 4.)
+    2d. **Forced-plan enforcer** — mirrors forced-fork for the ``plan``
+       routing-escalation target. (Phase 4.)
     3. **Global iteration cap** — ``max_tool_iterations`` is the only true
        ceiling. Hitting it forces a yield (not a silent final) so the user can
        redirect, unless the mode forbids yields (action mode), in which case
        we finish (the old truncate behavior, preserved as the last resort).
+    3b. **Resource-budget exhaustion** — the ``TurnBudget`` (tool calls /
+       tokens / wall time) is exhausted. Forces a yield (or finish for action
+       modes). (Phase 4.)
     4. **Per-step budget exhausted** — the current workflow step consumed its
        ``per_step_max_iterations`` / ``per_step_max_tool_calls``. If there is a
        next step, force a ``TransitionAction`` to it (the old
@@ -363,6 +395,55 @@ def resolve_lifecycle_action(
             target_mode_id=target,
         )
 
+    # ── 2b. Handoff-loop backstop (Phase 4) ──────────────────────────────
+    # The ``handoff_count`` hard backstop prevents infinite routing-hint
+    # cycles when ``chain_satisfied`` attribution fails. Fires before the
+    # iteration cap so a tight handoff loop (A→B→A→B...) is caught early
+    # rather than burning the full iteration budget.
+    if state.handoff_count > settings.max_handoffs_per_turn:
+        return FinishAction(
+            strip_tools=True,
+            reason=(
+                f"handoff loop guard: {state.handoff_count} handoffs "
+                f"(cap={settings.max_handoffs_per_turn})"
+            ),
+        )
+
+    # ── 2c. Forced-fork enforcer (Phase 4) ───────────────────────────────
+    # The kernel computed a deterministic ``fork:`` target (the routing hint
+    # named it) and the model refused to call ``transition_stage`` — instead
+    # burning iterations on read-only tools. After the cap of non-transition
+    # dispatches, the kernel takes over and forces the fork itself.
+    if (
+        state.forced_fork_target
+        and state.non_fork_tool_dispatches >= settings.forced_fork_non_fork_tool_cap
+    ):
+        return TransitionAction(
+            target_mode_id=state.forced_fork_target,
+            rationale=(
+                "kernel-forced fork: the model did not call transition_stage "
+                "after the routing hint named this fork target."
+            ),
+            forced=True,
+        )
+
+    # ── 2d. Forced-plan enforcer (Phase 4) ────────────────────────────────
+    # Mirrors the forced-fork enforcer for the ``plan`` routing-escalation
+    # target. Bounds the pre-plan token burn to roughly
+    # ``cap x per-iteration-tokens`` instead of the full iteration budget.
+    if (
+        state.forced_plan_target
+        and state.non_plan_tool_dispatches >= settings.forced_plan_non_transition_tool_cap
+    ):
+        return TransitionAction(
+            target_mode_id=state.forced_plan_target,
+            rationale=(
+                "kernel-forced plan handoff: the model did not call "
+                "transition_stage after the routing hint named plan."
+            ),
+            forced=True,
+        )
+
     # ── 3. Global iteration cap (the only true ceiling) ─────────────────
     if state.iteration >= settings.max_tool_iterations:
         if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
@@ -381,6 +462,28 @@ def resolve_lifecycle_action(
         return FinishAction(
             strip_tools=True,
             reason=f"iteration cap {settings.max_tool_iterations} (action mode, no yield)",
+        )
+
+    # ── 3b. Resource-budget exhaustion (Phase 4) ────────────────────────
+    # The TurnBudget (tool calls / tokens / wall time) is exhausted. Forces
+    # a yield so the user can redirect, instead of a truncated response.
+    # When no TurnBudget is wired (the common case), ``budget_exhausted``
+    # is False and this is a no-op.
+    if state.budget_exhausted:
+        if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
+            target = _resolve_yield_target(mode_yield_policy, instance=workflow_instance)
+            question = (
+                mode_yield_policy.default_question
+                or "I've hit a resource budget for this turn. How would you like me to proceed?"
+            )
+            return YieldAction(
+                question=question,
+                context="turn budget exhausted (tool calls / tokens / wall time)",
+                target_mode_id=target,
+            )
+        return FinishAction(
+            strip_tools=True,
+            reason="turn budget exhausted (action mode, no yield)",
         )
 
     # ── 4. Per-step budget exhausted ────────────────────────────────────
