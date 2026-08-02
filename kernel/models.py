@@ -1555,7 +1555,7 @@ class ForkTarget(BaseModel):
     query: str = ""
 
 
-ForkChildStatus = Literal["ok", "timeout", "cancelled", "error", "no_tools"]
+ForkChildStatus = Literal["ok", "timeout", "cancelled", "error", "no_tools", "yielded"]
 
 
 class ForkChildResult(BaseModel):

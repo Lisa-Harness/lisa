@@ -3657,12 +3657,26 @@ async def _run_turn_inner(
                                 # ``continue``-ing. The model cannot be
                                 # trusted to surface it honestly.
                                 has_no_tools = any(r.status == "no_tools" for r in failed_children)
+                                # A force-yielded child (iteration cap /
+                                # stuck-in-stage / budget) was interrupted,
+                                # not hallucinating. Treat it as a
+                                # deterministic failure like ``no_tools``
+                                # (the model cannot be trusted to surface
+                                # a partial result honestly) but with
+                                # distinct "interrupted" messaging. See
+                                # the 2026-08-02 fan-out regression.
+                                has_yielded = any(r.status == "yielded" for r in failed_children)
                                 if failed_children:
                                     failure_parts: list[str] = []
                                     for r in failed_children:
                                         if r.status == "no_tools":
                                             failure_parts.append(
                                                 f"{r.target.mode_id} (no tool calls; "
+                                                f"{r.error_message})"
+                                            )
+                                        elif r.status == "yielded":
+                                            failure_parts.append(
+                                                f"{r.target.mode_id} (interrupted; "
                                                 f"{r.error_message})"
                                             )
                                         elif r.status == "timeout":
@@ -3749,24 +3763,55 @@ async def _run_turn_inner(
                             }
                         )
                         # If any fork child is ``no_tools`` (hallucinated
-                        # success), abort the user-facing turn with a
-                        # deterministic failure. Do NOT ``continue`` and hand
-                        # the failure to the model as advice — the model can
-                        # paraphrase it into a false "completed" (the
-                        # 2026-07-25 incident). Surface the failure directly.
-                        if has_no_tools:
+                        # success) or ``yielded`` (interrupted by the harness
+                        # before completing its action tools), abort the
+                        # user-facing turn with a deterministic failure. Do
+                        # NOT ``continue`` and hand the failure to the model
+                        # as advice — the model can paraphrase it into a
+                        # false "completed" (the 2026-07-25 incident). Surface
+                        # the failure directly. ``no_tools`` and ``yielded``
+                        # get distinct messaging: the former is a
+                        # hallucinated success, the latter an honest
+                        # interruption (the 2026-08-02 fan-out regression).
+                        if has_no_tools or has_yielded:
                             no_tools_modes = [
                                 r.target.mode_id
                                 for r in fork_results_list
                                 if r.status == "no_tools"
                             ]
-                            content = (
-                                "Fork fan-out failed: the following children made "
-                                "zero tool calls despite their mode declaring action "
-                                f"tools ({', '.join(no_tools_modes)}), so their reported "
-                                "success is unverified — nothing was written to disk or "
-                                "memory. Re-issue the request."
-                            )
+                            yielded_modes = [
+                                r.target.mode_id
+                                for r in fork_results_list
+                                if r.status == "yielded"
+                            ]
+                            if has_no_tools and has_yielded:
+                                content = (
+                                    "Fork fan-out failed: the following children were "
+                                    f"interrupted before completing their action tools "
+                                    f"({', '.join(yielded_modes)}), and the following "
+                                    "made zero tool calls despite their mode declaring "
+                                    f"action tools ({', '.join(no_tools_modes)}), so "
+                                    "their reported success is unverified. Re-issue the "
+                                    "request, or raise FORK_CHILD_MAX_TOOL_ITERATIONS."
+                                )
+                            elif has_no_tools:
+                                content = (
+                                    "Fork fan-out failed: the following children made "
+                                    "zero tool calls despite their mode declaring action "
+                                    f"tools ({', '.join(no_tools_modes)}), so their "
+                                    "reported success is unverified — nothing was "
+                                    "written to disk or memory. Re-issue the request."
+                                )
+                            else:
+                                content = (
+                                    "Fork fan-out was interrupted: the following "
+                                    "children were force-yielded by the turn lifecycle "
+                                    "(iteration cap / stuck-in-stage / budget) before "
+                                    f"completing their action tools "
+                                    f"({', '.join(yielded_modes)}), so their output is "
+                                    "partial. Re-issue the request, or raise "
+                                    "FORK_CHILD_MAX_TOOL_ITERATIONS."
+                                )
                             break
                         continue
 
@@ -4820,7 +4865,10 @@ async def _run_turn_inner(
             or _state.handoff_count > _max_handoffs_per_turn
             or (
                 _state.fork_results is not None
-                and any(r.status == "no_tools" for r in _state.fork_results)
+                and any(
+                    r.status in ("no_tools", "yielded")
+                    for r in _state.fork_results
+                )
             )
         ):
             break
@@ -4869,7 +4917,7 @@ async def _run_turn_inner(
             _log.warning(
                 "turn loop exited with empty content mode=%s iteration=%d/%d "
                 "tool_calls_total=%d handoffs=%d entry_failed=%s fork_no_tools=%s "
-                "transitioned_to=%s routing_hint=%s",
+                "fork_yielded=%s transitioned_to=%s routing_hint=%s",
                 mode_id,
                 _state.iteration,
                 max_tool_iterations,
@@ -4879,6 +4927,10 @@ async def _run_turn_inner(
                 bool(
                     _state.fork_results is not None
                     and any(r.status == "no_tools" for r in _state.fork_results)
+                ),
+                bool(
+                    _state.fork_results is not None
+                    and any(r.status == "yielded" for r in _state.fork_results)
                 ),
                 transitioned_to,
                 bool(routing_hint),
@@ -4990,7 +5042,10 @@ async def _run_turn_inner(
         _state.entry_failed
         or _state.plan_failed
         or (
-            _state.fork_results and any(r.status == "no_tools" for r in (_state.fork_results or []))
+            _state.fork_results and any(
+                r.status in ("no_tools", "yielded")
+                for r in (_state.fork_results or [])
+            )
         )
     ):
         # A handoff entry operation failed, or a fork child was marked

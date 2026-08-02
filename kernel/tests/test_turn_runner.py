@@ -1740,7 +1740,7 @@ async def test_run_turn_fork_transition_basic() -> None:
     assert result.fork_results is not None
     assert len(result.fork_results) == 2
     for child in result.fork_results:
-        assert child.status in ("ok", "error", "timeout", "cancelled", "no_tools")
+        assert child.status in ("ok", "error", "timeout", "cancelled", "no_tools", "yielded")
 
 
 @pytest.mark.asyncio
@@ -1951,6 +1951,77 @@ async def test_run_turn_fork_namespaced_action_tool_not_flagged_no_tools() -> No
     # namespaced ambient form, so it must be ok — not no_tools.
     assert child.status == "ok"
     assert child.target.mode_id == "markdown"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_fork_yielded_child_not_flagged_no_tools() -> None:
+    """A fork child the harness force-yielded (iteration cap) is classified
+    ``status="yielded"``, not ``no_tools``.
+
+    Regression for the 2026-08-02 fan-out failure: the ``coding`` child
+    gathered evidence via read-only ``lisa-storage.read_file`` /
+    ``list_files`` calls, then the lifecycle resolver force-yielded it at
+    the ``fork_child_max_tool_iterations`` cap (the historical default of 5,
+    since raised to 50) before it reached its write tools
+    (``coding_apply_patch``, ``coding_commit``).
+    The validator only inspected ``tool_call_count`` /
+    ``called_tool_names`` and could not distinguish "interrupted by the
+    harness" from "model gave up after read-only fetches", so it flagged
+    the child ``no_tools`` (hallucinated success) and the parent aborted
+    with a dishonest "nothing was written" message. The fix reads
+    ``child_result.yielded``: a force-yielded child is ``yielded``
+    (interrupted), regardless of its tool-call pattern.
+    """
+    call_count = {"n": 0}
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "fork:coding"}',
+                        },
+                    }
+                ],
+            )
+        # The coding child inspects via read-only ambient storage tools
+        # and never reaches its write tools before the iteration cap
+        # forces a yield. It keeps calling a read-only tool every turn
+        # so the loop never produces final content and the cap fires.
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": f"call_{call_count['n']}",
+                    "function": {
+                        "name": "lisa-storage.read_file",
+                        "arguments": '{"path": "src/main.py"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(mode_id="default", query="refactor the main module", hooks=hooks)
+
+    assert result.fork_results is not None
+    assert len(result.fork_results) == 1
+    child = result.fork_results[0]
+    # The child was force-yielded by the harness, not hallucinating — it
+    # must be ``yielded``, not ``no_tools``.
+    assert child.status == "yielded"
+    assert child.target.mode_id == "coding"
+    # The parent must still abort (a partial result cannot be trusted to
+    # be surfaced honestly), but with the "interrupted" framing, not the
+    # "hallucinated success" framing.
+    assert result.blocked is True
+    assert "interrupted" in result.response_text.lower()
+    assert "hallucinated" not in result.response_text.lower()
 
 
 @pytest.mark.asyncio
@@ -3737,12 +3808,16 @@ async def test_no_tools_fork_child_aborts_turn() -> None:
 
 def test_max_handoffs_per_turn_setting_is_bound() -> None:
     """The hard backstop setting exists and is a sane bound. This guards
-    against accidental removal — the loop guard depends on it."""
+    against accidental removal — the loop guard depends on it. The
+    default is loosened to 50 to accommodate deep producer→consumer
+    pipelines (the 2026-08-02 fork fan-out work hit 6 handoffs on a
+    routine coding turn); it stays bounded so a runaway hint loop
+    cannot hand off forever."""
     from kernel.config import settings as kernel_settings
 
     value = kernel_settings.max_handoffs_per_turn
     assert isinstance(value, int)
-    assert 3 <= value <= 20
+    assert 3 <= value <= 100
 
 
 def test_duplicate_hint_limit_setting_is_bound() -> None:

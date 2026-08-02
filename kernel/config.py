@@ -100,13 +100,19 @@ class Settings(BaseSettings):
     # Maximum model-completion iterations per turn. Shared across all
     # handoffs within a single turn (the counter is not reset on
     # ``transition_stage``), so chained producer→consumer pipelines
-    # (research→write) consume the same budget. Override via
+    # (research→write) consume the same budget. The default is the
+    # per-turn runaway governor value (see docs/TOKEN_BUDGET.md); lower it
+    # only for sandboxed test runs. Override via
     # ``MAX_TOOL_ITERATIONS``.
-    max_tool_iterations: int = 15
+    max_tool_iterations: int = 300
     # Per-child iteration cap for fork fan-out. Fork children run in
-    # parallel and get a smaller slice than a full sequential turn.
-    # Override via ``FORK_CHILD_MAX_TOOL_ITERATIONS``.
-    fork_child_max_tool_iterations: int = 5
+    # parallel and get a smaller slice than a full sequential turn, but
+    # still need enough room to inspect → act → verify. A coding child
+    # (inspect → isolate → patch → check → publish) cannot fit a
+    # non-trivial change in fewer than ~30 iterations; 50 leaves headroom
+    # for the publish step. Override via
+    # ``FORK_CHILD_MAX_TOOL_ITERATIONS``.
+    fork_child_max_tool_iterations: int = 50
     # Per-step iteration sub-budget. Each workflow step (between two
     # ``transition_stage`` handoffs) gets its own iteration budget so a
     # chained producer→consumer pipeline does not starve its final step
@@ -114,15 +120,15 @@ class Settings(BaseSettings):
     # its per-step cap but the global cap has not fired, the kernel
     # synthesizes a handoff to the next remaining step instead of the
     # generic empty-content final completion. The global cap remains the
-    # hard ceiling: a 6-step chain with per_step=8 cannot exceed 15 total
-    # iterations — the per-step cap only redistributes *when* the budget
-    # runs out. Override via ``PER_STEP_MAX_ITERATIONS``.
-    per_step_max_iterations: int = 8
+    # hard ceiling: a 6-step chain with per_step=75 cannot exceed 300
+    # total iterations — the per-step cap only redistributes *when* the
+    # budget runs out. Override via ``PER_STEP_MAX_ITERATIONS``.
+    per_step_max_iterations: int = 75
     # Per-step tool-call sub-budget. Secondary guard against a model that
     # burns many tool calls within one step without converging. Same reset
     # and handoff-synth behavior as ``per_step_max_iterations``.
     # Override via ``PER_STEP_MAX_TOOL_CALLS``.
-    per_step_max_tool_calls: int = 12
+    per_step_max_tool_calls: int = 150
 
     # ── Turn-runner guard caps ──────────────────────────────────────────
     # These bound the various correction-nudge and loop-backstop guards
@@ -158,9 +164,11 @@ class Settings(BaseSettings):
     # ``STAGE_NUDGE_CAP``.
     stage_nudge_cap: int = 6
     # Hard backstop against routing-hint loops: caps the total mode
-    # handoffs per turn and forces a final completion. Override via
-    # ``MAX_HANDOFFS_PER_TURN``.
-    max_handoffs_per_turn: int = 6
+    # handoffs per turn and forces a final completion. Loosened from the
+    # historical 6 to accommodate deep producer→consumer pipelines (the
+    # 2026-08-02 fork fan-out work hit 6 handoffs on a routine coding
+    # turn). Override via ``MAX_HANDOFFS_PER_TURN``.
+    max_handoffs_per_turn: int = 50
     # Consecutive identical routing hints before the duplicate-hint dedup
     # suppresses injection. Override via ``DUPLICATE_HINT_LIMIT``.
     duplicate_hint_limit: int = 2
@@ -169,9 +177,13 @@ class Settings(BaseSettings):
     hint_cycle_min_len: int = 3
     # Consecutive routing-hint overrides (model hands off to a target
     # that differs from the hint's suggested target) before the hint
-    # layer stops injecting further hints for the rest of the turn.
-    # Override via ``HINT_OVERRIDE_LIMIT``.
-    hint_override_limit: int = 2
+    # layer stops injecting further hints for the rest of the turn. The
+    # historical 2 silenced hints far too early on multi-intent queries
+    # where the model legitimately reorders the suggested sequence; 50
+    # lets the model redirect while still bounding pathological override
+    # loops via ``max_handoffs_per_turn``. Override via
+    # ``HINT_OVERRIDE_LIMIT``.
+    hint_override_limit: int = 50
     # Budget briefing: inject a compact, per-iteration budget status
     # block into the system prompt so the model can self-scope its
     # work within the remaining iteration / tool-call / per-target

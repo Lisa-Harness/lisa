@@ -176,6 +176,42 @@ async def _run_fork_child_turn(
             suppress_routing_hint=True,
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
+        # A child the harness force-yielded (iteration cap, stuck-in-stage,
+        # or budget exhaustion) was *interrupted*, not hallucinating. Its
+        # tool-call pattern is irrelevant — it never got to finish, so we
+        # cannot conclude anything about whether it would have invoked its
+        # action tools. Classify it as ``yielded`` before the zero-tool /
+        # action-tool checks so a coding child that gathered evidence via
+        # ``lisa-storage.read_file`` then hit the iteration cap is not
+        # reported as "hallucinated success — nothing written" (the
+        # 2026-08-02 fan-out regression). The parent treats ``yielded``
+        # like ``no_tools`` for the deterministic abort but with honest
+        # "interrupted by harness" messaging.
+        if child_result.yielded is not None:
+            _flog.warning(
+                "fork child %s was force-yielded by the harness (iteration "
+                "cap / stuck-in-stage / budget); marking yielded (interrupted, "
+                "not hallucinated) — its tool-call pattern is inconclusive",
+                target.mode_id,
+            )
+            return (
+                ForkChildResult(
+                    target=target,
+                    status="yielded",
+                    output_text=child_result.response_text,
+                    error_message=(
+                        f"fork child {target.mode_id} was interrupted by the "
+                        f"turn lifecycle (force-yielded) before completing its "
+                        f"action tools; its reported output is partial. "
+                        f"Re-issue the request, or raise "
+                        f"FORK_CHILD_MAX_TOOL_ITERATIONS (currently "
+                        f"{_kernel_settings.fork_child_max_tool_iterations})."
+                    ),
+                    duration_ms=elapsed_ms,
+                ),
+                "yielded",
+                elapsed_ms,
+            )
         if child_result.tool_call_count == 0 and _fork_mode_requires_tools(target.mode_id):
             _flog.warning(
                 "fork child %s completed with 0 tool calls but its mode declares "
