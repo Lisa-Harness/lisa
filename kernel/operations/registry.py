@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
 from typing import Any, Literal
 
 from kernel.approval import (
@@ -45,7 +44,6 @@ __all__ = [
     "get_operation_catalog",
     "is_known_tool",
     "register_operation_mcp",
-    "register_tool_catalog_callback",
 ]
 
 _OPERATION_TRACER = get_tracer("kernel.operations")
@@ -55,7 +53,6 @@ _FRONT_MATTER_DELIMITER = "---"
 # The lisa-content MCP server config, injected by the host at startup.
 # When None, the operation catalog cannot be loaded.
 _operation_mcp_config: MCPClientConfig | None = None
-_get_tool_catalog_fn: Callable[[], dict[str, Any]] | None = None
 
 
 class OperationValidationError(ValueError):
@@ -73,51 +70,11 @@ def is_known_tool(tool_id: str) -> bool:
     return tool_id in get_tool_catalog()
 
 
-def register_tool_catalog_callback(get_tool_catalog_fn: Callable[[], dict[str, Any]]) -> None:
-    """Inject the tool catalog callback used for operation validation and tool schemas.
-
-    .. deprecated::
-        Tools are now discovered from content packs via ``register_tool_mcp``.
-        This callback is retained as a thin delegator for hosts that still
-        register a hand-built tool catalog. The live tool catalog lives in
-        ``kernel.tools.registry``; this function stashes the callback and
-        re-validates the operation catalog against it.
-    """
-    global _get_tool_catalog_fn  # noqa: PLW0603
-    _get_tool_catalog_fn = get_tool_catalog_fn
-    validate_operation_catalog(_OPERATION_CATALOG)
-
-
 def _resolve_tool_catalog() -> dict[str, Any]:
-    """Return the effective tool catalog, preferring the MCP-loaded registry.
-
-    Falls back to the legacy host callback if the tool registry is empty
-    (e.g. a host that hasn't called ``register_tool_mcp`` yet). When both
-    sources are populated, logs a warning if their key sets differ — a
-    divergent key set (e.g. a host callback returning bare keys while the
-    MCP registry returns namespaced ``server_id.tool`` keys) would silently
-    split tool-id resolution across the two sources.
-    """
+    """Return the effective tool catalog from the MCP-loaded registry."""
     from kernel.tools.registry import get_tool_catalog
 
-    mcp_catalog = get_tool_catalog()
-    if mcp_catalog:
-        if _get_tool_catalog_fn is not None:
-            host_catalog = _get_tool_catalog_fn()
-            if host_catalog and set(host_catalog) != set(mcp_catalog):
-                logger.warning(
-                    "Tool catalog key sets diverge between the host-injected "
-                    "callback (%d keys) and the MCP-loaded registry (%d keys). "
-                    "Tool-id resolution may silently miss tools present in one "
-                    "source but not the other. Ensure both use the same keying "
-                    "convention (bare tool_id for internal pack tools).",
-                    len(host_catalog),
-                    len(mcp_catalog),
-                )
-        return mcp_catalog
-    if _get_tool_catalog_fn is not None:
-        return _get_tool_catalog_fn()
-    return {}
+    return get_tool_catalog()
 
 
 def register_operation_mcp(config: MCPClientConfig) -> None:
@@ -188,14 +145,7 @@ def validate_operation_catalog(catalog: dict[str, OperationDefinition]) -> None:
     fail to build their ``DeclarativeOperationModule`` still raise — that
     indicates a genuine configuration error, not a missing install.
     """
-    tool_catalog = _resolve_tool_catalog() if _get_tool_catalog_fn is not None else None
-    # Also validate against the MCP-loaded tool registry even when no legacy
-    # callback is registered, so pack-contributed tools satisfy tool_id refs.
-    if tool_catalog is None:
-        from kernel.tools.registry import get_tool_catalog
-
-        mcp_tools = get_tool_catalog()
-        tool_catalog = mcp_tools if mcp_tools else None
+    tool_catalog = _resolve_tool_catalog() or None
     # Collect unimportable runtime operations to drop after iteration.
     unimportable: list[str] = []
     for operation_id, definition in catalog.items():
