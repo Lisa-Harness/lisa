@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
@@ -58,6 +59,14 @@ __all__ = [
 #: catalog can distinguish them from MCP-discovered tools. Synthetic tools
 #: are never routed to a subprocess — they dispatch to an in-process handler.
 SYNTHETIC_SERVER_ID = "__synthetic__"
+
+#: Matches ``scheme://...`` substrings in exception text so a leaked URL
+#: (potentially carrying a query-string token) is stripped before it reaches
+#: a log line or surfaced error.
+_URL_RE = re.compile(r"https?://[^\s'\"]+")
+
+#: Max characters of an exception description kept in ``_safe_exc_desc``.
+_EXC_DESC_MAX = 200
 
 
 def namespaced_tool_name(server_id: str, tool_name: str) -> str:
@@ -85,6 +94,27 @@ def bare_tool_name(tool_id: str) -> str:
     if "." in tool_id:
         return tool_id.split(".", 1)[1]
     return tool_id
+
+
+def _safe_exc_desc(exc: Exception | None) -> str:
+    """Return a log-safe description of a connect exception.
+
+    Raw exception ``str()`` can embed the full request URL — which, for a
+    network MCP server carrying a bearer token, may include credentials (the
+    same credential-leak class ``hosts/core/model_discovery/redact.py``
+    guards against for provider probes). This never surfaces the raw URL,
+    headers, or token; it reports the error type plus a length-bounded,
+    URL-stripped message.
+    """
+    if exc is None:
+        return "unknown"
+    text = str(exc)
+    # Strip anything that looks like a URL (scheme://...) so a leaked
+    # query-string token cannot ride through the message.
+    text = _URL_RE.sub("<url>", text)
+    if len(text) > _EXC_DESC_MAX:
+        text = text[: _EXC_DESC_MAX] + "…"
+    return text or type(exc).__name__
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +169,11 @@ class MCPClientConfig:
     # are ignored for HTTP configs.
     url: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
+    auth: Any = None
+    """Optional :class:`~kernel.mcp_launch.policy.AuthSpec` for network HTTP
+    servers. When set, the pool resolves auth at connect time (static bearer
+    re-read per connect; oauth2-pkce via the SDK auth provider). None keeps
+    the existing static-``headers`` behavior unchanged."""
     aliases: tuple[Any, ...] = field(default_factory=tuple)
     """Generic alias specs (``AliasSpec``) mapping stable model-facing
     names to native tools on this server. The host registers each alias
@@ -736,7 +771,7 @@ class MCPToolPool:
                         attempt + 1,
                         self._WARM_STARTUP_ATTEMPTS,
                         type(exc).__name__,
-                        exc,
+                        _safe_exc_desc(exc),
                         delay,
                     )
                     await asyncio.sleep(delay)
@@ -745,7 +780,8 @@ class MCPToolPool:
             raise MCPConnectionError(
                 f"Required warm MCP server '{config.server_id}' failed to start "
                 f"after {self._WARM_STARTUP_ATTEMPTS} attempts: "
-                f"{type(last_exc).__name__ if last_exc else 'unknown'}: {last_exc}"
+                f"{type(last_exc).__name__ if last_exc else 'unknown'}: "
+                f"{_safe_exc_desc(last_exc) if last_exc else 'unknown'}"
             ) from last_exc
         logger.warning(
             "Warm MCP server %r failed to start after %d attempts (non-required); "
@@ -797,17 +833,22 @@ class MCPToolPool:
     async def _connect_http(self, config: MCPClientConfig) -> None:
         """Connect one streamable-HTTP MCP server.
 
-        Uses the same independent-AsyncExitStack discipline as stdio.
+        Uses the same independent-AsyncExitStack discipline as stdio. Auth is
+        resolved at connect time from ``config.auth`` (static bearer re-read
+        per connect; oauth2-pkce via the SDK's httpx auth provider), and the
+        resulting ``httpx`` client is passed through the ``http_client=``
+        seam — the only auth/header injection point the MCP SDK exposes.
         """
         from mcp.client.session import ClientSession
-        from mcp.client.streamable_http import streamablehttp_client
+        from mcp.client.streamable_http import streamable_http_client
 
         assert config.url is not None
+        http_client = self._build_http_client(config)
         stack = AsyncExitStack()
         await stack.__aenter__()
         try:
-            read, write, _ = await stack.enter_async_context(
-                streamablehttp_client(config.url, headers=config.headers)
+            read, write = await stack.enter_async_context(
+                streamable_http_client(config.url, http_client=http_client)
             )
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
@@ -817,6 +858,80 @@ class MCPToolPool:
         async with self._connect_lock:
             self._child_stacks[config.server_id] = stack
         self._sessions[config.server_id] = session
+
+    def _build_http_client(self, config: MCPClientConfig) -> Any:
+        """Build the httpx.AsyncClient used to reach a network MCP server.
+
+        Merges the static ``config.headers`` (existing behavior) with any
+        connect-time auth resolved from ``config.auth``. For ``oauth2-pkce``
+        the SDK's :class:`OAuthClientProvider` is attached as the client's
+        ``auth`` so token acquisition/refresh ride the httpx auth lifecycle.
+        """
+        from mcp.shared._httpx_utils import create_mcp_http_client
+
+        auth = getattr(config, "auth", None)
+        kind = getattr(auth, "kind", None)
+
+        if kind is not None and kind.value == "oauth2-pkce":
+            provider = self._build_oauth_provider(config)
+            return create_mcp_http_client(headers=dict(config.headers), auth=provider)
+
+        headers = dict(config.headers)
+        if kind is not None and kind.value == "bearer":
+            token = getattr(auth, "token", None)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+        return create_mcp_http_client(headers=headers)
+
+    def _build_oauth_provider(self, config: MCPClientConfig) -> Any:
+        """Construct the SDK OAuthClientProvider for an oauth2-pkce server.
+
+        The provider runs RFC 9728 dynamic client registration + PKCE
+        authorization-code flow, auto-refreshing tokens via httpx. Token and
+        client-info storage is in-memory (per-process). OAuth is warm-only:
+        this is invoked from a host-owned long-lived pool, not a per-turn
+        cold spawn, because the flow opens a browser + loopback redirect.
+
+        ``auth.client_id`` is carried as the dynamic-registration client name
+        so operators can attribute the registration; the server mints the
+        real ``client_id``. ``auth.scopes`` narrows the requested grant.
+        """
+        from mcp.client.auth import OAuthClientProvider
+        from mcp.shared.auth import OAuthClientMetadata
+
+        assert config.url is not None
+        auth = config.auth
+        metadata = OAuthClientMetadata(
+            client_name=auth.client_id or "lisa",
+            redirect_uris=["http://127.0.0.1:8765/callback"],
+        )
+
+        async def _redirect(uri: str) -> None:
+            logger.warning(
+                "MCP server %r requires OAuth authorization; open this URL: %s",
+                config.server_id,
+                uri,
+            )
+            import webbrowser
+
+            webbrowser.open(uri)
+
+        async def _callback() -> Any:
+            # The host has not yet wired a loopback OAuth listener. Surface a
+            # clear error instead of blocking forever.
+            raise RuntimeError(
+                f"MCP server {config.server_id!r} requires an interactive OAuth "
+                "loopback callback, which this host does not wire yet. Use a "
+                "bearer token for now."
+            )
+
+        return OAuthClientProvider(
+            server_url=config.url,
+            client_metadata=metadata,
+            storage=_InMemoryTokenStorage(),
+            redirect_handler=_redirect,
+            callback_handler=_callback,
+        )
 
     async def _disconnect_server(self, server_id: str) -> None:
         """Close and clean up one server's session + stack.
@@ -1464,3 +1579,27 @@ class MCPToolPool:
         self._synthetic_handlers.clear()
         self._synthetic_targets.clear()
         self._started = False
+
+
+class _InMemoryTokenStorage:
+    """Minimal in-memory token/client-info storage for the SDK auth provider.
+
+    Satisfies the SDK's ``TokenStorage`` Protocol with process-scoped dicts.
+    Production hosts should swap in a durable store keyed by server_id.
+    """
+
+    def __init__(self) -> None:
+        self._tokens: Any = None
+        self._client_info: Any = None
+
+    async def get_tokens(self) -> Any:
+        return self._tokens
+
+    async def set_tokens(self, tokens: Any) -> None:
+        self._tokens = tokens
+
+    async def get_client_info(self) -> Any:
+        return self._client_info
+
+    async def set_client_info(self, client_info: Any) -> None:
+        self._client_info = client_info

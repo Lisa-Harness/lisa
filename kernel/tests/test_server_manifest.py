@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from kernel.mcp_launch.policy import RuntimeKind
+from kernel.mcp_launch.policy import AuthKind, AuthSpec, RuntimeKind
 from kernel.mcp_launch.server_manifest import (
     load_mcp_server_manifest,
 )
@@ -196,6 +196,93 @@ servers:
         encoding="utf-8",
     )
     with pytest.raises(Exception, match="url"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_load_manifest_parses_bearer_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """auth: {type: bearer, token} parses with ${VAR} expansion."""
+    monkeypatch.setenv("GITHUB_TOKEN_TEST", "ghp_secret")
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: github
+    runtime_kind: http
+    url: https://mcp.github.com/mcp
+    auth:
+      type: bearer
+      token: "${GITHUB_TOKEN_TEST}"
+""",
+        encoding="utf-8",
+    )
+    specs, _ = load_mcp_server_manifest(manifest)
+    assert len(specs) == 1
+    auth = specs[0].auth
+    assert isinstance(auth, AuthSpec)
+    assert auth.kind is AuthKind.BEARER
+    assert auth.token == "ghp_secret"
+    assert auth.is_authenticated() is True
+
+
+def test_load_manifest_parses_oauth_pkce_auth(tmp_path: Path) -> None:
+    """auth: {type: oauth2-pkce} parses client_id/scopes/auth_server."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: github
+    runtime_kind: http
+    url: https://mcp.github.com/mcp
+    auth:
+      type: oauth2-pkce
+      client_id: my-app
+      scopes: ["repo", "read:org"]
+      auth_server: "https://github.com/login/oauth/authorize"
+""",
+        encoding="utf-8",
+    )
+    specs, _ = load_mcp_server_manifest(manifest)
+    auth = specs[0].auth
+    assert auth.kind is AuthKind.OAUTH2_PKCE
+    assert auth.client_id == "my-app"
+    assert auth.scopes == ("repo", "read:org")
+    assert auth.auth_server == "https://github.com/login/oauth/authorize"
+    assert auth.is_authenticated() is True
+
+
+def test_load_manifest_bearer_auth_requires_token(tmp_path: Path) -> None:
+    """auth: {type: bearer} without token raises."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: github
+    runtime_kind: http
+    url: https://mcp.github.com/mcp
+    auth:
+      type: bearer
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(Exception, match="requires 'token'"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_load_manifest_invalid_auth_type_raises(tmp_path: Path) -> None:
+    """An unknown auth type raises a manifest error."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: github
+    runtime_kind: http
+    url: https://mcp.github.com/mcp
+    auth:
+      type: bogus
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(Exception, match="invalid auth type"):
         load_mcp_server_manifest(manifest)
 
 

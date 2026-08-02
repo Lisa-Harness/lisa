@@ -16,8 +16,9 @@ import pytest
 
 from kernel.context import MCPContentRegistry, MCPInputGuard, MCPOutputGuard
 from kernel.models import SurfaceContext
+from kernel.mcp_launch.policy import AuthKind, AuthSpec
 from kernel.seams.protocols import ContentRegistry, GuardResult, InputGuard, OutputGuard
-from kernel.tools.mcp_client import MCPClientConfig
+from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
 
 
 def _make_config(
@@ -49,6 +50,54 @@ def test_mcp_content_registry_satisfies_protocol() -> None:
     cfg = _make_config()
     registry = MCPContentRegistry(cfg)
     assert isinstance(registry, ContentRegistry)
+
+
+# ── Connect-time auth resolution ────────────────────────────────────────────
+
+
+def test_build_http_client_merges_static_headers() -> None:
+    """Without an auth spec, static config headers flow through unchanged."""
+    pool = MCPToolPool([])
+    config = MCPClientConfig(
+        server_id="svc",
+        command="",
+        args=[],
+        url="http://127.0.0.1:9000/mcp",
+        headers={"X-Custom": "v"},
+    )
+    client = pool._build_http_client(config)
+    assert client.headers.get("X-Custom") == "v"
+    assert "Authorization" not in client.headers
+
+
+def test_build_http_client_resolves_bearer_at_connect() -> None:
+    """A bearer auth spec injects Authorization at connect time."""
+    pool = MCPToolPool([])
+    config = MCPClientConfig(
+        server_id="github",
+        command="",
+        args=[],
+        url="https://mcp.github.com/mcp",
+        headers={"X-Custom": "v"},
+        auth=AuthSpec(kind=AuthKind.BEARER, token="ghp_secret"),
+    )
+    client = pool._build_http_client(config)
+    assert client.headers.get("Authorization") == "Bearer ghp_secret"
+    assert client.headers.get("X-Custom") == "v"
+
+
+def test_build_http_client_oauth_attaches_provider() -> None:
+    """An oauth2-pkce auth spec attaches the SDK auth provider."""
+    pool = MCPToolPool([])
+    config = MCPClientConfig(
+        server_id="github",
+        command="",
+        args=[],
+        url="https://mcp.github.com/mcp",
+        auth=AuthSpec(kind=AuthKind.OAUTH2_PKCE, client_id="my-app", scopes=("repo",)),
+    )
+    client = pool._build_http_client(config)
+    assert client.auth is not None
 
 
 # ── Response parsing ────────────────────────────────────────────────────────

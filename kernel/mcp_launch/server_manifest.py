@@ -39,6 +39,8 @@ import yaml
 from kernel.mcp_launch.policy import (
     AliasSpec,
     AmbientSource,
+    AuthKind,
+    AuthSpec,
     CwdPolicy,
     EnvPolicy,
     LaunchTimeouts,
@@ -367,6 +369,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
 
     url: str | None = None
     headers: dict[str, str] = {}
+    auth = AuthSpec()
     if runtime_kind is RuntimeKind.HTTP:
         url = str(entry.get("url") or "").strip()
         if not url:
@@ -379,6 +382,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
                 f"servers[{index}] '{server_id}': 'headers' must be a mapping"
             )
         headers = {str(k): _expand_env_value(v) for k, v in headers_raw.items()}
+        auth = _parse_auth(entry.get("auth"), server_id, index, path)
 
     aliases = _parse_aliases(entry.get("aliases"), server_id, index, path)
     default_available_tools = _parse_default_available_tools(
@@ -413,12 +417,69 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         timeouts=timeouts,
         url=url,
         headers=headers,
+        auth=auth,
         warm=bool(entry.get("warm", False)),
         required=bool(entry.get("required", False)),
         disabled=False,
         aliases=aliases,
         default_available_tools=default_available_tools,
     )
+
+
+def _parse_auth(raw: Any, server_id: str, index: int, path: Path) -> AuthSpec:
+    """Parse the ``auth:`` block for a network MCP server entry.
+
+    Returns the default :class:`AuthSpec` (kind=``none``) when the block is
+    absent. Raises :class:`MCPServerManifestError` on invalid kinds or
+    missing required fields. ``${VAR}`` references in ``token`` /
+    ``client_id`` / ``auth_server`` are expanded in place.
+    """
+    if raw is None:
+        return AuthSpec()
+    if not isinstance(raw, dict):
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}' in {path}: 'auth' must be a mapping"
+        )
+    kind_raw = str(raw.get("type") or raw.get("kind") or "none").strip()
+    try:
+        kind = AuthKind(kind_raw)
+    except ValueError as exc:
+        valid = ", ".join(k.value for k in AuthKind)
+        raise MCPServerManifestError(
+            f"servers[{index}] '{server_id}': invalid auth type {kind_raw!r} "
+            f"(valid: {valid})"
+        ) from exc
+
+    if kind is AuthKind.BEARER:
+        token = _expand_env_value(raw.get("token") or "")
+        if not token:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': auth type 'bearer' requires 'token'"
+            )
+        return AuthSpec(kind=kind, token=token)
+
+    if kind is AuthKind.OAUTH2_PKCE:
+        client_id = _expand_env_value(raw.get("client_id") or "")
+        if not client_id:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': auth type 'oauth2-pkce' requires 'client_id'"
+            )
+        scopes_raw = raw.get("scopes") or []
+        if not isinstance(scopes_raw, list):
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': 'auth.scopes' must be a list"
+            )
+        auth_server = raw.get("auth_server")
+        if auth_server is not None:
+            auth_server = _expand_env_value(auth_server) or None
+        return AuthSpec(
+            kind=kind,
+            client_id=client_id,
+            scopes=tuple(str(s) for s in scopes_raw),
+            auth_server=auth_server,
+        )
+
+    return AuthSpec(kind=AuthKind.NONE)
 
 
 def _parse_tool_policy(raw: Any, server_id: str, index: int, path: Path) -> ToolPolicy:

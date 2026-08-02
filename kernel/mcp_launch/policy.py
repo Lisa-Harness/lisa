@@ -18,6 +18,7 @@ from enum import Enum
 __all__ = [
     "AliasSpec",
     "AmbientSource",
+    "AuthSpec",
     "CwdPolicy",
     "EnvPolicy",
     "LaunchTimeouts",
@@ -78,6 +79,59 @@ class ToolPolicy:
 
     denied_tools: list[str] = field(default_factory=list)
     """Denylist of tool names to strip from the catalog."""
+
+
+class AuthKind(str, Enum):
+    """How a network (HTTP) MCP server authenticates the client."""
+
+    NONE = "none"  # no auth — only allowed for loopback/allowlisted hosts
+    BEARER = "bearer"  # static bearer token, resolved at connect time
+    OAUTH2_PKCE = "oauth2-pkce"  # RFC 9728 OAuth 2.1 authorization-code + PKCE
+
+
+@dataclass(frozen=True, slots=True)
+class AuthSpec:
+    """Authentication for a network (runtime_kind=HTTP) MCP server.
+
+    Declared per-server in ``mcp_servers.yaml`` under ``auth:``. The manifest
+    loader expands ``${VAR}`` references (e.g. ``"${GITHUB_TOKEN}"``) before
+    building the spec. The compiler carries it onto
+    :class:`~kernel.tools.mcp_client.MCPClientConfig.auth`; the pool resolves
+    it at connect time.
+
+    Two first-class kinds:
+
+    - ``bearer``: a static ``Authorization: Bearer <token>`` header, resolved
+      at connect time (so a cold server re-reads the token on every connect).
+    - ``oauth2-pkce``: RFC 9728 OAuth 2.1 authorization-code + PKCE via the MCP
+      SDK's auth provider. **Warm-only** — the loopback redirect doesn't fit
+      per-turn cold spawns. ``auth_server`` may be omitted and is discovered
+      from the server URL's ``/.well-known/oauth-protection-metadata``.
+    """
+
+    kind: AuthKind = AuthKind.NONE
+    """How to authenticate. Default ``none`` (no auth)."""
+
+    token: str | None = None
+    """Bearer token (kind=BEARER only). ``${VAR}``-expanded at load time."""
+
+    client_id: str | None = None
+    """OAuth client id (kind=OAUTH2_PKCE only)."""
+
+    scopes: tuple[str, ...] = ()
+    """OAuth scopes to request (kind=OAUTH2_PKCE only)."""
+
+    auth_server: str | None = None
+    """Authorization server URL (kind=OAUTH2_PKCE only). When None, it is
+    discovered from the server URL's well-known metadata."""
+
+    def is_authenticated(self) -> bool:
+        """True when this spec provides a usable credential."""
+        if self.kind is AuthKind.BEARER:
+            return bool(self.token)
+        if self.kind is AuthKind.OAUTH2_PKCE:
+            return bool(self.client_id)
+        return False
 
 
 class AmbientSource(str, Enum):
@@ -272,6 +326,13 @@ class MCPServerSpec:
     headers: dict[str, str] = field(default_factory=dict)
     """HTTP headers for runtime_kind=HTTP (e.g. Authorization bearer token).
     ${VAR} expansion happens in the manifest loader before the spec is built."""
+
+    auth: AuthSpec = field(default_factory=AuthSpec)
+    """Authentication for runtime_kind=HTTP (static bearer via
+    :class:`AuthSpec`). Rides through to ``MCPClientConfig.auth`` and is
+    resolved at connect time. For non-loopback hosts, ``auth`` must be
+    authenticated (or explicitly ``none`` with an allowlisted host) or
+    compilation is rejected."""
 
     warm: bool = False
     """When True, this server is a candidate for the host-owned long-lived

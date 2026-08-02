@@ -28,6 +28,8 @@ import pytest
 from kernel.mcp_launch.compiler import compile_mcp_config
 from kernel.mcp_launch.policy import (
     AmbientSource,
+    AuthKind,
+    AuthSpec,
     MCPServerSpec,
     ProxyPolicy,
     RuntimeKind,
@@ -485,6 +487,43 @@ def test_compiler_carries_proxy_policy() -> None:
         runtime_kind=RuntimeKind.HTTP,
         url="https://mcp.mem0.ai/mcp",
         proxy_policy=policy,
+        auth=AuthSpec(kind=AuthKind.BEARER, token="secret"),
     )
     config = compile_mcp_config(spec)
     assert config.proxy_policy is policy
+
+
+def test_compiler_carries_auth_spec() -> None:
+    """compile_mcp_config carries the auth spec from spec to config."""
+    spec = MCPServerSpec(
+        server_id="github",
+        runtime_kind=RuntimeKind.HTTP,
+        url="https://mcp.github.com/mcp",
+        auth=AuthSpec(kind=AuthKind.BEARER, token="ghp_secret"),
+    )
+    config = compile_mcp_config(spec)
+    assert config.auth is spec.auth
+    assert config.auth.kind is AuthKind.BEARER
+    assert config.auth.token == "ghp_secret"
+
+
+def test_compiler_rejects_non_loopback_http_without_auth() -> None:
+    """A non-loopback HTTP server with no usable auth is rejected at compile."""
+    spec = MCPServerSpec(
+        server_id="github",
+        runtime_kind=RuntimeKind.HTTP,
+        url="https://mcp.github.com/mcp",
+    )
+    with pytest.raises(ValueError, match="non-loopback"):
+        compile_mcp_config(spec)
+
+
+def test_compiler_allows_loopback_http_without_auth() -> None:
+    """A loopback HTTP server compiles without auth."""
+    spec = MCPServerSpec(
+        server_id="local",
+        runtime_kind=RuntimeKind.HTTP,
+        url="http://127.0.0.1:8765/mcp",
+    )
+    config = compile_mcp_config(spec)
+    assert config.url == "http://127.0.0.1:8765/mcp"

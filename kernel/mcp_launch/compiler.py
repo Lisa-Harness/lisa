@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kernel.mcp_launch.policy import (
+    AuthKind,
     CwdPolicy,
     EnvPolicy,
     MCPServerSpec,
@@ -129,6 +130,9 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
     This is the only function that produces MCPClientConfig entries for
     MCPToolPool. The host calls this after registry approval.
     """
+    if spec.runtime_kind is RuntimeKind.HTTP:
+        _validate_http_auth(spec)
+
     # Resolve the effective data directory, applying an optional namespaced
     # subdir. A spec with data_dir=None (servers managing their own storage)
     # compiles without any data-dir injection.
@@ -183,9 +187,48 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
         ensure_data_dir=spec.ensure_data_dir,
         url=spec.url,
         headers=dict(spec.headers),
+        auth=spec.auth,
         warm=spec.warm,
         required=spec.required,
         aliases=spec.aliases,
+    )
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True for localhost / loopback hosts (no credential required)."""
+    host = host.strip().lower()
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0", "[::1]"}:
+        return True
+    return host.startswith("127.")
+
+
+def _validate_http_auth(spec: MCPServerSpec) -> None:
+    """Enforce the network-auth gate.
+
+    A non-loopback HTTP server **must** declare a usable ``auth:`` block, or
+    an explicit ``auth: {type: none}`` whose host is allowlisted. A server
+    that reaches a remote host without a credential is a config error, not a
+    silent fallback to anonymous — reject it at compile time.
+    """
+    url = spec.url or ""
+    host = url.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0]
+    if _is_loopback_host(host):
+        return
+
+    if spec.auth.is_authenticated():
+        return
+    if spec.auth.kind is AuthKind.NONE:
+        # Explicit opt-out is honored only for loopback hosts; a remote host
+        # must carry a credential (bearer or oauth2-pkce).
+        raise ValueError(
+            f"HTTP MCP server '{spec.server_id}' at {url} targets a non-loopback "
+            "host but declares no usable auth. Declare an 'auth:' block "
+            "(type: bearer | oauth2-pkce) to proceed."
+        )
+    raise ValueError(
+        f"HTTP MCP server '{spec.server_id}' at {url} targets a non-loopback "
+        f"host with incomplete auth (kind={spec.auth.kind.value}). Provide the "
+        "required credential fields."
     )
 
 
