@@ -4,6 +4,42 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+#### CLI host: flowing single-column transcript replaces the four-pane layout
+
+- **The terminal turn display is now one flowing column of transcript rows** —
+  no panes, headers, or boxes. Each stage event appends (or updates) one
+  left-aligned line; tool calls are one-liners that update in place as they
+  complete (`→ mcp read_file(path) ✓ 400ms`).
+- **The final answer is re-rendered clean on completion.** The streamed
+  answer is staged during generation but never shown as the final — on
+  completion the Live region tears down and a fully formatted Markdown Panel
+  renders the complete answer, so it reads cleanly instead of interspersed
+  with the tool calls that produced it.
+- **Thinking is interspersed, collapsible segments.** A reasoning model's
+  thinking becomes multiple transcript rows that interleave with the tool
+  calls in arrival order (a tool/model event closes the current segment so the
+  next reasoning opens a fresh one). `Esc+t` expands/collapses ALL visible
+  thinking segments together; each collapsed segment shows a compact
+  `▸ Thinking… N char` summary.
+- **Togglable call-stats summary.** After the answer, a summary line renders
+  (call count with ✓/✗, total model time, handoff note). `--debug` upgrades it
+  to a per-row trajectory table so the operator can audit the full turn.
+- **Three-tier detail surface for live rows.** Default is a clean view (stage
+  lines + tool one-liners with status glyphs). `Esc+d` toggles a power-user
+  tier that adds the graphic column back (iteration/tool pip counters,
+  duration sparklines, token-flow suffixes). `--debug` selects the full
+  operator rendering at construction (every bookkeeping stage event + the
+  debug-context panel), so the pane-era information density survives as
+  opt-in telemetry, not the default surface.
+- **Differentiators kept.** The live `[mode] → handoff` transition lines and
+  the fork fan-out per-child table — telemetry no competitor shows — survive
+  as flowing rows. The `▾ mode · model · tokens · ms` footer is unchanged.
+- The `TransportCallbacks` Protocol in `hosts/core/callbacks.py` is untouched;
+  this is a CLI render-layer cutover only (hard cutover per the project
+  contract — the pane machinery is deleted, not shimmed).
+
 ### Added
 
 #### `default_available_tools` for MCP-native tools

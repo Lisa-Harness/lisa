@@ -655,7 +655,7 @@ def _build_repl_prompt_session(
         multiline=True,
         key_bindings=bindings,
         prompt_continuation=[("class:prompt-continuation", "… ")],
-        bottom_toolbar=_repl_bottom_toolbar,
+        bottom_toolbar=lambda: _repl_bottom_toolbar(transport),
         style=Style.from_dict(_REPL_PROMPT_STYLE) if Style is not None else None,
     )
 
@@ -670,15 +670,18 @@ _REPL_PROMPT_STYLE = {
     "bottom-toolbar": "reverse",
     "bottom-toolbar.text": "#626262",
     "bottom-toolbar.metric": "bold #5fafff",
+    "bottom-toolbar.hint": "#878787",
 }
 
 
-def _repl_bottom_toolbar() -> Any:
+def _repl_bottom_toolbar(transport: RichTransport) -> Any:
     """Render the bottom toolbar: live char/line count + control hints.
 
-    Called by prompt_toolkit on every buffer mutation. Returns
+    Called by prompt_toolkit on every buffer mutation (and on explicit
+    invalidation from the Esc→d / Esc→t toggles). Returns
     ``FormattedText`` (a list of ``(style, text)`` tuples) so the toolbar
-    updates in real time as the user types.
+    updates in real time as the user types — and reflects the current
+    detail/thinking toggle state rather than a static hint string.
     """
     # Import inside the function so the module imports cleanly when
     # prompt_toolkit is absent (the toolbar is only used when it is present).
@@ -698,17 +701,34 @@ def _repl_bottom_toolbar() -> Any:
     char_count = len(text)
     line_count = text.count("\n") + 1 if text else 0
 
+    # Reflect the live toggle state in the hint segments so the toolbar
+    # doubles as a status indicator, not just a static cheat-sheet.
+    detail_tier = transport.detail
+    if detail_tier == "debug":
+        detail_label = "detail:debug"
+    elif detail_tier == "power":
+        detail_label = "detail:on"
+    else:
+        detail_label = "detail:off"
+    thinking_label = "thinking:off" if transport.thinking_collapsed else "thinking:on"
+
     return FormattedText(
         [
             (
                 "class:bottom-toolbar",
-                " Enter submit · Esc+Enter newline · Esc+t thinking · ↑/↓ history · Tab complete ",
+                " Enter submit · Esc+Enter newline · ↑/↓ history · Tab complete ",
             ),
             ("class:bottom-toolbar.text", "│ "),
+            ("class:bottom-toolbar.metric", detail_label),
+            ("class:bottom-toolbar.text", " · "),
+            ("class:bottom-toolbar.metric", thinking_label),
+            ("class:bottom-toolbar.text", " · "),
             (
                 "class:bottom-toolbar.metric",
                 f"{line_count} line{'s' if line_count != 1 else ''}, {char_count} char{'s' if char_count != 1 else ''}",
             ),
+            ("class:bottom-toolbar.text", " · "),
+            ("class:bottom-toolbar.hint", "Esc+d detail · Esc+t thinking"),
         ]
     )
 
@@ -718,9 +738,17 @@ def _build_repl_key_bindings(transport: RichTransport) -> Any:
 
     - Enter: submit the current buffer (chat-box semantics).
     - Esc→Enter: insert a newline (for multi-line input).
-    - Esc→t: toggle the thinking/streaming pane between collapsed (default)
-      and expanded. Lets the user inspect the model's reasoning without the
-      wall-of-text dominating the pane during generation.
+    - Esc→t: expand/collapse ALL visible thinking segments in the transcript.
+      Thinking is rendered as multiple interspersed rows that interleave with
+      the tool calls (a tool/model event closes the current segment). The
+      toggle flips every thinking row at once so the user can inspect the
+      model's reasoning across the whole turn without hunting for each segment.
+    - Esc→d: toggle the detail tier between clean (default) and power, which
+      adds the graphic column (pip counters, duration sparklines, token
+      suffixes) to each transcript row. No-op on the construction-only debug
+      tier. After toggling, the bottom toolbar is invalidated so its
+      ``detail:off/on/debug`` segment reflects the new tier immediately
+      rather than waiting for the next keystroke.
 
     Without these bindings, prompt_toolkit's default ``multiline=True``
     behaviour is the reverse (Enter inserts a newline; Esc→Enter submits),
@@ -741,8 +769,28 @@ def _build_repl_key_bindings(transport: RichTransport) -> Any:
     @bindings.add("escape", "t")
     def _toggle_thinking(event: Any) -> None:
         transport.toggle_thinking()
+        _invalidate_repl_toolbar(event)
+
+    @bindings.add("escape", "d")
+    def _toggle_detail(event: Any) -> None:
+        transport.toggle_detail()
+        _invalidate_repl_toolbar(event)
 
     return bindings
+
+
+def _invalidate_repl_toolbar(event: Any) -> None:
+    """Force prompt_toolkit to re-render the bottom toolbar after a toggle.
+
+    The toolbar callback fires automatically only on buffer mutations; the
+    detail/thinking toggles mutate transport state without touching the
+    buffer, so without an explicit invalidation the stale hint string stays
+    on screen until the user types again.
+    """
+    try:
+        event.app.invalidate()
+    except Exception:  # pylint: disable=broad-except
+        pass
 
 
 # ── Status line ──────────────────────────────────────────────────────

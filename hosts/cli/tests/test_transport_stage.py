@@ -1,11 +1,10 @@
 """Tests for the RichTransport ``on_stage`` rendering.
 
-Covers the detailed stage line and the fork fan-out per-child rendering
-that the kernel's ``on_stage`` telemetry hook drives.
+Covers the flowing-transcript stage rows and the fork fan-out per-child
+rendering that the kernel's ``on_stage`` telemetry hook drives.
 """
 
 from __future__ import annotations
-
 
 import io
 
@@ -13,13 +12,13 @@ import pytest
 from rich.console import Console
 from rich.text import Text
 
-from hosts.cli.transport import RichTransport
+from hosts.cli.transport import RichTransport, _Row
 
 
 @pytest.mark.asyncio
 async def test_on_stage_renders_detailed_suffix() -> None:
-    """A normal stage event renders ``stage: <label> (key=value, …)`` with
-    the structured metadata, skipping empty/zero values.
+    """Stage events append transcript rows; metadata suffixes render only on
+    the power/debug tiers.
     """
     console = Console(quiet=True, force_terminal=False)
     transport = RichTransport(console=console, debug=False)
@@ -32,95 +31,43 @@ async def test_on_stage_renders_detailed_suffix() -> None:
             "model_id": "haiku",
             "provider": "anthropic",
             "iteration": 1,
-            "tool_calls_so_far": 0,  # should be omitted (zero)
-            "tools_offered": True,  # not in the render allowlist
+            "tool_calls_so_far": 0,
         },
     )
-
-    # The spinner text is private; stop and inspect the thinking stage label
-    # by capturing a non-spinner render.
     transport.stop_thinking()
-    # When no spinner is active, on_stage prints the line inline.
     await transport.on_stage(
         "model_call_complete",
-        {
-            "mode_id": "default",
-            "model_id": "haiku",
-            "iteration": 1,
-            "tool_calls": 2,
-            "total_tokens": 120,
-            "duration_ms": 340,
-        },
+        {"mode_id": "default", "model_id": "haiku", "iteration": 1, "total_tokens": 120, "duration_ms": 340},
     )
+    # Rows accumulated in the transcript.
+    assert any(r.kind == "model" for r in transport._rows)
 
 
 @pytest.mark.asyncio
 async def test_on_stage_fork_renders_one_line_per_child() -> None:
-    """Fork fan-out events render one line per active child.
-
-    After fork_start + two fork_child_start events, the transport holds
-    one entry per child index. fork_child_complete updates each child's
-    status. fork_complete clears the fork state.
+    """Fork fan-out events track one entry per child index; fork_complete
+    keeps the per-child table visible.
     """
     console = Console(quiet=True, force_terminal=False)
     transport = RichTransport(console=console, debug=False)
     transport.start_thinking("model_call")
 
-    await transport.on_stage(
-        "fork_start",
-        {
-            "children": 2,
-            "targets": [
-                {"mode_id": "coding", "stage_id": "implement"},
-                {"mode_id": "markdown", "stage_id": ""},
-            ],
-        },
-    )
+    await transport.on_stage("fork_start", {"children": 2})
     assert transport._fork_total == 2
     assert transport._fork_children == {}
 
-    await transport.on_stage(
-        "fork_child_start",
-        {
-            "child_index": 0,
-            "mode_id": "coding",
-            "stage_id": "implement",
-            "query_preview": "write the thing",
-        },
-    )
-    await transport.on_stage(
-        "fork_child_start",
-        {
-            "child_index": 1,
-            "mode_id": "markdown",
-            "stage_id": "",
-            "query_preview": "doc it",
-        },
-    )
+    await transport.on_stage("fork_child_start", {"child_index": 0, "mode_id": "coding", "stage_id": "implement", "query_preview": "write the thing"})
+    await transport.on_stage("fork_child_start", {"child_index": 1, "mode_id": "markdown", "stage_id": "", "query_preview": "doc it"})
     assert set(transport._fork_children.keys()) == {0, 1}
     assert transport._fork_children[0]["status"] == "running"
-    assert transport._fork_children[1]["mode_id"] == "markdown"
 
-    await transport.on_stage(
-        "fork_child_complete",
-        {
-            "child_index": 0,
-            "mode_id": "coding",
-            "stage_id": "implement",
-            "status": "ok",
-            "duration_ms": 42,
-        },
-    )
+    await transport.on_stage("fork_child_complete", {"child_index": 0, "status": "ok", "duration_ms": 42})
     assert transport._fork_children[0]["status"] == "ok"
     assert transport._fork_children[0]["duration_ms"] == 42
 
     await transport.on_stage("fork_complete", {"children": 2, "ok": 1, "failed": 1})
-    # fork_complete keeps the per-child table visible so the user sees
-    # *which* children succeeded/failed, not just counts. The table is
-    # cleared by the next start_thinking (verified by the reset test).
     assert transport._fork_children != {}
     assert transport._fork_total == 0
-    # Re-running start_thinking clears the fork state.
     transport.start_thinking("dispatch")
     assert transport._fork_children == {}
 
@@ -146,20 +93,8 @@ async def test_render_fork_stage_format() -> None:
     transport = RichTransport(console=console, debug=False)
     transport._fork_total = 2
     transport._fork_children = {
-        0: {
-            "mode_id": "coding",
-            "stage_id": "implement",
-            "status": "running",
-            "query_preview": "write the thing",
-            "duration_ms": None,
-        },
-        1: {
-            "mode_id": "markdown",
-            "stage_id": "",
-            "status": "ok",
-            "query_preview": "",
-            "duration_ms": 120,
-        },
+        0: {"mode_id": "coding", "stage_id": "implement", "status": "running", "query_preview": "write the thing", "duration_ms": None},
+        1: {"mode_id": "markdown", "stage_id": "", "status": "ok", "query_preview": "", "duration_ms": 120},
     }
 
     text = transport._render_fork_stage()
@@ -167,63 +102,37 @@ async def test_render_fork_stage_format() -> None:
     lines = text.splitlines()
     assert lines[0] == "stage: fork (2 children)"
     assert "#0 coding · implement · running · write the thing" in lines[1]
-    # markdown has no stage_id, so no double-dot segment; ok child shows duration.
     assert "#1 markdown · ok · 120ms" in lines[2]
 
 
 @pytest.mark.asyncio
 async def test_on_stage_no_spinner_prints_inline() -> None:
-    """When no spinner is active, on_stage prints the stage line inline."""
+    """When no Live region is active, on_stage prints the row inline without raising."""
     console = Console(quiet=True, force_terminal=False)
     transport = RichTransport(console=console, debug=False)
-    # No start_thinking call — _status is None.
     assert transport._status is None
-
-    # Should not raise.
     await transport.on_stage("model_call", {"mode_id": "default", "iteration": 1})
 
 
 @pytest.mark.asyncio
 async def test_mode_prefix_tracked_from_model_call() -> None:
-    """model_call seeds _current_mode and the [mode] prefix appears on the
-    status line. mode_id is no longer buried in a suffix key=value list.
-    """
+    """model_call seeds _current_mode and the [mode] prefix appears on rows."""
     console = Console(quiet=True, force_terminal=False)
     transport = RichTransport(console=console, debug=False)
     transport.start_thinking("dispatch")
-    # Before any model_call, no mode prefix.
     assert transport._current_mode == ""
 
-    await transport.on_stage(
-        "model_call",
-        {
-            "mode_id": "coding",
-            "model_id": "haiku",
-            "provider": "anthropic",
-            "iteration": 1,
-        },
-    )
+    await transport.on_stage("model_call", {"mode_id": "coding", "model_id": "haiku", "provider": "anthropic", "iteration": 1})
     assert transport._current_mode == "coding"
 
-    line = transport._render_status_line(
-        "model_call",
-        {
-            "mode_id": "coding",
-            "model_id": "haiku",
-            "provider": "anthropic",
-            "iteration": 1,
-        },
-    )
-    # [coding] prefix present; mode_id no longer appears as a suffix key.
+    line = transport._render_status_line("model_call", {"mode_id": "coding"})
     assert line.startswith("[coding] ")
     assert "mode_id=" not in line
 
 
 @pytest.mark.asyncio
 async def test_mode_prefix_updates_on_mid_turn_handoff() -> None:
-    """A mid-turn handoff (tool_dispatch_complete with transition=handoff)
-    updates _current_mode so the [mode] prefix reflects the new owner.
-    """
+    """A mid-turn handoff updates _current_mode so the [mode] prefix reflects the new owner."""
     console = Console(quiet=True, force_terminal=False)
     transport = RichTransport(console=console, debug=False)
     transport.start_thinking("dispatch")
@@ -233,127 +142,70 @@ async def test_mode_prefix_updates_on_mid_turn_handoff() -> None:
 
     await transport.on_stage(
         "tool_dispatch_complete",
-        {
-            "tool": "transition_stage",
-            "tool_kind": "transition",
-            "transition": "handoff",
-            "handoff_to": "coding",
-            "ok": True,
-            "iteration": 1,
-        },
+        {"tool": "transition_stage", "tool_kind": "transition", "transition": "handoff", "handoff_to": "coding", "ok": True, "iteration": 1},
     )
     assert transport._current_mode == "coding"
-
     line = transport._render_status_line("model_call", {"mode_id": "coding"})
     assert line.startswith("[coding] ")
 
 
 @pytest.mark.asyncio
 async def test_tool_dispatch_renders_legible_kind_glyphs() -> None:
-    """tool_dispatch renders a glyph + kind word per tool_kind, not a flat
-    tool_kind=key=value suffix. operation → op, mcp_tool → mcp, transition
-    → handoff target.
-    """
+    """tool_dispatch renders a glyph + tool name per tool_kind."""
     console = Console(quiet=True, force_terminal=False)
     transport = RichTransport(console=console, debug=False)
-    transport.start_thinking("dispatch")
-    await transport.on_stage("model_call", {"mode_id": "coding", "iteration": 1})
+    transport._current_mode = ""
 
-    # operation — counts now render in the pane's right-aligned graphic
-    # column, not inline in the text. The text carries only the glyph +
-    # tool name.
-    line = transport._render_tool_dispatch(
-        {
-            "tool": "write_file",
-            "tool_kind": "operation",
-            "iteration": 1,
-            "tool_calls_so_far": 1,
-        }
-    )
-    assert line == "stage: tool_dispatch → op: write_file"
+    line = transport._render_tool_dispatch({"tool": "write_file", "tool_kind": "operation"})
+    assert line == "→ op write_file"
 
-    # mcp_tool — same: no inline pip counters in the text.
-    line = transport._render_tool_dispatch(
-        {
-            "tool": "brave_search",
-            "tool_kind": "mcp_tool",
-            "iteration": 2,
-            "tool_calls_so_far": 3,
-        }
-    )
-    assert line == "stage: tool_dispatch → mcp: brave_search"
+    line = transport._render_tool_dispatch({"tool": "brave_search", "tool_kind": "mcp_tool"})
+    assert line == "→ mcp brave_search"
 
-    # transition handoff — shows the target
-    line = transport._render_tool_dispatch(
-        {
-            "tool": "transition_stage",
-            "tool_kind": "transition",
-            "transition": "handoff",
-            "handoff_to": "markdown",
-        }
-    )
+    line = transport._render_tool_dispatch({"tool": "transition_stage", "tool_kind": "transition", "transition": "handoff", "handoff_to": "markdown"})
     assert "↦ transition_stage → markdown" in line
 
-    # transition fork — shows child count
-    line = transport._render_tool_dispatch(
-        {
-            "tool": "transition_stage",
-            "tool_kind": "transition",
-            "transition": "fork",
-            "fork_children": 3,
-        }
-    )
+    line = transport._render_tool_dispatch({"tool": "transition_stage", "tool_kind": "transition", "transition": "fork", "fork_children": 3})
     assert "↦ transition_stage fork (3 children)" in line
 
 
 @pytest.mark.asyncio
-async def test_fork_complete_keeps_per_child_table() -> None:
-    """fork_complete keeps the per-child table so the user sees which
-    children succeeded/failed, with ok/failed totals in the header.
+async def test_tool_row_updates_in_place_on_completion() -> None:
+    """tool_dispatch_complete updates the open tool row in place with its
+    status glyph and duration instead of appending a second row.
     """
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("model_call")
+
+    await transport.on_stage("tool_dispatch", {"tool": "read_file", "tool_kind": "mcp_tool", "path": "hosts/cli/transport.py"})
+    tool_rows_before = [r for r in transport._rows if r.kind == "tool"]
+    assert len(tool_rows_before) == 1
+    assert "…" not in tool_rows_before[0].text  # no status yet
+
+    await transport.on_stage("tool_dispatch_complete", {"tool": "read_file", "ok": True, "duration_ms": 400})
+    tool_rows_after = [r for r in transport._rows if r.kind == "tool"]
+    # Still exactly one tool row — updated in place, not appended.
+    assert len(tool_rows_after) == 1
+    assert tool_rows_after[0] is tool_rows_before[0]
+    assert "✓" in tool_rows_after[0].text
+    assert "400ms" in tool_rows_after[0].text
+
+
+@pytest.mark.asyncio
+async def test_fork_complete_keeps_per_child_table() -> None:
+    """fork_complete keeps the per-child table with ok/failed totals in the header."""
     console = Console(quiet=True, force_terminal=False)
     transport = RichTransport(console=console, debug=False)
     transport.start_thinking("dispatch")
 
     await transport.on_stage("fork_start", {"children": 2})
-    await transport.on_stage(
-        "fork_child_start",
-        {
-            "child_index": 0,
-            "mode_id": "coding",
-            "stage_id": "implement",
-            "query_preview": "write",
-        },
-    )
-    await transport.on_stage(
-        "fork_child_start",
-        {
-            "child_index": 1,
-            "mode_id": "markdown",
-            "stage_id": "",
-            "query_preview": "doc",
-        },
-    )
-    await transport.on_stage(
-        "fork_child_complete",
-        {
-            "child_index": 0,
-            "status": "ok",
-            "duration_ms": 42,
-        },
-    )
-    await transport.on_stage(
-        "fork_child_complete",
-        {
-            "child_index": 1,
-            "status": "no_tools",
-            "duration_ms": 30,
-        },
-    )
+    await transport.on_stage("fork_child_start", {"child_index": 0, "mode_id": "coding", "stage_id": "implement", "query_preview": "write"})
+    await transport.on_stage("fork_child_start", {"child_index": 1, "mode_id": "markdown", "stage_id": "", "query_preview": "doc"})
+    await transport.on_stage("fork_child_complete", {"child_index": 0, "status": "ok", "duration_ms": 42})
+    await transport.on_stage("fork_child_complete", {"child_index": 1, "status": "no_tools", "duration_ms": 30})
     await transport.on_stage("fork_complete", {"children": 2, "ok": 1, "failed": 1})
 
-    # Table survives fork_complete.
-    assert transport._fork_children != {}
     text = transport._render_fork_stage(summary=(1, 1))
     lines = text.splitlines()
     assert lines[0] == "stage: fork complete (1 ok, 1 failed)"
@@ -362,76 +214,47 @@ async def test_fork_complete_keeps_per_child_table() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stage_history_accumulates_play_by_play() -> None:
-    """on_stage accumulates every stage line into _stage_history so the
-    user sees the full turn trajectory, not just the last stage.
-
-    Previously the transport overwrote a single spinner line; the user
-    missed earlier stages if they looked away. Now each event is appended
-    to a history list and the active line is the most recent entry.
+async def test_transcript_accumulates_play_by_play() -> None:
+    """on_stage accumulates every event into _rows so the user sees the full
+    turn trajectory, with the last row active.
     """
     console = Console(quiet=True, force_terminal=False)
     transport = RichTransport(console=console, debug=False)
     transport.start_thinking("dispatch")
 
-    await transport.on_stage(
-        "model_call",
-        {"mode_id": "default", "model_id": "glm-5.2:cloud", "iteration": 1},
-    )
-    await transport.on_stage(
-        "tool_dispatch",
-        {"tool": "search_web", "tool_kind": "mcp_tool", "iteration": 1, "tool_calls_so_far": 1},
-    )
-    await transport.on_stage(
-        "tool_dispatch_complete",
-        {"tool": "search_web", "duration_ms": 1200},
-    )
-    await transport.on_stage(
-        "model_call",
-        {"mode_id": "default", "model_id": "glm-5.2:cloud", "iteration": 2},
-    )
+    await transport.on_stage("model_call", {"mode_id": "default", "model_id": "glm", "iteration": 1})
+    await transport.on_stage("tool_dispatch", {"tool": "search_web", "tool_kind": "mcp_tool", "iteration": 1})
+    await transport.on_stage("tool_dispatch_complete", {"tool": "search_web", "ok": True, "duration_ms": 1200})
+    await transport.on_stage("model_call", {"mode_id": "default", "model_id": "glm", "iteration": 2})
 
-    # All four stage events are retained in their panes — the user can
-    # scroll back and see the full turn trajectory. model_call events go
-    # to the model-calls pane; tool_dispatch events go to the tools pane.
-    # The iteration counter is in the graphic column. With no
-    # max_iterations in the payload (cap=0 → unlimited), the graphic is
-    # a compact ``N{count}`` counter, not a saturating bar.
-    assert len(transport._model_calls) >= 2  # two model_call events
-    assert len(transport._tools) >= 1  # tool_dispatch event
-    model_text = "\n".join(row.text for row in transport._model_calls)
-    assert "model_call" in model_text
-    tools_text = "\n".join(row.text for row in transport._tools)
-    assert "search_web" in tools_text
-    # iteration=2, cap=0 (unlimited) → "N2"
-    assert transport._model_calls[-1].graphic == "N2"
-    # The active pane is the one that received the last event.
-    assert transport._active_pane == "model_calls"
+    model_rows = [r for r in transport._rows if r.kind == "model"]
+    assert len(model_rows) >= 2
+    tool_text = "\n".join(r.text for r in transport._rows if r.kind == "tool")
+    assert "search_web" in tool_text
+    # The last row carries the active spinner.
+    assert transport._rows[-1].active is True
 
 
 @pytest.mark.asyncio
-async def test_start_thinking_clears_history() -> None:
-    """start_thinking resets all three panes so a new turn starts clean."""
+async def test_start_thinking_clears_transcript() -> None:
+    """start_thinking resets the transcript so a new turn starts clean, seeded
+    with the initial dispatch row.
+    """
     console = Console(quiet=True, force_terminal=False)
     transport = RichTransport(console=console, debug=False)
     transport.start_thinking("dispatch")
     await transport.on_stage("model_call", {"mode_id": "default", "iteration": 1})
-    assert transport._model_calls != []
+    assert len(transport._rows) > 1
 
     transport.start_thinking("dispatch")
-    assert transport._model_calls == []
-    assert transport._transitions == []
-    # The tools pane is seeded with the initial dispatch row, so it has
-    # exactly one entry (the seed), not the prior turn's tool rows.
-    assert len(transport._tools) == 1
-    assert transport._tools[0].text == "stage: dispatch"
+    # Fresh transcript: exactly the dispatch seed row.
+    assert len(transport._rows) == 1
+    assert transport._rows[0].text == "stage: dispatch"
 
 
 @pytest.mark.asyncio
 async def test_stop_thinking_clears_status_sentinel() -> None:
-    """stop_thinking leaves _status as None so REPL cancel handling and
-    the cancel tests' ``transport._status is None`` assertion still hold.
-    """
+    """stop_thinking leaves _status and _live as None."""
     console = Console(quiet=True, force_terminal=False)
     transport = RichTransport(console=console, debug=False)
     transport.start_thinking("dispatch")
@@ -442,7 +265,45 @@ async def test_stop_thinking_clears_status_sentinel() -> None:
     assert transport._live is None
 
 
-# ── stream pane streaming (on_text_chunk) ────────────────────────────
+# ── detail-tier tests ────────────────────────────────────────────────
+
+
+def test_detail_tier_defaults_clean() -> None:
+    """Default detail tier is clean; --debug selects debug at construction."""
+    console = Console(quiet=True, force_terminal=False)
+    assert RichTransport(console=console, debug=False)._detail == "clean"
+    assert RichTransport(console=console, debug=True)._detail == "debug"
+
+
+def test_toggle_detail_switches_clean_and_power() -> None:
+    """toggle_detail flips clean ↔ power; it is a no-op on the debug tier."""
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    assert transport._detail == "clean"
+    transport.toggle_detail()
+    assert transport._detail == "power"
+    transport.toggle_detail()
+    assert transport._detail == "clean"
+
+    debug_transport = RichTransport(console=console, debug=True)
+    debug_transport.toggle_detail()
+    assert debug_transport._detail == "debug"
+
+
+def test_row_line_hides_graphic_on_clean_shows_on_power() -> None:
+    """The graphic column renders only on power/debug tiers."""
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    r = _Row(kind="model", text="stage: model_call", graphic="●●○")
+    clean_line = transport._row_line(r)
+    assert "●" not in clean_line.plain
+
+    transport._detail = "power"
+    power_line = transport._row_line(r)
+    assert "●●○" in power_line.plain
+
+
+# ── thinking segments + answer staging (on_text_chunk) ──────────────
 
 
 def _make_stream_transport() -> RichTransport:
@@ -453,136 +314,208 @@ def _make_stream_transport() -> RichTransport:
 
 
 @pytest.mark.asyncio
-async def test_on_text_chunk_accumulates_into_stream_pane() -> None:
-    """Visible and reasoning deltas accumulate in the stream pane without
-    tearing down the Live region (the window stays fixed)."""
+async def test_reasoning_becomes_interspersed_thinking_row() -> None:
+    """Reasoning deltas append to an interspersed thinking row in the
+    transcript; the Live region stays up.
+    """
     transport = _make_stream_transport()
     transport.start_thinking("model_call")
     live = transport._live
 
     await transport.on_text_chunk("", reasoning="Let me think")
     await transport.on_text_chunk("", reasoning=" more")
-    await transport.on_text_chunk("The answer")
 
-    # All deltas buffered in arrival order into the single flowing stream.
-    assert transport._stream_text.plain == "Let me think moreThe answer"
-    # The Live region must NOT have been torn down by streaming.
+    thinking_rows = [r for r in transport._rows if r.kind == "thinking"]
+    assert len(thinking_rows) == 1
+    assert thinking_rows[0].text == "Let me think more"
     assert transport._live is live
     assert transport._status is not None
 
 
 @pytest.mark.asyncio
-async def test_on_text_chunk_reasoning_dimmed_but_shown() -> None:
-    """Reasoning deltas are rendered (dimmed) alongside the visible answer."""
+async def test_tool_call_opens_new_thinking_segment() -> None:
+    """A tool call between two reasoning deltas closes the open segment so the
+    next reasoning opens a fresh interspersed segment.
+    """
     transport = _make_stream_transport()
     transport.start_thinking("model_call")
+    await transport.on_text_chunk("", reasoning="first think")
+    await transport.on_stage("model_call", {"mode_id": "default", "iteration": 1})
+    await transport.on_stage("tool_dispatch", {"tool": "search", "tool_kind": "mcp_tool"})
+    await transport.on_stage("tool_dispatch_complete", {"tool": "search", "ok": True, "duration_ms": 10})
+    await transport.on_text_chunk("", reasoning="second think")
 
-    await transport.on_text_chunk("", reasoning="secret thinking")
-    await transport.on_text_chunk("visible answer")
-
-    # Both reasoning and visible answer are buffered in arrival order.
-    assert transport._stream_text.plain == "secret thinkingvisible answer"
+    thinking_rows = [r for r in transport._rows if r.kind == "thinking"]
+    assert len(thinking_rows) == 2
+    assert thinking_rows[0].text == "first think"
+    assert thinking_rows[1].text == "second think"
 
 
 @pytest.mark.asyncio
-async def test_start_thinking_resets_stream_pane() -> None:
-    """start_thinking clears the stream pane so a new turn starts fresh."""
+async def test_visible_answer_staged_not_rendered_as_final() -> None:
+    """The visible-answer delta is staged (for mid-turn error flush) and is
+    never rendered into the transcript — on_response renders the clean Panel.
+    """
     transport = _make_stream_transport()
     transport.start_thinking("model_call")
-    await transport.on_text_chunk("some streamed text")
-    assert transport._stream_text != Text()
+    await transport.on_text_chunk("draft answer")
 
-    transport.start_thinking("model_call")
-    assert transport._stream_text == Text()
+    assert transport._answer_staging.plain == "draft answer"
+    # No stream/thinking row carries the visible answer.
+    assert not any(r.kind == "thinking" and "draft answer" in r.text for r in transport._rows)
 
 
 @pytest.mark.asyncio
-async def test_on_response_discards_stream_and_renders_panel() -> None:
-    """on_response stops the Live region, clears the stream pane, and renders
-    the fully formatted answer panel — the streamed version is gone."""
+async def test_start_thinking_resets_staging_and_thinking() -> None:
+    """start_thinking clears staging and the transcript so a new turn is clean."""
     transport = _make_stream_transport()
     transport.start_thinking("model_call")
-    await transport.on_text_chunk("", reasoning="think")
+    await transport.on_text_chunk("", reasoning="some thinking")
+    await transport.on_text_chunk("some answer")
+    assert transport._answer_staging != Text()
+    assert any(r.kind == "thinking" for r in transport._rows)
+
+    transport.start_thinking("model_call")
+    assert transport._answer_staging == Text()
+    assert not any(r.kind == "thinking" for r in transport._rows)
+
+
+@pytest.mark.asyncio
+async def test_on_response_always_renders_clean_panel() -> None:
+    """on_response always renders the clean Markdown Panel from the full
+    response text — even when the turn streamed — so the final answer is
+    readable, not interspersed with the calls.
+    """
+    transport = _make_stream_transport()
+    transport.start_thinking("model_call")
+    await transport.on_text_chunk("", reasoning="thinking")
     await transport.on_text_chunk("draft answer")
 
     await transport.on_response("# Final Answer")
 
-    # Stream pane discarded, Live region stopped.
-    assert transport._stream_text == Text()
     assert transport._live is None
     assert transport._status is None
-    # The formatted Markdown panel was rendered (panel title in output).
+    assert transport._answer_staging == Text()
     assert "Final Answer" in transport.console.file.getvalue()
+    # The Response panel (border + title) is present.
+    assert "Response" in transport.console.file.getvalue()
 
 
 @pytest.mark.asyncio
-async def test_stream_pane_wraps_to_full_width() -> None:
-    """The stream buffer wraps across the console width instead of each delta
-    rendering as its own short line."""
-    sink = io.StringIO()
-    console = Console(file=sink, force_terminal=False, width=20)
-    transport = RichTransport(console=console, debug=False)
+async def test_on_response_renders_call_summary() -> None:
+    """After the answer panel, a compact call-stats summary line is rendered
+    when the turn had tool/model calls.
+    """
+    transport = _make_stream_transport()
     transport.start_thinking("model_call")
+    await transport.on_stage("model_call", {"mode_id": "default", "iteration": 1, "duration_ms": 500})
+    await transport.on_stage("model_call_complete", {"mode_id": "default", "iteration": 1, "duration_ms": 500})
+    await transport.on_stage("tool_dispatch", {"tool": "search", "tool_kind": "mcp_tool"})
+    await transport.on_stage("tool_dispatch_complete", {"tool": "search", "ok": True, "duration_ms": 200})
 
-    await transport.on_text_chunk("hello world")
-    await transport.on_text_chunk(" hello again")
+    out_before = transport.console.file.getvalue()
+    await transport.on_response("answer")
 
-    # A single flowing buffer wraps into multiple full-width lines.
-    wrapped = transport._stream_wrapped_lines()
-    # 22 chars at width 20 → 2 wrapped lines.
-    assert len(wrapped) >= 2
-    # Concatenated wrapped text equals the full buffered content.
-    assert "".join(line.plain for line in wrapped) == "hello world hello again"
-
-
-# ── thinking pane collapsed/expanded (Esc+t toggle) ─────────────────
+    out_after = transport.console.file.getvalue()[len(out_before):]
+    # The summary mentions the call count.
+    assert "1 call" in out_after
+    assert "✓" in out_after
 
 
 @pytest.mark.asyncio
-async def test_thinking_pane_collapsed_by_default() -> None:
-    """The stream pane defaults to a compact summary, not the full reasoning."""
+async def test_on_response_debug_tier_renders_trajectory_table() -> None:
+    """On the debug tier the call summary is a per-row trajectory table."""
+    sink = io.StringIO()
+    console = Console(file=sink, force_terminal=False, width=100)
+    transport = RichTransport(console=console, debug=True)
+    transport.start_thinking("model_call")
+    await transport.on_stage("tool_dispatch", {"tool": "search", "tool_kind": "mcp_tool"})
+    await transport.on_stage("tool_dispatch_complete", {"tool": "search", "ok": True, "duration_ms": 200})
+
+    await transport.on_response("answer")
+
+    assert "Turn Trajectory" in sink.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_stop_thinking_does_not_flush_answer() -> None:
+    """stop_thinking flushes the transcript rows but NOT the staged answer —
+    the clean Panel is rendered by on_response, not the stream.
+    """
+    transport = _make_stream_transport()
+    transport.start_thinking("model_call")
+    await transport.on_text_chunk("the staged answer")
+
+    transport.stop_thinking()
+    assert "the staged answer" not in transport.console.file.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_on_error_flushes_partial_answer() -> None:
+    """On a mid-turn error, the partial staged answer flushes to scrollback so
+    partial work isn't silently lost.
+    """
+    transport = _make_stream_transport()
+    transport.start_thinking("model_call")
+    await transport.on_text_chunk("partial answer")
+
+    await transport.on_error("boom")
+
+    assert "partial answer" in transport.console.file.getvalue()
+    assert "Error" in transport.console.file.getvalue()
+
+
+# ── thinking collapsed/expanded (Esc+t toggle) ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_thinking_rows_collapsed_by_default() -> None:
+    """Thinking rows default to a compact summary (collapsed)."""
     transport = _make_stream_transport()
     transport.start_thinking("model_call")
     await transport.on_text_chunk("", reasoning="a long wall of reasoning text")
-    await transport.on_text_chunk(" visible answer")
 
-    # Collapsed by default.
     assert transport.thinking_collapsed is True
-    # The line count is 1 (the summary), not the full wrapped buffer.
-    assert transport._stream_line_count() == 1
+    row = next(r for r in transport._rows if r.kind == "thinking")
+    line = transport._row_line(row)
+    assert "Thinking…" in line.plain
+    assert "a long wall of reasoning text" not in line.plain
 
 
 @pytest.mark.asyncio
-async def test_toggle_thinking_expands_and_collapses() -> None:
-    """toggle_thinking flips the collapsed flag and refreshes the Live region."""
+async def test_toggle_thinking_expands_and_collapses_all_segments() -> None:
+    """toggle_thinking flips every thinking row's expand state at once
+    (segments are interspersed; the toggle is global).
+    """
     transport = _make_stream_transport()
     transport.start_thinking("model_call")
-    await transport.on_text_chunk("", reasoning="some thinking")
-    assert transport.thinking_collapsed is True
+    await transport.on_text_chunk("", reasoning="first think")
+    await transport.on_stage("model_call", {"mode_id": "default", "iteration": 1})
+    await transport.on_text_chunk("", reasoning="second think")
 
-    # Expand.
+    thinking_rows = [r for r in transport._rows if r.kind == "thinking"]
+    assert len(thinking_rows) == 2
+    assert all(not r.thinking_expanded for r in thinking_rows)
+
     transport.toggle_thinking()
     assert transport.thinking_collapsed is False
-    # Expanded: the line count reflects the actual wrapped buffer, not 1.
-    assert transport._stream_line_count() >= 1
+    assert all(r.thinking_expanded for r in thinking_rows)
+    # Expanded rows show the full body.
+    assert "first think" in transport._row_line(thinking_rows[0]).plain
 
-    # Collapse again.
     transport.toggle_thinking()
     assert transport.thinking_collapsed is True
-    assert transport._stream_line_count() == 1
+    assert all(not r.thinking_expanded for r in thinking_rows)
 
 
-# ── compact (short-terminal) layout ──────────────────────────────────
+# ── live height ───────────────────────────────────────────────────────
 
 
-def test_live_height_compact_threshold() -> None:
-    """Short terminals (below the threshold) collapse to a compact layout."""
+def test_live_height_floor_and_reserve() -> None:
+    """Live height is terminal height minus the reserve, floored at the minimum."""
     console = Console(quiet=True, force_terminal=False)
     transport = RichTransport(console=console, debug=False)
-    # Rich's console.size setter takes a (width, height) tuple. A height of
-    # 8 lines is below _COMPACT_HEIGHT_THRESHOLD (12) → compact.
-    transport.console.size = (80, 8)
-    assert transport._live_height() == 0
-    # A normal height (24) keeps the three-pane layout.
     transport.console.size = (80, 24)
-    assert transport._live_height() > 0
+    assert transport._live_height() == 24 - 4
+    transport.console.size = (80, 5)
+    assert transport._live_height() == 6
