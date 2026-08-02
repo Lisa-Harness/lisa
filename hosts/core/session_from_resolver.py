@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 # Blocks that may carry a ``from:`` directive. Each must be a top-level key of
 # the v2 session manifest whose value is itself a mapping (a "block").
-_FROM_BLOCK_NAMES: tuple[str, ...] = ("resources", "providers", "routing", "context")
+_FROM_BLOCK_NAMES: tuple[str, ...] = ("resources", "providers", "routing", "context", "execution")
 
 # The single accepted wrapper tag for ``body: mode: context``.
 _PACK_SESSION_BODY_TAG = "pack_session_body"

@@ -282,6 +282,9 @@ def _fork_child_budget(turn_budget: TurnBudget | None, n: int) -> TurnBudget | N
     return TurnBudget(
         max_tool_calls=(turn_budget.max_tool_calls // n if turn_budget.max_tool_calls else 0),
         max_total_tokens=(turn_budget.max_total_tokens // n if turn_budget.max_total_tokens else 0),
+        max_completion_tokens=(
+            turn_budget.max_completion_tokens // n if turn_budget.max_completion_tokens else 0
+        ),
         max_wall_ms=(turn_budget.max_wall_ms // n if turn_budget.max_wall_ms else 0),
     )
 

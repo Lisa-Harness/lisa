@@ -250,7 +250,9 @@ class SessionExecutionRequest(_StrictSessionModel):
     max_model_calls: int | None = Field(default=None, ge=1)
     max_capability_calls: int | None = Field(default=None, ge=1)
     max_total_tokens: int | None = Field(default=None, ge=1)
+    max_completion_tokens: int | None = Field(default=None, ge=1)
     max_wall_ms: int | None = Field(default=None, ge=1)
+    max_session_tokens: int | None = Field(default=None, ge=1)
     force_final_on_exhausted: bool | None = None
     capabilities: dict[str, SessionCapabilityExecutionRequest] = Field(default_factory=dict)
 

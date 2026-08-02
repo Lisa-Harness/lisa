@@ -1403,6 +1403,7 @@ async def run_turn(
             turn_budget = TurnBudget(
                 max_tool_calls=execution_policy.max_capability_calls or 0,
                 max_total_tokens=execution_policy.max_total_tokens or 0,
+                max_completion_tokens=execution_policy.max_completion_tokens or 0,
                 max_wall_ms=execution_policy.max_wall_ms or 0,
             )
 

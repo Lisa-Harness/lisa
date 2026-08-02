@@ -167,7 +167,9 @@ def test_compile_session_plan_accepts_execution_request_block() -> None:
             "  max_model_calls: 12\n"
             "  max_capability_calls: 20\n"
             "  max_total_tokens: 40000\n"
+            "  max_completion_tokens: 500000\n"
             "  max_wall_ms: 180000\n"
+            "  max_session_tokens: 15000000\n"
             "  capabilities:\n"
             "    fetch_page:\n"
             "      max_invocations_per_turn: 6\n"
@@ -179,7 +181,9 @@ def test_compile_session_plan_accepts_execution_request_block() -> None:
     assert plan.manifest.execution.max_model_calls == 12
     assert plan.manifest.execution.max_capability_calls == 20
     assert plan.manifest.execution.max_total_tokens == 40_000
+    assert plan.manifest.execution.max_completion_tokens == 500_000
     assert plan.manifest.execution.max_wall_ms == 180_000
+    assert plan.manifest.execution.max_session_tokens == 15_000_000
     assert plan.manifest.execution.capabilities["fetch_page"].max_invocations_per_turn == 6
 
 

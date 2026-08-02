@@ -454,7 +454,7 @@ A user session can pull whole blocks from a pack's bundled session file (`<pack_
 
 ### `from:` (block inheritance)
 
-Usable under any of `resources`, `providers`, `routing`, or `context`. The block is the **unit of inheritance** — there is no per-field merge. The named block is pulled wholesale from the referenced pack session.
+Usable under any of `resources`, `providers`, `routing`, `context`, or `execution`. The block is the **unit of inheritance** — there is no per-field merge. The named block is pulled wholesale from the referenced pack session.
 
 ```yaml
 routing:

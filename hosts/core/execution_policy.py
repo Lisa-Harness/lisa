@@ -64,6 +64,10 @@ def resolve_execution_policy(
             default_policy.max_total_tokens,
             session_request.max_total_tokens,
         ),
+        max_completion_tokens=tighten_limit(
+            default_policy.max_completion_tokens,
+            session_request.max_completion_tokens,
+        ),
         max_wall_ms=tighten_limit(default_policy.max_wall_ms, session_request.max_wall_ms),
         force_final_on_exhausted=force_final,
         capability_limits=capability_limits,

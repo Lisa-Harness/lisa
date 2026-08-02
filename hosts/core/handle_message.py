@@ -649,6 +649,26 @@ async def _execute_mode_turn(
     if mode_support_gap(mode) is not None:
         return _handle_unsupported_mode(runtime, message, mode, query)
 
+    # Pre-turn session budget gate. When the session has declared a
+    # ``max_session_tokens`` cap and the accumulated session total (across
+    # prior turns in this session) already meets or exceeds it, block the
+    # turn before any model call — the user must start a fresh session or
+    # raise the cap rather than continue burning tokens.
+    max_session_tokens = runtime.session_plan.manifest.execution.max_session_tokens
+    if max_session_tokens and runtime.tokens.session_total_tokens >= max_session_tokens:
+        used = runtime.tokens.session_total_tokens
+        message_text = (
+            f"Session token budget exhausted ({used:,} / {max_session_tokens:,} tokens). "
+            "Start a new session (or raise `max_session_tokens` in your session context) "
+            "to continue."
+        )
+        logger.warning(
+            "session token budget exhausted: used=%d cap=%d; blocking turn",
+            used,
+            max_session_tokens,
+        )
+        return message_text
+
     # Resolve the model for this turn.
     from hosts.core.commands import _resolve_model as _resolve_model_cmd
 

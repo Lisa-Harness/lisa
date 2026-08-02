@@ -14,10 +14,10 @@ from hosts.core.execution_policy import (
 def test_default_interactive_execution_policy_matches_contract() -> None:
     policy = default_interactive_execution_policy()
 
-    assert policy.max_model_calls == 20
-    assert policy.max_capability_calls == 30
-    assert policy.max_total_tokens == 50_000
-    assert policy.max_wall_ms == 300_000
+    assert policy.max_model_calls == 500
+    assert policy.max_capability_calls == 500
+    assert policy.max_total_tokens == 1_000_000
+    assert policy.max_wall_ms == 3_600_000
     assert policy.force_final_on_exhausted is True
 
 

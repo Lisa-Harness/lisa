@@ -348,6 +348,13 @@ def budget_forces_final(
         return False
     if turn_budget.max_tool_calls and state.total_tool_calls >= turn_budget.max_tool_calls:
         return True
+    # Completion-based token rail: measures actual model work (output tokens),
+    # not context re-send. ``max_total_tokens`` is the cumulative fallback for
+    # hosts/sessions that still want a whole-turn envelope.
+    if turn_budget.max_completion_tokens and state.total_completion_tokens >= (
+        turn_budget.max_completion_tokens
+    ):
+        return True
     if turn_budget.max_total_tokens and state.total_tokens >= turn_budget.max_total_tokens:
         return True
     if turn_budget.max_wall_ms:

@@ -25,6 +25,16 @@ routing:
     - followed by
     - based on
     - once
+execution:
+  # Working session token budget (cumulative across the session's turns).
+  # 15M is sized from docs/TOKEN_BUDGET.md: a ~3M max-intensity turn × 5,
+  # below the 19.26M inflated 2026-08-01 baseline. Blocks further turns
+  # pre-turn once the running session total is exhausted.
+  max_session_tokens: 15000000
+  # Completion-based per-turn token rail: bounds actual model work (output
+  # tokens), not cumulative context re-send. Iterations remain the primary
+  # turn-length governor.
+  max_completion_tokens: 500000
 context:
   sources:
     - rule_id: default

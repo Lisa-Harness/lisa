@@ -196,6 +196,64 @@ def test_from_pulls_routing_block(core_pack_root: Path) -> None:
     )
 
 
+def test_from_pulls_execution_block(tmp_path: Path) -> None:
+    """``execution: from:`` substitutes the pack's execution block wholesale.
+
+    Uses a self-contained pack root (the shared ``_core_pack_session_text``
+    fixture has a pre-existing YAML-indent bug that breaks every ``from:``
+    test; this test does not depend on it).
+    """
+
+    pack_root = tmp_path / "lisa_pack_core"
+    pack_root.mkdir()
+    (pack_root / "pyproject.toml").write_text(
+        '[project]\nname = "lisa-pack-core"\nversion = "0.0.0"\n', encoding="utf-8"
+    )
+    _write_pack_session(
+        pack_root,
+        "default",
+        dedent(
+            """\
+            ---
+            schema_version: 2
+            name: core-default
+            surface:
+              type: personal_dm
+              id: host-console
+              memory_scope: personal
+            execution:
+              max_session_tokens: 15000000
+              max_completion_tokens: 500000
+            ---
+            # Core session body
+            """
+        ),
+    )
+
+    user_text = dedent(
+        """\
+        ---
+        schema_version: 2
+        name: mine
+        surface: { type: personal_dm, id: host-console, memory_scope: personal }
+        execution:
+          from:
+            pack: lisa-pack-core
+            session: default
+        ---
+        # My session
+        """
+    )
+    resolved = resolve_session_from_directives(
+        text=user_text,
+        source_uri="workspace:mine.md",
+        pack_session_lookup=_lookup_for(pack_root),
+    )
+    plan = compile_session_plan(text=resolved, source_uri="workspace:mine.md")
+    assert plan.manifest.execution.max_session_tokens == 15_000_000
+    assert plan.manifest.execution.max_completion_tokens == 500_000
+
+
 def test_from_accepts_bare_pack_slug(core_pack_root: Path) -> None:
     """Both ``lisa-pack-core`` and the bare slug ``core`` resolve to the same pack."""
 
