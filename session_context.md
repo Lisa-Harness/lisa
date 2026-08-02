@@ -31,8 +31,8 @@ resources:
         base_branch: main
       lisa-pack-markdown:
         forge_max_completion_tokens: 10000
-        forge_max_document_chars: 100000
-        forge_max_document_chars_with_sources: 250000
+        forge_max_document_chars: 750000
+        forge_max_document_chars_with_sources: 1000000
       lisa-pack-memory:
         memory_distill_max_tokens: 7500
     include:
