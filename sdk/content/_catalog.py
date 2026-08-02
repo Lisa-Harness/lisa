@@ -470,9 +470,32 @@ def _load_session_provider_selections() -> dict[str, dict[str, str]]:
 
 
 def _infer_content_provider_id(root: Path) -> str:
-    """Infer a stable provider id from a content sub-root path."""
+    """Infer a stable provider id from a content sub-root path.
+
+    The authoritative source is the distribution package name declared in the
+    content root's ``pyproject.toml`` (``[project] name``, e.g.
+    ``lisa-pack-memory``). The session manifest's
+    ``resources.packs.configuration`` block is keyed by that same distribution
+    name, and ``SessionPackConfigurationResolver.for_pack`` looks ops up by
+    ``effective_provider_id()``. When inference returned the bare directory
+    slug (``memory``) instead of the distribution name (``lisa-pack-memory``),
+    the resolver silently dropped the pack's config — which left
+    ``synthesize_and_store_learning`` with the 512-token module fallback
+    instead of the manifest's ``memory_distill_max_tokens``, truncating the
+    distillation JSON mid-fact on every learn turn (2026-08-02 incident).
+
+    Falls back to the path-guess heuristic only when no readable
+    ``pyproject.toml`` sits at the content root. This keeps synthetic test
+    roots (no ``pyproject.toml``) working unchanged.
+    """
 
     resolved = root.resolve()
+    # The content root is the parent of the operations/tools/modes sub-root.
+    pyproject = resolved.parent / "pyproject.toml"
+    dist_name = _read_distribution_name(pyproject)
+    if dist_name:
+        return _normalize_provider_id(dist_name)
+
     raw_candidates = [
         resolved.parent.name,
         resolved.parent.parent.name,
@@ -483,6 +506,31 @@ def _infer_content_provider_id(root: Path) -> str:
         if normalized and normalized not in {"modes", "operations", "tools", "content"}:
             return normalized
     return ""
+
+
+def _read_distribution_name(pyproject: Path) -> str:
+    """Return the ``[project] name`` from a content-root pyproject, or ''.
+
+    Isolated so the inference path stays testable without a real pack on disk.
+    Returns the empty string for a missing/unreadable/parseable file or a
+    ``pyproject.toml`` with no ``[project] name`` rather than raising — the
+    caller falls back to the path-guess heuristic.
+    """
+    import tomllib  # noqa: PLC0415
+
+    if not pyproject.is_file():
+        return ""
+    try:
+        payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    project = payload.get("project") if isinstance(payload, dict) else None
+    if not isinstance(project, dict):
+        return ""
+    name = project.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return ""
+    return name.strip()
 
 
 def _normalize_provider_id(raw: str) -> str:
