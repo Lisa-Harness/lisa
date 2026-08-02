@@ -33,7 +33,7 @@ from kernel.models import (
     OperationResult,
     TurnBudget,
 )
-from kernel.tools.mcp_client import MCPToolPool
+from kernel.tools.mcp_client import MCPToolPool, bare_tool_name
 
 if TYPE_CHECKING:
     from kernel.turn_runner import TurnHooks
@@ -206,7 +206,21 @@ async def _run_fork_child_turn(
         # landed on disk yet the ``tool_call_count == 0`` guard passed it
         # as ``ok``. Catch it here.
         action_tool_ids = _fork_mode_action_tool_ids(target.mode_id)
-        if action_tool_ids and not (child_result.called_tool_names & action_tool_ids):
+        # Namespace-aware match: the authored ``action_tool_ids`` are bare
+        # front-matter names (``read_file``, ``write_file``, …) while the
+        # dispatched ``called_tool_names`` are namespaced MCP ids
+        # (``lisa-storage.read_file``) when the tool was merged into the
+        # mode's allowlist via the ambient ``default_available_tools``
+        # contract. A plain ``set & set`` intersection is empty in that
+        # case, false-flagging every fork child that legitimately used its
+        # ambient storage tools as ``no_tools`` (the 2026-08-02 fan-out
+        # regression). Strip the ``server_id.`` prefix from each called
+        # name before intersecting so a namespaced call matches its bare
+        # authored action tool. Bare dispatched names (e.g.
+        # ``synthesize_and_store_learning``, ``recall_memory``) are
+        # unchanged by ``bare_tool_name``.
+        called_bare = {bare_tool_name(n) for n in child_result.called_tool_names}
+        if action_tool_ids and not (called_bare & action_tool_ids):
             _flog.warning(
                 "fork child %s made %d tool call(s) but none were its "
                 "mode's authored action tools %s (called: %s); marking "

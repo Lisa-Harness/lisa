@@ -1893,6 +1893,67 @@ async def test_run_turn_fork_marks_no_tools_child_when_action_tool_skipped() -> 
 
 
 @pytest.mark.asyncio
+async def test_run_turn_fork_namespaced_action_tool_not_flagged_no_tools() -> None:
+    """A fork child that calls its mode's authored action tool under the
+    ambient namespaced form (``lisa-storage.write_file`` for markdown's
+    authored ``write_file``) is NOT flagged ``no_tools``.
+
+    Regression for the 2026-08-02 fan-out failure: the ambient
+    ``default_available_tools`` contract merges ``lisa-storage.read_file``
+    / ``lisa-storage.write_file`` into a mode's effective allowlist, so the
+    model dispatches the namespaced form. The authored action-tool set is
+    the bare front-matter name (``write_file``), and a plain
+    ``called_tool_names & action_tool_ids`` intersection was empty, false-
+    flagging every fork child that legitimately used its ambient storage
+    tools. The validator strips the ``server_id.`` prefix before matching.
+    """
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "fork:markdown"}',
+                        },
+                    }
+                ],
+            )
+        # The markdown child calls its action tool under the namespaced
+        # ambient form (lisa-storage.write_file). Its bare authored name
+        # is ``write_file``; the validator must recognize the match.
+        return _StubCompletion(
+            content="Done — wrote it to disk.",
+            tool_calls=[
+                {
+                    "id": "call_2",
+                    "function": {
+                        "name": "lisa-storage.write_file",
+                        "arguments": '{"path": "doc.md", "content": "..."}',
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(mode_id="default", query="write a markdown guide", hooks=hooks)
+
+    assert result.fork_results is not None
+    assert len(result.fork_results) == 1
+    child = result.fork_results[0]
+    # The child called its mode's action tool (write_file) under the
+    # namespaced ambient form, so it must be ok — not no_tools.
+    assert child.status == "ok"
+    assert child.target.mode_id == "markdown"
+
+
+@pytest.mark.asyncio
 async def test_run_turn_emits_model_call_stage_events() -> None:
     """The on_stage hook fires model_call and model_call_complete around
     each model completion, carrying iteration and token metadata.
