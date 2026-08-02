@@ -101,6 +101,7 @@ async def test_boot_load_resumes_active_instance(tmp_path: Path) -> None:
 
     # Construct a fresh runtime — boot-load should find the instance.
     fresh = _make_runtime(tmp_path)
+    fresh._boot_load_active_workflow_instance()  # pylint: disable=protected-access
 
     assert fresh._active_workflow_instance is not None
     resumed = fresh._active_workflow_instance
@@ -113,6 +114,7 @@ async def test_boot_load_resumes_active_instance(tmp_path: Path) -> None:
 def test_boot_load_no_active_instance_keeps_start_mode(tmp_path: Path) -> None:
     """When no instance is in the store, ``current_mode_id`` stays at start_mode."""
     runtime = _make_runtime(tmp_path)
+    runtime._boot_load_active_workflow_instance()  # pylint: disable=protected-access
     assert runtime._active_workflow_instance is None
     # The plan's default start_mode (default) is preserved.
     assert runtime.current_mode_id == "default"

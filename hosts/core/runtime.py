@@ -144,19 +144,6 @@ class HostRuntime:
             session_request=self.session_plan.manifest.execution,
         )
 
-        # ── Session routing vocabulary ────────────────────────────────
-        # Inject the session-authored sequential-connector list into the
-        # kernel registry so the routing-hint generator and the plan-mode
-        # planner share one vocabulary source. Empty list (the default)
-        # resets to the historical built-in set; sessions opt into richer
-        # coverage via ``routing.sequential_connectors`` front matter.
-        from kernel.routing_vocabulary import register_routing_vocabulary  # noqa: PLC0415
-
-        register_routing_vocabulary(
-            sequential_connectors=self.session_plan.manifest.routing.sequential_connectors,
-            resume_phrases=self.session_plan.manifest.routing.resume_phrases,
-        )
-
         # ── Cached provider clients ───────────────────────────────────
         self._azure_client: Any = None
         self._openai_client: Any = None
@@ -273,11 +260,6 @@ class HostRuntime:
         self.workflow_instance_store = FileWorkflowInstanceStore(
             self.data_dir / "workflow-instances.json"
         )
-        # Boot-load: resume a mid-flight workflow if one is durable. The
-        # ``current_mode_id`` static init above (from ``start_mode``) is
-        # overridden when an active instance is resuming, so the first
-        # post-restart turn starts in the instance's current step's mode.
-        self._boot_load_active_workflow_instance()
 
         # ── Token usage handler ───────────────────────────────────────
         # The durable JSONL appender for ``TokenUsageEvent`` payloads. The

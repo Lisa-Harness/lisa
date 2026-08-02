@@ -262,6 +262,7 @@ def build_content_mcp_config(
             str(data_dir),
         ],
         env=env,
+        runtime_kind="python",
     )
 
 
@@ -308,6 +309,7 @@ def build_catalog_mcp_config(*, content_config: MCPClientConfig, data_dir: Path)
             str(data_dir),
         ],
         env=env,
+        runtime_kind="python",
     )
 
 
@@ -386,8 +388,28 @@ def setup_framework(
     are reused instead of recomputed. When ``None``, this function calls
     :func:`discover_framework` internally (back-compat for standalone
     callers like tests).
+
+    This function is also the home for kernel-state side effects that were
+    previously in ``HostRuntime.__init__``: the session routing-vocabulary
+    registration (a kernel module-global mutation) and the durable
+    workflow-instance boot-load (file I/O + ``current_mode_id`` override).
+    Keeping construction side-effect-free means ``HostRuntime(config)`` is
+    pure and ``setup_framework`` owns all kernel/world mutation.
     """
     data_dir = runtime.data_dir
+
+    # ── Session routing vocabulary ────────────────────────────────────
+    # Inject the session-authored sequential-connector list into the
+    # kernel registry so the routing-hint generator and the plan-mode
+    # planner share one vocabulary source. Empty list (the default)
+    # resets to the historical built-in set; sessions opt into richer
+    # coverage via ``routing.sequential_connectors`` front matter.
+    from kernel.routing_vocabulary import register_routing_vocabulary  # noqa: PLC0415
+
+    register_routing_vocabulary(
+        sequential_connectors=runtime.session_plan.manifest.routing.sequential_connectors,
+        resume_phrases=runtime.session_plan.manifest.routing.resume_phrases,
+    )
 
     if discovery is None:
         discovery = discover_framework(runtime, seed_lock=True)
@@ -454,6 +476,14 @@ def setup_framework(
     set_production_extension_evidence_builder(
         excluded_packs=disabled_packs,
     )
+
+    # ── Durable workflow-instance boot-load ──────────────────────────
+    # Resume a mid-flight workflow if one is durable. The
+    # ``current_mode_id`` static init (from ``start_mode``) is overridden
+    # when an active instance is resuming, so the first post-restart turn
+    # starts in the instance's current step's mode. Moved here from
+    # ``HostRuntime.__init__`` so construction stays side-effect-free.
+    runtime._boot_load_active_workflow_instance()  # pylint: disable=protected-access
 
 
 def configure_runtime(runtime: HostRuntime) -> None:
