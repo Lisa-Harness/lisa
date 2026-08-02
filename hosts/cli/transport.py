@@ -312,6 +312,11 @@ class RichTransport:
     ) -> None:
         self.console: Console = console or Console()
         self.debug = debug
+        # When True (default), the stream pane shows a compact
+        # ``▸ Thinking…`` summary line instead of the full reasoning text,
+        # so the pane isn't a dense wall of text during generation. The user
+        # toggles this with the ``Esc+t`` REPL shortcut.
+        self.thinking_collapsed: bool = True
         # ``_status`` is retained as a non-None sentinel while the Live
         # region is active and ``None`` when stopped, preserving the
         # ``transport._status is None`` contract used by REPL cancel
@@ -485,20 +490,47 @@ class RichTransport:
         return list(self._stream_text.wrap(self.console, width=width))
 
     def _stream_line_count(self) -> int:
-        """Number of wrapped lines the stream buffer currently occupies."""
+        """Number of wrapped lines the stream buffer currently occupies.
+
+        When the pane is collapsed (default), it always occupies exactly one
+        summary line regardless of buffer size, so the content-aware pane
+        allocator donates the freed height to the telemetry panes.
+        """
+        if self.thinking_collapsed:
+            return 1 if self._stream_text else 0
         return len(self._stream_wrapped_lines())
+
+    def toggle_thinking(self) -> None:
+        """Toggle the stream pane between collapsed and expanded.
+
+        Collapsed (default) shows a compact ``▸ Thinking…`` summary;
+        expanded shows the full wrapped reasoning. Refreshes the Live region
+        so the change is visible immediately during generation.
+        """
+        self.thinking_collapsed = not self.thinking_collapsed
+        self._refresh_live()
 
     def _render_stream_pane(self, height: int) -> list[Any]:
         """Render the stream pane: a header plus the most recent wrapped lines.
 
-        The single flowing buffer is wrapped to the full terminal width, so
-        the streamed answer takes up the whole pane. Reasoning segments are
-        dimmed. Only the most recent ``height`` wrapped lines are shown (the
-        pane scrolls from the top).
+        By default (``thinking_collapsed``) the pane shows a compact
+        ``▸ Thinking… <chars>`` summary instead of the full reasoning text,
+        so a reasoning model's wall-of-text thinking doesn't dominate the
+        pane during generation. The user expands it with ``Esc+t`` to see
+        the full wrapped buffer (reasoning dimmed, answer bright). Only the
+        most recent ``height`` wrapped lines are shown when expanded.
         """
         renderables: list[Any] = []
         renderables.append(Text("Thinking / Streaming", style=STYLE_PANE_HEADER))
         wrapped = self._stream_wrapped_lines()
+        if self.thinking_collapsed:
+            # Collapsed: one dimmed summary line. The char count gives a
+            # sense of how much the model has "thought" without dumping it.
+            char_count = len(self._stream_text.plain)
+            label = "▸ Thinking…" if char_count else "▸ (streaming…)"
+            summary = Text(f"{label} {char_count} char", style=STYLE_GRAPHIC)
+            renderables.append(summary)
+            return renderables
         visible = wrapped[-height:] if height > 0 else wrapped
         renderables.extend(visible)
         return renderables

@@ -535,6 +535,43 @@ async def test_stream_pane_wraps_to_full_width() -> None:
     assert "".join(line.plain for line in wrapped) == "hello world hello again"
 
 
+# ── thinking pane collapsed/expanded (Esc+t toggle) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_thinking_pane_collapsed_by_default() -> None:
+    """The stream pane defaults to a compact summary, not the full reasoning."""
+    transport = _make_stream_transport()
+    transport.start_thinking("model_call")
+    await transport.on_text_chunk("", reasoning="a long wall of reasoning text")
+    await transport.on_text_chunk(" visible answer")
+
+    # Collapsed by default.
+    assert transport.thinking_collapsed is True
+    # The line count is 1 (the summary), not the full wrapped buffer.
+    assert transport._stream_line_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_toggle_thinking_expands_and_collapses() -> None:
+    """toggle_thinking flips the collapsed flag and refreshes the Live region."""
+    transport = _make_stream_transport()
+    transport.start_thinking("model_call")
+    await transport.on_text_chunk("", reasoning="some thinking")
+    assert transport.thinking_collapsed is True
+
+    # Expand.
+    transport.toggle_thinking()
+    assert transport.thinking_collapsed is False
+    # Expanded: the line count reflects the actual wrapped buffer, not 1.
+    assert transport._stream_line_count() >= 1
+
+    # Collapse again.
+    transport.toggle_thinking()
+    assert transport.thinking_collapsed is True
+    assert transport._stream_line_count() == 1
+
+
 # ── compact (short-terminal) layout ──────────────────────────────────
 
 

@@ -224,7 +224,7 @@ async def run_repl(
         )
     )
 
-    prompt_session = _build_repl_prompt_session(runtime, console)
+    prompt_session = _build_repl_prompt_session(runtime, console, transport)
     if prompt_session is None:
         console.print(f"[{STYLE_TEXT_MUTED}]prompt_toolkit unavailable; using basic input mode.[/]")
 
@@ -630,7 +630,9 @@ def _render_session_exit_summary(runtime: HostRuntime, console: Console) -> None
     )
 
 
-def _build_repl_prompt_session(runtime: HostRuntime, console: Console) -> Any:
+def _build_repl_prompt_session(
+    runtime: HostRuntime, console: Console, transport: RichTransport
+) -> Any:
     """Build a prompt_toolkit PromptSession with history + completion.
 
     Returns ``None`` when prompt_toolkit is unavailable. When available,
@@ -642,7 +644,9 @@ def _build_repl_prompt_session(runtime: HostRuntime, console: Console) -> Any:
         return None
     history_path = runtime.data_dir / _REPL_HISTORY_FILE_NAME
     history_path.parent.mkdir(parents=True, exist_ok=True)
-    bindings = _build_repl_key_bindings() if KeyBindings is not None else None
+    bindings = (
+        _build_repl_key_bindings(transport) if KeyBindings is not None else None
+    )
     return PromptSession(
         history=_SurrogateSafeFileHistory(str(history_path)),
         auto_suggest=AutoSuggestFromHistory() if AutoSuggestFromHistory is not None else None,
@@ -698,7 +702,7 @@ def _repl_bottom_toolbar() -> Any:
         [
             (
                 "class:bottom-toolbar",
-                " Enter submit · Esc+Enter newline · ↑/↓ history · Tab complete ",
+                " Enter submit · Esc+Enter newline · Esc+t thinking · ↑/↓ history · Tab complete ",
             ),
             ("class:bottom-toolbar.text", "│ "),
             (
@@ -709,11 +713,14 @@ def _repl_bottom_toolbar() -> Any:
     )
 
 
-def _build_repl_key_bindings() -> Any:
+def _build_repl_key_bindings(transport: RichTransport) -> Any:
     """Build chat-box key bindings for the multi-line REPL prompt.
 
     - Enter: submit the current buffer (chat-box semantics).
     - Esc→Enter: insert a newline (for multi-line input).
+    - Esc→t: toggle the thinking/streaming pane between collapsed (default)
+      and expanded. Lets the user inspect the model's reasoning without the
+      wall-of-text dominating the pane during generation.
 
     Without these bindings, prompt_toolkit's default ``multiline=True``
     behaviour is the reverse (Enter inserts a newline; Esc→Enter submits),
@@ -730,6 +737,10 @@ def _build_repl_key_bindings() -> Any:
     @bindings.add("escape", "enter")
     def _newline(event: Any) -> None:
         event.current_buffer.insert_text("\n")
+
+    @bindings.add("escape", "t")
+    def _toggle_thinking(event: Any) -> None:
+        transport.toggle_thinking()
 
     return bindings
 
