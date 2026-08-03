@@ -718,19 +718,19 @@ def _repl_bottom_toolbar(transport: RichTransport) -> Any:
         [
             (
                 "class:bottom-toolbar",
-                " Enter submit · Ctrl+J newline · ↑/↓ history · Tab complete ",
+                " Enter submit · newline Ctrl+J · ↑/↓ history · Tab complete ",
             ),
             ("class:bottom-toolbar.text", "│ "),
+            ("class:bottom-toolbar.hint", "Ctrl+O "),
             ("class:bottom-toolbar.metric", detail_label),
             ("class:bottom-toolbar.text", " · "),
+            ("class:bottom-toolbar.hint", "Ctrl+Y "),
             ("class:bottom-toolbar.metric", thinking_label),
             ("class:bottom-toolbar.text", " · "),
             (
                 "class:bottom-toolbar.metric",
                 f"{line_count} line{'s' if line_count != 1 else ''}, {char_count} char{'s' if char_count != 1 else ''}",
             ),
-            ("class:bottom-toolbar.text", " · "),
-            ("class:bottom-toolbar.hint", "Ctrl+O detail · Ctrl+Y thinking"),
         ]
     )
 
