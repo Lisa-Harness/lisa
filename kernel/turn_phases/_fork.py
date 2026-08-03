@@ -211,6 +211,16 @@ async def _run_fork_child_turn(
             # ``None`` (no ``fork_yield_policy`` authored) falls back to the
             # mode's foreground ``yield_policy`` — backward compatible.
             yield_policy_override=_fork_yield_policy_override(target.mode_id),
+            # Mark this turn as a fork child so the budget briefing emits
+            # a ``## Sub-Turn Contract`` block (framing the iteration
+            # budget as a write-deadline and naming the action tools the
+            # child must invoke) and the turn loop injects a one-shot
+            # midpoint write-nudge. Without this, a fork child sees only
+            # ``iters: 49/50`` and read-loops to the cap without writing
+            # (the 2026-08-03 incident). The ``action_tool_ids`` are
+            # resolved from the mode's authored allowlist inside
+            # ``_run_turn_inner`` via ``_fork_mode_action_tool_ids``.
+            sub_turn_kind="fork",
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
         # A child the harness force-yielded (iteration cap, stuck-in-stage,

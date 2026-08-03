@@ -224,6 +224,33 @@ class _TurnState:
     ``fetch_page`` calls but never called ``markdown_forge_document``
     hallucinated its success (the 2026-07-27 follow-on incident)."""
 
+    # ── Sub-turn (fork / delegate child) contract state ─────────────
+    # Set by the caller when this turn is a sub-turn (a fork child, or a
+    # delegate child once the delegate operation lands). ``None`` for the
+    # parent turn. The budget briefing uses this to emit a distinct
+    # ``## Sub-Turn Contract`` block that frames the budget as a
+    # write-deadline and names the action tools the child must invoke to
+    # avoid a ``no_tools`` abort — the 2026-08-03 incident: a fork child
+    # saw only ``iters: 49/50`` and read-looped to the cap without ever
+    # writing. The seam is generic (``str``) so delegate adds
+    # ``"delegate"`` without reworking the briefing.
+    sub_turn_kind: str | None = None
+    """``"fork"`` for fork children, ``"delegate"`` for delegate children
+    (planned), ``None`` for the parent turn. Drives the sub-turn contract
+    block in the budget briefing and the midpoint write-nudge below."""
+    action_tool_ids: set[str] = field(default_factory=set)
+    """The side-effecting action tools this sub-turn's mode declares
+    (from ``_fork_mode_action_tool_ids``). Empty for the parent turn and
+    for read-only modes. The briefing names these as the success
+    criterion; the midpoint nudge fires when the child is past its
+    iteration midpoint with zero of these called."""
+    write_nudge_fired: bool = False
+    """One-shot guard for the midpoint write-nudge. Set True after the
+    nudge is injected once so it does not repeat on every subsequent
+    iteration. Reset to False only by a fresh ``_TurnState`` (one per
+    turn / fork child), so each child gets exactly one nudge
+    opportunity."""
+
 
 # ── Closure-free helper functions ──────────────────────────────────────────
 

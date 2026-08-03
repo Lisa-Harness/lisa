@@ -168,6 +168,16 @@ def _build_budget_briefing(
     iterations emit only the counts that changed. Callers handle the
     full-vs-delta distinction by passing the right ``state`` snapshot.
 
+    **Sub-turn contract** (fork / delegate children): when
+    ``state.sub_turn_kind`` is set and ``state.action_tool_ids`` is
+    non-empty, a ``## Sub-Turn Contract`` block is prepended to the
+    briefing. It frames the iteration budget as a write-deadline and
+    names the action tools the child must invoke to avoid a ``no_tools``
+    abort — the 2026-08-03 incident: a fork child saw only ``iters: 49/50``
+    and read-looped to the cap without ever writing. The contract is
+    generic over ``sub_turn_kind`` so delegate (``"delegate"``) reuses the
+    same seam without reworking the briefing.
+
     Returns an empty string when there is nothing actionable to report
     (e.g. unlimited everything, iteration 1 with no per-target limits).
     """
@@ -227,9 +237,86 @@ def _build_budget_briefing(
     # model produces.
     if budget_exhausted:
         lines.append("YIELD: budget exhausted — harness will ask the user")
-    if not lines:
+    # ── Sub-turn contract (fork / delegate children) ──────────────────
+    # A fork/delegate child whose mode declares action tools must be told
+    # the budget is a write-deadline, not exploration room — and that
+    # reads do not count toward completion. Without this the child sees
+    # only ``iters: 49/50`` and read-loops to the cap (the 2026-08-03
+    # incident). The contract is generic over ``sub_turn_kind`` so
+    # delegate reuses the seam.
+    sub_contract = _build_sub_turn_contract(
+        state=state,
+        remaining_iterations=remaining_iterations,
+        budget_exhausted=budget_exhausted,
+    )
+    if not lines and not sub_contract:
         return ""
-    return "## Turn Lifecycle\n\n" + " · ".join(lines)
+    lifecycle_block = "## Turn Lifecycle\n\n" + " · ".join(lines) if lines else ""
+    if sub_contract and lifecycle_block:
+        return sub_contract + "\n\n" + lifecycle_block
+    if sub_contract:
+        return sub_contract
+    return lifecycle_block
+
+
+def _build_sub_turn_contract(
+    *,
+    state: Any,
+    remaining_iterations: int,
+    budget_exhausted: bool,
+) -> str:
+    """Build the ``## Sub-Turn Contract`` block for fork/delegate children.
+
+    Returns an empty string when this is the parent turn, the mode has no
+    action tools (read-only modes legitimately complete without writing),
+    or the child already wrote (at least one action tool was called).
+
+    The block names the action tools, frames the remaining iterations as a
+    write-deadline, and previews the abort: if the budget exhausts without
+    a write, the child's output is discarded as unverified. The framing
+    adapts to ``sub_turn_kind`` — a fork child's output is discarded;
+    a delegate child (planned) returns an honest ``no_tools`` status to
+    its parent. The parent-turn case (``sub_turn_kind is None``) returns
+    ``""`` so the parent briefing is unchanged.
+    """
+    kind = getattr(state, "sub_turn_kind", None)
+    if not kind:
+        return ""
+    action_ids = getattr(state, "action_tool_ids", None) or set()
+    if not action_ids:
+        return ""
+    # Once the child has called at least one action tool, the success
+    # criterion is met — drop the contract so it stops dominating the
+    # prompt for the rest of the child's iterations.
+    called = getattr(state, "called_tool_names", set()) or set()
+    if called & action_ids:
+        return ""
+    tools_list = ", ".join(sorted(action_ids))
+    if kind == "fork":
+        framing = (
+            "Fork child: success REQUIRES calling at least one of: "
+            f"[{tools_list}]. Read-only calls do NOT count. If the "
+            "budget exhausts without a write, your output is discarded "
+            "as unverified — do not claim success."
+        )
+    else:
+        # delegate (planned) — the parent stays alive and receives the
+        # structured status, so the framing is "return an honest status"
+        # rather than "your output is discarded."
+        framing = (
+            f"Subroutine child: success REQUIRES calling at least one of: "
+            f"[{tools_list}]. Read-only calls do NOT count. If the "
+            "budget exhausts without a write, return status=no_tools so "
+            "your parent can decide — do not claim success."
+        )
+    deadline = (
+        f"{remaining_iterations} iterations remain to produce a write; "
+        "reads are scaffolding, not progress."
+    )
+    parts = [framing, deadline]
+    if budget_exhausted:
+        parts.append("BUDGET EXHAUSTED — call an action tool now or yield.")
+    return "## Sub-Turn Contract\n\n" + " ".join(parts)
 
 
 def _is_workflow_instance_complete(instance: Any) -> bool:
@@ -1354,6 +1441,7 @@ async def run_turn(
     logger_override: logging.Logger | None = None,
     suppress_routing_hint: bool = False,
     yield_policy_override: YieldPolicy | None = None,
+    sub_turn_kind: str | None = None,
 ) -> TurnResult:
     """Execute one conversational turn with the full model+tool loop.
 
@@ -1373,6 +1461,17 @@ async def run_turn(
     may forbid them in the background (``fork_yield_policy: { allowed: false }``)
     and the ``yield`` tool is not advertised to the child at all. ``None`` means
     use the mode's authored ``yield_policy`` (the foreground policy).
+
+    ``sub_turn_kind`` is set by the fork fan-out (``"fork"``) and, once the
+    delegate operation lands, by ``_default_delegate_fn`` (``"delegate"``).
+    ``None`` for the parent turn. When set, the budget briefing emits a
+    ``## Sub-Turn Contract`` block that frames the iteration budget as a
+    write-deadline and names the action tools the child must invoke to
+    avoid a ``no_tools`` abort, and the turn loop injects a one-shot
+    midpoint write-nudge (see ``_build_sub_turn_contract`` and the
+    midpoint nudge in ``_run_turn_inner``). The action-tool set is
+    resolved from the mode's authored allowlist via
+    ``_fork_mode_action_tool_ids`` (shared with the fork-child validator).
 
     This is the single turn loop shared by lightweight hosts and the production app.
     Both call the same function — they differ only in which `TurnHooks` they
@@ -1485,6 +1584,7 @@ async def run_turn(
             logger_override=logger_override,
             suppress_routing_hint=suppress_routing_hint,
             yield_policy_override=yield_policy_override,
+            sub_turn_kind=sub_turn_kind,
         )
     pool = MCPToolPool(hooks.mcp_tool_servers)
     await pool.start()
@@ -1509,6 +1609,7 @@ async def run_turn(
             execution_policy=execution_policy,
             logger_override=logger_override,
             suppress_routing_hint=suppress_routing_hint,
+            sub_turn_kind=sub_turn_kind,
         )
     finally:
         await pool.aclose()
@@ -1536,6 +1637,7 @@ async def _run_turn_with_approval(
     logger_override: logging.Logger | None,
     suppress_routing_hint: bool = False,
     yield_policy_override: YieldPolicy | None = None,
+    sub_turn_kind: str | None = None,
 ) -> TurnResult:
     """Convert an approval interruption into a host-renderable turn result."""
 
@@ -1561,6 +1663,7 @@ async def _run_turn_with_approval(
             logger_override=logger_override,
             suppress_routing_hint=suppress_routing_hint,
             yield_policy_override=yield_policy_override,
+            sub_turn_kind=sub_turn_kind,
         )
     except ApprovalRequired as required:
         # Preserve the mid-turn handoff across the approval boundary. The
@@ -1700,6 +1803,7 @@ async def _run_turn_inner(
     logger_override: logging.Logger | None,
     suppress_routing_hint: bool = False,
     yield_policy_override: YieldPolicy | None = None,
+    sub_turn_kind: str | None = None,
 ) -> TurnResult:
     """Inner turn loop that owns the MCPToolPool lifecycle via the caller."""
 
@@ -1748,6 +1852,21 @@ async def _run_turn_inner(
     _state.max_iterations = max_tool_iterations
     _state.max_tool_calls = turn_budget.max_tool_calls if turn_budget is not None else 0
     _state.max_handoffs = _kernel_settings.max_handoffs_per_turn
+    # ── Sub-turn (fork / delegate child) contract state ─────────────
+    # When this turn is a sub-turn, resolve the mode's authored action
+    # tools once at turn start so the budget briefing and the midpoint
+    # write-nudge can name them without re-resolving every iteration.
+    # ``_fork_mode_action_tool_ids`` is the shared helper used by the
+    # fork-child validator; delegate (planned) will reuse it via the
+    # same ``sub_turn_kind`` seam.
+    if sub_turn_kind:
+        _state.sub_turn_kind = sub_turn_kind
+        try:
+            from kernel.turn_phases._fork import _fork_mode_action_tool_ids  # noqa: PLC0415
+
+            _state.action_tool_ids = _fork_mode_action_tool_ids(mode_id)
+        except Exception:  # pylint: disable=broad-except
+            _state.action_tool_ids = set()
     _on_stage_hook = hooks.on_stage
 
     # Turn-runner guard caps, read once from the kernel settings singleton
@@ -2458,6 +2577,7 @@ async def _run_turn_inner(
     # instruction, stage instruction, routing hint).
     _base_system_prompt = system_prompt
     _budget_briefing_marker = "\n\n## Turn Lifecycle\n\n"
+    _sub_turn_contract_marker = "\n\n## Sub-Turn Contract\n\n"
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
     # Build user message
@@ -2809,6 +2929,47 @@ async def _run_turn_inner(
                     }
                 )
 
+        # ── Fork/delegate child midpoint write-nudge ──────────────────
+        # A sub-turn (fork child, or delegate child once delegate lands)
+        # whose mode declares action tools gets a ONE-SHOT nudge at the
+        # iteration midpoint: if it has done only read-only calls so far,
+        # tell it to commit to a write or yield. This converts the silent
+        # read-loop → no_tools abort (2026-08-03 incident) into either a
+        # real write or an honest yield. The nudge fires exactly once per
+        # child (``write_nudge_fired`` on ``_TurnState``); the sub-turn
+        # contract block in the briefing carries the same signal every
+        # iteration, this is the escalated mid-run version.
+        if (
+            _state.sub_turn_kind
+            and _state.action_tool_ids
+            and not _state.write_nudge_fired
+            and not (_state.called_tool_names & _state.action_tool_ids)
+            and _state.iteration > max_tool_iterations // 2
+            and _pending_yield is None
+        ):
+            _state.write_nudge_fired = True
+            _action_list = ", ".join(sorted(_state.action_tool_ids))
+            _log.info(
+                "sub-turn midpoint write-nudge (kind=%s mode=%s iteration=%d "
+                "remaining=%d zero_writes); nudging to commit or yield",
+                _state.sub_turn_kind,
+                mode_id,
+                _state.iteration,
+                max_tool_iterations - _state.iteration,
+            )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"You are past the midpoint of your budget with zero "
+                        f"writes. Call one of: [{_action_list}] now to complete "
+                        f"your work, or call `yield` to hand back honestly. "
+                        f"Continuing to read without writing will result in "
+                        f"your output being discarded."
+                    ),
+                }
+            )
+
         # Determine effective_tools from the budget/yield state.
         if _pending_yield is not None:
             effective_tools = None
@@ -2849,6 +3010,15 @@ async def _run_turn_inner(
             # the leading ``\n\n`` separator so the split cleanly
             # separates the base from the briefing.
             _current_sys = str(messages[0].get("content", ""))
+            # Strip any previous briefing (by marker) and append the
+            # fresh one. The base prompt is the stable contract; the
+            # briefing is the per-iteration delta. Strip the sub-turn
+            # contract first (it precedes the lifecycle block), then the
+            # lifecycle block. Both markers include the leading ``\n\n``
+            # separator so the split cleanly separates the base from the
+            # briefing.
+            if _sub_turn_contract_marker in _current_sys:
+                _current_sys = _current_sys.split(_sub_turn_contract_marker, 1)[0]
             if _budget_briefing_marker in _current_sys:
                 _current_sys = _current_sys.split(_budget_briefing_marker, 1)[0]
             if _briefing:
@@ -3870,20 +4040,23 @@ async def _run_turn_inner(
                             ]
                             if has_no_tools and has_yielded:
                                 content = (
-                                    "Fork fan-out failed: the following children were "
-                                    f"interrupted before completing their action tools "
+                                    "Fork fan-out could not verify its work: the "
+                                    f"following children were interrupted before "
+                                    f"completing their action tools "
                                     f"({', '.join(interrupted_modes)}), and the "
-                                    "following made zero tool calls despite their mode "
-                                    f"declaring action tools ({', '.join(no_tools_modes)}), "
-                                    "so their reported success is unverified. Re-issue "
-                                    "the request, or raise FORK_CHILD_MAX_TOOL_ITERATIONS."
+                                    "following spent their budget on read-only calls "
+                                    "without invoking their action tools "
+                                    f"({', '.join(no_tools_modes)}). Nothing was "
+                                    "written to disk or memory. Re-issue the request, "
+                                    "or raise FORK_CHILD_MAX_TOOL_ITERATIONS."
                                 )
                             elif has_no_tools:
                                 content = (
-                                    "Fork fan-out failed: the following children made "
-                                    "zero tool calls despite their mode declaring action "
-                                    f"tools ({', '.join(no_tools_modes)}), so their "
-                                    "reported success is unverified — nothing was "
+                                    "Fork fan-out could not verify its work: the "
+                                    f"following children spent their budget on "
+                                    f"read-only calls without invoking their mode's "
+                                    f"action tools "
+                                    f"({', '.join(no_tools_modes)}), so nothing was "
                                     "written to disk or memory. Re-issue the request."
                                 )
                             else:
@@ -4615,6 +4788,10 @@ async def _run_turn_inner(
                                         # iteration's briefing injection will
                                         # append after the hint.
                                         _pre_hint_sys = str(messages[0].get("content", ""))
+                                        if _sub_turn_contract_marker in _pre_hint_sys:
+                                            _pre_hint_sys = _pre_hint_sys.split(
+                                                _sub_turn_contract_marker, 1
+                                            )[0]
                                         if _budget_briefing_marker in _pre_hint_sys:
                                             _pre_hint_sys = _pre_hint_sys.split(
                                                 _budget_briefing_marker, 1
