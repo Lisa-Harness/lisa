@@ -284,28 +284,6 @@ StreamingOption = Annotated[
         ),
     ),
 ]
-WithMcpOption = Annotated[
-    bool,
-    typer.Option(
-        "--with-mcp",
-        help=(
-            "Also list MCP server tools alongside internal tools. "
-            "Warms the MCP pool to discover tool names."
-        ),
-    ),
-]
-McpOnlyOption = Annotated[
-    bool,
-    typer.Option(
-        "--mcp-only",
-        help=(
-            "List only MCP server tools; skip the internal-tools table. "
-            "Warms the MCP pool to discover tool names."
-        ),
-    ),
-]
-
-
 # ---------------------------------------------------------------------------
 # Runtime initialization (builds HostRuntime, not _RUNTIME_STATE)
 # ---------------------------------------------------------------------------
@@ -1015,13 +993,10 @@ def _operations_command(
     "tools",
     help=(
         "List internal tools with IDs for allowlist authoring. "
-        "By default only internal tools are shown; pass --with-mcp to "
-        "also list MCP server tools, or --mcp-only to list only MCP tools."
+        "Use the `mcp` command to inspect MCP server tools."
     ),
 )
 def _tools_command(
-    with_mcp: WithMcpOption = False,
-    mcp_only: McpOnlyOption = False,
     debug: DebugOption = False,
     log_level: LogLevelOption = "",
     log: LogOption = "",
@@ -1053,19 +1028,7 @@ def _tools_command(
     )
     if runtime is None:
         return
-    # Only warm the MCP pool when asked — it spawns subprocesses and can be
-    # slow, so the default (internal tools only) stays cheap.
-    if with_mcp or mcp_only:
-        mcp_health, mcp_tools_by_server = asyncio.run(_collect_mcp_tools(runtime))
-    else:
-        mcp_health, mcp_tools_by_server = {}, {}
-    if mcp_only:
-        if not mcp_health:
-            console.print("[yellow]No MCP server tools discovered.[/yellow]")
-            return
-        render_mcp_servers(mcp_health, console=console)
-    else:
-        render_tools(runtime, mcp_tools=mcp_tools_by_server, console=console)
+    render_tools(runtime, console=console)
 
 
 McpIntrospection = tuple[dict[str, Any], dict[str, list[MCPToolSpec]]]

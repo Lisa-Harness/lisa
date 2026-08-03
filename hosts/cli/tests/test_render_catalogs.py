@@ -1,21 +1,12 @@
 """Tests for CLI render helpers that list operations/tools for allowlist authoring.
 
-Covers ``hosts.cli.render.render_operations``, ``render_tools`` and
-``render_mcp_tools``. These helpers read the kernel's in-process
-operation/tool catalogs plus a pre-collected list of MCP server tool
-pairs, and render Rich tables whose first column is the ID to copy into a
-mode's ``allowed_operation_ids`` / ``allowed_tool_ids`` front-matter (or,
-for MCP tools, the ``tool_policy`` block of ``mcp_servers.yaml``).
-
-The kernel catalogs are populated by ``register_operation_mcp`` /
-``register_tool_mcp`` at startup (which call the ``lisa-catalog`` MCP
-server). To keep these tests hermetic we monkeypatch
-``get_operation_catalog`` / ``get_tool_catalog`` to return fixed
-definitions, and build a minimal ``HostRuntime``.
-
-The async MCP tool collector (``hosts.cli.main._collect_mcp_tools``) is
-covered here too, via a stub runtime whose ``start``/``aclose`` and pool
-``list_tools`` are fakes — we never spawn a real MCP subprocess.
+Covers ``hosts.cli.render.render_operations`` and ``render_tools``. These
+helpers read the kernel's in-process operation/tool catalogs and render
+Rich tables whose first column is the ID to copy into a mode's
+``allowed_operation_ids`` / ``allowed_tool_ids`` front-matter. MCP server
+tool rendering (``render_mcp_servers`` / ``render_mcp_server_tools``) and
+the async MCP tool collector (``hosts.cli.main._collect_mcp_tools``) are
+covered here too, via stubs — we never spawn a real MCP subprocess.
 """
 
 from __future__ import annotations
@@ -95,7 +86,7 @@ def test_render_operations_empty_catalog_renders_header_only(tmp_path: Path) -> 
 
 
 def test_render_tools_lists_internal_tool_ids(tmp_path: Path) -> None:
-    """render_tools emits one row per internal tool; no MCP section without mcp_tools."""
+    """render_tools emits one row per internal tool."""
     fake_tools = {
         "memory.add": ToolDefinition(
             tool_id="memory.add",
@@ -107,45 +98,15 @@ def test_render_tools_lists_internal_tool_ids(tmp_path: Path) -> None:
     console = Console(record=True, width=120)
 
     with patch.object(tools_registry, "get_tool_catalog", return_value=fake_tools):
-        table = render_mod.render_tools(_make_runtime(tmp_path), mcp_tools=None, console=console)
+        table = render_mod.render_tools(_make_runtime(tmp_path), console=console)
 
     output = console.export_text()
     assert "memory.add" in output
     assert "Add a memory" in output
     assert "5" in output  # max_calls_per_turn
     assert "45s" in output  # timeout_seconds
-    # No MCP tools provided → no MCP section.
     assert "MCP Server Tools" not in output
     assert len(table.rows) == 1
-
-
-def test_render_tools_emits_mcp_section_when_pairs_provided(tmp_path: Path) -> None:
-    """When MCP tool specs are passed, a per-server MCP table is rendered."""
-    from kernel.tools.mcp_client import MCPToolSpec
-
-    mcp_tools = {
-        "brave": [MCPToolSpec("brave", "brave_search", "Search the web.", {})],
-        "github": [MCPToolSpec("github", "create_issue", "Open an issue.", {})],
-    }
-    console = Console(record=True, width=120)
-
-    with patch.object(tools_registry, "get_tool_catalog", return_value={}):
-        render_mod.render_tools(_make_runtime(tmp_path), mcp_tools=mcp_tools, console=console)
-
-    output = console.export_text()
-    assert "MCP Server Tools" in output
-    assert "brave" in output
-    assert "brave_search" in output
-    assert "github" in output
-    assert "create_issue" in output
-
-
-def test_render_tools_empty_mcp_pairs_omits_mcp_section(tmp_path: Path) -> None:
-    """An empty mcp_tools dict renders only the internal-tools table."""
-    console = Console(record=True, width=120)
-    with patch.object(tools_registry, "get_tool_catalog", return_value={}):
-        render_mod.render_tools(_make_runtime(tmp_path), mcp_tools={}, console=console)
-    assert "MCP Server Tools" not in console.export_text()
 
 
 # ── render_mcp_servers / render_mcp_server_tools ─────────────────────

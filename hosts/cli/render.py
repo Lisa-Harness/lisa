@@ -148,27 +148,14 @@ def render_operations(runtime: HostRuntime, *, console: Console | None = None) -
 def render_tools(
     runtime: HostRuntime,
     *,
-    mcp_tools: dict[str, list[MCPToolSpec]] | None = None,
     console: Console | None = None,
 ) -> Table:
     """Build a Rich Table of internal tools with IDs for allowlist authoring.
 
     Lists every internal tool discovered from content packs via the
     ``lisa-catalog`` MCP server. The ID column is exactly the string to copy
-    into a mode's ``allowed_tool_ids`` front-matter list.
-
-    Internal (pack-discovered) tools and MCP-server tools are listed in
-    separate tables so authors can tell which allowlist each ID belongs to:
-    pack tool IDs go in ``allowed_tool_ids``; MCP tool IDs are governed by
-    per-server ``tool_policy`` in ``mcp_servers.yaml``.
-
-    ``mcp_tools`` is an optional pre-collected ``dict[str, list[MCPToolSpec]]``
-    grouping discovered tool specs by their owning server (collected by
-    warming the MCP pool — see :func:`hosts.cli.main._collect_mcp_tools`).
-    When provided and non-empty, a second table is rendered for MCP server
-    tools. The ``render_mcp_server_tools`` helper renders one table per
-    server so authors can see the bare tool names referenced by
-    ``tool_policy.allowed_tools`` / ``denied_tools`` in ``mcp_servers.yaml``.
+    into a mode's ``allowed_tool_ids`` front-matter list. MCP server tools
+    are listed by the dedicated ``lisa mcp`` command (and REPL ``/mcp``).
     """
     _ = runtime  # catalog is global; runtime kept for future per-host scoping
     table = Table(title="Lisa Internal Tools")
@@ -191,14 +178,6 @@ def render_tools(
 
     if console is not None:
         console.print(table)
-
-    if mcp_tools:
-        for server_id in sorted(mcp_tools):
-            specs = mcp_tools[server_id]
-            if not specs:
-                continue
-            _render_mcp_tool_table(server_id, specs, console=console)
-
     return table
 
 
@@ -270,31 +249,6 @@ def render_mcp_server_tools(
         description = _truncate(spec.description, 80) or "—"
         required = _required_args(spec)
         table.add_row(spec.name, description, required)
-
-    if console is not None:
-        console.print(table)
-    return table
-
-
-def _render_mcp_tool_table(
-    server_id: str,
-    specs: list[MCPToolSpec],
-    *,
-    console: Console | None = None,
-) -> Table:
-    """Render one MCP server's tools as a Rich Table for the ``--with-mcp`` view.
-
-    Companion to :func:`render_tools`: when ``lisa tools --with-mcp`` warms
-    the pool, this renders one table per server so authors can see the bare
-    tool names referenced by ``tool_policy``.
-    """
-    table = Table(title=f"MCP Server Tools: {server_id}")
-    table.add_column("Tool", style="bold", overflow="fold")
-    table.add_column("Description", overflow="fold")
-
-    for spec in specs:
-        description = _truncate(spec.description, 80) or "—"
-        table.add_row(spec.name, description)
 
     if console is not None:
         console.print(table)
