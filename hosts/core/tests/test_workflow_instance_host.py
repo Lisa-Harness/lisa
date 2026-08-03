@@ -32,25 +32,13 @@ def _identity() -> RecoveryIdentity:
 
 def _make_runtime(tmp_path: Path) -> HostRuntime:
     """A HostRuntime with a minimal models.yaml, mirroring test_recovery_service."""
-    (tmp_path / "models.yaml").write_text(
-        "\n".join(
-            [
-                "version: 1",
-                "mode_models: {default: gemma3:latest}",
-                "models:",
-                "  - model_id: gemma3:latest",
-                "    provider: ollama",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return HostRuntime(
-        HostConfig.from_env(
-            data_dir=str(tmp_path),
-            user_slug="user",
-            surface_type="personal_dm",
-            surface_id="surface",
-        )
+    from kernel.testing.runtime_factory import build_test_runtime
+
+    return build_test_runtime(
+        tmp_path,
+        user_slug="user",
+        surface_type="personal_dm",
+        surface_id="surface",
     )
 
 

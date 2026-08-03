@@ -40,8 +40,9 @@ from kernel.tools import registry as tools_registry
 
 
 def _make_runtime(tmp_path: Path) -> HostRuntime:
-    config = HostConfig.from_env(data_dir=str(tmp_path))
-    return HostRuntime(config)
+    from kernel.testing.runtime_factory import build_test_runtime
+
+    return build_test_runtime(tmp_path, models_yaml="")
 
 
 # ── render_operations ─────────────────────────────────────────────────
@@ -119,12 +120,17 @@ def test_render_tools_lists_internal_tool_ids(tmp_path: Path) -> None:
 
 
 def test_render_tools_emits_mcp_section_when_pairs_provided(tmp_path: Path) -> None:
-    """When mcp_tools triples are passed, a second MCP table is rendered."""
-    mcp_pairs = [("brave", "brave_search", False), ("github", "create_issue", False)]
+    """When MCP tool specs are passed, a per-server MCP table is rendered."""
+    from kernel.tools.mcp_client import MCPToolSpec
+
+    mcp_tools = {
+        "brave": [MCPToolSpec("brave", "brave_search", "Search the web.", {})],
+        "github": [MCPToolSpec("github", "create_issue", "Open an issue.", {})],
+    }
     console = Console(record=True, width=120)
 
     with patch.object(tools_registry, "get_tool_catalog", return_value={}):
-        render_mod.render_tools(_make_runtime(tmp_path), mcp_tools=mcp_pairs, console=console)
+        render_mod.render_tools(_make_runtime(tmp_path), mcp_tools=mcp_tools, console=console)
 
     output = console.export_text()
     assert "MCP Server Tools" in output
@@ -132,55 +138,66 @@ def test_render_tools_emits_mcp_section_when_pairs_provided(tmp_path: Path) -> N
     assert "brave_search" in output
     assert "github" in output
     assert "create_issue" in output
-    # Native tools (is_alias=False) are NOT annotated with an arrow.
-    assert "->" not in output
 
 
 def test_render_tools_empty_mcp_pairs_omits_mcp_section(tmp_path: Path) -> None:
-    """An empty mcp_tools list renders only the internal-tools table."""
+    """An empty mcp_tools dict renders only the internal-tools table."""
     console = Console(record=True, width=120)
     with patch.object(tools_registry, "get_tool_catalog", return_value={}):
-        render_mod.render_tools(_make_runtime(tmp_path), mcp_tools=[], console=console)
+        render_mod.render_tools(_make_runtime(tmp_path), mcp_tools={}, console=console)
     assert "MCP Server Tools" not in console.export_text()
 
 
-# ── render_mcp_tools ──────────────────────────────────────────────────
+# ── render_mcp_servers / render_mcp_server_tools ─────────────────────
 
 
-def test_render_mcp_tools_lists_pairs_sorted_as_given() -> None:
-    """render_mcp_tools emits one row per (server_id, tool_name) triple."""
-    pairs = [("zsrv", "zeta", False), ("asrv", "alpha", False)]
-    console = Console(record=True, width=120)
-    table = render_mod.render_mcp_tools(pairs, console=console)
+def test_render_mcp_servers_lists_status_and_transport() -> None:
+    """render_mcp_servers emits one row per server with status + transport."""
+    from kernel.models import McpServerHealth
+
+    health = {
+        "lisa-catalog": McpServerHealth(
+            server_id="lisa-catalog", status="warm", transport="venv_bin",
+            command="lisa-catalog", tool_count=3,
+        ),
+        "mem0": McpServerHealth(
+            server_id="mem0", status="failed", transport="http",
+            url="https://mem0.ai", tool_count=0, last_error="401 unauthorized",
+        ),
+    }
+    console = Console(record=True, width=160)
+    table = render_mod.render_mcp_servers(health, console=console)
     output = console.export_text()
-    assert "MCP Server Tools" in output
-    assert "asrv" in output and "alpha" in output
-    assert "zsrv" in output and "zeta" in output
+    assert "MCP Servers" in output
+    assert "lisa-catalog" in output and "warm" in output and "venv_bin" in output
+    assert "mem0" in output and "failed" in output and "http" in output
+    assert "401 unauthorized" in output
     assert len(table.rows) == 2
 
 
-def test_render_mcp_tools_empty_renders_header_only() -> None:
-    """An empty pair list renders the table header with no data rows."""
-    console = Console(record=True, width=80)
-    table = render_mod.render_mcp_tools([], console=console)
-    assert len(table.rows) == 0
-    assert table.title is not None
+def test_render_mcp_server_tools_lists_tools_with_descriptions() -> None:
+    """render_mcp_server_tools emits one row per tool with description + required args."""
+    from kernel.models import McpServerHealth
+    from kernel.tools.mcp_client import MCPToolSpec
 
-
-def test_render_mcp_tools_annotates_alias_with_arrow() -> None:
-    """Synthetic alias entries are prefixed with → in the Tool column."""
-    pairs = [
-        ("lisa-memory", "memory.search", True),
-        ("brave", "brave_search", False),
+    health = McpServerHealth(
+        server_id="lisa-catalog", status="warm", transport="venv_bin", tool_count=2,
+    )
+    specs = [
+        MCPToolSpec("lisa-catalog", "list_modes", "List all modes.", {"type": "object"}),
+        MCPToolSpec(
+            "lisa-catalog", "list_tools", "List all tools.",
+            {"type": "object", "required": ["mode_id"], "properties": {"mode_id": {}}},
+        ),
     ]
     console = Console(record=True, width=120)
-    render_mod.render_mcp_tools(pairs, console=console)
+    table = render_mod.render_mcp_server_tools(specs, health, console=console)
     output = console.export_text()
-    # The alias row shows the arrow annotation.
-    assert "-> memory.search" in output
-    # The native tool is shown without the arrow.
-    assert "-> brave_search" not in output
-    assert "brave_search" in output
+    assert "lisa-catalog" in output
+    assert "list_modes" in output and "List all modes" in output
+    assert "list_tools" in output and "List all tools" in output
+    assert "mode_id" in output  # required arg shown
+    assert len(table.rows) == 2
 
 
 # ── _collect_mcp_tools (async, in hosts.cli.main) ─────────────────────
@@ -190,6 +207,8 @@ class _FakeSpec:
     def __init__(self, server_id: str, name: str, synthetic: bool = False) -> None:
         self.server_id = server_id
         self.name = name
+        self.description = ""
+        self.input_schema: dict = {}
         self._synthetic = synthetic
 
 
@@ -203,6 +222,7 @@ class _FakePool:
         self._tools = tools
         self._synthetic_names = synthetic_names or set()
         self.closed = False
+        self.configs: list = []
 
     async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[_FakeSpec]:
         return list(self._tools)
@@ -213,6 +233,27 @@ class _FakePool:
         if self.closed:
             return False
         return name in self._synthetic_names
+
+    def warm_server_ids(self) -> list[str]:
+        return []
+
+    def warm_failed_ids(self) -> list[str]:
+        return []
+
+    def cold_failed_ids(self) -> list[str]:
+        return []
+
+    def permanently_failed_ids(self) -> list[str]:
+        return []
+
+    def restart_counts(self) -> dict:
+        return {}
+
+    def last_errors(self) -> dict:
+        return {}
+
+    def tools_by_server(self) -> dict:
+        return {}
 
     def _aclose(self) -> None:
         self.closed = True
@@ -251,49 +292,28 @@ class _StubRuntime:
 
 
 @pytest.mark.asyncio
-async def test_collect_mcp_tools_returns_sorted_unique_pairs() -> None:
-    """_collect_mcp_tools starts the pool, reads list_tools, dedupes, sorts, closes."""
+async def test_collect_mcp_tools_returns_tools_grouped_by_server() -> None:
+    """_collect_mcp_tools starts the pool, reads list_tools, groups by server, closes."""
     from hosts.cli.main import _collect_mcp_tools
 
     pool = _FakePool(
         [
             _FakeSpec("brave", "brave_search"),
             _FakeSpec("github", "create_issue"),
-            _FakeSpec("brave", "brave_search"),  # duplicate → deduped
+            _FakeSpec("brave", "brave_search"),  # duplicate → both kept (grouped)
         ],
         synthetic_names=set(),
     )
     runtime = _StubRuntime(warm=1, cold=0, pool=pool)
 
-    entries = await _collect_mcp_tools(runtime)  # type: ignore[arg-type]
+    health, tools_by_server = await _collect_mcp_tools(runtime)  # type: ignore[arg-type]
 
-    assert entries == [
-        ("brave", "brave_search", False),
-        ("github", "create_issue", False),
-    ]
+    assert set(tools_by_server.keys()) == {"brave", "github"}
+    assert len(tools_by_server["brave"]) == 2  # both brave entries kept
+    assert tools_by_server["github"][0].name == "create_issue"
+    assert health == {}  # no configs on the fake pool → empty health
     assert runtime.started is True
     assert runtime.closed is True
-
-
-@pytest.mark.asyncio
-async def test_collect_mcp_tools_flags_synthetic_aliases() -> None:
-    """Synthetic tools are flagged with is_alias=True; native tools with False."""
-    from hosts.cli.main import _collect_mcp_tools
-
-    pool = _FakePool(
-        [
-            _FakeSpec("lisa-memory", "memory.search"),
-            _FakeSpec("brave", "brave_search"),
-        ],
-        synthetic_names={"memory.search"},
-    )
-    runtime = _StubRuntime(warm=1, cold=0, pool=pool)
-
-    entries = await _collect_mcp_tools(runtime)  # type: ignore[arg-type]
-
-    by_name = {name: is_alias for _srv, name, is_alias in entries}
-    assert by_name["memory.search"] is True
-    assert by_name["brave_search"] is False
 
 
 @pytest.mark.asyncio
@@ -302,8 +322,9 @@ async def test_collect_mcp_tools_no_configs_returns_empty_without_starting() -> 
     from hosts.cli.main import _collect_mcp_tools
 
     runtime = _StubRuntime(warm=0, cold=0, pool=None)
-    pairs = await _collect_mcp_tools(runtime)  # type: ignore[arg-type]
-    assert pairs == []
+    health, tools_by_server = await _collect_mcp_tools(runtime)  # type: ignore[arg-type]
+    assert health == {}
+    assert tools_by_server == {}
     assert runtime.started is False
     assert runtime.closed is False  # early-returns before the try/finally
 
@@ -314,8 +335,9 @@ async def test_collect_mcp_tools_pool_none_after_start_returns_empty() -> None:
     from hosts.cli.main import _collect_mcp_tools
 
     runtime = _StubRuntime(warm=1, cold=0, pool=None)
-    pairs = await _collect_mcp_tools(runtime)  # type: ignore[arg-type]
-    assert pairs == []
+    health, tools_by_server = await _collect_mcp_tools(runtime)  # type: ignore[arg-type]
+    assert health == {}
+    assert tools_by_server == {}
 
 
 @pytest.mark.asyncio
@@ -328,8 +350,9 @@ async def test_collect_mcp_tools_start_failure_returns_empty_and_closes() -> Non
             raise RuntimeError("server down")
 
     runtime = _BoomRuntime(warm=1, cold=0, pool=None)
-    pairs = await _collect_mcp_tools(runtime)  # type: ignore[arg-type]
-    assert pairs == []
+    health, tools_by_server = await _collect_mcp_tools(runtime)  # type: ignore[arg-type]
+    assert health == {}
+    assert tools_by_server == {}
     assert runtime.closed is True
 
 
@@ -340,7 +363,9 @@ def test_render_helpers_are_exported() -> None:
     """The render helpers are part of the render module's public API."""
     assert "render_operations" in render_mod.__all__
     assert "render_tools" in render_mod.__all__
-    assert "render_mcp_tools" in render_mod.__all__
+    assert "render_mcp_servers" in render_mod.__all__
+    assert "render_mcp_server_tools" in render_mod.__all__
     assert callable(render_mod.render_operations)
     assert callable(render_mod.render_tools)
-    assert callable(render_mod.render_mcp_tools)
+    assert callable(render_mod.render_mcp_servers)
+    assert callable(render_mod.render_mcp_server_tools)

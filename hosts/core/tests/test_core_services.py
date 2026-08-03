@@ -62,23 +62,21 @@ def _make_runtime(tmp_path: Path, **config_kwargs) -> HostRuntime:
     Seeds a minimal models.yaml so manifest-dependent code paths
     (capability snapshot, model resolution) have at least one model.
     """
-    (tmp_path / "models.yaml").write_text(
-        "\n".join(
-            [
-                "version: 1",
-                "mode_models: {default: gemma3:latest}",
-                "models:",
-                "  - model_id: gemma3:latest",
-                "    provider: ollama",
-                "  - model_id: deepseek-r1:latest",
-                "    provider: ollama",
-                "    reasoning_model: true",
-            ]
-        ),
-        encoding="utf-8",
+    from kernel.testing.runtime_factory import build_test_runtime
+
+    models_yaml = "\n".join(
+        [
+            "version: 1",
+            "mode_models: {default: gemma3:latest}",
+            "models:",
+            "  - model_id: gemma3:latest",
+            "    provider: ollama",
+            "  - model_id: deepseek-r1:latest",
+            "    provider: ollama",
+            "    reasoning_model: true",
+        ]
     )
-    config = HostConfig.from_env(data_dir=str(tmp_path), **config_kwargs)
-    return HostRuntime(config)
+    return build_test_runtime(tmp_path, models_yaml=models_yaml, **config_kwargs)
 
 
 # ── Mode / model rendering (CLI-only) ────────────────────────────────

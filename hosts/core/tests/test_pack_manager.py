@@ -39,8 +39,9 @@ from hosts.core.runtime import HostRuntime
 
 def _make_runtime(tmp_path: Path) -> HostRuntime:
     """Build a HostRuntime whose data_dir is tmp_path."""
-    config = HostConfig.from_env(data_dir=str(tmp_path))
-    return HostRuntime(config)
+    from kernel.testing.runtime_factory import build_test_runtime
+
+    return build_test_runtime(tmp_path, models_yaml="")
 
 
 def _make_runtime_with_memory_provider(
