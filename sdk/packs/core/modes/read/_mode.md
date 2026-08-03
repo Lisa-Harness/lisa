@@ -9,21 +9,21 @@ priority: 6
 routing_intent_tags: [read, list]
 satisfies_intents: [read, list]
 routing_intent_keywords:
-  list:
-    - list
-    - files
-    - contents
   read:
-    - read
-    - file
-    - content
-  review:
-    - review files
-    - review content
-command_pattern: '^(?:(?:/)?(?:read|review|list)(?:[\s,:;]+|(?=$))?$'
-description: "List files and read them."
+    - read file
+    - read the file
+    - read from sandbox
+    - show file
+    - cat file
+  list:
+    - list files
+    - list the files
+    - show files
+    - show contents
+command_pattern: '^(?:/)?(?:read|list)(?:[\s,:;]+(?P<query>.+))?$'
+description: "List files and read them from the storage sandbox."
 fast_path_patterns:
-  - "^(?:read|review)\\b"
+  - "^(?:read|list)\\b"
 ---
 # List and Read Mode
 
