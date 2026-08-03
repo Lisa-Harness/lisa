@@ -58,8 +58,6 @@ _STATUS_COMPACT_FULL = 0
 _STATUS_COMPACT_ABBREVIATED = 1
 _STATUS_COMPACT_TRIMMED = 2
 _STATUS_COMPACT_MINIMAL = 3
-_TIMEZONE_INITIALISM_MIN_LEN = 2
-_STATUS_TIME_PADDING_WIDTH = 2
 
 # ── REPL file history ────────────────────────────────────────────────
 _REPL_HISTORY_FILE_NAME = "repl_history.txt"
@@ -814,16 +812,11 @@ def _render_status_line(console: Console) -> None:
         if index < len(segments) - 1:
             left.append("", style=STYLE_STATUS_SEPARATOR)
 
-    time_label, time_style = _status_time_badge(console)
-    right = Text(f" {time_label} ", style=time_style)
-
     left_width = cell_len(left.plain)
-    right_width = cell_len(right.plain)
-    padding = max(1, int(console.size.width) - left_width - right_width)
+    padding = max(1, int(console.size.width) - left_width)
     line = Text()
     line.append(left)
     line.append(" " * padding)
-    line.append(right)
     console.print(line, no_wrap=True)
 
 
@@ -913,50 +906,6 @@ def _finalize_status_segments(
     return segments
 
 
-def _status_time_badge(console: Console) -> tuple[str, str]:
-    """Build the timezone-aware clock badge for the status line."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-    runtime: HostRuntime | None = getattr(console, "_lisa_runtime", None)
-    timezone_name = runtime.config.timezone if runtime is not None else "UTC"
-    try:
-        status_dt = datetime.now(ZoneInfo(timezone_name))
-    except ZoneInfoNotFoundError:
-        status_dt = datetime.now().astimezone()
-    timezone_label = timezone_name
-    if "/" in timezone_name:
-        tz_abbrev_raw = str(status_dt.tzname() or "").strip()
-        if tz_abbrev_raw:
-            if " " in tz_abbrev_raw:
-                initials = "".join(
-                    token[0] for token in tz_abbrev_raw.split() if token and token[0].isalpha()
-                ).upper()
-                timezone_label = (
-                    initials
-                    if len(initials) >= _TIMEZONE_INITIALISM_MIN_LEN
-                    else tz_abbrev_raw.upper()
-                )
-            else:
-                timezone_label = tz_abbrev_raw.upper()
-        elif timezone_label == timezone_name:
-            tail = timezone_name.rsplit("/", 1)[-1]
-            timezone_label = "".join(part[:1] for part in tail.split("_") if part).upper() or tail
-        if " " in timezone_label:
-            is_daylight = bool(status_dt.dst())
-            us_zone_abbrevs = {
-                "America/New_York": ("EST", "EDT"),
-                "America/Chicago": ("CST", "CDT"),
-                "America/Denver": ("MST", "MDT"),
-                "America/Los_Angeles": ("PST", "PDT"),
-            }
-            pair = us_zone_abbrevs.get(timezone_name)
-            if pair is not None:
-                timezone_label = pair[1] if is_daylight else pair[0]
-    now_local = status_dt.strftime("%H:%M:%S")
-    return f"🕒 {now_local} {timezone_label}", STYLE_STATUS_INFO
-
-
 def _estimated_status_line_width(segments: list[tuple[str, str]]) -> int:
     """Estimate rendered width for status segments and separators."""
     from rich.cells import cell_len
@@ -970,11 +919,7 @@ def _estimated_status_line_width(segments: list[tuple[str, str]]) -> int:
 
 def _fitted_status_segments(console: Console) -> list[tuple[str, str]]:
     """Return the richest status segments that fit the current terminal width."""
-    from rich.cells import cell_len
-
-    time_label, _ = _status_time_badge(console)
-    time_width = cell_len(time_label) + _STATUS_TIME_PADDING_WIDTH
-    max_width = max(0, int(console.size.width) - time_width - 1)
+    max_width = max(0, int(console.size.width) - 1)
     for compact_level in (
         _STATUS_COMPACT_FULL,
         _STATUS_COMPACT_ABBREVIATED,
