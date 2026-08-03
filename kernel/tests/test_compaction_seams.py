@@ -49,11 +49,14 @@ def test_slice_providers_entry_point_group_name() -> None:
 
 
 def test_discover_slice_provider_factories_empty_when_unregistered() -> None:
-    """With no packs installed under the group, discovery returns an empty list."""
+    """With no packs installed under the group, discovery returns an empty list.
+
+    The compaction pack is a workspace member and always importable, but
+    discovery only returns entries whose distribution is pip-installed and
+    registered under the entry-point group; in the test env this may be empty.
+    """
     entries = discover_slice_provider_factories()
-    # The compaction pack is not pip-installed in this test env; discovery
-    # should return an empty list (or, if it is installed, a list whose
-    # entries all carry callable factories).
+    # Any registered entries must carry callable factories.
     for entry in entries:
         assert callable(entry.factory)
         assert isinstance(entry.pack_name, str)
@@ -92,8 +95,7 @@ def test_discover_slice_provider_factories_filters_excluded_packs(
 
 def test_compaction_factory_returns_none_when_disabled() -> None:
     """The compaction pack's factory returns None when the plan disables it."""
-    pytest.importorskip("lisa_packs.compaction")
-    from lisa_packs.compaction.slice_provider import get_slice_provider_factory
+    from sdk.packs.compaction.slice_provider import get_slice_provider_factory
 
     class _Tuning:
         enabled = False
@@ -123,8 +125,7 @@ def test_compaction_factory_returns_none_when_disabled() -> None:
 
 def test_compaction_factory_returns_slice_when_enabled() -> None:
     """The compaction pack's factory returns a ContextCompactionSlice when enabled."""
-    pytest.importorskip("lisa_packs.compaction")
-    from lisa_packs.compaction.slice_provider import (
+    from sdk.packs.compaction.slice_provider import (
         ContextCompactionSlice,
         get_slice_provider_factory,
     )

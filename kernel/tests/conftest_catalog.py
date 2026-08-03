@@ -28,10 +28,11 @@ _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs"
 _LEARNING_ROOT: Path = (
     Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "memory"
 ).resolve()
-# search, markdown, compaction, and letta migrated to ../lisa_packs/<name>
+# search, markdown, and letta migrated to ../lisa_packs/<name>
 # (external submodules). Only include a content root when the submodule is
 # checked out alongside the framework; tests that need a migrated mode skip
-# when absent.
+# when absent. compaction was promoted back to an in-tree workspace member
+# (sdk/packs/compaction) and is discovered via entry points like checkpoint.
 _PACKS_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / ".." / "lisa_packs").resolve()
 
 
@@ -71,7 +72,7 @@ def _external_pack_roots() -> list[Path]:
     """
     installed = _installed_pack_names()
     roots: list[Path] = []
-    for name in ("search", "markdown", "compaction", "letta"):
+    for name in ("search", "markdown", "letta"):
         if name in installed:
             continue
         root = (_PACKS_ROOT / name / "lisa_packs" / name).resolve()
