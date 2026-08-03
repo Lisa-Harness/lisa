@@ -29,6 +29,7 @@ from kernel.models import (
     ToolResult,
 )
 from kernel.operations.declarative import execute_declarative_operation
+from kernel.seams.host_adapter import build_callable_host
 from kernel.tools.registry import execute_tool
 from kernel.turn_runner import TurnHooks, execute_approved_invocation, run_turn
 
@@ -112,8 +113,8 @@ async def test_run_turn_pauses_when_operation_calls_effectful_tool(
         return ToolResult(tool_id="write_file", output_text="unexpected")
 
     async def nested_operation(ctx: OperationExecutionContext) -> OperationResult:
-        assert ctx.execute_tool_fn is not None
-        await ctx.execute_tool_fn(
+        assert ctx.host is not None
+        await ctx.host.execute_tool(
             "write_file",
             ToolExecutionContext(
                 tool_id="write_file",
@@ -322,9 +323,11 @@ async def test_declarative_operation_rethrows_nested_approval() -> None:
         mode_id="coding",
         session_plan_digest="plan-a",
         approval_service=service,
-        complete_fn=complete,
-        resolve_model_fn=lambda _model_id: object(),
-        execute_tool_fn=execute_nested_tool,
+        host=build_callable_host(
+            complete_fn=complete,
+            resolve_model_fn=lambda _model_id: object(),
+            execute_tool_fn=execute_nested_tool,
+        ),
     )
 
     with pytest.raises(ApprovalRequired) as required:

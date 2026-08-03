@@ -187,7 +187,7 @@ class OutputGuard(Protocol):
 class CompleteFn(Protocol):
     """Protocol for LLM completion calls.
 
-    Injected into ``OperationExecutionContext.complete_fn``.
+    Injected into ``OperationExecutionContext.host.complete``.
     """
 
     async def __call__(
@@ -206,7 +206,7 @@ class CompleteFn(Protocol):
 class ResolveModelFn(Protocol):
     """Protocol for model alias resolution.
 
-    Injected into ``OperationExecutionContext.resolve_model_fn``.
+    Injected into ``OperationExecutionContext.host.resolve_model``.
     """
 
     def __call__(self, alias: str) -> str: ...
@@ -216,7 +216,7 @@ class ResolveModelFn(Protocol):
 class ExecuteToolFn(Protocol):
     """Protocol for invoking a tool by ID.
 
-    Injected into ``OperationExecutionContext.execute_tool_fn``.
+    Injected into ``OperationExecutionContext.host.execute_tool``.
     """
 
     async def __call__(self, tool_id: str, ctx: Any) -> Any: ...
@@ -226,10 +226,88 @@ class ExecuteToolFn(Protocol):
 class ExecuteOperationFn(Protocol):
     """Protocol for invoking an operation by ID.
 
-    Injected into ``OperationExecutionContext.execute_operation_fn``.
+    Injected into ``OperationExecutionContext.host.execute_operation``.
     """
 
     async def __call__(self, operation_id: str, ctx: Any) -> Any: ...
+
+
+# ── Operation host seam ──────────────────────────────────────────────
+#
+# The typed seam that operations depend on instead of reaching into five
+# separate untyped ``Any`` callables on ``OperationExecutionContext``.
+# Hosts inject a concrete adapter (``_CallableHost``) that delegates to
+# the existing callables; the kernel never imports host dataclasses.
+# ``CompletionResult`` and ``ModelRef`` are structural Protocols that the
+# host's ``StubCompletion`` / ``StubModelDefinition`` satisfy.
+
+
+@runtime_checkable
+class CompletionResult(Protocol):
+    """Structural shape of a completion result (host-owned concrete type).
+
+    Operations read ``content``, ``tool_calls``, ``finish_reason`` (for
+    telemetry), and ``truncated`` (the authoritative truncation signal)
+    via this Protocol. The host's ``StubCompletion`` structurally satisfies
+    it without inheriting.
+    """
+
+    content: str
+    tool_calls: list[dict[str, Any]]
+    finish_reason: str | None
+    truncated: bool | None
+
+
+@runtime_checkable
+class ModelRef(Protocol):
+    """Structural shape of a resolved model definition (host-owned concrete type).
+
+    The host's ``StubModelDefinition`` structurally satisfies this Protocol.
+    """
+
+    model_id: str
+    provider: str
+    reasoning_model: bool
+
+
+@runtime_checkable
+class OperationHost(Protocol):
+    """The single typed seam operations depend on.
+
+    Collapses the seven untyped ``Any`` callable fields on
+    ``OperationExecutionContext`` (``complete_fn``, ``resolve_model_fn``,
+    ``read_authored_text_fn``, ``execute_tool_fn``, ``execute_operation_fn``,
+    ``generate_image_fn``, ``introspect_fn``) into one Protocol. Operations
+    call ``ctx.host.complete(...)`` instead of ``ctx.complete_fn(...)``.
+
+    ``complete`` returns a ``CompletionResult`` (structural Protocol) whose
+    ``truncated`` field is the provider-owned authoritative truncation
+    signal — operations should prefer it over inferring from
+    ``finish_reason`` strings.
+    """
+
+    async def complete(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        model_def: Any,
+        max_tokens: int,
+        temperature: float,
+        tools: list[dict[str, Any]] | None = None,
+        response_format: type[Any] | None = None,
+    ) -> CompletionResult: ...
+
+    def resolve_model(self, model_id: str) -> ModelRef | None: ...
+
+    def read_authored_text(self, path: str) -> str: ...
+
+    async def execute_tool(self, tool_id: str, ctx: Any) -> Any: ...
+
+    async def execute_operation(self, operation_id: str, ctx: Any) -> Any: ...
+
+    async def generate_image(self, **kwargs: Any) -> Any: ...
+
+    def introspect(self, **kwargs: Any) -> Any: ...
 
 
 # ── Context seams ───────────────────────────────────────────────────────────

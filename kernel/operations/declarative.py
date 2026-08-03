@@ -245,13 +245,13 @@ async def execute_declarative_operation(
     completion_temperature: float,
 ) -> OperationResult:
     """Run one markdown-authored operation through the generic inference loop."""
-    if ctx.complete_fn is None or ctx.resolve_model_fn is None:
+    if ctx.host is None:
         raise RuntimeError(
-            f"Declarative operation '{operation_id}' is missing model completion callbacks."
+            f"Declarative operation '{operation_id}' is missing the OperationHost seam."
         )
 
     preferred_model_id = ctx.preferred_model_id or ctx.model_id or "gpt-chat-latest"
-    model_def = ctx.resolve_model_fn(preferred_model_id)
+    model_def = ctx.host.resolve_model(preferred_model_id)
     if model_def is None:
         raise RuntimeError(
             f"Declarative operation '{operation_id}' could not resolve model '{preferred_model_id}'."
@@ -268,7 +268,7 @@ async def execute_declarative_operation(
     while True:
         should_retry_for_json_only = False
         try:
-            completion = await ctx.complete_fn(
+            completion = await ctx.host.complete(
                 messages=messages,
                 model_def=model_def,
                 max_tokens=completion_max_tokens,
@@ -297,7 +297,7 @@ async def execute_declarative_operation(
                 raise
             should_retry_for_json_only = True
         if should_retry_for_json_only and response_format_model is not None:
-            completion = await ctx.complete_fn(
+            completion = await ctx.host.complete(
                 messages=json_only_retry_messages(messages, response_format_model),
                 model_def=model_def,
                 max_tokens=completion_max_tokens,
@@ -377,9 +377,9 @@ async def execute_declarative_operation(
                 },
             )
 
-        if ctx.execute_tool_fn is None:
+        if ctx.host is None:
             raise RuntimeError(
-                f"Declarative operation '{operation_id}' is missing the tool execution callback."
+                f"Declarative operation '{operation_id}' is missing the OperationHost seam."
             )
 
         for tool_call in completion.tool_calls:
@@ -391,7 +391,7 @@ async def execute_declarative_operation(
             if remaining_tool_calls > 0:
                 remaining_tool_calls -= 1
                 try:
-                    tool_result = await ctx.execute_tool_fn(
+                    tool_result = await ctx.host.execute_tool(
                         tool_name,
                         ToolExecutionContext(
                             tool_id=tool_name,

@@ -290,7 +290,7 @@ async def mcp_tool_executor(
     _ctx: Any,
     pool: MCPToolPool,
 ) -> ToolResult:
-    """Bridge ``OperationExecutionContext.execute_tool_fn`` to in-process tools.
+    """Bridge ``OperationExecutionContext.host.execute_tool`` to in-process tools.
 
     Catalog-driven: if the tool_id is in the internal tool catalog (discovered
     from packs), dispatch in-process via ``tools.registry.execute_tool``.

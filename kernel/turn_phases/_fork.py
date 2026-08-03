@@ -34,6 +34,7 @@ from kernel.models import (
     TurnBudget,
     YieldPolicy,
 )
+from kernel.seams.host_adapter import build_callable_host
 from kernel.tools.mcp_client import MCPToolPool, bare_tool_name
 
 if TYPE_CHECKING:
@@ -584,8 +585,16 @@ def _build_minimal_context(
     memory_scope: str = "personal",
     session_plan_digest: str = "",
     data_dir: str = "",
+    delegate_fn: Any = None,
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for the turn runner."""
+    host = build_callable_host(
+        complete_fn=complete_fn,
+        resolve_model_fn=resolve_model_fn,
+        read_authored_text_fn=read_authored_text_fn,
+        execute_tool_fn=execute_tool_fn,
+        execute_operation_fn=execute_operation_fn,
+    )
     return OperationExecutionContext(
         workspace_id=workspace_id,
         user_id=user_id,
@@ -599,15 +608,12 @@ def _build_minimal_context(
         mode_id=mode_id,
         query=query,
         model_id="default",
-        complete_fn=complete_fn,
-        resolve_model_fn=resolve_model_fn,
-        read_authored_text_fn=read_authored_text_fn,
-        execute_tool_fn=execute_tool_fn,
-        execute_operation_fn=execute_operation_fn,
         state_provider=state_provider,
         pack_configuration_resolver=pack_configuration_resolver,
         approval_service=approval_service,
         session_plan_digest=session_plan_digest,
         code_change_artifact_store=code_change_artifact_store,
         data_dir=data_dir,
+        delegate_fn=delegate_fn,
+        host=host,
     )

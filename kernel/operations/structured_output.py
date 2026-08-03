@@ -42,7 +42,7 @@ def completion_content(completion: Any) -> str:
     """Extract the text payload from a completion object, safely.
 
     This is the canonical content extractor for operations that call
-    ``ctx.complete_fn`` and need the model's text answer. It handles the
+    ``ctx.host.complete`` and need the model's text answer. It handles the
     three shapes a host's ``complete_fn`` can return:
 
     1. An object with a ``content`` attribute (the normal case —
@@ -210,7 +210,7 @@ async def run_structured_completion_with_retry(
 ) -> BaseModel:
     """Run one structured completion, retrying once with a JSON-only instruction.
 
-    Use this for Python-authored operations that call ``ctx.complete_fn`` with
+    Use this for Python-authored operations that call ``ctx.host.complete`` with
     ``response_format=<PydanticModel>``. It mirrors the retry behavior the
     declarative operation runtime and the router planner already use:
 

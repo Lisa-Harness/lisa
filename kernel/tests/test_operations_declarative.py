@@ -40,11 +40,16 @@ class _StubCompletion:
 
 def _build_ctx(*, complete_fn, resolve_model_fn=None) -> OperationExecutionContext:
     """Build a minimal declarative-operation execution context."""
+    from kernel.seams.host_adapter import build_callable_host
+
+    host = build_callable_host(
+        complete_fn=complete_fn,
+        resolve_model_fn=resolve_model_fn or _default_resolve_model,
+    )
     return OperationExecutionContext(
         operation_id="web_search",
         query="agent frameworks",
-        complete_fn=complete_fn,
-        resolve_model_fn=resolve_model_fn or _default_resolve_model,
+        host=host,
     )
 
 
@@ -207,7 +212,14 @@ async def test_declarative_retry_tool_call_turn_deferred_not_failed() -> None:
     ctx = _build_ctx(
         complete_fn=_make_complete_fn(completions),
     )
-    ctx.execute_tool_fn = _make_tool_execute_fn()
+    from kernel.seams.host_adapter import build_callable_host as _bch
+    # Preserve complete/resolve_model from the existing host, add execute_tool.
+    _existing = ctx.host
+    ctx.host = _bch(
+        complete_fn=_existing._complete_fn,
+        resolve_model_fn=_existing._resolve_model_fn,
+        execute_tool_fn=_make_tool_execute_fn(),
+    )
 
     result = await execute_declarative_operation(
         ctx,

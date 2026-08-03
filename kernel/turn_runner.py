@@ -15,11 +15,18 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Literal, cast
 
-from kernel.approval import ApprovalInvocation, ApprovalRequired, render_approval_request
+from kernel.approval import (
+    ApprovalInvocation,
+    ApprovalRequired,
+    render_approval_request,
+)
 from kernel.capability_manifest import compile_capability_manifest
 from kernel.config import settings as _kernel_settings
 from kernel.context.models import ContextBudgetSnapshot
-from kernel.context.sub_turn_contract import render_sub_turn_contract, render_sub_turn_midpoint_nudge
+from kernel.context.sub_turn_contract import (
+    render_sub_turn_contract,
+    render_sub_turn_midpoint_nudge,
+)
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
 from kernel.ipsar_fsm import (
     apply_transition,
@@ -42,6 +49,8 @@ from kernel.models import (
     CapabilityManifest,
     CheckpointBundle,
     ConversationSurface,
+    DelegationResult,
+    DelegationSpec,
     ForkChildResult,
     ForkTarget,
     MemoryScope,
@@ -61,8 +70,13 @@ from kernel.operations.registry import (
     get_operation_catalog,
 )
 from kernel.operations.structured_output import completion_content
-from kernel.provider_core import StreamedChunk, StreamedCompletion, _aggregate_streamed_chunks
+from kernel.provider_core import (
+    StreamedChunk,
+    StreamedCompletion,
+    _aggregate_streamed_chunks,
+)
 from kernel.recovery import RecoveryIdentity, RecoveryRecord
+from kernel.seams.host_adapter import build_callable_host
 from kernel.seams.protocols import (
     ContentRegistry,
     CoordinatorRouteDecision,
@@ -85,7 +99,10 @@ from kernel.slice import (
 )
 from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
 from kernel.tools.registry import execute_tool, get_tool_catalog
-from kernel.tools.schema_translator import mcp_tool_to_openai_function, openai_tool_call_to_mcp
+from kernel.tools.schema_translator import (
+    mcp_tool_to_openai_function,
+    openai_tool_call_to_mcp,
+)
 from kernel.workflow_instance import (
     WorkflowInstance,
     WorkflowStep,
@@ -318,7 +335,7 @@ def _is_workflow_instance_complete(instance: Any) -> bool:
     exist.
     """
     try:
-        from kernel.workflow_instance import is_complete  # noqa: PLC0415
+        from kernel.workflow_instance import is_complete
 
         return bool(is_complete(instance))
     except Exception:  # pylint: disable=broad-except
@@ -335,7 +352,7 @@ def _next_remaining_step(instance: Any) -> Any:
     remaining steps or on any exception.
     """
     try:
-        from kernel.workflow_instance import remaining_steps  # noqa: PLC0415
+        from kernel.workflow_instance import remaining_steps
 
         remaining = remaining_steps(instance)
         if not remaining:
@@ -739,6 +756,20 @@ class TurnHooks:
     so they receive full host callbacks (complete_fn, resolve_model_fn, etc.).
     """
 
+    delegate_fn: Callable[..., Awaitable[DelegationResult]] | None = None
+    """Execute one delegate sub-turn. Default: ``_default_delegate_fn``
+    (runs ``run_turn`` recursively as a ``sub_turn_kind="delegate"``
+    child). The pack-level ``delegate`` operation calls this with a
+    :class:`DelegationSpec` and awaits a :class:`DelegationResult`.
+
+    A host overrides this to inject a custom delegation backend (e.g. a
+    pooled agent runtime) without touching the pack handler. ``None``
+    means the kernel has not wired delegation; the delegate operation
+    fails loudly. The kernel wires ``_default_delegate_fn`` at turn
+    start, so hosts that want the default behavior leave this ``None``
+    and the kernel fills it in.
+    """
+
     # ── Post-turn side effects ───────────────────────────────────────────
     on_turn_complete: Callable[[str, str, str, list[dict[str, Any]]], Awaitable[None]] | None = None
     """Called after every successful turn with mode_id, query, response_text,
@@ -903,7 +934,7 @@ class TurnHooks:
     """Async callable returning an ``IntrospectSnapshot`` from the host's
     live runtime (process memory, asyncio tasks, MCP pool health, token
     usage, log tail). When set, injected into
-    ``OperationExecutionContext.introspect_fn`` so the self-model operation
+    ``OperationExecutionContext.host.introspect`` so the self-model operation
     and the reflect_self operation can access live runtime state. Default:
     None (self-model telemetry fields stay empty)."""
 
@@ -1028,6 +1059,215 @@ async def _default_execute_operation(
     return await execute_operation(operation_id, ctx)
 
 
+async def _default_delegate_fn(
+    spec: DelegationSpec,
+    *,
+    hooks: TurnHooks,
+    turn_budget: TurnBudget | None,
+    execution_policy: ExecutionPolicy | None,
+    depth: int,
+    logger_override: logging.Logger | None = None,
+) -> DelegationResult:
+    """Run one delegate sub-turn by recursing into ``run_turn``.
+
+    The default implementation reuses the fork infrastructure (budget,
+    status mapping, action-tool validation) without fanning out in
+    parallel. The child runs as a ``sub_turn_kind="delegate"`` turn so
+    the budget briefing emits the delegate-variant sub-turn contract
+    (``status=no_tools`` framing, not the fork "your output is
+    discarded" framing) and the midpoint write-nudge fires.
+
+    Per spec §6.1, the ``status`` predicate reuses the fork-child
+    action-tool-floor helper (``_fork_mode_action_tool_ids`` /
+    ``_fork_mode_requires_tools``) — a child that made 17 read-only calls
+    but never invoked a side-effecting action tool is ``no_tools``, not
+    ``ok``.
+
+    Per spec §6.2, the child passes ``sub_turn_kind="delegate"`` so the
+    seam already in place emits the delegate-variant briefing.
+
+    Per spec §6.3, delegate children suppress routing hints (matching
+    fork children) so a delegate child does not re-route and create a
+    loop. The seam is independent of this decision; the briefing
+    function handles either case.
+    """
+
+    _dlog = logger_override or logger
+    # Bound recursion. The root parent is depth 0; a direct delegate
+    # child is depth 1. When the cap is hit, return ``max_depth`` so the
+    # parent can surface the limit honestly instead of recursing until
+    # the stack overflows.
+    if depth > _kernel_settings.delegate_max_depth:
+        _dlog.warning(
+            "delegate child %s exceeded max depth %d (depth=%d); "
+            "returning max_depth status",
+            spec.target_mode_id,
+            _kernel_settings.delegate_max_depth,
+            depth,
+        )
+        return DelegationResult(
+            target_mode_id=spec.target_mode_id,
+            status="max_depth",
+            error_message=(
+                f"delegate child {spec.target_mode_id} exceeded the "
+                f"maximum recursion depth ({_kernel_settings.delegate_max_depth}); "
+                "re-issue the request with a shallower delegation chain or "
+                "raise DELEGATE_MAX_DEPTH."
+            ),
+            depth=depth,
+        )
+
+    started = time.monotonic()
+    child_budget = turn_budget
+    child_max_iters = spec.max_tool_iterations or _kernel_settings.delegate_child_max_tool_iterations
+    try:
+        from kernel.tools.mcp_client import bare_tool_name
+        from kernel.turn_phases._fork import (
+            _fork_mode_action_tool_ids,
+            _fork_mode_requires_tools,
+        )
+
+        child_result = await run_turn(
+            mode_id=spec.target_mode_id,
+            query=spec.query,
+            hooks=hooks,
+            max_tool_iterations=child_max_iters,
+            turn_budget=child_budget,
+            execution_policy=execution_policy,
+            logger_override=_dlog,
+            # Delegate children suppress routing hints (matching fork
+            # children) so a child does not re-route and create a loop.
+            suppress_routing_hint=True,
+            # Mark this turn as a delegate child so the budget briefing
+            # emits the delegate-variant sub-turn contract (the
+            # ``status=no_tools`` framing, not the fork "your output is
+            # discarded" framing) and the midpoint write-nudge fires.
+            sub_turn_kind="delegate",
+            # Thread the recursion depth so the child's own delegate
+            # children are depth+1 (bounded by delegate_max_depth).
+            delegate_depth=depth,
+        )
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+
+        # A child the harness force-yielded (iteration cap, stuck-in-stage,
+        # or budget exhaustion) was *interrupted*, not hallucinating.
+        # Classify it before the zero-tool / action-tool checks so a
+        # coding child that gathered evidence then hit the cap is not
+        # reported as "hallucinated success". Mirrors the fork-child
+        # logic in ``_run_fork_child_turn``.
+        if child_result.yielded is not None:
+            _ya = child_result.yielded
+            _is_model_yield = _ya.context == "model-emitted yield"
+            if _is_model_yield:
+                _dlog.info(
+                    "delegate child %s model-emitted yield (asking: %s); "
+                    "propagating question to parent",
+                    spec.target_mode_id,
+                    (_ya.question or "")[:120],
+                )
+                return DelegationResult(
+                    target_mode_id=spec.target_mode_id,
+                    status="model_yield",
+                    output_text=child_result.response_text,
+                    yield_action=_ya,
+                    tool_call_count=child_result.tool_call_count,
+                    called_tool_names=sorted(child_result.called_tool_names),
+                    duration_ms=elapsed_ms,
+                    depth=depth,
+                )
+            _dlog.warning(
+                "delegate child %s was force-yielded by the harness "
+                "(iteration cap / stuck-in-stage / budget); marking "
+                "interrupted (not hallucinated)",
+                spec.target_mode_id,
+            )
+            return DelegationResult(
+                target_mode_id=spec.target_mode_id,
+                status="interrupted",
+                output_text=child_result.response_text,
+                error_message=(
+                    f"delegate child {spec.target_mode_id} was interrupted "
+                    "by the turn lifecycle (force-yielded) before completing "
+                    "its action tools; its reported output is partial. "
+                    "Re-issue the request, or raise "
+                    "DELEGATE_CHILD_MAX_TOOL_ITERATIONS (currently "
+                    f"{_kernel_settings.delegate_child_max_tool_iterations})."
+                ),
+                yield_action=_ya,
+                tool_call_count=child_result.tool_call_count,
+                called_tool_names=sorted(child_result.called_tool_names),
+                duration_ms=elapsed_ms,
+                depth=depth,
+            )
+
+        # Action-tool-floor predicate (spec §6.1). Reuse the fork-child
+        # helpers so a child that made read-only calls but never invoked
+        # a side-effecting action tool is ``no_tools``, not ``ok``.
+        action_ids = _fork_mode_action_tool_ids(spec.target_mode_id)
+        called_bare = {bare_tool_name(n) for n in child_result.called_tool_names}
+        has_write = bool(called_bare & action_ids)
+        if has_write or not _fork_mode_requires_tools(spec.target_mode_id):
+            return DelegationResult(
+                target_mode_id=spec.target_mode_id,
+                status="ok",
+                output_text=child_result.response_text,
+                tool_call_count=child_result.tool_call_count,
+                called_tool_names=sorted(child_result.called_tool_names),
+                duration_ms=elapsed_ms,
+                depth=depth,
+            )
+        _dlog.warning(
+            "delegate child %s made %d tool call(s) but none were its "
+            "mode's authored action tools %s (called: %s); marking "
+            "no_tools (hallucinated success — nothing written/learned)",
+            spec.target_mode_id,
+            child_result.tool_call_count,
+            sorted(action_ids),
+            sorted(child_result.called_tool_names),
+        )
+        return DelegationResult(
+            target_mode_id=spec.target_mode_id,
+            status="no_tools",
+            output_text=child_result.response_text,
+            error_message=(
+                f"delegate child {spec.target_mode_id} made "
+                f"{child_result.tool_call_count} tool call(s) but none "
+                f"were its mode's authored action tools "
+                f"({', '.join(sorted(action_ids))}); its reported "
+                "success is unverified — nothing was written to disk or "
+                "memory."
+            ),
+            tool_call_count=child_result.tool_call_count,
+            called_tool_names=sorted(child_result.called_tool_names),
+            duration_ms=elapsed_ms,
+            depth=depth,
+        )
+    except TimeoutError:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return DelegationResult(
+            target_mode_id=spec.target_mode_id,
+            status="timeout",
+            error_message="Delegate child turn timed out.",
+            duration_ms=elapsed_ms,
+            depth=depth,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        _dlog.warning(
+            "delegate child %s failed: %s: %s",
+            spec.target_mode_id,
+            type(exc).__name__,
+            exc,
+        )
+        return DelegationResult(
+            target_mode_id=spec.target_mode_id,
+            status="error",
+            error_message=f"{type(exc).__name__}: {exc}",
+            duration_ms=elapsed_ms,
+            depth=depth,
+        )
+
+
 async def _default_on_turn_complete(
     _mode_id: str,
     _query: str,
@@ -1056,7 +1296,7 @@ def _looks_like_continuation_query(query: str) -> bool:
     lowered = (query or "").strip().lower()
     if not lowered:
         return False
-    from kernel.routing_vocabulary import get_resume_phrases  # noqa: PLC0415
+    from kernel.routing_vocabulary import get_resume_phrases
 
     return any(lowered.startswith(phrase) for phrase in get_resume_phrases())
 
@@ -1064,7 +1304,7 @@ def _looks_like_continuation_query(query: str) -> bool:
 def _coordinator_routing_hint(
     *,
     hooks: TurnHooks,
-    mode_id: str,  # noqa: ARG001  — kept for call-site compatibility
+    mode_id: str,
     query: str,
 ) -> str:
     """Return a handoff hint from an active workflow instance on a resume.
@@ -1431,6 +1671,7 @@ async def run_turn(
     suppress_routing_hint: bool = False,
     yield_policy_override: YieldPolicy | None = None,
     sub_turn_kind: str | None = None,
+    delegate_depth: int = 0,
 ) -> TurnResult:
     """Execute one conversational turn with the full model+tool loop.
 
@@ -1574,6 +1815,7 @@ async def run_turn(
             suppress_routing_hint=suppress_routing_hint,
             yield_policy_override=yield_policy_override,
             sub_turn_kind=sub_turn_kind,
+            delegate_depth=delegate_depth,
         )
     pool = MCPToolPool(hooks.mcp_tool_servers)
     await pool.start()
@@ -1599,6 +1841,7 @@ async def run_turn(
             logger_override=logger_override,
             suppress_routing_hint=suppress_routing_hint,
             sub_turn_kind=sub_turn_kind,
+            delegate_depth=delegate_depth,
         )
     finally:
         await pool.aclose()
@@ -1627,6 +1870,7 @@ async def _run_turn_with_approval(
     suppress_routing_hint: bool = False,
     yield_policy_override: YieldPolicy | None = None,
     sub_turn_kind: str | None = None,
+    delegate_depth: int = 0,
 ) -> TurnResult:
     """Convert an approval interruption into a host-renderable turn result."""
 
@@ -1653,6 +1897,7 @@ async def _run_turn_with_approval(
             suppress_routing_hint=suppress_routing_hint,
             yield_policy_override=yield_policy_override,
             sub_turn_kind=sub_turn_kind,
+            delegate_depth=delegate_depth,
         )
     except ApprovalRequired as required:
         # Preserve the mid-turn handoff across the approval boundary. The
@@ -1744,16 +1989,18 @@ async def execute_approved_invocation(
         operation_context = OperationExecutionContext(
             operation_id=invocation.target_id,
             params=invocation.parameters,
-            complete_fn=hooks.complete or _noop_complete,
-            resolve_model_fn=hooks.resolve_model or _default_resolve_model,
-            read_authored_text_fn=getattr(
-                hooks.context_seams.content_registry,
-                "read_authored_text",
-                None,
-            ),
-            execute_tool_fn=_nested_tool_executor,
-            execute_operation_fn=hooks.execute_operation or _default_execute_operation,
             state_provider=hooks.state_provider,
+            host=build_callable_host(
+                complete_fn=hooks.complete or _noop_complete,
+                resolve_model_fn=hooks.resolve_model or _default_resolve_model,
+                read_authored_text_fn=getattr(
+                    hooks.context_seams.content_registry,
+                    "read_authored_text",
+                    None,
+                ),
+                execute_tool_fn=_nested_tool_executor,
+                execute_operation_fn=hooks.execute_operation or _default_execute_operation,
+            ),
             **common,
         )
         execute_operation_fn = hooks.execute_operation or _default_execute_operation
@@ -1793,10 +2040,43 @@ async def _run_turn_inner(
     suppress_routing_hint: bool = False,
     yield_policy_override: YieldPolicy | None = None,
     sub_turn_kind: str | None = None,
+    delegate_depth: int = 0,
 ) -> TurnResult:
     """Inner turn loop that owns the MCPToolPool lifecycle via the caller."""
 
     _log = logger_override or logger
+
+    # ── Delegate hook wiring ──────────────────────────────────────────
+    # Build the ``delegate_fn`` closure that the pack-level ``delegate``
+    # operation calls via ``ctx.delegate_fn``. The closure captures the
+    # turn's hooks, budget, execution policy, and the current depth so
+    # the delegate child runs as a ``sub_turn_kind="delegate"`` turn at
+    # ``depth + 1``. When the host provides its own ``hooks.delegate_fn``,
+    # that takes precedence (custom delegation backend). Otherwise the
+    # kernel's ``_default_delegate_fn`` is used. The closure is built
+    # once per turn so every operation dispatched in this turn sees the
+    # same delegate hook.
+    _delegate_depth = delegate_depth
+    if hooks.delegate_fn is not None:
+        _delegate_fn: Callable[..., Awaitable[DelegationResult]] = hooks.delegate_fn
+    else:
+        async def _delegate_fn(
+            spec: DelegationSpec,
+            *,
+            _hooks: TurnHooks = hooks,
+            _budget: TurnBudget | None = turn_budget,
+            _policy: ExecutionPolicy | None = execution_policy,
+            _depth: int = _delegate_depth,
+            _logr: logging.Logger | None = logger_override,
+        ) -> DelegationResult:
+            return await _default_delegate_fn(
+                spec,
+                hooks=_hooks,
+                turn_budget=_budget,
+                execution_policy=_policy,
+                depth=_depth + 1,
+                logger_override=_logr,
+            )
 
     # Per-turn call ledger shared across all dispatch branches (operations,
     # pack tools, MCP tools). Enforces ``max_calls_per_turn`` uniformly; the
@@ -1851,7 +2131,9 @@ async def _run_turn_inner(
     if sub_turn_kind:
         _state.sub_turn_kind = sub_turn_kind
         try:
-            from kernel.turn_phases._fork import _fork_mode_action_tool_ids  # noqa: PLC0415
+            from kernel.turn_phases._fork import (
+                _fork_mode_action_tool_ids,
+            )
 
             _state.action_tool_ids = _fork_mode_action_tool_ids(mode_id)
         except Exception:  # pylint: disable=broad-except
@@ -1913,6 +2195,7 @@ async def _run_turn_inner(
             memory_scope=hooks.memory_scope,
             session_plan_digest=hooks.session_plan_digest,
             data_dir=hooks.data_dir,
+            delegate_fn=_delegate_fn,
         )
         result = await run_mode_entry_operations(
             mode_id,
@@ -2073,7 +2356,9 @@ async def _run_turn_inner(
             or "the planner returned no routing target"
         )
         plan_model_id = str(preferred_model_id or "")
-        from kernel.routing_vocabulary import mark_plan_unreliable_for_model  # noqa: PLC0415
+        from kernel.routing_vocabulary import (
+            mark_plan_unreliable_for_model,
+        )
 
         mark_plan_unreliable_for_model(plan_model_id)
         _log.warning(
@@ -2147,6 +2432,7 @@ async def _run_turn_inner(
         memory_scope=hooks.memory_scope,
         session_plan_digest=hooks.session_plan_digest,
         data_dir=hooks.data_dir,
+        delegate_fn=_delegate_fn,
     )
     pre_result = await run_mode_pre_turn_operations(
         mode_id,
@@ -2417,11 +2703,11 @@ async def _run_turn_inner(
             and hooks.workflow_instance is not None
         ):
             try:
-                from kernel.turn_phases._routing_hint import (  # noqa: PLC0415
+                from kernel.turn_phases._routing_hint import (
                     is_plan_escalation_hint,
                 )
             except Exception:  # pylint: disable=broad-except
-                is_plan_escalation_hint = lambda _h: False  # noqa: E731
+                is_plan_escalation_hint = lambda _h: False
             if not is_plan_escalation_hint(routing_hint):
                 try:
                     _existing_wi = hooks.workflow_instance()
@@ -2429,7 +2715,7 @@ async def _run_turn_inner(
                     _existing_wi = None
                 if _existing_wi is None:
                     try:
-                        from kernel.workflow_instance import (  # noqa: PLC0415
+                        from kernel.workflow_instance import (
                             compile_steps_from_routing_targets,
                         )
 
@@ -2541,6 +2827,7 @@ async def _run_turn_inner(
                 memory_scope=hooks.memory_scope,
                 session_plan_digest=hooks.session_plan_digest,
                 data_dir=hooks.data_dir,
+                delegate_fn=_delegate_fn,
             )
             recall_ctx.params = {
                 "query": query,
@@ -2799,12 +3086,22 @@ async def _run_turn_inner(
                     },
                 )
 
-        from kernel.turn_phases._lifecycle import (  # noqa: PLC0415
+        from kernel.turn_phases._lifecycle import (
             ContinueAction as _ContinueAction,
+        )
+        from kernel.turn_phases._lifecycle import (
             FinishAction as _FinishAction,
+        )
+        from kernel.turn_phases._lifecycle import (
             LifecycleResolverSettings as _LRS,
+        )
+        from kernel.turn_phases._lifecycle import (
             TransitionAction as _TransitionAction,
+        )
+        from kernel.turn_phases._lifecycle import (
             _TurnStateView as _TSV,
+        )
+        from kernel.turn_phases._lifecycle import (
             resolve_lifecycle_action as _resolve_lifecycle,
         )
 
@@ -4440,7 +4737,7 @@ async def _run_turn_inner(
                                             _state.plan_failed = True
                                             _state.plan_failed_mode = target_stage
                                             _state.plan_failed_reason = _plan_fail_reason
-                                            from kernel.routing_vocabulary import (  # noqa: PLC0415
+                                            from kernel.routing_vocabulary import (
                                                 mark_plan_unreliable_for_model,
                                             )
 
@@ -4482,7 +4779,7 @@ async def _run_turn_inner(
                                         # marks unreliable; this mirrors it
                                         # for the exception path.
                                         if _is_routing_entry_op:
-                                            from kernel.routing_vocabulary import (  # noqa: PLC0415
+                                            from kernel.routing_vocabulary import (
                                                 mark_plan_unreliable_for_model,
                                             )
 
@@ -5001,7 +5298,7 @@ async def _run_turn_inner(
                     # Operation: dispatch in-process via the host's
                     # execute_operation hook, which injects all host
                     # callbacks (complete_fn, resolve_model_fn,
-                    # execute_tool_fn, introspect_fn, etc.).
+                    # execute_tool, introspect, etc.).
                     op_ctx = ctx.model_copy(
                         update={"operation_id": tool_name, "params": tool_arguments}
                     )
@@ -5425,6 +5722,8 @@ async def _run_turn_inner(
             try:
                 from kernel.workflow_instance import (
                     is_complete as _wi_is_complete,
+                )
+                from kernel.workflow_instance import (
                     render_workflow_progress,
                 )
 

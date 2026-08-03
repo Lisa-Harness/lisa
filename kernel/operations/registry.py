@@ -488,7 +488,27 @@ async def execute_operation(
     # Inject preferred model from definition
     ctx.preferred_model_id = definition.preferred_model_id
     ctx.tool_schemas = _build_tool_schemas(definition.tool_ids)
-    ctx.execute_tool_fn = _wrap_declarative_tool_executor(definition, ctx.execute_tool_fn)
+    # Wrap the host's execute_tool with the declarative allowlist, then
+    # rebuild the typed host seam so ``ctx.host.execute_tool`` routes
+    # through the wrapper applied above. The other host methods
+    # (complete, resolve_model, read_authored_text, etc.) are preserved
+    # from the existing host.
+    from kernel.seams.host_adapter import build_callable_host  # noqa: PLC0415
+
+    _existing_host = ctx.host
+    _wrapped_tool_fn = _wrap_declarative_tool_executor(
+        definition,
+        _existing_host.execute_tool if _existing_host is not None else None,
+    )
+    ctx.host = build_callable_host(
+        complete_fn=_existing_host._complete_fn if _existing_host is not None else None,
+        resolve_model_fn=_existing_host._resolve_model_fn if _existing_host is not None else None,
+        read_authored_text_fn=_existing_host._read_authored_text_fn if _existing_host is not None else None,
+        execute_tool_fn=_wrapped_tool_fn,
+        execute_operation_fn=_existing_host._execute_operation_fn if _existing_host is not None else None,
+        generate_image_fn=_existing_host._generate_image_fn if _existing_host is not None else None,
+        introspect_fn=_existing_host._introspect_fn if _existing_host is not None else None,
+    )
     module = definition.implementation_module
     if module is None:
         raise OperationExecutionError(f"Operation '{operation_id}' has no implementation module.")

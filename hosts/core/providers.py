@@ -170,6 +170,61 @@ def extract_usage_counts(usage_payload: Any) -> tuple[int, int, int, int, int]:
     return _provider_extract_usage_counts(usage_payload, coerce_non_negative_int)
 
 
+def derive_openai_compatible_truncated(
+    *,
+    finish_reason: str | None,
+    completion_tokens: int,
+    requested_tokens: int,
+) -> bool | None:
+    """Derive the authoritative ``truncated`` signal for an OpenAI-compatible response.
+
+    ``"length"`` is the authoritative hit-max-tokens case → ``True``.
+    A missing signal (``None``) on a near-budget completion (≥90% of the
+    requested token budget) is treated as truncation — this is the
+    Ollama-defensive case where local backends omit ``finish_reason`` on
+    long docs. ``"stop"``/``"tool_calls"`` → ``False``. Anything else →
+    ``None`` (adapter genuinely cannot tell).
+    """
+    if finish_reason == "length":
+        return True
+    if finish_reason in {"stop", "tool_calls"}:
+        return False
+    if (
+        finish_reason is None
+        and requested_tokens > 0
+        and completion_tokens >= int(requested_tokens * 0.9)
+    ):
+        return True
+    return None
+
+
+def derive_responses_api_truncated(*, status: str | None) -> bool | None:
+    """Derive ``truncated`` for the Azure Responses API.
+
+    Status vocabulary: ``"completed"`` / ``"incomplete"`` / ``"failed"``.
+    ``"incomplete"`` is the authoritative truncation signal.
+    """
+    if status == "incomplete":
+        return True
+    if status == "completed":
+        return False
+    return None
+
+
+def derive_anthropic_truncated(*, stop_reason: str | None) -> bool | None:
+    """Derive ``truncated`` for an Anthropic completion from its native ``stop_reason``.
+
+    ``max_tokens`` / ``max_sequence`` → ``True`` (hit a limit).
+    ``end_turn`` / ``stop_sequence`` / ``tool_use`` → ``False`` (clean stop).
+    Anything else (including ``None``) → ``None`` (adapter cannot tell).
+    """
+    if stop_reason in {"max_tokens", "max_sequence"}:
+        return True
+    if stop_reason in {"end_turn", "stop_sequence", "tool_use"}:
+        return False
+    return None
+
+
 def with_duration(result: StubCompletion, elapsed_ms: float) -> StubCompletion:
     """Rebuild a frozen StubCompletion with the host-measured duration."""
     return StubCompletion(
@@ -530,6 +585,13 @@ async def complete_anthropic(
 
     content = _normalize_structured_content(content, response_format)
 
+    # Anthropic's native stop_reason is the authoritative termination
+    # signal. Map it to finish_reason (fixing a latent bug where it was
+    # discarded → operations always saw None) and derive truncated from
+    # the max_tokens/max_sequence cases.
+    stop_reason = str(response_json.get("stop_reason") or "").strip().lower() or None
+    truncated = derive_anthropic_truncated(stop_reason=stop_reason)
+
     return StubCompletion(
         content=content,
         tool_calls=tool_calls,
@@ -538,6 +600,8 @@ async def complete_anthropic(
         total_tokens=total_tokens,
         cached_tokens=cached_tokens,
         reasoning_tokens=reasoning_tokens,
+        finish_reason=stop_reason,
+        truncated=truncated,
     )
 
 
@@ -813,6 +877,7 @@ async def complete_live_responses(
     tool_calls = extract_responses_tool_calls(response)
     usage = extract_responses_usage(response)
     finish_reason = getattr(response, "status", None)
+    truncated = derive_responses_api_truncated(status=finish_reason)
     elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
 
     result = StubCompletion(
@@ -825,6 +890,7 @@ async def complete_live_responses(
         reasoning_tokens=getattr(usage, "reasoning_tokens", 0) if usage else 0,
         duration_ms=elapsed_ms,
         finish_reason=finish_reason,
+        truncated=truncated,
         reasoning_content="",
     )
     log_completion_response(
@@ -901,6 +967,17 @@ async def complete_live_openai_compatible(
 
     content = _normalize_structured_content(content, response_format)
 
+    requested_tokens = int(
+        kwargs.get("max_completion_tokens")
+        or kwargs.get("max_tokens")
+        or 0
+    )
+    truncated = derive_openai_compatible_truncated(
+        finish_reason=finish_reason,
+        completion_tokens=completion_tokens,
+        requested_tokens=requested_tokens,
+    )
+
     elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
     result = StubCompletion(
         content=content,
@@ -912,6 +989,7 @@ async def complete_live_openai_compatible(
         reasoning_tokens=reasoning_tokens,
         duration_ms=elapsed_ms,
         finish_reason=finish_reason,
+        truncated=truncated,
         reasoning_content=reasoning_content,
     )
     log_completion_response(

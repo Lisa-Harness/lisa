@@ -223,20 +223,28 @@ class OperationExecutionContext(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
     tool_schemas: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
     event_bus: Any = Field(default=None, exclude=True)
-    complete_fn: Any = Field(default=None, exclude=True)
-    resolve_model_fn: Any = Field(default=None, exclude=True)
-    read_authored_text_fn: Any = Field(default=None, exclude=True)
-    generate_image_fn: Any = Field(default=None, exclude=True)
-    execute_tool_fn: Any = Field(default=None, exclude=True)
-    execute_operation_fn: Any = Field(default=None, exclude=True)
     memory_recall_default_limit: int | None = Field(default=None, exclude=True)
     state_provider: Any = Field(default=None, exclude=True)
-    introspect_fn: Any = Field(default=None, exclude=True)
     preferred_model_id: str | None = Field(default=None, exclude=True)
+    # Typed seam: operations call ``ctx.host.complete(...)`` /
+    # ``ctx.host.resolve_model(...)`` / ``ctx.host.execute_tool(...)`` etc.
+    # instead of reaching into untyped ``Any`` callables directly.
+    # Wired by ``_build_minimal_context`` via ``_CallableHost``; ``None``
+    # means the host has not wired the typed seam (legacy hosts).
+    host: Any = Field(default=None, exclude=True)
     # Canonical host data root. See ``ToolExecutionContext.data_dir`` — the
     # same no-fallback contract applies to operations that write/persist
     # caches (e.g. ``fetch_page``) or need the host data root.
     data_dir: str = Field(default="", exclude=True)
+    # Pack-level ``delegate`` operation hook. When wired by the kernel at
+    # turn start, the delegate operation calls this with a
+    # :class:`DelegationSpec` and awaits a :class:`DelegationResult`. The
+    # default implementation (``_default_delegate_fn``) runs ``run_turn``
+    # recursively as a ``sub_turn_kind="delegate"`` child. ``None`` means
+    # the host has not wired delegation (the delegate operation fails
+    # loudly). Packs never import from ``kernel.turn_runner``; they only
+    # see this callable.
+    delegate_fn: Any = Field(default=None, exclude=True)
 
 
 class OperationResult(BaseModel):
@@ -1611,6 +1619,97 @@ class ForkChildResult(BaseModel):
     # propagate the question to the user (model_yield) or to render the
     # interruption framing (interrupted). ``None`` for non-yield statuses.
     yield_action: YieldAction | None = None
+
+
+# ---------------------------------------------------------------------------
+# Delegate operation (sequential / recursive sub-turn delegation)
+# ---------------------------------------------------------------------------
+
+
+DelegationStatus = Literal[
+    "ok",
+    "no_tools",
+    "timeout",
+    "error",
+    "cancelled",
+    "interrupted",
+    "model_yield",
+    "max_depth",
+]
+
+
+class DelegationSpec(BaseModel):
+    """Input contract for one delegate sub-turn.
+
+    The pack-level ``delegate`` operation builds this from LLM-supplied
+    parameters and hands it to the injected ``delegate_fn``. The kernel's
+    default implementation runs ``run_turn`` recursively as a
+    ``sub_turn_kind="delegate"`` child, reusing the fork infrastructure
+    (budget, status mapping, action-tool validation) without fanning out
+    in parallel.
+    """
+
+    target_mode_id: str = Field(
+        description=(
+            "The mode to delegate to. Must be a routable mode_id from the "
+            "installed catalog."
+        )
+    )
+    query: str = Field(
+        description=(
+            "The scoped input text for the delegated child. This is the "
+            "child turn's user query — the parent's full query is not "
+            "re-injected."
+        )
+    )
+    stage_id: str = Field(
+        default="",
+        description=(
+            "Optional stage_id for the target mode. Defaults to the mode's "
+            "start_stage_id when empty."
+        ),
+    )
+    max_tool_iterations: int = Field(
+        default=0,
+        description=(
+            "Optional per-child iteration cap override. 0 means use the "
+            "kernel default (``delegate_child_max_tool_iterations``)."
+        ),
+        ge=0,
+    )
+    model_alias: str = Field(
+        default="",
+        description=(
+            "Optional model alias override for the child turn. Empty "
+            "means use the target mode's resolved model."
+        ),
+    )
+
+
+class DelegationResult(BaseModel):
+    """Structured result of one delegate sub-turn.
+
+    The pack-level ``delegate`` operation returns this as its
+    ``output_json`` payload. The parent mode inspects ``status`` to decide
+    whether to continue, re-delegate, or surface the child's output.
+    """
+
+    target_mode_id: str
+    status: DelegationStatus = "ok"
+    output_text: str = ""
+    error_message: str = ""
+    duration_ms: int = 0
+    tool_call_count: int = 0
+    called_tool_names: list[str] = Field(default_factory=list)
+    # The ``YieldAction`` when ``status`` is ``model_yield`` or
+    # ``interrupted``; ``None`` otherwise. Lets the parent propagate a
+    # child's question to the user (model_yield) or render the
+    # interruption framing (interrupted).
+    yield_action: YieldAction | None = None
+    # Recursion depth of this child relative to the root parent turn.
+    # The root parent is depth 0; a direct delegate child is depth 1.
+    # Bounded by ``delegate_max_depth``.
+    depth: int = 0
 
 
 # ---------------------------------------------------------------------------

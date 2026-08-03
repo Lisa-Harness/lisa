@@ -85,6 +85,21 @@ class StubCompletion:
 
     truncation and issue a continuation pass rather than persisting a
     partial artifact.
+
+
+    ``truncated`` is the provider-owned authoritative truncation signal:
+
+    ``True`` = the model stopped before completing (hit max_tokens or an
+
+    incomplete status); ``False`` = a clean stop; ``None`` = the adapter
+
+    genuinely cannot tell (e.g. a backend that omits the signal and did
+
+    not hit the token budget). Operations should prefer ``truncated`` over
+
+    inferring from ``finish_reason`` strings; ``None`` is treated as a
+
+    single safety-net continuation, not a multi-attempt loop.
     """
 
     content: str
@@ -104,6 +119,8 @@ class StubCompletion:
     duration_ms: float = 0.0
 
     finish_reason: str | None = None
+
+    truncated: bool | None = None
 
     reasoning_content: str = ""
 
