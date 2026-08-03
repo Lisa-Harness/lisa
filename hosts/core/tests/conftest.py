@@ -89,12 +89,18 @@ def _mcp_catalog_setup(tmp_path_factory: pytest.TempPathFactory) -> None:
     register_operation_callbacks(get_operation_catalog, execute_operation)
     register_content_mcp(config)
 
-    # Wire the MCPContentRegistry as the content registry for context frames.
-    # This is needed by render_context_packet_markdown and turn hooks.
+    # Wire the MCPContentRegistry as the content registry for context frames
+    # and the sub-turn contract assets (fork/delegate briefings + midpoint
+    # write-nudge). Both modules share the same registry instance.
     from kernel.context.context_frames import set_content_registry  # noqa: PLC0415
     from kernel.context.mcp_content_registry import MCPContentRegistry  # noqa: PLC0415
+    from kernel.context.sub_turn_contract import (  # noqa: PLC0415
+        set_content_registry as _set_sub_turn_content_registry,
+    )
 
-    set_content_registry(MCPContentRegistry(config))
+    _registry = MCPContentRegistry(config)
+    set_content_registry(_registry)
+    _set_sub_turn_content_registry(_registry)
 
     # Eagerly load the workflow catalog now (sync context, before any async test runs).
     get_workflow_catalog()

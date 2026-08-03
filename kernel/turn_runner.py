@@ -19,6 +19,7 @@ from kernel.approval import ApprovalInvocation, ApprovalRequired, render_approva
 from kernel.capability_manifest import compile_capability_manifest
 from kernel.config import settings as _kernel_settings
 from kernel.context.models import ContextBudgetSnapshot
+from kernel.context.sub_turn_contract import render_sub_turn_contract, render_sub_turn_midpoint_nudge
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
 from kernel.ipsar_fsm import (
     apply_transition,
@@ -278,6 +279,13 @@ def _build_sub_turn_contract(
     a delegate child (planned) returns an honest ``no_tools`` status to
     its parent. The parent-turn case (``sub_turn_kind is None``) returns
     ``""`` so the parent briefing is unchanged.
+
+    The framing prose, deadline sentence, and budget-exhausted tail are
+    authored Markdown loaded through ``kernel.context.sub_turn_contract``
+    (``prompts/sub_turn/{fork,delegate}_contract.md`` and
+    ``prompts/sub_turn/budget_exhausted.md``). This function keeps only the
+    ``sub_turn_kind`` discriminator, the action-tool set, and the
+    ``str.format_map`` substitution glue — no model-facing prose lives here.
     """
     kind = getattr(state, "sub_turn_kind", None)
     if not kind:
@@ -292,31 +300,12 @@ def _build_sub_turn_contract(
     if called & action_ids:
         return ""
     tools_list = ", ".join(sorted(action_ids))
-    if kind == "fork":
-        framing = (
-            "Fork child: success REQUIRES calling at least one of: "
-            f"[{tools_list}]. Read-only calls do NOT count. If the "
-            "budget exhausts without a write, your output is discarded "
-            "as unverified — do not claim success."
-        )
-    else:
-        # delegate (planned) — the parent stays alive and receives the
-        # structured status, so the framing is "return an honest status"
-        # rather than "your output is discarded."
-        framing = (
-            f"Subroutine child: success REQUIRES calling at least one of: "
-            f"[{tools_list}]. Read-only calls do NOT count. If the "
-            "budget exhausts without a write, return status=no_tools so "
-            "your parent can decide — do not claim success."
-        )
-    deadline = (
-        f"{remaining_iterations} iterations remain to produce a write; "
-        "reads are scaffolding, not progress."
+    return render_sub_turn_contract(
+        kind=kind,
+        tools_list=tools_list,
+        remaining_iterations=remaining_iterations,
+        budget_exhausted=budget_exhausted,
     )
-    parts = [framing, deadline]
-    if budget_exhausted:
-        parts.append("BUDGET EXHAUSTED — call an action tool now or yield.")
-    return "## Sub-Turn Contract\n\n" + " ".join(parts)
 
 
 def _is_workflow_instance_complete(instance: Any) -> bool:
@@ -2960,12 +2949,12 @@ async def _run_turn_inner(
             messages.append(
                 {
                     "role": "user",
-                    "content": (
-                        f"You are past the midpoint of your budget with zero "
-                        f"writes. Call one of: [{_action_list}] now to complete "
-                        f"your work, or call `yield` to hand back honestly. "
-                        f"Continuing to read without writing will result in "
-                        f"your output being discarded."
+                    # The nudge prose is authored Markdown loaded through
+                    # ``kernel.context.sub_turn_contract`` (``prompts/
+                    # sub_turn/midpoint_write_nudge.md``); only the
+                    # action-list substitution glue lives here.
+                    "content": render_sub_turn_midpoint_nudge(
+                        action_list=_action_list,
                     ),
                 }
             )

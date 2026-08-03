@@ -448,12 +448,18 @@ def setup_framework(
     register_operation_callbacks(get_operation_catalog, execute_operation)
     register_content_mcp(catalog_config)
 
-    # Wire the MCPContentRegistry as the content registry for context frames.
+    # Wire the MCPContentRegistry as the content registry for context frames
+    # and the sub-turn contract assets (fork/delegate briefings + midpoint
+    # write-nudge). Both modules share the same registry instance.
     from kernel.context.context_frames import set_content_registry  # noqa: PLC0415
     from kernel.context.mcp_content_registry import MCPContentRegistry  # noqa: PLC0415
+    from kernel.context.sub_turn_contract import (  # noqa: PLC0415
+        set_content_registry as _set_sub_turn_content_registry,
+    )
 
     registry = MCPContentRegistry(content_config)
     set_content_registry(registry)
+    _set_sub_turn_content_registry(registry)
 
     # Eagerly validate required authored content at startup so a broken
     # content install fails at boot rather than producing a silently-
