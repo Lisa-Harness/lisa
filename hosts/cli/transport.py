@@ -272,6 +272,8 @@ class RichTransport:
         self._tool_call_count: int = 0
         # Index of the in-flight tool row, so its completion updates in place.
         self._open_tool_row: int | None = None
+        # Index of the in-flight model row, so its completion updates in place.
+        self._open_model_row: int | None = None
         # The streamed model output for the current turn as a single flowing
         # Text (visible answer bright, reasoning dimmed). Persists across
         # stop_thinking — the transcript flushes it to scrollback.
@@ -299,6 +301,7 @@ class RichTransport:
         self._handoff_count = 0
         self._tool_call_count = 0
         self._open_tool_row = None
+        self._open_model_row = None
         self._open_thinking_row = None
         self._answer_staging = Text()
         is_dispatch = stage == "dispatch"
@@ -485,8 +488,9 @@ class RichTransport:
     async def on_stage(self, label: str, data: dict[str, Any] | None = None) -> None:
         """Route one stage event into the transcript and refresh.
 
-        * ``model_call`` / ``model_call_complete`` → model rows; completion
-          samples the duration sparkline.
+        * ``model_call`` opens a model row; ``model_call_complete`` /
+          ``model_call_failed`` update it in place with ✓/✗ + duration
+          (mirrors the tool-dispatch in-place update pattern).
         * ``tool_dispatch`` opens a tool row; ``tool_dispatch_complete`` updates
           it in place with its status glyph and duration.
         * ``fork_*`` → fork rows, one per child.
@@ -499,7 +503,7 @@ class RichTransport:
 
         # A tool/model/fork event closes the open thinking segment so the next
         # reasoning delta opens a fresh interspersed segment.
-        if label in ("model_call", "model_call_complete", "tool_dispatch", "tool_dispatch_complete", "fork_start", "fork_child_start", "fork_child_complete", "fork_complete"):
+        if label in ("model_call", "model_call_complete", "model_call_failed", "tool_dispatch", "tool_dispatch_complete", "fork_start", "fork_child_start", "fork_child_complete", "fork_complete"):
             self._open_thinking_row = None
 
         # ── Live mode tracking ──────────────────────────────────────
@@ -560,8 +564,8 @@ class RichTransport:
             return
 
         # ── Model calls ─────────────────────────────────────────────
-        if label in ("model_call", "model_call_complete"):
-            self._append_model_row(label, data)
+        if label in ("model_call", "model_call_complete", "model_call_failed"):
+            self._route_model_call(label, data)
             return
 
         # ── Tool dispatch ───────────────────────────────────────────
@@ -613,21 +617,93 @@ class RichTransport:
         graphic = _pip_counter(self._handoff_count, max_handoffs)
         self._append_row(_Row(kind="transition", text=text, graphic=graphic, data=data))
 
-    def _append_model_row(self, label: str, data: dict[str, Any]) -> None:
-        """Append a model-call row; ``model_call_complete`` adds the sparkline graphic."""
-        text = self._render_status_line(label, data)
+    def _route_model_call(self, label: str, data: dict[str, Any]) -> None:
+        """Route a model-call stage event to a single in-place-updated row.
+
+        ``model_call`` opens a model row (storing its index in
+        ``_open_model_row``); ``model_call_complete`` / ``model_call_failed``
+        update that row in place with ✓/✗ + duration — the same pattern as
+        ``tool_dispatch`` / ``tool_dispatch_complete``.
+        """
         max_iter = int(data.get("max_iterations") or 0)
         iter_raw = data.get("iteration")
         if iter_raw in (None, "", 0):
             iter_raw = data.get("_state.iteration")
         iter_count = int(iter_raw) if iter_raw not in (None, "", 0) else 0
+
+        if label == "model_call":
+            graphic = _pip_counter(iter_count, max_iter)
+            self._open_model_row = len(self._rows)
+            self._append_row(
+                _Row(
+                    kind="model",
+                    text=self._render_model_call(data),
+                    graphic=graphic,
+                    data=data,
+                )
+            )
+            return
+
+        # model_call_complete or model_call_failed — update the open row in place.
+        status_glyph = "✗" if label == "model_call_failed" else "✓"
         graphic = _pip_counter(iter_count, max_iter)
         if label == "model_call_complete":
             spark = _sparkline(self._iteration_durations)
             dur_raw = data.get("duration_ms")
             if dur_raw not in (None, "", 0):
-                graphic = f"{graphic}  {spark or _block_bar(float(dur_raw))} {round(float(dur_raw), 3)}ms"
-        self._append_row(_Row(kind="model", text=text, graphic=graphic, data=data))
+                graphic = (
+                    f"{graphic}  {spark or _block_bar(float(dur_raw))} "
+                    f"{round(float(dur_raw), 3)}ms"
+                )
+
+        idx = self._open_model_row
+        if idx is not None and idx < len(self._rows):
+            row = self._rows[idx]
+            row.text = self._render_model_call(row.data, status_glyph=status_glyph, complete=data)
+            row.graphic = graphic
+            row.data = {**row.data, **data}
+        else:
+            self._append_row(
+                _Row(
+                    kind="model",
+                    text=self._render_model_call(data, status_glyph=status_glyph, complete=data),
+                    graphic=graphic,
+                    data=data,
+                )
+            )
+        self._open_model_row = None
+        self._mark_last_active()
+        self._refresh_live()
+
+    def _render_model_call(
+        self,
+        data: dict[str, Any],
+        *,
+        status_glyph: str = "",
+        complete: dict[str, Any] | None = None,
+    ) -> str:
+        """Render a model call as a one-liner: stage, model, iteration, status.
+
+        ``[mode] stage: model_call haiku #1 ✓ 340ms``. On completion
+        (``status_glyph`` set) the status and duration are appended.
+        Metadata suffixes (provider, tokens) render only on the power/debug
+        tiers.
+        """
+        prefix = f"[{self._current_mode}] " if self._current_mode else ""
+        body = "stage: model_call"
+        model_id = data.get("model_id")
+        if model_id not in (None, "", 0):
+            body += f" {model_id}"
+        iter_raw = data.get("iteration") or data.get("_state.iteration")
+        if iter_raw not in (None, "", 0):
+            body += f" #{iter_raw}"
+        if status_glyph:
+            body += f" {status_glyph}"
+        duration = (complete or data).get("duration_ms")
+        if status_glyph and duration not in (None, "", 0):
+            body += f" {round(float(duration))}ms"
+        suffix = self._render_stage_suffix(data) if self._detail in ("power", "debug") else ""
+        return f"{prefix}{body}{suffix}"
 
     def _complete_tool_row(self, data: dict[str, Any]) -> None:
         """Update the in-flight tool row in place with its status + duration."""

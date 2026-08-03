@@ -36,6 +36,14 @@ All notable changes to the Lisa Framework will be documented in this file.
 - **Differentiators kept.** The live `[mode] → handoff` transition lines and
   the fork fan-out per-child table — telemetry no competitor shows — survive
   as flowing rows. The `▾ mode · model · tokens · ms` footer is unchanged.
+- **Model calls are a single in-place-updated row.** `model_call` opens a
+  model row and `model_call_complete` / `model_call_failed` update it in
+  place with ✓/✗ + duration — the same pattern as
+  `tool_dispatch` / `tool_dispatch_complete`. Previously each model
+  iteration appended two rows (one for the start, one for the complete),
+  doubling the row count and splitting the status from the call it
+  describes. Now one iteration = one row:
+  `[mode] stage: model_call haiku #1 ✓ 340ms`.
 - The `TransportCallbacks` Protocol in `hosts/core/callbacks.py` is untouched;
   this is a CLI render-layer cutover only (hard cutover per the project
   contract — the pane machinery is deleted, not shimmed).

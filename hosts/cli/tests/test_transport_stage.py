@@ -193,6 +193,56 @@ async def test_tool_row_updates_in_place_on_completion() -> None:
 
 
 @pytest.mark.asyncio
+async def test_model_call_updates_in_place_on_completion() -> None:
+    """model_call_complete updates the open model row in place with its
+    status glyph and duration instead of appending a second row — the
+    same in-place pattern as tool_dispatch_complete.
+    """
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("model_call")
+
+    await transport.on_stage(
+        "model_call",
+        {"mode_id": "default", "model_id": "haiku", "provider": "anthropic", "iteration": 1},
+    )
+    model_rows_before = [r for r in transport._rows if r.kind == "model"]
+    assert len(model_rows_before) == 1
+    assert "✓" not in model_rows_before[0].text  # no status yet
+
+    await transport.on_stage(
+        "model_call_complete",
+        {"mode_id": "default", "model_id": "haiku", "iteration": 1, "duration_ms": 340},
+    )
+    model_rows_after = [r for r in transport._rows if r.kind == "model"]
+    # Still exactly one model row — updated in place, not appended.
+    assert len(model_rows_after) == 1
+    assert model_rows_after[0] is model_rows_before[0]
+    assert "✓" in model_rows_after[0].text
+    assert "340ms" in model_rows_after[0].text
+
+
+@pytest.mark.asyncio
+async def test_model_call_failed_marks_row_with_x() -> None:
+    """model_call_failed updates the open model row in place with ✗."""
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("model_call")
+
+    await transport.on_stage(
+        "model_call",
+        {"mode_id": "default", "model_id": "haiku", "iteration": 1},
+    )
+    await transport.on_stage(
+        "model_call_failed",
+        {"mode_id": "default", "model_id": "haiku", "iteration": 1},
+    )
+    model_rows = [r for r in transport._rows if r.kind == "model"]
+    assert len(model_rows) == 1  # updated in place, not appended
+    assert "✗" in model_rows[0].text
+
+
+@pytest.mark.asyncio
 async def test_fork_complete_keeps_per_child_table() -> None:
     """fork_complete keeps the per-child table with ok/failed totals in the header."""
     console = Console(quiet=True, force_terminal=False)
