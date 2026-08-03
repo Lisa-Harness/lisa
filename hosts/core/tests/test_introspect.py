@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from kernel.models import IntrospectSnapshot
+from kernel.tools.mcp_client import MCPToolSpec
 
 from hosts.core.introspect import gather_introspection
 
@@ -131,19 +132,41 @@ async def test_gather_introspection_mcp_pool_health() -> None:
     """MCP pool health is derived from warm_server_ids and warm_failed_ids."""
     mock_pool = MagicMock()
     mock_pool.configs = [
-        MagicMock(server_id="lisa_memory", warm=True),
-        MagicMock(server_id="lisa-guard", warm=True),
-        MagicMock(server_id="mem0", warm=False),
+        MagicMock(server_id="lisa_memory", warm=True, url=None, command="python", runtime_kind="venv_bin"),
+        MagicMock(server_id="lisa-guard", warm=True, url=None, command="python", runtime_kind="venv_bin"),
+        MagicMock(server_id="mem0", warm=False, url="https://mem0.ai", command="", runtime_kind="http"),
     ]
     mock_pool.warm_server_ids.return_value = ["lisa_memory"]
     mock_pool.warm_failed_ids.return_value = ["lisa-guard"]
+    mock_pool.cold_failed_ids.return_value = ["mem0"]
+    mock_pool.permanently_failed_ids.return_value = ["lisa-guard"]
+    mock_pool.restart_counts.return_value = {"lisa-guard": 3}
+    mock_pool.last_errors.return_value = {
+        "lisa-guard": "connection refused",
+        "mem0": "401 unauthorized",
+    }
+    mock_pool.tools_by_server.return_value = {
+        "lisa_memory": [
+            MCPToolSpec("lisa_memory", "add_memory", "Add a memory.", {}),
+            MCPToolSpec("lisa_memory", "search_memory", "Search memories.", {}),
+        ],
+    }
 
     snapshot = await gather_introspection(mcp_pool=mock_pool)
     assert len(snapshot.mcp_pool_health) == 3
     assert snapshot.mcp_pool_health["lisa_memory"].status == "warm"
+    assert snapshot.mcp_pool_health["lisa_memory"].transport == "venv_bin"
+    assert snapshot.mcp_pool_health["lisa_memory"].tool_count == 2
     assert snapshot.mcp_pool_health["lisa-guard"].status == "failed"
-    assert snapshot.mcp_pool_health["mem0"].status == "cold"
-    assert snapshot.failed_mcp_servers == 1
+    assert snapshot.mcp_pool_health["lisa-guard"].permanently_failed is True
+    assert snapshot.mcp_pool_health["lisa-guard"].restart_count == 3
+    assert snapshot.mcp_pool_health["lisa-guard"].last_error == "connection refused"
+    # A cold server that tried and failed reports `failed`, not `cold`.
+    assert snapshot.mcp_pool_health["mem0"].status == "failed"
+    assert snapshot.mcp_pool_health["mem0"].transport == "http"
+    assert snapshot.mcp_pool_health["mem0"].url == "https://mem0.ai"
+    assert snapshot.mcp_pool_health["mem0"].last_error == "401 unauthorized"
+    assert snapshot.failed_mcp_servers == 2
     assert snapshot.operational_health in {"degraded", "critical"}
 
 

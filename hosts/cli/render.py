@@ -18,6 +18,9 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from kernel.models import McpServerHealth
+from kernel.tools.mcp_client import MCPToolSpec
+
 if TYPE_CHECKING:
     # ``HostRuntime`` is used only as a string annotation (stringified by
     # ``from __future__ import annotations``); the runtime symbols are
@@ -145,7 +148,7 @@ def render_operations(runtime: HostRuntime, *, console: Console | None = None) -
 def render_tools(
     runtime: HostRuntime,
     *,
-    mcp_tools: list[tuple[str, str, bool]] | None = None,
+    mcp_tools: dict[str, list[MCPToolSpec]] | None = None,
     console: Console | None = None,
 ) -> Table:
     """Build a Rich Table of internal tools with IDs for allowlist authoring.
@@ -159,13 +162,13 @@ def render_tools(
     pack tool IDs go in ``allowed_tool_ids``; MCP tool IDs are governed by
     per-server ``tool_policy`` in ``mcp_servers.yaml``.
 
-    ``mcp_tools`` is an optional pre-collected list of
-    ``(server_id, tool_name, is_alias)`` triples (collected by warming the
-    MCP pool — see :func:`hosts.cli.main._collect_mcp_tools`). When provided
-    and non-empty, a second table is rendered for MCP server tools. Alias
-    entries are annotated with an arrow (``->``) so authors can tell host-owned
-    synthetic aliases (e.g. ``memory.search``) apart from native server
-    tools.
+    ``mcp_tools`` is an optional pre-collected ``dict[str, list[MCPToolSpec]]``
+    grouping discovered tool specs by their owning server (collected by
+    warming the MCP pool — see :func:`hosts.cli.main._collect_mcp_tools`).
+    When provided and non-empty, a second table is rendered for MCP server
+    tools. The ``render_mcp_server_tools`` helper renders one table per
+    server so authors can see the bare tool names referenced by
+    ``tool_policy.allowed_tools`` / ``denied_tools`` in ``mcp_servers.yaml``.
     """
     _ = runtime  # catalog is global; runtime kept for future per-host scoping
     table = Table(title="Lisa Internal Tools")
@@ -190,42 +193,140 @@ def render_tools(
         console.print(table)
 
     if mcp_tools:
-        render_mcp_tools(mcp_tools, console=console)
+        for server_id in sorted(mcp_tools):
+            specs = mcp_tools[server_id]
+            if not specs:
+                continue
+            _render_mcp_tool_table(server_id, specs, console=console)
 
     return table
 
 
-def render_mcp_tools(
-    mcp_tools: list[tuple[str, str, bool]],
+def render_mcp_servers(
+    health: dict[str, McpServerHealth],
     *,
     console: Console | None = None,
 ) -> Table:
-    """Render a Rich Table of MCP server tools for allowlist authoring.
+    """Render a Rich Table summarizing every configured MCP server.
 
-    ``mcp_tools`` is a list of ``(server_id, tool_name, is_alias)`` triples
-    collected by warming the MCP pool (see
-    :func:`hosts.cli.main._collect_mcp_tools`). The tool names are the bare
-    strings referenced by per-server ``tool_policy.allowed_tools`` /
-    ``denied_tools`` in ``mcp_servers.yaml``.
-
-    Host-owned synthetic alias tools (``is_alias`` is True) are annotated
-    with an arrow (``->``) prefix on the Tool column so authors can tell
-    them apart from native MCP server tools. Aliases dispatch through the
-    host's in-process handler, not the server subprocess — the ``Server``
-    column shows the forwarding target when available, or
-    ``__synthetic__`` for purely in-process tools.
+    Columns: Server | Status | Transport | URL/Command | Tools | Last Error.
+    Reads the per-server :class:`McpServerHealth` collected by warming the
+    MCP pool (see :func:`hosts.cli.main._collect_mcp_tools`). The status,
+    tool count, and last error reflect the current runtime state — a cold
+    server that failed to start shows ``failed`` with the failure reason,
+    not ``cold``.
     """
-    table = Table(title="MCP Server Tools (per-server tool_policy)")
+    table = Table(title="MCP Servers")
     table.add_column("Server", style="bold")
-    table.add_column("Tool", overflow="fold")
+    table.add_column("Status")
+    table.add_column("Transport")
+    table.add_column("URL/Command", overflow="fold")
+    table.add_column("Tools", justify="right")
+    table.add_column("Last Error", overflow="fold")
 
-    for server_id, tool_name, is_alias in mcp_tools:
-        display_name = f"-> {tool_name}" if is_alias else tool_name
-        table.add_row(server_id, display_name)
+    for server_id in sorted(health):
+        h = health[server_id]
+        endpoint = h.url or h.command or "—"
+        last_error = _truncate(h.last_error, 200) or "—"
+        status_style = _status_style(h.status)
+        table.add_row(
+            server_id,
+            f"[{status_style}]{h.status}[/]",
+            h.transport,
+            endpoint,
+            str(h.tool_count),
+            last_error,
+        )
 
     if console is not None:
         console.print(table)
     return table
+
+
+def render_mcp_server_tools(
+    specs: list[MCPToolSpec],
+    health: McpServerHealth,
+    *,
+    console: Console | None = None,
+) -> Table:
+    """Render a Rich Table of one MCP server's tools with descriptions + required args.
+
+    Used by ``lisa mcp <server_id>`` to drill into a single server. The
+    header (status, transport, URL/command) comes from ``health``; the tool
+    rows come from ``specs``. Tool names are the bare strings referenced by
+    per-server ``tool_policy.allowed_tools`` / ``denied_tools`` in
+    ``mcp_servers.yaml``.
+    """
+    table = Table(title=f"MCP Server: {health.server_id}")
+    table.add_column("Tool", style="bold", overflow="fold")
+    table.add_column("Description", overflow="fold")
+    table.add_column("Required args", overflow="fold")
+
+    for spec in specs:
+        description = _truncate(spec.description, 80) or "—"
+        required = _required_args(spec)
+        table.add_row(spec.name, description, required)
+
+    if console is not None:
+        console.print(table)
+    return table
+
+
+def _render_mcp_tool_table(
+    server_id: str,
+    specs: list[MCPToolSpec],
+    *,
+    console: Console | None = None,
+) -> Table:
+    """Render one MCP server's tools as a Rich Table for the ``--with-mcp`` view.
+
+    Companion to :func:`render_tools`: when ``lisa tools --with-mcp`` warms
+    the pool, this renders one table per server so authors can see the bare
+    tool names referenced by ``tool_policy``.
+    """
+    table = Table(title=f"MCP Server Tools: {server_id}")
+    table.add_column("Tool", style="bold", overflow="fold")
+    table.add_column("Description", overflow="fold")
+
+    for spec in specs:
+        description = _truncate(spec.description, 80) or "—"
+        table.add_row(spec.name, description)
+
+    if console is not None:
+        console.print(table)
+    return table
+
+
+def _status_style(status: str) -> str:
+    """Return a Rich style name for an MCP server status glyph."""
+    if status == "warm":
+        return "green"
+    if status == "failed":
+        return "red"
+    if status == "cold":
+        return "yellow"
+    return "grey58"
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Truncate ``text`` to ``limit`` chars, appending an ellipsis when cut."""
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
+def _required_args(spec: MCPToolSpec) -> str:
+    """Extract the comma-joined required arg names from a tool's input schema."""
+    schema = spec.input_schema or {}
+    required = schema.get("required")
+    if isinstance(required, list) and required:
+        return ", ".join(str(r) for r in required)
+    properties = schema.get("properties")
+    if isinstance(properties, dict) and properties:
+        return ", ".join(str(k) for k in properties)
+    return "—"
 
 
 def render_markdown_panel(
@@ -250,7 +351,8 @@ def render_markdown_panel(
 
 __all__ = [
     "render_markdown_panel",
-    "render_mcp_tools",
+    "render_mcp_server_tools",
+    "render_mcp_servers",
     "render_models",
     "render_modes",
     "render_operations",

@@ -80,6 +80,8 @@ _HOST_REPL_SHORTCUTS: tuple[str, ...] = (
     "/models edit",
     "/settings",
     "/tokens",
+    "/mcp",
+    "/mcp ",
     "/debug context",
     "/debug router",
     "/consolidate",
@@ -217,7 +219,7 @@ async def run_repl(
     _print_startup_banner(console)
     console.print(
         Panel(
-            "Type /help, /help capabilities, /debug context, "
+            "Type /help, /help capabilities, /debug context, /mcp, "
             "/pack list, /models discover, /search <query>, or /quit.",
             title="Session",
             border_style=STYLE_BORDER_SESSION,

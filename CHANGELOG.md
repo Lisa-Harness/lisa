@@ -4,6 +4,42 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### MCP server introspection in the CLI/REPL
+
+- **`/mcp` REPL command and `lisa mcp` CLI subcommand now show a full
+  per-server readout**: status (warm/cold/failed), transport (the
+  `runtime_kind` from `mcp_servers.yaml` — `venv_bin`, `http`, `python`,
+  …), URL or command, tool count, and last error. `/mcp <server_id>` (and
+  `lisa mcp <server_id>`) drill into one server's tools with name,
+  description, and required schema args. Cold servers are warmed on demand
+  via `pool.list_tools(allowed_server_ids={server_id})` so their tools
+  appear without a full pool warm-up.
+- **`McpServerHealth` extended** with `transport`, `url`, `command`,
+  `tool_count`, `tool_names`, `permanently_failed`, and `restart_count`
+  fields. The introspection collector (`hosts/core/introspect.py`) now
+  reads new pool accessors (`cold_failed_ids`, `permanently_failed_ids`,
+  `restart_counts`, `last_errors`, `tools_by_server`) so a cold server
+  that tried and failed reports `failed` (not `cold`), and the operator
+  sees *why* it is down via `last_error`.
+- **`MCPClientConfig.runtime_kind`** passthrough field (a string — the
+  `RuntimeKind.value`) set by `compile_mcp_config` and the in-code
+  `lisa-content`/`lisa-catalog` configs. Carried as a plain string so
+  `kernel.tools` does not import from `kernel.mcp_launch` (preserving the
+  `mcp_launch → tools` dependency direction).
+- **`MCPToolPool` captures `_last_errors`** on every connect/restart
+  failure (URL-stripped and length-bounded via `_safe_exc_desc`) and
+  clears them on successful connect. Five new read accessors
+  (`cold_failed_ids`, `permanently_failed_ids`, `restart_counts`,
+  `last_errors`, `tools_by_server`) expose the pool's existing private
+  bookkeeping without adding new mutation surface.
+- **Hard cutover**: the lossy `McpToolEntry = tuple[str, str, bool]` type
+  alias and the 2-column `render_mcp_tools` renderer are deleted.
+  `_collect_mcp_tools` now returns `(dict[str, McpServerHealth],
+  dict[str, list[MCPToolSpec]])` so the render layer stops discarding
+  tool descriptions and schemas.
+
 ### Changed
 
 #### CLI host: flowing single-column transcript replaces the four-pane layout

@@ -1394,6 +1394,19 @@ class WorkflowModeConfig(BaseModel):
     # rerouted to ``fallback_mode`` (typically ``discuss``). See
     # :class:`kernel.models.YieldPolicy` and :class:`kernel.models.YieldAction`.
     yield_policy: YieldPolicy = Field(default_factory=YieldPolicy)
+    # Per-mode policy applied when this mode is invoked as a **fork child**
+    # (parallel fan-out). Fork children run with no interactive channel — the
+    # user cannot answer a mid-turn question — so a mode that allows inline
+    # asks in the foreground may forbid them in the background. Authored in
+    # ``_mode.md`` front matter under ``fork_yield_policy``. When ``None`` (the
+    # default), fork children fall back to ``yield_policy`` (the foreground
+    # policy), preserving backward compatibility. When set, the fork child's
+    # ``run_turn`` call receives it as ``yield_policy_override`` and the
+    # ``yield`` tool is advertised (or not) per this policy. Action modes that
+    # are unsafe to fork with an unsatisfied question set
+    # ``fork_yield_policy: { allowed: false }`` so the model cannot punt to a
+    # user that is not there.
+    fork_yield_policy: YieldPolicy | None = None
 
 
 class WorkflowSessionState(BaseModel):
@@ -1555,7 +1568,16 @@ class ForkTarget(BaseModel):
     query: str = ""
 
 
-ForkChildStatus = Literal["ok", "timeout", "cancelled", "error", "no_tools", "yielded"]
+ForkChildStatus = Literal[
+    "ok",
+    "timeout",
+    "cancelled",
+    "error",
+    "no_tools",
+    "yielded",  # legacy — force-yielded by the harness (cap/budget/stuck)
+    "model_yield",  # the model called the ``yield`` tool voluntarily
+    "interrupted",  # the harness force-yielded (iteration cap / budget / stuck)
+]
 
 
 class ForkChildResult(BaseModel):
@@ -1566,6 +1588,12 @@ class ForkChildResult(BaseModel):
     output_text: str = ""
     error_message: str = ""
     duration_ms: int = 0
+    # The ``YieldAction`` the child produced when ``status`` is ``model_yield``
+    # (model called the ``yield`` tool) or ``interrupted`` (harness cap/budget
+    # forced a yield). The parent fork-result handler inspects this to
+    # propagate the question to the user (model_yield) or to render the
+    # interruption framing (interrupted). ``None`` for non-yield statuses.
+    yield_action: YieldAction | None = None
 
 
 # ---------------------------------------------------------------------------

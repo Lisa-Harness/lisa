@@ -82,6 +82,11 @@ from hosts.core.commands._log import (
     _resolve_model,
     _set_turn_context,
 )
+from hosts.core.commands._mcp import (
+    handle_mcp_command,
+    render_mcp_server_detail,
+    render_mcp_summary,
+)
 from hosts.core.commands._models import (
     _handle_models_apply,
     _handle_models_discover,
@@ -208,6 +213,7 @@ __all__ = [
     "handle_debug_command",
     "handle_help_command",
     "handle_intake_command",
+    "handle_mcp_command",
     "handle_models_command",
     "handle_pack_command",
     "handle_simple_command",
@@ -225,6 +231,8 @@ __all__ = [
     "render_capability_help",
     "render_debug_context",
     "render_debug_self",
+    "render_mcp_server_detail",
+    "render_mcp_summary",
     "render_modes_list",
     "render_operations_list",
     "render_pack_list",

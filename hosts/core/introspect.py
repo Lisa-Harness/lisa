@@ -29,7 +29,7 @@ import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kernel.models import (
     IntrospectSnapshot,
@@ -160,27 +160,77 @@ def _gather_mcp_pool_health(mcp_pool: MCPToolPool | None) -> dict[str, McpServer
     health: dict[str, McpServerHealth] = {}
     try:
         warm_ids = set(mcp_pool.warm_server_ids())
-        failed_ids = set(mcp_pool.warm_failed_ids())
+        warm_failed_ids = set(mcp_pool.warm_failed_ids())
+        cold_failed_ids = set(_safe_call(mcp_pool, "cold_failed_ids", set))
+        permanently_failed_ids = set(_safe_call(mcp_pool, "permanently_failed_ids", set))
+        restart_counts = _safe_call(mcp_pool, "restart_counts", dict)
+        last_errors = _safe_call(mcp_pool, "last_errors", dict)
+        tools_by_server = _safe_call(mcp_pool, "tools_by_server", dict)
     except (AttributeError, RuntimeError):
         return health
 
     for config in mcp_pool.configs:
         server_id = config.server_id
-        if server_id in failed_ids:
+        if server_id in permanently_failed_ids or server_id in warm_failed_ids:
             status: McpConnectionStatus = "failed"
+        elif server_id in cold_failed_ids:
+            # A cold server that tried and failed to start is ``failed``,
+            # not ``cold`` — ``cold`` means "not yet attempted."
+            status = "failed"
         elif server_id in warm_ids:
             status = "warm"
         elif config.warm:
+            # Warm but not connected and not in the failed set: treat as
+            # failed (a warm server that is not up is down, not cold).
             status = "failed"
         else:
             status = "cold"
+        server_tools = tools_by_server.get(server_id, [])
+        tool_names = [spec.name for spec in server_tools]
         health[server_id] = McpServerHealth(
             server_id=server_id,
             status=status,
             warm=config.warm,
-            last_error="",
+            transport=getattr(config, "runtime_kind", None) or _derive_transport(config),
+            url=config.url or "",
+            command=config.command or "",
+            tool_count=len(tool_names),
+            tool_names=tool_names,
+            permanently_failed=server_id in permanently_failed_ids,
+            restart_count=int(restart_counts.get(server_id, 0)),
+            last_error=last_errors.get(server_id, ""),
         )
     return health
+
+
+def _safe_call(pool: MCPToolPool, attr: str, default_factory: Any) -> Any:
+    """Call a pool accessor defensively, returning a default when absent.
+
+    Keeps ``_gather_mcp_pool_health`` working against a ``MagicMock`` or an
+    older pool that does not yet expose the new accessors (``cold_failed_ids``,
+    ``permanently_failed_ids``, ``restart_counts``, ``last_errors``,
+    ``tools_by_server``). Real pools always have them after Phase 1.
+    """
+    method = getattr(pool, attr, None)
+    if method is None or not callable(method):
+        return default_factory()
+    try:
+        return method()
+    except (AttributeError, RuntimeError):
+        return default_factory()
+
+
+def _derive_transport(config: Any) -> str:
+    """Derive a transport label when ``runtime_kind`` was not carried through.
+
+    Falls back to ``\"http\"`` when a URL is set, else ``\"stdio\"``. Only
+    used for configs constructed before the compiler passed ``runtime_kind``
+    through; the introspection surface prefers the truthful
+    ``config.runtime_kind`` when present.
+    """
+    if getattr(config, "url", None):
+        return "http"
+    return "stdio"
 
 
 def _summarize_token_usage(token_usage_path: Path | None) -> TokenUsageSummary | None:

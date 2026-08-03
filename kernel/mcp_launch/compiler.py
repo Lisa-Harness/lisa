@@ -191,6 +191,7 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
         warm=spec.warm,
         required=spec.required,
         aliases=spec.aliases,
+        runtime_kind=spec.runtime_kind.value,
     )
 
 

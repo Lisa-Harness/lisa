@@ -96,7 +96,7 @@ def bare_tool_name(tool_id: str) -> str:
     return tool_id
 
 
-def _safe_exc_desc(exc: Exception | None) -> str:
+def _safe_exc_desc(exc: BaseException | None) -> str:
     """Return a log-safe description of a connect exception.
 
     Raw exception ``str()`` can embed the full request URL — which, for a
@@ -151,6 +151,18 @@ class MCPClientConfig:
             (with ``parents=True, exist_ok=True``) before spawning the
             server. Lets a server own a managed subfolder that is guaranteed
             to pre-exist. Default False.
+        runtime_kind: The launch kind this config was compiled from, as a
+            string (the ``RuntimeKind.value`` — e.g. ``"venv_bin"``,
+            ``"http"``, ``"stdio"``). Carried as a plain string rather than
+            the :class:`~kernel.mcp_launch.server_manifest.RuntimeKind` enum
+            so ``kernel.tools`` does not import from ``kernel.mcp_launch``
+            (preserving the ``mcp_launch → tools`` dependency direction).
+            ``None`` for configs constructed before the compiler passed it
+            through; introspection surfaces fall back to deriving transport
+            from ``url``/``command`` in that case. Used by the MCP
+            introspection surface (:func:`hosts.core.introspect.gather_introspection`)
+            so the operator sees the real launch kind, not a derived
+            ``http|stdio`` binary.
     """
 
     server_id: str
@@ -170,6 +182,7 @@ class MCPClientConfig:
     url: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
     auth: Any = None
+    runtime_kind: str | None = None
     """Optional :class:`~kernel.mcp_launch.policy.AuthSpec` for network HTTP
     servers. When set, the pool resolves auth at connect time (static bearer
     re-read per connect; oauth2-pkce via the SDK auth provider). None keeps
@@ -350,6 +363,13 @@ class MCPToolPool:
         set, ``_ensure_all_cold_connected`` skips them instead of retrying
         on every ``list_tools()`` call (which would cause an unbounded
         re-spawn loop for cold servers that can't start)."""
+        self._last_errors: dict[str, str] = {}
+        """Per-server last connect/restart failure description (URL-stripped,
+        length-bounded via :func:`_safe_exc_desc`). Cleared on successful
+        connect. Surfaced by :meth:`last_errors` for the MCP introspection
+        read accessors so the operator sees *why* a server is down, not just
+        *that* it is. Kept separate from the warm/cold/permanently-failed
+        sets so a server that later recovers drops its stale error."""
         self._synthetic_handlers: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {}
         """Host-owned in-process handlers keyed by tool name. Populated by
         :meth:`add_synthetic_tools`. Synthetic tools dispatch through here
@@ -395,6 +415,55 @@ class MCPToolPool:
     def warm_failed_ids(self) -> list[str]:
         """Return ids of warm servers that failed (re)start and are down."""
         return sorted(self._warm_failed)
+
+    def cold_failed_ids(self) -> list[str]:
+        """Return ids of cold servers that failed to connect and are skipped.
+
+        Mirrors :meth:`warm_failed_ids` for the cold-server failure set so
+        the introspection surface can distinguish "cold and not yet tried"
+        from "cold and tried-and-failed" — the latter reports ``failed``,
+        not ``cold``, in :func:`hosts.core.introspect.gather_introspection`.
+        """
+        return sorted(self._cold_failed)
+
+    def permanently_failed_ids(self) -> list[str]:
+        """Return ids of warm servers that exhausted their restart budget."""
+        return sorted(self._permanently_failed)
+
+    def restart_counts(self) -> dict[str, int]:
+        """Return per-server restart counts (within the restart window).
+
+        Keyed by ``server_id``; each value is the number of restart
+        timestamps recorded for that server. Used by the introspection
+        surface to show how many times a warm server has been restarted
+        before it was marked permanently failed.
+        """
+        return {sid: len(ts) for sid, ts in self._restart_timestamps.items()}
+
+    def last_errors(self) -> dict[str, str]:
+        """Return a copy of the per-server last connect/restart error text.
+
+        Each value is the URL-stripped, length-bounded description from
+        :func:`_safe_exc_desc`. Empty string for servers that have never
+        failed or that recovered after a failure (the entry is cleared on
+        successful connect). Surfaced so the operator sees *why* a server
+        is down, not just *that* it is.
+        """
+        return dict(self._last_errors)
+
+    def tools_by_server(self) -> dict[str, list[MCPToolSpec]]:
+        """Return a frozen per-server view of the discovered tool catalog.
+
+        Keyed by ``server_id``; each value is a copy of that server's
+        :class:`MCPToolSpec` list from the per-server index
+        (:attr:`_tool_index_by_server`). Covers only currently-connected
+        servers — cold servers that have not been lazily connected yet are
+        absent (their tools appear after :meth:`list_tools` warms them).
+        Returns copies so callers cannot mutate pool state.
+        """
+        return {
+            sid: list(specs.values()) for sid, specs in self._tool_index_by_server.items()
+        }
 
     def add_synthetic_tools(self, tools: list[SyntheticToolSpec]) -> None:
         """Register host-owned in-process tools into the merged catalog.
@@ -776,6 +845,8 @@ class MCPToolPool:
                     )
                     await asyncio.sleep(delay)
         # Exhausted retries.
+        if last_exc is not None:
+            self._last_errors[config.server_id] = _safe_exc_desc(last_exc)
         if config.required:
             raise MCPConnectionError(
                 f"Required warm MCP server '{config.server_id}' failed to start "
@@ -823,12 +894,14 @@ class MCPToolPool:
             read, write = await stack.enter_async_context(stdio_client(params))
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
-        except BaseException:
+        except BaseException as exc:
             await stack.aclose()
+            self._last_errors[config.server_id] = _safe_exc_desc(exc)
             raise
         async with self._connect_lock:
             self._child_stacks[config.server_id] = stack
         self._sessions[config.server_id] = session
+        self._last_errors.pop(config.server_id, None)
 
     async def _connect_http(self, config: MCPClientConfig) -> None:
         """Connect one streamable-HTTP MCP server.
@@ -852,12 +925,14 @@ class MCPToolPool:
             )
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
-        except BaseException:
+        except BaseException as exc:
             await stack.aclose()
+            self._last_errors[config.server_id] = _safe_exc_desc(exc)
             raise
         async with self._connect_lock:
             self._child_stacks[config.server_id] = stack
         self._sessions[config.server_id] = session
+        self._last_errors.pop(config.server_id, None)
 
     def _build_http_client(self, config: MCPClientConfig) -> Any:
         """Build the httpx.AsyncClient used to reach a network MCP server.
@@ -1124,6 +1199,7 @@ class MCPToolPool:
                 type(exc).__name__,
                 exc,
             )
+            self._last_errors[config.server_id] = _safe_exc_desc(exc)
             return False
         # New session: refresh so this server's tools are indexed.
         await self._refresh_tool_index()
@@ -1157,6 +1233,7 @@ class MCPToolPool:
                     type(exc).__name__,
                     exc,
                 )
+                self._last_errors[config.server_id] = _safe_exc_desc(exc)
                 self._cold_failed.add(config.server_id)
         await self._refresh_tool_index()
 
@@ -1196,6 +1273,7 @@ class MCPToolPool:
                     type(exc).__name__,
                     exc,
                 )
+                self._last_errors[config.server_id] = _safe_exc_desc(exc)
                 self._cold_failed.add(config.server_id)
                 continue
             await self._refresh_tool_index()
@@ -1277,6 +1355,7 @@ class MCPToolPool:
                     type(exc).__name__,
                     exc,
                 )
+                self._last_errors[server_id] = _safe_exc_desc(exc)
                 self._warm_failed.add(server_id)
                 if config.required:
                     raise MCPConnectionError(
@@ -1573,6 +1652,7 @@ class MCPToolPool:
         self._restart_timestamps.clear()
         self._permanently_failed.clear()
         self._cold_failed.clear()
+        self._last_errors.clear()
         self._tool_index.clear()
         self._tool_index_by_server.clear()
         self._tools = []
