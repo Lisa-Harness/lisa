@@ -275,7 +275,9 @@ def _next_remaining_step(instance: Any) -> Any:
         return None
 
 
-def _resolve_yield_policy(mode_config: Any) -> YieldPolicy:
+def _resolve_yield_policy(
+    mode_config: Any, override: YieldPolicy | None = None
+) -> YieldPolicy:
     """Return the ``YieldPolicy`` for one mode, tolerating missing config.
 
     The policy is authored in ``_mode.md`` front matter and loaded onto
@@ -283,7 +285,16 @@ def _resolve_yield_policy(mode_config: Any) -> YieldPolicy:
     config or policy is absent (e.g. a minimal test fixture), return the
     default-empty policy (inline asks allowed, no fallback) so the turn
     degrades to the legacy "ask in place" behavior rather than crashing.
+
+    ``override`` is an optional ``YieldPolicy`` supplied by the caller (the
+    fork fan-out passes the mode's ``fork_yield_policy`` here so a fork child's
+    ``yield`` tool surface and lifecycle resolution follow the background
+    policy rather than the foreground one). When non-None, it takes precedence
+    over the mode's authored policy — this is the single seam by which a fork
+    child suppresses ``yield`` even when the foreground mode allows it.
     """
+    if override is not None:
+        return override
     if mode_config is None:
         return YieldPolicy()
     policy = getattr(mode_config, "yield_policy", None)
@@ -1342,6 +1353,7 @@ async def run_turn(
     execution_policy: ExecutionPolicy | None = None,
     logger_override: logging.Logger | None = None,
     suppress_routing_hint: bool = False,
+    yield_policy_override: YieldPolicy | None = None,
 ) -> TurnResult:
     """Execute one conversational turn with the full model+tool loop.
 
@@ -1352,6 +1364,15 @@ async def run_turn(
     intents its mode doesn't satisfy, and is told to re-route — which a
     weak/strict model turns into an invalid-content 500). Fork children
     must run their mode to completion without re-routing.
+
+    ``yield_policy_override`` is set by the fork fan-out so a fork child's
+    ``yield`` tool surface and lifecycle resolution follow the mode's
+    ``fork_yield_policy`` rather than its foreground ``yield_policy``. A fork
+    child runs with no interactive channel — the user cannot answer a
+    mid-turn question — so a mode that allows inline asks in the foreground
+    may forbid them in the background (``fork_yield_policy: { allowed: false }``)
+    and the ``yield`` tool is not advertised to the child at all. ``None`` means
+    use the mode's authored ``yield_policy`` (the foreground policy).
 
     This is the single turn loop shared by lightweight hosts and the production app.
     Both call the same function — they differ only in which `TurnHooks` they
@@ -1463,6 +1484,7 @@ async def run_turn(
             execution_policy=execution_policy,
             logger_override=logger_override,
             suppress_routing_hint=suppress_routing_hint,
+            yield_policy_override=yield_policy_override,
         )
     pool = MCPToolPool(hooks.mcp_tool_servers)
     await pool.start()
@@ -1513,6 +1535,7 @@ async def _run_turn_with_approval(
     execution_policy: ExecutionPolicy | None,
     logger_override: logging.Logger | None,
     suppress_routing_hint: bool = False,
+    yield_policy_override: YieldPolicy | None = None,
 ) -> TurnResult:
     """Convert an approval interruption into a host-renderable turn result."""
 
@@ -1537,6 +1560,7 @@ async def _run_turn_with_approval(
             execution_policy=execution_policy,
             logger_override=logger_override,
             suppress_routing_hint=suppress_routing_hint,
+            yield_policy_override=yield_policy_override,
         )
     except ApprovalRequired as required:
         # Preserve the mid-turn handoff across the approval boundary. The
@@ -1675,6 +1699,7 @@ async def _run_turn_inner(
     execution_policy: ExecutionPolicy | None,
     logger_override: logging.Logger | None,
     suppress_routing_hint: bool = False,
+    yield_policy_override: YieldPolicy | None = None,
 ) -> TurnResult:
     """Inner turn loop that owns the MCPToolPool lifecycle via the caller."""
 
@@ -1733,6 +1758,11 @@ async def _run_turn_inner(
     # overrides and the incidents each cap guards against.
     _max_handoffs_per_turn = _kernel_settings.max_handoffs_per_turn
     _hint_override_limit = _kernel_settings.hint_override_limit
+    # The fork fan-out passes the mode's ``fork_yield_policy`` here so a fork
+    # child's ``yield`` tool surface and lifecycle resolution follow the
+    # background policy. ``None`` (foreground / non-fork path) means
+    # ``_resolve_yield_policy`` reads the mode's authored ``yield_policy``.
+    _yield_policy_override = yield_policy_override
 
     async def _emit_stage(label: str, data: dict[str, Any] | None = None) -> None:
         await _emit_stage_fn(_state, _on_stage_hook, _log, label, data)
@@ -2153,7 +2183,7 @@ async def _run_turn_inner(
     # loop intercepts it (same pattern as ``transition_stage``) — it does
     # NOT dispatch to any executor; it breaks the loop with the question as
     # the turn content and stamps ``CheckpointBundle.lifecycle_state="yielded"``.
-    _yield_policy_for_tools = _resolve_yield_policy(mode_config)
+    _yield_policy_for_tools = _resolve_yield_policy(mode_config, _yield_policy_override)
     if _yield_policy_for_tools.allowed or _yield_policy_for_tools.fallback_mode:
         tool_schemas.extend(get_yield_tool_schema())
 
@@ -2702,7 +2732,7 @@ async def _run_turn_inner(
         _lifecycle_action = _resolve_lifecycle(
             state=_resolver_state,
             mode_id=mode_id,
-            mode_yield_policy=_resolve_yield_policy(mode_config),
+            mode_yield_policy=_resolve_yield_policy(mode_config, _yield_policy_override),
             settings=_resolver_settings,
             router_decision=_state.pending_router_decision,
             workflow_instance=_active_instance_for_resolver,
@@ -3457,7 +3487,7 @@ async def _run_turn_inner(
                     if not _yield_question:
                         # The model called yield with no question — degenerate.
                         # Use the policy's default question rather than hanging.
-                        _yp = _resolve_yield_policy(mode_config)
+                        _yp = _resolve_yield_policy(mode_config, _yield_policy_override)
                         _yield_question = _yp.default_question or (
                             "I need more information to proceed. "
                             "What would you like me to focus on?"
@@ -3664,8 +3694,28 @@ async def _run_turn_inner(
                                 # (the model cannot be trusted to surface
                                 # a partial result honestly) but with
                                 # distinct "interrupted" messaging. See
-                                # the 2026-08-02 fan-out regression.
-                                has_yielded = any(r.status == "yielded" for r in failed_children)
+                                # the 2026-08-02 fan-out regression. The legacy
+                                # ``"yielded"`` status and the new
+                                # ``"interrupted"`` status both take this path
+                                # (the cutover renames the bucket; both mean
+                                # "harness force-yielded, not the model").
+                                has_yielded = any(
+                                    r.status in ("yielded", "interrupted")
+                                    for r in failed_children
+                                )
+                                # A child the model voluntarily yielded from
+                                # (it called the ``yield`` tool to ask the
+                                # user a question) is *not* a failure — it is
+                                # an honest punt. The parent propagates the
+                                # child's ``YieldAction`` (question + context)
+                                # to the user as the turn's own yield so the
+                                # host renders it with proper yield UX. This
+                                # is the 2026-08-02 fix: previously the parent
+                                # overwrote ``content`` with a generic
+                                # "Re-issue the request" string and discarded
+                                # the child's question for both model-yield
+                                # and harness-yield.
+                                has_model_yield = any(r.status == "model_yield" for r in failed_children)
                                 if failed_children:
                                     failure_parts: list[str] = []
                                     for r in failed_children:
@@ -3763,36 +3813,70 @@ async def _run_turn_inner(
                             }
                         )
                         # If any fork child is ``no_tools`` (hallucinated
-                        # success) or ``yielded`` (interrupted by the harness
-                        # before completing its action tools), abort the
-                        # user-facing turn with a deterministic failure. Do
-                        # NOT ``continue`` and hand the failure to the model
-                        # as advice — the model can paraphrase it into a
-                        # false "completed" (the 2026-07-25 incident). Surface
-                        # the failure directly. ``no_tools`` and ``yielded``
-                        # get distinct messaging: the former is a
-                        # hallucinated success, the latter an honest
+                        # success) or ``yielded``/``interrupted`` (harness
+                        # force-yielded before completing its action tools),
+                        # abort the user-facing turn with a deterministic
+                        # failure. Do NOT ``continue`` and hand the failure to
+                        # the model as advice — the model can paraphrase it
+                        # into a false "completed" (the 2026-07-25 incident).
+                        # Surface the failure directly. ``no_tools`` and
+                        # ``interrupted`` get distinct messaging: the former
+                        # is a hallucinated success, the latter an honest
                         # interruption (the 2026-08-02 fan-out regression).
+                        #
+                        # A ``model_yield`` child is NOT a failure: the model
+                        # called the ``yield`` tool to ask the user a question
+                        # (an honest punt, not a hallucination). Propagate the
+                        # child's ``YieldAction`` to the parent turn's
+                        # ``yielded`` so the host renders the question with the
+                        # normal yield UX. When more than one child model-yielded,
+                        # surface the first (ordered by fork target index) —
+                        # the user answers one question per turn.
+                        if has_model_yield:
+                            model_yield_children = [
+                                r for r in fork_results_list if r.status == "model_yield"
+                            ]
+                            _propagated = model_yield_children[0].yield_action
+                            if _propagated is not None:
+                                _pending_yield = _propagated
+                                content = _propagated.question
+                                _yielded = True
+                                _log.info(
+                                    "turn lifecycle: propagating fork child "
+                                    "model-yield (mode=%s, target=%s)",
+                                    _propagated.target_mode_id or "(in-place)",
+                                    model_yield_children[0].target.mode_id,
+                                )
+                                break
+                            # Defensive: a model_yield child without a
+                            # ``yield_action`` (should not happen —
+                            # ``_run_fork_child_turn`` always sets it). Fall
+                            # through to the deterministic abort below.
+                            _log.warning(
+                                "fork child %s reported model_yield but carried "
+                                "no yield_action; falling back to interrupt framing",
+                                model_yield_children[0].target.mode_id,
+                            )
                         if has_no_tools or has_yielded:
                             no_tools_modes = [
                                 r.target.mode_id
                                 for r in fork_results_list
                                 if r.status == "no_tools"
                             ]
-                            yielded_modes = [
+                            interrupted_modes = [
                                 r.target.mode_id
                                 for r in fork_results_list
-                                if r.status == "yielded"
+                                if r.status in ("yielded", "interrupted")
                             ]
                             if has_no_tools and has_yielded:
                                 content = (
                                     "Fork fan-out failed: the following children were "
                                     f"interrupted before completing their action tools "
-                                    f"({', '.join(yielded_modes)}), and the following "
-                                    "made zero tool calls despite their mode declaring "
-                                    f"action tools ({', '.join(no_tools_modes)}), so "
-                                    "their reported success is unverified. Re-issue the "
-                                    "request, or raise FORK_CHILD_MAX_TOOL_ITERATIONS."
+                                    f"({', '.join(interrupted_modes)}), and the "
+                                    "following made zero tool calls despite their mode "
+                                    f"declaring action tools ({', '.join(no_tools_modes)}), "
+                                    "so their reported success is unverified. Re-issue "
+                                    "the request, or raise FORK_CHILD_MAX_TOOL_ITERATIONS."
                                 )
                             elif has_no_tools:
                                 content = (
@@ -3808,8 +3892,8 @@ async def _run_turn_inner(
                                     "children were force-yielded by the turn lifecycle "
                                     "(iteration cap / stuck-in-stage / budget) before "
                                     f"completing their action tools "
-                                    f"({', '.join(yielded_modes)}), so their output is "
-                                    "partial. Re-issue the request, or raise "
+                                    f"({', '.join(interrupted_modes)}), so their output "
+                                    "is partial. Re-issue the request, or raise "
                                     "FORK_CHILD_MAX_TOOL_ITERATIONS."
                                 )
                             break
@@ -4891,8 +4975,8 @@ async def _run_turn_inner(
         if _pending_yield is not None:
             content = _pending_yield.question
             _yielded = True
-        elif _resolve_yield_policy(mode_config).allowed:
-            _yield_policy = _resolve_yield_policy(mode_config)
+        elif _resolve_yield_policy(mode_config, _yield_policy_override).allowed:
+            _yield_policy = _resolve_yield_policy(mode_config, _yield_policy_override)
             _pending_yield = YieldAction(
                 question=(
                     _yield_policy.default_question

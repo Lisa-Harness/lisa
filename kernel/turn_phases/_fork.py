@@ -32,6 +32,7 @@ from kernel.models import (
     OperationExecutionContext,
     OperationResult,
     TurnBudget,
+    YieldPolicy,
 )
 from kernel.tools.mcp_client import MCPToolPool, bare_tool_name
 
@@ -43,6 +44,7 @@ __all__ = [
     "_execute_fork_fanout",
     "_fork_child_budget",
     "_fork_mode_requires_tools",
+    "_fork_yield_policy_override",
     "_run_fork_child",
     "_run_fork_child_turn",
 ]
@@ -128,6 +130,32 @@ def _fork_mode_action_tool_ids(mode_id: str) -> set[str]:
     return result
 
 
+def _fork_yield_policy_override(mode_id: str) -> YieldPolicy | None:
+    """Return the mode's ``fork_yield_policy`` to apply when forked, or ``None``.
+
+    A mode may author a *second* ``YieldPolicy`` in ``_mode.md`` front matter
+    under ``fork_yield_policy`` to govern how it behaves when invoked as a
+    fork child (parallel fan-out). Fork children run with no interactive
+    channel — the user cannot answer a mid-turn question — so a mode that
+    allows inline asks in the foreground may forbid them in the background
+    (``fork_yield_policy: { allowed: false }``) and the ``yield`` tool is not
+    advertised to the child at all.
+
+    Returns ``None`` when the key is absent OR the mode is unknown to the
+    catalog. ``None`` is the sentinel ``run_turn``'s ``yield_policy_override``
+    param interprets as "use the mode's foreground ``yield_policy``" — so
+    fork children inherit the prior behavior (backward compatible).
+    """
+    mode_config = get_workflow_catalog().get(mode_id)
+    if mode_config is None:
+        return None
+    policy = getattr(mode_config, "fork_yield_policy", None)
+    # ``fork_yield_policy`` is ``YieldPolicy | None``; ``None`` means
+    # "no fork override". A ``YieldPolicy()`` default (empty) is a real
+    # override — it means "allow yield in the background" — so we return it.
+    return policy
+
+
 async def _run_fork_child_turn(
     *,
     target: ForkTarget,
@@ -174,30 +202,68 @@ async def _run_fork_child_turn(
             # run to completion without re-injecting the original query's
             # multi-intent routing signal.
             suppress_routing_hint=True,
+            # Apply the mode's ``fork_yield_policy`` (authored in
+            # ``_mode.md`` front matter) so a fork child's ``yield`` tool
+            # surface follows the background policy. A mode that allows
+            # inline asks in the foreground may forbid them in the
+            # background (``fork_yield_policy: { allowed: false }``) and
+            # the ``yield`` tool is not advertised to the child at all.
+            # ``None`` (no ``fork_yield_policy`` authored) falls back to the
+            # mode's foreground ``yield_policy`` — backward compatible.
+            yield_policy_override=_fork_yield_policy_override(target.mode_id),
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
         # A child the harness force-yielded (iteration cap, stuck-in-stage,
         # or budget exhaustion) was *interrupted*, not hallucinating. Its
         # tool-call pattern is irrelevant — it never got to finish, so we
         # cannot conclude anything about whether it would have invoked its
-        # action tools. Classify it as ``yielded`` before the zero-tool /
+        # action tools. Classify it as ``interrupted`` before the zero-tool /
         # action-tool checks so a coding child that gathered evidence via
         # ``lisa-storage.read_file`` then hit the iteration cap is not
         # reported as "hallucinated success — nothing written" (the
-        # 2026-08-02 fan-out regression). The parent treats ``yielded``
+        # 2026-08-02 fan-out regression). The parent treats ``interrupted``
         # like ``no_tools`` for the deterministic abort but with honest
         # "interrupted by harness" messaging.
+        #
+        # A child the *model* yielded from (it called the ``yield`` tool to
+        # ask the user a question) is NOT an interruption — it is an honest
+        # punt. Classify it as ``model_yield`` and carry the ``YieldAction``
+        # so the parent can propagate the question to the user. The
+        # discriminator is ``child_result.yielded.context``: the in-loop
+        # ``yield`` tool dispatch (``turn_runner.py``) sets
+        # ``context="model-emitted yield"``; the lifecycle resolver's
+        # cap/budget/stuck paths set ``context="iteration cap …"`` etc.
         if child_result.yielded is not None:
+            _ya = child_result.yielded
+            _is_model_yield = _ya.context == "model-emitted yield"
+            if _is_model_yield:
+                _flog.info(
+                    "fork child %s model-emitted yield (asking the user: %s); "
+                    "propagating question to parent",
+                    target.mode_id,
+                    (_ya.question or "")[:120],
+                )
+                return (
+                    ForkChildResult(
+                        target=target,
+                        status="model_yield",
+                        output_text=child_result.response_text,
+                        yield_action=_ya,
+                        duration_ms=elapsed_ms,
+                    ),
+                    "model_yield",
+                    elapsed_ms,
+                )
             _flog.warning(
                 "fork child %s was force-yielded by the harness (iteration "
-                "cap / stuck-in-stage / budget); marking yielded (interrupted, "
-                "not hallucinated) — its tool-call pattern is inconclusive",
+                "cap / stuck-in-stage / budget); marking interrupted (not "
+                "hallucinated) — its tool-call pattern is inconclusive",
                 target.mode_id,
             )
             return (
                 ForkChildResult(
                     target=target,
-                    status="yielded",
+                    status="interrupted",
                     output_text=child_result.response_text,
                     error_message=(
                         f"fork child {target.mode_id} was interrupted by the "
@@ -207,9 +273,10 @@ async def _run_fork_child_turn(
                         f"FORK_CHILD_MAX_TOOL_ITERATIONS (currently "
                         f"{_kernel_settings.fork_child_max_tool_iterations})."
                     ),
+                    yield_action=_ya,
                     duration_ms=elapsed_ms,
                 ),
-                "yielded",
+                "interrupted",
                 elapsed_ms,
             )
         if child_result.tool_call_count == 0 and _fork_mode_requires_tools(target.mode_id):

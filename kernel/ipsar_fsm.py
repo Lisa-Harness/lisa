@@ -333,6 +333,7 @@ _KERNEL_OWNED_FRONT_MATTER_KEYS: frozenset[str] = _MODE_OVERRIDES_PROTECTED_KEYS
         "mode_provider_id",
         "context_evidence_packs",
         "yield_policy",
+        "fork_yield_policy",
     }
 )
 
@@ -803,6 +804,29 @@ def load_catalog_from_disk(
             is_default_yield_target=bool(yield_policy_raw.get("is_default_yield_target", False)),
             default_question=str(yield_policy_raw.get("default_question", "") or ""),
         )
+        # Parse fork_yield_policy: an optional *second* ``YieldPolicy`` applied
+        # when this mode is invoked as a fork child (parallel fan-out). Fork
+        # children run with no interactive channel, so a mode that allows
+        # inline asks in the foreground may forbid them in the background by
+        # setting ``fork_yield_policy: { allowed: false }``. When the key is
+        # absent, ``None`` signals "use the foreground ``yield_policy``" so
+        # fork children inherit the prior behavior (backward compatible).
+        fork_yield_policy_raw = mode_front_matter.get("fork_yield_policy")
+        if fork_yield_policy_raw is None:
+            fork_yield_policy: YieldPolicy | None = None
+        elif not isinstance(fork_yield_policy_raw, dict):
+            raise WorkflowValidationError(
+                f"fork_yield_policy must be a mapping in {mode_config_path}"
+            )
+        else:
+            fork_yield_policy = YieldPolicy(
+                allowed=bool(fork_yield_policy_raw.get("allowed", True)),
+                fallback_mode=str(fork_yield_policy_raw.get("fallback_mode", "") or ""),
+                is_default_yield_target=bool(
+                    fork_yield_policy_raw.get("is_default_yield_target", False)
+                ),
+                default_question=str(fork_yield_policy_raw.get("default_question", "") or ""),
+            )
 
         # Collect app/pack-owned extension keys the kernel does not interpret.
         # Everything in the (possibly overridden) front matter that is not a
@@ -851,6 +875,7 @@ def load_catalog_from_disk(
                 str(p) for p in (mode_front_matter.get("context_evidence_packs") or [])
             ],
             yield_policy=yield_policy,
+            fork_yield_policy=fork_yield_policy,
             extra_front_matter=extra_front_matter,
         )
         resolved_provider_id = catalog[mode_id].mode_provider_id

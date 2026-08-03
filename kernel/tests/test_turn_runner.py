@@ -16,6 +16,7 @@ from kernel.models import (
     OperationExecutionContext,
     OperationResult,
     WorkflowModeConfig,
+    YieldPolicy,
 )
 from kernel.seams.protocols import CoordinatorRouteDecision
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn
@@ -2012,9 +2013,10 @@ async def test_run_turn_fork_yielded_child_not_flagged_no_tools() -> None:
     assert result.fork_results is not None
     assert len(result.fork_results) == 1
     child = result.fork_results[0]
-    # The child was force-yielded by the harness, not hallucinating — it
-    # must be ``yielded``, not ``no_tools``.
-    assert child.status == "yielded"
+    # The child was force-yielded by the harness (iteration cap), not
+    # hallucinating and not a model-emitted yield — it must be
+    # ``interrupted`` (the renamed bucket), not ``no_tools``.
+    assert child.status == "interrupted"
     assert child.target.mode_id == "coding"
     # The parent must still abort (a partial result cannot be trusted to
     # be surfaced honestly), but with the "interrupted" framing, not the
@@ -2022,6 +2024,213 @@ async def test_run_turn_fork_yielded_child_not_flagged_no_tools() -> None:
     assert result.blocked is True
     assert "interrupted" in result.response_text.lower()
     assert "hallucinated" not in result.response_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_fork_child_model_yield_propagates_question_to_parent() -> None:
+    """A fork child whose model calls ``yield`` (model-emitted yield, not a
+    harness cap) is classified ``status="model_yield"`` and its question
+    propagates to the parent turn's ``yielded``.
+
+    Regression for the 2026-08-02 incident: a forked ``markdown`` child
+    called ``yield`` to ask the user a clarifying question. The parent
+    overwrote the question with a generic "Re-issue the request" string,
+    discarding what the model actually wanted to know. The fix
+    distinguishes ``model_yield`` (model called ``yield``) from
+    ``interrupted`` (harness cap/budget) and propagates the child's
+    ``YieldAction`` to the parent so the host renders the real question.
+    """
+    call_count = {"n": 0}
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "fork:markdown"}',
+                        },
+                    }
+                ],
+            )
+        # The markdown child calls yield with a question for the user.
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_2",
+                    "function": {
+                        "name": "yield",
+                        "arguments": json.dumps(
+                            {
+                                "question": "Which audience should the guide target?",
+                                "context": "model-emitted yield",
+                            }
+                        ),
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(mode_id="default", query="write a markdown guide", hooks=hooks)
+
+    assert result.fork_results is not None
+    assert len(result.fork_results) == 1
+    child = result.fork_results[0]
+    # Model called yield voluntarily — model_yield, not interrupted/no_tools.
+    assert child.status == "model_yield"
+    assert child.target.mode_id == "markdown"
+    assert child.yield_action is not None
+    assert child.yield_action.question == "Which audience should the guide target?"
+    # The parent propagates the child's yield question as its own yield —
+    # the user sees the real question, not a generic "Re-issue" string.
+    assert result.yielded is not None
+    assert result.yielded.question == "Which audience should the guide target?"
+    assert result.response_text == "Which audience should the guide target?"
+
+
+@pytest.mark.asyncio
+async def test_fork_child_yield_tool_not_advertised_when_fork_policy_forbids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mode with ``fork_yield_policy: { allowed: false }`` does not advertise
+    the ``yield`` tool to a forked child — the model cannot call it.
+
+    The ``yield`` tool surface is gated by the effective yield policy
+    (``turn_runner.py``'s ``_resolve_yield_policy`` with the override). When a
+    fork child runs with ``yield_policy_override=YieldPolicy(allowed=False)``,
+    the ``yield`` tool schema is never added to the child's tool list, so the
+    model cannot punt to a user that is not there. This test patches the
+    markdown mode's ``fork_yield_policy`` and verifies the child falls back to
+    finishing (or hallucinating) rather than yielding.
+    """
+    from kernel.ipsar_fsm import get_workflow_catalog
+
+    markdown_cfg = get_workflow_catalog().get("markdown")
+    assert markdown_cfg is not None, "markdown mode must be loaded by the catalog fixture"
+    monkeypatch.setattr(markdown_cfg, "fork_yield_policy", YieldPolicy(allowed=False))
+
+    call_count = {"n": 0}
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "fork:markdown"}',
+                        },
+                    }
+                ],
+            )
+        # The child finishes without tools — it did not (and could not)
+        # call yield. With the override in place, the model is forced to
+        # produce content, so it returns a text response.
+        return _StubCompletion(content="Done — made reasonable assumptions.")
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(mode_id="default", query="write a markdown guide", hooks=hooks)
+
+    assert result.fork_results is not None
+    assert len(result.fork_results) == 1
+    child = result.fork_results[0]
+    # The child did not yield (the tool was not advertised). With zero tool
+    # calls and no action tool invoked, it is flagged no_tools — the
+    # honest "make assumptions" path is a model-quality concern the harness
+    # still catches as unverified. The point of this test is that the child
+    # never entered the model_yield / interrupted path at all.
+    assert child.status != "model_yield"
+    assert child.yield_action is None
+
+
+def test_fork_yield_policy_override_returns_none_when_absent() -> None:
+    """``_fork_yield_policy_override`` returns ``None`` for a mode with no
+    ``fork_yield_policy`` front matter (backward compatible).
+
+    ``None`` is the sentinel ``run_turn``'s ``yield_policy_override`` param
+    interprets as "use the mode's foreground ``yield_policy``". A mode that
+    does not author ``fork_yield_policy`` keeps the prior fork behavior.
+    """
+    from kernel.turn_runner import _fork_yield_policy_override
+
+    # The markdown mode ships without ``fork_yield_policy`` (it is a new
+    # field), so the override must be None for it.
+    assert _fork_yield_policy_override("markdown") is None
+    # Unknown mode → None (no config to read a policy from).
+    assert _fork_yield_policy_override("nonexistent_mode_xyz") is None
+
+
+@pytest.mark.asyncio
+async def test_fork_child_no_fork_policy_falls_back_to_mode_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mode with no ``fork_yield_policy`` front matter advertises ``yield`` to
+    forked children per the foreground ``yield_policy`` (backward compatible).
+
+    This is the dual of the ``allowed: false`` test: without a
+    ``fork_yield_policy`` override, the child sees the foreground policy and
+    the model can call ``yield``. The test confirms a child that model-yields
+    still propagates the question under the default (no-override) path.
+    """
+    from kernel.ipsar_fsm import get_workflow_catalog
+
+    markdown_cfg = get_workflow_catalog().get("markdown")
+    assert markdown_cfg is not None
+    # Explicitly clear any authored fork_yield_policy so the fallback path
+    # is exercised regardless of what the pack authors.
+    monkeypatch.setattr(markdown_cfg, "fork_yield_policy", None)
+
+    call_count = {"n": 0}
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "fork:markdown"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_2",
+                    "function": {
+                        "name": "yield",
+                        "arguments": json.dumps(
+                            {"question": "Fallback path: what format?", "context": "model-emitted yield"}
+                        ),
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(mode_id="default", query="write a markdown guide", hooks=hooks)
+
+    assert result.fork_results is not None
+    assert len(result.fork_results) == 1
+    child = result.fork_results[0]
+    # Foreground policy applies → model can call yield → model_yield.
+    assert child.status == "model_yield"
+    assert result.yielded is not None
+    assert result.yielded.question == "Fallback path: what format?"
 
 
 @pytest.mark.asyncio
