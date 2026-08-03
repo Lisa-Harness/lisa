@@ -105,27 +105,105 @@ async def test_memory_list_memories_json(memory_env: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_memory_get_surface_context(memory_env: Path) -> None:
+async def test_memory_get_memory_by_id(memory_env: Path) -> None:
     from mcp_server.memory.server import mcp
 
-    await mcp.call_tool(
+    add_result = await mcp.call_tool(
         "add_memory",
         {"user_slug": "alice", "content": "context line"},
     )
+    add_text = _tool_text(add_result)
+    # "Memory stored with ID 1" → parse the trailing integer.
+    memory_id = int(add_text.rsplit("ID ", 1)[-1])
     result = await mcp.call_tool(
-        "get_surface_context",
-        {"user_slug": "alice"},
+        "get_memory",
+        {"memory_id": memory_id, "user_slug": "alice"},
     )
-    assert "context line" in _tool_text(result)
+    parsed = json.loads(_tool_text(result))
+    assert parsed["content"] == "context line"
+    assert parsed["id"] == memory_id
 
 
 @pytest.mark.asyncio
-async def test_memory_lists_four_tools() -> None:
+async def test_memory_get_memory_not_found(memory_env: Path) -> None:
+    from mcp_server.memory.server import mcp
+
+    result = await mcp.call_tool(
+        "get_memory",
+        {"memory_id": 9999, "user_slug": "alice"},
+    )
+    assert _tool_text(result) == "No memory found."
+
+
+@pytest.mark.asyncio
+async def test_memory_get_memory_cross_surface_is_not_found(memory_env: Path) -> None:
+    from mcp_server.memory.server import mcp
+
+    add_result = await mcp.call_tool(
+        "add_memory",
+        {"user_slug": "alice", "content": "alice's note", "surface_id": "surface-a"},
+    )
+    memory_id = int(_tool_text(add_result).rsplit("ID ", 1)[-1])
+    # A different surface cannot read alice's record.
+    result = await mcp.call_tool(
+        "get_memory",
+        {"memory_id": memory_id, "user_slug": "alice", "surface_id": "surface-b"},
+    )
+    assert _tool_text(result) == "No memory found."
+
+
+@pytest.mark.asyncio
+async def test_memory_delete_memory_by_id(memory_env: Path) -> None:
+    from mcp_server.memory.server import mcp
+
+    add_result = await mcp.call_tool(
+        "add_memory",
+        {"user_slug": "alice", "content": "doomed note"},
+    )
+    memory_id = int(_tool_text(add_result).rsplit("ID ", 1)[-1])
+    delete_result = await mcp.call_tool(
+        "delete_memory",
+        {"memory_id": memory_id, "user_slug": "alice"},
+    )
+    assert f"Deleted memory {memory_id}" in _tool_text(delete_result)
+    # Subsequent get returns not-found.
+    get_result = await mcp.call_tool(
+        "get_memory",
+        {"memory_id": memory_id, "user_slug": "alice"},
+    )
+    assert _tool_text(get_result) == "No memory found."
+
+
+@pytest.mark.asyncio
+async def test_memory_delete_memory_cross_surface_is_not_found(memory_env: Path) -> None:
+    from mcp_server.memory.server import mcp
+
+    add_result = await mcp.call_tool(
+        "add_memory",
+        {"user_slug": "alice", "content": "alice's note", "surface_id": "surface-a"},
+    )
+    memory_id = int(_tool_text(add_result).rsplit("ID ", 1)[-1])
+    # A different surface cannot delete alice's record.
+    result = await mcp.call_tool(
+        "delete_memory",
+        {"memory_id": memory_id, "user_slug": "alice", "surface_id": "surface-b"},
+    )
+    assert _tool_text(result) == "No memory found."
+
+
+@pytest.mark.asyncio
+async def test_memory_lists_five_tools() -> None:
     from mcp_server.memory.server import mcp
 
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
-    assert {"add_memory", "search_memory", "list_memories", "get_surface_context"} <= names
+    assert {
+        "add_memory",
+        "search_memory",
+        "list_memories",
+        "get_memory",
+        "delete_memory",
+    } <= names
 
 
 # ── lisa_context (broker only) ─────────────────────────────────────────────

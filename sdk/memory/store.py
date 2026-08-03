@@ -2,9 +2,10 @@
 
 Extracted verbatim from the former ``lisa_context.server`` module: the
 ``SqliteMemoryStore`` plus its TTL helpers and row mapper. This is the
-minimal built-in memory backend — three operations (add / search / list)
-backed by a local SQLite file. Mem0 (or any other HTTP/stdio memory server)
-serves the same three operations and more via the MCP tool pool.
+minimal built-in memory backend — five operations (add / search / list /
+get / delete) backed by a local SQLite file. Mem0 (or any other HTTP/stdio
+memory server) serves the same five operations and more via the MCP tool
+pool.
 """
 
 from __future__ import annotations
@@ -208,6 +209,61 @@ class SqliteMemoryStore:
             (user_slug, workspace_id, memory_scope, surface_id, limit),
         ).fetchall()
         return [_row_to_record(row) for row in rows]
+
+    async def get_memory(
+        self,
+        *,
+        memory_id: int | str,
+        user_slug: str,
+        workspace_id: str = "default",
+        memory_scope: str = "personal",
+        surface_id: str = "",
+    ) -> MemoryRecord | None:
+        """Fetch a single memory record by id, scoped to the caller's surface.
+
+        Returns ``None`` when no row matches — the caller decides whether to
+        treat that as "not found" vs "deleted". Surface-scope filters
+        (``user_slug`` / ``workspace_id`` / ``memory_scope`` / ``surface_id``)
+        are applied so a caller cannot read across user or surface
+        boundaries by guessing an id.
+        """
+        assert self._conn is not None
+        row = self._conn.execute(
+            """
+            SELECT * FROM memories
+            WHERE id = ? AND user_slug = ? AND workspace_id = ?
+              AND memory_scope = ? AND surface_id = ?
+            """,
+            (int(memory_id), user_slug, workspace_id, memory_scope, surface_id),
+        ).fetchone()
+        return _row_to_record(row) if row is not None else None
+
+    async def delete_memory(
+        self,
+        *,
+        memory_id: int | str,
+        user_slug: str,
+        workspace_id: str = "default",
+        memory_scope: str = "personal",
+        surface_id: str = "",
+    ) -> bool:
+        """Delete a single memory record by id, scoped to the caller's surface.
+
+        Returns ``True`` when a row was deleted, ``False`` when no matching
+        record existed (wrong id or wrong scope). Surface-scope filters
+        prevent cross-user / cross-surface deletion by id guessing.
+        """
+        assert self._conn is not None
+        cursor = self._conn.execute(
+            """
+            DELETE FROM memories
+            WHERE id = ? AND user_slug = ? AND workspace_id = ?
+              AND memory_scope = ? AND surface_id = ?
+            """,
+            (int(memory_id), user_slug, workspace_id, memory_scope, surface_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     async def recall(self, query: str, **kwargs: Any) -> str:
         user_slug = str(kwargs.get("user_slug") or "").strip() or "default"

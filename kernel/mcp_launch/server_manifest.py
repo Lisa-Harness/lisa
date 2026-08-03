@@ -74,9 +74,9 @@ class MemoryBackendSpec:
     Each backend is provider-agnostic: it declares its connection ``kind``
     (http, stdio) plus the tool names the generic aliases route to. The host
     builds the right client per ``kind`` and wires it behind the generic
-    ``memory.add`` / ``memory.search`` / ``memory.list`` synthetic aliases.
-    No backend-specific knowledge lives in the schema — adding a new backend
-    is a YAML entry, not a code change.
+    ``memory.add`` / ``memory.search`` / ``memory.list`` / ``memory.get`` /
+    ``memory.delete`` synthetic aliases. No backend-specific knowledge lives
+    in the schema — adding a new backend is a YAML entry, not a code change.
     """
 
     id: str
@@ -84,7 +84,7 @@ class MemoryBackendSpec:
     tool_names: dict[str, str] = field(default_factory=dict)
     result_maps: dict[str, str] = field(default_factory=dict)
     """Dotted import paths to output-normalization adapters, keyed by
-    generic operation name (``add``, ``search``, ``list``). Each value is a
+    generic operation name (``add``, ``search``, ``list``, ``get``, ``delete``). Each value is a
     ``module.path:function_name`` string resolved lazily by the host when
     building the alias. When empty (the default for first-party backends like
     lisa_memory that already return the canonical shape), the alias passes

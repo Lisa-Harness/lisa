@@ -556,7 +556,8 @@ async def test_denied_tool_hidden_from_catalog_but_dispatchable_scoped(
                     _FakeTool("add_memory", "add", {"type": "object"}),
                     _FakeTool("search_memory", "search", {"type": "object"}),
                     _FakeTool("list_memories", "list", {"type": "object"}),
-                    _FakeTool("get_surface_context", "surface", {"type": "object"}),
+                    _FakeTool("get_memory", "get", {"type": "object"}),
+                    _FakeTool("delete_memory", "delete", {"type": "object"}),
                 ]
             )
 
@@ -567,7 +568,7 @@ async def test_denied_tool_hidden_from_catalog_but_dispatchable_scoped(
         server_id="lisa-memory",
         command="python",
         args=["-m", "nonexistent"],
-        tool_policy=ToolPolicy(denied_tools=["get_surface_context", "list_memories"]),
+        tool_policy=ToolPolicy(denied_tools=["get_memory", "delete_memory", "list_memories"]),
     )
     pool = MCPToolPool([config])
     await pool.start()
@@ -577,14 +578,16 @@ async def test_denied_tool_hidden_from_catalog_but_dispatchable_scoped(
     # 1. Denied tools are NOT in the model-facing catalog.
     catalog_names = {t.name for t in await pool.list_tools()}
     assert "lisa-memory.list_memories" not in catalog_names
-    assert "lisa-memory.get_surface_context" not in catalog_names
+    assert "lisa-memory.get_memory" not in catalog_names
+    assert "lisa-memory.delete_memory" not in catalog_names
     assert "lisa-memory.add_memory" in catalog_names
     assert "lisa-memory.search_memory" in catalog_names
 
     # 2. Denied tool IS still in the per-server dispatch index.
     server_idx = pool._tool_index_by_server.get("lisa-memory", {})
     assert "list_memories" in server_idx
-    assert "get_surface_context" in server_idx
+    assert "get_memory" in server_idx
+    assert "delete_memory" in server_idx
 
     # 3. Scoped dispatch to the denied tool works (alias forwarding path).
     result = await pool.call_tool("list_memories", {}, server_id="lisa-memory")

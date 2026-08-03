@@ -17,6 +17,8 @@ memory:
         add: add_memory
         search: search_memory
         list: list_memories
+        get: get_memory
+        delete: delete_memory
 servers:
   - server_id: lisa-memory
     runtime_kind: venv_bin
@@ -31,5 +33,6 @@ servers:
     # NOT filtered, only the model catalog is.
     tool_policy:
       denied_tools:
-        - get_surface_context
+        - get_memory
+        - delete_memory
         - list_memories

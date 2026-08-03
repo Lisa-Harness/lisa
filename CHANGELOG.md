@@ -6,6 +6,25 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Added
 
+#### Memory backend CRUD completion
+
+- **`get_memory` and `delete_memory` tools** added to the `lisa-memory` MCP
+  server, completing the essential CRUD subset (add / search / list / get /
+  delete). Both are surface-scoped: the caller's `user_slug` +
+  `workspace_id` + `memory_scope` + `surface_id` filters are applied
+  server-side, so cross-surface reads and deletes by id guessing are
+  impossible.
+- **`memory.get` and `memory.delete` synthetic aliases** registered on the
+  generic memory router (`hosts/core/memory_aliases.py`), routing to the
+  default backend's `get_memory` / `delete_memory` native tools. The alias
+  contract grows from 3 to 5; backends that don't declare a `get` or
+  `delete` tool name simply don't get those aliases registered (graceful
+  partial-manifest handling).
+- **`SqliteMemoryStore.get_memory` and `delete_memory`** methods, scoped by
+  user + workspace + memory_scope + surface_id.
+- **`dispute_memory` operation simplified**: the old list-50-and-filter
+  client-side hack is replaced with a direct `memory.get(id)` call.
+
 #### MCP server introspection in the CLI/REPL
 
 - **`/mcp` REPL command and `lisa mcp` CLI subcommand now show a full
@@ -39,6 +58,17 @@ All notable changes to the Lisa Framework will be documented in this file.
   `_collect_mcp_tools` now returns `(dict[str, McpServerHealth],
   dict[str, list[MCPToolSpec]])` so the render layer stops discarding
   tool descriptions and schemas.
+
+### Removed
+
+#### Memory backend: redundant `get_memories` tool
+
+- **`get_memories` tool removed** from the `lisa-memory` MCP server. It was
+  a thin presentational wrapper over `list_memories` (same query, same
+  params, newline-serialized instead of JSON) with no alias target, already
+  denied from the model catalog. The standalone server now exposes five
+  coherent tools (add / search / list / get / delete) instead of four where
+  two were redundant.
 
 ### Changed
 
@@ -269,7 +299,7 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 
 - `lisa-context` MCP server owns the SQLite-backed memory store and context broker.
 - Kernel no longer ships in-process memory stores or memory hooks; memory is MCP-only.
-- Memory tools exposed over MCP: `add_memory`, `search_memory`, `list_memories`, `get_surface_context`.
+- Memory tools exposed over MCP: `add_memory`, `search_memory`, `list_memories`, `get_memories`.
 - Context broker exposed over MCP: `broker_context` returns `ContextBrokerResponse` (packet + markdown).
 
 #### Kernel-as-MCP servers (Part 4)
@@ -423,7 +453,7 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 
 #### MCP Server (`mcp-server`)
 
-- FastMCP server (`"Lisa Context Server"`) exposing four memory tools over stdio: `add_memory`, `search_memory`, `get_surface_context`, `list_memories`.
+- FastMCP server (`"Lisa Context Server"`) exposing four memory tools over stdio: `add_memory`, `search_memory`, `get_memories`, `list_memories`.
 - Surface-scoped privacy isolation enforced at the tool level.
 - SQLite-backed memory store with configurable database path via `LISA_MCP_DB_PATH`.
 

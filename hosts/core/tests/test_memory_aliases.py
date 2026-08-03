@@ -32,6 +32,8 @@ class FakeSpec:
             "add": "add_memory",
             "search": "search_memory",
             "list": "list_memories",
+            "get": "get_memory",
+            "delete": "delete_memory",
         }
     )
     result_maps: dict[str, str] = field(default_factory=dict)
@@ -152,13 +154,25 @@ class TestMem0AndLisaMemoryDeclared:
         )
         names = _registered_names(pool)
         # Only the generic router — no per-backend synthetics.
-        assert names == ["memory.add", "memory.search", "memory.list"]
+        assert names == [
+            "memory.add",
+            "memory.search",
+            "memory.list",
+            "memory.get",
+            "memory.delete",
+        ]
 
     def test_generic_router_targets_default_backend(self) -> None:
         mem0_spec = FakeSpec(
             id="mem0",
             kind="http",
-            tool_names={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
+            tool_names={
+                "add": "add_memory",
+                "search": "search_memories",
+                "list": "get_memories",
+                "get": "get_memory",
+                "delete": "delete_memory",
+            },
         )
         lisa_spec = FakeSpec(id="lisa_memory")
         pool = FakePool()
@@ -206,7 +220,13 @@ class TestMem0ArgMap:
         mem0_spec = FakeSpec(
             id="mem0",
             kind="http",
-            tool_names={"add": "add_memory", "search": "search_memories", "list": "get_memories"},
+            tool_names={
+                "add": "add_memory",
+                "search": "search_memories",
+                "list": "get_memories",
+                "get": "get_memory",
+                "delete": "delete_memory",
+            },
         )
         pool = FakePool()
         register_memory_aliases(

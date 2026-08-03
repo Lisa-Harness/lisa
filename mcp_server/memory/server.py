@@ -1,18 +1,19 @@
 """Lisa Memory MCP server — the minimal built-in memory backend.
 
 Owns the SQLite-backed memory store (extracted from the former
-``lisa_context`` server). Exposes four tools:
+``lisa_context`` server). Exposes five tools:
 
 - ``add_memory`` — store a scoped memory snippet
 - ``search_memory`` — keyword recall for one user
 - ``list_memories`` — raw JSON array of recent memory records
-- ``get_surface_context`` — newline-formatted recent context
+- ``get_memory`` — fetch a single record by id
+- ``delete_memory`` — remove a single record by id
 
 This is the default backend behind the generic ``memory.add`` /
-``memory.search`` / ``memory.list`` synthetic aliases. Mem0 (or any other
-HTTP/stdio memory server) serves the same three operations and more via
-the MCP tool pool; modes that want Mem0's full surface declare the
-server's tools directly.
+``memory.search`` / ``memory.list`` / ``memory.get`` / ``memory.delete``
+synthetic aliases. Mem0 (or any other HTTP/stdio memory server) serves the
+same five operations and more via the MCP tool pool; modes that want Mem0's
+full surface declare the server's tools directly.
 """
 
 from __future__ import annotations
@@ -152,25 +153,58 @@ async def search_memory(
 
 
 @mcp.tool()
-async def get_surface_context(
+async def get_memory(
+    memory_id: int | str,
     user_slug: str,
     memory_scope: str = "personal",
     workspace_id: str = "default",
     surface_id: str = "",
-    limit: int = 20,
 ) -> str:
-    """Retrieve the most recent memories for a specific user and surface context."""
+    """Fetch a single memory record by id, scoped to the caller's surface.
+
+    Returns the record as a JSON object, or ``"No memory found."`` when no
+    record matches the id within the caller's surface scope. Cross-surface
+    reads are impossible — the scope filters are applied server-side.
+    """
     store = _store_instance()
-    records = await store.list_memories(
+    record = await store.get_memory(
+        memory_id=memory_id,
         user_slug=user_slug,
         workspace_id=workspace_id,
         memory_scope=memory_scope,
         surface_id=surface_id,
-        limit=limit,
     )
-    if not records:
-        return "No recent context."
-    return "\n".join(f"- {r.content}" for r in records)
+    if record is None:
+        return "No memory found."
+    return json.dumps(record.model_dump(mode="json"), default=str)
+
+
+@mcp.tool()
+async def delete_memory(
+    memory_id: int | str,
+    user_slug: str,
+    memory_scope: str = "personal",
+    workspace_id: str = "default",
+    surface_id: str = "",
+) -> str:
+    """Delete a single memory record by id, scoped to the caller's surface.
+
+    Returns ``"Deleted memory <id>."`` on success, or ``"No memory found."``
+    when no record matched the id within the caller's surface scope.
+    Cross-surface deletion is impossible — the scope filters are applied
+    server-side.
+    """
+    store = _store_instance()
+    deleted = await store.delete_memory(
+        memory_id=memory_id,
+        user_slug=user_slug,
+        workspace_id=workspace_id,
+        memory_scope=memory_scope,
+        surface_id=surface_id,
+    )
+    if not deleted:
+        return "No memory found."
+    return f"Deleted memory {memory_id}."
 
 
 @mcp.tool()

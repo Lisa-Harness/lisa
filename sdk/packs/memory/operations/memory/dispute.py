@@ -69,11 +69,13 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     disputed_record: MemoryRecord | None = None
 
     if memory_id:
-        # Look up by id via memory.list and filter client-side.
-        list_result = await ctx.execute_tool_fn(
-            "memory.list",
+        # Fetch the target record directly by id — surface-scoped on the
+        # server side, so a wrong-scope id returns "not found" rather than
+        # a cross-surface record.
+        get_result = await ctx.execute_tool_fn(
+            "memory.get",
             ToolExecutionContext(
-                tool_id="memory.list",
+                tool_id="memory.get",
                 workspace_id=ctx.workspace_id,
                 user_id=ctx.user_id,
                 user_slug=ctx.user_slug,
@@ -81,34 +83,26 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                 memory_scope=ctx.memory_scope,
                 mode_id=ctx.mode_id,
                 parameters={
+                    "memory_id": int(memory_id),
                     "user_slug": ctx.user_slug,
-                    "limit": 50,
                 },
             ),
         )
-        if getattr(list_result, "error", None):
+        if getattr(get_result, "error", None):
             return OperationResult(
-                output_text=f"Memory dispute: could not list memories: {list_result.error}"
+                output_text=f"Memory dispute: could not fetch memory: {get_result.error}"
             )
-        try:
-            data = json.loads(list_result.output_text or "[]")
-        except (json.JSONDecodeError, TypeError):
-            data = []
-        if isinstance(data, dict) and "results" in data:
-            results = data.get("results")
-            if isinstance(results, list):
-                data = results
-        if isinstance(data, list):
-            for item in data:
-                if not isinstance(item, dict):
-                    continue
+        raw = (get_result.output_text or "").strip()
+        if raw and raw != "No memory found.":
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                data = None
+            if isinstance(data, dict):
                 try:
-                    record = MemoryRecord.model_validate(item)
+                    disputed_record = MemoryRecord.model_validate(data)
                 except (ValidationError, TypeError):
-                    continue
-                if str(record.id) == memory_id:
-                    disputed_record = record
-                    break
+                    pass
 
     elif search_query:
         # Search by content.

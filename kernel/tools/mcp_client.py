@@ -214,7 +214,8 @@ class SyntheticToolSpec:
     Synthetic tools are a **generic** mechanism: any well-known or made-up
     call can be registered as a synthetic tool and dispatched in-process,
     without an MCP server subprocess backing it. The canonical use case is
-    memory aliases (``memory.add`` / ``memory.search`` / ``memory.list``)
+    memory aliases (``memory.add`` / ``memory.search`` / ``memory.list`` /
+    ``memory.get`` / ``memory.delete``)
     that route to whichever backend is wired as default — but the mechanism
     is not memory-specific. A synthetic tool may also redirect to an MCP
     server tool via :func:`kernel.tools.synthetic.mcp_alias_tool`.
@@ -472,7 +473,8 @@ class MCPToolPool:
         :meth:`list_tools` and dispatch through :meth:`call_tool` to their
         in-process handler — no subprocess backing them. The canonical use
         case is memory aliases (``memory.add`` / ``memory.search`` /
-        ``memory.list``), but the mechanism is generic: any well-known or
+        ``memory.list`` / ``memory.get`` / ``memory.delete``), but the
+        mechanism is generic: any well-known or
         made-up call can be registered as a synthetic tool.
 
         Register synthetic tools **after** :meth:`start` so handlers that

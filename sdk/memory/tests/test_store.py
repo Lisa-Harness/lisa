@@ -1,10 +1,11 @@
-"""Tests for the SqliteMemoryStore — record, list, and recall semantics.
+"""Tests for the SqliteMemoryStore — record, list, get, delete, and recall semantics.
 
 Covers the minimal built-in backend's contract: surface-scoped isolation,
-TTL expiry filtering, lexical-overlap recall ranking, and opportunistic
-access tracking. These are the behaviors the lisa-memory MCP server and
-the generic ``memory.*`` aliases depend on; Mem0 (or any other backend)
-is expected to preserve the same observable semantics.
+TTL expiry filtering, lexical-overlap recall ranking, opportunistic
+access tracking, and surface-scoped get/delete by id. These are the
+behaviors the lisa-memory MCP server and the generic ``memory.*`` aliases
+depend on; Mem0 (or any other backend) is expected to preserve the same
+observable semantics.
 """
 
 from __future__ import annotations
@@ -177,6 +178,117 @@ async def test_list_memories_isolates_by_user(tmp_path: Path) -> None:
 
     assert [r.content for r in adam] == ["adam's note"]
     assert [r.content for r in nadia] == ["nadia's note"]
+
+
+# ---------------------------------------------------------------------------
+# get_memory
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_memory_returns_record_by_id(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    record = await store.record_memory(_write(content="target note"))
+
+    fetched = await store.get_memory(memory_id=record.id, user_slug="adam")
+
+    assert fetched is not None
+    assert fetched.id == record.id
+    assert fetched.content == "target note"
+
+
+@pytest.mark.asyncio
+async def test_get_memory_returns_none_for_wrong_id(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.record_memory(_write(content="a note"))
+
+    fetched = await store.get_memory(memory_id=9999, user_slug="adam")
+
+    assert fetched is None
+
+
+@pytest.mark.asyncio
+async def test_get_memory_is_surface_scoped(tmp_path: Path) -> None:
+    """A record on surface-a cannot be fetched from surface-b."""
+    store = _store(tmp_path)
+    record = await store.record_memory(
+        _write(content="surface-a note", surface_id="surface-a")
+    )
+
+    # Same user, wrong surface → not found.
+    wrong_surface = await store.get_memory(
+        memory_id=record.id, user_slug="adam", surface_id="surface-b"
+    )
+    assert wrong_surface is None
+    # Same user, wrong scope → not found.
+    wrong_scope = await store.get_memory(
+        memory_id=record.id, user_slug="adam", memory_scope="shared"
+    )
+    assert wrong_scope is None
+    # Wrong user → not found.
+    wrong_user = await store.get_memory(memory_id=record.id, user_slug="nadia")
+    assert wrong_user is None
+    # Correct scope → found.
+    correct = await store.get_memory(
+        memory_id=record.id, user_slug="adam", surface_id="surface-a"
+    )
+    assert correct is not None
+    assert correct.content == "surface-a note"
+
+
+# ---------------------------------------------------------------------------
+# delete_memory
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_removes_record(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    record = await store.record_memory(_write(content="doomed"))
+
+    deleted = await store.delete_memory(memory_id=record.id, user_slug="adam")
+
+    assert deleted is True
+    # Subsequent get returns None.
+    fetched = await store.get_memory(memory_id=record.id, user_slug="adam")
+    assert fetched is None
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_returns_false_for_wrong_id(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.record_memory(_write(content="a note"))
+
+    deleted = await store.delete_memory(memory_id=9999, user_slug="adam")
+
+    assert deleted is False
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_is_surface_scoped(tmp_path: Path) -> None:
+    """A record on surface-a cannot be deleted from surface-b."""
+    store = _store(tmp_path)
+    record = await store.record_memory(
+        _write(content="surface-a note", surface_id="surface-a")
+    )
+
+    # Wrong surface → no deletion.
+    wrong_surface = await store.delete_memory(
+        memory_id=record.id, user_slug="adam", surface_id="surface-b"
+    )
+    assert wrong_surface is False
+    # Wrong user → no deletion.
+    wrong_user = await store.delete_memory(memory_id=record.id, user_slug="nadia")
+    assert wrong_user is False
+    # Correct scope → deleted.
+    correct = await store.delete_memory(
+        memory_id=record.id, user_slug="adam", surface_id="surface-a"
+    )
+    assert correct is True
+    # Record is gone.
+    assert await store.get_memory(
+        memory_id=record.id, user_slug="adam", surface_id="surface-a"
+    ) is None
 
 
 # ---------------------------------------------------------------------------

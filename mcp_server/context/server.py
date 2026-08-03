@@ -5,7 +5,7 @@ Owns the context broker logic only. Tools:
 - ``broker_context`` — query-aware context brokerage
 
 The former memory tools (``add_memory`` / ``search_memory`` /
-``list_memories`` / ``get_surface_context``) moved to the dedicated
+``list_memories`` / ``get_memory`` / ``delete_memory``) moved to the dedicated
 ``lisa_memory`` server — the minimal built-in memory backend. ``lisa_context``
 no longer owns a SQLite store; it operates on a :class:`~kernel.models.UnifiedState`
 payload supplied by the caller.

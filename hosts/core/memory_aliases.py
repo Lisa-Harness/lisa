@@ -6,9 +6,10 @@ Transport hosts (cli, web) both need the same wiring after
 1. Set ambient resolvers on the pool so the proxy layer can inject
    runtime scope (user_slug, mode_id, app_id) into tool arguments at
    dispatch time.
-2. Register the three generic aliases (``memory.add`` / ``memory.search``
-   / ``memory.list``) that route through the pool to the default memory
-   backend selected by capability-provider policy.
+2. Register the five generic aliases (``memory.add`` / ``memory.search``
+   / ``memory.list`` / ``memory.get`` / ``memory.delete``) that route
+   through the pool to the default memory backend selected by
+   capability-provider policy.
 
 Both steps are transport-neutral: they depend only on the runtime's
 ``memory_config`` / ``memory_config_pack_slug`` (set by
@@ -101,8 +102,8 @@ def _register_memory_synthetic_tools(
 ) -> None:
     """Register the generic ``memory.*`` synthetic aliases on a started pool.
 
-    Only the three generic aliases (``memory.add`` / ``memory.search`` /
-    ``memory.list``) are registered. They route through the pool to the
+    Only the five generic aliases (``memory.add`` / ``memory.search`` /
+    ``memory.list`` / ``memory.get`` / ``memory.delete``) are registered. They route through the pool to the
     default memory backend selected by capability-provider policy.
 
     Per-backend explicit surfaces (``mem0.add``, ``lisa_memory.add``, …)
@@ -160,6 +161,8 @@ _LISA_MEMORY_IMPLICIT_SPEC = [
                 "add": "add_memory",
                 "search": "search_memory",
                 "list": "list_memories",
+                "get": "get_memory",
+                "delete": "delete_memory",
             },
         },
     )()
@@ -184,49 +187,49 @@ def _register_generic_router(
     raw_server_id = _BACKEND_ID_TO_SERVER_ID.get(backend_id, backend_id)
     server_id = f"{prefix}{raw_server_id}"
     tool_names = dict(default_spec.tool_names)
-    add_arg_map, search_arg_map, list_arg_map = _backend_arg_maps(backend_id)
-    add_result_map, search_result_map, list_result_map = _backend_result_maps(default_spec)
+    add_arg_map, search_arg_map, list_arg_map, get_arg_map, delete_arg_map = _backend_arg_maps(backend_id)
+    add_result_map, search_result_map, list_result_map, get_result_map, delete_result_map = _backend_result_maps(default_spec)
 
-    add_schema, search_schema, list_schema = _memory_schemas()
+    add_schema, search_schema, list_schema, get_schema, delete_schema = _memory_schemas()
 
-    pool.add_synthetic_tools(
-        [
+    # Build the alias list dynamically, skipping any operation the backend
+    # doesn't declare a tool name for. This keeps the router robust against
+    # partial/legacy manifests (e.g. a mem0 config that only declares
+    # add/search/list) — the missing aliases simply aren't registered.
+    alias_defs = [
+        ("memory.add", "Persist a memory record via the default memory backend.",
+         "add", add_schema, add_arg_map, add_result_map),
+        ("memory.search", "Recall memories matching a free-text query via the default backend.",
+         "search", search_schema, search_arg_map, search_result_map),
+        ("memory.list", "List recent memory records for a user scope via the default backend.",
+         "list", list_schema, list_arg_map, list_result_map),
+        ("memory.get", "Fetch a single memory record by id via the default backend.",
+         "get", get_schema, get_arg_map, get_result_map),
+        ("memory.delete", "Delete a single memory record by id via the default backend.",
+         "delete", delete_schema, delete_arg_map, delete_result_map),
+    ]
+    aliases = []
+    for name, desc, op, schema, arg_map, result_map in alias_defs:
+        target = tool_names.get(op)
+        if not target:
+            continue
+        aliases.append(
             mcp_alias_tool(
-                name="memory.add",
-                description="Persist a memory record via the default memory backend.",
+                name=name,
+                description=desc,
                 pool=pool,
-                target_tool=tool_names["add"],
-                input_schema=add_schema,
+                target_tool=target,
+                input_schema=schema,
                 target_server_id=server_id,
-                arg_map=add_arg_map,
-                result_map=add_result_map,
-            ),
-            mcp_alias_tool(
-                name="memory.search",
-                description="Recall memories matching a free-text query via the default backend.",
-                pool=pool,
-                target_tool=tool_names["search"],
-                input_schema=search_schema,
-                target_server_id=server_id,
-                arg_map=search_arg_map,
-                result_map=search_result_map,
-            ),
-            mcp_alias_tool(
-                name="memory.list",
-                description="List recent memory records for a user scope via the default backend.",
-                pool=pool,
-                target_tool=tool_names["list"],
-                input_schema=list_schema,
-                target_server_id=server_id,
-                arg_map=list_arg_map,
-                result_map=list_result_map,
-            ),
-        ]
-    )
+                arg_map=arg_map,
+                result_map=result_map,
+            )
+        )
+    pool.add_synthetic_tools(aliases)
 
 
-def _backend_arg_maps(backend_id: str) -> tuple[Any, Any, Any]:
-    """Return (add_arg_map, search_arg_map, list_arg_map) for a backend."""
+def _backend_arg_maps(backend_id: str) -> tuple[Any, Any, Any, Any, Any]:
+    """Return (add, search, list, get, delete) arg maps for a backend."""
     if backend_id == "mem0":
 
         def _mem0_add_arg_map(args: dict[str, Any]) -> dict[str, Any]:
@@ -241,19 +244,33 @@ def _backend_arg_maps(backend_id: str) -> tuple[Any, Any, Any]:
         def _mem0_search_or_list_arg_map(args: dict[str, Any]) -> dict[str, Any]:
             return {k: v for k, v in args.items() if k != "user_slug"}
 
-        return _mem0_add_arg_map, _mem0_search_or_list_arg_map, _mem0_search_or_list_arg_map
-    return None, None, None
+        def _mem0_get_or_delete_arg_map(args: dict[str, Any]) -> dict[str, Any]:
+            # mem0's get/delete take the memory id under ``memory_id``.
+            mapped = {
+                "memory_id": args.get("memory_id"),
+                "user_id": args.get("user_slug", "default"),
+            }
+            return {k: v for k, v in mapped.items() if v is not None}
+
+        return (
+            _mem0_add_arg_map,
+            _mem0_search_or_list_arg_map,
+            _mem0_search_or_list_arg_map,
+            _mem0_get_or_delete_arg_map,
+            _mem0_get_or_delete_arg_map,
+        )
+    return None, None, None, None, None
 
 
 def _backend_result_maps(
     default_spec: Any,
-) -> tuple[Any, Any, Any]:
+) -> tuple[Any, Any, Any, Any, Any]:
     """Resolve the backend's ``result_maps`` dotted import paths into callables.
 
-    Returns ``(add_result_map, search_result_map, list_result_map)`` — each
-    is a ``Callable[[str], str]`` or ``None``. When the backend declares no
+    Returns ``(add, search, list, get, delete)`` result maps — each is a
+    ``Callable[[str], str]`` or ``None``. When the backend declares no
     ``result_maps`` (e.g. first-party lisa_memory which already returns the
-    canonical ``list[MemoryRecord]`` JSON array), all three are ``None`` and
+    canonical ``list[MemoryRecord]`` JSON array), all five are ``None`` and
     the alias passes ``output_text`` through unchanged.
 
     Import paths are resolved lazily at registration time (not at manifest
@@ -264,7 +281,7 @@ def _backend_result_maps(
     """
     result_maps = getattr(default_spec, "result_maps", None) or {}
     if not result_maps:
-        return None, None, None
+        return None, None, None, None, None
 
     def _resolve(path: str | None) -> Any:
         if not path:
@@ -290,11 +307,13 @@ def _backend_result_maps(
         _resolve(result_maps.get("add")),
         _resolve(result_maps.get("search")),
         _resolve(result_maps.get("list")),
+        _resolve(result_maps.get("get")),
+        _resolve(result_maps.get("delete")),
     )
 
 
-def _memory_schemas() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    """Return the (add, search, list) input schemas shared by all surfaces."""
+def _memory_schemas() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Return the (add, search, list, get, delete) input schemas shared by all surfaces."""
     add_schema = {
         "type": "object",
         "properties": {
@@ -321,4 +340,20 @@ def _memory_schemas() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
             "limit": {"type": "integer", "default": 20},
         },
     }
-    return add_schema, search_schema, list_schema
+    get_schema = {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "integer", "description": "The memory record id."},
+            "user_slug": {"type": "string", "default": "default"},
+        },
+        "required": ["memory_id"],
+    }
+    delete_schema = {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "integer", "description": "The memory record id to delete."},
+            "user_slug": {"type": "string", "default": "default"},
+        },
+        "required": ["memory_id"],
+    }
+    return add_schema, search_schema, list_schema, get_schema, delete_schema
