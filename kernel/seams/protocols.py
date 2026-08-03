@@ -274,16 +274,25 @@ class ModelRef(Protocol):
 class OperationHost(Protocol):
     """The single typed seam operations depend on.
 
-    Collapses the seven untyped ``Any`` callable fields on
+    Collapses the untyped ``Any`` callable fields that previously lived on
     ``OperationExecutionContext`` (``complete_fn``, ``resolve_model_fn``,
     ``read_authored_text_fn``, ``execute_tool_fn``, ``execute_operation_fn``,
-    ``generate_image_fn``, ``introspect_fn``) into one Protocol. Operations
-    call ``ctx.host.complete(...)`` instead of ``ctx.complete_fn(...)``.
+    ``generate_image_fn``, ``introspect_fn``, ``delegate_fn``) into one
+    Protocol. Operations call ``ctx.host.complete(...)`` instead of
+    ``ctx.complete_fn(...)``.
 
     ``complete`` returns a ``CompletionResult`` (structural Protocol) whose
     ``truncated`` field is the provider-owned authoritative truncation
     signal — operations should prefer it over inferring from
     ``finish_reason`` strings.
+
+    ``delegate`` runs one sequential sub-turn via the injected
+    ``delegate_fn``. The pack-level ``delegate`` operation calls
+    ``ctx.host.delegate(spec)`` with a :class:`~kernel.delegation.DelegationSpec`
+    and awaits a :class:`~kernel.delegation.DelegationResult`. The default
+    implementation (``_default_delegate_fn``) recurses into ``run_turn``
+    as a ``sub_turn_kind="delegate"`` child; a host may override
+    ``TurnHooks.delegate_fn`` to inject a custom delegation backend.
     """
 
     async def complete(
@@ -308,6 +317,8 @@ class OperationHost(Protocol):
     async def generate_image(self, **kwargs: Any) -> Any: ...
 
     def introspect(self, **kwargs: Any) -> Any: ...
+
+    async def delegate(self, spec: Any) -> Any: ...
 
 
 # ── Context seams ───────────────────────────────────────────────────────────

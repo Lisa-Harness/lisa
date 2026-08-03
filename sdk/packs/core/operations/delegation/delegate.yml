@@ -1,0 +1,15 @@
+operation_id: delegate
+description: >
+  Delegate a sequential sub-turn to another mode, wait for its structured
+  result, and return it to the parent. Unlike fork (parallel fan-out),
+  delegate keeps the parent turn alive so it can use the child's output
+  and make further decisions. The child runs as a sub_turn_kind="delegate"
+  turn with its own budget and action-tool validation.
+pack_id: lisa-pack-core
+effect: read
+execution_kind: runtime
+timeout_seconds: 120
+max_calls_per_turn: 5
+preferred_model_id: default
+exportable: true
+default_available: true

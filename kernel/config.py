@@ -113,6 +113,19 @@ class Settings(BaseSettings):
     # for the publish step. Override via
     # ``FORK_CHILD_MAX_TOOL_ITERATIONS``.
     fork_child_max_tool_iterations: int = 50
+    # Per-child iteration cap for delegate sub-turns. Delegate children
+    # run sequentially (one at a time, parent waits) and get the same
+    # inspect → act → verify room as fork children. Defaults to the fork
+    # child cap so a delegate child has identical headroom unless a host
+    # explicitly tunes it. Override via
+    # ``DELEGATE_CHILD_MAX_TOOL_ITERATIONS``.
+    delegate_child_max_tool_iterations: int = 50
+    # Maximum recursion depth for delegate sub-turns. A delegate child
+    # may itself delegate, forming an agent tree of arbitrary depth. This
+    # cap bounds the tree so a misbehaving mode cannot recurse
+    # indefinitely. The root parent turn is depth 0; a direct delegate
+    # child is depth 1. Override via ``DELEGATE_MAX_DEPTH``.
+    delegate_max_depth: int = 4
     # Per-step iteration sub-budget. Each workflow step (between two
     # ``transition_stage`` handoffs) gets its own iteration budget so a
     # chained producer→consumer pipeline does not starve its final step
@@ -358,6 +371,8 @@ class Settings(BaseSettings):
         "declarative_completion_max_tokens",
         "max_tool_iterations",
         "fork_child_max_tool_iterations",
+        "delegate_child_max_tool_iterations",
+        "delegate_max_depth",
         "forced_fork_non_fork_tool_cap",
         "forced_plan_non_transition_tool_cap",
         "stage_nudge_threshold",

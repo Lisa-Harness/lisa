@@ -1173,7 +1173,7 @@ async def _default_delegate_fn(
                     tool_call_count=child_result.tool_call_count,
                     called_tool_names=sorted(child_result.called_tool_names),
                     duration_ms=elapsed_ms,
-                    depth=depth,
+                    depth=depth + 1,
                 )
             _dlog.warning(
                 "delegate child %s was force-yielded by the harness "
@@ -1197,7 +1197,7 @@ async def _default_delegate_fn(
                 tool_call_count=child_result.tool_call_count,
                 called_tool_names=sorted(child_result.called_tool_names),
                 duration_ms=elapsed_ms,
-                depth=depth,
+                depth=depth + 1,
             )
 
         # Action-tool-floor predicate (spec §6.1). Reuse the fork-child
@@ -1214,7 +1214,7 @@ async def _default_delegate_fn(
                 tool_call_count=child_result.tool_call_count,
                 called_tool_names=sorted(child_result.called_tool_names),
                 duration_ms=elapsed_ms,
-                depth=depth,
+                depth=depth + 1,
             )
         _dlog.warning(
             "delegate child %s made %d tool call(s) but none were its "
@@ -1240,7 +1240,7 @@ async def _default_delegate_fn(
             tool_call_count=child_result.tool_call_count,
             called_tool_names=sorted(child_result.called_tool_names),
             duration_ms=elapsed_ms,
-            depth=depth,
+            depth=depth + 1,
         )
     except TimeoutError:
         elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -1249,7 +1249,7 @@ async def _default_delegate_fn(
             status="timeout",
             error_message="Delegate child turn timed out.",
             duration_ms=elapsed_ms,
-            depth=depth,
+            depth=depth + 1,
         )
     except Exception as exc:  # pylint: disable=broad-except
         elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -1264,7 +1264,7 @@ async def _default_delegate_fn(
             status="error",
             error_message=f"{type(exc).__name__}: {exc}",
             duration_ms=elapsed_ms,
-            depth=depth,
+            depth=depth + 1,
         )
 
 
@@ -2048,8 +2048,8 @@ async def _run_turn_inner(
 
     # ── Delegate hook wiring ──────────────────────────────────────────
     # Build the ``delegate_fn`` closure that the pack-level ``delegate``
-    # operation calls via ``ctx.delegate_fn``. The closure captures the
-    # turn's hooks, budget, execution policy, and the current depth so
+    # operation calls via ``ctx.host.delegate(spec)``. The closure captures
+    # the turn's hooks, budget, execution policy, and the current depth so
     # the delegate child runs as a ``sub_turn_kind="delegate"`` turn at
     # ``depth + 1``. When the host provides its own ``hooks.delegate_fn``,
     # that takes precedence (custom delegation backend). Otherwise the

@@ -594,6 +594,7 @@ def _build_minimal_context(
         read_authored_text_fn=read_authored_text_fn,
         execute_tool_fn=execute_tool_fn,
         execute_operation_fn=execute_operation_fn,
+        delegate_fn=delegate_fn,
     )
     return OperationExecutionContext(
         workspace_id=workspace_id,
@@ -614,6 +615,5 @@ def _build_minimal_context(
         session_plan_digest=session_plan_digest,
         code_change_artifact_store=code_change_artifact_store,
         data_dir=data_dir,
-        delegate_fn=delegate_fn,
         host=host,
     )

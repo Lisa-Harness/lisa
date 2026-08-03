@@ -236,15 +236,6 @@ class OperationExecutionContext(BaseModel):
     # same no-fallback contract applies to operations that write/persist
     # caches (e.g. ``fetch_page``) or need the host data root.
     data_dir: str = Field(default="", exclude=True)
-    # Pack-level ``delegate`` operation hook. When wired by the kernel at
-    # turn start, the delegate operation calls this with a
-    # :class:`DelegationSpec` and awaits a :class:`DelegationResult`. The
-    # default implementation (``_default_delegate_fn``) runs ``run_turn``
-    # recursively as a ``sub_turn_kind="delegate"`` child. ``None`` means
-    # the host has not wired delegation (the delegate operation fails
-    # loudly). Packs never import from ``kernel.turn_runner``; they only
-    # see this callable.
-    delegate_fn: Any = Field(default=None, exclude=True)
 
 
 class OperationResult(BaseModel):
