@@ -448,6 +448,23 @@ class McpServerHealth(BaseModel):
     server_id: str
     status: McpConnectionStatus = "unknown"
     warm: bool = False
+    transport: str = "stdio"
+    """Launch kind this server was compiled from (the ``RuntimeKind.value`` —
+    e.g. ``\"venv_bin\"``, ``\"http\"``, ``\"python\"``). ``\"stdio\"`` is the
+    pre-introspection default for configs constructed before the compiler
+    carried ``runtime_kind`` through. Lets the operator distinguish HTTP
+    endpoints from subprocess launches at a glance."""
+    url: str = ""
+    """Endpoint URL for HTTP-transport servers; empty for subprocess servers."""
+    command: str = ""
+    """Executable path for subprocess servers; empty for HTTP servers."""
+    tool_count: int = 0
+    tool_names: list[str] = Field(default_factory=list)
+    permanently_failed: bool = False
+    """True when a warm server exhausted its restart budget and will not be
+    spawned again until the host restarts the pool."""
+    restart_count: int = 0
+    """Number of restarts recorded for this server within the restart window."""
     last_error: str = ""
 
 
