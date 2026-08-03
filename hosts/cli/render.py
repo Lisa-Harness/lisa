@@ -229,15 +229,10 @@ def render_mcp_servers(
         endpoint = h.url or h.command or "—"
         last_error = _truncate(h.last_error, 200) or "—"
         status_style = _status_style(h.status)
-        # A cold server that hasn't been connected yet legitimately shows
-        # tool_count=0 because tools/list hasn't run — annotate it so the
-        # operator doesn't read "0" as "has no tools." A warm/connected
-        # server with 0 tools is a real empty catalog (e.g. lisa-content,
-        # whose tool_policy.allowed_tools is []).
-        if h.status == "cold" and h.tool_count == 0:
-            tool_display = "cold (run `lisa mcp <server>`)"
-        else:
-            tool_display = str(h.tool_count)
+        # A cold server that hasn't been connected yet shows tool_count=0
+        # because tools/list hasn't run — render an em-dash (like the empty
+        # Last Error column) instead of a misleading 0.
+        tool_display = "—" if (h.status == "cold" and h.tool_count == 0) else str(h.tool_count)
         table.add_row(
             server_id,
             f"[{status_style}]{h.status}[/]",
