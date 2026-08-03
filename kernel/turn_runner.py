@@ -4027,26 +4027,47 @@ async def _run_turn_inner(
                                 for r in fork_results_list
                                 if r.status in ("yielded", "interrupted")
                             ]
+                            # Per-child detail that distinguishes the two
+                            # no_tools shapes: a child that made ZERO tool
+                            # calls hallucinated success on iteration 1 (the
+                            # model produced text claiming done without ever
+                            # invoking a tool); a child that made read-only
+                            # calls gathered evidence but never committed to
+                            # a write. The local model (ollama) is the common
+                            # cause — suggest switching to a more capable
+                            # model so the child follows the sub-turn contract
+                            # and actually invokes its action tools.
+                            no_tools_detail = [
+                                (
+                                    f"{r.target.mode_id} "
+                                    f"({'0 tool calls — hallucinated success' if r.duration_ms and not r.called_tool_names else f'{len(r.called_tool_names)} read-only calls, never wrote'})"
+                                )
+                                for r in fork_results_list
+                                if r.status == "no_tools"
+                            ]
+                            model_hint = (
+                                "The local model may be too weak to follow the "
+                                "sub-turn contract; retry with a more capable "
+                                "model (e.g. a frontier cloud model) or re-issue."
+                            )
                             if has_no_tools and has_yielded:
                                 content = (
                                     "Fork fan-out could not verify its work: the "
                                     f"following children were interrupted before "
                                     f"completing their action tools "
                                     f"({', '.join(interrupted_modes)}), and the "
-                                    "following spent their budget on read-only calls "
-                                    "without invoking their action tools "
-                                    f"({', '.join(no_tools_modes)}). Nothing was "
-                                    "written to disk or memory. Re-issue the request, "
-                                    "or raise FORK_CHILD_MAX_TOOL_ITERATIONS."
+                                    "following hallucinated their output "
+                                    f"({', '.join(no_tools_detail)}). Nothing was "
+                                    "written to disk or memory. "
+                                    f"{model_hint}"
                                 )
                             elif has_no_tools:
                                 content = (
                                     "Fork fan-out could not verify its work: the "
-                                    f"following children spent their budget on "
-                                    f"read-only calls without invoking their mode's "
-                                    f"action tools "
-                                    f"({', '.join(no_tools_modes)}), so nothing was "
-                                    "written to disk or memory. Re-issue the request."
+                                    "following children hallucinated their output "
+                                    f"({', '.join(no_tools_detail)}), so nothing "
+                                    "was written to disk or memory. "
+                                    f"{model_hint}"
                                 )
                             else:
                                 content = (
