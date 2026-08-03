@@ -21,7 +21,7 @@ sparklines, token suffixes) is opt-in via the detail tiers below.
 Detail tiers
 ------------
 * ``clean`` (default) — stage lines and tool one-liners with status glyphs.
-* ``power`` (``Esc+d`` toggle) — the same rows plus the graphic column
+* ``power`` (``Ctrl+O`` toggle) — the same rows plus the graphic column
   (pip counters, duration sparklines, token-flow suffixes).
 * ``debug`` (``--debug``, construction-only) — the full operator rendering:
   every bookkeeping stage event gets a row with all metadata, plus the
@@ -233,12 +233,12 @@ class RichTransport:
     def __init__(self, *, console: Console | None = None, debug: bool = False) -> None:
         self.console: Console = console or Console()
         self.debug = debug
-        # Detail tier: ``clean`` (default) → ``power`` (Esc+d) → ``debug``
+        # Detail tier: ``clean`` (default) → ``power`` (Ctrl+O) → ``debug``
         # (--debug, construction-only). Seed from the debug flag.
         self._detail: Literal["clean", "power", "debug"] = "debug" if debug else "clean"
         # When True (default), each thinking row renders a compact
         # ``▸ Thinking… N char`` summary; when False, the full segment body is
-        # shown. ``Esc+t`` toggles ALL thinking rows together (they are
+        # shown. ``Ctrl+Y`` toggles ALL thinking rows together (they are
         # interspersed with tool calls, so a single global flag is the right
         # model, not a per-segment one). Preserved across detail tiers.
         self.thinking_collapsed: bool = True
@@ -445,7 +445,7 @@ class RichTransport:
         return self._detail
 
     def toggle_thinking(self) -> None:
-        """Collapse/expand ALL thinking rows together (Esc+t).
+        """Collapse/expand ALL thinking rows together (Ctrl+Y).
 
         Thinking segments are interspersed with tool calls in the transcript;
         the toggle flips every visible thinking row's expand state at once so
@@ -459,7 +459,7 @@ class RichTransport:
         self._refresh_live()
 
     def toggle_detail(self) -> None:
-        """Toggle the detail tier between ``clean`` and ``power`` (Esc+d).
+        """Toggle the detail tier between ``clean`` and ``power`` (Ctrl+O).
 
         ``power`` re-renders rows with their graphic column (pip counters,
         sparklines, token suffixes). No-op on the construction-only ``debug``

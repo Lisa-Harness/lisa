@@ -515,7 +515,7 @@ async def test_on_error_flushes_partial_answer() -> None:
     assert "Error" in transport.console.file.getvalue()
 
 
-# ── thinking collapsed/expanded (Esc+t toggle) ────────────────────────
+# ── thinking collapsed/expanded (Ctrl+Y toggle) ──────────────────────
 
 
 @pytest.mark.asyncio

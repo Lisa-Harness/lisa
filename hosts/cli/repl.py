@@ -638,7 +638,7 @@ def _build_repl_prompt_session(
     """Build a prompt_toolkit PromptSession with history + completion.
 
     Returns ``None`` when prompt_toolkit is unavailable. When available,
-    the session is multi-line: Enter submits the turn, Esc→Enter inserts
+    the session is multi-line: Enter submits the turn, Ctrl+J inserts
     a newline (chat-box semantics). A bottom toolbar shows live char/line
     count and control hints while the prompt is active.
     """
@@ -680,7 +680,7 @@ def _repl_bottom_toolbar(transport: RichTransport) -> Any:
     """Render the bottom toolbar: live char/line count + control hints.
 
     Called by prompt_toolkit on every buffer mutation (and on explicit
-    invalidation from the Esc→d / Esc→t toggles). Returns
+    invalidation from the Ctrl+O / Ctrl+Y toggles). Returns
     ``FormattedText`` (a list of ``(style, text)`` tuples) so the toolbar
     updates in real time as the user types — and reflects the current
     detail/thinking toggle state rather than a static hint string.
@@ -718,7 +718,7 @@ def _repl_bottom_toolbar(transport: RichTransport) -> Any:
         [
             (
                 "class:bottom-toolbar",
-                " Enter submit · Esc+Enter newline · ↑/↓ history · Tab complete ",
+                " Enter submit · Ctrl+J newline · ↑/↓ history · Tab complete ",
             ),
             ("class:bottom-toolbar.text", "│ "),
             ("class:bottom-toolbar.metric", detail_label),
@@ -730,7 +730,7 @@ def _repl_bottom_toolbar(transport: RichTransport) -> Any:
                 f"{line_count} line{'s' if line_count != 1 else ''}, {char_count} char{'s' if char_count != 1 else ''}",
             ),
             ("class:bottom-toolbar.text", " · "),
-            ("class:bottom-toolbar.hint", "Esc+d detail · Esc+t thinking"),
+            ("class:bottom-toolbar.hint", "Ctrl+O detail · Ctrl+Y thinking"),
         ]
     )
 
@@ -739,13 +739,18 @@ def _build_repl_key_bindings(transport: RichTransport) -> Any:
     """Build chat-box key bindings for the multi-line REPL prompt.
 
     - Enter: submit the current buffer (chat-box semantics).
-    - Esc→Enter: insert a newline (for multi-line input).
-    - Esc→t: expand/collapse ALL visible thinking segments in the transcript.
+    - Ctrl+J: insert a newline (for multi-line input). Ctrl+J is a reliable
+      single-chord newline in prompt_toolkit; unlike Esc-prefixed sequences
+      it cannot be mistaken for an Alt modifier and leak stray characters
+      into the buffer (the previous ``Esc→Enter`` binding could emit a
+      stage/call fragment into the input area when the escape timed out
+      without a follow-up key).
+    - Ctrl+Y: expand/collapse ALL visible thinking segments in the transcript.
       Thinking is rendered as multiple interspersed rows that interleave with
       the tool calls (a tool/model event closes the current segment). The
       toggle flips every thinking row at once so the user can inspect the
       model's reasoning across the whole turn without hunting for each segment.
-    - Esc→d: toggle the detail tier between clean (default) and power, which
+    - Ctrl+O: toggle the detail tier between clean (default) and power, which
       adds the graphic column (pip counters, duration sparklines, token
       suffixes) to each transcript row. No-op on the construction-only debug
       tier. After toggling, the bottom toolbar is invalidated so its
@@ -764,16 +769,16 @@ def _build_repl_key_bindings(transport: RichTransport) -> Any:
     def _submit(event: Any) -> None:
         event.current_buffer.validate_and_handle()
 
-    @bindings.add("escape", "enter")
+    @bindings.add("c-j")
     def _newline(event: Any) -> None:
         event.current_buffer.insert_text("\n")
 
-    @bindings.add("escape", "t")
+    @bindings.add("c-y")
     def _toggle_thinking(event: Any) -> None:
         transport.toggle_thinking()
         _invalidate_repl_toolbar(event)
 
-    @bindings.add("escape", "d")
+    @bindings.add("c-o")
     def _toggle_detail(event: Any) -> None:
         transport.toggle_detail()
         _invalidate_repl_toolbar(event)
