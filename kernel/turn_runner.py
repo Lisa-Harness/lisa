@@ -111,6 +111,59 @@ from kernel.workflow_instance import (
 
 logger = logging.getLogger(__name__)
 
+
+def _read_cache_signature(tool_name: str, tool_arguments: dict[str, Any]) -> str:
+    """Build a stable cache key for one read-tool invocation.
+
+    The signature is ``tool_name`` + a deterministic rendering of the
+    *identity-relevant* parameters. We include all params because read
+    tools are bounded and their params are small (path, line range, query,
+    max_results). Sorting the keys makes the signature order-independent
+    so two calls with the same params in different key order hit the same
+    cache entry. The kernel never names tool ids here — the caller passes
+    ``tool_name``; this function only formats the params.
+    """
+    parts = [tool_name]
+    for key in sorted(tool_arguments):
+        val = tool_arguments[key]
+        # Normalize nested values to a stable string. Lists/dicts are
+        # JSON-serialized with sorted keys; scalars use ``str()``.
+        if isinstance(val, dict):
+            parts.append(f"{key}={json.dumps(val, sort_keys=True)}")
+        elif isinstance(val, list):
+            parts.append(f"{key}={json.dumps(val, sort_keys=True)}")
+        else:
+            parts.append(f"{key}={val}")
+    return "|".join(parts)
+
+
+def _format_read_abbreviation(
+    template: str,
+    params: dict[str, Any],
+    result_json: dict[str, Any],
+    result_text: str = "",
+) -> str:
+    """Apply a tool's ``abbreviation_template`` to params + result JSON.
+
+    Uses ``str.format_map`` with a missing-key-tolerant mapping so an
+    absent field renders as ``{field_name}`` (visible to the model) rather
+    than raising ``KeyError``. The template references both parameter
+    fields (e.g. ``{path}``, ``{start_line}``) and result-JSON fields
+    (e.g. ``{total_lines_observed}``). ``{output_text}`` is also available
+    so a template can reuse the tool's own one-line summary. When params
+    and result JSON share a key, the result JSON takes precedence (it
+    carries the observed outcome, not the request).
+    """
+    fields: dict[str, Any] = dict(params)
+    fields.update(result_json)
+    fields["output_text"] = result_text
+
+    class _MissingKeyDict(dict):
+        def __missing__(self, key: str) -> str:  # type: ignore[override]
+            return "{" + key + "}"
+
+    return template.format_map(_MissingKeyDict(fields))
+
 # Turn-runner guard caps live in ``kernel.config.Settings`` (fields
 # ``max_tool_iterations`` / ``fork_child_max_tool_iterations`` /
 # ``per_step_max_iterations`` / ``per_step_max_tool_calls`` /
@@ -5309,11 +5362,63 @@ async def _run_turn_inner(
                     # tool registry, which imports the implementation module
                     # and calls execute(ctx) under a timeout.
                     tool_def = tool_catalog[tool_name]
-                    if tool_def.implementation_module is not None:
+                    # ── Within-turn read cache (Level C) ──────────────
+                    # When the tool declares ``effect == "read"`` and an
+                    # ``abbreviation_template``, check the per-turn cache
+                    # before dispatching. A hit returns the one-line
+                    # abbreviation instead of re-running the tool and
+                    # appending a second full result to ``messages``. This
+                    # is the within-turn analog of cross-turn conversation
+                    # compaction — it prevents the linear prompt-token
+                    # accumulation that burned 1.4M tokens on the 2026-08-03
+                    # code review (the model re-read the same files across
+                    # ~25 iterations). The cache still counts as a tool
+                    # call (the model sees its call was answered) but costs
+                    # ~200 tokens instead of ~4,000.
+                    _cache_template = getattr(tool_def, "abbreviation_template", "") or ""
+                    _cacheable = (
+                        getattr(tool_def, "effect", "") == "read"
+                        and bool(_cache_template)
+                        and isinstance(tool_arguments, dict)
+                    )
+                    if _cacheable:
+                        _cache_key = _read_cache_signature(tool_name, tool_arguments)
+                        _cached = _state.read_cache.get(_cache_key)
+                    else:
+                        _cache_key = ""
+                        _cached = None
+                    if _cached is not None:
+                        _log.info(
+                            "read cache hit (tool=%s, key=%s); returning "
+                            "abbreviation instead of re-running",
+                            tool_name,
+                            _cache_key[:120],
+                        )
+                        tool_output = _cached
+                    elif tool_def.implementation_module is not None:
                         tool_ctx = _to_tool_context(tool_name, ctx)
                         tool_ctx.parameters = tool_arguments
                         tool_result = await execute_tool(tool_name, tool_ctx)
                         tool_output = _stringify_pack_tool_result(tool_result)
+                        # Record the abbreviation for future re-reads. The
+                        # template is applied to the tool's params + result
+                        # JSON so the abbreviation carries the observed
+                        # outcome (e.g. line count) not just the request.
+                        if _cacheable and isinstance(tool_result, ToolResult):
+                            try:
+                                _abbrev = _format_read_abbreviation(
+                                    _cache_template,
+                                    tool_arguments,
+                                    tool_result.output_json or {},
+                                    result_text=tool_result.output_text or "",
+                                )
+                                _state.read_cache[_cache_key] = _abbrev
+                            except Exception as cache_exc:  # pylint: disable=broad-except
+                                _log.debug(
+                                    "read cache record failed for %s: %s",
+                                    tool_name,
+                                    cache_exc,
+                                )
                     else:
                         mcp_result = await pool.call_tool(tool_name, tool_arguments)
                         tool_output = mcp_result.output_text or "Done"

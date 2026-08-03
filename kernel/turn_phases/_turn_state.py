@@ -251,6 +251,24 @@ class _TurnState:
     turn / fork child), so each child gets exactly one nudge
     opportunity."""
 
+    # ── Within-turn read cache (Level C) ─────────────────────────────
+    # Per-turn cache of read-tool call signatures → one-line abbreviations.
+    # On a cache hit (the model re-requests the same path/line-range), the
+    # dispatch path returns the abbreviation instead of re-running the tool
+    # and appending a second full result to ``messages``. This is the
+    # within-turn analog of cross-turn conversation compaction: it prevents
+    # the linear prompt-token accumulation that burned 1.4M tokens on the
+    # 2026-08-03 code review. The cache is keyed by a stable signature
+    # derived from the tool id + sorted params (built by the caller); only
+    # tools with ``effect == "read"`` and an authored
+    # ``abbreviation_template`` are cached, so the kernel never names tool
+    # ids. One cache per turn (no cross-turn leakage); reset by the fresh
+    # ``_TurnState`` every turn and every fork child.
+    read_cache: dict[str, str] = field(default_factory=dict)
+    """Per-turn cache of read-tool signatures → abbreviations. Prevents
+    re-reads from re-accumulating full tool output in the message
+    history."""
+
 
 # ── Closure-free helper functions ──────────────────────────────────────────
 

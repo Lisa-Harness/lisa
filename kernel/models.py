@@ -177,6 +177,19 @@ class ToolDefinition(BaseModel):
     # without forcing every mode author to re-list them. The kernel never
     # names tool ids; it only filters on the already-merged allowlist.
     default_available: bool = False
+    # Authored in ``.tool.yml`` front matter. A ``str.format_map`` template
+    # the turn runner applies to the tool's *parameters* + *result JSON* to
+    # produce a one-line abbreviation when the model re-requests the same
+    # read within a single turn. The cache is keyed by a stable signature
+    # derived from the tool id + sorted params; only tools with
+    # ``effect == "read"`` and a non-empty template are cached. On a cache
+    # hit the dispatch path returns the formatted abbreviation instead of
+    # re-running the tool and appending a second full result to ``messages``.
+    # This is the within-turn analog of cross-turn conversation compaction —
+    # it prevents the linear prompt-token accumulation that burned 1.4M
+    # tokens on the 2026-08-03 code review. Empty (default) disables caching
+    # for this tool; the kernel never names tool ids or hardcodes templates.
+    abbreviation_template: str = ""
 
     def effective_provider_id(self) -> str:
         """Return the canonical owning-provider id for this tool.
