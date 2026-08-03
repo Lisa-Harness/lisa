@@ -93,6 +93,15 @@ def _resolve_subdir_roots(roots: list[Path], subdir: str) -> list[Path]:
     return candidates
 
 
+def _path_is_under(path: Path, parent: Path) -> bool:
+    """Return True if ``path`` is equal to or under ``parent``."""
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 # ── Mode catalog ────────────────────────────────────────────────────────────
 
 _MODE_CONFIG_FILENAME = "_mode.md"
@@ -106,6 +115,7 @@ def build_mode_catalog_json(
     tool_catalog_json: str | None = None,
     default_mcp_tool_ids: set[str] | None = None,
     strict: bool = False,
+    overlay_root: Path | None = None,
 ) -> str:
     """Scan mode roots and return a JSON-serializable mode catalog.
 
@@ -116,6 +126,13 @@ def build_mode_catalog_json(
     When *strict* is ``True``, malformed mode/stage files raise
     :class:`CatalogCollisionError` instead of being logged and skipped. Used
     at host startup so a broken pack install fails fast.
+
+    When ``overlay_root`` is set, mode entries discovered under that root are
+    tagged ``_overlay: True`` and automatically take precedence over pack
+    entries with the same ``mode_id``. Shortcut entries (``_mode.md`` directly
+    under ``overlay_root/modes/`` without a provider folder) resolve their
+    target via ``mode_provider_id`` in frontmatter and must match an existing
+    installed mode — they are override-only, not a way to create new modes.
 
     Three ambient-capability sources feed the merge (all optional, all in the
     SDK catalog layer so the kernel only ever sees the already-merged
@@ -149,8 +166,23 @@ def build_mode_catalog_json(
         if not root.is_dir():
             continue
         inferred_provider_id = _infer_content_provider_id(root)
+        is_overlay_root = overlay_root is not None and _path_is_under(
+            root, overlay_root
+        )
         for mode_dir in sorted(root.iterdir()):
             if not mode_dir.is_dir():
+                continue
+            # ── Overlay provider-folder expansion ─────────────────────
+            # When scanning the overlay's modes root, a directory without
+            # _mode.md but with subdirectories that have _mode.md is a
+            # provider folder (e.g. overlays/modes/lisa-pack-core/).
+            # Scan one level deeper so folder-path entries work.
+            if is_overlay_root and not (mode_dir / _MODE_CONFIG_FILENAME).is_file():
+                _scan_overlay_provider_folder(
+                    mode_dir,
+                    candidates_by_id,
+                    strict=strict,
+                )
                 continue
             mode_dict = _load_one_mode(
                 mode_dir,
@@ -158,8 +190,20 @@ def build_mode_catalog_json(
                 strict=strict,
             )
             if mode_dict is not None:
+                # Tag overlay entries so _resolve_catalog_candidates can
+                # auto-select them. The tag is stripped before serialization.
+                if overlay_root is not None:
+                    mode_path = str(mode_dict.get("mode_markdown_path", ""))
+                    if mode_path.startswith(str(overlay_root)):
+                        mode_dict["_overlay"] = True
                 mode_id = str(mode_dict.get("mode_id") or "")
                 candidates_by_id.setdefault(mode_id, []).append(mode_dict)
+    # ── Shortcut validation ──────────────────────────────────────────
+    # Shortcut entries (overlay modes without a provider folder) must
+    # shadow an existing installed mode. Validate after all candidates
+    # are collected so we can check against the full non-overlay set.
+    if overlay_root is not None:
+        _validate_overlay_shortcuts(candidates_by_id, strict=strict)
     merged = {
         mode_id: _resolve_catalog_candidates(
             resource_kind="mode",
@@ -170,6 +214,10 @@ def build_mode_catalog_json(
         )
         for mode_id, candidates in candidates_by_id.items()
     }
+    # Strip internal _overlay tag from all resolved modes before
+    # serialization — the kernel never sees it.
+    for mode_dict in merged.values():
+        mode_dict.pop("_overlay", None)
     if operation_catalog_json is not None or tool_catalog_json is not None or default_mcp_tool_ids:
         _merge_default_capabilities(
             modes=merged,
@@ -576,10 +624,34 @@ def _resolve_catalog_candidates(
     provider_field: str,
     selected_provider: str,
 ) -> dict[str, Any]:
-    """Resolve duplicate IDs only through an explicit session provider choice."""
+    """Resolve duplicate IDs, with overlay entries taking automatic precedence.
 
+    Resolution order:
+    1. Single candidate → return it.
+    2. Exactly one overlay candidate (``_overlay: True``) → return it
+       immediately. Overlay entries always win, even over explicit
+       ``selected_provider``.
+    3. Multiple overlay candidates → ``CatalogCollisionError`` (ambiguous).
+    4. Multiple non-overlay candidates → require explicit
+       ``selected_provider`` (existing behavior).
+    """
     if len(candidates) == 1:
         return candidates[0]
+
+    # Overlay entries take automatic precedence. When exactly one candidate
+    # is tagged _overlay, it wins — no provider selection needed.
+    overlay_candidates = [c for c in candidates if c.get("_overlay")]
+    if len(overlay_candidates) == 1:
+        return overlay_candidates[0]
+    if len(overlay_candidates) > 1:
+        paths = sorted(
+            str(c.get("mode_markdown_path", "?")) for c in overlay_candidates
+        )
+        raise CatalogCollisionError(
+            f"Multiple overlay entries for {resource_kind} ID '{resource_id}' "
+            f"are ambiguous. Conflicting paths: {', '.join(paths)}."
+        )
+
     if not selected_provider:
         raise CatalogCollisionError(
             f"Duplicate {resource_kind} ID '{resource_id}' requires an explicit "
@@ -607,6 +679,104 @@ def _resolve_catalog_candidates(
         f"ID '{resource_id}', but matching candidates are ambiguous or absent "
         f"(available: {available_text})."
     )
+
+
+def _scan_overlay_provider_folder(
+    provider_dir: Path,
+    candidates_by_id: dict[str, list[dict[str, Any]]],
+    *,
+    strict: bool = False,
+) -> None:
+    """Scan a provider folder under the overlay's modes root.
+
+    A provider folder (e.g. ``overlays/modes/lisa-pack-core/``) contains
+    mode subdirectories, each with a ``_mode.md``. The folder name is the
+    ``mode_provider_id`` scope — only modes from that provider are shadowed.
+    """
+    provider_id = provider_dir.name
+    for mode_dir in sorted(provider_dir.iterdir()):
+        if not mode_dir.is_dir():
+            continue
+        mode_dict = _load_one_mode(
+            mode_dir,
+            inferred_provider_id=provider_id,
+            strict=strict,
+        )
+        if mode_dict is None:
+            continue
+        # Consistency check: frontmatter mode_provider_id should match
+        # the provider folder name. Warn on mismatch but don't reject —
+        # the frontmatter value is what the kernel sees.
+        fm_provider = str(mode_dict.get("mode_provider_id", "") or "")
+        if fm_provider and _normalize_provider_id(fm_provider) != _normalize_provider_id(
+            provider_id
+        ):
+            logger.warning(
+                "Overlay mode '%s' in provider folder '%s' declares "
+                "mode_provider_id '%s' — folder name and frontmatter "
+                "disagree. Using frontmatter value.",
+                mode_dict.get("mode_id", "?"),
+                provider_id,
+                fm_provider,
+            )
+        mode_dict["_overlay"] = True
+        mode_dict["_overlay_provider_folder"] = True
+        mode_id = str(mode_dict.get("mode_id") or "")
+        candidates_by_id.setdefault(mode_id, []).append(mode_dict)
+
+
+def _validate_overlay_shortcuts(
+    candidates_by_id: dict[str, list[dict[str, Any]]],
+    *,
+    strict: bool = False,
+) -> None:
+    """Validate that shortcut overlay entries shadow an existing installed mode.
+
+    A shortcut is an overlay mode whose ``mode_provider_id`` does not match
+    any provider folder — it was loaded directly from the modes root. These
+    must match an existing ``(mode_id, mode_provider_id)`` pair from a
+    non-overlay candidate. Shortcuts that don't match any installed mode are
+    rejected (override-only, no ad-hoc mode creation).
+    """
+    for mode_id, candidates in list(candidates_by_id.items()):
+        overlay_entries = [c for c in candidates if c.get("_overlay")]
+        non_overlay_entries = [c for c in candidates if not c.get("_overlay")]
+        if not overlay_entries:
+            continue
+        for entry in list(overlay_entries):
+            # Provider-folder entries are validated by
+            # _scan_overlay_provider_folder. Only validate shortcuts
+            # (entries loaded directly from the modes root).
+            if entry.get("_overlay_provider_folder"):
+                continue
+            entry_provider = _normalize_provider_id(
+                str(entry.get("mode_provider_id", "") or "")
+            )
+            # Folder-path entries have their provider validated by
+            # _scan_overlay_provider_folder. Only validate shortcuts:
+            # entries whose provider doesn't match any non-overlay entry.
+            matching_base = any(
+                _normalize_provider_id(str(base.get("mode_provider_id", "") or ""))
+                == entry_provider
+                for base in non_overlay_entries
+            )
+            if not matching_base:
+                msg = (
+                    f"Overlay shortcut mode '{mode_id}' from provider "
+                    f"'{entry_provider or '(empty)'}' does not match any "
+                    f"installed mode. Shortcut entries must override an "
+                    f"existing mode — specify a valid mode_provider_id."
+                )
+                if strict:
+                    raise CatalogCollisionError(msg)
+                logger.warning(msg)
+                # Remove the orphan shortcut so it doesn't shadow the pack entry.
+                candidates_by_id[mode_id] = [
+                    c for c in candidates_by_id[mode_id] if c is not entry
+                ]
+        # Clean up empty candidate lists after orphan removal.
+        if not candidates_by_id[mode_id]:
+            del candidates_by_id[mode_id]
 
 
 def _load_one_stage(

@@ -494,6 +494,10 @@ class HostRuntime:
         return self.config.data_dir
 
     @property
+    def overlays_dir(self) -> Path:
+        return self.config.resolved_overlays_dir
+
+    @property
     def thread_dir(self) -> Path:
         return self.config.resolved_thread_dir
 

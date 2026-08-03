@@ -77,6 +77,13 @@ DataDirOption = Annotated[
         help="Data root for artifacts, memory, and logs. Default: ~/.lisa",
     ),
 ]
+OverlaysDirOption = Annotated[
+    str,
+    typer.Option(
+        "--overlays-dir",
+        help="User-authored overlays directory for mode and content overrides. Default: <data-dir>/overlays",
+    ),
+]
 ThreadDirOption = Annotated[
     str,
     typer.Option("--thread-dir", help="Thread log directory."),
@@ -150,6 +157,7 @@ def _initialize_runtime(
     log_path: str = "",
     no_log: bool = False,
     data_dir: str = "",
+    overlays_dir: str = "",
     thread_dir: str = "",
     no_thread: bool = False,
     user_slug: str,
@@ -179,6 +187,7 @@ def _initialize_runtime(
         log_path=log_path,
         no_log=no_log,
         data_dir=data_dir,
+        overlays_dir=overlays_dir,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=user_slug,

@@ -221,6 +221,16 @@ DataDirOption = Annotated[
         ),
     ),
 ]
+OverlaysDirOption = Annotated[
+    str,
+    typer.Option(
+        "--overlays-dir",
+        help=(
+            "User-authored overlays directory for mode and content overrides. "
+            "Default: <data-dir>/overlays"
+        ),
+    ),
+]
 ThreadDirOption = Annotated[
     str,
     typer.Option(
@@ -296,6 +306,7 @@ def _initialize_runtime(
     log_path: str = "",
     no_log: bool = False,
     data_dir: str = "",
+    overlays_dir: str = "",
     thread_dir: str = "",
     no_thread: bool = False,
     user_slug: str,
@@ -325,6 +336,7 @@ def _initialize_runtime(
         log_path=log_path,
         no_log=no_log,
         data_dir=data_dir,
+        overlays_dir=overlays_dir,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=user_slug,
@@ -365,6 +377,7 @@ def _run_default_no_args_mode(
     log: str,
     no_log: bool,
     data_dir: str,
+    overlays_dir: str,
     thread_dir: str,
     no_thread: bool,
     session_context: str,
@@ -385,6 +398,7 @@ def _run_default_no_args_mode(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
+        overlays_dir=overlays_dir,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,
@@ -462,6 +476,7 @@ def _cli_callback(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
+    overlays_dir: OverlaysDirOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -482,6 +497,7 @@ def _cli_callback(
         log=log,
         no_log=no_log,
         data_dir=data_dir,
+        overlays_dir=overlays_dir,
         thread_dir=thread_dir,
         no_thread=no_thread,
         session_context=session_context,
@@ -505,6 +521,7 @@ def _cli_command(
     log: LogOption = "",
     no_log: NoLogOption = False,
     data_dir: DataDirOption = "",
+    overlays_dir: OverlaysDirOption = "",
     thread_dir: ThreadDirOption = "",
     no_thread: NoThreadOption = False,
     session_context: SessionContextOption = "",
@@ -520,6 +537,7 @@ def _cli_command(
         log_path=log,
         no_log=no_log,
         data_dir=data_dir,
+        overlays_dir=overlays_dir,
         thread_dir=thread_dir,
         no_thread=no_thread,
         user_slug=session_context,

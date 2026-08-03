@@ -113,6 +113,10 @@ async def list_modes() -> str:
     ``server_id.tool`` ids); this is the only channel for MCP-native ambient
     ids because those tools are not in the pack tool catalog the catalog
     server scans.
+
+    When ``LISA_OVERLAY_ROOT`` is set, mode entries discovered under that
+    root take automatic precedence over pack entries with the same
+    ``mode_id``.
     """
     mode_roots = resolve_mode_roots(_all_roots())
     operation_roots = resolve_operation_roots(_all_roots())
@@ -120,11 +124,13 @@ async def list_modes() -> str:
     operation_catalog_json = build_operation_catalog_json(operation_roots)
     tool_catalog_json = build_tool_catalog_json(tool_roots)
     default_mcp_tool_ids = _read_default_mcp_tools_env()
+    overlay_root = _read_overlay_root_env()
     return build_mode_catalog_json(
         mode_roots,
         operation_catalog_json=operation_catalog_json,
         tool_catalog_json=tool_catalog_json,
         default_mcp_tool_ids=default_mcp_tool_ids,
+        overlay_root=overlay_root,
     )
 
 
@@ -139,6 +145,21 @@ def _read_default_mcp_tools_env() -> set[str]:
     """
     raw = os.getenv("LISA_DEFAULT_MCP_TOOLS", "")
     return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _read_overlay_root_env() -> Path | None:
+    """Read the overlay root path from ``LISA_OVERLAY_ROOT``.
+
+    The host sets this env var when ``--overlays-dir`` is configured and
+    the directory exists. The catalog server uses it to identify overlay
+    entries for automatic precedence in duplicate resolution. Returns
+    ``None`` when the env var is absent or the path does not exist.
+    """
+    raw = os.getenv("LISA_OVERLAY_ROOT", "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if path.is_dir() else None
 
 
 @mcp.tool()

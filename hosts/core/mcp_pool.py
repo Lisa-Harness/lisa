@@ -197,6 +197,7 @@ def build_content_mcp_config(
     content_roots: list[Path],
     disabled_packs: set[str],
     provider_selections: ProviderSelections,
+    overlays_dir: Path | None = None,
 ) -> MCPClientConfig:
     """Build an MCPClientConfig that spawns lisa-content for discovered pack roots.
 
@@ -208,13 +209,18 @@ def build_content_mcp_config(
     ``SDK_CONTENT_ROOTS`` includes both the pack root (for modes/operations
     discovery) and the ``content/`` subdirectory (so ``read_authored_text``
     can resolve authored text assets like ``prompts/system-prompt.md`` without a
-    ``content/`` prefix).
+    ``content/`` prefix). When ``overlays_dir`` is set and exists, it is
+    prepended so overlay content takes precedence over pack content.
 
     Args:
         data_dir: Host data directory (passed to the child as ``--data-dir``).
         content_roots: Active SDK content roots (pack roots + configured roots).
         disabled_packs: Normalized pack names to exclude in the child process.
         provider_selections: Explicit SessionPlan ownership decisions.
+        overlays_dir: Optional user-authored overlays directory. When set and
+            the directory exists, it is prepended to ``SDK_CONTENT_ROOTS`` and
+            the ``LISA_OVERLAY_ROOT`` env var is set so the catalog server can
+            identify overlay entries for precedence logic.
     """
     roots_for_child = content_roots
     subdir_roots = [root / "content" for root in roots_for_child if (root / "content").is_dir()]
@@ -222,6 +228,20 @@ def build_content_mcp_config(
     env: dict[str, str] = {
         "SDK_CONTENT_ROOTS": os.pathsep.join(str(root) for root in configured_roots)
     }
+
+    # Prepend the overlays directory so overlay content takes precedence.
+    # The catalog server uses LISA_OVERLAY_ROOT to identify which entries
+    # are overlay-authored and should auto-win in duplicate resolution.
+    if overlays_dir is not None and overlays_dir.is_dir():
+        env["SDK_CONTENT_ROOTS"] = (
+            str(overlays_dir) + os.pathsep + env["SDK_CONTENT_ROOTS"]
+        )
+        env["LISA_OVERLAY_ROOT"] = str(overlays_dir)
+    elif overlays_dir is not None:
+        logger.warning(
+            "Overlays directory '%s' does not exist — overlays disabled.",
+            overlays_dir,
+        )
 
     # Pass disabled pack names to the lisa-content child process so that
     # entry-point discovery in the child also excludes disabled packs.
@@ -421,6 +441,7 @@ def setup_framework(
         content_roots=roots,
         disabled_packs=disabled_packs,
         provider_selections=runtime.session_plan.manifest.providers,
+        overlays_dir=runtime.overlays_dir,
     )
     default_mcp_tool_ids = resolve_default_mcp_tool_ids(
         host_manifest_path=discovery.host_manifest_path,

@@ -128,6 +128,7 @@ class HostConfig:
 
     # ── Paths ────────────────────────────────────────────────────────────
     data_dir: Path = field(default_factory=default_data_dir)
+    overlays_dir: Path | None = None
     thread_dir: Path | None = None
     mcp_manifest_path: Path | None = None
     state_snapshot_path: Path | None = None
@@ -183,6 +184,11 @@ class HostConfig:
     )
 
     @property
+    def resolved_overlays_dir(self) -> Path:
+        """Return the resolved overlays directory, defaulting to ``<data_dir>/overlays``."""
+        return self.overlays_dir or (self.data_dir / "overlays")
+
+    @property
     def resolved_thread_dir(self) -> Path:
         return self.thread_dir or (self.data_dir / "threads")
 
@@ -226,6 +232,7 @@ class HostConfig:
         log_path: str = "",
         host_log_path: str = "",
         data_dir: str = "",
+        overlays_dir: str = "",
         thread_dir: str = "",
         no_thread: bool = False,
         timezone: str = "",
@@ -269,6 +276,12 @@ class HostConfig:
             .expanduser()
             .resolve()
         )
+
+        # ── Overlays dir ──────────────────────────────────────────────
+        resolved_overlays_dir: Path | None = None
+        raw_overlays = overlays_dir.strip()
+        if raw_overlays:
+            resolved_overlays_dir = Path(raw_overlays).expanduser().resolve()
 
         # ── Paths ──────────────────────────────────────────────────────
         resolved_thread_dir: Path | None = None
@@ -338,6 +351,7 @@ class HostConfig:
 
         return cls(
             data_dir=resolved_data_dir,
+            overlays_dir=resolved_overlays_dir,
             thread_dir=resolved_thread_dir,
             mcp_manifest_path=resolved_mcp_manifest,
             state_snapshot_path=resolved_snapshot,
