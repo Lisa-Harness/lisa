@@ -95,7 +95,7 @@ def _validate_model_capabilities(
     from kernel.turn_runner import TurnResult as _TurnResult  # noqa: PLC0415
 
     return _CapabilityGateBlock(
-        result=_TurnResult(response_text=message, blocked=True),
+        result=_TurnResult(response_text=message, blocked=True, block_origin="capability_gate"),
         missing=missing,
     )
 

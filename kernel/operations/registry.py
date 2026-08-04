@@ -524,17 +524,29 @@ def mode_completion_effects(mode_id: str) -> set[str]:
         effect = str(getattr(op_def, "effect", "read") or "read")
         if effect in ("write", "external_write"):
             result.add(op_id)
-    # 2) Authored tool bindings — include wholesale (tools are not resolvable
-    #    in-process reliably; a mode that authors a tool did so because it
-    #    does the mode's work, and we only exclude operations we can prove
-    #    are read-effect).
-    result.update(mode.authored_allowed_tool_ids)
+    # 2) Authored tool bindings filtered by declared effect. Unlike the
+    #    original ``_fork_mode_action_tool_ids`` (which included authored
+    #    tools wholesale because it could not resolve tool effects in
+    #    process), the in-process tool catalog is available here, so a
+    #    read-effect authored tool (e.g. ``web_search`` in a reasoning mode,
+    #    or a mode that authors an ambient ``read_file``) is not a completion
+    #    requirement. Only tools we cannot resolve are included as a
+    #    conservative fallback.
+    tool_catalog = get_tool_catalog() or {}
+    for tool_id in mode.authored_allowed_tool_ids:
+        tool_def = tool_catalog.get(tool_id)
+        if tool_def is None:
+            # Unknown tool — include it (can't prove it's read-only).
+            result.add(tool_id)
+            continue
+        effect = str(getattr(tool_def, "effect", "read") or "read")
+        if effect in ("write", "external_write"):
+            result.add(tool_id)
     # 3) Operations explicitly bound via their own ``mode_allowlist``.
     result.update(
         _mode_allowlist_write_ops(op_catalog, mode_id)
     )
     # 4) Tools explicitly bound via their own ``mode_allowlist``.
-    tool_catalog = get_tool_catalog() or {}
     result.update(
         _mode_allowlist_write_tools(tool_catalog, mode_id)
     )

@@ -76,11 +76,20 @@ def classify_child_turn(
 
     # 1. Blocked (capability gate / input guard / output guard).
     if child_result.blocked:
-        _clog.warning(
-            "child turn mode=%s was blocked before producing output; "
-            "classifying as blocked (not no_tools)",
-            mode_id,
-        )
+        _block_reason = child_result.block_origin or "output_guard"
+        if _block_reason == "capability_gate":
+            _clog.warning(
+                "child turn mode=%s was blocked by the capability gate "
+                "(router declined to escalate); classifying as blocked "
+                "(not no_tools)",
+                mode_id,
+            )
+        else:
+            _clog.warning(
+                "child turn mode=%s was blocked by the %s; classifying as blocked",
+                mode_id,
+                _block_reason,
+            )
         return ChildTurnOutcome(
             status="blocked",
             output_text=child_result.response_text,
@@ -90,7 +99,7 @@ def classify_child_turn(
             called_tool_names=tuple(sorted(child_result.called_tool_names)),
             effect_receipts=tuple(child_result.effect_receipts),
             block_diagnostic=BlockDiagnostic(
-                reason="capability_gate",
+                reason=_block_reason,  # type: ignore[arg-type]
                 message=child_result.response_text,
             ),
         )
@@ -100,10 +109,9 @@ def classify_child_turn(
         _ya = child_result.yielded
         if _ya.context == "model-emitted yield":
             _clog.info(
-                "child turn mode=%s model-emitted yield (asking: %s); "
-                "propagating question to parent",
+                "child turn mode=%s model-emitted yield; propagating question "
+                "to parent (not logged to avoid echoing user content)",
                 mode_id,
-                (_ya.question or "")[:120],
             )
             return ChildTurnOutcome(
                 status="model_yield",
@@ -150,20 +158,32 @@ def classify_child_turn(
             effect_receipts=tuple(child_result.effect_receipts),
         )
 
-    # A mode with a completion contract must produce at least one
-    # ``EffectReceipt`` matching its required action tools. Receipts are
-    # collected at dispatch time from the capability's declared ``effect``,
-    # not inferred from tool names or response prose — so a child that
-    # called a ``mode_allowlist``-admitted write operation (invisible to the
-    # old ``authored_allowed_*``-only detector) is correctly counted.
-    # ``bare_tool_name`` strips the ``server_id.`` prefix so a namespaced
-    # call (``lisa-storage.write_file``) matches its bare authored name.
+    # A mode with a completion contract must produce evidence it invoked a
+    # side-effecting action tool. Evidence comes from two sources:
+    #
+    # 1) ``EffectReceipt`` — collected at dispatch time from the capability's
+    #    declared ``effect`` on a *successful* write. This is the primary,
+    #    strongest evidence: it only fires when a write actually landed
+    #    (a failed write emits no receipt), so a read-only or failed call
+    #    never satisfies the contract.
+    #
+    # 2) ``called_tool_names`` matching an action tool — the *fallback* for
+    #    opaque MCP tools (e.g. ``lisa-storage.write_file``) that are not
+    #    present in the in-process tool catalog and therefore cannot declare
+    #    an effect or emit a receipt at dispatch. ``mode_completion_effects``
+    #    already restricts the action set to write-effect tools (filtering
+    #    out resolvable read tools), so a name match against an action id is
+    #    a write-intent match. ``bare_tool_name`` strips the ``server_id.``
+    #    prefix so ``lisa-storage.write_file`` matches the authored ``write_file``.
+    #
+    # Receipt ``capability_id`` is recorded as the dispatched namespaced MCP
+    # name; ``bare_tool_name`` normalizes it to match the bare action id.
     # lazy: avoids top-level MCP import
     from kernel.tools.mcp_client import bare_tool_name  # noqa: PLC0415
 
     called_bare = {bare_tool_name(n) for n in child_result.called_tool_names}
-    receipt_ids = {r.capability_id for r in child_result.effect_receipts}
-    has_write_effect = bool(called_bare & action_tool_ids) or bool(receipt_ids & action_tool_ids)
+    receipt_ids = {bare_tool_name(r.capability_id) for r in child_result.effect_receipts}
+    has_write_effect = bool(receipt_ids & action_tool_ids) or bool(called_bare & action_tool_ids)
 
     if has_write_effect:
         return ChildTurnOutcome(

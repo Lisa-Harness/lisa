@@ -18,6 +18,7 @@ from typing import Any, Literal, cast
 from kernel.approval import (
     ApprovalInvocation,
     ApprovalRequired,
+    EffectKind,
     render_approval_request,
 )
 from kernel.capability_manifest import compile_capability_manifest
@@ -51,6 +52,7 @@ from kernel.models import (
     ConversationSurface,
     DelegationResult,
     DelegationSpec,
+    DelegationStatus,
     EffectReceipt,
     ForkChildResult,
     ForkTarget,
@@ -558,6 +560,12 @@ class TurnResult:
     """True when an input or output guard blocked the turn. Input blocks
     short-circuit before the model call; output blocks replace the response
     with a safe fallback and emit a ``guardrail.audit`` event."""
+    block_origin: str = ""
+    """When ``blocked`` is True, which gate produced the block:
+    ``"capability_gate"``, ``"input_guard"``, or ``"output_guard"``. Empty
+    when the block came from a non-guard lifecycle failure (entry/plan/fork).
+    The child-turn classifier reads this to build an accurate
+    ``BlockDiagnostic`` instead of assuming every block is a capability gate."""
     transitioned_to: str | None = None
     """When the model called ``transition_stage`` during this turn, the new
     ``stage_id``. None when no transition occurred or the mode is not a
@@ -1182,12 +1190,6 @@ async def _default_delegate_fn(
     child_budget = turn_budget
     child_max_iters = spec.max_tool_iterations or _kernel_settings.delegate_child_max_tool_iterations
     try:
-        from kernel.tools.mcp_client import bare_tool_name
-        from kernel.turn_phases._fork import (
-            _fork_mode_action_tool_ids,
-            _fork_mode_requires_tools,
-        )
-
         child_result = await run_turn(
             mode_id=spec.target_mode_id,
             query=spec.query,
@@ -1216,9 +1218,6 @@ async def _default_delegate_fn(
         # findings (3.1: ``blocked`` is checked first; 4.1:
         # ``mode_completion_effects`` replaces ``_fork_mode_action_tool_ids``;
         # 7.1: the duplicated classifier is removed).
-        from kernel.operations.registry import mode_completion_effects  # noqa: PLC0415  # lazy: breaks cycle with registry
-        from kernel.turn_phases._child_turn import classify_child_turn  # noqa: PLC0415  # lazy: breaks cycle with turn_runner
-
         action_ids = mode_completion_effects(spec.target_mode_id)
         outcome = classify_child_turn(
             child_result=child_result,
@@ -1226,7 +1225,11 @@ async def _default_delegate_fn(
             elapsed_ms=elapsed_ms,
             action_tool_ids=action_ids,
         )
-        _delegate_status = "ok" if outcome.status == "complete" else outcome.status
+        # ``ChildStatus`` and ``DelegationStatus`` share every status except
+        # ``complete`` (child) vs ``ok`` (delegate); map ``complete`` to ``ok``.
+        _delegate_status: DelegationStatus = (
+            "ok" if outcome.status == "complete" else outcome.status
+        )
         return DelegationResult(
             target_mode_id=spec.target_mode_id,
             status=_delegate_status,
@@ -2452,6 +2455,7 @@ async def _run_turn_inner(
         return TurnResult(
             response_text=blocked_reason,
             blocked=True,
+            block_origin="input_guard",
         )
     if input_guard_result.sanitized_text is not None:
         query = input_guard_result.sanitized_text
@@ -4301,7 +4305,14 @@ async def _run_turn_inner(
                         # normal yield UX. When more than one child model-yielded,
                         # surface the first (ordered by fork target index) —
                         # the user answers one question per turn.
-                        if has_model_yield:
+                        #
+                        # Precedence: a hard sibling failure (blocked, no_tools,
+                        # interrupted) wins over a voluntary yield. A child's
+                        # clarification question is only useful when the rest of
+                        # the fan-out actually completed; surfacing the question
+                        # and then silently marking the turn blocked hides the
+                        # actionable failure (2026-08-04 audit finding).
+                        if has_model_yield and not has_no_tools and not has_yielded and not has_blocked:
                             model_yield_children = [
                                 r for r in fork_results_list if r.status == "model_yield"
                             ]
@@ -4327,20 +4338,10 @@ async def _run_turn_inner(
                                 model_yield_children[0].target.mode_id,
                             )
                         if has_no_tools or has_yielded or has_blocked:
-                            no_tools_modes = [
-                                r.target.mode_id
-                                for r in fork_results_list
-                                if r.status == "no_tools"
-                            ]
                             interrupted_modes = [
                                 r.target.mode_id
                                 for r in fork_results_list
                                 if r.status in ("yielded", "interrupted")
-                            ]
-                            blocked_modes = [
-                                r.target.mode_id
-                                for r in fork_results_list
-                                if r.status == "blocked"
                             ]
                             # Per-child detail that distinguishes the two
                             # no_tools shapes: a child that made ZERO tool
@@ -4372,13 +4373,11 @@ async def _run_turn_inner(
                                     if r.status == "blocked"
                                 ]
                                 content = (
-                                    "Fork fan-out was blocked: the following "
-                                    "children were stopped by the capability gate "
-                                    "(the router declined to escalate to a model "
-                                    f"with the required capabilities) "
-                                    f"({'; '.join(blocked_detail)}). Use a model "
-                                    "that declares the required capabilities, or "
-                                    "switch to a mode that does not require them."
+                                    "Fork fan-out was blocked before completing: "
+                                    "the following children were stopped before "
+                                    "producing output "
+                                    f"({'; '.join(blocked_detail)}). Resolve the "
+                                    "reported block and re-issue the request."
                                 )
                             elif has_no_tools and has_yielded:
                                 content = (
@@ -5438,13 +5437,26 @@ async def _run_turn_inner(
                             or ""
                         )
                 if _dispatched_effect in ("write", "external_write"):
-                    _state.effect_receipts.append(
-                        EffectReceipt(
-                            effect=_dispatched_effect,
-                            capability_id=tool_name,
-                            artifact_id=_dispatched_artifact_id,
+                    # Only record a receipt when the capability actually
+                    # landed its work. A pack tool that reports an error
+                    # (``ToolResult.error`` non-empty) did NOT write — no
+                    # receipt, so the child-turn completion contract does
+                    # not count a failed write as success. Operation
+                    # failures raise before this point, so ``op_result`` is
+                    # always a successful result here.
+                    _dispatched_succeeded = True
+                    if tool_name in tool_catalog and isinstance(tool_result, ToolResult):
+                        _dispatched_succeeded = not tool_result.error.strip()
+                    if _dispatched_succeeded:
+                        _state.effect_receipts.append(
+                            EffectReceipt(
+                                # ``_dispatched_effect`` is guaranteed to be
+                                # one of the write literals by the guard above.
+                                effect=cast(EffectKind, _dispatched_effect),
+                                capability_id=tool_name,
+                                artifact_id=_dispatched_artifact_id,
+                            )
                         )
-                    )
                 # Sync the ledger counts to _state so the per-iteration
                 # budget briefing can report per-target remaining calls.
                 _state.call_ledger_counts = dict(ledger.counts)
@@ -5727,6 +5739,7 @@ async def _run_turn_inner(
     # outputs emit a guardrail.audit event and skip the post-turn slice.
     output_guard_result = await hooks.context_seams.output_guard.validate(content, guard_surface)
     turn_blocked = False
+    _block_origin = ""
     if (
         _state.entry_failed
         or _state.plan_failed
@@ -5766,6 +5779,7 @@ async def _run_turn_inner(
             _log.warning("guardrail.audit publish failed: %s", audit_exc)
         content = safe_fallback
         turn_blocked = True
+        _block_origin = "output_guard"
     elif output_guard_result.sanitized_text is not None:
         content = output_guard_result.sanitized_text
 
@@ -5870,6 +5884,7 @@ async def _run_turn_inner(
         latency_ms=_state.total_latency_ms,
         slice_outcomes=slice_outcomes,
         blocked=turn_blocked,
+        block_origin=_block_origin,
         transitioned_to=transitioned_to,
         handoff_to=handoff_to,
         fork_results=fork_results,
