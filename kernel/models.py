@@ -1617,6 +1617,15 @@ class ForkChildResult(BaseModel):
     output_text: str = ""
     error_message: str = ""
     duration_ms: int = 0
+    # Names of tools the child actually invoked, mirroring
+    # ``DelegationResult.called_tool_names``. The parent fork-result
+    # handler reads this to build the per-child ``no_tools`` detail
+    # (distinguishing a zero-call hallucinated success from a read-only
+    # gather that never wrote). Populated from the child ``TurnResult``
+    # for every status whose classification inspected the child's tool
+    # calls; left empty for ``timeout`` / ``error`` / ``cancelled``
+    # (no child turn ran, so the list is meaningless).
+    called_tool_names: list[str] = []
     # The ``YieldAction`` the child produced when ``status`` is ``model_yield``
     # (model called the ``yield`` tool) or ``interrupted`` (harness cap/budget
     # forced a yield). The parent fork-result handler inspects this to

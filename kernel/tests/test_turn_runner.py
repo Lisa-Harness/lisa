@@ -4015,6 +4015,70 @@ async def test_no_tools_fork_child_aborts_turn() -> None:
     assert result.response_text != "Done — wrote it to disk."
 
 
+async def test_no_tools_fork_child_read_only_calls_surfaces_fork_failure_not_yield() -> None:
+    """A ``no_tools`` fork child that made read-only calls must surface the
+    deterministic fork-failure message, not the generic iteration-budget
+    yield question.
+
+    Regression for the 2026-08-04 incident: the parent's ``no_tools_detail``
+    list comprehension accessed ``r.called_tool_names`` on each
+    ``ForkChildResult``, but that field existed only on ``DelegationResult``.
+    The ``AttributeError`` was caught by the ``transition_stage`` tool-dispatch
+    wrapper, the fork-failure ``content`` was never set, the loop broke with
+    empty content, and the post-loop fallback emitted "I've hit my iteration
+    budget for this turn." — masking the real fork abort after only a few
+    iterations. ``ForkChildResult`` now carries ``called_tool_names`` so the
+    detail comp runs and the user sees the fork-failure framing.
+    """
+
+    call_count = 0
+
+    async def two_step(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "fork:markdown"}',
+                        },
+                    }
+                ],
+            )
+        # The markdown child makes a read-only call (fetch_page) instead of
+        # its authored action tool — exactly the production scenario.
+        return _StubCompletion(
+            content="Done — wrote it to disk.",
+            tool_calls=[
+                {
+                    "id": "call_2",
+                    "function": {
+                        "name": "fetch_page",
+                        "arguments": '{"url": "https://example.com"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(two_step)
+    result = await run_turn(mode_id="default", query="write a markdown guide", hooks=hooks)
+
+    # The child is labeled no_tools with its read-only calls recorded.
+    assert result.fork_results is not None
+    assert len(result.fork_results) == 1
+    child = result.fork_results[0]
+    assert child.status == "no_tools"
+    assert child.called_tool_names == ["fetch_page"]
+    # The parent must surface the fork-failure framing, not the generic
+    # iteration-budget yield question that masked the abort.
+    assert "read-only calls" in result.response_text or "never wrote" in result.response_text
+    assert "iteration budget" not in result.response_text.lower()
+
+
 def test_max_handoffs_per_turn_setting_is_bound() -> None:
     """The hard backstop setting exists and is a sane bound. This guards
     against accidental removal — the loop guard depends on it. The

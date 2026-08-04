@@ -259,6 +259,7 @@ async def _run_fork_child_turn(
                         target=target,
                         status="model_yield",
                         output_text=child_result.response_text,
+                        called_tool_names=sorted(child_result.called_tool_names),
                         yield_action=_ya,
                         duration_ms=elapsed_ms,
                     ),
@@ -284,6 +285,7 @@ async def _run_fork_child_turn(
                         f"FORK_CHILD_MAX_TOOL_ITERATIONS (currently "
                         f"{_kernel_settings.fork_child_max_tool_iterations})."
                     ),
+                    called_tool_names=sorted(child_result.called_tool_names),
                     yield_action=_ya,
                     duration_ms=elapsed_ms,
                 ),
@@ -306,6 +308,7 @@ async def _run_fork_child_turn(
                         "declares action operations/tools, so its reported success is "
                         "unverified (nothing written to disk or memory)."
                     ),
+                    called_tool_names=sorted(child_result.called_tool_names),
                     duration_ms=elapsed_ms,
                 ),
                 "no_tools",
@@ -357,6 +360,7 @@ async def _run_fork_child_turn(
                         "reported success is unverified — nothing was "
                         "written to disk or memory."
                     ),
+                    called_tool_names=sorted(child_result.called_tool_names),
                     duration_ms=elapsed_ms,
                 ),
                 "no_tools",
@@ -367,6 +371,7 @@ async def _run_fork_child_turn(
                 target=target,
                 status="ok",
                 output_text=child_result.response_text,
+                called_tool_names=sorted(child_result.called_tool_names),
                 duration_ms=elapsed_ms,
             ),
             "ok",
