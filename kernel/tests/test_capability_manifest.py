@@ -97,7 +97,7 @@ def test_compile_manifest_reflects_exact_tool_count() -> None:
 def test_compile_manifest_records_mode_constraints() -> None:
     """When mode_config has allowed_tool_ids, the manifest records the constraint."""
     mode_config = SimpleNamespace(
-        mode_id="learn",
+        mode_id="remember",
         allowed_tool_ids=["memory.add", "memory.search"],
         tools_authoritative=False,
     )
@@ -106,7 +106,7 @@ def test_compile_manifest_records_mode_constraints() -> None:
         [_make_tool_schema("memory.add")], mode_config=mode_config
     )
 
-    assert manifest.metadata["mode_id"] == "learn"
+    assert manifest.metadata["mode_id"] == "remember"
     assert manifest.metadata["allowed_tool_ids"] == ["memory.add", "memory.search"]
     assert manifest.metadata["tools_authoritative"] is False
     # Non-authoritative mode does not add an authoritative constraint
@@ -158,7 +158,7 @@ def test_render_capability_manifest_context_includes_counts() -> None:
 def test_render_capability_manifest_context_shows_mode() -> None:
     """The rendered context block shows the active mode."""
     mode_config = SimpleNamespace(
-        mode_id="learn",
+        mode_id="remember",
         allowed_tool_ids=[],
         tools_authoritative=True,
     )
@@ -168,5 +168,5 @@ def test_render_capability_manifest_context_shows_mode() -> None:
 
     rendered = render_capability_manifest_context(manifest)
 
-    assert "mode: learn" in rendered
+    assert "mode: remember" in rendered
     assert "tools_authoritative: yes" in rendered

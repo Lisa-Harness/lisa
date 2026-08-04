@@ -69,7 +69,7 @@ DEFAULT_SEQUENTIAL_CONNECTORS: Final[tuple[str, ...]] = (
 #
 # A fork runs children in parallel with the whole query; none can see
 # another's output. That is correct when every child is *independent*
-# (e.g. ``learn`` writes memory + ``markdown`` writes a doc from the same
+# (e.g. ``remember`` writes memory + ``markdown`` writes a doc from the same
 # query text). It is wrong when one child *consumes* another's output —
 # e.g. ``markdown`` writing a doc from research that ``ponder``/``search``
 # gather in parallel. The consumer has no evidence to work from, so it

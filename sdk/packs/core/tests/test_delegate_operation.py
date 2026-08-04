@@ -172,14 +172,14 @@ async def test_delegate_rejects_unexpected_result_type(monkeypatch: pytest.Monke
 @pytest.mark.asyncio
 async def test_delegate_renders_no_tools_status(monkeypatch: pytest.MonkeyPatch) -> None:
     """A no_tools child renders the status and error message honestly."""
-    _patched_catalog(monkeypatch, {"learn"})
+    _patched_catalog(monkeypatch, {"remember"})
 
     async def fake_delegate_fn(spec: DelegationSpec) -> DelegationResult:
         return DelegationResult(
-            target_mode_id="learn",
+            target_mode_id="remember",
             status="no_tools",
             output_text="I learned it (unverified)",
-            error_message="learn child made 3 tool calls but none were action tools",
+            error_message="remember child made 3 tool calls but none were action tools",
             tool_call_count=3,
             called_tool_names=["recall_memory", "read_file", "list_files"],
             duration_ms=100,
@@ -187,7 +187,7 @@ async def test_delegate_renders_no_tools_status(monkeypatch: pytest.MonkeyPatch)
         )
 
     ctx = _ctx_with_host(
-        params={"target_mode_id": "learn", "query": "learn about rust"},
+        params={"target_mode_id": "remember", "query": "learn about rust"},
         delegate_fn=fake_delegate_fn,
     )
     result = await delegate_mod.execute(ctx)

@@ -1754,7 +1754,7 @@ async def test_run_turn_fork_marks_no_tools_child_when_action_mode_skipped_tools
     produced a hallucinated "Done — wrote it to disk" text response
     without ever calling ``markdown_forge_document`` / ``write_file``,
     and the parent reported "2/2 children succeeded" while nothing landed
-    on disk. ``learn`` and ``markdown`` declare non-empty
+    on disk. ``remember`` and ``markdown`` declare non-empty
     ``allowed_operation_ids``/``allowed_tool_ids``; a child running such
     a mode that made no tool calls did not actually do its job.
     """
@@ -1772,7 +1772,7 @@ async def test_run_turn_fork_marks_no_tools_child_when_action_mode_skipped_tools
                         "id": "call_1",
                         "function": {
                             "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:learn,markdown"}',
+                            "arguments": '{"target_stage_id": "fork:remember,markdown"}',
                         },
                     }
                 ],
@@ -1788,9 +1788,9 @@ async def test_run_turn_fork_marks_no_tools_child_when_action_mode_skipped_tools
     assert result.fork_results is not None
     assert len(result.fork_results) == 2
     statuses = {child.target.mode_id: child.status for child in result.fork_results}
-    # Both learn and markdown declare action tools/operations, so children
+    # Both remember and markdown declare action tools/operations, so children
     # that made zero tool calls must be flagged no_tools, not ok.
-    assert statuses["learn"] == "no_tools"
+    assert statuses["remember"] == "no_tools"
     assert statuses["markdown"] == "no_tools"
     for child in result.fork_results:
         assert child.status != "ok"
@@ -1798,11 +1798,11 @@ async def test_run_turn_fork_marks_no_tools_child_when_action_mode_skipped_tools
 
 def test_fork_mode_requires_tools_true_for_action_modes() -> None:
     """``_fork_mode_requires_tools`` returns True for modes that declare
-    non-empty ``allowed_operation_ids`` or ``allowed_tool_ids`` (learn,
+    non-empty ``allowed_operation_ids`` or ``allowed_tool_ids`` (remember,
     markdown), and False for chat-only modes (default, ponder)."""
     from kernel.turn_runner import _fork_mode_requires_tools
 
-    assert _fork_mode_requires_tools("learn") is True
+    assert _fork_mode_requires_tools("remember") is True
     assert _fork_mode_requires_tools("markdown") is True
     assert _fork_mode_requires_tools("default") is False
     assert _fork_mode_requires_tools("nonexistent_mode") is False
@@ -1818,13 +1818,13 @@ def test_fork_mode_action_tool_ids_returns_authored_action_tools() -> None:
     # markdown declares markdown_forge_document / markdown_generate as
     # authored operations/tools — at least one must be present.
     assert "markdown_forge_document" in markdown_actions or "markdown_generate" in markdown_actions
-    # learn declares synthesize_and_store_learning (write-effect) as an
+    # remember declares synthesize_and_store_learning (write-effect) as an
     # authored action operation — a child that persists learning via that
-    # op must NOT be flagged no_tools (the 2026-08-01 fork:learn,markdown
-    # regression: learn told to use synthesize_and_store_learning was
+    # op must NOT be flagged no_tools (the 2026-08-01 fork:remember,markdown
+    # regression: remember told to use synthesize_and_store_learning was
     # wrongly flagged because only the memory.* tools were recognized).
-    learn_actions = _fork_mode_action_tool_ids("learn")
-    assert "synthesize_and_store_learning" in learn_actions
+    remember_actions = _fork_mode_action_tool_ids("remember")
+    assert "synthesize_and_store_learning" in remember_actions
     # ponder's only authored operation is web_search (read-effect) — it
     # must be excluded because ponder's output is its response text, not a
     # side-effect. A child that gathers evidence via fetch_page and
@@ -2769,11 +2769,11 @@ def test_routing_hint_concurrent_query_still_forks() -> None:
 
     from kernel.turn_runner import _compute_capability_routing_hint
 
-    learn_cfg = _mode_config(
-        mode_id="learn",
-        satisfies_intents=["learn"],
-        routing_intent_tags=["learn"],
-        routing_intent_keywords={"learn": ["remember", "note", "capture"]},
+    remember_cfg = _mode_config(
+        mode_id="remember",
+        satisfies_intents=["remember"],
+        routing_intent_tags=["remember"],
+        routing_intent_keywords={"remember": ["remember", "note", "capture"]},
     )
     markdown_cfg = _mode_config(
         mode_id="markdown",
@@ -2782,20 +2782,20 @@ def test_routing_hint_concurrent_query_still_forks() -> None:
         routing_intent_keywords={"write": ["write", "markdown", "document"]},
     )
     default_cfg = _mode_config(mode_id="default")
-    patched_catalog = {"learn": learn_cfg, "markdown": markdown_cfg, "default": default_cfg}
+    patched_catalog = {"remember": remember_cfg, "markdown": markdown_cfg, "default": default_cfg}
 
     with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
         hint = _compute_capability_routing_hint(
             mode_id="default",
             query="remember this and write a markdown of it",
             capability_manifest=_empty_manifest(),
-            routing_targets=["learn", "markdown"],
+            routing_targets=["remember", "markdown"],
             mode_config=default_cfg,
         )
 
     assert hint != ""
     assert "fork:" in hint
-    assert "learn" in hint and "markdown" in hint
+    assert "remember" in hint and "markdown" in hint
 
 
 def test_routing_hint_refuses_fork_for_producer_consumer_mix() -> None:
@@ -3377,7 +3377,7 @@ def test_routing_hint_search_gap_without_reasoning_lists_targets() -> None:
 def test_routing_hint_forks_for_remember_and_write_markdown() -> None:
     """A request pairing remember/learn with write-a-markdown-doc has two
     concurrent goals. The hint must steer the model to a fork fan-out
-    (`fork:learn,markdown`), not a single-mode handoff.
+    (`fork:remember,markdown`), not a single-mode handoff.
 
     Regression case for docs/lisa-markdown-stage-failure-2026-07-17.md: the
     model called markdown_forge_document / markdown_generate from default
@@ -3385,7 +3385,7 @@ def test_routing_hint_forks_for_remember_and_write_markdown() -> None:
     The proactive hint must surface before the model wastes an iteration.
     The kernel is a pure mapper: the decision (fork, not single handoff)
     is driven entirely by set algebra over the pack-authored
-    routing_intent_tags (learn covers 'learn', markdown covers 'write',
+    routing_intent_tags (remember covers 'remember', markdown covers 'write',
     neither covers both). The kernel emits no tool-policy narration
     ('mode-scoped tools', 'rejected'); it names only the mechanics
     (transition_stage + the fork target id). Any such narration would be
@@ -3397,12 +3397,12 @@ def test_routing_hint_forks_for_remember_and_write_markdown() -> None:
         mode_id="default",
         query="remember that pretty much verbatim and also write a markdown of it",
         capability_manifest=_empty_manifest(),
-        routing_targets=["learn", "markdown", "coding", "ponder", "search"],
+        routing_targets=["remember", "markdown", "coding", "ponder", "search"],
     )
     assert hint != ""
     assert "transition_stage" in hint
     # Must name the fork target, not a single mode handoff
-    assert "fork:learn,markdown" in hint
+    assert "fork:remember,markdown" in hint
     # The kernel must not narrate tool-policy semantics in its own prose.
     # The handoff instruction is purely mechanical.
     assert "mode-scoped" not in hint.lower()
@@ -3410,18 +3410,18 @@ def test_routing_hint_forks_for_remember_and_write_markdown() -> None:
 
 
 def test_routing_hint_fork_requires_both_routable_modes() -> None:
-    """When one of learn/markdown is not a routing target, do not suggest a
+    """When one of remember/markdown is not a routing target, do not suggest a
     fork — fall back to the single-goal branches (or no hint).
     """
     from kernel.turn_runner import _compute_capability_routing_hint
 
-    # markdown not routable from here → no fork hint; learn+write cues with
+    # markdown not routable from here → no fork hint; remember+write cues with
     # no tool/search/research-reason gap means no hint at all.
     hint = _compute_capability_routing_hint(
         mode_id="default",
         query="remember the decision and write a markdown of it",
         capability_manifest=_empty_manifest(),
-        routing_targets=["learn", "coding"],  # markdown missing
+        routing_targets=["remember", "coding"],  # markdown missing
     )
     assert "fork:" not in hint
 
@@ -3436,18 +3436,18 @@ def test_routing_hint_fork_preserves_target_case() -> None:
         mode_id="default",
         query="take a note of this and write a markdown document",
         capability_manifest=_empty_manifest(),
-        routing_targets=["learn", "markdown"],
+        routing_targets=["remember", "markdown"],
     )
-    assert "fork:learn,markdown" in hint
+    assert "fork:remember,markdown" in hint
 
 
 def test_routing_hint_forks_from_coding_mode() -> None:
     """From coding mode, a remember+write-markdown request must still steer
-    to fork:learn,markdown once the routing FSM is a full mesh.
+    to fork:remember,markdown once the routing FSM is a full mesh.
 
     Regression for docs/lisa-coding-mode-fork-failure-2026-07-17.md: with the
     conservative default-only edge set, coding's routing_targets were
-    ["default"] and the fork branch's "learn"/"markdown" membership guard
+    ["default"] and the fork branch's "remember"/"markdown" membership guard
     never passed. The model then fell back to coding_create_worktree
     (approval-gated), producing a worktree approval loop instead of a fork.
     """
@@ -3457,17 +3457,17 @@ def test_routing_hint_forks_from_coding_mode() -> None:
         mode_id="coding",
         query="remember the entire thing and write a markdown document of it",
         capability_manifest=_empty_manifest(),
-        # Post-mesh coding routing targets include learn + markdown.
-        routing_targets=["default", "learn", "markdown", "ponder", "search"],
+        # Post-mesh coding routing targets include remember + markdown.
+        routing_targets=["default", "remember", "markdown", "ponder", "search"],
     )
     assert hint != ""
     assert "transition_stage" in hint
-    assert "fork:learn,markdown" in hint
+    assert "fork:remember,markdown" in hint
 
 
 # ── Single-intent handoff tests (satisfies_intents) ──────────────────
 #
-# The 2026-07-17 fork fix only unblocked the *two-goal* learn+markdown
+# The 2026-07-17 fork fix only unblocked the *two-goal* remember+markdown
 # fork from coding. A *single-intent* "write a markdown document" request
 # (no "remember" cue) should produce a single coding → markdown handoff,
 # not a fork and not an approval-gated coding_create_worktree fallback.
@@ -3498,7 +3498,7 @@ def test_routing_hint_single_handoff_coding_to_markdown() -> None:
         mode_id="coding",
         query="write a markdown document of the report you just produced",
         capability_manifest=coding_manifest,
-        routing_targets=["default", "learn", "markdown", "ponder", "search"],
+        routing_targets=["default", "remember", "markdown", "ponder", "search"],
         mode_config=_mode_config(
             mode_id="coding",
             # Coding declares it handles coding intent in-place, NOT write.
@@ -3530,7 +3530,7 @@ def test_routing_hint_suppressed_when_mode_satisfies_write_intent() -> None:
         mode_id="markdown",
         query="write a markdown document of the report you just produced",
         capability_manifest=_empty_manifest(),
-        routing_targets=["default", "learn", "coding", "ponder", "search"],
+        routing_targets=["default", "remember", "coding", "ponder", "search"],
         mode_config=_mode_config(
             mode_id="markdown",
             satisfies_intents=["write"],
@@ -3555,14 +3555,14 @@ def test_routing_hint_single_handoff_fires_even_with_rich_manifest() -> None:
         mode_id="coding",
         query="draft a markdown document of the findings",
         capability_manifest=_manifest_with_coding_tools(),
-        routing_targets=["default", "learn", "markdown", "ponder", "search"],
+        routing_targets=["default", "remember", "markdown", "ponder", "search"],
         mode_config=_mode_config(mode_id="coding", satisfies_intents=["coding"]),
     )
     hint_with_empty_manifest = _compute_capability_routing_hint(
         mode_id="coding",
         query="draft a markdown document of the findings",
         capability_manifest=_empty_manifest(),
-        routing_targets=["default", "learn", "markdown", "ponder", "search"],
+        routing_targets=["default", "remember", "markdown", "ponder", "search"],
         mode_config=_mode_config(mode_id="coding", satisfies_intents=["coding"]),
     )
     # Both must fire and produce identical steering — the manifest is
@@ -3989,7 +3989,7 @@ async def test_no_tools_fork_child_aborts_turn() -> None:
                         "id": "call_1",
                         "function": {
                             "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:learn,markdown"}',
+                            "arguments": '{"target_stage_id": "fork:remember,markdown"}',
                         },
                     }
                 ],
@@ -4131,9 +4131,9 @@ def test_extract_hint_target_parses_fork_target() -> None:
     hint = (
         "## Routing Hint\n\n"
         "Hand off by calling `transition_stage` with "
-        "target_stage_id `fork:learn,markdown`."
+        "target_stage_id `fork:remember,markdown`."
     )
-    assert _extract_hint_target(hint) == "fork:learn,markdown"
+    assert _extract_hint_target(hint) == "fork:remember,markdown"
 
 
 def test_extract_hint_target_returns_empty_for_no_marker() -> None:
@@ -4429,7 +4429,7 @@ async def test_fork_child_sees_sub_turn_contract_with_action_tools() -> None:
     ``## Sub-Turn Contract`` block naming those tools, framing the
     budget as a write-deadline.
 
-    Regression for the 2026-08-03 incident: a ``learn`` fork child saw
+    Regression for the 2026-08-03 incident: a ``remember`` fork child saw
     only ``iters: 49/50`` and read-looped to the cap without ever calling
     its action tools. The sub-turn contract now names the action tools
     and tells the child reads do not count.
@@ -4447,7 +4447,7 @@ async def test_fork_child_sees_sub_turn_contract_with_action_tools() -> None:
                         "id": "call_1",
                         "function": {
                             "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:learn"}',
+                            "arguments": '{"target_stage_id": "fork:remember"}',
                         },
                     }
                 ],
@@ -4455,7 +4455,7 @@ async def test_fork_child_sees_sub_turn_contract_with_action_tools() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(two_step)
-    result = await run_turn(mode_id="default", query="learn and write", hooks=hooks)
+    result = await run_turn(mode_id="default", query="remember and write", hooks=hooks)
 
     assert result.fork_results is not None
     assert len(result.fork_results) == 1
@@ -4464,7 +4464,7 @@ async def test_fork_child_sees_sub_turn_contract_with_action_tools() -> None:
     # but the stub complete function doesn't capture the child's prompt.
     # Verify via the child's status: the contract + nudge are behaviorally
     # tested in the next test. Here we just verify the fork ran.
-    assert child.target.mode_id == "learn"
+    assert child.target.mode_id == "remember"
 
 
 @pytest.mark.asyncio
@@ -4516,7 +4516,7 @@ async def test_fork_child_midpoint_write_nudge_fires_once() -> None:
     calls gets a one-shot midpoint write-nudge. The nudge fires exactly
     once (``write_nudge_fired`` on ``_TurnState``).
 
-    The test runs a fork:learn child that keeps calling ``fetch_page``
+    The test runs a fork:remember child that keeps calling ``fetch_page``
     (read-only) past the midpoint. The nudge is captured as a user
     message appended to the conversation.
     """
@@ -4534,7 +4534,7 @@ async def test_fork_child_midpoint_write_nudge_fires_once() -> None:
                         "id": "call_1",
                         "function": {
                             "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "fork:learn"}',
+                            "arguments": '{"target_stage_id": "fork:remember"}',
                         },
                     }
                 ],
@@ -4544,7 +4544,7 @@ async def test_fork_child_midpoint_write_nudge_fires_once() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(two_step)
-    result = await run_turn(mode_id="default", query="learn and write", hooks=hooks)
+    result = await run_turn(mode_id="default", query="remember and write", hooks=hooks)
 
     assert result.fork_results is not None
     assert len(result.fork_results) == 1
@@ -4558,4 +4558,4 @@ async def test_fork_child_midpoint_write_nudge_fires_once() -> None:
     # we assert the structural seam exists rather than the exact nudge
     # text. The _build_sub_turn_contract unit test above covers the
     # contract content; this test verifies the fork child wiring.
-    assert result.fork_results[0].target.mode_id == "learn"
+    assert result.fork_results[0].target.mode_id == "remember"

@@ -12,7 +12,7 @@ include = ["sdk.packs.memory*"]
 [project]
 name = "lisa-pack-memory"
 version = "0.1.0"
-description = "Lisa memory pack - memory-backed default and learn workflows"
+description = "Lisa memory pack - memory-backed default and remember workflows"
 requires-python = ">=3.11"
 
 [project.optional-dependencies]

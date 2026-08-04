@@ -163,8 +163,8 @@ def test_operation_allowed_for_mode_returns_true_when_no_mode_config() -> None:
 
 def test_operation_allowed_for_mode_mode_allowlist_match() -> None:
     """When the operation's mode_allowlist includes the current mode, it's allowed."""
-    definition = SimpleNamespace(mode_allowlist=["learn", "default"])
-    mode_config = _make_mode_config(mode_id="learn")
+    definition = SimpleNamespace(mode_allowlist=["remember", "default"])
+    mode_config = _make_mode_config(mode_id="remember")
     assert (
         _operation_allowed_for_mode(
             operation_id="my_op",
@@ -407,7 +407,7 @@ async def test_schema_assembly_includes_operations_for_mode() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = TurnHooks(complete=capture)
-    await run_turn(mode_id="learn", query="test", hooks=hooks)
+    await run_turn(mode_id="remember", query="test", hooks=hooks)
 
     tool_names = {_tool_schema_name(t) for t in captured_tools}
     operation_ids = set(get_operation_catalog().keys())
@@ -460,10 +460,10 @@ async def test_schema_assembly_excludes_mcp_tools_not_in_allowlist() -> None:
             pass
 
     hooks = TurnHooks(complete=capture, mcp_tool_pool=_StubPool())
-    await run_turn(mode_id="learn", query="test", hooks=hooks)
+    await run_turn(mode_id="remember", query="test", hooks=hooks)
 
     tool_names = {_tool_schema_name(t) for t in captured_tools}
-    # learn mode allows memory.add (synthetic) but not test.unauthorized_tool
+    # remember mode allows memory.add (synthetic) but not test.unauthorized_tool
     assert "memory.add" in tool_names
     assert "test.unauthorized_tool" not in tool_names
 

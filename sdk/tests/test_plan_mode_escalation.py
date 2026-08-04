@@ -81,11 +81,11 @@ def _full_catalog() -> dict[str, WorkflowModeConfig]:
             routing_intent_keywords={"write": ["write", "markdown", "document", "report"]},
             description="Markdown document mode.",
         ),
-        "learn": _mode_config(
-            mode_id="learn",
-            satisfies_intents=["learn"],
-            routing_intent_tags=["learn"],
-            routing_intent_keywords={"learn": ["remember", "note", "capture"]},
+        "remember": _mode_config(
+            mode_id="remember",
+            satisfies_intents=["remember"],
+            routing_intent_tags=["remember"],
+            routing_intent_keywords={"remember": ["remember", "note", "capture"]},
             description="Memory capture mode.",
         ),
         "plan": _mode_config(
@@ -144,7 +144,7 @@ def test_routing_hint_escalates_to_plan_for_three_plus_intents_non_sequential() 
             mode_id="default",
             query=q,
             capability_manifest=_empty_manifest(),
-            routing_targets=["search", "learn", "markdown", "plan"],
+            routing_targets=["search", "remember", "markdown", "plan"],
             mode_config=catalog["default"],
         )
 
@@ -182,7 +182,7 @@ def test_routing_hint_does_not_escalate_to_plan_when_plan_not_routable() -> None
 
     reset_plan_reliability()
     catalog = {
-        "learn": _full_catalog()["learn"],
+        "remember": _full_catalog()["remember"],
         "markdown": _full_catalog()["markdown"],
         "default": _full_catalog()["default"],
     }
@@ -192,7 +192,7 @@ def test_routing_hint_does_not_escalate_to_plan_when_plan_not_routable() -> None
             mode_id="default",
             query=q,
             capability_manifest=_empty_manifest(),
-            routing_targets=["learn", "markdown"],
+            routing_targets=["remember", "markdown"],
             mode_config=catalog["default"],
         )
 
@@ -351,11 +351,11 @@ def test_routing_hint_fallback_silences_when_no_clean_cover() -> None:
             routing_intent_tags=["research"],
             routing_intent_keywords={"research": ["search", "news"]},
         ),
-        "learn": _mode_config(
-            mode_id="learn",
-            satisfies_intents=["learn"],
-            routing_intent_tags=["learn"],
-            routing_intent_keywords={"learn": ["remember", "note"]},
+        "remember": _mode_config(
+            mode_id="remember",
+            satisfies_intents=["remember"],
+            routing_intent_tags=["remember"],
+            routing_intent_keywords={"remember": ["remember", "note"]},
         ),
         # A third target that covers a *third* intent the query also
         # expresses, so the fork's two-target cover is incomplete.
@@ -386,7 +386,7 @@ def test_routing_hint_fallback_silences_when_no_clean_cover() -> None:
             mode_id="default",
             query="hello world",
             capability_manifest=_empty_manifest(),
-            routing_targets=["search", "learn", "coding"],
+            routing_targets=["search", "remember", "coding"],
             mode_config=catalog["default"],
         )
     # No intents detected from "hello world" → no gap → empty hint.

@@ -1,6 +1,6 @@
 """Memory pack for Lisa.
 
-Adds memory-backed conversational behavior and explicit learn-mode workflows
+Adds memory-backed conversational behavior and explicit remember-mode workflows
 without requiring changes to core-pack content.
 """
 

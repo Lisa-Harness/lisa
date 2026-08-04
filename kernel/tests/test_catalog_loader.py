@@ -485,10 +485,10 @@ def test_load_catalog_from_disk_reads_satisfies_intents(tmp_path: Path) -> None:
     routing hint generator knows not to suggest a handoff for them. Authored
     by packs; the kernel never hardcodes mode-specific intent semantics.
     """
-    _write_mode(tmp_path, extra_front_matter={"satisfies_intents": ["write", "learn"]})
+    _write_mode(tmp_path, extra_front_matter={"satisfies_intents": ["write", "remember"]})
     catalog = _load(tmp_path)
 
-    assert catalog["demo"].satisfies_intents == ["write", "learn"]
+    assert catalog["demo"].satisfies_intents == ["write", "remember"]
 
 
 def test_load_catalog_from_disk_satisfies_intents_default_empty(tmp_path: Path) -> None:

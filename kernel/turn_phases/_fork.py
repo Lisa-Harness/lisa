@@ -54,13 +54,13 @@ __all__ = [
 def _fork_mode_requires_tools(mode_id: str) -> bool:
     """Return True when a fork child's mode declares side-effecting action tools.
 
-    Modes like ``learn`` and ``markdown`` exist to *take action* (distill +
+    Modes like ``remember`` and ``markdown`` exist to *take action* (distill +
     persist memories, write documents). Their ``_mode.md`` front matter
     declares non-empty ``allowed_operation_ids`` or ``allowed_tool_ids``
     that include at least one write/external_write-effect tool. A fork
     child running such a mode that completes with **zero tool calls**
     almost certainly produced a hallucinated "Done — wrote it to disk" text
-    response without invoking its write/learn tool, leaving nothing on disk
+    response without invoking its write/remember tool, leaving nothing on disk
     or in memory. The caller marks these ``status="no_tools"`` instead of
     ``"ok"`` so the parent does not report a false success.
 
@@ -173,11 +173,11 @@ async def _run_fork_child_turn(
     Extracted from ``_execute_fork_fanout`` to keep that function under
     the McCabe complexity cap.
 
-    A child whose mode declares action operations/tools (``learn``,
+    A child whose mode declares action operations/tools (``remember``,
     ``markdown``, etc.) but completes with **zero tool calls** is marked
     ``status="no_tools"`` rather than ``"ok"``. Such a child typically
     produced a hallucinated "Done — wrote it to disk" text response
-    without invoking its write/learn tool, leaving nothing on disk or
+    without invoking its write/remember tool, leaving nothing on disk or
     in the memory store. The parent must not report these as succeeded.
     """
     _flog = logger_override or logging.getLogger(__name__)

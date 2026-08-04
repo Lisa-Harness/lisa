@@ -105,7 +105,7 @@ def _detect_query_intents(
                     detected.add(tag)
                     break
         # Also check the command_pattern — a query that explicitly names the
-        # mode (e.g. "learn that...") is a strong signal.
+        # mode (e.g. "remember that...") is a strong signal.
         if not mode_config.routing_intent_keywords and mode_config.command_pattern:
             try:
                 if re.search(mode_config.command_pattern, query, re.IGNORECASE):
@@ -554,7 +554,7 @@ def _compute_capability_routing_hint(
     """Compute a proactive routing hint when the current mode lacks tools.
 
     Tag-blind and prose-blind: the kernel does not name, hardcode, or
-    hard-author any intent tag (research, reasoning, write, learn, ...) or
+    hard-author any intent tag (research, reasoning, write, remember, ...) or
     any steering prose. Intent tags are opaque pack-authored vocabulary;
     routing prose is pack-authored via each target's ``routing_hint``
     template. Each routing target declares its own ``fast_path_patterns``
@@ -593,7 +593,7 @@ def _compute_capability_routing_hint(
     # ── 2. Check if the current mode already satisfies detected intents ──
     # Declarative and tag-blind: the kernel works over opaque intent-tag
     # sets. It never names any specific intent (research, reasoning, write,
-    # learn, ...) — those are pack-authored vocabulary. The current mode
+    # remember, ...) — those are pack-authored vocabulary. The current mode
     # authors ``satisfies_intents`` in its _mode.md front matter; the
     # detected intents it does not claim to satisfy are the gap. Default
     # empty (e.g. ``default`` mode) means every detected intent is a gap,
@@ -692,8 +692,8 @@ def _compute_capability_routing_hint(
     # ── 4. Multi-intent fork detection ─────────────────────────────────
     # When no single target covers all remaining gap intents but multiple
     # targets each cover a disjoint subset, suggest a fork fan-out. This is
-    # the generic form of the learn+write case: learn covers "learn", markdown
-    # covers "write", neither covers both → fork:learn,markdown.
+    # the generic form of the remember+write case: remember covers "remember",
+    # markdown covers "write", neither covers both → fork:remember,markdown.
     #
     # Sequential requests ("search ... then code ... then write a markdown")
     # must NOT fork — a fork runs the children in parallel with the whole

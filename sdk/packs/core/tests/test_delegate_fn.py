@@ -55,7 +55,7 @@ async def test_default_delegate_fn_ok_status_with_action_tool(
     """A child that invoked an action tool is ``ok`` (spec §6.1 predicate)."""
     _stub_catalog(monkeypatch, {})
 
-    spec = DelegationSpec(target_mode_id="learn", query="learn rust")
+    spec = DelegationSpec(target_mode_id="remember", query="learn rust")
     hooks = TurnHooks()
 
     async def fake_run_turn(**kwargs: Any) -> TurnResult:
@@ -76,11 +76,11 @@ async def test_default_delegate_fn_ok_status_with_action_tool(
     # and the called name matches the action set.
     monkeypatch.setattr(
         "kernel.turn_phases._fork._fork_mode_action_tool_ids",
-        lambda mode_id: {"synthesize_and_store_learning"} if mode_id == "learn" else set(),
+        lambda mode_id: {"synthesize_and_store_learning"} if mode_id == "remember" else set(),
     )
     monkeypatch.setattr(
         "kernel.turn_phases._fork._fork_mode_requires_tools",
-        lambda mode_id: mode_id == "learn",
+        lambda mode_id: mode_id == "remember",
     )
 
     result = await _default_delegate_fn(
@@ -104,7 +104,7 @@ async def test_default_delegate_fn_no_tools_when_only_read_calls(
     """
     _stub_catalog(monkeypatch, {})
 
-    spec = DelegationSpec(target_mode_id="learn", query="learn rust")
+    spec = DelegationSpec(target_mode_id="remember", query="learn rust")
     hooks = TurnHooks()
 
     async def fake_run_turn(**kwargs: Any) -> TurnResult:
@@ -117,11 +117,11 @@ async def test_default_delegate_fn_no_tools_when_only_read_calls(
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
     monkeypatch.setattr(
         "kernel.turn_phases._fork._fork_mode_action_tool_ids",
-        lambda mode_id: {"synthesize_and_store_learning"} if mode_id == "learn" else set(),
+        lambda mode_id: {"synthesize_and_store_learning"} if mode_id == "remember" else set(),
     )
     monkeypatch.setattr(
         "kernel.turn_phases._fork._fork_mode_requires_tools",
-        lambda mode_id: mode_id == "learn",
+        lambda mode_id: mode_id == "remember",
     )
 
     result = await _default_delegate_fn(
@@ -168,7 +168,7 @@ async def test_default_delegate_fn_interrupted_on_harness_yield(
     """A harness force-yield (cap/budget) is ``interrupted``, not ``no_tools``."""
     _stub_catalog(monkeypatch, {})
 
-    spec = DelegationSpec(target_mode_id="learn", query="learn rust")
+    spec = DelegationSpec(target_mode_id="remember", query="learn rust")
     hooks = TurnHooks()
 
     async def fake_run_turn(**kwargs: Any) -> TurnResult:
@@ -185,7 +185,7 @@ async def test_default_delegate_fn_interrupted_on_harness_yield(
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
     monkeypatch.setattr(
         "kernel.turn_phases._fork._fork_mode_action_tool_ids",
-        lambda mode_id: {"synthesize_and_store_learning"} if mode_id == "learn" else set(),
+        lambda mode_id: {"synthesize_and_store_learning"} if mode_id == "remember" else set(),
     )
 
     result = await _default_delegate_fn(
@@ -202,7 +202,7 @@ async def test_default_delegate_fn_model_yield_propagates_question(
     """A model-emitted yield propagates the question to the parent."""
     _stub_catalog(monkeypatch, {})
 
-    spec = DelegationSpec(target_mode_id="learn", query="learn rust")
+    spec = DelegationSpec(target_mode_id="remember", query="learn rust")
     hooks = TurnHooks()
 
     async def fake_run_turn(**kwargs: Any) -> TurnResult:

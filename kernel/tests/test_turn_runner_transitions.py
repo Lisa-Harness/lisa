@@ -114,9 +114,9 @@ def test_fork_child_budget_floors_division() -> None:
 # ── Fork: _fork_mode_requires_tools ────────────────────────────────────
 
 
-def test_fork_mode_requires_tools_true_for_learn() -> None:
-    """learn mode declares allowed_tool_ids, so it requires tools."""
-    assert _fork_mode_requires_tools("learn") is True
+def test_fork_mode_requires_tools_true_for_remember() -> None:
+    """remember mode declares allowed_tool_ids, so it requires tools."""
+    assert _fork_mode_requires_tools("remember") is True
 
 
 def test_fork_mode_requires_tools_true_for_markdown() -> None:
@@ -632,7 +632,7 @@ def test_compute_fork_target_string_returns_none_when_no_gap() -> None:
     catalog = get_workflow_catalog()
     target = _compute_fork_target_string(
         query="hello",  # no detectable intents
-        routing_targets=["learn", "markdown"],
+        routing_targets=["remember", "markdown"],
         mode_config=catalog.get("default"),
     )
     assert target is None
@@ -688,7 +688,7 @@ async def test_forced_fork_when_model_refuses_to_fork() -> None:
         return _StubCompletion(content="Synthesized from forced fork.")
 
     hooks = _build_hooks(two_step)
-    # A query that triggers a fork hint from default mode (learn + write).
+    # A query that triggers a fork hint from default mode (remember + write).
     result = await run_turn(
         mode_id="default",
         query="remember this learning and write a markdown guide",

@@ -28,12 +28,14 @@ _CORE_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs"
 _LEARNING_ROOT: Path = (
     Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "memory"
 ).resolve()
-# search, markdown, and letta migrated to ../lisa_packs/<name>
-# (external submodules). Only include a content root when the submodule is
-# checked out alongside the framework; tests that need a migrated mode skip
-# when absent. compaction was promoted back to an in-tree workspace member
-# (sdk/packs/compaction) and is discovered via entry points like checkpoint.
-_PACKS_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / ".." / "lisa_packs").resolve()
+# search, markdown, and letta migrated to ../lisa-packs/<name>
+# (external submodules; note the hyphenated repo name — the inner Python
+# package dir is still ``lisa_packs``). Only include a content root when the
+# submodule is checked out alongside the framework; tests that need a
+# migrated mode skip when absent. compaction was promoted back to an in-tree
+# workspace member (sdk/packs/compaction) and is discovered via entry points
+# like checkpoint.
+_PACKS_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / ".." / "lisa-packs").resolve()
 
 
 def _installed_pack_names() -> set[str]:

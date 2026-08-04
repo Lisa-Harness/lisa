@@ -624,7 +624,7 @@ def load_catalog_from_disk(
 
         # Parse routing_intent_tags: declarative intent coverage for proactive
         # routing hints. Each tag is a lowercase string (e.g. "research",
-        # "reasoning", "learn", "write"). The hint generator checks whether
+        # "reasoning", "remember", "write"). The hint generator checks whether
         # a single routing target's tags cover all detected query intents,
         # preferring it over a fork fan-out when they do.
         routing_intent_tags_raw = mode_front_matter.get("routing_intent_tags") or []
@@ -1335,7 +1335,7 @@ def synthesize_routing_transitions(
     routing hint (see ``kernel/turn_runner.py ::
     _compute_capability_routing_hint``) from every entry mode the user can
     reach, not just ``default`` — e.g. a remember+write request issued from
-    ``coding`` can fork to ``learn`` + ``markdown`` instead of falling back
+    ``coding`` can fork to ``remember`` + ``markdown`` instead of falling back
     to the current mode's approval-gated write tool.
 
     Per-edge restrictions (e.g. forbidding ``search`` → ``coding``) are
@@ -1455,7 +1455,7 @@ def get_transition_tool_schema() -> list[dict[str, object]]:
                 "`markdown` to write a document); "
                 "(2) `fork:mode,mode,...` to run each named mode as a parallel "
                 "child with its own tools (use this when the request has "
-                "independent concurrent goals — e.g. `fork:learn,markdown`); "
+                "independent concurrent goals — e.g. `fork:remember,markdown`); "
                 "(3) a workflow stage id to advance the current mode's FSM. "
                 "When a Routing Hint is present in the system prompt, follow it "
                 "by calling this tool with the suggested target. If user input "

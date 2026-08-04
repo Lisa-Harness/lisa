@@ -61,7 +61,7 @@ def _make_tool_schema(name: str, description: str = "") -> dict[str, Any]:
 
 def test_build_operation_tool_schemas_returns_openai_format() -> None:
     """Schemas are OpenAI function-tool dicts with the operation's Parameters."""
-    schemas = build_operation_tool_schemas("learn")
+    schemas = build_operation_tool_schemas("remember")
     assert len(schemas) > 0
     for schema in schemas:
         assert schema["type"] == "function"
@@ -71,12 +71,12 @@ def test_build_operation_tool_schemas_returns_openai_format() -> None:
 
 def test_build_operation_tool_schemas_filters_by_mode() -> None:
     """Operations not allowed for a mode are not included."""
-    learn_schemas = build_operation_tool_schemas("learn")
-    learn_names = {s["function"]["name"] for s in learn_schemas}
-    # learn mode allows synthesize_and_store_learning
-    assert "synthesize_and_store_learning" in learn_names
+    remember_schemas = build_operation_tool_schemas("remember")
+    remember_names = {s["function"]["name"] for s in remember_schemas}
+    # remember mode allows synthesize_and_store_learning
+    assert "synthesize_and_store_learning" in remember_names
 
-    # With the learning pack enabled, default mode can expose memory recall.
+    # With the memory pack enabled, default mode can expose memory recall.
     default_schemas = build_operation_tool_schemas("default")
     default_names = {s["function"]["name"] for s in default_schemas}
     assert "recall_memory" in default_names
@@ -118,7 +118,7 @@ async def test_operation_tool_call_dispatches_via_execute_operation() -> None:
     hooks = TurnHooks(complete=two_step, execute_operation=stub_execute_op)
 
     result = await run_turn(
-        mode_id="learn", query="learn that we decided to use PostgreSQL", hooks=hooks
+        mode_id="remember", query="remember that we decided to use PostgreSQL", hooks=hooks
     )
 
     assert result.response_text == "Memory stored successfully."
@@ -191,10 +191,10 @@ async def test_operation_schemas_appear_in_tools_sent_to_model() -> None:
 
     hooks = TurnHooks(complete=capture_then_respond)
 
-    await run_turn(mode_id="learn", query="test", hooks=hooks)
+    await run_turn(mode_id="remember", query="test", hooks=hooks)
 
     tool_names = {t["function"]["name"] for t in captured_tools if "function" in t}
-    # At least one operation should be in the tool list for learn mode
+    # At least one operation should be in the tool list for remember mode
     operation_ids = set(get_operation_catalog().keys())
     assert tool_names & operation_ids, f"Expected operation schemas in tools, got: {tool_names}"
 
@@ -228,7 +228,7 @@ async def test_operation_dispatch_error_produces_tool_error_message() -> None:
 
     hooks = TurnHooks(complete=two_step, execute_operation=failing_execute_op)
 
-    result = await run_turn(mode_id="learn", query="test", hooks=hooks)
+    result = await run_turn(mode_id="remember", query="test", hooks=hooks)
 
     # The model should have received the error as a tool result and recovered
     assert result.response_text == "Handled error."
@@ -240,13 +240,13 @@ async def test_operation_dispatch_error_produces_tool_error_message() -> None:
 # ── Mode-level tool filtering ────────────────────────────────────────
 
 
-def test_learn_mode_has_allowed_tool_ids() -> None:
-    """The learn mode declares allowed_tool_ids in its front-matter."""
+def test_remember_mode_has_allowed_tool_ids() -> None:
+    """The remember mode declares allowed_tool_ids in its front-matter."""
     from kernel.ipsar_fsm import get_workflow_catalog
 
-    learn = get_workflow_catalog().get("learn")
-    assert learn is not None
-    assert learn.allowed_tool_ids == ["memory.add", "memory.search", "memory.list"]
+    remember = get_workflow_catalog().get("remember")
+    assert remember is not None
+    assert remember.allowed_tool_ids == ["memory.add", "memory.search", "memory.list"]
 
 
 def test_default_mode_has_no_allowed_tool_ids() -> None:
@@ -270,7 +270,7 @@ async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
         captured_tools.extend(tools)
         return _StubCompletion(content="Done.")
 
-    # Build a stub pool that returns tools the learn mode doesn't allow.
+    # Build a stub pool that returns tools the remember mode doesn't allow.
     # MCP-discovered tools are namespaced (server_id.tool_name); synthetic
     # aliases keep their bare names (memory.add, etc.).
     class _StubPool:
@@ -315,7 +315,7 @@ async def test_mode_tool_filtering_excludes_unlisted_tools() -> None:
 
     hooks = TurnHooks(complete=capture_then_respond, mcp_tool_pool=_StubPool())
 
-    await run_turn(mode_id="learn", query="test", hooks=hooks)
+    await run_turn(mode_id="remember", query="test", hooks=hooks)
 
     tool_names = {t["function"]["name"] for t in captured_tools if "function" in t}
     # memory.add (synthetic) is allowed; namespaced MCP tools are not
@@ -336,27 +336,27 @@ def test_default_mode_tools_authoritative_is_true() -> None:
     assert default.tools_authoritative is True
 
 
-def test_learn_mode_tools_authoritative_is_true() -> None:
-    """Learn mode is tool-authoritative to constrain memory calls."""
+def test_remember_mode_tools_authoritative_is_true() -> None:
+    """Remember mode is tool-authoritative to constrain memory calls."""
     from kernel.ipsar_fsm import get_workflow_catalog
 
-    learn = get_workflow_catalog().get("learn")
-    assert learn is not None
-    assert learn.tools_authoritative is True
+    remember = get_workflow_catalog().get("remember")
+    assert remember is not None
+    assert remember.tools_authoritative is True
 
 
 def test_build_operation_tool_schemas_authoritative_excludes_unbound() -> None:
     """When tools_authoritative=True, only mode-bound operations are included."""
     from kernel.operations.registry import build_operation_tool_schemas
 
-    # learn mode with authoritative=True should only include operations
-    # explicitly bound to learn (synthesize_and_store_learning, recall_memory).
+    # remember mode with authoritative=True should only include operations
+    # explicitly bound to remember (synthesize_and_store_learning, recall_memory).
     # Other operations with no mode_allowlist should be excluded.
-    schemas = build_operation_tool_schemas("learn", tools_authoritative=True)
+    schemas = build_operation_tool_schemas("remember", tools_authoritative=True)
     names = {s["function"]["name"] for s in schemas}
     assert "synthesize_and_store_learning" in names
     assert "recall_memory" in names
-    # Operations not bound to learn should NOT appear
+    # Operations not bound to remember should NOT appear
     assert "self_model" not in names
 
 
@@ -365,14 +365,14 @@ def test_build_operation_tool_schemas_non_authoritative_includes_unbound() -> No
     (the default fallback: no mode_allowlist = allowed everywhere)."""
     from kernel.operations.registry import build_operation_tool_schemas
 
-    schemas = build_operation_tool_schemas("learn", tools_authoritative=False)
+    schemas = build_operation_tool_schemas("remember", tools_authoritative=False)
     names = {s["function"]["name"] for s in schemas}
-    # learn-bound operations are included
+    # remember-bound operations are included
     assert "synthesize_and_store_learning" in names
     assert "recall_memory" in names
     # Non-authoritative should include MORE operations than authoritative
     # (operations without a restricting mode_allowlist pass through)
-    authoritative_schemas = build_operation_tool_schemas("learn", tools_authoritative=True)
+    authoritative_schemas = build_operation_tool_schemas("remember", tools_authoritative=True)
     assert len(schemas) >= len(authoritative_schemas)
 
 
