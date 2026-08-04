@@ -90,29 +90,53 @@ _SPARK_WIDTH = 8
 #: empty cell; index 7 is the full block.
 _BLOCK_RAMP = " ▁▂▃▄▅▆▇█"
 
+#: Gradient ramp for the pip counter fill: light → medium → dark → full
+#: block, left to right across the filled portion. Index 0 is the empty cell
+#: used for the unfilled tail; the remaining cells graduate the fill.
+_PIP_GRADIENT = "░▒▓█"
+
+
+def _pip_counter(count: int, cap: int) -> str:
+    """Render ``count`` as a gradient block bar that tracks the cap.
+
+    ``cap > 0`` draws a bar of ``_PIP_MAX_WIDTH`` cells whose filled fraction is
+    ``count / cap`` (clamped to full); the cap is rendered faithfully no matter
+    how large it is, so a 300-call budget does not saturate after 16 calls. The
+    filled portion graduates left-to-right from ``░`` (light) through ``▒``/``▓``
+    to ``█`` (full block) so the bar reads as a filling gradient; the unfilled
+    tail is ``░``. The bar saturates with ``⁺`` only when ``count`` actually
+    exceeds ``cap``. ``cap <= 0`` (unlimited) renders a compact ``N{count}``
+    counter. Used only on the ``power``/``debug`` detail tiers.
+    """
+    if cap <= 0:
+        return f"N{count}"
+    width = _PIP_MAX_WIDTH
+    if count >= cap:
+        full = "█" * width
+        return full + "⁺" if count > cap else full
+    filled = round(count * width / cap)
+    if filled >= width:
+        filled = width - 1 if count < cap else width
+    if filled <= 0:
+        return "░" * width
+    # Graduate the filled cells across the gradient ramp (light → full).
+    # The last filled cell maps to the full block; earlier cells ramp through
+    # the lighter shades so the fill reads as a gradient, not a hard edge.
+    cells: list[str] = []
+    grad = _PIP_GRADIENT  # ░▒▓█
+    for i in range(filled):
+        # Map position 0..filled-1 onto 1..len(grad)-1 (skip the empty cell at
+        # index 0); the last filled cell is always the full block (█).
+        idx = len(grad) - 1 if filled == 1 else round((i + 1) * (len(grad) - 1) / (filled - 1))
+        cells.append(grad[max(1, min(idx, len(grad) - 1))])
+    return "".join(cells) + "░" * (width - filled)
+
+
 #: Glyphs for tool-dispatch completion status.
 _TOOL_STATUS_GLYPH = {"ok": "✓", "error": "✗", "running": "…", "": "·"}
 
 #: Maximum length of the primary tool argument shown inline on a tool row.
 _ARG_PREVIEW_MAX = 40
-
-
-def _pip_counter(count: int, cap: int) -> str:
-    """Render ``count`` as a pip row that tracks the cap exactly.
-
-    ``cap > 0`` draws ``cap`` cells (``●`` per unit, ``○`` for remaining),
-    capped at ``_PIP_MAX_WIDTH`` and saturating with ``⁺``; ``cap <= 0``
-    (unlimited) renders a compact ``N{count}`` counter. Used only on the
-    ``power``/``debug`` detail tiers.
-    """
-    if cap <= 0:
-        return f"N{count}"
-    width = min(cap, _PIP_MAX_WIDTH)
-    if count >= width:
-        if count > width:
-            return "●" * width + "⁺"
-        return "●" * width
-    return "●" * count + "○" * (width - count)
 
 
 def _sparkline(values: list[float], width: int = _SPARK_WIDTH) -> str:
@@ -451,12 +475,18 @@ class RichTransport:
         the toggle flips every visible thinking row's expand state at once so
         the user can inspect the model's reasoning across the whole turn
         without hunting for each segment.
+
+        Between turns (Live region inactive) the toggle is a state-only change:
+        it does NOT reprint the transcript, so no spurious row leaks into the
+        input area. The bottom toolbar reflects the new state (the REPL
+        invalidates it on the keystroke). During a turn (Live active) the
+        in-flight thinking rows re-render expanded/collapsed immediately.
         """
         self.thinking_collapsed = not self.thinking_collapsed
         for row in self._rows:
             if row.kind == "thinking":
                 row.thinking_expanded = not self.thinking_collapsed
-        self._refresh_live()
+        self._redraw_live()
 
     def toggle_detail(self) -> None:
         """Toggle the detail tier between ``clean`` and ``power`` (Ctrl+O).
@@ -464,14 +494,37 @@ class RichTransport:
         ``power`` re-renders rows with their graphic column (pip counters,
         sparklines, token suffixes). No-op on the construction-only ``debug``
         tier, which already shows everything.
+
+        Between turns (Live region inactive) the toggle is state-only — no
+        transcript reprint, so no spurious row leaks into the input area. The
+        bottom toolbar reflects the new tier.
         """
         if self._detail == "debug":
             return
         self._detail = "power" if self._detail == "clean" else "clean"
-        self._refresh_live()
+        self._redraw_live()
+
+    def _redraw_live(self) -> None:
+        """Re-render the Live region if active; otherwise do nothing.
+
+        Used by the detail/thinking toggles: between turns the Live region is
+        down and reprinting the last transcript row would pollute the input
+        area with a stale call line. The toggle's feedback surface is the
+        bottom toolbar, not the transcript.
+        """
+        if self._live is not None:
+            try:
+                self._live.update(self._render_live_display())
+            except Exception:  # pylint: disable=broad-except
+                pass
 
     def _refresh_live(self) -> None:
-        """Re-render the Live region if active; otherwise print the latest row inline."""
+        """Re-render the Live region if active; otherwise print the latest row inline.
+
+        Used by row-arrival paths (stage events, streamed deltas): when the
+        Live region is up, refresh it; in the headless/test path (no Live),
+        print the latest row so the transcript still flows to stdout.
+        """
         if self._live is not None:
             try:
                 self._live.update(self._render_live_display())

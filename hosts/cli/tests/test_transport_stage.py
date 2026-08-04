@@ -451,6 +451,143 @@ async def test_on_response_always_renders_clean_panel() -> None:
     assert "Response" in transport.console.file.getvalue()
 
 
+# ── pip counter scaling (detail tier) ─────────────────────────────────
+
+
+def test_pip_counter_scales_to_cap_not_width() -> None:
+    """The pip bar tracks the cap proportionally, not 1:1 to its width.
+
+    Regression: with a large cap (e.g. ``max_tool_iterations=300``) the bar
+    used to saturate at ``count == _PIP_MAX_WIDTH`` (16), filling up "way too
+    fast and showing overfull". The filled fraction must be ``count / cap``.
+    """
+    from hosts.cli.transport import _PIP_MAX_WIDTH, _pip_counter
+
+    # A 300-call budget at 16 calls (~5%) should show ~1 filled cell, not saturate.
+    bar = _pip_counter(16, 300)
+    assert "⁺" not in bar
+    # A filled cell is any shade denser than the empty ``░`` tail.
+    filled_cells = sum(1 for c in bar if c != "░")
+    assert filled_cells <= 1  # 16/300 * 16 ≈ 0.85 → 1 cell
+    assert bar.count("░") >= _PIP_MAX_WIDTH - 1
+
+    # Halfway through a 100-call budget: ~half the bar filled, no saturation.
+    half = _pip_counter(50, 100)
+    assert "⁺" not in half
+    assert sum(1 for c in half if c != "░") == _PIP_MAX_WIDTH // 2
+
+    # Exactly at the cap: full block bar, no plus (count == cap).
+    at_cap = _pip_counter(100, 100)
+    assert at_cap == "█" * _PIP_MAX_WIDTH
+
+    # Over the cap: full bar plus the saturation glyph.
+    over = _pip_counter(101, 100)
+    assert over == "█" * _PIP_MAX_WIDTH + "⁺"
+
+
+def test_pip_counter_gradient_ramps_light_to_full() -> None:
+    """The filled portion graduates left-to-right from ``░`` through ``▒``/``▓``
+    to ``█`` so the bar reads as a filling gradient, not a hard edge."""
+    from hosts.cli.transport import _PIP_MAX_WIDTH, _PIP_GRADIENT, _pip_counter
+
+    # A full-width fill on a cap of width: the first cell ramps from the
+    # lightest fill shade and the last cell is the full block.
+    bar = _pip_counter(_PIP_MAX_WIDTH, _PIP_MAX_WIDTH)
+    assert bar == "█" * _PIP_MAX_WIDTH
+
+    # Half fill: the filled half graduates, the unfilled tail is all ``░``.
+    half = _pip_counter(8, 16)
+    assert half.endswith("░" * 8)  # unfilled tail
+    filled = half[:8]
+    # The last filled cell is the full block; earlier cells use lighter shades.
+    assert filled[-1] == "█"
+    # The gradient shades (▒/▓) appear somewhere in the fill (not all █).
+    assert any(c in "▒▓" for c in filled[:-1])
+    # No empty ``●``/``○`` glyphs remain — we use block shades now.
+    assert "●" not in half and "○" not in half
+
+    # A single filled cell: always the full block (no lighter shade at low
+    # counts, so a single-cell fill is still clearly "on").
+    one = _pip_counter(1, 16)
+    assert one == "█" + "░" * (_PIP_MAX_WIDTH - 1)
+
+    # Zero count: the whole bar is the empty shade.
+    zero = _pip_counter(0, 16)
+    assert zero == "░" * _PIP_MAX_WIDTH
+    # The gradient ramp is the canonical light → full sequence.
+    assert _PIP_GRADIENT == "░▒▓█"
+
+
+def test_pip_counter_unlimited_uses_compact_counter() -> None:
+    """``cap <= 0`` (unlimited) renders a compact N{count} counter — a
+    saturating bar against infinity is meaningless."""
+    from hosts.cli.transport import _pip_counter
+
+    assert _pip_counter(0, 0) == "N0"
+    assert _pip_counter(42, 0) == "N42"
+
+
+# ── toggle no-leak between turns (Issue 3) ────────────────────────────
+
+
+def test_toggle_detail_between_turns_does_not_print_into_input_area() -> None:
+    """Toggling detail with the Live region down must NOT print a stale
+    transcript row into the input area — only the toolbar should change.
+    """
+    sink = io.StringIO()
+    console = Console(file=sink, force_terminal=False, width=100)
+    transport = RichTransport(console=console, debug=False)
+    # Seed a prior turn's transcript, then tear down the Live region (the
+    # state the REPL is in between turns: rows persist, _live is None).
+    transport.start_thinking("model_call")
+    transport._rows.append(_Row(kind="tool", text="→ search ✓ 10ms"))
+    transport.stop_thinking()
+
+    out_before = sink.getvalue()
+    transport.toggle_detail()  # clean → power
+    transport.toggle_detail()  # power → clean
+    out_after = sink.getvalue()
+
+    # Nothing was printed by the toggles — the toolbar is the feedback surface.
+    assert out_after == out_before
+    assert transport.detail == "clean"
+
+
+def test_toggle_thinking_between_turns_does_not_print_into_input_area() -> None:
+    """Toggling thinking with the Live region down must NOT reprint the
+    transcript; only the toolbar reflects the new state."""
+    sink = io.StringIO()
+    console = Console(file=sink, force_terminal=False, width=100)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("model_call")
+    transport._rows.append(_Row(kind="thinking", text="a reasoning segment"))
+    transport.stop_thinking()
+
+    out_before = sink.getvalue()
+    transport.toggle_thinking()  # collapsed → expanded
+    out_after = sink.getvalue()
+
+    assert out_after == out_before
+    assert transport.thinking_collapsed is False
+
+
+@pytest.mark.asyncio
+async def test_toggle_thinking_during_turn_expands_inflight_rows() -> None:
+    """With the Live region up (mid-turn), toggling thinking re-renders the
+    in-flight thinking rows expanded so the user sees the streamed reasoning."""
+    transport = _make_stream_transport()
+    transport.start_thinking("model_call")
+    await transport.on_text_chunk("", reasoning="reasoning body")
+
+    thinking_row = [r for r in transport._rows if r.kind == "thinking"][0]
+    assert thinking_row.thinking_expanded is False  # collapsed by default
+
+    transport.toggle_thinking()
+    assert thinking_row.thinking_expanded is True
+    # Live region still active and refreshed.
+    assert transport._live is not None
+
+
 @pytest.mark.asyncio
 async def test_on_response_renders_call_summary() -> None:
     """After the answer panel, a compact call-stats summary line is rendered

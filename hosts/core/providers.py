@@ -1275,10 +1275,20 @@ async def _stream_anthropic_chunks(
             event_type = data.get("type") or current_event
             if event_type == "content_block_delta":
                 delta = data.get("delta") or {}
-                if delta.get("type") == "text_delta":
+                delta_type = delta.get("type")
+                if delta_type == "text_delta":
                     text = delta.get("text") or ""
                     if text:
                         yield StreamedChunk(content=text)
+                elif delta_type == "thinking_delta":
+                    # Extended-thinking models stream their reasoning as
+                    # ``thinking_delta`` blocks (separate from ``text_delta``).
+                    # Surface them as ``reasoning_content`` so the host transport
+                    # renders the thinking live — without this, streamed thinking
+                    # is silently dropped and the user never sees it.
+                    thinking = delta.get("thinking") or ""
+                    if thinking:
+                        yield StreamedChunk(reasoning_content=thinking)
             elif event_type == "message_delta":
                 delta = data.get("delta") or {}
                 stop_reason = delta.get("stop_reason")
