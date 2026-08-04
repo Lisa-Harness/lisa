@@ -1599,6 +1599,7 @@ class ForkTarget(BaseModel):
 
 ForkChildStatus = Literal[
     "ok",
+    "blocked",
     "timeout",
     "cancelled",
     "error",
@@ -1606,6 +1607,7 @@ ForkChildStatus = Literal[
     "yielded",  # legacy — force-yielded by the harness (cap/budget/stuck)
     "model_yield",  # the model called the ``yield`` tool voluntarily
     "interrupted",  # the harness force-yielded (iteration cap / budget / stuck)
+    "max_depth",  # delegate-only — fork never produces this, but the union is shared
 ]
 
 
@@ -1641,6 +1643,7 @@ class ForkChildResult(BaseModel):
 
 DelegationStatus = Literal[
     "ok",
+    "blocked",
     "no_tools",
     "timeout",
     "error",
@@ -1723,6 +1726,120 @@ class DelegationResult(BaseModel):
     # The root parent is depth 0; a direct delegate child is depth 1.
     # Bounded by ``delegate_max_depth``.
     depth: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Unified child-turn contracts (internal)
+# ---------------------------------------------------------------------------
+#
+# The fork fan-out and the delegate operation both recurse into ``run_turn``
+# as a child turn, then classify the child's ``TurnResult`` into a status.
+# Historically those two paths duplicated the classifier and diverged (the
+# 2026-08-04 audit: the fork classifier never read ``TurnResult.blocked``, so
+# a capability-gated child was misreported as ``no_tools``; the action-tool
+# set was derived from ``authored_allowed_*`` only, missing operations
+# admitted via their own ``mode_allowlist``).
+#
+# These three types are the single internal contract that replaces the
+# duplicate logic. ``EffectReceipt`` is the evidence a side-effecting
+# capability landed its work. ``BlockDiagnostic`` carries the structured
+# reason a child was blocked (capability gate, input guard, …).
+# ``ChildTurnOutcome`` is the shared status + evidence the single
+# classifier (``kernel.turn_phases._child_turn.classify_child_turn``) returns.
+# ``ForkChildResult`` and ``DelegationResult`` remain as host-facing
+# adapters; they are populated from a ``ChildTurnOutcome`` so callers that
+# import them today are not broken during the cutover.
+
+
+class EffectReceipt(BaseModel):
+    """Evidence that one side-effecting capability actually executed.
+
+    A write/external_write operation or tool produces a receipt at dispatch
+    time. Read capabilities produce none. The child-turn completion contract
+    checks receipts, not tool-name heuristics or response prose, so a child
+    that called a write tool admitted via its ``mode_allowlist`` (invisible
+    to the old ``authored_allowed_*``-only detector) is correctly counted.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
+
+    effect: EffectKind
+    capability_id: str = Field(
+        description="The operation or tool id that produced this effect.",
+    )
+    artifact_id: str = Field(
+        default="",
+        description=(
+            "Optional stable identifier for the persisted artifact (e.g. a "
+            "document path, memory record id, code-change artifact id). "
+            "Empty when the capability does not produce a addressable artifact."
+        ),
+    )
+
+
+class BlockDiagnostic(BaseModel):
+    """Structured reason a child turn was blocked before producing output.
+
+    Carried on ``ChildTurnOutcome`` when ``status`` is ``blocked`` so the
+    parent can surface the *actual* cause (the router declined to escalate
+    to a code-capable model) instead of the old misleading "model too weak
+    to follow the sub-turn contract" framing.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
+
+    reason: Literal["capability_gate", "input_guard", "output_guard"] = Field(
+        description="Which gate produced the block.",
+    )
+    resolved_model_id: str = Field(
+        default="",
+        description="The model that was resolved, when applicable.",
+    )
+    missing_capabilities: tuple[str, ...] = Field(
+        default_factory=tuple,
+        description="Required capabilities the resolved model lacked (capability_gate only).",
+    )
+    message: str = Field(default="", description="The user-facing block message.")
+
+
+ChildStatus = Literal[
+    "complete",
+    "blocked",
+    "no_tools",
+    "interrupted",
+    "model_yield",
+    "timeout",
+    "error",
+    "cancelled",
+    "max_depth",
+]
+"""The single canonical child-turn status.
+
+``complete`` replaces the old ``ok`` for clarity (the child satisfied its
+completion contract). The legacy ``ForkChildStatus`` / ``DelegationStatus``
+``ok`` values map to ``complete`` in the adapter layer.
+"""
+
+
+class ChildTurnOutcome(BaseModel):
+    """Shared result of one child turn (fork or delegate).
+
+    Produced by ``classify_child_turn`` (``kernel.turn_phases._child_turn``)
+    from the child's ``TurnResult``. The fork and delegate adapters map this
+    to their host-facing models (``ForkChildResult`` / ``DelegationResult``).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
+
+    status: ChildStatus = "complete"
+    output_text: str = ""
+    error_message: str = ""
+    duration_ms: int = 0
+    tool_call_count: int = 0
+    called_tool_names: tuple[str, ...] = Field(default_factory=tuple)
+    effect_receipts: tuple[EffectReceipt, ...] = Field(default_factory=tuple)
+    yield_action: YieldAction | None = None
+    block_diagnostic: BlockDiagnostic | None = None
 
 
 # ---------------------------------------------------------------------------

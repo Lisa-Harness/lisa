@@ -223,6 +223,14 @@ class _TurnState:
     action tools — not just read-only fetches. A child that did 4
     ``fetch_page`` calls but never called ``markdown_forge_document``
     hallucinated its success (the 2026-07-27 follow-on incident)."""
+    effect_receipts: list[Any] = field(default_factory=list)
+    """``EffectReceipt`` instances collected at dispatch time for every
+    write/external_write capability that executed this turn. The child-turn
+    completion contract checks these receipts (not tool-name heuristics)
+    so a child that called a ``mode_allowlist``-admitted write operation
+    invisible to the old ``authored_allowed_*``-only detector is correctly
+    counted as having completed. Empty for read-only turns. See
+    ``kernel.models.EffectReceipt``."""
 
     # ── Sub-turn (fork / delegate child) contract state ─────────────
     # Set by the caller when this turn is a sub-turn (a fork child, or a

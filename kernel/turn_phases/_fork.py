@@ -35,7 +35,7 @@ from kernel.models import (
     YieldPolicy,
 )
 from kernel.seams.host_adapter import build_callable_host
-from kernel.tools.mcp_client import MCPToolPool, bare_tool_name
+from kernel.tools.mcp_client import MCPToolPool
 
 if TYPE_CHECKING:
     from kernel.turn_runner import TurnHooks
@@ -54,23 +54,20 @@ __all__ = [
 def _fork_mode_requires_tools(mode_id: str) -> bool:
     """Return True when a fork child's mode declares side-effecting action tools.
 
-    Modes like ``remember`` and ``markdown`` exist to *take action* (distill +
-    persist memories, write documents). Their ``_mode.md`` front matter
-    declares non-empty ``allowed_operation_ids`` or ``allowed_tool_ids``
-    that include at least one write/external_write-effect tool. A fork
-    child running such a mode that completes with **zero tool calls**
-    almost certainly produced a hallucinated "Done — wrote it to disk" text
-    response without invoking its write/remember tool, leaving nothing on disk
-    or in memory. The caller marks these ``status="no_tools"`` instead of
-    ``"ok"`` so the parent does not report a false success.
-
-    Modes whose authored tools are all read-effect (e.g. ``ponder``, whose
-    only authored operation is ``web_search``) legitimately complete with
-    zero tool calls — their output is the response text (the reasoning),
-    not a side-effect — so this returns False for them. Chat-only modes
-    (``default``) with empty allowlists also return False.
+    Delegates to :func:`kernel.operations.registry.mode_completion_effects` —
+    the single canonical resolver shared with the child-turn classifier — so
+    the "does this mode require tools?" check and the "which tools?" check
+    agree. A mode with no side-effecting completion contract (chat / reasoning)
+    returns False; its output is the response text, not a side effect.
     """
-    return bool(_fork_mode_action_tool_ids(mode_id))
+    from kernel.operations.registry import (  # noqa: PLC0415  # lazy: breaks cycle with registry
+        mode_completion_effects,
+    )
+
+    try:
+        return bool(mode_completion_effects(mode_id))
+    except Exception:  # pylint: disable=broad-except
+        return False
 
 
 def _fork_mode_action_tool_ids(mode_id: str) -> set[str]:
@@ -224,157 +221,48 @@ async def _run_fork_child_turn(
             sub_turn_kind="fork",
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        # A child the harness force-yielded (iteration cap, stuck-in-stage,
-        # or budget exhaustion) was *interrupted*, not hallucinating. Its
-        # tool-call pattern is irrelevant — it never got to finish, so we
-        # cannot conclude anything about whether it would have invoked its
-        # action tools. Classify it as ``interrupted`` before the zero-tool /
-        # action-tool checks so a coding child that gathered evidence via
-        # ``lisa-storage.read_file`` then hit the iteration cap is not
-        # reported as "hallucinated success — nothing written" (the
-        # 2026-08-02 fan-out regression). The parent treats ``interrupted``
-        # like ``no_tools`` for the deterministic abort but with honest
-        # "interrupted by harness" messaging.
-        #
-        # A child the *model* yielded from (it called the ``yield`` tool to
-        # ask the user a question) is NOT an interruption — it is an honest
-        # punt. Classify it as ``model_yield`` and carry the ``YieldAction``
-        # so the parent can propagate the question to the user. The
-        # discriminator is ``child_result.yielded.context``: the in-loop
-        # ``yield`` tool dispatch (``turn_runner.py``) sets
-        # ``context="model-emitted yield"``; the lifecycle resolver's
-        # cap/budget/stuck paths set ``context="iteration cap …"`` etc.
-        if child_result.yielded is not None:
-            _ya = child_result.yielded
-            _is_model_yield = _ya.context == "model-emitted yield"
-            if _is_model_yield:
-                _flog.info(
-                    "fork child %s model-emitted yield (asking the user: %s); "
-                    "propagating question to parent",
-                    target.mode_id,
-                    (_ya.question or "")[:120],
-                )
-                return (
-                    ForkChildResult(
-                        target=target,
-                        status="model_yield",
-                        output_text=child_result.response_text,
-                        called_tool_names=sorted(child_result.called_tool_names),
-                        yield_action=_ya,
-                        duration_ms=elapsed_ms,
-                    ),
-                    "model_yield",
-                    elapsed_ms,
-                )
-            _flog.warning(
-                "fork child %s was force-yielded by the harness (iteration "
-                "cap / stuck-in-stage / budget); marking interrupted (not "
-                "hallucinated) — its tool-call pattern is inconclusive",
-                target.mode_id,
-            )
-            return (
-                ForkChildResult(
-                    target=target,
-                    status="interrupted",
-                    output_text=child_result.response_text,
-                    error_message=(
-                        f"fork child {target.mode_id} was interrupted by the "
-                        f"turn lifecycle (force-yielded) before completing its "
-                        f"action tools; its reported output is partial. "
-                        f"Re-issue the request, or raise "
-                        f"FORK_CHILD_MAX_TOOL_ITERATIONS (currently "
-                        f"{_kernel_settings.fork_child_max_tool_iterations})."
-                    ),
-                    called_tool_names=sorted(child_result.called_tool_names),
-                    yield_action=_ya,
-                    duration_ms=elapsed_ms,
-                ),
-                "interrupted",
-                elapsed_ms,
-            )
-        if child_result.tool_call_count == 0 and _fork_mode_requires_tools(target.mode_id):
-            _flog.warning(
-                "fork child %s completed with 0 tool calls but its mode declares "
-                "action operations/tools; marking no_tools (likely hallucinated success)",
-                target.mode_id,
-            )
-            return (
-                ForkChildResult(
-                    target=target,
-                    status="no_tools",
-                    output_text=child_result.response_text,
-                    error_message=(
-                        f"fork child {target.mode_id} produced no tool calls; its mode "
-                        "declares action operations/tools, so its reported success is "
-                        "unverified (nothing written to disk or memory)."
-                    ),
-                    called_tool_names=sorted(child_result.called_tool_names),
-                    duration_ms=elapsed_ms,
-                ),
-                "no_tools",
-                elapsed_ms,
-            )
-        # A child that made tool calls but never invoked any of its mode's
-        # authored *action* tools (only read-only fetches / searches) also
-        # hallucinated its success: it gathered evidence but never wrote,
-        # learned, or applied anything. The 2026-07-27 follow-on: the
-        # ``markdown`` child did 4 ``fetch_page`` calls then exited empty
-        # without ever calling ``markdown_forge_document``, so nothing
-        # landed on disk yet the ``tool_call_count == 0`` guard passed it
-        # as ``ok``. Catch it here.
-        action_tool_ids = _fork_mode_action_tool_ids(target.mode_id)
-        # Namespace-aware match: the authored ``action_tool_ids`` are bare
-        # front-matter names (``read_file``, ``write_file``, …) while the
-        # dispatched ``called_tool_names`` are namespaced MCP ids
-        # (``lisa-storage.read_file``) when the tool was merged into the
-        # mode's allowlist via the ambient ``default_available_tools``
-        # contract. A plain ``set & set`` intersection is empty in that
-        # case, false-flagging every fork child that legitimately used its
-        # ambient storage tools as ``no_tools`` (the 2026-08-02 fan-out
-        # regression). Strip the ``server_id.`` prefix from each called
-        # name before intersecting so a namespaced call matches its bare
-        # authored action tool. Bare dispatched names (e.g.
-        # ``synthesize_and_store_learning``, ``recall_memory``) are
-        # unchanged by ``bare_tool_name``.
-        called_bare = {bare_tool_name(n) for n in child_result.called_tool_names}
-        if action_tool_ids and not (called_bare & action_tool_ids):
-            _flog.warning(
-                "fork child %s made %d tool call(s) but none were its "
-                "mode's authored action tools %s (called: %s); marking "
-                "no_tools (hallucinated success — nothing written/learned)",
-                target.mode_id,
-                child_result.tool_call_count,
-                sorted(action_tool_ids),
-                sorted(child_result.called_tool_names),
-            )
-            return (
-                ForkChildResult(
-                    target=target,
-                    status="no_tools",
-                    output_text=child_result.response_text,
-                    error_message=(
-                        f"fork child {target.mode_id} made "
-                        f"{child_result.tool_call_count} tool call(s) but "
-                        f"none were its mode's authored action tools "
-                        f"({', '.join(sorted(action_tool_ids))}); its "
-                        "reported success is unverified — nothing was "
-                        "written to disk or memory."
-                    ),
-                    called_tool_names=sorted(child_result.called_tool_names),
-                    duration_ms=elapsed_ms,
-                ),
-                "no_tools",
-                elapsed_ms,
-            )
+        # ── Shared child-turn classification ───────────────────────────
+        # Delegate to ``classify_child_turn`` so the fork and delegate
+        # paths share one classifier, one status union, and one completion
+        # contract. This fixes the 2026-08-04 audit findings:
+        # 3.1 — ``TurnResult.blocked`` is now checked first, so a
+        # capability-gated child surfaces ``blocked`` (router declined to
+        # escalate) instead of ``no_tools`` ("model too weak").
+        # 4.1 — ``mode_completion_effects`` replaces ``_fork_mode_action_tool_ids``
+        # so operations admitted via their own ``mode_allowlist`` are
+        # included in the action-tool set.
+        # 7.1 — the duplicated classifier is removed; both paths call the
+        # same function.
+        from kernel.operations.registry import (  # noqa: PLC0415  # lazy: breaks cycle with registry
+            mode_completion_effects,
+        )
+        from kernel.turn_phases._child_turn import (  # noqa: PLC0415  # lazy: breaks cycle with turn_runner
+            classify_child_turn,
+        )
+
+        action_tool_ids = mode_completion_effects(target.mode_id)
+        outcome = classify_child_turn(
+            child_result=child_result,
+            mode_id=target.mode_id,
+            elapsed_ms=elapsed_ms,
+            action_tool_ids=action_tool_ids,
+        )
+        # Map the canonical ``ChildTurnOutcome`` to the host-facing
+        # ``ForkChildResult``. The ``status`` mapping is 1:1 except
+        # ``complete`` → ``ok`` (the legacy fork status) so existing
+        # callers and tests that inspect ``r.status == "ok"`` are preserved.
+        _fork_status = "ok" if outcome.status == "complete" else outcome.status
         return (
             ForkChildResult(
                 target=target,
-                status="ok",
-                output_text=child_result.response_text,
-                called_tool_names=sorted(child_result.called_tool_names),
-                duration_ms=elapsed_ms,
+                status=_fork_status,
+                output_text=outcome.output_text,
+                error_message=outcome.error_message,
+                called_tool_names=list(outcome.called_tool_names),
+                yield_action=outcome.yield_action,
+                duration_ms=outcome.duration_ms,
             ),
-            "ok",
+            _fork_status,
             elapsed_ms,
         )
     except TimeoutError:

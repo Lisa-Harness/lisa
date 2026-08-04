@@ -1868,17 +1868,24 @@ async def test_run_turn_fork_marks_no_tools_child_when_action_tool_skipped() -> 
         # The markdown child calls fetch_page (read-only) instead of its
         # action tool (markdown_forge_document). It made tool calls, but
         # none are its mode's authored action tools.
+        if call_count == 2:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_2",
+                        "function": {
+                            "name": "fetch_page",
+                            "arguments": '{"url": "https://example.com"}',
+                        },
+                    }
+                ],
+            )
+        # After the read-only call, the child exits with a text response
+        # claiming success — but it never invoked its action tool.
         return _StubCompletion(
             content="Done — wrote it to disk.",
-            tool_calls=[
-                {
-                    "id": "call_2",
-                    "function": {
-                        "name": "fetch_page",
-                        "arguments": '{"url": "https://example.com"}',
-                    },
-                }
-            ],
+            tool_calls=[],
         )
 
     hooks = _build_minimal_hooks(two_step)
@@ -1929,17 +1936,23 @@ async def test_run_turn_fork_namespaced_action_tool_not_flagged_no_tools() -> No
         # The markdown child calls its action tool under the namespaced
         # ambient form (lisa-storage.write_file). Its bare authored name
         # is ``write_file``; the validator must recognize the match.
+        if call_count == 2:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_2",
+                        "function": {
+                            "name": "lisa-storage.write_file",
+                            "arguments": '{"path": "doc.md", "content": "..."}',
+                        },
+                    }
+                ],
+            )
+        # After the write, the child exits with a text response.
         return _StubCompletion(
             content="Done — wrote it to disk.",
-            tool_calls=[
-                {
-                    "id": "call_2",
-                    "function": {
-                        "name": "lisa-storage.write_file",
-                        "arguments": '{"path": "doc.md", "content": "..."}',
-                    },
-                }
-            ],
+            tool_calls=[],
         )
 
     hooks = _build_minimal_hooks(two_step)
@@ -4010,11 +4023,12 @@ async def test_no_tools_fork_child_aborts_turn() -> None:
         assert child.status == "no_tools"
     # NEW: the parent must abort, not continue as advisory prose.
     assert result.blocked is True
-    assert "failed" in result.response_text.lower() or "unverified" in result.response_text.lower()
+    assert "failed" in result.response_text.lower() or "unverified" in result.response_text.lower() or "hallucinated" in result.response_text.lower()
     # The model must NOT have been allowed to emit its false "Done — wrote it to disk."
     assert result.response_text != "Done — wrote it to disk."
 
 
+@pytest.mark.asyncio
 async def test_no_tools_fork_child_read_only_calls_surfaces_fork_failure_not_yield() -> None:
     """A ``no_tools`` fork child that made read-only calls must surface the
     deterministic fork-failure message, not the generic iteration-budget
@@ -4051,17 +4065,24 @@ async def test_no_tools_fork_child_read_only_calls_surfaces_fork_failure_not_yie
             )
         # The markdown child makes a read-only call (fetch_page) instead of
         # its authored action tool — exactly the production scenario.
+        if call_count == 2:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_2",
+                        "function": {
+                            "name": "fetch_page",
+                            "arguments": '{"url": "https://example.com"}',
+                        },
+                    }
+                ],
+            )
+        # After the read-only call, the child exits with a text response
+        # claiming success — but it never invoked its action tool.
         return _StubCompletion(
             content="Done — wrote it to disk.",
-            tool_calls=[
-                {
-                    "id": "call_2",
-                    "function": {
-                        "name": "fetch_page",
-                        "arguments": '{"url": "https://example.com"}',
-                    },
-                }
-            ],
+            tool_calls=[],
         )
 
     hooks = _build_minimal_hooks(two_step)

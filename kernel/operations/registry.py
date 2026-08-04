@@ -43,6 +43,7 @@ __all__ = [
     "execute_operation",
     "get_operation_catalog",
     "is_known_tool",
+    "mode_completion_effects",
     "register_operation_mcp",
 ]
 
@@ -461,6 +462,126 @@ def build_operation_tool_schemas(
             )
         )
     return schemas
+
+
+def mode_completion_effects(mode_id: str) -> set[str]:
+    """Return the side-effecting capability IDs a child running ``mode_id`` must invoke.
+
+    The single canonical source of truth for "which tools prove this mode's
+    child completed its work." Replaces the old
+    ``_fork_mode_action_tool_ids`` (``kernel.turn_phases._fork``), which read
+    only the mode's ``authored_allowed_*`` front-matter lists and missed any
+    operation or tool admitted via its own ``mode_allowlist`` — the cross-pack
+    pattern the markdown / letta / okf packs use. This resolver reads the same
+    explicit bindings :func:`build_operation_tool_schemas` advertises, so the
+    advertiser and the child-turn validator never diverge.
+
+    The set is the union of:
+
+    - The mode's *authored* ``allowed_operation_ids`` / ``allowed_tool_ids``
+      filtered by ``effect in ("write", "external_write")``. Authored
+      (front-matter) bindings are the mode author's declaration of the tools
+      that land the mode's work.
+    - Operations and tools whose own ``mode_allowlist`` contains ``mode_id``
+      AND whose ``effect`` is ``write`` or ``external_write``. These are
+      *explicitly bound* to the mode (the capability author chose to serve it)
+      even though they are absent from the mode's front-matter lists.
+
+    Excluded:
+
+    - Capabilities admitted via ``default_available`` (ambient — the mode
+      inherited them, it did not declare them; ``recall_memory`` in a chat-only
+      mode is not a completion requirement). This preserves the original
+      intent of the ``authored_*`` vs effective split without conflating
+      *ambient* with *op-owned binding* (the 2026-08-04 audit finding 4.2).
+    - Read-effect capabilities (``read``, ``execute``). A reasoning mode whose
+      authored tool is ``web_search`` (read) legitimately completes without
+      side effects — its output is the response text.
+
+    Returns an empty set for unknown modes, chat-only modes, and modes whose
+    explicit bindings are all read-effect. An empty set means "no
+    side-effecting completion contract" — the child is ``complete`` on any
+    clean exit (the ``ponder`` / ``default`` case).
+    """
+    if not mode_id:
+        return set()
+    # Lazy import: breaks cycle with kernel.ipsar_fsm (catalog load path).
+    from kernel.ipsar_fsm import get_workflow_catalog  # noqa: PLC0415  # lazy: breaks cycle with ipsar_fsm
+    from kernel.tools.registry import get_tool_catalog  # noqa: PLC0415  # lazy: defers tool registry startup cost
+
+    mode = get_workflow_catalog().get(mode_id)
+    if mode is None:
+        return set()
+    result: set[str] = set()
+    # 1) Authored operation bindings filtered by declared effect.
+    op_catalog = get_operation_catalog()
+    for op_id in mode.authored_allowed_operation_ids:
+        op_def = op_catalog.get(op_id)
+        if op_def is None:
+            # Unknown operation — include it (can't prove it's read-only).
+            result.add(op_id)
+            continue
+        effect = str(getattr(op_def, "effect", "read") or "read")
+        if effect in ("write", "external_write"):
+            result.add(op_id)
+    # 2) Authored tool bindings — include wholesale (tools are not resolvable
+    #    in-process reliably; a mode that authors a tool did so because it
+    #    does the mode's work, and we only exclude operations we can prove
+    #    are read-effect).
+    result.update(mode.authored_allowed_tool_ids)
+    # 3) Operations explicitly bound via their own ``mode_allowlist``.
+    result.update(
+        _mode_allowlist_write_ops(op_catalog, mode_id)
+    )
+    # 4) Tools explicitly bound via their own ``mode_allowlist``.
+    tool_catalog = get_tool_catalog() or {}
+    result.update(
+        _mode_allowlist_write_tools(tool_catalog, mode_id)
+    )
+    return result
+
+
+def _mode_allowlist_write_ops(
+    op_catalog: dict[str, OperationDefinition],
+    mode_id: str,
+) -> set[str]:
+    """Return write-effect operations whose ``mode_allowlist`` binds them to ``mode_id``.
+
+    Excludes ``default_available`` (ambient) operations. Shared with
+    :func:`mode_completion_effects` to keep its McCabe complexity bounded.
+    """
+    result: set[str] = set()
+    for op_id, op_def in op_catalog.items():
+        if not op_def.mode_allowlist or mode_id not in op_def.mode_allowlist:
+            continue
+        if op_def.default_available:
+            continue  # ambient — not a completion requirement
+        effect = str(getattr(op_def, "effect", "read") or "read")
+        if effect in ("write", "external_write"):
+            result.add(op_id)
+    return result
+
+
+def _mode_allowlist_write_tools(
+    tool_catalog: dict[str, Any],
+    mode_id: str,
+) -> set[str]:
+    """Return write-effect tools whose ``mode_allowlist`` binds them to ``mode_id``.
+
+    Excludes ``default_available`` (ambient) tools. Shared with
+    :func:`mode_completion_effects` to keep its McCabe complexity bounded.
+    """
+    result: set[str] = set()
+    for tool_id, tool_def in tool_catalog.items():
+        tool_mode_allowlist = getattr(tool_def, "mode_allowlist", None)
+        if not tool_mode_allowlist or mode_id not in tool_mode_allowlist:
+            continue
+        if getattr(tool_def, "default_available", False):
+            continue  # ambient
+        effect = str(getattr(tool_def, "effect", "read") or "read")
+        if effect in ("write", "external_write"):
+            result.add(tool_id)
+    return result
 
 
 async def execute_operation(
