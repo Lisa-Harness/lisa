@@ -53,29 +53,47 @@ the opportunistic, pressure-driven pattern — the hint *is* the pressure.
 
 ---
 
-## Invariant 3 — Action-tool validation for fork children
+## Invariant 3 — Completion-contract validation for fork children
 
-**Code:** `kernel/turn_phases/_fork.py :: _fork_mode_action_tool_ids` and
-the validation branch in `_run_fork_child_turn`;
-`kernel/turn_phases/_turn_state.py :: called_tool_names`;
-`kernel/turn_runner.py :: TurnResult.called_tool_names`.
+**Code:** `kernel/operations/registry.py :: mode_completion_effects`
+(the canonical action-tool resolver);
+`kernel/turn_phases/_child_turn.py :: classify_child_turn` (the shared
+classifier);
+`kernel/turn_runner.py :: TurnResult.effect_receipts` (dispatch-time
+evidence);
+`kernel/turn_phases/_turn_state.py :: effect_receipts`.
 
 **Without it:** A fork child whose mode exists to take action (write a
 file, persist a memory) could do read-only research, produce a hallucinated
 "Done — wrote it to disk" text response, and be marked `status="ok"`. The
 older `tool_call_count == 0` guard missed this because it asked "did the
-child call *any* tool?" — a child making 4 `fetch_page` calls passed.
+child call *any* tool?" — a child making 4 `fetch_page` calls passed. A
+later heuristic asked "did the child call *its action* tool?" but derived
+the action-tool set from `authored_allowed_*` only, missing operations
+admitted via their own `mode_allowlist` (the cross-pack pattern
+`markdown_forge_document` uses). And a child blocked by the capability
+gate (router declined to escalate to a code-capable model) was
+misclassified as `no_tools` ("model too weak") because the classifier
+never checked `TurnResult.blocked`.
 
-**What it does:** `_fork_mode_action_tool_ids` returns the mode's
-`authored_allowed_operation_ids ∪ authored_allowed_tool_ids` — the tools
-that actually *do* the mode's work. The validator flags
-`status="no_tools"` when `called_tool_names ∩ action_tool_ids == ∅`, even
-if `tool_call_count > 0`. The parent's `succeeded` count uses
-`status == "ok"`, so `no_tools` children reduce the success count and the
-parent surfaces them by name.
+**What it does:** `mode_completion_effects` is the single canonical
+resolver for a mode's required side-effecting capabilities. It reads
+authored bindings **plus** `mode_allowlist`-admitted operations and
+tools, excluding ambient `default_available` capabilities — so the
+advertiser (`build_operation_tool_schemas`) and the validator see the
+same set. `classify_child_turn` is the single classifier called by both
+fork and delegate paths. Its fixed order: `blocked` → `model_yield` →
+`interrupted` → `timeout`/`error` → completion-contract → `complete`.
+The completion contract checks `EffectReceipt`s collected at dispatch
+time (from the capability's declared `effect`), not tool-name
+heuristics — so a child that called a `mode_allowlist`-admitted write
+operation is correctly counted. A capability-gated child returns
+`blocked` with a structured `BlockDiagnostic` (missing capabilities,
+resolved model), never `no_tools`.
 
-**Right question:** "did the child call *its action* tool?" — not "did it
-call any tool?"
+**Right question:** "did the child produce a write-effect receipt for a
+required capability?" — not "did it call any tool?" and not "did it call
+a tool from the authored allowlist?"
 
 ---
 

@@ -66,7 +66,7 @@ ______________________________________________________________________
   - [ ] Pack system architecture and loading mechanism
   - [ ] Storage layer (`lisa-storage`) and document persistence
   - [ ] Workflow stages and FSM transitions
-  - [ ] Fork capability for parallel sub-workflows (`ForkTarget` / `ForkChildResult` with `no_tools` status)
+  - [ ] Fork capability for parallel sub-workflows (`ForkTarget` / `ForkChildResult` with `no_tools` / `blocked` status, `EffectReceipt` completion validation via `classify_child_turn`)
 - [ ] Installation / setup guide exists
 - [ ] Configuration reference exists (environment variables, config files)
 - [ ] Tool reference documentation exists for each tool

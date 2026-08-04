@@ -47,9 +47,12 @@ addressed before any new feature work.
      and `kernel/operations/structured_output.py`.
   2. `normalize_openai_messages` sets assistant `content` to `""` (not
      omit) when tool_calls present — `kernel/provider_core.py`.
-  3. Fork-child result validation: `ForkChildStatus` now includes `"no_tools"`;
-     `_fork_mode_requires_tools` rejects a child that lacks its required
-     tools — `kernel/turn_phases/_fork.py`, `kernel/models.py`.
+  3. Fork-child result validation: `ForkChildStatus` now includes `"no_tools"`
+     and `"blocked"`; the shared classifier
+     (`kernel/turn_phases/_child_turn.py :: classify_child_turn`) checks
+     `TurnResult.blocked` first and validates completion via `EffectReceipt`s
+     resolved by `mode_completion_effects` (`kernel/operations/registry.py`)
+     — `kernel/turn_phases/_child_turn.py`, `kernel/models.py`.
   4. Fork regression tests added — see `test_run_turn_fork_no_tools*`,
      `test_distill_retry.py`, `test_normalize_*`.
 - **Follow-on (2026-07-27): model refusal to fork.** The above fixes
@@ -96,16 +99,19 @@ addressed before any new feature work.
 ### 1.2 Fork child observability
 
 - **Status:** ✅ Shipped. `ForkChildResult` exists in `kernel/models.py` with
-  `status: ForkChildStatus` (where `ForkChildStatus = Literal["ok",
-  "timeout", "cancelled", "error", "no_tools"]`), `output_text: str`, and
+  `status: ForkChildStatus` (where `ForkChildStatus` includes `"ok"`,
+  `"blocked"`, `"no_tools"`, `"interrupted"`, `"model_yield"`, `"timeout"`,
+  `"cancelled"`, `"error"`), `output_text: str`, and
   `duration_ms: int`. The parent aggregates child results into
-  `TurnResult.fork_results`; `_fork_mode_requires_tools` rejects children
-  that lack their required tools (status `"no_tools"`).
+  `TurnResult.fork_results`; the shared classifier
+  (`classify_child_turn`) validates completion via `EffectReceipt`s
+  (not tool-name heuristics) resolved by `mode_completion_effects`.
 - **Note on shape:** The shipped fields differ from the original proposal
   (`succeeded`/`side_effects`/`error`). The `status` enum captures the same
   intent more precisely (the `"no_tools"` case was the 2026-07-18 false-success
-  root cause). A future enhancement could add an explicit `side_effects` list
-  if richer attribution is needed.
+  root cause; the `"blocked"` case was the 2026-08-04 capability-gate
+  misclassification root cause). `EffectReceipt` carries the structured
+  side-effect evidence the original proposal called `side_effects`.
 
 ### 1.3 Ollama provider compatibility
 

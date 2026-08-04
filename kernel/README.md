@@ -596,7 +596,8 @@ Modes opt out via three front-matter keys:
 The kernel distinguishes the *authored* allowlists
 (`authored_allowed_operation_ids` / `authored_allowed_tool_ids`) from the merged
 *effective* ones (`allowed_operation_ids` / `allowed_tool_ids`) so that
-`_fork_mode_requires_tools` checks only the authored set — a chat-only mode that
+`mode_completion_effects` (`kernel/operations/registry.py`) checks only the
+authored set plus `mode_allowlist`-admitted capabilities — a chat-only mode that
 inherits `recall_memory` is not misflagged as requiring tools to complete.
 
 ```yaml

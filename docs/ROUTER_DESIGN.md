@@ -241,8 +241,11 @@ When the model calls `transition_stage(target_stage_id="fork:coding,markdown")`:
    `run_turn()` with its own mode's system prompt and tool surface.
 4. The parent turn's `TurnBudget` is divided equally across N children.
 5. Results are collected into `fork_results: list[ForkChildResult]`.
-6. The loop continues — the model sees the fork results as the tool output
-   and can synthesize from them.
+6. If any child is `no_tools`, `blocked`, or `interrupted`, the parent
+   aborts with a deterministic failure message (the model cannot
+   paraphrase a failure into a false "completed"). Otherwise the loop
+   continues — the model sees the fork results as the tool output and
+   can synthesize from them.
 
 Fork target syntax:
 
@@ -297,8 +300,9 @@ Both paths clear `forced_fork_target` after firing, so the enforcer runs
 at most once per turn and the post-fork hint recomputation can set a
 fresh target if the chain continues.
 
-> **Philosophy.** This is the same lesson as the `no_tools` guard (which
-> catches children that hallucinated success), applied one layer earlier:
+> **Philosophy.** This is the same lesson as the completion-contract guard
+> (which catches children that hallucinated success via effect receipts,
+> not tool-name heuristics), applied one layer earlier:
 > *don't hand the model advisory prose and trust it.* When the kernel has
 > already decided the routing, the model is the executor. When the
 > executor won't execute a deterministic next step, the kernel takes
@@ -717,9 +721,34 @@ grant extra resources.
 ### Failure handling
 
 The FSM collects all child results (including failures) into `fork_results`
-and continues the loop. The model sees which children succeeded and which
-failed, and can decide to retry, ask the user, or synthesize from partial
-results.
+and aborts the turn with a deterministic failure message when any child is
+`no_tools`, `blocked`, or `interrupted`. The model cannot paraphrase a
+failure into a false "completed" (the 2026-07-25 incident).
+
+Child status is classified by `kernel/turn_phases/_child_turn.py ::
+classify_child_turn` — the single shared classifier called by both the
+fork and delegate paths. Its fixed classification order:
+
+1. **`blocked`** — the capability gate stopped the child before the tool
+   loop (the router declined to escalate to a model with the required
+   capabilities). Carries a `BlockDiagnostic` with the missing capabilities
+   and resolved model so the parent surfaces the actual cause.
+2. **`model_yield`** — the model called the `yield` tool to ask the user
+   a question. The parent propagates the child's `YieldAction`.
+3. **`interrupted`** — the harness force-yielded (iteration cap / budget /
+   stuck-in-stage). The child never finished, so its tool-call pattern is
+   inconclusive.
+4. **`timeout`** / **`error`** / **`cancelled`** — exception-based outcomes.
+5. **`complete`** / **`no_tools`** — completion-contract validation.
+
+The completion contract uses `EffectReceipt`s collected at dispatch time
+from each capability's declared `effect`, not tool-name heuristics. The
+required set is resolved by `kernel/operations/registry.py ::
+mode_completion_effects` — the single canonical source that reads authored
+bindings plus `mode_allowlist`-admitted operations and tools, excluding
+ambient `default_available` capabilities. This ensures the advertiser
+(`build_operation_tool_schemas`) and the validator see the same action-tool
+set.
 
 ---
 
@@ -751,9 +780,12 @@ Hosts manage manifests through commands:
 
 | Module | Role |
 | --- | --- |
-| `kernel/turn_runner.py` | Turn execution loop. Intercepts `transition_stage` for mode handoff, fork fan-out, and workflow stage transitions. Compiles capability manifest and injects routing hints. |
+| `kernel/turn_runner.py` | Turn execution loop. Intercepts `transition_stage` for mode handoff, fork fan-out, and workflow stage transitions. Compiles capability manifest and injects routing hints. Captures `EffectReceipt`s at dispatch time. |
+| `kernel/turn_phases/_child_turn.py` | Shared child-turn classifier (`classify_child_turn`). Called by both fork and delegate paths. Fixed order: blocked → model_yield → interrupted → timeout/error → completion-contract → complete. |
+| `kernel/turn_phases/_fork.py` | Fork fan-out orchestration. Budget division, child turn execution, `fork_yield_policy` resolution. Delegates classification to `classify_child_turn`. |
+| `kernel/operations/registry.py` | Operation catalog, admission gates, `mode_completion_effects` (the canonical action-tool resolver shared with `classify_child_turn`). |
 | `kernel/ipsar_fsm.py` | FSM loader and runtime. Synthesizes routing transitions (`synthesize_routing_transitions`, `get_routing_targets`, `is_routable_mode`). Parses fork targets (`parse_fork_target_string`, `is_fork_target`). Validates workflow stage transitions (`apply_transition`). |
-| `kernel/models.py` | `ForkTarget`, `ForkChildResult`, `WorkflowModeConfig`, `WorkflowStageConfig`, `WorkflowTransitionRequest`, `TurnBudget`, `CallLedger`. |
+| `kernel/models.py` | `ForkTarget`, `ForkChildResult`, `ChildTurnOutcome`, `EffectReceipt`, `BlockDiagnostic`, `WorkflowModeConfig`, `WorkflowStageConfig`, `WorkflowTransitionRequest`, `TurnBudget`, `CallLedger`. |
 | `kernel/ipsar.py` | Slash-command route resolution (`parse_route`). String parser, no model call. |
 | `kernel/session_plan.py` | `SessionRouting` model (compiled from session context front matter). Owns `start_mode`, `aliases`, `priority_adjustments`, `hints`. |
 | `kernel/capability_manifest.py` | Compiles `CapabilityManifest` from live tool schemas. Used for proactive routing hints. |

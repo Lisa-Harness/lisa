@@ -149,7 +149,7 @@ exportable: true
 # default_available omitted — modes opt in via allowed_tool_ids
 ```
 
-Modes opt out of the ambient merge via `accept_default_capabilities: false` (disables all defaults) or `excluded_operation_ids` / `excluded_tool_ids` (subtracts specific ids). The kernel distinguishes the authored allowlists from the merged effective ones so that `_fork_mode_requires_tools` checks only the authored set.
+Modes opt out of the ambient merge via `accept_default_capabilities: false` (disables all defaults) or `excluded_operation_ids` / `excluded_tool_ids` (subtracts specific ids). The kernel distinguishes the authored allowlists from the merged effective ones so that `mode_completion_effects` (`kernel/operations/registry.py`) checks only the authored set plus `mode_allowlist`-admitted capabilities.
 
 #### MCP-native ambient tools
 

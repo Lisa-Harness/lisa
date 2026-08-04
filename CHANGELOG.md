@@ -6,6 +6,50 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Added
 
+#### Unified child-turn classification with effect receipts
+
+- **`EffectReceipt` model** (`kernel/models.py`) — frozen Pydantic model
+  carrying the `effect` kind, `capability_id`, and optional `artifact_id`
+  for one side-effecting capability that executed. Collected at dispatch
+  time from the capability's declared `EffectKind`, not inferred from tool
+  names or response prose. The child-turn completion contract checks
+  receipts, so a child that called a `mode_allowlist`-admitted write
+  operation (invisible to the old `authored_allowed_*`-only detector) is
+  correctly counted as having completed.
+- **`BlockDiagnostic` model** (`kernel/models.py`) — structured reason
+  for a blocked child turn: `reason` (capability_gate / input_guard /
+  output_guard), `resolved_model_id`, `missing_capabilities`, `message`.
+  Carried on `ChildTurnOutcome` when `status` is `blocked` so the parent
+  surfaces the actual cause (router declined to escalate) instead of the
+  old misleading "model too weak to follow the sub-turn contract" framing.
+- **`ChildTurnOutcome` model and `ChildStatus` Literal** (`kernel/models.py`)
+  — the single canonical child-turn result: `status`, `output_text`,
+  `error_message`, `duration_ms`, `tool_call_count`, `called_tool_names`,
+  `effect_receipts`, `yield_action`, `block_diagnostic`. The fork and
+  delegate adapters map this to their host-facing models
+  (`ForkChildResult` / `DelegationResult`).
+- **`mode_completion_effects` function** (`kernel/operations/registry.py`)
+  — the single canonical resolver for a mode's required side-effecting
+  capabilities. Reads authored bindings plus `mode_allowlist`-admitted
+  operations and tools, excluding ambient `default_available` capabilities.
+  Replaces the faulty `_fork_mode_action_tool_ids` which read only
+  `authored_allowed_*` and missed `mode_allowlist`-admitted ops (the
+  cross-pack pattern `markdown_forge_document` uses). The advertiser
+  (`build_operation_tool_schemas`) and the validator now share one source
+  of truth.
+- **`classify_child_turn` function** (`kernel/turn_phases/_child_turn.py`)
+  — the single shared classifier called by both the fork and delegate
+  paths. Fixed classification order: `blocked` → `model_yield` →
+  `interrupted` → `timeout`/`error`/`cancelled` → completion-contract →
+  `complete`. Replaces 130+ lines of duplicated classification logic in
+  `_run_fork_child_turn` and `_default_delegate_fn`.
+- **`TurnResult.effect_receipts`** field — list of `EffectReceipt`s
+  collected during the turn. Threaded through the turn loop, the sub-turn
+  contract briefing, and the midpoint write-nudge (which is now
+  receipt-aware).
+- **`ForkChildStatus` and `DelegationStatus`** gain `"blocked"` (and
+  `"max_depth"` on `ForkChildStatus` for union compatibility).
+
 #### Memory backend CRUD completion
 
 - **`get_memory` and `delete_memory` tools** added to the `lisa-memory` MCP
@@ -244,7 +288,7 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 
 - **`exportable` and `default_available` flags on operation/tool YAML.** Two pack-authored visibility flags control cross-pack capability access. `exportable: true` (default `false`) marks a capability as referenceable by modes in other packs; a foreign mode referencing a non-exported capability is rejected at startup by `validate_export_boundaries` (`kernel/operations/registry.py`). `default_available: true` (default `false`) marks a capability for ambient merge: the SDK catalog loader (`sdk/content/_catalog.py :: _merge_default_capabilities`) auto-unions the id into every mode's effective `allowed_operation_ids` / `allowed_tool_ids` before the kernel sees them, so modes inherit ambient capabilities (e.g. `recall_memory`) without re-listing them. The merge is idempotent and happens entirely in the SDK layer; the kernel's `tools_authoritative` filter is unchanged.
 - **Mode-level opt-out keys: `accept_default_capabilities`, `excluded_operation_ids`, `excluded_tool_ids`.** `accept_default_capabilities: false` (default `true`) disables all ambient inheritance for a mode. `excluded_operation_ids` / `excluded_tool_ids` subtract specific ambient ids while keeping the rest. Added to `WorkflowModeConfig` (`kernel/models.py`), the FSM loader protected-keys sets, the SDK loader, and the kernel deserializer.
-- **`authored_allowed_operation_ids` / `authored_allowed_tool_ids` on `WorkflowModeConfig`.** Captures the explicit front-matter allowlists before the default-available merge, so `_fork_mode_requires_tools` (`kernel/turn_runner.py`) checks only the authored set — a chat-only mode that inherits `recall_memory` is not misflagged as requiring tools to complete.
+- **`authored_allowed_operation_ids` / `authored_allowed_tool_ids` on `WorkflowModeConfig`.** Captures the explicit front-matter allowlists before the default-available merge, so `mode_completion_effects` (`kernel/operations/registry.py`) checks only the authored set plus `mode_allowlist`-admitted capabilities — a chat-only mode that inherits `recall_memory` is not misflagged as requiring tools to complete.
 - **Seeds: `recall_memory` is `exportable: true, default_available: true`; `web_search` (tool + operation) is `exportable: true` only** (search is costly, stays opt-in per mode).
 
 ### Changed
