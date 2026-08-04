@@ -5,6 +5,7 @@ import json
 import pytest
 
 from kernel.models import MemoryRecord, OperationExecutionContext, ToolResult
+from kernel.seams.host_adapter import build_callable_host
 from sdk.packs.memory.operations.memory.recall import execute
 from sdk.packs.memory.utils.memory_recall import build_memory_recall_answer
 
@@ -80,7 +81,7 @@ async def test_recall_operation_uses_memory_list_and_returns_ranked_evidence() -
         user_id="adam",
         workspace_id="default",
         params={"query": "postgres control plane", "limit": 3},
-        execute_tool_fn=execute_tool,
+        host=build_callable_host(execute_tool_fn=execute_tool),
     )
 
     result = await execute(ctx)
@@ -142,7 +143,7 @@ async def test_recall_operation_searches_and_unwraps_mem0_envelope() -> None:
         user_id="adam",
         workspace_id="default",
         params={"query": "postgres analytics", "limit": 3},
-        execute_tool_fn=execute_tool,
+        host=build_callable_host(execute_tool_fn=execute_tool),
     )
 
     result = await execute(ctx)
@@ -235,7 +236,7 @@ async def test_recall_operation_deep_returns_results_with_no_lexical_overlap() -
             "deep": True,
             "limit": 5,
         },
-        execute_tool_fn=execute_tool,
+        host=build_callable_host(execute_tool_fn=execute_tool),
     )
 
     result = await execute(ctx)

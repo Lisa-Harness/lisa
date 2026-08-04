@@ -27,7 +27,7 @@ from sdk.content import require_authored_text
 
 logger = logging.getLogger(__name__)
 
-# Authored-text path — loaded via ctx.read_authored_text_fn (SDK loader).
+# Authored-text path — loaded via ctx.host.read_authored_text (SDK loader).
 _SYSTEM_PROMPT_PATH = "operations/memory/prompts/synthesize_learning_system.md"
 
 # Fallback default for the distillation LLM token budget. The authoritative
@@ -102,7 +102,7 @@ def _load_system_prompt(ctx: OperationExecutionContext) -> str:
     """
 
     return require_authored_text(
-        ctx.read_authored_text_fn,
+        ctx.host.read_authored_text if ctx.host is not None else None,
         _SYSTEM_PROMPT_PATH,
         context="synthesize_learning operation",
     )
@@ -229,14 +229,14 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # Step 1: Distill with the LLM. Distillation is required (not optional) —
     # a missing completion function, unresolved model, or authored prompt
     # raises rather than silently persisting the raw conversation text.
-    if ctx.complete_fn is None or not callable(ctx.resolve_model_fn):
+    if ctx.host is None:
         raise RuntimeError(
-            "synthesize_and_store_learning requires complete_fn and resolve_model_fn"
+            "synthesize_and_store_learning requires the OperationHost seam"
         )
     model_id = ctx.preferred_model_id
-    model_def = ctx.resolve_model_fn(model_id)
+    model_def = ctx.host.resolve_model(model_id)
     if model_def is None:
-        model_def = ctx.resolve_model_fn("default")
+        model_def = ctx.host.resolve_model("default")
     if model_def is None:
         raise RuntimeError("synthesize_and_store_learning could not resolve a model")
 
@@ -267,7 +267,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         (first_messages, json_only_retry_messages(first_messages, DistilledLearning))
     ):
         try:
-            raw = await ctx.complete_fn(
+            raw = await ctx.host.complete(
                 messages=attempt_messages,
                 model_def=model_def,
                 max_tokens=distill_max_tokens,
@@ -295,12 +295,12 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     if "had_briefing" in ctx.extra:
         content_json["had_chase_briefing"] = ctx.extra["had_briefing"]
 
-    if not callable(ctx.execute_tool_fn):
+    if ctx.host is None:
         return OperationResult(
             output_text="Learning storage unavailable: tool execution not injected."
         )
 
-    tool_result = await ctx.execute_tool_fn(
+    tool_result = await ctx.host.execute_tool(
         "memory.add",
         ToolExecutionContext(
             tool_id="memory.add",

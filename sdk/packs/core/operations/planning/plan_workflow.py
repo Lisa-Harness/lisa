@@ -329,10 +329,10 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             output_json={"target_stage_id": "", "rationale": "empty query"},
         )
 
-    if ctx.complete_fn is None or not callable(ctx.resolve_model_fn):
+    if ctx.host is None:
         return OperationResult(
             output_text=(
-                "plan_workflow requires complete_fn and resolve_model_fn to "
+                "plan_workflow requires the OperationHost seam to "
                 "run; falling back to no routing target."
             ),
             output_json={"target_stage_id": "", "rationale": "no model wiring"},
@@ -346,9 +346,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     )
 
     preferred_model_id = ctx.preferred_model_id or ctx.model_id or "default"
-    model_def = ctx.resolve_model_fn(preferred_model_id)
+    model_def = ctx.host.resolve_model(preferred_model_id)
     if model_def is None:
-        model_def = ctx.resolve_model_fn("default")
+        model_def = ctx.host.resolve_model("default")
     if model_def is None:
         return OperationResult(
             output_text="plan_workflow could not resolve a model for planning.",
@@ -373,7 +373,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     first_completion: Any | None = None
     first_call_failed = False
     try:
-        first_completion = await ctx.complete_fn(
+        first_completion = await ctx.host.complete(
             messages=messages,
             model_def=model_def,
             max_tokens=plan_max_tokens,
@@ -502,7 +502,7 @@ async def _json_only_retry(
         # drop it. Re-passing response_format reproduces the failure.
         # This mirrors the declarative runtime
         # (kernel/operations/declarative.py) and synthesize_learning.
-        retry_completion = await ctx.complete_fn(
+        retry_completion = await ctx.host.complete(
             messages=json_only_retry_messages(messages, PlanWorkflowOutput),
             model_def=model_def,
             # Same reasoning-model budget as the first attempt. The retry

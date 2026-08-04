@@ -60,7 +60,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     if not correction:
         return OperationResult(output_text="⛔ No correction provided.")
 
-    if not callable(ctx.execute_tool_fn):
+    if ctx.host is None:
         return OperationResult(
             output_text="Memory dispute unavailable: tool execution not injected."
         )
@@ -72,7 +72,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         # Fetch the target record directly by id — surface-scoped on the
         # server side, so a wrong-scope id returns "not found" rather than
         # a cross-surface record.
-        get_result = await ctx.execute_tool_fn(
+        get_result = await ctx.host.execute_tool(
             "memory.get",
             ToolExecutionContext(
                 tool_id="memory.get",
@@ -106,7 +106,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
     elif search_query:
         # Search by content.
-        search_result = await ctx.execute_tool_fn(
+        search_result = await ctx.host.execute_tool(
             "memory.search",
             ToolExecutionContext(
                 tool_id="memory.search",
@@ -157,7 +157,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # recall. The old record stays with its original salience (audit trail).
     boosted_salience = max(0.8, min(1.0, disputed_record.salience + 0.2))
 
-    add_result = await ctx.execute_tool_fn(
+    add_result = await ctx.host.execute_tool(
         "memory.add",
         ToolExecutionContext(
             tool_id="memory.add",

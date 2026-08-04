@@ -50,7 +50,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     if not raw_query:
         return OperationResult()
 
-    if not callable(ctx.execute_tool_fn):
+    if ctx.host is None:
         return OperationResult(
             output_text="Memory recall unavailable: tool execution not injected."
         )
@@ -63,24 +63,31 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # backend's search engine — setting it only on ToolExecutionContext.query
     # is not enough; it must also be in parameters (which is what
     # _mcp_tool_executor forwards to the pool).
-    tool_result = await ctx.execute_tool_fn(
-        "memory.search",
-        ToolExecutionContext(
-            tool_id="memory.search",
-            workspace_id=ctx.workspace_id,
-            user_id=ctx.user_id,
-            user_slug=ctx.user_slug,
-            surface_id=ctx.surface_id,
-            memory_scope=ctx.memory_scope,
-            mode_id=ctx.mode_id,
-            query=raw_query,
-            parameters={
-                "query": raw_query,
-                "user_slug": ctx.user_slug,
-                "limit": max(1, min(limit, 20)),
-            },
-        ),
-    )
+    try:
+        tool_result = await ctx.host.execute_tool(
+            "memory.search",
+            ToolExecutionContext(
+                tool_id="memory.search",
+                workspace_id=ctx.workspace_id,
+                user_id=ctx.user_id,
+                user_slug=ctx.user_slug,
+                surface_id=ctx.surface_id,
+                memory_scope=ctx.memory_scope,
+                mode_id=ctx.mode_id,
+                query=raw_query,
+                parameters={
+                    "query": raw_query,
+                    "user_slug": ctx.user_slug,
+                    "limit": max(1, min(limit, 20)),
+                },
+            ),
+        )
+    except TypeError as exc:
+        if "not wired" in str(exc):
+            return OperationResult(
+                output_text="Memory recall unavailable: tool execution not injected."
+            )
+        raise
     if getattr(tool_result, "error", None):
         return OperationResult(output_text=f"Memory recall unavailable: {tool_result.error}")
 

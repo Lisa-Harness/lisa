@@ -11,6 +11,7 @@ from kernel.models import (
     McpServerHealth,
     OperationExecutionContext,
 )
+from kernel.seams.host_adapter import build_callable_host
 from sdk.packs.introspect.operations.self_model.self_model import build_self_model_vibe
 
 
@@ -98,7 +99,7 @@ async def test_self_model_execute_with_introspect_fn(monkeypatch: pytest.MonkeyP
     ctx = OperationExecutionContext(
         operation_id="self_model",
         user_slug="test_user",
-        introspect_fn=_mock_introspect,
+        host=build_callable_host(introspect_fn=_mock_introspect),
     )
 
     result = await execute(ctx)

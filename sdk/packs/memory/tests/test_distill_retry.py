@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from kernel.models import OperationExecutionContext, OperationResult
+from kernel.seams.host_adapter import build_callable_host
 from sdk.packs.memory.operations.memory.synthesize_learning import execute
 
 
@@ -27,6 +28,7 @@ def _ctx(
     *,
     complete_fn: Any,
     raw_content: str,
+    execute_tool_fn: Any | None = None,
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext wired for distillation."""
 
@@ -36,13 +38,17 @@ def _ctx(
     def _resolve_model(_model_id: str | None) -> SimpleNamespace:
         return SimpleNamespace(provider="ollama", model_id="llama-test")
 
+    host = build_callable_host(
+        complete_fn=complete_fn,
+        resolve_model_fn=_resolve_model,
+        read_authored_text_fn=_read_authored_text,
+        execute_tool_fn=execute_tool_fn,
+    )
     return OperationExecutionContext(
         query="remember the architectural rundown",
         response="",
         params={"content": raw_content},
-        complete_fn=complete_fn,
-        resolve_model_fn=_resolve_model,
-        read_authored_text_fn=_read_authored_text,
+        host=host,
         preferred_model_id="default",
     )
 
@@ -65,8 +71,6 @@ async def test_execute_retries_then_succeeds_when_first_attempt_empty() -> None:
         # Retry (response_format=None, JSON-only instruction appended) returns valid JSON.
         return _completion('{"facts": ["fact one", "fact two"]}')
 
-    ctx = _ctx(complete_fn=complete_fn, raw_content="the architectural rundown")
-
     # execute_tool_fn is required to persist; stub it so we isolate the distillation loop.
     persisted: dict[str, Any] = {}
 
@@ -74,7 +78,11 @@ async def test_execute_retries_then_succeeds_when_first_attempt_empty() -> None:
         persisted["content"] = tool_ctx.parameters.get("content")
         return OperationResult(output_text='{"ok": true}')
 
-    ctx.execute_tool_fn = _execute_tool
+    ctx = _ctx(
+        complete_fn=complete_fn,
+        raw_content="the architectural rundown",
+        execute_tool_fn=_execute_tool,
+    )
 
     result = await execute(ctx)
 
@@ -99,12 +107,14 @@ async def test_execute_retries_then_succeeds_when_first_attempt_truncated_json()
             return _completion(truncated)
         return _completion('{"facts": ["fact one"]}')
 
-    ctx = _ctx(complete_fn=complete_fn, raw_content="the rundown")
-
     async def _execute_tool(_tool_id: str, _tool_ctx: Any) -> OperationResult:
         return OperationResult(output_text='{"ok": true}')
 
-    ctx.execute_tool_fn = _execute_tool
+    ctx = _ctx(
+        complete_fn=complete_fn,
+        raw_content="the rundown",
+        execute_tool_fn=_execute_tool,
+    )
 
     result = await execute(ctx)
     assert "Learning stored" in result.output_text
@@ -120,12 +130,14 @@ async def test_execute_raises_when_both_attempts_fail() -> None:
         # Both attempts return empty.
         return _completion("")
 
-    ctx = _ctx(complete_fn=complete_fn, raw_content="the rundown")
-
     async def _execute_tool(_tool_id: str, _tool_ctx: Any) -> OperationResult:
         return OperationResult(output_text='{"ok": true}')
 
-    ctx.execute_tool_fn = _execute_tool
+    ctx = _ctx(
+        complete_fn=complete_fn,
+        raw_content="the rundown",
+        execute_tool_fn=_execute_tool,
+    )
 
     with pytest.raises(RuntimeError, match="distillation failed: empty distillation output"):
         await execute(ctx)

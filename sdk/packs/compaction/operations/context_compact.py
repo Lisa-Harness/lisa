@@ -71,17 +71,17 @@ def _format_turns(turn_history: list[dict[str, Any]]) -> str:
 
 
 def _load_prompt(ctx: OperationExecutionContext) -> str:
-    if not callable(ctx.read_authored_text_fn):
+    if ctx.host is None:
         raise RuntimeError(
-            "read_authored_text_fn is not wired; cannot load context_compact prompt"
+            "OperationHost seam is not wired; cannot load context_compact prompt"
         )
     try:
         loaded = str(
-            ctx.read_authored_text_fn("operations/prompts/context_compact.md") or ""
+            ctx.host.read_authored_text("operations/prompts/context_compact.md") or ""
         ).strip()
     except Exception as exc:  # pylint: disable=broad-except
         raise RuntimeError(
-            f"read_authored_text_fn failed for context_compact prompt: {exc}"
+            f"read_authored_text failed for context_compact prompt: {exc}"
         ) from exc
     if not loaded:
         raise RuntimeError(
@@ -117,13 +117,13 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     transcript = _format_turns(old_turns)
     if not transcript:
         raise RuntimeError("context_compact requires non-empty old turns")
-    if ctx.complete_fn is None or not callable(ctx.resolve_model_fn):
-        raise RuntimeError("context_compact requires complete_fn and resolve_model_fn")
+    if ctx.host is None:
+        raise RuntimeError("context_compact requires the OperationHost seam")
 
     model_id = ctx.preferred_model_id or "default"
-    model_def = ctx.resolve_model_fn(model_id)
+    model_def = ctx.host.resolve_model(model_id)
     if model_def is None:
-        model_def = ctx.resolve_model_fn("default")
+        model_def = ctx.host.resolve_model("default")
     if model_def is None:
         raise RuntimeError("context_compact could not resolve a model")
 
@@ -135,7 +135,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     )
 
     try:
-        raw = await ctx.complete_fn(
+        raw = await ctx.host.complete(
             messages=[
                 {"role": "system", "content": system_prompt + pressure_line},
                 {"role": "user", "content": transcript},

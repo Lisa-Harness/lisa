@@ -2,7 +2,7 @@
 
 Covers:
 - ``checkpoint_create`` with model enrichment (mocked complete_fn)
-- ``checkpoint_create`` raises when complete_fn is not wired (no silent bare bundle)
+- ``checkpoint_create`` raises when the OperationHost seam is not wired (no silent bare bundle)
 - ``checkpoint_create`` with no tool executor
 - ``checkpoint_restore`` successful load
 - ``checkpoint_restore`` missing checkpoint
@@ -25,6 +25,7 @@ from kernel.models import (
     OperationExecutionContext,
     ToolResult,
 )
+from kernel.seams.host_adapter import build_callable_host
 
 # ── Test helpers ──────────────────────────────────────────────────────
 
@@ -48,6 +49,20 @@ def _make_ctx(
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for checkpoint operations."""
     authored_text = read_authored_text_fn or (lambda _path: "Test authored prompt.")
+    # Build a host when any seam callable is provided; leave host=None only
+    # when the caller wants to test the unwired-seam path (complete_fn=None
+    # AND execute_tool_fn=None).
+    any_seam = complete_fn is not None or execute_tool_fn is not None
+    host = (
+        build_callable_host(
+            complete_fn=complete_fn,
+            resolve_model_fn=resolve_model_fn,
+            read_authored_text_fn=authored_text,
+            execute_tool_fn=execute_tool_fn,
+        )
+        if any_seam
+        else None
+    )
     return OperationExecutionContext(
         workspace_id="test",
         user_id="test-user",
@@ -57,10 +72,7 @@ def _make_ctx(
         memory_scope="personal",
         mode_id="default",
         query="test query",
-        complete_fn=complete_fn,
-        resolve_model_fn=resolve_model_fn,
-        read_authored_text_fn=authored_text,
-        execute_tool_fn=execute_tool_fn,
+        host=host,
         state_provider=state_provider,
         params=params or {},
     )
@@ -178,7 +190,7 @@ async def test_checkpoint_create_with_enrichment() -> None:
 
 @pytest.mark.asyncio
 async def test_checkpoint_create_without_model_raises() -> None:
-    """checkpoint_create raises when complete_fn is not wired (no silent bare bundle)."""
+    """checkpoint_create raises when the OperationHost seam is not wired (no silent bare bundle)."""
     from sdk.packs.checkpoint.operations.checkpoint_create import execute
 
     save_response = json.dumps({"checkpoint_id": "def456"})
@@ -193,7 +205,7 @@ async def test_checkpoint_create_without_model_raises() -> None:
         execute_tool_fn=_mock_tool_executor(save_response),
     )
 
-    with pytest.raises(RuntimeError, match="complete_fn and resolve_model_fn"):
+    with pytest.raises(RuntimeError, match="OperationHost\\..+ is not wired"):
         await execute(ctx)
 
 

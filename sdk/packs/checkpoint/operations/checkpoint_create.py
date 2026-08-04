@@ -7,13 +7,13 @@ host state, then persists it via the ``lisa-storage`` MCP server's
 Enrichment: the operation calls the model to produce a structured summary
 (overview, work_done, important_files, next_steps) from the conversation
 excerpt. The enrichment system prompt is authored content loaded via
-``ctx.read_authored_text_fn`` (``operations/prompts/checkpoint_create_enrichment.md``);
+``ctx.host.read_authored_text`` (``operations/prompts/checkpoint_create_enrichment.md``);
 per the pack-content rule, a missing/empty loader raises rather than silently
 falling back to a bare bundle. A caller may override the prompt via
 ``params["prompt"]``.
 
 The operation declares ``save_checkpoint`` in its ``tool_ids`` so it can
-call ``lisa-storage`` through ``ctx.execute_tool_fn``. The host's tool
+call ``lisa-storage`` through ``ctx.host.execute_tool``. The host's tool
 executor routes this to the MCP tool pool with server-scoped dispatch
 to ``lisa-storage``.
 """
@@ -118,38 +118,34 @@ async def _enrich_checkpoint(
 ) -> CheckpointEnrichment:
     """Call the model to produce structured enrichment for the checkpoint.
 
-    Requires a wired completion function, a resolvable model, and an authored
-    enrichment prompt (loaded via ``ctx.read_authored_text_fn`` or overridden
+    Requires a wired OperationHost seam, a resolvable model, and an authored
+    enrichment prompt (loaded via ``ctx.host.read_authored_text`` or overridden
     via ``prompt_override``). Raises ``RuntimeError`` when any required input is
     missing — no silent fallback to an unenriched bundle.
     """
     transcript = _format_conversation_for_model(turn_history)
     if not transcript:
         raise RuntimeError("checkpoint enrichment requires non-empty turn history")
-    if ctx.complete_fn is None or not callable(ctx.resolve_model_fn):
-        raise RuntimeError("checkpoint enrichment requires complete_fn and resolve_model_fn")
+    if ctx.host is None:
+        raise RuntimeError("checkpoint enrichment requires the OperationHost seam")
 
     model_id = ctx.preferred_model_id or "default"
-    model_def = ctx.resolve_model_fn(model_id)
+    model_def = ctx.host.resolve_model(model_id)
     if model_def is None:
-        model_def = ctx.resolve_model_fn("default")
+        model_def = ctx.host.resolve_model("default")
     if model_def is None:
         raise RuntimeError("checkpoint enrichment could not resolve a model")
 
     system_prompt = prompt_override.strip()
     if not system_prompt:
-        if not callable(ctx.read_authored_text_fn):
-            raise RuntimeError(
-                "read_authored_text_fn is not wired; cannot load checkpoint enrichment prompt"
-            )
         try:
             loaded = str(
-                ctx.read_authored_text_fn("operations/prompts/checkpoint_create_enrichment.md")
+                ctx.host.read_authored_text("operations/prompts/checkpoint_create_enrichment.md")
                 or ""
             ).strip()
         except Exception as exc:  # pylint: disable=broad-except
             raise RuntimeError(
-                f"read_authored_text_fn failed for checkpoint enrichment prompt: {exc}"
+                f"read_authored_text failed for checkpoint enrichment prompt: {exc}"
             ) from exc
         if not loaded:
             raise RuntimeError(
@@ -159,7 +155,7 @@ async def _enrich_checkpoint(
         system_prompt = loaded
 
     try:
-        raw = await ctx.complete_fn(
+        raw = await ctx.host.complete(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": transcript},
@@ -219,24 +215,31 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     }
 
     # Persist via lisa-storage's save_checkpoint tool.
-    if not callable(ctx.execute_tool_fn):
+    if ctx.host is None:
         return OperationResult(
             output_text="Checkpoint failed: tool execution not injected.",
         )
 
-    tool_result = await ctx.execute_tool_fn(
-        "save_checkpoint",
-        ToolExecutionContext(
-            tool_id="save_checkpoint",
-            workspace_id=ctx.workspace_id,
-            user_id=ctx.user_id,
-            user_slug=ctx.user_slug,
-            surface_id=ctx.surface_id,
-            memory_scope=ctx.memory_scope,
-            mode_id=ctx.mode_id,
-            parameters={"bundle": bundle},
-        ),
-    )
+    try:
+        tool_result = await ctx.host.execute_tool(
+            "save_checkpoint",
+            ToolExecutionContext(
+                tool_id="save_checkpoint",
+                workspace_id=ctx.workspace_id,
+                user_id=ctx.user_id,
+                user_slug=ctx.user_slug,
+                surface_id=ctx.surface_id,
+                memory_scope=ctx.memory_scope,
+                mode_id=ctx.mode_id,
+                parameters={"bundle": bundle},
+            ),
+        )
+    except TypeError as exc:
+        if "not wired" in str(exc):
+            return OperationResult(
+                output_text="Checkpoint failed: tool execution not injected.",
+            )
+        raise
 
     output_text = getattr(tool_result, "output_text", "") or str(tool_result)
     error_text = getattr(tool_result, "error", "") or ""

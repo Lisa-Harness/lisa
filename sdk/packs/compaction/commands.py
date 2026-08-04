@@ -57,6 +57,8 @@ def _build_context(
     params: dict[str, Any],
 ) -> OperationExecutionContext:
     """Build an OperationExecutionContext for a compaction operation."""
+    from kernel.seams.host_adapter import build_callable_host
+
     return OperationExecutionContext(
         workspace_id="lite-host",
         user_id=str(runtime.config.user_slug or "lite-user"),
@@ -66,9 +68,11 @@ def _build_context(
         memory_scope="personal",
         mode_id=str(runtime.current_mode_id or "default"),
         query=message,
-        complete_fn=getattr(runtime, "complete_fn", None),
-        resolve_model_fn=lambda model_id: _resolve_model(runtime, model_id),
-        read_authored_text_fn=_content_loader(runtime),
+        host=build_callable_host(
+            complete_fn=getattr(runtime, "complete_fn", None),
+            resolve_model_fn=lambda model_id: _resolve_model(runtime, model_id),
+            read_authored_text_fn=_content_loader(runtime),
+        ),
         state_provider=lambda: _build_unified_state(runtime),
         params=params,
     )

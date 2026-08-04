@@ -45,12 +45,12 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     if not checkpoint_id:
         return OperationResult(output_text="Checkpoint restore failed: no checkpoint_id provided.")
 
-    if not callable(ctx.execute_tool_fn):
+    if ctx.host is None:
         return OperationResult(
             output_text="Checkpoint restore failed: tool execution not injected.",
         )
 
-    tool_result = await ctx.execute_tool_fn(
+    tool_result = await ctx.host.execute_tool(
         "restore_checkpoint",
         ToolExecutionContext(
             tool_id="restore_checkpoint",

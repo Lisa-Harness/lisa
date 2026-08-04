@@ -172,23 +172,22 @@ def build_self_model_vibe(artifact: LisaSelfModelArtifact) -> str:
 
 
 async def _gather_introspection(ctx: OperationExecutionContext) -> IntrospectSnapshot | None:
-    """Call the host's ``introspect_fn`` callback when wired.
+    """Call the host's ``introspect`` callback when wired.
 
     Returns ``None`` when the callback is not set or raises — the self-model
     still works without live telemetry, it just lacks the runtime fields.
     """
-    introspect_fn = getattr(ctx, "introspect_fn", None)
-    if introspect_fn is None:
+    if ctx.host is None:
         return None
     try:
-        result = introspect_fn()
+        result = ctx.host.introspect()
         # Support both sync and async callables
         if hasattr(result, "__await__"):
             result = await result
         if isinstance(result, IntrospectSnapshot):
             return result
     except Exception:
-        logger.debug("introspect_fn failed; self-model telemetry fields empty", exc_info=True)
+        logger.debug("introspect failed; self-model telemetry fields empty", exc_info=True)
     return None
 
 
@@ -217,13 +216,13 @@ def _resolve_tool_catalog(ctx: OperationExecutionContext) -> dict[str, Any]:
 
 
 def _resolve_model_manifest(ctx: OperationExecutionContext) -> ModelManifest | None:
-    """Best-effort model manifest from the resolve_model_fn."""
-    if ctx.resolve_model_fn is None:
+    """Best-effort model manifest from the host's resolve_model."""
+    if ctx.host is None:
         return None
     try:
         # The manifest is typically loaded by the host; we try common designations
         for designation in ("default", "fast_chat"):
-            model = ctx.resolve_model_fn(designation)
+            model = ctx.host.resolve_model(designation)
             if model is not None:
                 # We got a model entry; the manifest itself isn't directly
                 # accessible, so we return None and let the caller handle it
@@ -402,7 +401,7 @@ def _build_architecture_entries(now_iso: str) -> list[SelfKnowledgeEntry]:
 
 
 def _build_memory_entries(ctx: OperationExecutionContext, now_iso: str) -> list[SelfKnowledgeEntry]:
-    has_memory = callable(getattr(ctx, "execute_tool_fn", None))
+    has_memory = ctx.host is not None
     return [
         SelfKnowledgeEntry(
             entry_id=_make_entry_id("memory", 0),
@@ -410,7 +409,7 @@ def _build_memory_entries(ctx: OperationExecutionContext, now_iso: str) -> list[
             title="Memory store",
             body=("Memory tools available via MCP." if has_memory else "Memory tools not wired."),
             confidence=1.0,
-            source_refs=["ctx.execute_tool_fn"],
+            source_refs=["ctx.host.execute_tool"],
             tags=["memory"],
             updated_at=now_iso,
         ),

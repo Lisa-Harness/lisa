@@ -74,38 +74,34 @@ async def _summarize_old_turns(
 ) -> HistorySummary:
     """Call the model to summarize older turns.
 
-    Requires a wired completion function, a resolvable model, and an authored
-    summarization prompt (loaded via ``ctx.read_authored_text_fn`` or
+    Requires a wired OperationHost seam, a resolvable model, and an authored
+    summarization prompt (loaded via ``ctx.host.read_authored_text`` or
     overridden via ``prompt_override``). Raises ``RuntimeError`` when any
     required input is missing — no deterministic fallback summary.
     """
     transcript = _format_turns(old_turns)
     if not transcript:
         raise RuntimeError("checkpoint history summarize requires non-empty old turns")
-    if ctx.complete_fn is None or not callable(ctx.resolve_model_fn):
-        raise RuntimeError("checkpoint history summarize requires complete_fn and resolve_model_fn")
+    if ctx.host is None:
+        raise RuntimeError("checkpoint history summarize requires the OperationHost seam")
 
     model_id = ctx.preferred_model_id or "default"
-    model_def = ctx.resolve_model_fn(model_id)
+    model_def = ctx.host.resolve_model(model_id)
     if model_def is None:
-        model_def = ctx.resolve_model_fn("default")
+        model_def = ctx.host.resolve_model("default")
     if model_def is None:
         raise RuntimeError("checkpoint history summarize could not resolve a model")
 
     system_prompt = prompt_override.strip()
     if not system_prompt:
-        if not callable(ctx.read_authored_text_fn):
-            raise RuntimeError(
-                "read_authored_text_fn is not wired; cannot load checkpoint history summarize prompt"
-            )
         try:
             loaded = str(
-                ctx.read_authored_text_fn("operations/prompts/checkpoint_history_summarize.md")
+                ctx.host.read_authored_text("operations/prompts/checkpoint_history_summarize.md")
                 or ""
             ).strip()
         except Exception as exc:  # pylint: disable=broad-except
             raise RuntimeError(
-                f"read_authored_text_fn failed for checkpoint history summarize prompt: {exc}"
+                f"read_authored_text failed for checkpoint history summarize prompt: {exc}"
             ) from exc
         if not loaded:
             raise RuntimeError(
@@ -115,7 +111,7 @@ async def _summarize_old_turns(
         system_prompt = loaded
 
     try:
-        raw = await ctx.complete_fn(
+        raw = await ctx.host.complete(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": transcript},

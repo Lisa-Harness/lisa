@@ -89,6 +89,8 @@ def _build_context(
     tool_executor: Any = None,
 ) -> OperationExecutionContext:
     """Build an OperationExecutionContext for a checkpoint operation."""
+    from kernel.seams.host_adapter import build_callable_host
+
     return OperationExecutionContext(
         workspace_id="lite-host",
         user_id=str(runtime.config.user_slug or "lite-user"),
@@ -98,10 +100,12 @@ def _build_context(
         memory_scope="personal",
         mode_id=str(runtime.current_mode_id or "default"),
         query=message,
-        complete_fn=getattr(runtime, "complete_fn", None),
-        resolve_model_fn=lambda model_id: _resolve_model(runtime, model_id),
-        read_authored_text_fn=_content_loader(runtime),
-        execute_tool_fn=tool_executor,
+        host=build_callable_host(
+            complete_fn=getattr(runtime, "complete_fn", None),
+            resolve_model_fn=lambda model_id: _resolve_model(runtime, model_id),
+            read_authored_text_fn=_content_loader(runtime),
+            execute_tool_fn=tool_executor,
+        ),
         state_provider=lambda: _build_unified_state(runtime),
         params=params,
     )

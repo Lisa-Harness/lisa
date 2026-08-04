@@ -434,11 +434,19 @@ def _make_ctx(
     complete_fn: Any | None = None,
     resolve_model_fn: Any | None = None,
 ) -> OperationExecutionContext:
+    from kernel.seams.host_adapter import build_callable_host
+
+    host = None
+    if complete_fn is not None:
+        host = build_callable_host(
+            complete_fn=complete_fn,
+            resolve_model_fn=resolve_model_fn
+            or (lambda mid: type("M", (), {"model_id": "default"})()),
+        )
     return OperationExecutionContext(
         query=query,
         mode_id="plan",
-        complete_fn=complete_fn,
-        resolve_model_fn=resolve_model_fn or (lambda mid: type("M", (), {"model_id": "default"})()),
+        host=host,
     )
 
 
@@ -486,14 +494,14 @@ def test_plan_workflow_handles_empty_query() -> None:
 
 
 def test_plan_workflow_handles_missing_model_wiring() -> None:
-    """When ``complete_fn`` is missing, the operation returns a no-target
-    fallback instead of raising."""
+    """When the OperationHost seam is missing, the operation returns a
+    no-target fallback instead of raising."""
     from sdk.packs.core.operations.planning.plan_workflow import execute
 
     ctx = _make_ctx(query="search for the latest news", complete_fn=None)
     result = asyncio.run(execute(ctx))
     assert result.output_json["target_stage_id"] == ""
-    assert "complete_fn" in result.output_text or "model" in result.output_text.lower()
+    assert "OperationHost" in result.output_text or "model" in result.output_text.lower()
 
 
 def test_plan_workflow_retries_when_first_completion_is_empty() -> None:
