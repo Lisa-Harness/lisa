@@ -520,9 +520,25 @@ def setup_framework(
     # ``if runtime.manifest is None: runtime.manifest = load_manifest(...)``.
     # The ``/models reload`` command still reassigns ``runtime.manifest``
     # directly after re-reading from disk.
-    from hosts.core.model_runtime import load_manifest as _load_manifest  # noqa: PLC0415
+    #
+    # A missing manifest is a valid first-run state: the user must be able
+    # to launch the REPL and run ``/models discover`` to generate one, so we
+    # tolerate an absent file (``runtime.manifest`` stays ``None``) and let
+    # the graceful-degradation paths handle it (``model_alias_for_mode`` →
+    # ``"default"``, ``build_capability_snapshot`` → empty models, ``/models
+    # show`` → "No active models manifest is available yet"). A
+    # present-but-invalid manifest still raises so a broken config fails
+    # loudly. ``models_path`` is pre-validated in
+    # ``HostRuntime._resolve_models_path``, so a missing session-pinned path
+    # already raises before we reach this point — only the default
+    # ``data_dir/models.yaml`` first-run case lands here.
+    from hosts.core.model_runtime import (  # noqa: PLC0415
+        load_manifest_or_none as _load_manifest_or_none,
+    )
 
-    runtime.manifest = _load_manifest({}, data_dir=runtime.data_dir, path=runtime.models_path)
+    runtime.manifest = _load_manifest_or_none(
+        data_dir=runtime.data_dir, path=runtime.models_path
+    )
 
 
 def configure_runtime(runtime: HostRuntime) -> None:

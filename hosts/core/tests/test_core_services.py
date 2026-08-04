@@ -1142,6 +1142,61 @@ def test_resolve_model_rejects_unknown_manifest_id(tmp_path: Path) -> None:
         resolve_model("not-a-real-model", runtime_state={}, data_dir=tmp_path)
 
 
+# ── Startup without an existing models.yaml ──────────────────────────
+
+
+def test_load_manifest_or_none_missing_manifest_returns_none(tmp_path: Path) -> None:
+    """A missing data_dir/models.yaml must not abort startup.
+
+    First-run launches have no manifest yet; the REPL must come up so the
+    user can run ``/models discover`` then ``/models apply``. The startup
+    helper returns ``None`` for an absent file and the graceful-degradation
+    paths (model_alias_for_mode -> "default", capability snapshot -> empty
+    models) handle the unconfigured state.
+    """
+    from hosts.core.model_runtime import load_manifest_or_none
+
+    manifest = load_manifest_or_none(data_dir=tmp_path)
+
+    assert manifest is None
+
+
+def test_load_manifest_or_none_loads_present_manifest(tmp_path: Path) -> None:
+    """A present manifest is still loaded (and pre-loaded at startup)."""
+    from hosts.core.model_runtime import load_manifest_or_none
+
+    (tmp_path / "models.yaml").write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "mode_models: {default: gemma3:latest}",
+                "models:",
+                "  - model_id: gemma3:latest",
+                "    provider: ollama",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = load_manifest_or_none(data_dir=tmp_path)
+
+    assert manifest is not None
+    assert manifest.resolve("default").model_id == "gemma3:latest"
+
+
+def test_load_manifest_or_none_invalid_present_manifest_raises(tmp_path: Path) -> None:
+    """A present-but-invalid manifest fails loudly (not silently ignored)."""
+    from hosts.core.model_runtime import load_manifest_or_none
+
+    (tmp_path / "models.yaml").write_text(
+        "version: 1\nmodels: []\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="'mode_models' mapping"):
+        load_manifest_or_none(data_dir=tmp_path)
+
+
 # ── Ollama host normalization ────────────────────────────────────────
 
 

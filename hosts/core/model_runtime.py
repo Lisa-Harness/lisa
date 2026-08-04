@@ -270,6 +270,28 @@ def reload_manifest(
     return manifest
 
 
+def load_manifest_or_none(
+    *,
+    data_dir: Path,
+    path: Path | None = None,
+) -> ModelManifest | None:
+    """Load the active manifest, or ``None`` when no manifest file exists yet.
+
+    Unlike :func:`load_manifest`, a missing manifest file is a valid first-run
+    state and returns ``None`` instead of raising. A present-but-invalid
+    manifest still raises so a broken config fails loudly rather than being
+    silently ignored. Callers (e.g. ``setup_framework`` startup) treat
+    ``None`` as "unconfigured" and let the graceful-degradation paths handle
+    it (``model_alias_for_mode`` → ``"default"``, capability snapshot → empty
+    models, ``/models show`` → "No active models manifest is available yet").
+    """
+    resolved = path if path is not None else active_manifest_path(data_dir=data_dir)
+    if not resolved.exists():
+        logger.warning("model manifest not found at %s; starting unconfigured", resolved)
+        return None
+    return load_manifest({}, data_dir=data_dir, path=resolved)
+
+
 def require_models_present(
     runtime_state: dict[str, Any],
     *,
