@@ -105,7 +105,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
 
 ### Calling tools from a runtime operation
 
-List the tools in `tool_ids` and call them via `ctx.execute_tool_fn`:
+List the tools in `tool_ids` and call them via `ctx.host.execute_tool`:
 
 ```python
 from kernel.models import OperationExecutionContext, OperationResult, ToolExecutionContext
@@ -119,7 +119,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         query=ctx.query,
         parameters={"label": "my checkpoint"},
     )
-    result = await ctx.execute_tool_fn("save_checkpoint", tool_ctx)
+    result = await ctx.host.execute_tool("save_checkpoint", tool_ctx)
     return OperationResult(output_text=result.output_text)
 ```
 
@@ -131,6 +131,30 @@ description: Save a labeled checkpoint.
 tool_ids: [save_checkpoint]
 mode_allowlist: [my_mode]
 ```
+
+### The `OperationHost` typed seam
+
+Operations interact with the host (LLM calls, tool execution, authored
+content, model resolution) through a single typed seam: `ctx.host`. The
+`OperationHost` Protocol (defined in `kernel/seams/protocols.py`) declares
+the methods operations may call:
+
+| Method | Purpose |
+| --- | --- |
+| `await ctx.host.complete(messages=..., model_def=..., max_tokens=..., temperature=..., tools=..., response_format=...)` | Call the host's LLM. Returns a `CompletionResult` with `.content`, `.tool_calls`, `.finish_reason`, and `.truncated`. |
+| `ctx.host.resolve_model(model_id)` | Resolve a model id to a `ModelRef` (provider, model_id, capabilities). |
+| `ctx.host.read_authored_text(path)` | Load authored Markdown content shipped as package data. Raises on missing. |
+| `await ctx.host.execute_tool(tool_id, tool_ctx)` | Execute a tool by id. Returns a `ToolResult`. |
+| `await ctx.host.execute_operation(op_id, op_ctx)` | Execute a sub-operation. |
+| `await ctx.host.generate_image(...)` | Generate an image (when wired). |
+| `ctx.host.introspect(...)` | Introspect live runtime state (when wired). |
+
+The `truncated` field on the completion result is the **provider-owned
+truncation signal**: `True` = the model stopped mid-output (hit token
+budget), `False` = clean stop, `None` = adapter cannot tell. Operations
+that synthesize long-form output use this to decide whether to issue a
+continuation pass. This replaces the old heuristic of guessing from
+`finish_reason` strings.
 
 ### Reading cached state
 
@@ -224,7 +248,7 @@ class BriefingOutput(BaseModel):
 
 When `response_format_model_path` is set, the declarative runtime:
 
-1. Passes the model class to `ctx.complete_fn` as `response_format`.
+1. Passes the model class to `ctx.host.complete` as `response_format`.
 2. On a parse failure or a provider rejection (`structured_output_unsupported`), appends
    a JSON-only retry instruction and retries without the `response_format` parameter.
 3. Extracts `response_output_text_field` from the parsed model for `OperationResult.output_text`.

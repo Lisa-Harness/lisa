@@ -487,6 +487,22 @@ Real examples: `lisa_packs/stripe/operations/stripe_status/`,
 `lisa_packs/github/operations/github_status/`,
 `sdk/packs/checkpoint/operations/checkpoint_create/`.
 
+#### The `OperationHost` typed seam
+
+Operations interact with the host through a single typed seam: `ctx.host`.
+The `OperationHost` Protocol (`kernel/seams/protocols.py`) declares the
+methods operations may call — `complete` (LLM call), `resolve_model`,
+`read_authored_text` (authored content), `execute_tool`, `execute_operation`,
+`generate_image`, `introspect`. The host wires a concrete adapter
+(`_CallableHost` in `kernel/seams/host_adapter.py`) that delegates each
+method to the corresponding host-side callable.
+
+The completion result carries a `truncated: bool | None` signal that is set
+authoritatively by the provider adapter (not guessed from `finish_reason`
+strings): `True` = model stopped mid-output, `False` = clean stop, `None` =
+adapter cannot tell. Operations that synthesize long-form output use this
+to decide whether to issue a continuation pass.
+
 #### Declarative (prompt) operations (`execution_kind: "prompt"`)
 
 Authored as a single Markdown file whose YAML front matter carries the same metadata
@@ -606,11 +622,11 @@ purposes:
    `OperationExecutionContext.tool_schemas` from those declared tools so the
    operation's own LLM calls see the right function schemas.
 2. **Enforcement for declarative operations** — the registry wraps
-   `ctx.execute_tool_fn` with `_wrap_declarative_tool_executor`, which rejects any
+   `ctx.host.execute_tool` with `_wrap_declarative_tool_executor`, which rejects any
    tool call outside the declared set at runtime
    (`kernel/operations/registry.py: _wrap_declarative_tool_executor`).
 
-Runtime operations receive the same `ctx.execute_tool_fn`, but Python code is not
+Runtime operations receive the same `ctx.host.execute_tool`, but Python code is not
 mechanically prevented from calling an undeclared tool through other paths. Honor the
 contract; it is the basis for capability auditing.
 
@@ -655,7 +671,7 @@ provider selection in `LISA_SESSION_PROVIDER_SELECTIONS`; the catalog loader rai
 2. Checks mode permission via `_is_operation_allowed_for_mode`.
 3. Injects `ctx.preferred_model_id` from the definition.
 4. Builds `ctx.tool_schemas` from declared `tool_ids`.
-5. Wraps `ctx.execute_tool_fn` to enforce the tool allowlist (declarative only).
+5. Wraps `ctx.host.execute_tool` to enforce the tool allowlist (declarative only).
 6. Calls `definition.implementation_module.execute(ctx)` under `asyncio.wait_for`
    when `timeout_seconds > 0`.
 7. Emits a `ToolExecutionTelemetry` event via `ctx.event_bus` with duration and status.
@@ -669,7 +685,7 @@ provider selection in `LISA_SESSION_PROVIDER_SELECTIONS`; the catalog loader rai
 | **Author format** | `.yml` + `.py` or `.operation.md` | `.tool.yml` + `.py` |
 | **Discovered from** | `operations/` subdirs in content roots | `tools/` subdirs in content roots |
 | **Model-callable** | When listed in `allowed_operation_ids` | When listed in `allowed_tool_ids` |
-| **Can call tools** | Yes, via `ctx.execute_tool_fn` | No |
+| **Can call tools** | Yes, via `ctx.host.execute_tool` | No |
 | **LLM turn** | Optional (prompt ops use the model internally) | Never (pure Python) |
 | **Return type** | `OperationResult` | `ToolResult` |
 | **Execution kind** | `"runtime"` or `"prompt"` | `"runtime"` only |
