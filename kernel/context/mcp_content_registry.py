@@ -8,6 +8,7 @@ calling the ``read_authored_text`` and ``invalidate_cache`` tools on a
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 from typing import Any
 
 from mcp.client.session import ClientSession
@@ -58,8 +59,6 @@ class MCPContentRegistry:
 
         if in_loop:
             # Already inside a running event loop — create a new one in a thread.
-            import concurrent.futures
-
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(asyncio.run, _run())
                 return future.result()

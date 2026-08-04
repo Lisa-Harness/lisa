@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -240,8 +241,6 @@ def compile_registry(
     workspace_root: str | None = None,
 ) -> list[MCPClientConfig]:
     """Compile all approved server specs from a registry into MCPClientConfig entries."""
-    from dataclasses import replace
-
     configs: list[MCPClientConfig] = []
     for spec in registry.all_specs():
         # Inject host-provided args (slots dataclass — use replace, not __dict__)

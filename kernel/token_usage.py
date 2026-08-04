@@ -19,7 +19,9 @@ Design notes:
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -150,7 +152,6 @@ class TokenUsageTelemetryHandler:
             lines = self._path.read_text(encoding="utf-8").splitlines()
         except OSError:
             return []
-        import json
 
         tail = lines[-limit:] if limit > 0 else lines
         results: list[dict[str, Any]] = []
@@ -166,8 +167,6 @@ class TokenUsageTelemetryHandler:
 
 def _time_ns_suffix() -> str:
     """Return a short nanosecond suffix for idempotency keys."""
-    import time
-
     return str(time.time_ns() % 1_000_000_000)
 
 
