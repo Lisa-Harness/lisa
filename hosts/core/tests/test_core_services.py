@@ -1196,6 +1196,14 @@ def test_load_manifest_or_none_invalid_present_manifest_raises(tmp_path: Path) -
     with pytest.raises(ValueError, match="'mode_models' mapping"):
         load_manifest_or_none(data_dir=tmp_path)
 
+    runtime = _make_runtime(tmp_path)
+    assert runtime.models_path.exists()
+
+    mcp_pool.setup_framework(runtime)
+
+    assert runtime.manifest is not None
+    assert len(runtime.manifest.models) >= 1
+
 
 # ── Ollama host normalization ────────────────────────────────────────
 
