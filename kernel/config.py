@@ -259,41 +259,6 @@ class Settings(BaseSettings):
     conversation_digest_source_turns: int = 8
     conversation_digest_recent_turns: int = 4
 
-    # ── Memory ──────────────────────────────────────────────────────────
-    memory_enabled: bool = True
-    memory_sqlite_path: str = ""
-    memory_sync_enabled: bool = False
-    memory_eager_sync_on_write: bool = False
-    memory_sync_batch_size: int = 50
-    memory_final_sync_timeout_seconds: float = 5.0
-    memory_flush_interval_seconds: int = 60
-    memory_snapshot_interval_seconds: int = 300
-    memory_salience_event_threshold: float = 0.6
-    memory_embedding_enabled: bool = False
-    memory_embedding_provider: str = "azure_openai"
-    memory_embedding_model: str = ""
-    memory_embedding_dimensions: int = 1536
-    memory_ann_enabled: bool = False
-    memory_decay_enabled: bool = True
-    memory_decay_half_life_days: float = 14.0
-    memory_decay_floor: float = 0.05
-    memory_recall_candidate_pool_size: int = 50
-    memory_recall_recent_limit: int = 5
-    memory_recall_lexical_limit: int = 20
-    memory_recall_semantic_limit: int = 10
-    memory_recall_final_limit: int = 5
-    memory_recall_auto_deep_threshold: float = 0.4
-    memory_recall_cheap_model: str = ""
-    memory_promotion_threshold: int = 3
-    memory_consolidation_enabled: bool = True
-    memory_eviction_enabled: bool = True
-    memory_eviction_min_age_days: int = 30
-    memory_eviction_default_ttl_days: int = 90
-    memory_eviction_min_salience: float = 0.1
-    memory_eviction_min_access_count: int = 0
-    memory_eviction_max_active_per_scope: int = 500
-    memory_eviction_max_kind_per_user: dict[str, int] = {}
-
     # ── Memory recall (pre-turn injection) ─────────────────────────────
     memory_recall_enabled: bool = True
     memory_recall_pre_turn_limit: int = 3
