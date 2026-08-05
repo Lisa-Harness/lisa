@@ -925,7 +925,18 @@ async def complete_live_openai_compatible(
 ) -> StubCompletion:
     """Execute an OpenAI-compatible provider completion with stage callbacks."""
     tport = transport or NullTransport()
-    kwargs["messages"] = messages
+    # Normalize at the chokepoint: prune orphaned tool_calls (ids with no
+    # matching role:tool result) so strict OpenAI-compatible backends
+    # (Azure OpenAI, OpenAI) do not reject the request with
+    # ``An assistant message with 'tool_calls' must be followed by tool
+    # messages responding to each 'tool_call_id'``. The turn loop can break
+    # mid-tool-loop (forced plan/fork handoff, entry_failed, iteration-cap
+    # yield) after appending an assistant message with tool_calls but
+    # before attaching the tool result; that dangling history is replayed
+    # here. See /memories/repo/orphaned-tool-calls-400.md.
+    from kernel.provider_core import normalize_openai_messages
+
+    kwargs["messages"] = normalize_openai_messages(messages)
     try:
         if stream_stage:
             await tport.on_stage("model_call", {"label": stage_label})
@@ -1147,7 +1158,11 @@ async def _stream_openai_compatible_chunks(
     response_format: type[Any] | None,
 ) -> Any:
     """Yield ``StreamedChunk`` objects from an OpenAI-compatible streaming endpoint."""
-    from kernel.provider_core import StreamedChunk, extract_openai_completion_usage
+    from kernel.provider_core import (
+        StreamedChunk,
+        extract_openai_completion_usage,
+        normalize_openai_messages,
+    )
 
     kwargs = build_completion_kwargs(
         model_def=model_def,
@@ -1156,7 +1171,10 @@ async def _stream_openai_compatible_chunks(
         tools=tools,
         response_format=response_format,
     )
-    kwargs["messages"] = messages
+    # Prune orphaned tool_calls before the streaming request reaches a
+    # strict OpenAI-compatible backend. See the non-streaming path in
+    # ``complete_live_openai_compatible`` for the full rationale.
+    kwargs["messages"] = normalize_openai_messages(messages)
     kwargs["stream"] = True
     kwargs["stream_options"] = {"include_usage": True}
 
