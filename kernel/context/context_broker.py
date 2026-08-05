@@ -185,23 +185,6 @@ def _default_collected_at(state: UnifiedState) -> str:
     return state.compiled_at or datetime.now(UTC).isoformat()
 
 
-def _source_ttl(source: str) -> timedelta:
-    if source in discover_installed_signal_collectors() or source in {"alerts", "dev_state"}:
-        return timedelta(seconds=max(settings.heartbeat_interval_seconds * 2, 60))
-    if source == "domain_knowledge":
-        return timedelta(hours=max(settings.repo_context_stale_after_hours, 1))
-    if source == "thinking":
-        return timedelta(minutes=max(settings.reflection_cadence_minutes * 2, 1))
-    if source == "strategy":
-        return timedelta(hours=max(settings.dream_hypothesis_ttl_hours, 1))
-    return timedelta(minutes=30)
-
-
-def _build_freshness_expires_at(*, collected_at: str, source: str) -> str:
-    collected_at_dt = _parse_iso(collected_at) or datetime.now(UTC)
-    return (collected_at_dt + _source_ttl(source)).isoformat()
-
-
 def _compute_recency_score(collected_at: str, now: datetime) -> float:
     collected_at_dt = _parse_iso(collected_at)
     if collected_at_dt is None:
@@ -364,7 +347,7 @@ def _new_evidence(
         title=title,
         body=body,
         collected_at=collected_at,
-        freshness_expires_at=_build_freshness_expires_at(collected_at=collected_at, source=source),
+        freshness_expires_at= _parse_iso(collected_at),
         confidence=confidence,
         salience_score=salience_score,
         tags=[tag for tag in (tags or []) if tag],

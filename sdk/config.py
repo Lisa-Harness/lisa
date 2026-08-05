@@ -38,7 +38,6 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    heartbeat_interval_seconds: int = 180
     external_signal_timeout_seconds: float = 10.0
     workspace_id_fallback: str = "default"
     state_container: str = "lisa-state"
@@ -57,7 +56,6 @@ class Settings(BaseSettings):
 
     @field_validator(
         "declarative_completion_max_tokens",
-        "heartbeat_interval_seconds",
         "external_signal_timeout_seconds",
         "memory_recall_final_limit",
         mode="before",

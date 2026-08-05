@@ -210,10 +210,6 @@ class Settings(BaseSettings):
     budget_briefing_enabled: bool = True
 
     # ── Context broker ──────────────────────────────────────────────────
-    heartbeat_interval_seconds: int = 60
-    repo_context_stale_after_hours: int = 6
-    reflection_cadence_minutes: int = 30
-    dream_hypothesis_ttl_hours: int = 24
     context_broker_prefer_recent: bool = True
     context_broker_min_evidence_score: float = 0.15
     context_broker_max_selected_items: int = 8
@@ -382,10 +378,6 @@ class Settings(BaseSettings):
         "hint_cycle_min_len",
         "hint_override_limit",
         "budget_briefing_enabled",
-        "heartbeat_interval_seconds",
-        "repo_context_stale_after_hours",
-        "reflection_cadence_minutes",
-        "dream_hypothesis_ttl_hours",
         "context_budget_default_total_tokens",
         "context_budget_deep_total_tokens",
         "context_budget_core_max_tokens",
