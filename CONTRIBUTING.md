@@ -57,7 +57,8 @@ uv run lisa verify
 | `lisa-kernel` | `kernel/` | Runtime-neutral contracts, FSM engine, operation registry |
 | `lisa-sdk` | `sdk/` | Author-facing helpers for packs and integration contracts |
 | `lisa-pack-*` | `sdk/packs/` | Public mode/operation packs |
-| `lisa-host-cli` | `hosts/cli/` | Local terminal host CLI |
+| `lisa-host-runtime` | `host/` | Transport-neutral host runtime |
+| `lisa-cli` | `../lisa-cli/` | Terminal host CLI (separate repo) |
 
 ## Commit Conventions
 

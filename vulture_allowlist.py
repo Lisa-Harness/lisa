@@ -7,15 +7,12 @@ or are public API surface declared in ``__all__`` but never imported internally.
 Every entry carries a ``# reason:`` comment explaining why vulture should
 ignore it.  Run::
 
-    uv run vulture kernel sdk mcp_server host hosts/cli vulture_allowlist.py
+    uv run vulture kernel sdk mcp_server host vulture_allowlist.py
 """
 
 # ────────────────────────────────────────────────────────────────────────
 # Console-script entry points — called by pip-installed [project.scripts].
 # ────────────────────────────────────────────────────────────────────────
-# reason: console_script target — lisa CLI (hosts/cli/pyproject.toml: lisa)
-hosts.cli.main.main  # noqa: Vulture
-
 # reason: console_script target — lisa-context MCP server
 mcp_server.context.server.main  # noqa: Vulture
 

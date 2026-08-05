@@ -7,7 +7,7 @@ repo checkout present).
 Resolution modes
 ----------------
 - **Repo mode**: the module file lives inside a git checkout. The framework
-  root is ``Path(__file__).resolve().parents[2]`` (the repo root), and the
+  root is ``Path(__file__).resolve().parents[1]`` (the repo root), and the
   venv root is ``<repo>/.venv``.
 - **Tool mode**: the module file lives inside an isolated ``uv tool`` venv
   (no ``.git`` dir and no workspace ``pyproject.toml`` above it). The
@@ -40,8 +40,8 @@ _PACKS_VENV_DIR_NAME = "packs-venv"
 
 
 def _repo_root_from_module() -> Path:
-    """Return the directory three parents up from this module (repo root)."""
-    return Path(__file__).resolve().parents[2]
+    """Return the directory two parents up from this module (repo root)."""
+    return Path(__file__).resolve().parents[1]
 
 
 def _is_repo_checkout(path: Path) -> bool:

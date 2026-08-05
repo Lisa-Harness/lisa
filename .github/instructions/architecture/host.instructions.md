@@ -1,10 +1,10 @@
 ---
-name: Hosts Architecture
-applyTo: "hosts/**"
-description: Architecture boundaries for the hosts package.
+name: Host Architecture
+applyTo: "host/**"
+description: Architecture boundaries for the host package.
 ---
 
-# Hosts architecture
+# Host architecture
 
 - Hosts own runtime integration, process boundaries, and environment-specific wiring. Keep domain logic in kernel or SDK modules.
 - `host` is transport-neutral: it owns typed configuration, runtime state, callbacks, provider dispatch, MCP compilation, content roots, thread state, slices, and command dispatch.

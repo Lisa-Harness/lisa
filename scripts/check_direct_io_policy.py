@@ -129,9 +129,6 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "temp_path.write_text(",
         "os.replace(temp_path, self._path)",
     ),
-    "hosts/cli/repl.py": (
-        "history_path.parent.mkdir(parents=True, exist_ok=True)",
-    ),
     "host/commands/_packs.py": (
         "packs_venv.parent.mkdir(parents=True, exist_ok=True)",
     ),
@@ -192,7 +189,7 @@ def _is_runtime_python(path: Path) -> bool:
 
 
 # In-tree scan roots (relative to repo root).
-_IN_TREE_ROOTS: tuple[str, ...] = ("kernel", "host", "hosts", "sdk", "mcp_server")
+_IN_TREE_ROOTS: tuple[str, ...] = ("kernel", "host", "sdk", "mcp_server")
 
 # External pack repos (relative to repo root's parent).
 _EXTERNAL_PACK_DIRS: tuple[str, ...] = ("lisa-packs", "lisa-packs-wip")

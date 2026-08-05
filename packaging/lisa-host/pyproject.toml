@@ -24,13 +24,13 @@ classifiers = [
 ]
 
 # The meta-package pulls in the terminal CLI host:
-#   - lisa-host-cli: provides the `lisa` console script (terminal REPL,
+#   - lisa-cli: provides the `lisa` console script (terminal REPL,
 #     `lisa verify`, `/pack install`).
 #
 # External packs (cloudflare, github, stripe, mem0, brave_search, gmail)
 # are NOT included — install them on demand via `/pack install <name>`.
 dependencies = [
-    "lisa-host-cli>=0.1.0",
+    "lisa-cli>=0.1.0",
 ]
 
 [project.urls]

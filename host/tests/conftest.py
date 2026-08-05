@@ -23,14 +23,14 @@ from kernel.operations.registry import (
 )
 from kernel.tools.mcp_client import MCPClientConfig
 
-_CORE_ROOT: Path = (Path(__file__).resolve().parents[3] / "sdk" / "packs" / "core").resolve()
-_LEARNING_ROOT: Path = (Path(__file__).resolve().parents[3] / "sdk" / "packs" / "memory").resolve()
+_CORE_ROOT: Path = (Path(__file__).resolve().parents[2] / "sdk" / "packs" / "core").resolve()
+_LEARNING_ROOT: Path = (Path(__file__).resolve().parents[2] / "sdk" / "packs" / "memory").resolve()
 # search, markdown, and letta migrated to ../../lisa_packs/<name>
 # (external submodules). Only include a content root when the submodule is
 # checked out alongside the framework; tests that need a migrated mode skip
 # when absent. compaction was promoted back to an in-tree workspace member
 # (sdk/packs/compaction) and is discovered via entry points like checkpoint.
-_PACKS_ROOT: Path = (Path(__file__).resolve().parents[3].parent / "lisa_packs").resolve()
+_PACKS_ROOT: Path = (Path(__file__).resolve().parents[2].parent / "lisa_packs").resolve()
 
 
 def _external_pack_roots() -> list[Path]:

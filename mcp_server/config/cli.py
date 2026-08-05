@@ -116,6 +116,8 @@ def configure_logging(level: str, *, server_name: str) -> logging.Logger:
     from sdk.logging_setup import (  # noqa: PLC0415
         LISA_LOG_DEBUG_ENV,
         _parse_debug_modules,
+    )
+    from sdk.logging_setup import (
         configure_logging as _configure_shared,
     )
 

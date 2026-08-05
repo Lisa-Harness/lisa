@@ -63,7 +63,7 @@ def bundled_default_session_path() -> Path:
     """Return the mandatory bundled v2 session used when none is selected."""
 
     return (
-        Path(__file__).resolve().parents[2] / "sdk" / "packs" / "core" / "sessions" / "default.md"
+        Path(__file__).resolve().parents[1] / "sdk" / "packs" / "core" / "sessions" / "default.md"
     )
 
 
