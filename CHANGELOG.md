@@ -114,7 +114,35 @@ All notable changes to the Lisa Framework will be documented in this file.
   coherent tools (add / search / list / get / delete) instead of four where
   two were redundant.
 
+#### Kernel config: obsolete memory-store settings removed
+
+- **`kernel/config.py` no longer defines the memory-store settings** that
+  the MCP-memory cutover obsoleted (`memory_sync_batch_size`,
+  `memory_final_sync_timeout_seconds`, `memory_flush_interval_seconds`,
+  `memory_snapshot_interval_seconds`, `memory_embedding_dimensions`,
+  `memory_recall_candidate_pool_size`, `memory_recall_recent_limit`,
+  `memory_recall_lexical_limit`, `memory_recall_semantic_limit`,
+  `memory_recall_final_limit`, `memory_promotion_threshold`,
+  `memory_eviction_min_age_days`, `memory_eviction_default_ttl_days`,
+  `memory_eviction_min_access_count`,
+  `memory_eviction_max_active_per_scope`). Their entries were also dropped
+  from the `_coerce_numeric_with_inline_comments` field validator so
+  `kernel.config.Settings` imports cleanly again (the dangling references
+  had made the whole `kernel` package unimportable under Pydantic v2).
+  The active recall/auto-capture knobs (`memory_recall_enabled`,
+  `memory_recall_pre_turn_limit`, `memory_recall_min_query_chars`,
+  `memory_auto_capture_enabled`, `memory_auto_capture_min_salience`) are
+  unchanged.
+
 ### Changed
+
+#### Evidence freshness: expiry based on `collected_at`, no TTL
+
+- **`freshness_expires_at` on context evidence is now the raw
+  `collected_at` string** instead of `_parse_iso(collected_at)`'s
+  `datetime`/`None`, which contradicted the field's `str` type and would
+  raise a Pydantic validation error at construction. The TTL-based freshness
+  config is gone; expiry is anchored to when evidence was collected.
 
 #### CLI host: flowing single-column transcript replaces the four-pane layout
 
@@ -514,4 +542,3 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 - `little-lisa` turn logs now emit top-level resolved model fields and per-invocation token totals for both router planning and mode execution, making `turn.completed` JSONL entries readable without deep payload expansion.
 - Router routing retries once without `response_format` when the first structured-output call fails, using explicit JSON-only instructions before deciding fallback.
 - Slice budget is pressure-driven: budget grows as a function of idle time since the last slice finished, not a wall-clock tick. This is the canonical pattern for opportunistic house-keeping (reindex, eviction, sync) — everything not wall-clock bound is a candidate.
-

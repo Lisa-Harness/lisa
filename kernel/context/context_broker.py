@@ -347,7 +347,7 @@ def _new_evidence(
         title=title,
         body=body,
         collected_at=collected_at,
-        freshness_expires_at= _parse_iso(collected_at),
+        freshness_expires_at=collected_at,
         confidence=confidence,
         salience_score=salience_score,
         tags=[tag for tag in (tags or []) if tag],
