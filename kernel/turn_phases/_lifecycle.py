@@ -143,6 +143,12 @@ class LifecycleResolverSettings:
     forced_fork_non_fork_tool_cap: int = 3
     forced_plan_non_transition_tool_cap: int = 3
     max_handoffs_per_turn: int = 5
+    # Stuck-in-chat-mode guard (2026-08-05): mirrors the workflow
+    # stuck-in-stage cap for chat/action modes that received a routing
+    # hint and are not acting on it. ``step_iteration`` (iterations
+    # since the last handoff) is the analog of ``turns_in_stage``.
+    chat_stuck_mode_threshold: int = 6
+    chat_stuck_mode_cap: int = 10
 
 
 @runtime_checkable
@@ -212,6 +218,13 @@ class _TurnStateView:
     non_plan_tool_dispatches: int = 0
     # Handoff-loop backstop: total mid-turn mode handoffs this turn.
     handoff_count: int = 0
+    # Stuck-in-chat-mode guard (2026-08-05): True when the current mode
+    # is a chat/action mode that advertises routing targets (it can be
+    # handed off mid-turn). The stuck-in-chat-mode cap uses
+    # ``step_iteration`` (iterations since the last handoff) as the
+    # analog of ``turns_in_stage``; this flag gates the guard so it
+    # only fires for modes that can actually transition out.
+    has_routing_targets: bool = False
 
 
 def _has_next_step(instance: _WorkflowInstanceLike | None) -> bool:
@@ -535,6 +548,59 @@ def resolve_lifecycle_action(
                 f"You have been in this stage for {state.turns_in_stage} turns. "
                 f"If you have enough evidence, call transition_stage to advance. "
                 f"Otherwise, call yield with a clarifying question."
+            )
+        )
+
+    # ── 6b. Stuck-in-chat-mode cap (2026-08-05) ────────────────────────
+    # The workflow stuck-in-stage guards (5 & 6) are gated on
+    # ``is_workflow`` because ``turns_in_stage`` is workflow-FSM turn
+    # counting. But a chat/action mode that received a routing hint and
+    # is not acting on it exhibits the same symptom — it keeps
+    # dispatching tools without calling ``transition_stage``, burning
+    # iterations at full-context prompt cost. ``step_iteration``
+    # (iterations since the last handoff) is the direct analog and is
+    # already reset on every ``transition_stage``. This guard only fires
+    # for modes that can actually hand off (``has_routing_targets``) so a
+    # single-mode chat turn is bounded only by the global iteration cap.
+    if (
+        not is_workflow
+        and state.has_routing_targets
+        and state.step_iteration >= settings.chat_stuck_mode_cap
+    ):
+        if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
+            target = _resolve_yield_target(mode_yield_policy, instance=workflow_instance)
+            question = mode_yield_policy.default_question or (
+                f"I've been working in {mode_id} for {state.step_iteration} iterations "
+                f"without advancing to the next mode. Can you clarify what you need?"
+            )
+            return YieldAction(
+                question=question,
+                context=(
+                    f"stuck in chat mode {mode_id} for {state.step_iteration} "
+                    f"iterations (cap)"
+                ),
+                target_mode_id=target,
+            )
+        return FinishAction(
+            strip_tools=True,
+            reason=(
+                f"stuck in chat mode {mode_id} for {state.step_iteration} "
+                f"iterations (action mode, no yield)"
+            ),
+        )
+
+    # ── 6c. Stuck-in-chat-mode threshold (soft nudge) ──────────────────
+    if (
+        not is_workflow
+        and state.has_routing_targets
+        and state.step_iteration >= settings.chat_stuck_mode_threshold
+    ):
+        return ContinueAction(
+            nudge=(
+                f"You have been in {mode_id} for {state.step_iteration} iterations "
+                f"without handing off. If the routing hint's target is the right "
+                f"next step, call transition_stage. Otherwise, call yield with a "
+                f"clarifying question."
             )
         )
 

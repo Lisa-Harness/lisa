@@ -3139,6 +3139,8 @@ async def _run_turn_inner(
             forced_fork_non_fork_tool_cap=_kernel_settings.forced_fork_non_fork_tool_cap,
             forced_plan_non_transition_tool_cap=_kernel_settings.forced_plan_non_transition_tool_cap,
             max_handoffs_per_turn=_max_handoffs_per_turn,
+            chat_stuck_mode_threshold=_kernel_settings.chat_stuck_mode_threshold,
+            chat_stuck_mode_cap=_kernel_settings.chat_stuck_mode_cap,
         )
         _resolver_state = _TSV(
             iteration=_state.iteration,
@@ -3152,6 +3154,7 @@ async def _run_turn_inner(
             forced_plan_target=_state.forced_plan_target,
             non_plan_tool_dispatches=_state.non_plan_tool_dispatches,
             handoff_count=_state.handoff_count,
+            has_routing_targets=has_routing_targets,
         )
         _active_instance_for_resolver: Any = None
         if hooks.workflow_instance is not None:
@@ -5062,8 +5065,19 @@ async def _run_turn_inner(
                                     # hint is noise (the 2026-07-30 bounce:
                                     # model overrode ``discuss``→``ponder``
                                     # twice). The hint stays suppressed for
-                                    # the rest of the turn; the handoff
-                                    # cap backstop fires if the model loops.
+                                    # the rest of the turn.
+                                    #
+                                    # 2026-08-05: suppression alone was not
+                                    # enough — with ``hint_override_limit=50``
+                                    # the model kept cycling for 16
+                                    # round-trips at ~48k prompt tokens
+                                    # after suppression, burning 62% of the
+                                    # session's tokens in markdown mode. Now
+                                    # that the limit is bounded (5), also
+                                    # arm a pending yield when the mode
+                                    # allows it so the next iteration halts
+                                    # with a redirect question instead of
+                                    # burning to the 300-iteration ceiling.
                                     if _state.hint_override_count >= _hint_override_limit:
                                         _log.warning(
                                             "suppressing post-handoff hint: "
@@ -5074,6 +5088,32 @@ async def _run_turn_inner(
                                         )
                                         post_handoff_hint = ""
                                         routing_hint = ""
+                                        # Arm a halt: the model has
+                                        # demonstrated it will not follow
+                                        # routing hints this turn. Yield on
+                                        # the next iteration (when the mode
+                                        # allows it) so the user can
+                                        # redirect, instead of burning the
+                                        # remaining iteration budget.
+                                        if _pending_yield is None:
+                                            _halt_yp = _resolve_yield_policy(
+                                                mode_config, _yield_policy_override
+                                            )
+                                            if _halt_yp.allowed or _halt_yp.fallback_mode:
+                                                _pending_yield = YieldAction(
+                                                    question=_halt_yp.default_question or (
+                                                        "I've overridden the suggested routing "
+                                                        f"{_state.hint_override_count} times and "
+                                                        "am not converging. How would you like "
+                                                        "me to proceed?"
+                                                    ),
+                                                    context=(
+                                                        f"hint override limit reached "
+                                                        f"({_state.hint_override_count} "
+                                                        f"overrides, mode={target_stage})"
+                                                    ),
+                                                    target_mode_id=_halt_yp.fallback_mode or "",
+                                                )
                                     elif post_handoff_hint == _state.last_hint_text:
                                         # Duplicate-hint dedup: when the
                                         # recomputed hint is byte-identical
