@@ -432,26 +432,51 @@ def _compute_fork_target_string(
 
 
 def _fork_has_producer_consumer_mix(gap_intents: set[str]) -> bool:
-    """Return True when the gap mixes a producer intent with a consumer intent.
+    """Return True when a parallel fork is the wrong shape for the gap.
 
-    A fork runs children in parallel; none can see another's output. When
-    the gap includes both a *producer* intent (research/reasoning —
-    satisfied by producing text the next step consumes) and a *consumer*
-    intent (write/coding — satisfied by consuming that text to create an
-    artifact), a parallel fork is the wrong shape: the consumer has no
-    evidence to work from, re-does the producer's research, and runs out
-    of iterations before reaching its action tool (the 2026-07-27
-    incident: ``markdown`` child did 7 ``fetch_page`` calls across all 5
-    iterations and never called ``write_file``).
+    A fork runs children in parallel; none can see another's output. Two
+    gap shapes make a parallel fork sequential-wrong:
+
+    1. **Producer/consumer mix** — the gap includes both a *producer*
+       intent (research/reasoning — satisfied by producing text the next
+       step consumes) and a *consumer* intent (write/coding — satisfied by
+       consuming that text to create an artifact). The consumer has no
+       evidence to work from, re-does the producer's research, and runs
+       out of iterations before reaching its action tool (the 2026-07-27
+       incident: ``markdown`` child did 7 ``fetch_page`` calls across all
+       5 iterations and never called ``write_file``).
+    2. **Multiple consumers, no producer** — the gap contains two or more
+       consumer intents but no producer intent. Every consumer needs
+       evidence to consume; with no producer in the gap, a parallel fork
+       sends each consumer child off to gather its own evidence
+       independently, burning iterations on read-only tools and never
+       reaching its action tool (the 2026-08-05 incident:
+       ``fork:markdown,coding`` was forced on a ``{write, coding}`` gap —
+       both children re-researched in parallel and the ``coding`` child
+       made 26 tool calls with no write-effect receipt). The fix is the
+       same as the mix case: refuse the fork, route sequential (single
+       handoff to a producer first), and chain the consumers via
+       post-handoff hints.
+
+    A single consumer paired with a non-consumer, non-producer intent
+    (e.g. ``{remember, write}``) is still a legitimate fork: the
+    non-consumer child has an independent goal that needs no evidence,
+    and the single consumer can gather what it needs from context.
 
     The intent roles are read from the session-injected routing vocabulary
     (``get_producer_intents`` / ``get_consumer_intents``); the kernel
-    reads them as opaque tags and never names them in code. Returns False
-    when the gap has no such mix (independent forks are still allowed).
+    reads them as opaque tags and never names them in code.
     """
     producers = _producer_intent_set()
     consumers = _consumer_intent_set()
-    return bool(gap_intents & producers) and bool(gap_intents & consumers)
+    gap_consumers = gap_intents & consumers
+    gap_producers = gap_intents & producers
+    # Producer + consumer mix → sequential-wrong.
+    if gap_producers and gap_consumers:
+        return True
+    # Two or more consumers with no producer → each re-gathers evidence
+    # in parallel → sequential-wrong.
+    return len(gap_consumers) >= 2
 
 
 def _producer_intent_set() -> frozenset[str]:

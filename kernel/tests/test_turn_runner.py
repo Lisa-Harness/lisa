@@ -2876,6 +2876,72 @@ def test_routing_hint_refuses_fork_for_producer_consumer_mix() -> None:
     assert "ponder" in hint
 
 
+def test_routing_hint_refuses_fork_for_consumer_only_gap() -> None:
+    """A query whose gap contains two consumer intents (write/coding) and
+    no producer intent must NOT fork — each consumer child needs evidence
+    to consume, but a parallel fork gives neither any. Both children
+    re-gather evidence independently and never reach their action tool.
+
+    Regression for the 2026-08-05 incident: "analyze the code, write a
+    doc, and patch the code" was routed as ``fork:markdown,coding`` on a
+    ``{write, coding}`` gap. The ``markdown`` child was blocked by the
+    capability gate and the ``coding`` child made 26 tool calls with no
+    write-effect receipt (hallucinated success). The intent detector
+    failed to flag a producer for "analyze the code" (see the companion
+    fix in ``lisa-pack-coding``'s ``learn`` mode keywords), and the guard
+    only caught a producer+consumer *mix*, not a consumer-only gap. The
+    kernel now refuses the fork on any gap with multiple consumers and no
+    producer, and routes sequential instead.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    # markdown = consumer (write), coding = consumer (coding). No producer
+    # in the gap. A parallel fork is sequential-wrong. search is a producer
+    # in routing_targets so the fallback single-handoff has somewhere to go.
+    markdown_cfg = _mode_config(
+        mode_id="markdown",
+        satisfies_intents=["write"],
+        routing_intent_tags=["write"],
+        routing_intent_keywords={"write": ["write", "markdown", "document"]},
+    )
+    coding_cfg = _mode_config(
+        mode_id="coding",
+        satisfies_intents=["coding"],
+        routing_intent_tags=["coding"],
+        routing_intent_keywords={"coding": ["code", "patch", "implement"]},
+    )
+    search_cfg = _mode_config(
+        mode_id="search",
+        satisfies_intents=["research"],
+        routing_intent_tags=["research"],
+        routing_intent_keywords={"research": ["search", "find", "look up"]},
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {
+        "markdown": markdown_cfg,
+        "coding": coding_cfg,
+        "search": search_cfg,
+        "default": default_cfg,
+    }
+
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=patched_catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="write a markdown document and patch the code",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["search", "markdown", "coding"],
+            mode_config=default_cfg,
+        )
+
+    # Must NOT fork — two consumers with no producer is sequential-wrong.
+    # The hint may be empty (no producer in the gap to route to first) or
+    # may name a single handoff target; either is acceptable so long as
+    # the kernel does not fan out a parallel fork.
+    assert "fork:" not in hint
+
+
 def test_routing_hint_does_not_re_escalate_to_plan_after_plan_ran() -> None:
     """Once ``plan`` has run this turn, the plan-escalation branch must NOT
     re-fire on the post-handoff hint recompute.
