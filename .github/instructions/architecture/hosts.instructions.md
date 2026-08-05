@@ -7,8 +7,8 @@ description: Architecture boundaries for the hosts package.
 # Hosts architecture
 
 - Hosts own runtime integration, process boundaries, and environment-specific wiring. Keep domain logic in kernel or SDK modules.
-- `hosts.core` is transport-neutral: it owns typed configuration, runtime state, callbacks, provider dispatch, MCP compilation, content roots, thread state, slices, and command dispatch.
-- Do not import transport UI packages or call rendering and delivery APIs from `hosts.core`; transports implement `TransportCallbacks` at their edge.
+- `host` is transport-neutral: it owns typed configuration, runtime state, callbacks, provider dispatch, MCP compilation, content roots, thread state, slices, and command dispatch.
+- Do not import transport UI packages or call rendering and delivery APIs from `host`; transports implement `TransportCallbacks` at their edge.
 - Keep configuration resolution pure and move a new responsibility out of `handle_message` before that dispatcher becomes a second runtime.
 
 ## Runtime invariants

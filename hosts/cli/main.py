@@ -1,7 +1,7 @@
 """hosts.cli.main — Typer app and CLI entry points for the terminal host.
 
 This is the terminal-transport entry point for the Lisa framework. It
-wraps the transport-neutral :mod:`hosts.core` runtime with Typer commands
+wraps the transport-neutral :mod:`host` runtime with Typer commands
 and Rich/prompt_toolkit rendering.
 """
 
@@ -16,31 +16,30 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-
-from kernel.models import McpServerHealth
-from kernel.tools.mcp_client import MCPToolSpec
 
 # Load .env BEFORE injecting the packs venv site-packages so that
 # LISA_DATA_DIR (and LISA_PACKS_VENV) are honored when resolving the
 # packs venv location. The loader only needs framework_root() and
 # default_data_dir(), both of which are env-independent, so it can run
-# safely before any hosts.core import. Search order:
+# safely before any host import. Search order:
 #   (1) CWD — for repo-mode dev sessions
 #   (2) ~/.lisa/.env — for tool-install mode (uv tool install lisa)
 #   (3) project root — repo-mode back-compat
 #   (4) hosts/little_lisa/.env — legacy repo-mode back-compat
-from hosts.core.paths import (
+from host.paths import (
     framework_root as _framework_root,
 )
+from kernel.models import McpServerHealth
+from kernel.tools.mcp_client import MCPToolSpec
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
 try:
     from dotenv import load_dotenv
 
     _FRAMEWORK_ROOT = _framework_root()
-    from hosts.core.config import default_data_dir as _default_data_dir
+    from host.config import default_data_dir as _default_data_dir
 
     for _env_candidate in (
         Path.cwd() / ".env",
@@ -55,15 +54,16 @@ except ImportError:  # pragma: no cover — python-dotenv is optional
     pass
 
 # Inject the packs venv site-packages into sys.path BEFORE importing
-# hosts.core so that importlib.metadata.entry_points discovers packs
+# host so that importlib.metadata.entry_points discovers packs
 # installed via /pack install into the packs venv. This must run
-# before any hosts.core / kernel import that triggers entry-point scanning.
-from hosts.core.paths import (
+# before any host / kernel import that triggers entry-point scanning.
+from host.paths import (
     inject_packs_venv_site_packages as _inject_packs_venv_site_packages,
 )
 
 _inject_packs_venv_site_packages()
 
+from host.config import default_data_dir
 from hosts.cli.render import (
     render_mcp_server_tools,
     render_mcp_servers,
@@ -73,22 +73,21 @@ from hosts.cli.render import (
     render_pack_list_panel,
     render_tools,
 )
-from hosts.core.config import default_data_dir
 
 # ``HostRuntime`` is used only as a string annotation (``from __future__
 # import annotations`` stringifies signatures) across the Typer callbacks.
 # The runtime construction happens inside ``_initialize_runtime``, which
 # imports ``HostRuntime`` + the mcp_pool / state_provider symbols lazily so
 # ``--version`` (which exits in the eager Typer callback before any command
-# body runs) does not pay the ~2s ``hosts.core.runtime`` ->
+# body runs) does not pay the ~2s ``host.runtime`` ->
 # ``kernel.ipsar_fsm`` -> ``openai`` import chain.
 if TYPE_CHECKING:
-    from hosts.core.runtime import HostRuntime as HostRuntime
+    from host.runtime import HostRuntime as HostRuntime
 
 # ``handle_message`` is deferred to the turn-execution call sites
 # (``_run_once_with_teardown``) so ``--version`` / ``modes`` / ``models`` /
 # ``verify`` don't pay the ~3s ``openai`` + ``mcp`` + ``kernel.ipsar_fsm``
-# import cost it drags in. See ``hosts/core/__init__.py``'s PEP 562
+# import cost it drags in. See ``host/__init__.py``'s PEP 562
 # ``__getattr__`` for the package-level lazy import.
 
 from rich.traceback import install
@@ -110,7 +109,7 @@ _RESTART_REQUIRED_EXIT = 69
 
 # Env var carrying a message to replay as the first turn on the next launch
 # after a restart. Set by `/pack install ... --resume <msg>` in
-# hosts.core.commands; consumed once on startup by the CLI host.
+# host.commands; consumed once on startup by the CLI host.
 _RESTART_RESUME_MESSAGE_ENV = "LISA_RESTART_RESUME_MESSAGE"
 
 
@@ -318,7 +317,7 @@ def _initialize_runtime(
 ) -> HostRuntime:
     """Build and wire a HostRuntime from CLI args + env vars.
 
-    Thin adapter over :func:`hosts.core.bootstrap.build_runtime` that
+    Thin adapter over :func:`host.bootstrap.build_runtime` that
     stamps ``host_kind="cli"`` and forwards every CLI argument. The
     composition sequence (config -> runtime -> state snapshot -> framework
     wiring -> MCP config compilation) lives in the shared bootstrap so
@@ -327,7 +326,7 @@ def _initialize_runtime(
     The MCP pool is NOT started here â€” ``runtime.start()`` must be called
     inside the host's event loop (see :func:`hosts.cli.repl.run_repl`).
     """
-    from hosts.core.bootstrap import build_runtime
+    from host.bootstrap import build_runtime
 
     return build_runtime(
         host_kind="cli",
@@ -590,7 +589,7 @@ def _verify_check_python() -> tuple[str, str]:
 def _verify_check_env(runtime: HostRuntime) -> tuple[str, str]:
     # Check for .env in the same search order as the startup loader:
     # CWD → ~/.lisa/.env (tool mode) → framework root → hosts/little_lisa/.
-    from hosts.core.config import default_data_dir as _default_data_dir
+    from host.config import default_data_dir as _default_data_dir
 
     _root = _framework_root()
     for candidate in (
@@ -605,7 +604,7 @@ def _verify_check_env(runtime: HostRuntime) -> tuple[str, str]:
 
 
 def _verify_check_manifest(runtime: HostRuntime) -> tuple[str, str]:
-    from hosts.core.model_manifest import load_model_manifest
+    from host.model_manifest import load_model_manifest
 
     try:
         path = runtime.models_path
@@ -933,9 +932,8 @@ def _models_command(
     # command uses), so behavior stays identical across hosts. We
     # synthesize the equivalent '/models <sub> [--force]' slash string
     # and print the returned Markdown text in a Rich panel.
+    from host.commands import handle_models_command
     from rich.markdown import Markdown
-
-    from hosts.core.commands import handle_models_command
 
     if normalized == "discover" and force:
         stripped = "/models discover --force"
@@ -948,7 +946,7 @@ def _models_command(
     # is started inside the host's event loop. Start it here, run the
     # handler, and tear the pool down in finally — all within one
     # asyncio.run loop so anyio cancel scopes are entered and exited in
-    # the same task (per hosts.core.runtime invariants).
+    # the same task (per host.runtime invariants).
     async def _run_models_command() -> str:
         try:
             await runtime.start()
@@ -1066,7 +1064,7 @@ def _build_mcp_health(
 ) -> dict[str, McpServerHealth]:
     """Build a per-server health dict from the live pool's introspection accessors.
 
-    Mirrors :func:`hosts.core.introspect._gather_mcp_pool_health` but runs
+    Mirrors :func:`host.introspect.gather_mcp_pool_health` but runs
     in the CLI's short-lived ``asyncio.run`` event loop (the pool is started
     and torn down within ``_collect_mcp_tools``). Reads the same accessors
     (``warm_server_ids``, ``warm_failed_ids``, ``cold_failed_ids``,
@@ -1074,9 +1072,9 @@ def _build_mcp_health(
     ``tools_by_server``) so the CLI summary and the REPL ``/mcp`` command
     show identical state.
     """
-    from hosts.core.introspect import _gather_mcp_pool_health  # noqa: PLC0415
+    from host.introspect import gather_mcp_pool_health
 
-    health = _gather_mcp_pool_health(pool)
+    health = gather_mcp_pool_health(pool)
     # Annotate alias tools on the tool_names so the render layer can mark
     # them without a separate lookup. The specs themselves carry the real
     # server_id; this is purely a display hint.
@@ -1260,8 +1258,8 @@ def _pack_command(
 
 
 async def _run_pack_install(runtime: HostRuntime, spec: str) -> tuple[bool, str]:
-    """Install a pack by spec (delegates to hosts.core pack management)."""
-    from hosts.core.commands import handle_pack_command
+    """Install a pack by spec (delegates to host pack management)."""
+    from host.commands import handle_pack_command
 
     result = await handle_pack_command(runtime, "/pack", f"/pack install {spec}")
     # handle_pack_command returns a plain string; treat it as success unless
@@ -1271,7 +1269,7 @@ async def _run_pack_install(runtime: HostRuntime, spec: str) -> tuple[bool, str]
 
 async def _run_pack_uninstall(runtime: HostRuntime, package_name: str) -> tuple[bool, str]:
     """Uninstall a pack by package name."""
-    from hosts.core.commands import handle_pack_command
+    from host.commands import handle_pack_command
 
     result = await handle_pack_command(runtime, "/pack", f"/pack uninstall {package_name}")
     return (True, result)
@@ -1328,8 +1326,8 @@ async def _run_once_with_teardown(runtime: HostRuntime, message: str) -> bool:
     a pack lifecycle command), so the caller can exit with a restart
     notice instead of a clean exit.
     """
+    from host.handle_message import handle_message
     from hosts.cli.transport import RichTransport
-    from hosts.core.handle_message import handle_message
 
     transport = RichTransport(console=console, debug=runtime.config.debug)
     try:
@@ -1359,7 +1357,7 @@ def _intake_command(
     """
     resolved_data_dir = Path(data_dir).expanduser() if data_dir else default_data_dir()
     try:
-        from hosts.core.intake import run_intake
+        from host.intake import run_intake
     except ImportError:
         console.print("[red]intake module not available in this host.[/red]")
         raise typer.Exit(code=2)

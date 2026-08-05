@@ -43,7 +43,8 @@ async def test_fetch_page_rejects_non_http_scheme() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_page_returns_extracted_text(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """A successful fetch returns the stripped page text and structured payload."""
     from typing import Any
@@ -89,7 +90,8 @@ async def test_fetch_page_requires_injected_data_dir() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_page_surfaces_transport_error(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """A transport failure is reported as a tool error, not raised."""
     from typing import Any

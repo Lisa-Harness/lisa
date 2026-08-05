@@ -12,17 +12,13 @@ Covers the platform-aware restart contract:
 from __future__ import annotations
 
 # pylint: disable=protected-access
-
 import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
-
-from hosts.core.config import HostConfig
-from hosts.core.runtime import HostRuntime
-
+from host.runtime import HostRuntime
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -64,7 +60,6 @@ def test_restart_current_process_windows_exits_without_spawning(
 ) -> None:
     """On Windows, _restart_current_process does NOT spawn; exits with code."""
     import typer
-
     from hosts.cli import main as cli_main
 
     spawn_calls: list[Any] = []
@@ -92,7 +87,6 @@ def test_restart_current_process_windows_exits_without_spawning(
 def test_exit_restart_required_raises_typer_exit(tmp_path: Path) -> None:
     """_exit_restart_required raises typer.Exit with the restart code."""
     import typer
-
     from hosts.cli import main as cli_main
 
     with pytest.raises(typer.Exit) as exc_info:
@@ -106,9 +100,8 @@ def test_exit_restart_required_raises_typer_exit(tmp_path: Path) -> None:
 
 def test_confirm_restart_yes_proceeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When the user answers yes, _confirm_restart returns True."""
-    from rich.console import Console
-
     from hosts.cli import repl as cli_repl
+    from rich.console import Console
 
     runtime = _make_runtime(tmp_path)
     runtime.request_restart("pack install: lisa-pack-cloudflare")
@@ -121,9 +114,8 @@ def test_confirm_restart_yes_proceeds(tmp_path: Path, monkeypatch: pytest.Monkey
 
 def test_confirm_restart_no_defers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When the user answers no, _confirm_restart returns False (defer)."""
-    from rich.console import Console
-
     from hosts.cli import repl as cli_repl
+    from rich.console import Console
 
     runtime = _make_runtime(tmp_path)
     runtime.request_restart("pack install: lisa-pack-cloudflare")
@@ -140,9 +132,8 @@ def test_confirm_restart_eof_defers(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     def _raise_eof(*a: Any, **k: Any) -> bool:
         raise EOFError
 
-    from rich.console import Console
-
     from hosts.cli import repl as cli_repl
+    from rich.console import Console
 
     runtime = _make_runtime(tmp_path)
     runtime.request_restart("pack enable: lisa-pack-cloudflare")
@@ -161,9 +152,8 @@ def test_confirm_restart_keyboard_interrupt_defers(
     def _raise_interrupt(*a: Any, **k: Any) -> bool:
         raise KeyboardInterrupt
 
-    from rich.console import Console
-
     from hosts.cli import repl as cli_repl
+    from rich.console import Console
 
     runtime = _make_runtime(tmp_path)
     runtime.request_restart("pack enable: lisa-pack-cloudflare")

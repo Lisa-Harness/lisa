@@ -211,9 +211,7 @@ async def test_get_memory_returns_none_for_wrong_id(tmp_path: Path) -> None:
 async def test_get_memory_is_surface_scoped(tmp_path: Path) -> None:
     """A record on surface-a cannot be fetched from surface-b."""
     store = _store(tmp_path)
-    record = await store.record_memory(
-        _write(content="surface-a note", surface_id="surface-a")
-    )
+    record = await store.record_memory(_write(content="surface-a note", surface_id="surface-a"))
 
     # Same user, wrong surface → not found.
     wrong_surface = await store.get_memory(
@@ -229,9 +227,7 @@ async def test_get_memory_is_surface_scoped(tmp_path: Path) -> None:
     wrong_user = await store.get_memory(memory_id=record.id, user_slug="nadia")
     assert wrong_user is None
     # Correct scope → found.
-    correct = await store.get_memory(
-        memory_id=record.id, user_slug="adam", surface_id="surface-a"
-    )
+    correct = await store.get_memory(memory_id=record.id, user_slug="adam", surface_id="surface-a")
     assert correct is not None
     assert correct.content == "surface-a note"
 
@@ -268,9 +264,7 @@ async def test_delete_memory_returns_false_for_wrong_id(tmp_path: Path) -> None:
 async def test_delete_memory_is_surface_scoped(tmp_path: Path) -> None:
     """A record on surface-a cannot be deleted from surface-b."""
     store = _store(tmp_path)
-    record = await store.record_memory(
-        _write(content="surface-a note", surface_id="surface-a")
-    )
+    record = await store.record_memory(_write(content="surface-a note", surface_id="surface-a"))
 
     # Wrong surface → no deletion.
     wrong_surface = await store.delete_memory(
@@ -286,9 +280,10 @@ async def test_delete_memory_is_surface_scoped(tmp_path: Path) -> None:
     )
     assert correct is True
     # Record is gone.
-    assert await store.get_memory(
-        memory_id=record.id, user_slug="adam", surface_id="surface-a"
-    ) is None
+    assert (
+        await store.get_memory(memory_id=record.id, user_slug="adam", surface_id="surface-a")
+        is None
+    )
 
 
 # ---------------------------------------------------------------------------

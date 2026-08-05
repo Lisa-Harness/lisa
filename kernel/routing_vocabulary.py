@@ -357,7 +357,7 @@ def get_resume_phrases() -> tuple[str, ...]:
     """Return the active resume-phrase vocabulary.
 
     Returns the session-injected list when one has been registered, else
-    the historical default. The detectors in ``hosts.core.handle_message``
+    the historical default. The detectors in ``host.handle_message``
     (affirmative resume) and ``kernel.turn_runner`` (continuation query)
     read this so the vocabulary stays in one place. Entries are lowercased,
     stripped, and applied as prefix matches on the lowered message.

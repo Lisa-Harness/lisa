@@ -90,7 +90,7 @@ $ErrorActionPreference = "Stop"
 # NOTE: env var names use the LISA_* prefix (renamed from LITTLE_LISA_*; no
 # compat aliases). The hosts read LISA_* with fallbacks to bare
 # OPENAI_API_KEY / ANTHROPIC_API_KEY / AZURE_OPENAI_* / GOOGLE_API_KEY /
-# OLLAMA_HOST. See hosts/core/providers.py and .env.example at repo root.
+# OLLAMA_HOST. See host/providers.py and .env.example at repo root.
 $ProviderMeta = @{
     ollama       = @{ Label = "Ollama";       EnvVars = @("LISA_OLLAMA_HOST");         Defaults = @("127.0.0.1:11434") }
     openai       = @{ Label = "OpenAI";       EnvVars = @("LISA_OPENAI_API_KEY");       Defaults = @("") }

@@ -211,10 +211,10 @@ def test_append_file_creates_and_appends(tmp_path: Path) -> None:
     b = _backend(tmp_path)
     first = json.loads(b.append_file("log.txt", "line1\n"))
     assert first["ok"] is True
-    assert first["bytes"] == len("line1\n".encode("utf-8"))
+    assert first["bytes"] == len(b"line1\n")
     second = json.loads(b.append_file("log.txt", "line2\n"))
     assert second["ok"] is True
-    assert second["bytes"] == len("line1\nline2\n".encode("utf-8"))
+    assert second["bytes"] == len(b"line1\nline2\n")
     assert b.read_file("log.txt") == "line1\nline2\n"
 
 

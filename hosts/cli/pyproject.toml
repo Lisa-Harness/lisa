@@ -12,7 +12,7 @@ version = "0.1.0"
 description = "Terminal CLI host for the Lisa framework"
 requires-python = ">=3.11"
 dependencies = [
-    "lisa-host-core",
+    "lisa-host-runtime",
     "lisa-kernel",
     "lisa-sdk",
     "lisa-mcp-servers",

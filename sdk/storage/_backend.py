@@ -393,9 +393,7 @@ class StorageBackend:
             # that's an existing concern out of scope here).
             with resolved.open("a", encoding="utf-8", newline="") as handle:
                 handle.write(content)
-            return json.dumps(
-                {"ok": True, "path": path, "bytes": resolved.stat().st_size}
-            )
+            return json.dumps({"ok": True, "path": path, "bytes": resolved.stat().st_size})
         except OSError as exc:
             return json.dumps({"error": f"append failed: {exc}"})
 

@@ -16,7 +16,7 @@ addressed before any new feature work.
 
 ### 0.1 Model-router factory-factory crash *(fixed this session)*
 
-- **Status:** ✅ Fixed in `hosts/core/turn_hooks_builder.py`.
+- **Status:** ✅ Fixed in `host/turn_hooks_builder.py`.
 - **Root cause:** `get_router_factory` is a factory-factory (0 args → returns
   the real `_factory(manifest, session_plan)`), but `_discover_active_router`
   called it directly with 2 args. The logging handler also had a format-string
@@ -77,7 +77,7 @@ addressed before any new feature work.
 
 ### 0.4 Stale Pyright / lint issues
 
-- `hosts/core/turn_hooks_builder.py` has several pre-existing type-check
+- `host/turn_hooks_builder.py` has several pre-existing type-check
   warnings (`complete_live` missing mandatory kwargs via `**kwargs`,
   `execute_operation` defined outside `__init__`, `ModelRouter` not callable
   through factory-factory indirection). These are largely false positives from
@@ -203,7 +203,7 @@ addressed before any new feature work.
 
 - (Backlog item — also tracked in `docs/SPEC/todo.md`.)
 - WhatsApp / Telegram / Signal hosts. Each is a thin transport adapter over
-  `hosts/core`, implementing `TransportCallbacks`. The architecture is ready
+  `host`, implementing `TransportCallbacks`. The architecture is ready
   (see `../hosts/README.md`) — only the transport adapter needs writing.
 
 ### 3.4 Stuck-session detection improvements

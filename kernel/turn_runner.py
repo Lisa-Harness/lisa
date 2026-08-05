@@ -133,9 +133,7 @@ def _read_cache_signature(tool_name: str, tool_arguments: dict[str, Any]) -> str
         val = tool_arguments[key]
         # Normalize nested values to a stable string. Lists/dicts are
         # JSON-serialized with sorted keys; scalars use ``str()``.
-        if isinstance(val, dict):
-            parts.append(f"{key}={json.dumps(val, sort_keys=True)}")
-        elif isinstance(val, list):
+        if isinstance(val, dict) or isinstance(val, list):
             parts.append(f"{key}={json.dumps(val, sort_keys=True)}")
         else:
             parts.append(f"{key}={val}")
@@ -168,6 +166,7 @@ def _format_read_abbreviation(
             return "{" + key + "}"
 
     return template.format_map(_MissingKeyDict(fields))
+
 
 # Turn-runner guard caps live in ``kernel.config.Settings`` (fields
 # ``max_tool_iterations`` / ``fork_child_max_tool_iterations`` /
@@ -426,9 +425,7 @@ def _next_remaining_step(instance: Any) -> Any:
         return None
 
 
-def _resolve_yield_policy(
-    mode_config: Any, override: YieldPolicy | None = None
-) -> YieldPolicy:
+def _resolve_yield_policy(mode_config: Any, override: YieldPolicy | None = None) -> YieldPolicy:
     """Return the ``YieldPolicy`` for one mode, tolerating missing config.
 
     The policy is authored in ``_mode.md`` front matter and loaded onto
@@ -1174,8 +1171,7 @@ async def _default_delegate_fn(
     # the stack overflows.
     if depth > _kernel_settings.delegate_max_depth:
         _dlog.warning(
-            "delegate child %s exceeded max depth %d (depth=%d); "
-            "returning max_depth status",
+            "delegate child %s exceeded max depth %d (depth=%d); returning max_depth status",
             spec.target_mode_id,
             _kernel_settings.delegate_max_depth,
             depth,
@@ -1194,7 +1190,9 @@ async def _default_delegate_fn(
 
     started = time.monotonic()
     child_budget = turn_budget
-    child_max_iters = spec.max_tool_iterations or _kernel_settings.delegate_child_max_tool_iterations
+    child_max_iters = (
+        spec.max_tool_iterations or _kernel_settings.delegate_child_max_tool_iterations
+    )
     try:
         child_result = await run_turn(
             mode_id=spec.target_mode_id,
@@ -1302,7 +1300,7 @@ def _looks_like_continuation_query(query: str) -> bool:
     The vocabulary is session-authored via ``routing.resume_phrases`` in
     ``session_context.md``; the historical default is used when no session
     vocabulary is wired. This keeps the detector in lock-step with the
-    host's affirmative-resume path (``hosts.core.handle_message``), which
+    host's affirmative-resume path (``host.handle_message``), which
     reads the same registry.
     """
     lowered = (query or "").strip().lower()
@@ -2078,6 +2076,7 @@ async def _run_turn_inner(
     if hooks.delegate_fn is not None:
         _delegate_fn: Callable[..., Awaitable[DelegationResult]] = hooks.delegate_fn
     else:
+
         async def _delegate_fn(
             spec: DelegationSpec,
             *,
@@ -3256,10 +3255,7 @@ async def _run_turn_inner(
             and _state.action_tool_ids
             and not _state.write_nudge_fired
             and not (_state.called_tool_names & _state.action_tool_ids)
-            and not any(
-                r.capability_id in _state.action_tool_ids
-                for r in _state.effect_receipts
-            )
+            and not any(r.capability_id in _state.action_tool_ids for r in _state.effect_receipts)
             and _state.iteration > max_tool_iterations // 2
             and _pending_yield is None
         ):
@@ -4186,8 +4182,7 @@ async def _run_turn_inner(
                                 # (the cutover renames the bucket; both mean
                                 # "harness force-yielded, not the model").
                                 has_yielded = any(
-                                    r.status in ("yielded", "interrupted")
-                                    for r in failed_children
+                                    r.status in ("yielded", "interrupted") for r in failed_children
                                 )
                                 # A child the model voluntarily yielded from
                                 # (it called the ``yield`` tool to ask the
@@ -4201,7 +4196,9 @@ async def _run_turn_inner(
                                 # "Re-issue the request" string and discarded
                                 # the child's question for both model-yield
                                 # and harness-yield.
-                                has_model_yield = any(r.status == "model_yield" for r in failed_children)
+                                has_model_yield = any(
+                                    r.status == "model_yield" for r in failed_children
+                                )
                                 # A ``blocked`` child was stopped by the
                                 # capability gate (the router declined to
                                 # escalate to a model with the required
@@ -4222,8 +4219,7 @@ async def _run_turn_inner(
                                             )
                                         elif r.status == "blocked":
                                             failure_parts.append(
-                                                f"{r.target.mode_id} (blocked; "
-                                                f"{r.error_message})"
+                                                f"{r.target.mode_id} (blocked; {r.error_message})"
                                             )
                                         elif r.status == "yielded":
                                             failure_parts.append(
@@ -4340,7 +4336,12 @@ async def _run_turn_inner(
                         # the fan-out actually completed; surfacing the question
                         # and then silently marking the turn blocked hides the
                         # actionable failure (2026-08-04 audit finding).
-                        if has_model_yield and not has_no_tools and not has_yielded and not has_blocked:
+                        if (
+                            has_model_yield
+                            and not has_no_tools
+                            and not has_yielded
+                            and not has_blocked
+                        ):
                             model_yield_children = [
                                 r for r in fork_results_list if r.status == "model_yield"
                             ]
@@ -5620,10 +5621,7 @@ async def _run_turn_inner(
             or _state.handoff_count > _max_handoffs_per_turn
             or (
                 _state.fork_results is not None
-                and any(
-                    r.status in ("no_tools", "yielded")
-                    for r in _state.fork_results
-                )
+                and any(r.status in ("no_tools", "yielded") for r in _state.fork_results)
             )
         ):
             break
@@ -5798,7 +5796,8 @@ async def _run_turn_inner(
         _state.entry_failed
         or _state.plan_failed
         or (
-            _state.fork_results and any(
+            _state.fork_results
+            and any(
                 r.status in ("no_tools", "yielded", "interrupted", "blocked")
                 for r in (_state.fork_results or [])
             )
@@ -5905,9 +5904,7 @@ async def _run_turn_inner(
             _progress_instance = hooks.workflow_instance()
         except Exception:  # pylint: disable=broad-except
             _progress_instance = None
-        if _progress_instance is not None and getattr(
-            _progress_instance, "declared_steps", ()
-        ):
+        if _progress_instance is not None and getattr(_progress_instance, "declared_steps", ()):
             try:
                 from kernel.workflow_instance import (
                     is_complete as _wi_is_complete,
@@ -5961,6 +5958,10 @@ async def _run_turn_inner(
 
 # Routing-hint cluster (extracted in Phase 1)
 # Fork fan-out cluster (extracted in Phase 2)
+# Shared child-turn classifier (extracted in Phase 5)
+from kernel.turn_phases._child_turn import (
+    classify_child_turn,
+)
 from kernel.turn_phases._fork import (  # noqa: F401
     _build_minimal_context,
     _execute_fork_fanout,
@@ -5982,10 +5983,6 @@ from kernel.turn_phases._post_turn import (  # noqa: F401
     _stringify_result,
     _to_tool_context,
     _validate_model_capabilities,
-)
-# Shared child-turn classifier (extracted in Phase 5)
-from kernel.turn_phases._child_turn import (  # noqa: F401
-    classify_child_turn,
 )
 from kernel.turn_phases._routing_hint import (  # noqa: F401
     _compute_capability_routing_hint,

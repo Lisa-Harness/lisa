@@ -1,7 +1,7 @@
 """Fetch-and-cache primitive for remote content (http(s) URLs).
 
 Generalizes the fetch + conditional-GET + disk-cache pattern that lived in
-``hosts/core/session_context_fetch.py`` so any pack, host, or MCP server can
+``host/session_context_fetch.py`` so any pack, host, or MCP server can
 retrieve and cache remote documents (session contexts, GitHub-raw agents,
 skills, etc.) through one SDK primitive.
 

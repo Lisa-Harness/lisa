@@ -12,14 +12,13 @@ import os
 import re
 import socket
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from kernel.config import settings
 from kernel.context.context_frames import render_ranked_evidence_namespace_frame
 from kernel.context.extension_evidence import NoOpExtensionEvidenceBuilder
 from kernel.extension_runtime import ExtensionRuntimeContext
-from kernel.intake.connector_discovery import discover_installed_signal_collectors
 from kernel.models import (
     ContextConflictRisk,
     ContextEvidence,

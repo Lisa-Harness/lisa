@@ -34,10 +34,12 @@ pytestmark = pytest.mark.asyncio
 
 def _snapshot(*, window: int = 10000, used: int = 0, conversation: int = 0) -> Any:
     """Build a minimal duck-typed ContextBudgetSnapshot stub."""
+
     class _Snap:
         model_context_window_tokens = window
         used_context_tokens = used
         conversation_tokens = conversation
+
     return _Snap()
 
 
@@ -52,6 +54,7 @@ def _hooks(
             self.last_context_snapshot = snapshot
             self.write_turn_history_fn = write_fn
             self.execute_operation = execute_op
+
     return _Hooks()
 
 
@@ -87,6 +90,7 @@ def _op_result(new_history: list[dict[str, Any]] | None) -> Any:
     class _Result:
         output_json = {"turn_history": new_history} if new_history is not None else {}
         output_text = "compacted"
+
     return _Result()
 
 
@@ -135,9 +139,15 @@ async def test_between_thresholds_high_budget_fires() -> None:
     slice_ = ContextCompactionSlice(
         _config(
             min_interval_turns=0,
-            turn_history_loader=lambda: [{"q": "a"}, {"q": "b"}, {"q": "c"},
-                                          {"q": "d"}, {"q": "e"}, {"q": "f"},
-                                          {"q": "g"}],
+            turn_history_loader=lambda: [
+                {"q": "a"},
+                {"q": "b"},
+                {"q": "c"},
+                {"q": "d"},
+                {"q": "e"},
+                {"q": "f"},
+                {"q": "g"},
+            ],
         ),
         turn_hooks=hooks,
     )

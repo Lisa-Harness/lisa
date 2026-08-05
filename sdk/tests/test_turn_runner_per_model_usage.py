@@ -394,8 +394,12 @@ async def test_router_escalates_past_capability_gate() -> None:
     from contextlib import ExitStack
 
     stack = ExitStack()
-    stack.enter_context(patch("kernel.turn_runner.get_workflow_catalog", return_value=_mode_catalog()))
-    stack.enter_context(patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=_mode_catalog()))
+    stack.enter_context(
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=_mode_catalog())
+    )
+    stack.enter_context(
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=_mode_catalog())
+    )
     try:
         hooks = TurnHooks(
             complete=complete,

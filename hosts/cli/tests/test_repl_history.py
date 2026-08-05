@@ -12,7 +12,7 @@ import pytest
 
 prompt_toolkit = pytest.importorskip("prompt_toolkit")
 
-from hosts.cli.repl import _SurrogateSafeFileHistory  # noqa: E402
+from hosts.cli.repl import _SurrogateSafeFileHistory
 
 
 def test_append_string_updates_wrapper_in_memory(tmp_path) -> None:

@@ -36,7 +36,7 @@ preserved across the handoff.
   mode handoff, and fork fan-out. There is no separate router, no separate
   handoff primitive, no separate fan-out operation.
 - **No compat or migration layers.** The old `kernel/router.py`,
-  `hosts/core/routing.py`, `RouteDecision` model, and `WorkshopExecutionService`
+  `host/routing.py`, `RouteDecision` model, and `WorkshopExecutionService`
   were all removed in a hard cutover. No shims, no dual-path.
 - **Zero extra model calls.** The old router spent one planner call per NL
   turn before the real turn. The unified FSM folds routing into the main
@@ -53,7 +53,7 @@ preserved across the handoff.
 
 ## 2. Turn-Time Dispatch Contract
 
-All hosts route inbound messages through `hosts/core/handle_message.py`. The
+All hosts route inbound messages through `host/handle_message.py`. The
 dispatch order is fixed:
 
 ```mermaid
@@ -121,7 +121,7 @@ class SessionRouting(_StrictSessionModel):
 initialization:
 
 ```python
-# hosts/core/runtime.py
+# host/runtime.py
 self.current_mode_id: str = self.session_plan.manifest.routing.start_mode
 ```
 
@@ -155,7 +155,7 @@ model called `transition_stage` with a `mode_id` target, the host updates
 `current_mode_id`:
 
 ```python
-# hosts/core/handle_message.py — after run_turn returns
+# host/handle_message.py — after run_turn returns
 if result.handoff_to and result.handoff_to != mode.mode_id:
     runtime.current_mode_id = result.handoff_to
 ```
@@ -485,12 +485,12 @@ configured via `per_step_max_iterations` / `per_step_max_tool_calls` on
 
 ### Host wiring
 
-The host (`hosts/core/runtime.py`) owns the instance lifecycle:
+The host (`host/runtime.py`) owns the instance lifecycle:
 
 - `workflow_instance` hook: returns the active `WorkflowInstance` (or `None`).
 - `workflow_instance_updater` hook: persists an advanced instance and swaps
   the in-memory active ref. When the instance is complete, clears the ref.
-- `FileWorkflowInstanceStore` (`hosts/core/workflow_instance_store.py`):
+- `FileWorkflowInstanceStore` (`host/workflow_instance_store.py`):
   atomically persists instances to `<data-dir>/workflow-instances.json`,
   scoped by `RecoveryIdentity` (one active instance per user/surface).
 - Boot-load: `_boot_load_active_workflow_instance` resumes a mid-flight
@@ -789,15 +789,15 @@ Hosts manage manifests through commands:
 | `kernel/ipsar.py` | Slash-command route resolution (`parse_route`). String parser, no model call. |
 | `kernel/session_plan.py` | `SessionRouting` model (compiled from session context front matter). Owns `start_mode`, `aliases`, `priority_adjustments`, `hints`. |
 | `kernel/capability_manifest.py` | Compiles `CapabilityManifest` from live tool schemas. Used for proactive routing hints. |
-| `hosts/core/handle_message.py` | Turn-time dispatch contract. The fixed priority order: slash commands → `start_mode` bypass → `current_mode_id`. Persists `handoff_to` after the turn. |
-| `hosts/core/runtime.py` | `HostRuntime.start_mode_id` property and `current_mode_id` initialization + update. |
+| `host/handle_message.py` | Turn-time dispatch contract. The fixed priority order: slash commands → `start_mode` bypass → `current_mode_id`. Persists `handoff_to` after the turn. |
+| `host/runtime.py` | `HostRuntime.start_mode_id` property and `current_mode_id` initialization + update. |
 
 ### Removed
 
 | Module | Status |
 | --- | --- |
 | `kernel/router.py` | Removed. The stateless router planner (`plan_route`) was replaced by mid-turn `transition_stage` handoff. No shim, no dual-path. |
-| `hosts/core/routing.py` | Removed. The host wrapper around `plan_route`. |
+| `host/routing.py` | Removed. The host wrapper around `plan_route`. |
 | `sdk/workshop_execution.py` | Removed. `WorkshopExecutionService` replaced by `fork:` targets in `transition_stage`. |
 | `sdk/packs/core/operations/research/workshop_run.py` | Removed. The `workshop_run` operation replaced by `transition_stage` with `fork:` targets. |
 | `sdk/packs/core/modes/workshop/` | Removed. The workshop mode. |

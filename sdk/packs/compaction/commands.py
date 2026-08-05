@@ -1,6 +1,6 @@
 """Compaction-pack slash-command handlers.
 
-These handlers live in the pack (not in ``hosts/core``) because they
+These handlers live in the pack (not in ``host``) because they
 either delegate to the ``context_compact`` operation (``/compact-now``)
 or read the compaction slice's sidecar state (``/compaction-status``).
 The host discovers them through the ``lisa.extensions.host_commands``
@@ -31,7 +31,7 @@ __all__ = ["get_host_commands", "handle_compact_now", "handle_compaction_status"
 
 
 def _resolve_model(runtime: Any, model_id: str) -> Any:
-    from hosts.core.model_runtime import resolve_model  # noqa: PLC0415
+    from host.model_runtime import resolve_model  # noqa: PLC0415
 
     return resolve_model(
         model_id,
@@ -43,7 +43,7 @@ def _resolve_model(runtime: Any, model_id: str) -> Any:
 def _content_loader(runtime: Any) -> Any:
     """Return the authored-text reader, or None when the registry is not set."""
     try:
-        from hosts.core.turn_hooks_builder import content_loader  # noqa: PLC0415
+        from host.turn_hooks_builder import content_loader  # noqa: PLC0415
 
         return content_loader(runtime)
     except RuntimeError:
@@ -79,14 +79,14 @@ def _build_context(
 
 
 def _build_unified_state(runtime: Any) -> Any:
-    from hosts.core.state_provider import build_unified_state
+    from host.state_provider import build_unified_state
 
     return build_unified_state(state_snapshot=runtime.state_snapshot)
 
 
 def _load_turn_history(runtime: Any, limit: int = 50) -> list[dict[str, Any]]:
     """Load recent thread entries and normalize for compaction operations."""
-    from hosts.core.thread import load_recent_thread_entries
+    from host.thread import load_recent_thread_entries
 
     entries = load_recent_thread_entries(
         thread_path=runtime.thread_path,
@@ -107,7 +107,7 @@ def _write_turn_history(runtime: Any, new_history: list[dict[str, Any]]) -> bool
     """Persist the compacted turn history via the host write-back seam.
 
     Prefers the host's ``write_turn_history_fn`` seam (wired on
-    ``TurnHooks`` by ``hosts/core/turn_hooks_builder``). Direct pack-level
+    ``TurnHooks`` by ``host/turn_hooks_builder``). Direct pack-level
     file writes are intentionally disallowed so all persistence ownership
     remains in host services / lisa-storage. Returns ``True`` when the
     write succeeded, ``False`` (with a warning logged) when it did not.
@@ -250,8 +250,7 @@ def get_host_commands() -> list[HostCommandSpec]:
             prefix="/compact-now",
             handler=handle_compact_now,
             help_text=(
-                "/compact-now [prompt] runs context compaction immediately "
-                "and persists the result."
+                "/compact-now [prompt] runs context compaction immediately and persists the result."
             ),
         ),
         HostCommandSpec(

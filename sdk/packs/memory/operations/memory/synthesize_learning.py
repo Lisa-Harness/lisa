@@ -230,9 +230,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # a missing completion function, unresolved model, or authored prompt
     # raises rather than silently persisting the raw conversation text.
     if ctx.host is None:
-        raise RuntimeError(
-            "synthesize_and_store_learning requires the OperationHost seam"
-        )
+        raise RuntimeError("synthesize_and_store_learning requires the OperationHost seam")
     model_id = ctx.preferred_model_id
     model_def = ctx.host.resolve_model(model_id)
     if model_def is None:

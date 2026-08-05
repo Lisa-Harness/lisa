@@ -1,7 +1,7 @@
 """Interactive REPL for the CLI host.
 
 This is the terminal transport's read-eval-print loop. It wraps the
-transport-neutral :func:`hosts.core.handle_message` with a Rich-based
+transport-neutral :func:`host.handle_message` with a Rich-based
 :class:`hosts.cli.transport.RichTransport` and a prompt_toolkit-backed
 input session (with fallback to plain ``console.input``).
 
@@ -14,7 +14,7 @@ Lifecycle::
 
 The REPL is transport-specific: it owns the Rich console, the status line,
 the prompt, and the session-exit summary. It delegates all routing and
-turn execution to ``hosts.core.handle_message``.
+turn execution to ``host.handle_message``.
 """
 
 from __future__ import annotations
@@ -25,17 +25,16 @@ import os
 import time
 from typing import Any
 
+from host.callbacks import TransportCallbacks
+from host.handle_message import handle_message
+from host.runtime import HostRuntime
+from hosts.cli.transport import RichTransport
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.rule import Rule
 from rich.text import Text
-
-from hosts.cli.transport import RichTransport
-from hosts.core.callbacks import TransportCallbacks
-from hosts.core.handle_message import handle_message
-from hosts.core.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -138,9 +137,8 @@ class _SurrogateSafeFileHistory(History):
 
 def _repl_command_hints() -> tuple[str, ...]:
     """Build REPL completion hints from host shortcuts plus catalog mode commands."""
+    from host.commands import mode_support_gap
     from kernel.ipsar_fsm import get_workflow_catalog
-
-    from hosts.core.commands import mode_support_gap
 
     catalog = get_workflow_catalog()
     mode_hints: list[str] = []
@@ -178,7 +176,7 @@ async def run_repl(
     # Set the initial route preview so the status line shows the
     # resolved model before the first turn is executed. When start_mode
     # is set in the session context, use it instead of "default".
-    from hosts.core.commands import model_alias_for_mode, set_runtime_route_preview
+    from host.commands import model_alias_for_mode, set_runtime_route_preview
 
     initial_mode = runtime.start_mode_id
     initial_model_alias = (
@@ -606,7 +604,7 @@ def _confirm_restart(runtime: HostRuntime, console: Console) -> bool:
 
 def _render_session_exit_summary(runtime: HostRuntime, console: Console) -> None:
     """Render the session-exit summary panel from the runtime's token counters."""
-    from hosts.core.commands import format_token_stats
+    from host.commands import format_token_stats
 
     summary = format_token_stats(runtime)
     console.print(
@@ -633,9 +631,7 @@ def _build_repl_prompt_session(
         return None
     history_path = runtime.data_dir / _REPL_HISTORY_FILE_NAME
     history_path.parent.mkdir(parents=True, exist_ok=True)
-    bindings = (
-        _build_repl_key_bindings(transport) if KeyBindings is not None else None
-    )
+    bindings = _build_repl_key_bindings(transport) if KeyBindings is not None else None
     return PromptSession(
         history=_SurrogateSafeFileHistory(str(history_path)),
         auto_suggest=AutoSuggestFromHistory() if AutoSuggestFromHistory is not None else None,

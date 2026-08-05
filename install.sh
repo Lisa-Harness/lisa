@@ -60,7 +60,7 @@ readonly MIN_PYTHON_MINOR=11
 # NOTE: env var names use the LISA_* prefix (renamed from LITTLE_LISA_*; no
 # compat aliases). The hosts read LISA_* with fallbacks to bare
 # OPENAI_API_KEY / ANTHROPIC_API_KEY / AZURE_OPENAI_* / GOOGLE_API_KEY /
-# OLLAMA_HOST. See hosts/core/providers.py and .env.example at repo root.
+# OLLAMA_HOST. See host/providers.py and .env.example at repo root.
 declare -A _PROVIDER_LABEL
 _PROVIDER_LABEL[ollama]="Ollama"
 _PROVIDER_LABEL[openai]="OpenAI"

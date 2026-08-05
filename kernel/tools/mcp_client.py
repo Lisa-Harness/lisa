@@ -101,7 +101,7 @@ def _safe_exc_desc(exc: BaseException | None) -> str:
 
     Raw exception ``str()`` can embed the full request URL — which, for a
     network MCP server carrying a bearer token, may include credentials (the
-    same credential-leak class ``hosts/core/model_discovery/redact.py``
+    same credential-leak class ``host/model_discovery/redact.py``
     guards against for provider probes). This never surfaces the raw URL,
     headers, or token; it reports the error type plus a length-bounded,
     URL-stripped message.
@@ -113,7 +113,7 @@ def _safe_exc_desc(exc: BaseException | None) -> str:
     # query-string token cannot ride through the message.
     text = _URL_RE.sub("<url>", text)
     if len(text) > _EXC_DESC_MAX:
-        text = text[: _EXC_DESC_MAX] + "…"
+        text = text[:_EXC_DESC_MAX] + "…"
     return text or type(exc).__name__
 
 
@@ -160,7 +160,7 @@ class MCPClientConfig:
             ``None`` for configs constructed before the compiler passed it
             through; introspection surfaces fall back to deriving transport
             from ``url``/``command`` in that case. Used by the MCP
-            introspection surface (:func:`hosts.core.introspect.gather_introspection`)
+            introspection surface (:func:`host.introspect.gather_introspection`)
             so the operator sees the real launch kind, not a derived
             ``http|stdio`` binary.
     """
@@ -423,7 +423,7 @@ class MCPToolPool:
         Mirrors :meth:`warm_failed_ids` for the cold-server failure set so
         the introspection surface can distinguish "cold and not yet tried"
         from "cold and tried-and-failed" — the latter reports ``failed``,
-        not ``cold``, in :func:`hosts.core.introspect.gather_introspection`.
+        not ``cold``, in :func:`host.introspect.gather_introspection`.
         """
         return sorted(self._cold_failed)
 
@@ -462,9 +462,7 @@ class MCPToolPool:
         absent (their tools appear after :meth:`list_tools` warms them).
         Returns copies so callers cannot mutate pool state.
         """
-        return {
-            sid: list(specs.values()) for sid, specs in self._tool_index_by_server.items()
-        }
+        return {sid: list(specs.values()) for sid, specs in self._tool_index_by_server.items()}
 
     def add_synthetic_tools(self, tools: list[SyntheticToolSpec]) -> None:
         """Register host-owned in-process tools into the merged catalog.

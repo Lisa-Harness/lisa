@@ -28,13 +28,13 @@ class _CallableHost:
 
     __slots__ = (
         "_complete_fn",
-        "_resolve_model_fn",
-        "_read_authored_text_fn",
-        "_execute_tool_fn",
+        "_delegate_fn",
         "_execute_operation_fn",
+        "_execute_tool_fn",
         "_generate_image_fn",
         "_introspect_fn",
-        "_delegate_fn",
+        "_read_authored_text_fn",
+        "_resolve_model_fn",
     )
 
     def __init__(

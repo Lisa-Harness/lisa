@@ -63,7 +63,7 @@ _MIN_SLICE_BUDGET_MS = 150
 
 #: Sidecar filename (beside the thread JSONL) holding the last-fire
 #: counter and timestamp. Mirrors the ``_THREAD_DIGEST_FILE_NAME``
-#: pattern in ``hosts/core/state_provider.py``.
+#: pattern in ``host/state_provider.py``.
 _LAST_COMPACTION_FILE_NAME = "last_compaction.json"
 
 

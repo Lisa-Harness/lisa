@@ -1,8 +1,8 @@
 """Rich rendering helpers for the CLI host.
 
 These functions build Rich renderables (Tables, Panels, Text) from the
-transport-neutral data surfaced by ``hosts.core``. They are the CLI-host
-analogue of the plain-text renderers in ``hosts.core.commands`` — the core
+transport-neutral data surfaced by ``host``. They are the CLI-host
+analogue of the plain-text renderers in ``host.commands`` — the core
 returns Markdown strings, and here we wrap them in Rich panels/tables for
 the terminal.
 
@@ -14,20 +14,19 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from kernel.models import McpServerHealth
+from kernel.tools.mcp_client import MCPToolSpec
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-
-from kernel.models import McpServerHealth
-from kernel.tools.mcp_client import MCPToolSpec
 
 if TYPE_CHECKING:
     # ``HostRuntime`` is used only as a string annotation (stringified by
     # ``from __future__ import annotations``); the runtime symbols are
     # passed in at call time. Deferring this import keeps ``render`` from
-    # dragging in ``hosts.core.runtime`` -> ``kernel.ipsar_fsm`` -> ``openai``
+    # dragging in ``host.runtime`` -> ``kernel.ipsar_fsm`` -> ``openai``
     # (~2s) at module load.
-    from hosts.core.runtime import HostRuntime as HostRuntime
+    from host.runtime import HostRuntime as HostRuntime
 
 # Heavy imports are deferred into the functions that use them so that
 # ``--version`` / ``modes`` / ``models`` / ``verify`` don't pay the cost of
@@ -45,11 +44,11 @@ def render_modes(runtime: HostRuntime, *, console: Console | None = None) -> Tab
     """Build a Rich Table of supported modes from the live workflow catalog.
 
     Uses ``kernel.ipsar_fsm.get_workflow_catalog`` (wired by
-    ``hosts.core.mcp_pool.setup_framework``) and ``mode_support_gap`` to
+    ``host.mcp_pool.setup_framework``) and ``mode_support_gap`` to
     separate supported from unsupported modes.
     """
-    from hosts.core.commands import mode_support_gap  # noqa: PLC0415
-    from kernel.ipsar_fsm import get_workflow_catalog  # noqa: PLC0415
+    from host.commands import mode_support_gap
+    from kernel.ipsar_fsm import get_workflow_catalog
 
     _ = runtime  # catalog is global; runtime kept for future per-host scoping
     catalog = get_workflow_catalog()
@@ -75,10 +74,10 @@ def render_modes(runtime: HostRuntime, *, console: Console | None = None) -> Tab
 def render_models(runtime: HostRuntime, *, console: Console | None = None) -> Table:
     """Build a Rich Table of configured models from the model manifest.
 
-    Uses ``hosts.core.model_manifest.load_model_manifest`` against the
+    Uses ``host.model_manifest.load_model_manifest`` against the
     canonical runtime data-dir path.
     """
-    from hosts.core.model_manifest import load_model_manifest  # noqa: PLC0415
+    from host.model_manifest import load_model_manifest
 
     path = runtime.models_path
     manifest = load_model_manifest(path)
@@ -99,13 +98,13 @@ def render_models(runtime: HostRuntime, *, console: Console | None = None) -> Ta
 
 
 def render_pack_list_panel(runtime: HostRuntime, *, console: Console | None = None) -> Panel:
-    """Render the pack activation list from ``hosts.core.commands.render_pack_list``.
+    """Render the pack activation list from ``host.commands.render_pack_list``.
 
     The core returns a Markdown string; we wrap it in a Rich Panel for the
     terminal host.
     """
-    from rich.markdown import Markdown  # noqa: PLC0415
-    from hosts.core.commands import render_pack_list  # noqa: PLC0415
+    from host.commands import render_pack_list
+    from rich.markdown import Markdown
 
     markdown_text = render_pack_list(runtime)
     panel = Panel(
@@ -125,7 +124,7 @@ def render_operations(runtime: HostRuntime, *, console: Console | None = None) -
     ``lisa-catalog`` MCP server. The ID column is exactly the string to copy
     into a mode's ``allowed_operation_ids`` front-matter list.
     """
-    from kernel.operations.registry import get_operation_catalog  # noqa: PLC0415
+    from kernel.operations.registry import get_operation_catalog
 
     _ = runtime  # catalog is global; runtime kept for future per-host scoping
     catalog = get_operation_catalog()
@@ -164,7 +163,7 @@ def render_tools(
     table.add_column("Max/Turn")
     table.add_column("Timeout")
 
-    from kernel.tools.registry import get_tool_catalog  # noqa: PLC0415
+    from kernel.tools.registry import get_tool_catalog
 
     catalog = get_tool_catalog()
     for tool_id, definition in sorted(catalog.items()):
@@ -297,9 +296,9 @@ def render_markdown_panel(
     """Wrap a Markdown string in a Rich Panel.
 
     Convenience helper for rendering any plain-text/Markdown response from
-    ``hosts.core`` in a terminal panel.
+    ``host`` in a terminal panel.
     """
-    from rich.markdown import Markdown  # noqa: PLC0415
+    from rich.markdown import Markdown
 
     panel = Panel(Markdown(text), title=title, border_style=border_style)
     if console is not None:

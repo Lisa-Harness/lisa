@@ -22,7 +22,6 @@ constants, the structured ``Parameters`` model, and substitution glue.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 

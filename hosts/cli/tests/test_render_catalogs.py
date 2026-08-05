@@ -12,20 +12,16 @@ covered here too, via stubs — we never spawn a real MCP subprocess.
 from __future__ import annotations
 
 # pylint: disable=protected-access
-
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from rich.console import Console
-
+from host.runtime import HostRuntime
 from hosts.cli import render as render_mod
-from hosts.core.config import HostConfig
-from hosts.core.runtime import HostRuntime
 from kernel.models import OperationDefinition, ToolDefinition
 from kernel.operations import registry as operations_registry
 from kernel.tools import registry as tools_registry
-
+from rich.console import Console
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -118,12 +114,19 @@ def test_render_mcp_servers_lists_status_and_transport() -> None:
 
     health = {
         "lisa-catalog": McpServerHealth(
-            server_id="lisa-catalog", status="warm", transport="venv_bin",
-            command="lisa-catalog", tool_count=3,
+            server_id="lisa-catalog",
+            status="warm",
+            transport="venv_bin",
+            command="lisa-catalog",
+            tool_count=3,
         ),
         "mem0": McpServerHealth(
-            server_id="mem0", status="failed", transport="http",
-            url="https://mem0.ai", tool_count=0, last_error="401 unauthorized",
+            server_id="mem0",
+            status="failed",
+            transport="http",
+            url="https://mem0.ai",
+            tool_count=0,
+            last_error="401 unauthorized",
         ),
     }
     console = Console(record=True, width=160)
@@ -142,12 +145,17 @@ def test_render_mcp_server_tools_lists_tools_with_descriptions() -> None:
     from kernel.tools.mcp_client import MCPToolSpec
 
     health = McpServerHealth(
-        server_id="lisa-catalog", status="warm", transport="venv_bin", tool_count=2,
+        server_id="lisa-catalog",
+        status="warm",
+        transport="venv_bin",
+        tool_count=2,
     )
     specs = [
         MCPToolSpec("lisa-catalog", "list_modes", "List all modes.", {"type": "object"}),
         MCPToolSpec(
-            "lisa-catalog", "list_tools", "List all tools.",
+            "lisa-catalog",
+            "list_tools",
+            "List all tools.",
             {"type": "object", "required": ["mode_id"], "properties": {"mode_id": {}}},
         ),
     ]

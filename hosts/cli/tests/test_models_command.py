@@ -2,7 +2,7 @@
 
 The CLI ``lisa models`` command mirrors the in-REPL ``/models`` command by
 delegating the workflow subcommands (discover/apply/reload/edit/help) to
-:func:`hosts.core.commands.handle_models_command`. ``show`` keeps the Rich
+:func:`host.commands.handle_models_command`. ``show`` keeps the Rich
 table renderer. These tests verify the dispatch wiring without paying the
 full ``_initialize_runtime`` cost: we stub the runtime builder and the core
 handler, then invoke the Typer callback directly.
@@ -11,16 +11,12 @@ handler, then invoke the Typer callback directly.
 from __future__ import annotations
 
 # pylint: disable=protected-access
-
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from host.runtime import HostRuntime
 from rich.console import Console
-
-from hosts.core.config import HostConfig
-from hosts.core.runtime import HostRuntime
-
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -60,7 +56,7 @@ def _invoke_models(
             return_value=runtime,
         ),
         patch(
-            "hosts.core.commands.handle_models_command",
+            "host.commands.handle_models_command",
             new=_fake_handle_models,
         ),
         patch.object(cli_main, "console", new=Console(quiet=True)),
@@ -160,7 +156,7 @@ def _invoke_rejected_models(
     printed: list[str] = []
 
     class _CapturingConsole:
-        def print(self, *args, **kwargs):  # noqa: D401, ANN002
+        def print(self, *args, **kwargs):
             # Rich print renders markup; capture the plain text of the
             # first positional arg (a str here, not a Rich renderable).
             for a in args:
@@ -180,7 +176,7 @@ def _invoke_rejected_models(
             return_value=runtime,
         ),
         patch(
-            "hosts.core.commands.handle_models_command",
+            "host.commands.handle_models_command",
             new=_fake_handle_models,
         ),
         patch.object(cli_main, "console", new=_CapturingConsole()),
@@ -240,7 +236,6 @@ def test_models_show_renders_table_when_manifest_present(
 
     def _fake_render_models(_runtime, *, console=None):
         rendered.append(True)
-        return None
 
     with (
         patch.object(

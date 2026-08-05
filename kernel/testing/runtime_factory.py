@@ -11,8 +11,8 @@ workflow catalog, operation catalog, or content registry pass
 ``setup_framework=True``.
 
 Dependency direction: ``kernel.testing.runtime_factory`` ->
-``hosts.core.config``, ``hosts.core.runtime``, ``hosts.core.model_runtime``,
-``hosts.core.mcp_pool``. This module is test-only; it must not be imported by
+``host.config``, ``host.runtime``, ``host.model_runtime``,
+``host.mcp_pool``. This module is test-only; it must not be imported by
 production code.
 """
 
@@ -21,8 +21,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from hosts.core.config import HostConfig
-from hosts.core.runtime import HostRuntime
+from host.config import HostConfig
+from host.runtime import HostRuntime
 
 _DEFAULT_MODELS_YAML = "\n".join(
     [
@@ -57,7 +57,7 @@ def build_test_runtime(
         manifest: When provided, sets ``runtime.manifest`` directly after
             construction, bypassing the file load. Takes precedence over
             ``models_yaml``.
-        setup_framework: When ``True``, runs ``hosts.core.mcp_pool.setup_framework``
+        setup_framework: When ``True``, runs ``host.mcp_pool.setup_framework``
             (which registers operation/tool/content MCP, routing vocabulary,
             workflow boot-load, and manifest pre-load). Default ``False`` —
             most unit tests only need the runtime, not the full catalog wiring.
@@ -80,7 +80,7 @@ def build_test_runtime(
         runtime.manifest = manifest
 
     if setup_framework:
-        from hosts.core.mcp_pool import setup_framework as _setup_framework  # noqa: PLC0415
+        from host.mcp_pool import setup_framework as _setup_framework  # noqa: PLC0415
 
         _setup_framework(runtime)
 

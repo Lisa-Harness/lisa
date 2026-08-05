@@ -72,17 +72,13 @@ def _format_turns(turn_history: list[dict[str, Any]]) -> str:
 
 def _load_prompt(ctx: OperationExecutionContext) -> str:
     if ctx.host is None:
-        raise RuntimeError(
-            "OperationHost seam is not wired; cannot load context_compact prompt"
-        )
+        raise RuntimeError("OperationHost seam is not wired; cannot load context_compact prompt")
     try:
         loaded = str(
             ctx.host.read_authored_text("operations/prompts/context_compact.md") or ""
         ).strip()
     except Exception as exc:  # pylint: disable=broad-except
-        raise RuntimeError(
-            f"read_authored_text failed for context_compact prompt: {exc}"
-        ) from exc
+        raise RuntimeError(f"read_authored_text failed for context_compact prompt: {exc}") from exc
     if not loaded:
         raise RuntimeError(
             "Authored context_compact prompt is empty or missing "
@@ -146,9 +142,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             response_format=HistorySummary,
         )
         content = completion_content(raw)
-        summary = cast(
-            HistorySummary, parse_structured_payload(HistorySummary, content)
-        )
+        summary = cast(HistorySummary, parse_structured_payload(HistorySummary, content))
     except ValidationError as exc:
         raise RuntimeError(f"context_compact structured output parse failed: {exc}") from exc
     except Exception as exc:  # pylint: disable=broad-except

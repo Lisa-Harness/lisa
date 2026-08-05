@@ -2231,7 +2231,10 @@ async def test_fork_child_no_fork_policy_falls_back_to_mode_policy(
                     "function": {
                         "name": "yield",
                         "arguments": json.dumps(
-                            {"question": "Fallback path: what format?", "context": "model-emitted yield"}
+                            {
+                                "question": "Fallback path: what format?",
+                                "context": "model-emitted yield",
+                            }
                         ),
                     },
                 }
@@ -3962,7 +3965,9 @@ async def test_plan_entry_op_timeout_marks_model_unreliable() -> None:
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
-        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=failing_plan_entry_operation),
+        patch(
+            "kernel.turn_runner.run_mode_entry_operations", side_effect=failing_plan_entry_operation
+        ),
     ):
         result = await run_turn(
             mode_id="default",
@@ -4027,7 +4032,11 @@ async def test_no_tools_fork_child_aborts_turn() -> None:
         assert child.status == "no_tools"
     # NEW: the parent must abort, not continue as advisory prose.
     assert result.blocked is True
-    assert "failed" in result.response_text.lower() or "unverified" in result.response_text.lower() or "hallucinated" in result.response_text.lower()
+    assert (
+        "failed" in result.response_text.lower()
+        or "unverified" in result.response_text.lower()
+        or "hallucinated" in result.response_text.lower()
+    )
     # The model must NOT have been allowed to emit its false "Done — wrote it to disk."
     assert result.response_text != "Done — wrote it to disk."
 
@@ -4502,7 +4511,12 @@ async def test_build_sub_turn_contract_names_action_tools() -> None:
 
     # Parent turn → no sub-turn contract.
     parent_state = _TurnState()
-    assert _build_sub_turn_contract(state=parent_state, remaining_iterations=10, budget_exhausted=False) == ""
+    assert (
+        _build_sub_turn_contract(
+            state=parent_state, remaining_iterations=10, budget_exhausted=False
+        )
+        == ""
+    )
 
     # Fork child with action tools → contract names them.
     fork_state = _TurnState()
@@ -4519,9 +4533,10 @@ async def test_build_sub_turn_contract_names_action_tools() -> None:
 
     # Once the child has called an action tool, the contract drops.
     fork_state.called_tool_names = {"memory.add"}
-    assert _build_sub_turn_contract(
-        state=fork_state, remaining_iterations=20, budget_exhausted=False
-    ) == ""
+    assert (
+        _build_sub_turn_contract(state=fork_state, remaining_iterations=20, budget_exhausted=False)
+        == ""
+    )
 
     # Delegate child (planned) → different framing (status, not discarded).
     delegate_state = _TurnState()
@@ -4575,7 +4590,8 @@ async def test_fork_child_midpoint_write_nudge_fires_once() -> None:
     assert len(result.fork_results) == 1
     # The nudge is a user message containing the write-deadline language.
     nudge_messages = [
-        m for m in captured_messages
+        m
+        for m in captured_messages
         if m.get("role") == "user" and "midpoint" in str(m.get("content", ""))
     ]
     # The nudge may or may not fire depending on whether the stub child

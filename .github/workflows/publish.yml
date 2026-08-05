@@ -35,6 +35,7 @@ jobs:
           uv build --package lisa-pack-core
           uv build --package lisa-pack-memory
           uv build --package lisa-pack-search
+          uv build --package lisa-host-runtime
           uv build --package lisa-host-cli
 
       - name: Publish to PyPI

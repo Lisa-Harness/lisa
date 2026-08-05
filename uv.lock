@@ -13,7 +13,7 @@ members = [
     "lisa-framework-workspace",
     "lisa-host",
     "lisa-host-cli",
-    "lisa-host-core",
+    "lisa-host-runtime",
     "lisa-kernel",
     "lisa-mcp-servers",
     "lisa-pack-checkpoint",
@@ -924,7 +924,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "lisa-host" },
     { name = "lisa-host-cli" },
-    { name = "lisa-host-core" },
+    { name = "lisa-host-runtime" },
     { name = "lisa-kernel" },
     { name = "lisa-mcp-servers" },
     { name = "lisa-pack-checkpoint" },
@@ -969,7 +969,7 @@ requires-dist = [
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.0" },
     { name = "lisa-host", editable = "packaging/lisa-host" },
     { name = "lisa-host-cli", editable = "hosts/cli" },
-    { name = "lisa-host-core", editable = "hosts/core" },
+    { name = "lisa-host-runtime", editable = "host" },
     { name = "lisa-kernel", editable = "kernel" },
     { name = "lisa-mcp-servers", editable = "mcp_server" },
     { name = "lisa-pack-brave-search", marker = "extra == 'ext'", directory = "../lisa-packs/brave_search" },
@@ -1018,7 +1018,7 @@ version = "0.1.0"
 source = { editable = "hosts/cli" }
 dependencies = [
     { name = "httpx" },
-    { name = "lisa-host-core" },
+    { name = "lisa-host-runtime" },
     { name = "lisa-kernel" },
     { name = "lisa-mcp-servers" },
     { name = "lisa-pack-checkpoint" },
@@ -1048,7 +1048,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "lisa-host-core" },
+    { name = "lisa-host-runtime" },
     { name = "lisa-kernel" },
     { name = "lisa-mcp-servers" },
     { name = "lisa-pack-checkpoint" },
@@ -1073,9 +1073,9 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "lisa-host-core"
+name = "lisa-host-runtime"
 version = "0.1.0"
-source = { editable = "hosts/core" }
+source = { editable = "host" }
 dependencies = [
     { name = "httpx" },
     { name = "lisa-kernel" },
@@ -1102,14 +1102,14 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "lisa-kernel" },
-    { name = "lisa-mcp-servers" },
-    { name = "lisa-pack-checkpoint" },
-    { name = "lisa-pack-core" },
-    { name = "lisa-pack-introspect" },
-    { name = "lisa-pack-memory" },
-    { name = "lisa-pack-recovery" },
-    { name = "lisa-sdk" },
+    { name = "lisa-kernel", editable = "kernel" },
+    { name = "lisa-mcp-servers", editable = "mcp_server" },
+    { name = "lisa-pack-checkpoint", editable = "sdk/packs/checkpoint" },
+    { name = "lisa-pack-core", editable = "sdk/packs/core" },
+    { name = "lisa-pack-introspect", editable = "sdk/packs/introspect" },
+    { name = "lisa-pack-memory", editable = "sdk/packs/memory" },
+    { name = "lisa-pack-recovery", editable = "sdk/packs/recovery" },
+    { name = "lisa-sdk", editable = "sdk" },
     { name = "openai", specifier = ">=1.30.0" },
     { name = "pydantic", specifier = ">=2.7.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },

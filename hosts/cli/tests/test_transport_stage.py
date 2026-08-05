@@ -9,10 +9,9 @@ from __future__ import annotations
 import io
 
 import pytest
+from hosts.cli.transport import RichTransport, _Row
 from rich.console import Console
 from rich.text import Text
-
-from hosts.cli.transport import RichTransport, _Row
 
 
 @pytest.mark.asyncio
@@ -37,7 +36,13 @@ async def test_on_stage_renders_detailed_suffix() -> None:
     transport.stop_thinking()
     await transport.on_stage(
         "model_call_complete",
-        {"mode_id": "default", "model_id": "haiku", "iteration": 1, "total_tokens": 120, "duration_ms": 340},
+        {
+            "mode_id": "default",
+            "model_id": "haiku",
+            "iteration": 1,
+            "total_tokens": 120,
+            "duration_ms": 340,
+        },
     )
     # Rows accumulated in the transcript.
     assert any(r.kind == "model" for r in transport._rows)
@@ -56,12 +61,25 @@ async def test_on_stage_fork_renders_one_line_per_child() -> None:
     assert transport._fork_total == 2
     assert transport._fork_children == {}
 
-    await transport.on_stage("fork_child_start", {"child_index": 0, "mode_id": "coding", "stage_id": "implement", "query_preview": "write the thing"})
-    await transport.on_stage("fork_child_start", {"child_index": 1, "mode_id": "markdown", "stage_id": "", "query_preview": "doc it"})
+    await transport.on_stage(
+        "fork_child_start",
+        {
+            "child_index": 0,
+            "mode_id": "coding",
+            "stage_id": "implement",
+            "query_preview": "write the thing",
+        },
+    )
+    await transport.on_stage(
+        "fork_child_start",
+        {"child_index": 1, "mode_id": "markdown", "stage_id": "", "query_preview": "doc it"},
+    )
     assert set(transport._fork_children.keys()) == {0, 1}
     assert transport._fork_children[0]["status"] == "running"
 
-    await transport.on_stage("fork_child_complete", {"child_index": 0, "status": "ok", "duration_ms": 42})
+    await transport.on_stage(
+        "fork_child_complete", {"child_index": 0, "status": "ok", "duration_ms": 42}
+    )
     assert transport._fork_children[0]["status"] == "ok"
     assert transport._fork_children[0]["duration_ms"] == 42
 
@@ -93,8 +111,20 @@ async def test_render_fork_stage_format() -> None:
     transport = RichTransport(console=console, debug=False)
     transport._fork_total = 2
     transport._fork_children = {
-        0: {"mode_id": "coding", "stage_id": "implement", "status": "running", "query_preview": "write the thing", "duration_ms": None},
-        1: {"mode_id": "markdown", "stage_id": "", "status": "ok", "query_preview": "", "duration_ms": 120},
+        0: {
+            "mode_id": "coding",
+            "stage_id": "implement",
+            "status": "running",
+            "query_preview": "write the thing",
+            "duration_ms": None,
+        },
+        1: {
+            "mode_id": "markdown",
+            "stage_id": "",
+            "status": "ok",
+            "query_preview": "",
+            "duration_ms": 120,
+        },
     }
 
     text = transport._render_fork_stage()
@@ -122,7 +152,10 @@ async def test_mode_prefix_tracked_from_model_call() -> None:
     transport.start_thinking("dispatch")
     assert transport._current_mode == ""
 
-    await transport.on_stage("model_call", {"mode_id": "coding", "model_id": "haiku", "provider": "anthropic", "iteration": 1})
+    await transport.on_stage(
+        "model_call",
+        {"mode_id": "coding", "model_id": "haiku", "provider": "anthropic", "iteration": 1},
+    )
     assert transport._current_mode == "coding"
 
     line = transport._render_status_line("model_call", {"mode_id": "coding"})
@@ -142,7 +175,14 @@ async def test_mode_prefix_updates_on_mid_turn_handoff() -> None:
 
     await transport.on_stage(
         "tool_dispatch_complete",
-        {"tool": "transition_stage", "tool_kind": "transition", "transition": "handoff", "handoff_to": "coding", "ok": True, "iteration": 1},
+        {
+            "tool": "transition_stage",
+            "tool_kind": "transition",
+            "transition": "handoff",
+            "handoff_to": "coding",
+            "ok": True,
+            "iteration": 1,
+        },
     )
     assert transport._current_mode == "coding"
     line = transport._render_status_line("model_call", {"mode_id": "coding"})
@@ -162,10 +202,24 @@ async def test_tool_dispatch_renders_legible_kind_glyphs() -> None:
     line = transport._render_tool_dispatch({"tool": "brave_search", "tool_kind": "mcp_tool"})
     assert line == "→ mcp brave_search"
 
-    line = transport._render_tool_dispatch({"tool": "transition_stage", "tool_kind": "transition", "transition": "handoff", "handoff_to": "markdown"})
+    line = transport._render_tool_dispatch(
+        {
+            "tool": "transition_stage",
+            "tool_kind": "transition",
+            "transition": "handoff",
+            "handoff_to": "markdown",
+        }
+    )
     assert "↦ transition_stage → markdown" in line
 
-    line = transport._render_tool_dispatch({"tool": "transition_stage", "tool_kind": "transition", "transition": "fork", "fork_children": 3})
+    line = transport._render_tool_dispatch(
+        {
+            "tool": "transition_stage",
+            "tool_kind": "transition",
+            "transition": "fork",
+            "fork_children": 3,
+        }
+    )
     assert "↦ transition_stage fork (3 children)" in line
 
 
@@ -178,12 +232,17 @@ async def test_tool_row_updates_in_place_on_completion() -> None:
     transport = RichTransport(console=console, debug=False)
     transport.start_thinking("model_call")
 
-    await transport.on_stage("tool_dispatch", {"tool": "read_file", "tool_kind": "mcp_tool", "path": "hosts/cli/transport.py"})
+    await transport.on_stage(
+        "tool_dispatch",
+        {"tool": "read_file", "tool_kind": "mcp_tool", "path": "hosts/cli/transport.py"},
+    )
     tool_rows_before = [r for r in transport._rows if r.kind == "tool"]
     assert len(tool_rows_before) == 1
     assert "…" not in tool_rows_before[0].text  # no status yet
 
-    await transport.on_stage("tool_dispatch_complete", {"tool": "read_file", "ok": True, "duration_ms": 400})
+    await transport.on_stage(
+        "tool_dispatch_complete", {"tool": "read_file", "ok": True, "duration_ms": 400}
+    )
     tool_rows_after = [r for r in transport._rows if r.kind == "tool"]
     # Still exactly one tool row — updated in place, not appended.
     assert len(tool_rows_after) == 1
@@ -250,10 +309,20 @@ async def test_fork_complete_keeps_per_child_table() -> None:
     transport.start_thinking("dispatch")
 
     await transport.on_stage("fork_start", {"children": 2})
-    await transport.on_stage("fork_child_start", {"child_index": 0, "mode_id": "coding", "stage_id": "implement", "query_preview": "write"})
-    await transport.on_stage("fork_child_start", {"child_index": 1, "mode_id": "markdown", "stage_id": "", "query_preview": "doc"})
-    await transport.on_stage("fork_child_complete", {"child_index": 0, "status": "ok", "duration_ms": 42})
-    await transport.on_stage("fork_child_complete", {"child_index": 1, "status": "no_tools", "duration_ms": 30})
+    await transport.on_stage(
+        "fork_child_start",
+        {"child_index": 0, "mode_id": "coding", "stage_id": "implement", "query_preview": "write"},
+    )
+    await transport.on_stage(
+        "fork_child_start",
+        {"child_index": 1, "mode_id": "markdown", "stage_id": "", "query_preview": "doc"},
+    )
+    await transport.on_stage(
+        "fork_child_complete", {"child_index": 0, "status": "ok", "duration_ms": 42}
+    )
+    await transport.on_stage(
+        "fork_child_complete", {"child_index": 1, "status": "no_tools", "duration_ms": 30}
+    )
     await transport.on_stage("fork_complete", {"children": 2, "ok": 1, "failed": 1})
 
     text = transport._render_fork_stage(summary=(1, 1))
@@ -272,10 +341,18 @@ async def test_transcript_accumulates_play_by_play() -> None:
     transport = RichTransport(console=console, debug=False)
     transport.start_thinking("dispatch")
 
-    await transport.on_stage("model_call", {"mode_id": "default", "model_id": "glm", "iteration": 1})
-    await transport.on_stage("tool_dispatch", {"tool": "search_web", "tool_kind": "mcp_tool", "iteration": 1})
-    await transport.on_stage("tool_dispatch_complete", {"tool": "search_web", "ok": True, "duration_ms": 1200})
-    await transport.on_stage("model_call", {"mode_id": "default", "model_id": "glm", "iteration": 2})
+    await transport.on_stage(
+        "model_call", {"mode_id": "default", "model_id": "glm", "iteration": 1}
+    )
+    await transport.on_stage(
+        "tool_dispatch", {"tool": "search_web", "tool_kind": "mcp_tool", "iteration": 1}
+    )
+    await transport.on_stage(
+        "tool_dispatch_complete", {"tool": "search_web", "ok": True, "duration_ms": 1200}
+    )
+    await transport.on_stage(
+        "model_call", {"mode_id": "default", "model_id": "glm", "iteration": 2}
+    )
 
     model_rows = [r for r in transport._rows if r.kind == "model"]
     assert len(model_rows) >= 2
@@ -392,7 +469,9 @@ async def test_tool_call_opens_new_thinking_segment() -> None:
     await transport.on_text_chunk("", reasoning="first think")
     await transport.on_stage("model_call", {"mode_id": "default", "iteration": 1})
     await transport.on_stage("tool_dispatch", {"tool": "search", "tool_kind": "mcp_tool"})
-    await transport.on_stage("tool_dispatch_complete", {"tool": "search", "ok": True, "duration_ms": 10})
+    await transport.on_stage(
+        "tool_dispatch_complete", {"tool": "search", "ok": True, "duration_ms": 10}
+    )
     await transport.on_text_chunk("", reasoning="second think")
 
     thinking_rows = [r for r in transport._rows if r.kind == "thinking"]
@@ -488,7 +567,7 @@ def test_pip_counter_scales_to_cap_not_width() -> None:
 def test_pip_counter_gradient_ramps_light_to_full() -> None:
     """The filled portion graduates left-to-right from ``░`` through ``▒``/``▓``
     to ``█`` so the bar reads as a filling gradient, not a hard edge."""
-    from hosts.cli.transport import _PIP_MAX_WIDTH, _PIP_GRADIENT, _pip_counter
+    from hosts.cli.transport import _PIP_GRADIENT, _PIP_MAX_WIDTH, _pip_counter
 
     # A full-width fill on a cap of width: the first cell ramps from the
     # lightest fill shade and the last cell is the full block.
@@ -595,15 +674,21 @@ async def test_on_response_renders_call_summary() -> None:
     """
     transport = _make_stream_transport()
     transport.start_thinking("model_call")
-    await transport.on_stage("model_call", {"mode_id": "default", "iteration": 1, "duration_ms": 500})
-    await transport.on_stage("model_call_complete", {"mode_id": "default", "iteration": 1, "duration_ms": 500})
+    await transport.on_stage(
+        "model_call", {"mode_id": "default", "iteration": 1, "duration_ms": 500}
+    )
+    await transport.on_stage(
+        "model_call_complete", {"mode_id": "default", "iteration": 1, "duration_ms": 500}
+    )
     await transport.on_stage("tool_dispatch", {"tool": "search", "tool_kind": "mcp_tool"})
-    await transport.on_stage("tool_dispatch_complete", {"tool": "search", "ok": True, "duration_ms": 200})
+    await transport.on_stage(
+        "tool_dispatch_complete", {"tool": "search", "ok": True, "duration_ms": 200}
+    )
 
     out_before = transport.console.file.getvalue()
     await transport.on_response("answer")
 
-    out_after = transport.console.file.getvalue()[len(out_before):]
+    out_after = transport.console.file.getvalue()[len(out_before) :]
     # The summary mentions the call count.
     assert "1 call" in out_after
     assert "✓" in out_after
@@ -617,7 +702,9 @@ async def test_on_response_debug_tier_renders_trajectory_table() -> None:
     transport = RichTransport(console=console, debug=True)
     transport.start_thinking("model_call")
     await transport.on_stage("tool_dispatch", {"tool": "search", "tool_kind": "mcp_tool"})
-    await transport.on_stage("tool_dispatch_complete", {"tool": "search", "ok": True, "duration_ms": 200})
+    await transport.on_stage(
+        "tool_dispatch_complete", {"tool": "search", "ok": True, "duration_ms": 200}
+    )
 
     await transport.on_response("answer")
 

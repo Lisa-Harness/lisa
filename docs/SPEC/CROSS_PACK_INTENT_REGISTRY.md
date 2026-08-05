@@ -193,7 +193,7 @@ The bridge handles A and B. State C is the kernel's job and the bridge is silent
 
 ### 6.5.2 Where the bridge lives
 
-A new host module `hosts/core/intent_registry_bridge.py` (mirrors `hosts/core/pack_autoinstall.py`: synchronous, host-owned, no kernel imports beyond the registry loader's public type). It exposes:
+A new host module `host/intent_registry_bridge.py` (mirrors `host/pack_autoinstall.py`: synchronous, host-owned, no kernel imports beyond the registry loader's public type). It exposes:
 
 ```python
 def registry_pack_is_installed() -> bool:
@@ -234,7 +234,7 @@ The registry pack's `required` status is **not** forced. Adding it to `resources
 
 ### 6.5.4 The bridge prompt — host-injected, not model-generated
 
-The bridge message is **deterministic host text**, not model prose. It is injected as a host-owned system-prompt fragment via the existing `assemble_system_prompt` path (the same seam that injects `copilot_customizations_text` in `hosts/core/turn_hooks_builder._assemble_system_prompt`). Rationale: the model has no way to know the registry exists (it's not installed), so asking it to generate the message would hallucinate. The host knows and the host writes the line.
+The bridge message is **deterministic host text**, not model prose. It is injected as a host-owned system-prompt fragment via the existing `assemble_system_prompt` path (the same seam that injects `copilot_customizations_text` in `host/turn_hooks_builder._assemble_system_prompt`). Rationale: the model has no way to know the registry exists (it's not installed), so asking it to generate the message would hallucinate. The host knows and the host writes the line.
 
 The fragment is short and appended only when the bridge is active:
 
@@ -407,8 +407,8 @@ The kernel and host stay registry-agnostic; they consume the bundle the pack pro
 - [ ] `kernel/intent_registry.py` — `IntentRegistry`, `IntentRegistryEntry`, `PackRegistryEntry`, `load_intent_registry(bundle_path)` (OKF-ingest semantics, no model calls). Pure parser; no filesystem scanning.
 - [ ] `kernel/turn_phases/_routing_hint.py` — `_detect_uninstalled_intents` and the "Missing Capability" hint branch (§7.2–§7.3). Must be a no-op when `registry is None` (today's behaviour preserved).
 - [ ] `sdk/packs/core/operations/planning/plan_workflow.py` — call `_detect_uninstalled_intents` before the model call; return the actionable empty-target rationale on hit (reuses the rationale contract from commit `0b76759`).
-- [ ] `hosts/core/intent_registry_bridge.py` — `registry_pack_is_installed`, `registry_bundle_is_loaded`, `maybe_install_registry_pack` (§6.5.2). Host-owned, synchronous, mirrors `pack_autoinstall.py`.
-- [ ] `hosts/core/turn_hooks_builder.py` — boot wiring in `_initialize_runtime` (load registry after `auto_install_required_packs`, before content-root discovery) and the deterministic bridge fragment injection in `_assemble_system_prompt` (§6.5.3–§6.5.4).
+- [ ] `host/intent_registry_bridge.py` — `registry_pack_is_installed`, `registry_bundle_is_loaded`, `maybe_install_registry_pack` (§6.5.2). Host-owned, synchronous, mirrors `pack_autoinstall.py`.
+- [ ] `host/turn_hooks_builder.py` — boot wiring in `_initialize_runtime` (load registry after `auto_install_required_packs`, before content-root discovery) and the deterministic bridge fragment injection in `_assemble_system_prompt` (§6.5.3–§6.5.4).
 - [ ] Host natural-language command interception for "install the intent registry" / "scan for packs" (§6.5.5), in the same layer as `/pack`.
 - [ ] `runtime.intent_registry: IntentRegistry | None` and `runtime.intent_registry_bridge_dismissed: bool` host attributes (kernel never reads these).
 - [ ] Tests: `_detect_uninstalled_intents` unit tests (installed vs uninstalled provider, no-registry no-op); "Missing Capability" hint fires and names the pack; `plan_workflow` actionable empty-target rationale; bridge fragment injection in each state A/B/C; boot wiring loads/does-not-load the registry.

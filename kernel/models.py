@@ -1667,8 +1667,7 @@ class DelegationSpec(BaseModel):
 
     target_mode_id: str = Field(
         description=(
-            "The mode to delegate to. Must be a routable mode_id from the "
-            "installed catalog."
+            "The mode to delegate to. Must be a routable mode_id from the installed catalog."
         )
     )
     query: str = Field(

@@ -116,8 +116,7 @@ def read_sub_turn_budget_exhausted_tail() -> str:
     body = _strip_authored_heading(raw)
     if not body:
         raise ValueError(
-            f"Authored sub-turn budget-exhausted asset is empty: "
-            f"{_BUDGET_EXHAUSTED_PATH}."
+            f"Authored sub-turn budget-exhausted asset is empty: {_BUDGET_EXHAUSTED_PATH}."
         )
     return body
 
@@ -135,8 +134,7 @@ def read_sub_turn_midpoint_nudge() -> str:
     body = _strip_authored_heading(raw)
     if not body:
         raise ValueError(
-            f"Authored sub-turn midpoint-nudge asset is empty: "
-            f"{_MIDPOINT_NUDGE_PATH}."
+            f"Authored sub-turn midpoint-nudge asset is empty: {_MIDPOINT_NUDGE_PATH}."
         )
     return body
 
@@ -170,6 +168,4 @@ def render_sub_turn_contract(
 def render_sub_turn_midpoint_nudge(*, action_list: str) -> str:
     """Render the midpoint write-nudge user message for a sub-turn child."""
 
-    return read_sub_turn_midpoint_nudge().format_map(
-        _MissingKeyDict(action_list=action_list)
-    )
+    return read_sub_turn_midpoint_nudge().format_map(_MissingKeyDict(action_list=action_list))

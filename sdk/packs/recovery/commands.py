@@ -1,6 +1,6 @@
 """Recovery-pack slash-command handlers.
 
-These handlers live in the pack (not in ``hosts/core``) because they
+These handlers live in the pack (not in ``host``) because they
 delegate to the recovery service owned by the host runtime. The host
 discovers them through the ``lisa.extensions.host_commands`` entry-point
 group and dispatches ``/stalls``, ``/stall``, ``/retry``, ``/retry-safe``,

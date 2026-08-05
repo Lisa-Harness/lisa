@@ -88,13 +88,15 @@ def test_overlay_auto_wins_over_pack(
     pack_root = tmp_path / "pack"
     overlay_root = tmp_path / "overlay"
 
-    _write_mode(pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default")
-    _write_mode(overlay_root, mode_id="default", provider_id="lisa-pack-core", description="overlay default")
+    _write_mode(
+        pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default"
+    )
+    _write_mode(
+        overlay_root, mode_id="default", provider_id="lisa-pack-core", description="overlay default"
+    )
 
     mode_roots = resolve_mode_roots([overlay_root, pack_root])
-    catalog = json.loads(
-        build_mode_catalog_json(mode_roots, overlay_root=overlay_root)
-    )
+    catalog = json.loads(build_mode_catalog_json(mode_roots, overlay_root=overlay_root))
 
     assert catalog["default"]["description"] == "overlay default"
     assert catalog["default"]["mode_provider_id"] == "lisa-pack-core"
@@ -110,8 +112,12 @@ def test_overlay_beats_explicit_provider_selection(
     overlay_root = tmp_path / "overlay"
 
     _write_mode(pack_a, mode_id="default", provider_id="lisa-pack-core", description="core default")
-    _write_mode(pack_b, mode_id="default", provider_id="lisa-pack-memory", description="memory default")
-    _write_mode(overlay_root, mode_id="default", provider_id="lisa-pack-core", description="overlay default")
+    _write_mode(
+        pack_b, mode_id="default", provider_id="lisa-pack-memory", description="memory default"
+    )
+    _write_mode(
+        overlay_root, mode_id="default", provider_id="lisa-pack-core", description="overlay default"
+    )
 
     monkeypatch.setenv(
         "LISA_SESSION_PROVIDER_SELECTIONS",
@@ -119,9 +125,7 @@ def test_overlay_beats_explicit_provider_selection(
     )
 
     mode_roots = resolve_mode_roots([overlay_root, pack_a, pack_b])
-    catalog = json.loads(
-        build_mode_catalog_json(mode_roots, overlay_root=overlay_root)
-    )
+    catalog = json.loads(build_mode_catalog_json(mode_roots, overlay_root=overlay_root))
 
     # Overlay wins despite session selecting lisa-pack-memory
     assert catalog["default"]["description"] == "overlay default"
@@ -134,7 +138,9 @@ def test_multiple_overlay_entries_raises_collision(
     pack_root = tmp_path / "pack"
     overlay_root = tmp_path / "overlay"
 
-    _write_mode(pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default")
+    _write_mode(
+        pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default"
+    )
     # Two overlay entries under different provider folders — both get _overlay tag
     _write_mode_in_provider_folder(
         overlay_root, mode_id="default", provider_id="lisa-pack-core", description="overlay a"
@@ -154,7 +160,9 @@ def test_no_overlay_dir_unchanged_behavior(
     """Without an overlay root, behavior is unchanged."""
     pack_root = tmp_path / "pack"
 
-    _write_mode(pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default")
+    _write_mode(
+        pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default"
+    )
 
     mode_roots = resolve_mode_roots([pack_root])
     catalog = json.loads(build_mode_catalog_json(mode_roots))
@@ -172,14 +180,16 @@ def test_shortcut_shadows_installed_mode(
     pack_root = tmp_path / "pack"
     overlay_root = tmp_path / "overlay"
 
-    _write_mode(pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default")
+    _write_mode(
+        pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default"
+    )
     # Shortcut: _mode.md directly under overlay/modes/default/
-    _write_mode(overlay_root, mode_id="default", provider_id="lisa-pack-core", description="overlay default")
+    _write_mode(
+        overlay_root, mode_id="default", provider_id="lisa-pack-core", description="overlay default"
+    )
 
     mode_roots = resolve_mode_roots([overlay_root, pack_root])
-    catalog = json.loads(
-        build_mode_catalog_json(mode_roots, overlay_root=overlay_root)
-    )
+    catalog = json.loads(build_mode_catalog_json(mode_roots, overlay_root=overlay_root))
 
     assert catalog["default"]["description"] == "overlay default"
 
@@ -191,9 +201,16 @@ def test_shortcut_with_no_matching_base_raises_in_strict_mode(
     pack_root = tmp_path / "pack"
     overlay_root = tmp_path / "overlay"
 
-    _write_mode(pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default")
+    _write_mode(
+        pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default"
+    )
     # Shortcut targeting a non-existent provider
-    _write_mode(overlay_root, mode_id="default", provider_id="nonexistent-pack", description="orphan overlay")
+    _write_mode(
+        overlay_root,
+        mode_id="default",
+        provider_id="nonexistent-pack",
+        description="orphan overlay",
+    )
 
     mode_roots = resolve_mode_roots([overlay_root, pack_root])
     with pytest.raises(CatalogCollisionError, match="does not match any installed mode"):
@@ -207,8 +224,15 @@ def test_shortcut_with_no_matching_base_skips_in_non_strict(
     pack_root = tmp_path / "pack"
     overlay_root = tmp_path / "overlay"
 
-    _write_mode(pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default")
-    _write_mode(overlay_root, mode_id="default", provider_id="nonexistent-pack", description="orphan overlay")
+    _write_mode(
+        pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default"
+    )
+    _write_mode(
+        overlay_root,
+        mode_id="default",
+        provider_id="nonexistent-pack",
+        description="orphan overlay",
+    )
 
     mode_roots = resolve_mode_roots([overlay_root, pack_root])
     catalog = json.loads(
@@ -229,7 +253,9 @@ def test_provider_folder_overlay_shadows_pack(
     pack_root = tmp_path / "pack"
     overlay_root = tmp_path / "overlay"
 
-    _write_mode(pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default")
+    _write_mode(
+        pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default"
+    )
     _write_mode_in_provider_folder(
         overlay_root,
         mode_id="default",
@@ -238,9 +264,7 @@ def test_provider_folder_overlay_shadows_pack(
     )
 
     mode_roots = resolve_mode_roots([overlay_root, pack_root])
-    catalog = json.loads(
-        build_mode_catalog_json(mode_roots, overlay_root=overlay_root)
-    )
+    catalog = json.loads(build_mode_catalog_json(mode_roots, overlay_root=overlay_root))
 
     assert catalog["default"]["description"] == "overlay default"
 
@@ -253,7 +277,9 @@ def test_provider_folder_mismatch_warns(
     pack_root = tmp_path / "pack"
     overlay_root = tmp_path / "overlay"
 
-    _write_mode(pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default")
+    _write_mode(
+        pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default"
+    )
     # Folder is named lisa-pack-core but frontmatter says lisa-pack-memory
     mode_dir = overlay_root / "modes" / "lisa-pack-core" / "default"
     mode_dir.mkdir(parents=True, exist_ok=True)
@@ -278,16 +304,13 @@ def test_provider_folder_mismatch_warns(
     )
 
     mode_roots = resolve_mode_roots([overlay_root, pack_root])
-    catalog = json.loads(
-        build_mode_catalog_json(mode_roots, overlay_root=overlay_root)
-    )
+    catalog = json.loads(build_mode_catalog_json(mode_roots, overlay_root=overlay_root))
 
     # The overlay still wins (frontmatter is authoritative)
     assert catalog["default"]["description"] == "overlay default"
     # But a warning was logged
     assert any(
-        "folder name and frontmatter disagree" in record.message
-        for record in caplog.records
+        "folder name and frontmatter disagree" in record.message for record in caplog.records
     )
 
 
@@ -301,12 +324,14 @@ def test_overlay_tag_stripped_from_output(
     pack_root = tmp_path / "pack"
     overlay_root = tmp_path / "overlay"
 
-    _write_mode(pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default")
-    _write_mode(overlay_root, mode_id="default", provider_id="lisa-pack-core", description="overlay default")
+    _write_mode(
+        pack_root, mode_id="default", provider_id="lisa-pack-core", description="pack default"
+    )
+    _write_mode(
+        overlay_root, mode_id="default", provider_id="lisa-pack-core", description="overlay default"
+    )
 
     mode_roots = resolve_mode_roots([overlay_root, pack_root])
-    catalog = json.loads(
-        build_mode_catalog_json(mode_roots, overlay_root=overlay_root)
-    )
+    catalog = json.loads(build_mode_catalog_json(mode_roots, overlay_root=overlay_root))
 
     assert "_overlay" not in catalog["default"]

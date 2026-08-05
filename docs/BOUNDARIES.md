@@ -8,10 +8,10 @@ This staged tree is the intended public framework boundary. It contains reusable
 | --- | --- | --- |
 | `kernel` | Runtime-neutral contracts, mode catalog loading, workflow state, operation registry, tool and storage protocols | Host transport SDKs, production deployment, proprietary app behavior |
 | `sdk` | Author-facing helpers for rendering, workshop execution, integration contracts, and pack composition | Private app imports, private model policy, production storage |
-| `sdk/packs` | Bundled reference packs (checkpoint, core, introspect, memory, models) with modes, operations, authored content, and pack-registered slash commands. Packs may import `hosts.core` for transport-neutral runtime services (thread loading, model resolution, state provider, content loader) but must not import host transports (`hosts.cli`, `hosts.web`). | Private product strategy, market-intel workflows, CloudServers-specific content |
+| `sdk/packs` | Bundled reference packs (checkpoint, core, introspect, memory, models) with modes, operations, authored content, and pack-registered slash commands. Packs may import `host` for transport-neutral runtime services (thread loading, model resolution, state provider, content loader) but must not import host transports (`hosts.cli`). | Private product strategy, market-intel workflows, CloudServers-specific content |
 | `../lisa-packs` (public repo: `github.com/Lisa-Framework/lisa-packs`) and `../lisa-packs-wip` (private repo: `github.com/Lisa-Framework/packs-wip`) | External integration packs under the `lisa_packs.*` namespace (public: brave_search, compaction, letta, markdown, mem0, okf, search; WIP: cloudflare, coding, github, gmail, stripe) with modes, operations, content, pack-registered slash commands, and all SDK extension kinds | Private app imports, kernel internals |
-| `hosts/core` | Transport-neutral runtime: typed config (`HostConfig`), mutable state (`HostRuntime`), provider dispatch, MCP pool compilation, command dispatch, context assembly, thread persistence. No Rich, Typer, aiohttp, or transport imports. | Production chat transport, durable memory, production-grade model policy/fallback |
-| `hosts/cli` | Terminal CLI host (Typer + Rich + prompt_toolkit). Wraps `hosts/core` with console rendering and REPL loop. Entry point: `lisa`. | Production transport, multi-user routing |
+| `host` | Transport-neutral runtime: typed config (`HostConfig`), mutable state (`HostRuntime`), provider dispatch, MCP pool compilation, command dispatch, context assembly, thread persistence. No Rich, Typer, aiohttp, or transport imports. | Production chat transport, durable memory, production-grade model policy/fallback |
+| `hosts/cli` | Terminal CLI host (Typer + Rich + prompt_toolkit). Wraps `host` with console rendering and REPL loop. Entry point: `lisa`. | Production transport, multi-user routing |
 
 ## Host Responsibilities
 
@@ -27,7 +27,7 @@ A real host must inject concrete implementations for runtime seams:
 
 The framework keeps these as protocols and callbacks so package authors can build reusable behavior without depending on the production Lisa app.
 
-The shared host runtime (`hosts/core`) wires a starter subset: `/search`, `/markdown`, `/discuss`, `/help`, default chat parsing, and locally added action/chat modes discovered through `SDK_CONTENT_ROOTS` when they only need the shipped callbacks. It supports live OpenAI-compatible completions through a small manifest contract. The terminal host (`hosts/cli`) implements `TransportCallbacks` to render turns in its native surface — the runtime never imports Rich, Typer, aiohttp, or any transport-specific package. See `../hosts/README.md` for the full architecture.
+The shared host runtime (`host`) wires a starter subset: `/search`, `/markdown`, `/discuss`, `/help`, default chat parsing, and locally added action/chat modes discovered through `SDK_CONTENT_ROOTS` when they only need the shipped callbacks. It supports live OpenAI-compatible completions through a small manifest contract. The terminal host (`hosts/cli`) implements `TransportCallbacks` to render turns in its native surface — the runtime never imports Rich, Typer, aiohttp, or any transport-specific package. See `../hosts/README.md` for the full architecture.
 
 ## Privacy Boundary
 

@@ -21,7 +21,7 @@ def _wire_sub_turn_content_registry() -> None:
     ``kernel.context.sub_turn_contract`` loads the fork/delegate contract and
     midpoint-nudge prose from authored Markdown under
     ``sdk/packs/core/content/prompts/sub_turn/``. Production wires the
-    ``MCPContentRegistry`` at host startup (``hosts.core.mcp_pool``); kernel
+    ``MCPContentRegistry`` at host startup (``host.mcp_pool``); kernel
     unit tests that call ``_build_sub_turn_contract`` directly need the same
     registry. A lightweight direct-file registry avoids spawning the catalog
     MCP subprocess for these unit tests.

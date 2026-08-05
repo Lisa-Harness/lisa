@@ -37,8 +37,7 @@ class TestInferModulePath:
         py.parent.mkdir()
         py.write_text("")
         assert (
-            _infer_module_path(py, ops)
-            == "sdk.packs.introspect.operations.self_model.self_model"
+            _infer_module_path(py, ops) == "sdk.packs.introspect.operations.self_model.self_model"
         )
 
     def test_namespace_package_path_without_init(self, tmp_path: Path) -> None:
@@ -60,9 +59,6 @@ class TestInferModulePath:
         sys.path.insert(0, str(site_dir))
         try:
             assert _is_package_dir(namespace_root) is True
-            assert (
-                _infer_module_path(py, tools)
-                == "lisa_packs.coding.tools.status.status"
-            )
+            assert _infer_module_path(py, tools) == "lisa_packs.coding.tools.status.status"
         finally:
             sys.path.remove(str(site_dir))

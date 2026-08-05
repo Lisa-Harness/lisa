@@ -2,8 +2,8 @@
 
 The kernel defines only the seam: ``WorkflowInstanceStore`` is a Protocol
 the host implements. The file-backed implementation lives in
-``hosts/core/workflow_instance_store.py`` — same split as
-``kernel/recovery.py`` (contracts) vs ``hosts/core/recovery.py``
+``host/workflow_instance_store.py`` — same split as
+``kernel/recovery.py`` (contracts) vs ``host/recovery.py``
 (``FileRecoveryService``).
 
 The kernel never touches the store directly — the host owns the instance

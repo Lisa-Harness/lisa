@@ -59,7 +59,7 @@ All notable changes to the Lisa Framework will be documented in this file.
   server-side, so cross-surface reads and deletes by id guessing are
   impossible.
 - **`memory.get` and `memory.delete` synthetic aliases** registered on the
-  generic memory router (`hosts/core/memory_aliases.py`), routing to the
+  generic memory router (`host/memory_aliases.py`), routing to the
   default backend's `get_memory` / `delete_memory` native tools. The alias
   contract grows from 3 to 5; backends that don't declare a `get` or
   `delete` tool name simply don't get those aliases registered (graceful
@@ -81,7 +81,7 @@ All notable changes to the Lisa Framework will be documented in this file.
   appear without a full pool warm-up.
 - **`McpServerHealth` extended** with `transport`, `url`, `command`,
   `tool_count`, `tool_names`, `permanently_failed`, and `restart_count`
-  fields. The introspection collector (`hosts/core/introspect.py`) now
+  fields. The introspection collector (`host/introspect.py`) now
   reads new pool accessors (`cold_failed_ids`, `permanently_failed_ids`,
   `restart_counts`, `last_errors`, `tools_by_server`) so a cold server
   that tried and failed reports `failed` (not `cold`), and the operator
@@ -182,7 +182,7 @@ All notable changes to the Lisa Framework will be documented in this file.
   doubling the row count and splitting the status from the call it
   describes. Now one iteration = one row:
   `[mode] stage: model_call haiku #1 ✓ 340ms`.
-- The `TransportCallbacks` Protocol in `hosts/core/callbacks.py` is untouched;
+- The `TransportCallbacks` Protocol in `host/callbacks.py` is untouched;
   this is a CLI render-layer cutover only (hard cutover per the project
   contract — the pane machinery is deleted, not shimmed).
 
@@ -204,7 +204,7 @@ All notable changes to the Lisa Framework will be documented in this file.
   semantics as pack `default_available: true` tools. The turn-runner's
   existing MCP-tool filter admits them with no further change.
 - **`lisa-storage.read_file` is now ambient-available** by default, declared
-  in `hosts/core/mcp_servers.yaml`. Modes can read persisted artifacts
+  in `host/mcp_servers.yaml`. Modes can read persisted artifacts
   without re-listing the tool or paying the cold-server spawn cost unless
   they actually call it. The previous delegate pack tool under
   `sdk/packs/core/tools/read_file/` is removed — `lisa-storage` stays the
@@ -212,26 +212,26 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Changed
 
-#### `FileWorkflowInstanceStore` moved from `kernel/` to `hosts/core/`
+#### `FileWorkflowInstanceStore` moved from `kernel/` to `host/`
 
 - **File-backed workflow-instance store relocated from the kernel to the host
   runtime.** `FileWorkflowInstanceStore` does file I/O, holds an
   `asyncio.Lock`, and writes under the host's `data_dir` — it is a
   host-runtime implementation, not a runtime-neutral contract. This mirrors
   the existing `recovery` split (`kernel/recovery.py` contracts vs
-  `hosts/core/recovery.py` `FileRecoveryService`) and the `approvals` split.
+  `host/recovery.py` `FileRecoveryService`) and the `approvals` split.
 - **Kernel keeps only the seam.** `kernel/workflow_instance_store.py` is
   trimmed to the `WorkflowInstanceStore` Protocol; its imports drop
   `asyncio`, `json`, `os`, `Path`, and `is_complete`.
 - **Hard cutover, no compat.** The implementation now lives in
-  `hosts/core/workflow_instance_store.py`. The single non-test importer
-  (`hosts/core/runtime.py`) and the host wiring test import from the new
+  `host/workflow_instance_store.py`. The single non-test importer
+  (`host/runtime.py`) and the host wiring test import from the new
   location. The seven `FileWorkflowInstanceStore` tests moved from
   `kernel/tests/test_workflow_instance.py` to
-  `hosts/core/tests/test_workflow_instance_store.py`; the kernel test file
+  `host/tests/test_workflow_instance_store.py`; the kernel test file
   no longer imports a host implementation.
 
-#### `kernel/introspect.py` moved to `hosts/core/introspect.py`
+#### `kernel/introspect.py` moved to `host/introspect.py`
 
 - **Live introspection gatherer relocated from the kernel to the host runtime.**
   `gather_introspection` reads host-owned concrete resources (the MCP tool
@@ -242,9 +242,9 @@ All notable changes to the Lisa Framework will be documented in this file.
   on `OperationExecutionContext` and `TurnRunnerTurnConfig.introspect`.
 - **Hard cutover, no compat.** `kernel/introspect.py` and
   `kernel/tests/test_introspect.py` are deleted. The single non-test
-  importer (`hosts/core/turn_hooks_builder.py`) now imports
-  `from hosts.core.introspect import gather_introspection`. The test moved
-  to `hosts/core/tests/test_introspect.py`. `kernel/README.md`'s Built-in
+  importer (`host/turn_hooks_builder.py`) now imports
+  `from host.introspect import gather_introspection`. The test moved
+  to `host/tests/test_introspect.py`. `kernel/README.md`'s Built-in
   Capabilities table drops the `introspect.py` row; the `introspect` hook
   row (seam contract) stays.
 
@@ -325,8 +325,8 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 
 - **Four packs migrated from bundled workspace members to external packs.** `lisa-pack-search`, `lisa-pack-markdown`, `lisa-pack-compaction`, and `lisa-pack-letta` moved out of `sdk/packs/<name>` (import `sdk.packs.<name>`) to `lisa_packs/<name>/` submodules (import `lisa_packs.<name>`), each in its own `github.com/Lisa-Framework/lisa-pack-<name>` repository pinned into `lisa-framework/packs`. Import paths renamed from `sdk.packs.<name>` to `lisa_packs.<name>`; distribution names unchanged. `compaction` keeps its `from sdk.packs.checkpoint...` import because `checkpoint` stays bundled. The bundled `sdk/packs` set is now `core`, `introspect`, `memory`, `models`, `checkpoint`.
 - **All four are on-demand via `/pack install`.** Removed from the framework `pyproject.toml` `[project.dependencies]` and `[tool.uv.sources]`, and from every host `pyproject.toml`. A fresh `uv sync` no longer installs them; install the ones you want with `uv pip install -e ../lisa_packs/<name>` or the in-app `/pack install lisa-pack-<name>`.
-- **`lisa-pack-search` removed from `hosts/core` hard deps.** The transport-neutral runtime no longer depends on a research-personality pack; `/search` and `/discuss` are a starter-subset choice wired by the transport hosts (and now on-demand there too).
-- **Test conftest repointed.** `kernel/tests/conftest_catalog.py` and `hosts/core/tests/conftest.py` now discover migrated packs via the sibling `lisa_packs/<name>/lisa_packs/<name>` content roots when the submodules are checked out, and omit them when absent. `kernel/tests/test_compaction_seams.py` imports the compaction factory from `lisa_packs.compaction` with `pytest.importorskip` so it skips when the pack isn't installed.
+- **`lisa-pack-search` removed from `host` hard deps.** The transport-neutral runtime no longer depends on a research-personality pack; `/search` and `/discuss` are a starter-subset choice wired by the transport hosts (and now on-demand there too).
+- **Test conftest repointed.** `kernel/tests/conftest_catalog.py` and `host/tests/conftest.py` now discover migrated packs via the sibling `lisa_packs/<name>/lisa_packs/<name>` content roots when the submodules are checked out, and omit them when absent. `kernel/tests/test_compaction_seams.py` imports the compaction factory from `lisa_packs.compaction` with `pytest.importorskip` so it skips when the pack isn't installed.
 
 #### `lisa-pack-models` moved back into the framework; `lisa_packs` split into per-pack submodule repos
 

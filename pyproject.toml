@@ -13,7 +13,7 @@ dependencies = [
     "lisa-pack-checkpoint",
     "lisa-pack-compaction",
     "lisa-pack-recovery",
-    "lisa-host-core",
+    "lisa-host-runtime",
     "lisa-host-cli",
     "lisa-host",
     "rich>=13.7.0",
@@ -64,7 +64,7 @@ members = [
     "sdk/packs/checkpoint",
     "sdk/packs/compaction",
     "sdk/packs/recovery",
-    "hosts/core",
+    "host",
     "hosts/cli",
     "packaging/lisa-host",
 ]
@@ -90,7 +90,7 @@ lisa-pack-gmail = { path = "../lisa-packs-wip/gmail" }
 lisa-pack-search = { path = "../lisa-packs/search" }
 lisa-pack-markdown = { path = "../lisa-packs/markdown" }
 lisa-pack-letta = { path = "../lisa-packs/letta" }
-lisa-host-core = { workspace = true }
+lisa-host-runtime = { workspace = true }
 lisa-host-cli = { workspace = true }
 lisa-host = { workspace = true }
 
@@ -193,14 +193,15 @@ ignore_decorators = [
 # import-linter — enforces the architectural boundaries documented in
 # docs/BOUNDARIES.md.  Run with:  uv run lint-imports
 #
-# The codebase uses root-level import paths (kernel, sdk, hosts.* , mcp_server)
-# rather than installed distribution names, so we use those here.
+# The codebase uses root-level import paths (kernel, sdk, host, hosts.cli ,
+# mcp_server) rather than installed distribution names, so we use those here.
 # ---------------------------------------------------------------------------
 [tool.importlinter]
 root_packages = [
     "kernel",
     "sdk",
     "mcp_server",
+    "host",
     "hosts",
 ]
 
@@ -213,12 +214,12 @@ type = "forbidden"
 source_modules = ["kernel"]
 forbidden_modules = [
     "hosts",
-    "hosts.core",
+    "host",
     "hosts.cli",
 ]
 
 # SDK must not import host transports (cli/web) or mcp_server internals.
-# SDK and packs may import hosts.core (transport-neutral runtime services:
+# SDK and packs may import host (transport-neutral runtime services:
 # thread, model_runtime, state_provider, turn_hooks_builder). See
 # docs/BOUNDARIES.md "Packs have host bindings".
 [[tool.importlinter.contracts]]
@@ -230,7 +231,7 @@ forbidden_modules = [
     "mcp_server",
 ]
 
-# Bundled reference packs may import hosts.core (transport-neutral runtime
+# Bundled reference packs may import host (transport-neutral runtime
 # services) but must not import host transports (cli/web).
 [[tool.importlinter.contracts]]
 name = "SDK packs do not import host transports (cli)"
@@ -248,15 +249,15 @@ forbidden_modules = [
 # Host layering: cli → core. The CLI host wraps the transport-neutral
 # runtime; core must not import the transport. The sdk/mcp_server/kernel
 # dependency direction is enforced by the forbidden contracts above
-# (kernel forbids hosts; sdk and mcp_server forbid host transports). Packs
-# importing hosts.core is a deliberate, constrained exception documented
+# (kernel forbids host; sdk and mcp_server forbid host transports). Packs
+# importing host is a deliberate, constrained exception documented
 # in docs/BOUNDARIES.md.
 [[tool.importlinter.contracts]]
 name = "Host layering (cli → core)"
 type = "layers"
 layers = [
     "hosts.cli",
-    "hosts.core",
+    "host",
 ]
 
 # mcp_server may use kernel/sdk but must not depend on host transports.

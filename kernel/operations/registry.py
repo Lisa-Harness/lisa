@@ -506,8 +506,12 @@ def mode_completion_effects(mode_id: str) -> set[str]:
     if not mode_id:
         return set()
     # Lazy import: breaks cycle with kernel.ipsar_fsm (catalog load path).
-    from kernel.ipsar_fsm import get_workflow_catalog  # noqa: PLC0415  # lazy: breaks cycle with ipsar_fsm
-    from kernel.tools.registry import get_tool_catalog  # noqa: PLC0415  # lazy: defers tool registry startup cost
+    from kernel.ipsar_fsm import (
+        get_workflow_catalog,  # lazy: breaks cycle with ipsar_fsm
+    )
+    from kernel.tools.registry import (
+        get_tool_catalog,  # lazy: defers tool registry startup cost
+    )
 
     mode = get_workflow_catalog().get(mode_id)
     if mode is None:
@@ -543,13 +547,9 @@ def mode_completion_effects(mode_id: str) -> set[str]:
         if effect in ("write", "external_write"):
             result.add(tool_id)
     # 3) Operations explicitly bound via their own ``mode_allowlist``.
-    result.update(
-        _mode_allowlist_write_ops(op_catalog, mode_id)
-    )
+    result.update(_mode_allowlist_write_ops(op_catalog, mode_id))
     # 4) Tools explicitly bound via their own ``mode_allowlist``.
-    result.update(
-        _mode_allowlist_write_tools(tool_catalog, mode_id)
-    )
+    result.update(_mode_allowlist_write_tools(tool_catalog, mode_id))
     return result
 
 
@@ -636,9 +636,13 @@ async def execute_operation(
     ctx.host = build_callable_host(
         complete_fn=_existing_host._complete_fn if _existing_host is not None else None,
         resolve_model_fn=_existing_host._resolve_model_fn if _existing_host is not None else None,
-        read_authored_text_fn=_existing_host._read_authored_text_fn if _existing_host is not None else None,
+        read_authored_text_fn=_existing_host._read_authored_text_fn
+        if _existing_host is not None
+        else None,
         execute_tool_fn=_wrapped_tool_fn,
-        execute_operation_fn=_existing_host._execute_operation_fn if _existing_host is not None else None,
+        execute_operation_fn=_existing_host._execute_operation_fn
+        if _existing_host is not None
+        else None,
         generate_image_fn=_existing_host._generate_image_fn if _existing_host is not None else None,
         introspect_fn=_existing_host._introspect_fn if _existing_host is not None else None,
     )

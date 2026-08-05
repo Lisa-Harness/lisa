@@ -31,6 +31,7 @@ my_pack = "my_pack:get_content_root"
 # my_pack/__init__.py
 from pathlib import Path
 
+
 def get_content_root() -> Path:
     return Path(__file__).parent
 ```
@@ -299,6 +300,7 @@ Every pack must verify it imports cleanly without private app modules:
 # tests/test_import_boundaries.py
 import importlib
 
+
 def test_pack_imports_cleanly() -> None:
     importlib.import_module("my_pack")
 ```
@@ -311,8 +313,10 @@ from pathlib import Path
 from sdk.content import build_operation_catalog_json
 import json
 
+
 def test_my_operation_discovered() -> None:
     import my_pack
+
     root = my_pack.get_content_root() / "operations"
     catalog = json.loads(build_operation_catalog_json([root]))
     assert "my_operation" in catalog
@@ -320,8 +324,10 @@ def test_my_operation_discovered() -> None:
     assert op["description"]
     assert "my_mode" in op["mode_allowlist"]
 
+
 def test_tool_ids_declared() -> None:
     import my_pack
+
     root = my_pack.get_content_root() / "operations"
     catalog = json.loads(build_operation_catalog_json([root]))
     assert catalog["my_checkpoint_op"]["tool_ids"] == ["save_checkpoint"]

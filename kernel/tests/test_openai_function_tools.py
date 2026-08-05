@@ -79,7 +79,9 @@ def test_strict_incompatible_or_of_both() -> None:
 
 
 def test_clean_schema_stays_strict() -> None:
-    tool = build_strict_openai_function_tool(name="clean", description="d", parameters_schema=_Empty)
+    tool = build_strict_openai_function_tool(
+        name="clean", description="d", parameters_schema=_Empty
+    )
     assert _is_strict(tool) is True
 
 

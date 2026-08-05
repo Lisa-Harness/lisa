@@ -446,8 +446,7 @@ def _parse_auth(raw: Any, server_id: str, index: int, path: Path) -> AuthSpec:
     except ValueError as exc:
         valid = ", ".join(k.value for k in AuthKind)
         raise MCPServerManifestError(
-            f"servers[{index}] '{server_id}': invalid auth type {kind_raw!r} "
-            f"(valid: {valid})"
+            f"servers[{index}] '{server_id}': invalid auth type {kind_raw!r} (valid: {valid})"
         ) from exc
 
     if kind is AuthKind.BEARER:

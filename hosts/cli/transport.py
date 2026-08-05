@@ -1,8 +1,8 @@
 """Rich-based TransportCallbacks implementation for the CLI host.
 
 This is the terminal-transport implementation of
-:class:`hosts.core.callbacks.TransportCallbacks`. The CLI host constructs a
-``RichTransport`` and passes it to ``hosts.core.handle_message``; the runtime
+:class:`host.callbacks.TransportCallbacks`. The CLI host constructs a
+``RichTransport`` and passes it to ``host.handle_message``; the runtime
 calls these methods during turn execution to deliver stage updates, streamed
 text chunks, final responses, debug context, and errors.
 
@@ -315,9 +315,7 @@ class RichTransport:
 
     # ── Live region lifecycle ───────────────────────────────────────
 
-    def start_thinking(
-        self, stage: str = "dispatch", *, session_tokens: int = 0
-    ) -> None:
+    def start_thinking(self, stage: str = "dispatch", *, session_tokens: int = 0) -> None:
         """Start the flowing transcript so the user sees the turn is active.
 
         The default stage is ``dispatch`` — the pre-pipeline phase where
@@ -436,9 +434,7 @@ class RichTransport:
             if self._status_model_provider:
                 model = f"{self._status_model_provider}:{model}"
             parts.append(model)
-        parts.append(
-            f"tokens {self._status_turn_tokens}/{self._status_session_tokens}"
-        )
+        parts.append(f"tokens {self._status_turn_tokens}/{self._status_session_tokens}")
         text = " │ ".join(parts)
         return Text(text, style="bold " + STYLE_STAGE)
 
@@ -453,7 +449,7 @@ class RichTransport:
         body) per the global ``thinking_collapsed`` flag.
         """
         renderables: list[Any] = [self._render_status_header()]
-        rows = self._rows[-self._live_height():]
+        rows = self._rows[-self._live_height() :]
         for i, row in enumerate(rows):
             is_active = row.active and self._live is not None and i == len(rows) - 1
             line = self._row_line(row)
@@ -600,7 +596,17 @@ class RichTransport:
 
         # A tool/model/fork event closes the open thinking segment so the next
         # reasoning delta opens a fresh interspersed segment.
-        if label in ("model_call", "model_call_complete", "model_call_failed", "tool_dispatch", "tool_dispatch_complete", "fork_start", "fork_child_start", "fork_child_complete", "fork_complete"):
+        if label in (
+            "model_call",
+            "model_call_complete",
+            "model_call_failed",
+            "tool_dispatch",
+            "tool_dispatch_complete",
+            "fork_start",
+            "fork_child_start",
+            "fork_child_complete",
+            "fork_complete",
+        ):
             self._open_thinking_row = None
 
         # ── Live mode tracking ──────────────────────────────────────
@@ -686,7 +692,9 @@ class RichTransport:
 
         # ── Catch-all (debug tier only) ──────────────────────────────
         if self._detail == "debug":
-            self._append_row(_Row(kind="stage", text=self._render_status_line(label, data), data=data))
+            self._append_row(
+                _Row(kind="stage", text=self._render_status_line(label, data), data=data)
+            )
         else:
             # Bookkeeping events update counters but render no row on clean/power.
             self._mark_last_active()
@@ -757,8 +765,7 @@ class RichTransport:
             dur_raw = data.get("duration_ms")
             if dur_raw not in (None, "", 0):
                 graphic = (
-                    f"{graphic}  {spark or _block_bar(float(dur_raw))} "
-                    f"{round(float(dur_raw), 3)}ms"
+                    f"{graphic}  {spark or _block_bar(float(dur_raw))} {round(float(dur_raw), 3)}ms"
                 )
             # Accumulate the model call's token usage into the live header so
             # the running total updates instantly and guards runaway sessions.
@@ -827,7 +834,11 @@ class RichTransport:
             row.data = {**row.data, **data}
         else:
             self._append_row(
-                _Row(kind="tool", text=self._render_tool_dispatch(data, status_glyph=glyph, complete=data), data=data)
+                _Row(
+                    kind="tool",
+                    text=self._render_tool_dispatch(data, status_glyph=glyph, complete=data),
+                    data=data,
+                )
             )
             return
         self._open_tool_row = None
@@ -1040,7 +1051,9 @@ class RichTransport:
             # tool/model event closed the open segment, so a new reasoning
             # delta after a tool call starts a fresh interspersed segment.
             if self._open_thinking_row is None or self._open_thinking_row >= len(self._rows):
-                row = _Row(kind="thinking", text=reasoning, thinking_expanded=not self.thinking_collapsed)
+                row = _Row(
+                    kind="thinking", text=reasoning, thinking_expanded=not self.thinking_collapsed
+                )
                 self._append_row(row)
                 self._open_thinking_row = len(self._rows) - 1
             else:

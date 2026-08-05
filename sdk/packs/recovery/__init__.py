@@ -14,7 +14,7 @@ service:
 
 The kernel owns the recovery contracts (``kernel.recovery``) and the
 write-ahead lifecycle instrumentation in the turn runner. The host
-(``hosts/core/recovery.py``) owns the durable file-backed store. This
+(``host/recovery.py``) owns the durable file-backed store. This
 pack owns the operator UX: rendering stall summaries, gating retries
 through approval, and deterministic replay of saved invocations.
 """

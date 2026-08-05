@@ -213,6 +213,7 @@ async def test_declarative_retry_tool_call_turn_deferred_not_failed() -> None:
         complete_fn=_make_complete_fn(completions),
     )
     from kernel.seams.host_adapter import build_callable_host as _bch
+
     # Preserve complete/resolve_model from the existing host, add execute_tool.
     _existing = ctx.host
     ctx.host = _bch(

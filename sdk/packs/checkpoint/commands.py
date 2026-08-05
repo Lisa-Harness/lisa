@@ -1,6 +1,6 @@
 """Checkpoint-pack slash-command handlers.
 
-These handlers live in the pack (not in ``hosts/core``) because they
+These handlers live in the pack (not in ``host``) because they
 delegate to checkpoint-pack operations (``checkpoint_create``,
 ``checkpoint_restore``, ``checkpoint_history_summarize``). The host
 discovers them through the ``lisa.extensions.host_commands`` entry-point
@@ -44,7 +44,7 @@ __all__ = [
 
 def _load_turn_history(runtime: Any, limit: int = 50) -> list[dict[str, Any]]:
     """Load recent thread entries and normalize for checkpoint operations."""
-    from hosts.core.thread import load_recent_thread_entries
+    from host.thread import load_recent_thread_entries
 
     entries = load_recent_thread_entries(
         thread_path=runtime.thread_path,
@@ -62,7 +62,7 @@ def _load_turn_history(runtime: Any, limit: int = 50) -> list[dict[str, Any]]:
 
 
 def _resolve_model(runtime: Any, model_id: str) -> Any:
-    from hosts.core.model_runtime import resolve_model
+    from host.model_runtime import resolve_model
 
     return resolve_model(
         model_id,
@@ -74,7 +74,7 @@ def _resolve_model(runtime: Any, model_id: str) -> Any:
 def _content_loader(runtime: Any) -> Any:
     """Return the authored-text reader, or None when the registry is not set."""
     try:
-        from hosts.core.turn_hooks_builder import content_loader  # noqa: PLC0415
+        from host.turn_hooks_builder import content_loader  # noqa: PLC0415
 
         return content_loader(runtime)
     except RuntimeError:
@@ -112,7 +112,7 @@ def _build_context(
 
 
 def _build_unified_state(runtime: Any) -> Any:
-    from hosts.core.state_provider import build_unified_state
+    from host.state_provider import build_unified_state
 
     return build_unified_state(state_snapshot=runtime.state_snapshot)
 
@@ -475,7 +475,7 @@ def _persist_compacted_history(runtime: Any, new_history: list[dict[str, Any]]) 
     """Write the compacted turn-history list back to the live thread JSONL.
 
     Prefers the host's ``write_turn_history_fn`` seam (wired on ``TurnHooks``
-    by ``hosts/core/turn_hooks_builder``). Direct pack-level file writes are
+    by ``host/turn_hooks_builder``). Direct pack-level file writes are
     intentionally disallowed so all persistence ownership remains in host
     services / lisa-storage. Returns ``True`` when the write succeeded,
     ``False`` (with a warning logged) when it did not.

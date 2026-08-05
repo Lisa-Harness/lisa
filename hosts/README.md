@@ -1,6 +1,6 @@
 # Hosts Guide
 
-The Lisa framework ships a terminal CLI host that wraps a single transport-neutral runtime (`hosts/core`). The host is a thin transport adapter that wires the same `HostRuntime` and calls the same `handle_message` dispatcher. The runtime never imports Rich, Typer, or any transport-specific code.
+The Lisa framework ships a terminal CLI host that wraps a single transport-neutral runtime (`host`). The host is a thin transport adapter that wires the same `HostRuntime` and calls the same `handle_message` dispatcher. The runtime never imports Rich, Typer, or any transport-specific code.
 
 ## Architecture
 
@@ -11,7 +11,7 @@ flowchart TD
   end
 
   subgraph SharedRuntime
-    Core[hosts/core<br/>HostConfig + HostRuntime<br/>+ TransportCallbacks<br/>+ handle_message<br/>+ providers + mcp_pool<br/>+ commands + context_assembly]
+    Core[host<br/>HostConfig + HostRuntime<br/>+ TransportCallbacks<br/>+ handle_message<br/>+ providers + mcp_pool<br/>+ commands + context_assembly]
   end
 
   subgraph Kernel
@@ -44,13 +44,13 @@ flowchart TD
   TOOLS --> Storage
 ```
 
-The terminal host imports only from `hosts.core`. The kernel and SDK never import from any host. The transport boundary is enforced by the `TransportCallbacks` protocol — `hosts.core` calls `on_stage`, `on_text_chunk`, `on_response`, `on_debug_context`, and `on_error`; the transport host implements those methods to render in its native surface.
+The terminal host imports only from `host`. The kernel and SDK never import from any host. The transport boundary is enforced by the `TransportCallbacks` protocol — `host` calls `on_stage`, `on_text_chunk`, `on_response`, `on_debug_context`, and `on_error`; the transport host implements those methods to render in its native surface.
 
 ## Package Layout
 
 | Package | Purpose | Entry point | Transport |
 | --- | --- | --- | --- |
-| `hosts/core` | Transport-neutral runtime: config, runtime state, provider dispatch, MCP pool, command dispatch, context assembly | — (library) | None |
+| `host` | Transport-neutral runtime: config, runtime state, provider dispatch, MCP pool, command dispatch, context assembly | — (library) | None |
 | `hosts/cli` | Terminal REPL with Rich rendering | `lisa` | Rich + prompt_toolkit + Typer |
 
 ## Quick Start
@@ -93,7 +93,7 @@ uv run lisa intake
 `HostConfig` is a frozen dataclass constructed once at startup from CLI args and env vars. It owns all resolved configuration — paths, timezone, log level, streaming mode, slice tuning, pack policy, surface identity.
 
 ```python
-from hosts.core import HostConfig
+from host import HostConfig
 
 config = HostConfig.from_env(debug=True, data_dir="/path/to/artifacts")
 ```
@@ -105,14 +105,14 @@ Environment variables use the `LISA_*` prefix (e.g. `LISA_TIMEZONE`, `LISA_LOG_L
 `HostRuntime` is the mutable runtime state. It owns cached provider clients, the model manifest cache, MCP pool handles, token counters, thread/log paths, and last-turn diagnostics. It has an async lifecycle that must run inside the host's real event loop:
 
 ```python
-from hosts.core import HostConfig, HostRuntime
+from host import HostConfig, HostRuntime
 
 config = HostConfig.from_env()
 runtime = HostRuntime(config)
 
-await runtime.start()        # starts MCP pool in host's event loop
+await runtime.start()  # starts MCP pool in host's event loop
 result = await handle_message(runtime, "/search test")
-await runtime.aclose()       # closes MCP pool in same loop
+await runtime.aclose()  # closes MCP pool in same loop
 ```
 
 ### TransportCallbacks
@@ -237,7 +237,7 @@ The `--session-context` flag supports loading authored contexts from multiple sh
 
 ## Commands
 
-All commands are handled by `hosts/core/commands.py` and produce plain text (not rendered panels). Transport hosts render the output:
+All commands are handled by `host/commands.py` and produce plain text (not rendered panels). Transport hosts render the output:
 
 | Command | Purpose |
 | --- | --- |
@@ -316,13 +316,13 @@ When `routing.start_mode` is set, the runtime seeds `current_mode_id` to that mo
 
 A new host (e.g. Slack, Microsoft Teams, custom web app) follows this pattern:
 
-1. Create `hosts/<name>/` with a `pyproject.toml` depending on `lisa-host-core`.
+1. Create `hosts/<name>/` with a `pyproject.toml` depending on `lisa-host-runtime`.
 2. Build a `HostConfig.from_env(...)` from the host's config source.
 3. Construct a `HostRuntime(config)`.
-4. Call `hosts.core.mcp_pool.setup_framework(runtime)` and `compile_mcp_configs(runtime)`.
+4. Call `host.mcp_pool.setup_framework(runtime)` and `compile_mcp_configs(runtime)`.
 5. Implement `TransportCallbacks` for the host's native surface.
 6. Call `await runtime.start()` inside the host's event loop.
-7. Call `hosts.core.handle_message(runtime, message, transport)` per turn.
+7. Call `host.handle_message(runtime, message, transport)` per turn.
 8. Call `await runtime.aclose()` at shutdown.
 
 The runtime handles routing, model execution, MCP tools, memory, commands, and thread persistence. The host only owns config construction and output rendering.

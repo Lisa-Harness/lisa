@@ -60,4 +60,6 @@ def test_cumulative_rail_still_fires_as_fallback() -> None:
 
 def test_none_budget_never_fires() -> None:
     """No budget wired means no forced yield from the token rails."""
-    assert budget_forces_final(_state(total_completion_tokens=10_000), None, time.monotonic()) is False
+    assert (
+        budget_forces_final(_state(total_completion_tokens=10_000), None, time.monotonic()) is False
+    )

@@ -166,9 +166,7 @@ def build_mode_catalog_json(
         if not root.is_dir():
             continue
         inferred_provider_id = _infer_content_provider_id(root)
-        is_overlay_root = overlay_root is not None and _path_is_under(
-            root, overlay_root
-        )
+        is_overlay_root = overlay_root is not None and _path_is_under(root, overlay_root)
         for mode_dir in sorted(root.iterdir()):
             if not mode_dir.is_dir():
                 continue
@@ -644,9 +642,7 @@ def _resolve_catalog_candidates(
     if len(overlay_candidates) == 1:
         return overlay_candidates[0]
     if len(overlay_candidates) > 1:
-        paths = sorted(
-            str(c.get("mode_markdown_path", "?")) for c in overlay_candidates
-        )
+        paths = sorted(str(c.get("mode_markdown_path", "?")) for c in overlay_candidates)
         raise CatalogCollisionError(
             f"Multiple overlay entries for {resource_kind} ID '{resource_id}' "
             f"are ambiguous. Conflicting paths: {', '.join(paths)}."
@@ -749,9 +745,7 @@ def _validate_overlay_shortcuts(
             # (entries loaded directly from the modes root).
             if entry.get("_overlay_provider_folder"):
                 continue
-            entry_provider = _normalize_provider_id(
-                str(entry.get("mode_provider_id", "") or "")
-            )
+            entry_provider = _normalize_provider_id(str(entry.get("mode_provider_id", "") or ""))
             # Folder-path entries have their provider validated by
             # _scan_overlay_provider_folder. Only validate shortcuts:
             # entries whose provider doesn't match any non-overlay entry.
@@ -771,9 +765,7 @@ def _validate_overlay_shortcuts(
                     raise CatalogCollisionError(msg)
                 logger.warning(msg)
                 # Remove the orphan shortcut so it doesn't shadow the pack entry.
-                candidates_by_id[mode_id] = [
-                    c for c in candidates_by_id[mode_id] if c is not entry
-                ]
+                candidates_by_id[mode_id] = [c for c in candidates_by_id[mode_id] if c is not entry]
         # Clean up empty candidate lists after orphan removal.
         if not candidates_by_id[mode_id]:
             del candidates_by_id[mode_id]

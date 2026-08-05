@@ -231,7 +231,7 @@ When compaction does not fire, the slice returns a no-work outcome with a note e
 
 **`/compact-now` reports "write-back unavailable".**
 
-- The host has not wired `write_turn_history_fn`. This should not happen for the standard CLI/web hosts (they wire it in `hosts/core/turn_hooks_builder.py`), but a custom host may need to add it. The compaction slice and `/summarize-history` both degrade to a no-op with a warning in this case.
+- The host has not wired `write_turn_history_fn`. This should not happen for the standard CLI/web hosts (they wire it in `host/turn_hooks_builder.py`), but a custom host may need to add it. The compaction slice and `/summarize-history` both degrade to a no-op with a warning in this case.
 
 **The summary is low quality.**
 
@@ -273,7 +273,7 @@ sequenceDiagram
 
 ### The seams (all additive, all default to no-op)
 
-1. **`TurnHooks.last_context_snapshot`** (`kernel/turn_runner.py`) — the host stashes the mapper's `ContextBudgetSnapshot` here each turn via a `snapshot_sink` callback threaded through `hosts/core/context_assembly.py`. The slice reads it to compute utilization. Default `None` → slice no-ops with `no_context_snapshot`.
+1. **`TurnHooks.last_context_snapshot`** (`kernel/turn_runner.py`) — the host stashes the mapper's `ContextBudgetSnapshot` here each turn via a `snapshot_sink` callback threaded through `host/context_assembly.py`. The slice reads it to compute utilization. Default `None` → slice no-ops with `no_context_snapshot`.
 2. **`TurnHooks.write_turn_history_fn`** — host-owned write-back for the live thread JSONL. Default `None` → slice and `/summarize-history` no-op with a warning.
 3. **`lisa.extensions.slice_providers` entry-point group** (`kernel/slice_provider_discovery.py`) — a pack's factory receives `(turn_hooks, session_plan)` and returns a slice provider or `None`. The host loader chains non-`None` providers ahead of `FileBackedStateProvider` in the trigger slot selected by `CompactionTuning.trigger`. A provider returns `None` when its tuning is disabled → no behavior change for that session.
 

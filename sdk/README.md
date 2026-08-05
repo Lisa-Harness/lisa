@@ -156,7 +156,7 @@ Modes opt out of the ambient merge via `accept_default_capabilities: false` (dis
 MCP-native tools (discovered at runtime from server subprocesses) have no pack `.tool.yml`, so they cannot declare `default_available` in front matter. Instead, the host manifest (`mcp_servers.yaml`) declares ambient MCP-native tools per server:
 
 ```yaml
-# hosts/core/mcp_servers.yaml
+# host/mcp_servers.yaml
 - server_id: lisa-storage
   runtime_kind: venv_bin
   venv_dir: "${FRAMEWORK_ROOT}"
@@ -369,9 +369,7 @@ class HelloWorldSignalCollector(SignalCollector[HelloWorldSnapshot]):
         collected_at: str,
     ) -> HelloWorldSnapshot:
         del client
-        return HelloWorldSnapshot(
-            collected_at=collected_at, status="ok", message="hello world"
-        )
+        return HelloWorldSnapshot(collected_at=collected_at, status="ok", message="hello world")
 
     def build_unconfigured_snapshot(self, collected_at: str) -> HelloWorldSnapshot:
         return HelloWorldSnapshot(

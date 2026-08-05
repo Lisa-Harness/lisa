@@ -12,15 +12,11 @@ killing the whole session on every mid-turn Ctrl+C.
 from __future__ import annotations
 
 # pylint: disable=protected-access
-
 from pathlib import Path
 from typing import Any
 
 import pytest
-
-from hosts.core.config import HostConfig
-from hosts.core.runtime import HostRuntime
-
+from host.runtime import HostRuntime
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -45,10 +41,9 @@ def test_process_repl_turn_keyboard_interrupt_returns_prompt(
     return normally so the REPL loop re-renders the prompt. The session
     must NOT be torn down (no aclose on the runtime).
     """
-    from rich.console import Console
-
     from hosts.cli import repl as cli_repl
     from hosts.cli.transport import RichTransport
+    from rich.console import Console
 
     runtime = _make_runtime(tmp_path)
     console = Console(quiet=True)
@@ -104,10 +99,9 @@ def test_process_repl_turn_cancelled_error_returns_prompt(
     """
     import asyncio
 
-    from rich.console import Console
-
     from hosts.cli import repl as cli_repl
     from hosts.cli.transport import RichTransport
+    from rich.console import Console
 
     runtime = _make_runtime(tmp_path)
     console = Console(quiet=True)
@@ -132,10 +126,9 @@ def test_process_repl_turn_keyboard_interrupt_stops_spinner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The thinking spinner is stopped even when the turn is interrupted."""
-    from rich.console import Console
-
     from hosts.cli import repl as cli_repl
     from hosts.cli.transport import RichTransport
+    from rich.console import Console
 
     runtime = _make_runtime(tmp_path)
     console = Console(quiet=True)
@@ -159,10 +152,9 @@ def test_process_repl_turn_normal_exception_still_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A normal Exception is still counted as an error, not a cancellation."""
-    from rich.console import Console
-
     from hosts.cli import repl as cli_repl
     from hosts.cli.transport import RichTransport
+    from rich.console import Console
 
     runtime = _make_runtime(tmp_path)
     console = Console(quiet=True)
@@ -218,7 +210,7 @@ def test_token_counters_has_cancelled_field(tmp_path: Path) -> None:
 
 def test_session_exit_summary_includes_cancelled_when_present(tmp_path: Path) -> None:
     """format_session_exit_summary_lines surfaces cancelled count when > 0."""
-    from hosts.core.commands import format_token_stats
+    from host.commands import format_token_stats
 
     runtime = _make_runtime(tmp_path)
     runtime.tokens.session_cancelled_count = 2
@@ -228,7 +220,7 @@ def test_session_exit_summary_includes_cancelled_when_present(tmp_path: Path) ->
 
 def test_session_exit_summary_omits_cancelled_when_zero(tmp_path: Path) -> None:
     """When no turns were cancelled, the cancelled suffix is omitted."""
-    from hosts.core.commands import format_token_stats
+    from host.commands import format_token_stats
 
     runtime = _make_runtime(tmp_path)
     summary = format_token_stats(runtime)

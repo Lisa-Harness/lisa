@@ -8,15 +8,12 @@ model switched modes mid-turn.
 from __future__ import annotations
 
 # pylint: disable=protected-access
-
 import io
 from pathlib import Path
 
-from rich.console import Console
-
+from host.runtime import HostRuntime, TurnContext
 from hosts.cli.repl import _render_turn_footer
-from hosts.core.config import HostConfig
-from hosts.core.runtime import HostRuntime, TurnContext
+from rich.console import Console
 
 
 def _make_runtime(tmp_path: Path) -> HostRuntime:

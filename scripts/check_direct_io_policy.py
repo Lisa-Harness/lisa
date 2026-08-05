@@ -79,52 +79,52 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
         "resolved.write_text(",
         "path.write_text(",
     ),
-    "hosts/core/content_roots.py": (
+    "host/content_roots.py": (
         "path.write_text(",
         "path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "hosts/core/turn_hooks_builder.py": (
+    "host/turn_hooks_builder.py": (
         "thread_path.write_text(",
         "thread_path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "hosts/core/code_artifacts.py": (
+    "host/code_artifacts.py": (
         "temporary_path.write_text(",
         "os.replace(temporary_path, self._path)",
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "hosts/core/approvals.py": (
+    "host/approvals.py": (
         "temp_path.write_text(",
         "os.replace(temp_path, self._path)",
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "hosts/core/intake.py": (
+    "host/intake.py": (
         "state_path.write_text(",
         "data_dir.mkdir(parents=True, exist_ok=True)",
     ),
-    "hosts/core/recovery.py": (
+    "host/recovery.py": (
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
         "temp_path.write_text(",
         "os.replace(temp_path, self._path)",
     ),
-    "hosts/core/state_provider.py": (
+    "host/state_provider.py": (
         "digest_path.write_text(",
         "self._thread_path.write_text(",
     ),
-    "hosts/core/model_discovery/manifest.py": (
+    "host/model_discovery/manifest.py": (
         "tmp.write_text(",
         "path.parent.mkdir(parents=True, exist_ok=True)",
         "tmp.unlink(missing_ok=True)",
     ),
-    "hosts/core/session_context_fetch.py": (
+    "host/session_context_fetch.py": (
         "cache_meta.write_text(",
         "cache_md.write_bytes(",
         "cache_md.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "hosts/core/thread.py": (
+    "host/thread.py": (
         'thread_path.open("a"',
         "thread_path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "hosts/core/workflow_instance_store.py": (
+    "host/workflow_instance_store.py": (
         "self._path.parent.mkdir(parents=True, exist_ok=True)",
         "temp_path.write_text(",
         "os.replace(temp_path, self._path)",
@@ -132,7 +132,7 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
     "hosts/cli/repl.py": (
         "history_path.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "hosts/core/commands/_packs.py": (
+    "host/commands/_packs.py": (
         "packs_venv.parent.mkdir(parents=True, exist_ok=True)",
     ),
     "kernel/token_usage.py": (
@@ -192,7 +192,7 @@ def _is_runtime_python(path: Path) -> bool:
 
 
 # In-tree scan roots (relative to repo root).
-_IN_TREE_ROOTS: tuple[str, ...] = ("kernel", "hosts", "sdk", "mcp_server")
+_IN_TREE_ROOTS: tuple[str, ...] = ("kernel", "host", "hosts", "sdk", "mcp_server")
 
 # External pack repos (relative to repo root's parent).
 _EXTERNAL_PACK_DIRS: tuple[str, ...] = ("lisa-packs", "lisa-packs-wip")

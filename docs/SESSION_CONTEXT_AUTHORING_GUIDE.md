@@ -430,7 +430,7 @@ Provider IDs are normalized: `lisa-pack-brave-search`, `brave-search`, and `brav
 
 ## Resolution and Loading
 
-The host resolves a session context source at startup via `hosts.core.session_context.resolve_session_context_source`:
+The host resolves a session context source at startup via `host.session_context.resolve_session_context_source`:
 
 1. **Auto-discovery** (empty `--session-context`):
    - `LISA_SESSION_CONTEXT_PATH` env var (highest auto-discovery precedence) — an explicit `.md` path overriding the cwd/data-dir scan.
@@ -509,7 +509,7 @@ body:
 
 ### Resolution order
 
-`from:`/`body:` are resolved by `hosts.core.session_from_resolver.resolve_session_from_directives` after source resolution and before `compile_session_plan`. Pack discovery runs lazily — only when a directive is actually present — so sessions without directives pay zero discovery cost. When no directive is present, the resolver is a passthrough and existing sessions behave identically.
+`from:`/`body:` are resolved by `host.session_from_resolver.resolve_session_from_directives` after source resolution and before `compile_session_plan`. Pack discovery runs lazily — only when a directive is actually present — so sessions without directives pay zero discovery cost. When no directive is present, the resolver is a passthrough and existing sessions behave identically.
 
 ---
 

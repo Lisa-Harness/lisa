@@ -16,14 +16,14 @@ iteration budget all reference. The result (proven by the 2026-07-28
 glm-5.2 self-assessment run): a 6-stage chain starves its final step on a
 shared iteration budget, a stalled turn can't resume the *plan* (only the
 mode), recovery records can't block or skip workflow steps, and the
-canonical ``hosts/core`` host doesn't even wire the existing FSM/checkpoint
+canonical ``host`` host doesn't even wire the existing FSM/checkpoint
 hooks.
 
 This module owns that missing object — **``WorkflowInstance``** — plus the
 pure helpers that advance it and the step compiler that derives steps from
 routing targets for ad-hoc workflows. The durable store contract lives in
 ``kernel/workflow_instance_store.py`` (Protocol only); the file-backed
-implementation lives in ``hosts/core/workflow_instance_store.py``. The
+implementation lives in ``host/workflow_instance_store.py``. The
 model and helpers are here.
 
 Design constraints (mirroring the codebase conventions):

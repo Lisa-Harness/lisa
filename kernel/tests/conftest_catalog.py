@@ -90,7 +90,7 @@ def _make_catalog_mcp_config(*, log_path: Path) -> MCPClientConfig:
     ``configure_logging`` fallback writes ``<cwd>/lisa-catalog.jsonl`` when
     ``LISA_MCP_LOG_PATH`` is unset, and these configs leave cwd=None so the
     subprocess inherits the pytest cwd). Mirrors the env injection that
-    ``hosts.core.mcp_pool.build_catalog_mcp_config`` does in production.
+    ``host.mcp_pool.build_catalog_mcp_config`` does in production.
     """
     content_roots = [_CORE_ROOT, _LEARNING_ROOT, *_external_pack_roots()]
     return MCPClientConfig(

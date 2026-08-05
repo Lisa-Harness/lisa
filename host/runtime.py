@@ -1,0 +1,927 @@
+"""HostRuntime — the typed runtime object that replaces ``_RUNTIME_STATE``.
+
+This is the mutable, stateful counterpart to the frozen ``HostConfig``. It
+owns:
+- Cached provider clients (Azure OpenAI, OpenAI, Anthropic, Ollama, Google).
+- The model manifest cache.
+- The MCP tool pool (warm + cold configs), with async ``start()``/``aclose()``
+  that **must** run inside the host's real event loop.
+- Session/token counters.
+- Thread/log paths.
+- Last-turn diagnostics.
+
+Transport hosts construct a ``HostRuntime`` from a ``HostConfig``, call
+``await runtime.start()`` inside their event loop, execute turns via
+``handle_message``, and call ``await runtime.aclose()`` at shutdown.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from kernel.session_plan import SessionPlan
+
+from host.config import HostConfig
+from host.execution_policy import resolve_execution_policy
+from host.session_context import compile_selected_session_plan
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class TokenCounters:
+    """Per-turn and per-session token counters."""
+
+    # Per-turn (reset at the start of each turn).
+    turn_prompt_tokens: int = 0
+    turn_completion_tokens: int = 0
+    turn_total_tokens: int = 0
+    turn_cached_tokens: int = 0
+    turn_reasoning_tokens: int = 0
+    turn_duration_ms: float = 0.0
+    turn_latency_ms: int = 0
+
+    # Per-session (accumulate across turns).
+    session_prompt_tokens: int = 0
+    session_completion_tokens: int = 0
+    session_total_tokens: int = 0
+    session_cached_tokens: int = 0
+    session_reasoning_tokens: int = 0
+    session_duration_ms: float = 0.0
+    session_latency_ms: int = 0
+    session_token_ledger: list[dict[str, Any]] = field(default_factory=list)
+    model_token_totals: dict[str, dict[str, int]] = field(default_factory=dict)
+    mode_token_totals: dict[str, dict[str, int]] = field(default_factory=dict)
+    stage_token_totals: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    # Session metadata.
+    session_started_utc: datetime | None = None
+    session_turn_count: int = 0
+    session_success_count: int = 0
+    session_error_count: int = 0
+    session_cancelled_count: int = 0
+    session_total_latency_ms: float = 0.0
+    session_mode_counts: dict[str, int] = field(default_factory=dict)
+
+    def reset_turn(self) -> None:
+        """Reset per-turn counters at the start of a new turn."""
+        self.turn_prompt_tokens = 0
+        self.turn_completion_tokens = 0
+        self.turn_total_tokens = 0
+        self.turn_cached_tokens = 0
+        self.turn_reasoning_tokens = 0
+        self.turn_duration_ms = 0.0
+        self.turn_latency_ms = 0
+
+
+@dataclass(slots=True)
+class TurnContext:
+    """Mutable per-turn diagnostic context.
+
+    Passed through ``handle_message`` and updated by ``on_turn_complete``.
+    Transport hosts read this via ``runtime.last_turn_context`` for
+    ``/debug context`` rendering.
+    """
+
+    timestamp_utc: str = ""
+    raw_message: str = ""
+    mode_id: str = "default"
+    mode_kind: str = ""
+    query: str = ""
+    preferred_model_id: str = ""
+    resolved_model: dict[str, Any] = field(default_factory=dict)
+    handoff: str = ""
+    turn_input: dict[str, Any] | None = None
+    completion: dict[str, Any] | None = None
+
+
+class HostRuntime:
+    """Typed, mutable host runtime — the replacement for ``_RUNTIME_STATE``.
+
+    Constructed from a ``HostConfig``. Owns all mutable state that was
+    previously scattered across the ``_RUNTIME_STATE`` dict: cached provider
+    clients, manifest cache, MCP pool handles, token counters, thread/log
+    paths, and last-turn diagnostics.
+
+    Async lifecycle::
+
+        runtime = HostRuntime(config)
+        await runtime.start()     # starts MCP pool in host's event loop
+        result = await handle_message(runtime, "/search test", transport)
+        await runtime.aclose()    # closes MCP pool in same loop
+    """
+
+    def __init__(self, config: HostConfig, *, session_plan: SessionPlan | None = None) -> None:
+        self.session_plan = session_plan or compile_selected_session_plan(
+            session_context=config.session_context,
+            data_dir=config.data_dir,
+            force_refresh=config.session_context_refresh,
+        )
+        source_matches_user_slug = (
+            bool(config.session_context) and config.user_slug == config.session_context
+        )
+        effective_user_slug = (
+            config.user_slug
+            if config.user_slug and not source_matches_user_slug
+            else self.session_plan.manifest.name
+        )
+        surface = self.session_plan.manifest.surface
+        self.config = replace(
+            config,
+            user_slug=effective_user_slug,
+            session_context=self.session_plan.source_uri,
+            surface_type=config.surface_type or surface.type,
+            surface_id=config.surface_id or surface.id,
+            memory_scope=config.memory_scope or surface.memory_scope,
+        )
+        self.execution_policy = resolve_execution_policy(
+            default_policy=self.config.execution_policy,
+            session_request=self.session_plan.manifest.execution,
+        )
+
+        # ── Cached provider clients ───────────────────────────────────
+        self._azure_client: Any = None
+        self._openai_client: Any = None
+        self._anthropic_http_client: Any = None
+        self._ollama_client: Any = None
+        self._google_client: Any = None
+
+        # ── Manifest cache ────────────────────────────────────────────
+        self._manifest: Any = None
+        # Resolved model-manifest path. When the session plan declares
+        # ``context.models.path``, this is the resolved absolute path;
+        # otherwise it falls back to ``config.resolved_models_path``
+        # (``data_dir / models.yaml``). All manifest loaders read this.
+        self._models_path_override: Path | None = self._resolve_models_path()
+
+        # ── MCP pool ──────────────────────────────────────────────────
+        self._mcp_tool_pool: Any = None
+        self._mcp_warm_configs: list[Any] = []
+        self._mcp_cold_configs: list[Any] = []
+        self._mcp_started: bool = False
+        self._mcp_start_task: asyncio.Task[None] | None = None
+        """Background task started by start_pool_deferred(); awaited by
+        ensure_pool_ready() before any pool read. When None, the pool
+        was either started synchronously (start()) or never started."""
+        self._mcp_start_exc: BaseException | None = None
+        """Cached exception from a failed deferred start, consumed once by
+        ensure_pool_ready() so it doesn't re-raise on every subsequent call."""
+        self._mcp_started_event: asyncio.Event | None = None
+        """Set by the deferred-start task once the pool is constructed, so
+        ensure_pool_ready() can return without waiting for the (long-lived)
+        start task to finish. The deferred task stays alive after this point
+        so it can tear down the pool in the same task that entered the MCP
+        anyio cancel scopes (anyio forbids exiting a cancel scope from a
+        different task than the one that entered it — see debugging.md)."""
+        self._mcp_close_signal: asyncio.Event | None = None
+        """Set by aclose() to tell the deferred-start task to tear down the
+        pool. The task then closes the pool's child AsyncExitStacks in its
+        own task, where the anyio cancel scopes were entered."""
+
+        # ── Memory config (selected by capability provider policy) ───
+        self.memory_config: Any = None
+        self.memory_config_pack_slug: str | None = None
+
+        # ── Token counters ────────────────────────────────────────────
+        self.tokens = TokenCounters()
+        if self.tokens.session_started_utc is None:
+            self.tokens.session_started_utc = datetime.now(UTC)
+
+        # ── Runtime route state ───────────────────────────────────────
+        self.current_mode_id: str = self.session_plan.manifest.routing.start_mode
+        self.current_stage_id: str = "-"
+        self.next_model_id: str = "-"
+        self.next_model_provider: str = "-"
+
+        # ── Durable workflow-instance state ────────────────────────────
+        # The active ``WorkflowInstance`` for the current user/surface, or
+        # ``None`` when no multi-stage workflow is in flight. The instance is
+        # the durable inter-mode object that survives across modes, turns,
+        # and host restarts; the kernel hydrates ``chain_satisfied`` from
+        # its ``completed_steps`` at turn start so a resumed turn does not
+        # re-suggest already-completed steps. Boot-loaded below once the
+        # store is constructed. The per-mode intra-mode FSM pointer lives
+        # on ``_workflow_session`` (separate concern).
+        self._active_workflow_instance: Any = None
+        self._workflow_session: Any = None
+
+        # ── State snapshot ────────────────────────────────────────────
+        self._state_snapshot: dict[str, Any] | None = None
+
+        # ── Slice ─────────────────────────────────────────────────────
+        self.last_slice_finished_at: float | None = None
+        # Latest ContextBudgetSnapshot produced by the context-mapper pass
+        # on this turn. Mutated by the host's ``assemble_user_context``
+        # path; read by utilization-aware slice providers (e.g. the
+        # compaction pack) via ``TurnHooks.last_context_snapshot``.
+        self.last_context_snapshot: Any = None
+
+        # ── Last-turn diagnostics ─────────────────────────────────────
+        self.last_turn_context: TurnContext | None = None
+
+        # ── Restart state ─────────────────────────────────────────────
+        self.restart_required: bool = False
+        self.restart_reason: str = ""
+        # Stashed by the CLI host from the LISA_RESTART_RESUME_MESSAGE env
+        # var on startup; the REPL replays it as the first turn, then clears
+        # it. ``None`` means no resume pending.
+        self.pending_resume_message: str | None = None
+
+        # ── Copilot customizations cache ──────────────────────────────
+        # Lazily discovered always-on + applyTo-scoped instructions +
+        # skills from .github/{instructions,skills} and .claude/ equivalents.
+        # None means "not yet discovered"; "" means "discovered, nothing
+        # found or discovery failed gracefully."
+        self._copilot_customizations_text: str | None = None
+
+        # ── Approval persistence ──────────────────────────────────────
+        from host.approvals import FileApprovalService
+        from host.code_artifacts import FileCodeChangeArtifactStore
+        from host.recovery import FileRecoveryService
+
+        self.approval_service = FileApprovalService(self.data_dir / "approvals.json")
+        self.recovery_service = FileRecoveryService(self.data_dir / "recovery-items.json")
+        self.code_change_artifact_store = FileCodeChangeArtifactStore(
+            self.data_dir / "code-change-artifacts.json"
+        )
+
+        # ── Durable workflow-instance store ───────────────────────────
+        # Mirrors ``recovery_service``: same JSON-file-with-identity-scope
+        # pattern, same data_dir. The store keys active instances by
+        # ``RecoveryIdentity`` (the same scope recovery records use); one
+        # user has at most one active (non-complete) instance per surface.
+        from host.workflow_instance_store import FileWorkflowInstanceStore  # noqa: PLC0415
+
+        self.workflow_instance_store = FileWorkflowInstanceStore(
+            self.data_dir / "workflow-instances.json"
+        )
+
+        # ── Token usage handler ───────────────────────────────────────
+        # The durable JSONL appender for ``TokenUsageEvent`` payloads. The
+        # host's completion dispatch (``publish_completion_usage``) publishes
+        # one event per provider call to this handler, which appends it to
+        # ``token-usage.jsonl`` under the data directory. ``introspect`` reads
+        # that file to build the 24h token summary. Without this wiring the
+        # session token count is always zero even though models were called.
+        from kernel.token_usage import TokenUsageTelemetryHandler
+
+        self._token_usage_handler: Any = TokenUsageTelemetryHandler(self.token_usage_path)
+
+    @property
+    def token_usage_handler(self) -> Any:
+        """Return the durable ``TokenUsageTelemetryHandler`` for this runtime."""
+        return self._token_usage_handler
+
+    # ── Durable workflow-instance lifecycle ─────────────────────────
+    # The kernel calls these via the TurnHooks wiring:
+    # ``workflow_instance`` (lambda) returns ``self._active_workflow_instance``;
+    # ``workflow_instance_updater`` calls ``self._set_workflow_instance``;
+    # ``workflow_session`` / ``workflow_session_updater`` likewise for the
+    # intra-mode FSM pointer; ``on_checkpoint`` calls ``self._on_checkpoint``
+    # to persist a snapshot through the storage MCP tool pool.
+
+    def _workflow_identity(self) -> Any:
+        """Build the ``RecoveryIdentity`` scoping the active instance.
+
+        Mirrors the kernel's ``_build_recovery_identity`` using the same
+        config fields. The instance store keys active instances by this
+        identity so one user has at most one active workflow per surface.
+        """
+        from kernel.recovery import RecoveryIdentity  # noqa: PLC0415
+
+        return RecoveryIdentity(
+            workspace_id=self.session_plan.manifest.name,
+            user_id=self.config.user_slug,
+            user_slug=self.config.user_slug,
+            surface_type=self.config.surface_type,
+            surface_id=self.config.surface_id,
+            memory_scope=self.config.memory_scope,
+            session_plan_digest=self.session_plan.plan_digest,
+        )
+
+    def _boot_load_active_workflow_instance(self) -> None:
+        """Resume a mid-flight workflow instance from the durable store.
+
+        Called once at ``__init__`` after the store is constructed. When a
+        non-complete instance for this identity exists, restore it into
+        ``_active_workflow_instance`` and override ``current_mode_id`` from
+        the instance's current step's mode — so the first post-restart
+        turn starts in the right mode instead of the static ``start_mode``.
+        Safe to call on a fresh data_dir (the store returns ``None``).
+        """
+        identity = self._workflow_identity()
+        try:
+            instance = self.workflow_instance_store.load_active_sync(identity)
+        except Exception:  # pylint: disable=broad-except
+            return
+        if instance is None:
+            return
+        self._active_workflow_instance = instance
+        # Override the static start_mode init: a resuming instance starts
+        # in its current step's mode, not the plan's default entry mode.
+        current_mode = getattr(instance, "current_mode_id", "") or ""
+        if current_mode:
+            self.current_mode_id = current_mode
+
+    def _set_workflow_instance(self, updated: Any) -> None:
+        """Persist an advanced ``WorkflowInstance`` and update the active ref.
+
+        Called by the kernel's ``workflow_instance_updater`` hook after a
+        successful ``transition_stage``. Persists to the durable store
+        (scoped by identity) and swaps the in-memory active ref in place so
+        ``workflow_instance()`` returns the advanced state. When the instance
+        is complete, clears the active ref so the next turn starts fresh.
+
+        Uses the store's sync save/clear paths because the kernel calls this
+        from within the running event loop (the async store methods'
+        ``asyncio.Lock`` would deadlock against the running loop).
+        """
+        self._active_workflow_instance = updated
+        from kernel.workflow_instance import is_complete  # noqa: PLC0415
+
+        identity = self._workflow_identity()
+        try:
+            self.workflow_instance_store.save_sync(updated, identity)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        if is_complete(updated):
+            # Workflow done: clear the active ref so the next turn starts
+            # fresh (no instance to hydrate from).
+            self._active_workflow_instance = None
+            try:
+                self.workflow_instance_store.clear_sync(
+                    getattr(updated, "instance_id", ""),
+                    identity,
+                )
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+    def _set_workflow_session(self, updated: Any) -> None:
+        """Persist an updated ``WorkflowSessionState`` (intra-mode FSM).
+
+        Called by the kernel's ``workflow_session_updater`` hook after a
+        successful workflow-stage transition. Held in memory on
+        ``_workflow_session``; the checkpoint pack's ``handle_restore``
+        also calls this when restoring a bundle's ``workflow_session_state``.
+        """
+        self._workflow_session = updated
+
+    async def _on_checkpoint(self, bundle: Any) -> None:
+        """Persist a ``CheckpointBundle`` via the storage MCP tool pool.
+
+        Called by the kernel after a turn when the checkpoint tuning gate
+        fires. The bundle is serialized and saved through the
+        ``lisa-storage`` MCP server's ``save_checkpoint`` tool, mirroring how
+        recovery records and approval state are persisted through their
+        respective stores. No-op when no pool is available.
+        """
+        if self.mcp_tool_pool is None:
+            return
+        try:
+            import json  # noqa: PLC0415
+
+            payload = bundle.model_dump(mode="json") if hasattr(bundle, "model_dump") else {}
+            await self.mcp_tool_pool.call_tool(
+                "save_checkpoint",
+                {"checkpoint": json.dumps(payload)},
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    @property
+    def start_mode_id(self) -> str:
+        """Return the plan-selected initial route mode."""
+
+        return self.session_plan.manifest.routing.start_mode
+
+    @property
+    def copilot_customizations_text(self) -> str:
+        """Lazily-discovered Copilot customizations for system-prompt injection.
+
+        Discovers always-on files (``copilot-instructions.md``,
+        ``AGENTS.md``, ``CLAUDE.md``), ``applyTo``-scoped instructions,
+        and skills from the coding workspace. Agents and prompts are
+        excluded — they are invocation-based and handled by host commands.
+
+        Returns the formatted Markdown block, or ``""`` if discovery
+        fails or no customizations are found (graceful degradation).
+        Cached after first access — files don't change mid-session.
+        """
+        if self._copilot_customizations_text is not None:
+            return self._copilot_customizations_text
+
+        try:
+            from sdk.content import discover_copilot_customizations
+
+            workspace_root = self._resolve_copilot_workspace_root()
+            bundle = discover_copilot_customizations(workspace_root)
+
+            parts: list[str] = []
+
+            # Always-on files (copilot-instructions.md, AGENTS.md, CLAUDE.md).
+            for f in bundle.always_on:
+                if f.body.strip():
+                    parts.append(f"## Project Instructions\n\n{f.body.strip()}")
+
+            # applyTo-scoped instructions.
+            for inst in bundle.instructions:
+                if inst.body.strip():
+                    apply_label = ", ".join(inst.apply_to) if inst.apply_to else "all files"
+                    parts.append(
+                        f"## Instruction: {inst.name} (applies to: {apply_label})\n\n{inst.body.strip()}"
+                    )
+
+            # Skills.
+            for skill in bundle.skills:
+                if skill.body.strip():
+                    parts.append(f"## Skill: {skill.name}\n\n{skill.body.strip()}")
+
+            self._copilot_customizations_text = "\n\n".join(parts)
+        except Exception:
+            logger.warning(
+                "Failed to discover Copilot customizations; continuing without them.",
+                exc_info=True,
+            )
+            self._copilot_customizations_text = ""
+
+        return self._copilot_customizations_text
+
+    def _resolve_copilot_workspace_root(self) -> Path:
+        """Resolve the workspace root for Copilot customization discovery.
+
+        Uses the coding pack's configured ``workspace_root`` if available;
+        otherwise falls back to the current working directory.
+        """
+        try:
+            pack_config = self.session_plan.manifest.resources.packs.configuration
+            coding_config = pack_config.get("lisa-pack-coding", {})
+            raw = coding_config.get("workspace_root")
+            if raw:
+                return Path(raw).expanduser().resolve()
+        except Exception:
+            pass
+        return Path.cwd()
+
+    def _resolve_models_path(self) -> Path | None:
+        """Resolve the model-manifest path override from the session plan.
+
+        Returns the resolved absolute path when ``context.models.path`` is
+        set on the session plan, or ``None`` to fall back to
+        ``config.resolved_models_path``. A session-relative path requires
+        ``session_plan.source_dir``; a missing file or wrong type raises a
+        startup ``ValueError``.
+        """
+        from host.model_runtime import resolve_session_manifest_path
+
+        session_source_dir: Path | None = None
+        if self.session_plan.source_dir:
+            session_source_dir = Path(self.session_plan.source_dir)
+        return resolve_session_manifest_path(
+            session_plan=self.session_plan,
+            session_source_dir=session_source_dir,
+            data_dir=self.config.data_dir,
+        )
+
+    # ── Path accessors ────────────────────────────────────────────────
+
+    @property
+    def data_dir(self) -> Path:
+        return self.config.data_dir
+
+    @property
+    def overlays_dir(self) -> Path:
+        return self.config.resolved_overlays_dir
+
+    @property
+    def thread_dir(self) -> Path:
+        return self.config.resolved_thread_dir
+
+    @property
+    def thread_path(self) -> Path | None:
+        if self.config.no_thread:
+            return None
+        user = self.config.user_slug
+        if not user:
+            return None
+        return self.thread_dir / f"{user}.jsonl"
+
+    @property
+    def log_path(self) -> Path | None:
+        return self.config.resolved_log_path
+
+    @property
+    def host_log_path(self) -> Path:
+        return self.config.resolved_host_log_path
+
+    @property
+    def token_usage_path(self) -> Path:
+        return self.data_dir / "token-usage.jsonl"
+
+    @property
+    def models_path(self) -> Path:
+        return self._models_path_override or self.config.resolved_models_path
+
+    @property
+    def models_proposal_path(self) -> Path:
+        return self.config.resolved_models_proposal_path
+
+    # ── Provider client accessors (lazy) ──────────────────────────────
+
+    @property
+    def azure_client(self) -> Any:
+        return self._azure_client
+
+    @azure_client.setter
+    def azure_client(self, value: Any) -> None:
+        self._azure_client = value
+
+    @property
+    def openai_client(self) -> Any:
+        return self._openai_client
+
+    @openai_client.setter
+    def openai_client(self, value: Any) -> None:
+        self._openai_client = value
+
+    @property
+    def anthropic_http_client(self) -> Any:
+        return self._anthropic_http_client
+
+    @anthropic_http_client.setter
+    def anthropic_http_client(self, value: Any) -> None:
+        self._anthropic_http_client = value
+
+    @property
+    def ollama_client(self) -> Any:
+        return self._ollama_client
+
+    @ollama_client.setter
+    def ollama_client(self, value: Any) -> None:
+        self._ollama_client = value
+
+    @property
+    def google_client(self) -> Any:
+        return self._google_client
+
+    @google_client.setter
+    def google_client(self, value: Any) -> None:
+        self._google_client = value
+
+    # ── Manifest cache ────────────────────────────────────────────────
+
+    @property
+    def manifest(self) -> Any:
+        return self._manifest
+
+    @manifest.setter
+    def manifest(self, value: Any) -> None:
+        self._manifest = value
+
+    # ── MCP pool ──────────────────────────────────────────────────────
+
+    @property
+    def mcp_tool_pool(self) -> Any:
+        return self._mcp_tool_pool
+
+    @property
+    def mcp_warm_configs(self) -> list[Any]:
+        return self._mcp_warm_configs
+
+    @property
+    def mcp_cold_configs(self) -> list[Any]:
+        return self._mcp_cold_configs
+
+    @property
+    def mcp_started(self) -> bool:
+        return self._mcp_started
+
+    def set_mcp_configs(self, warm: list[Any], cold: list[Any]) -> None:
+        """Set compiled MCP server configs (sync — no pool creation)."""
+        self._mcp_warm_configs = warm
+        self._mcp_cold_configs = cold
+
+    async def start(self) -> None:
+        """Start the MCP tool pool synchronously inside the host's loop.
+
+        Awaits the full warm-server spawn before returning. Transport hosts
+        that need the prompt up immediately should call
+        :meth:`start_pool_deferred` instead and :meth:`ensure_pool_ready`
+        before the first turn.
+        """
+        await self._start_pool_impl(deferred=False)
+
+    def start_pool_deferred(self) -> asyncio.Task[None]:
+        """Start the MCP pool as a background task; return immediately.
+
+        Schedules :meth:`_start_pool_impl` as an :class:`asyncio.Task` so
+        the host can render the prompt while warm servers spawn. Callers
+        that read :attr:`mcp_tool_pool` must ``await`` :meth:`ensure_pool_ready`
+        first. Idempotent: if a deferred start is already in flight,
+        returns the existing task.
+        """
+        if self._mcp_start_task is not None and not self._mcp_start_task.done():
+            return self._mcp_start_task
+        if self._mcp_started and self._mcp_start_task is None:
+            # Already started synchronously; return a completed no-op task.
+            loop = asyncio.get_running_loop()
+            self._mcp_start_task = loop.create_task(asyncio.sleep(0))
+            return self._mcp_start_task
+        # The deferred task is long-lived: it builds the pool, signals
+        # _mcp_started_event, then blocks on _mcp_close_signal so it can
+        # tear the pool down in the SAME task that entered the MCP anyio
+        # cancel scopes. aclose() sets the close signal and awaits the task.
+        # See debugging.md (anyio cross-loop/task rule).
+        self._mcp_started_event = asyncio.Event()
+        self._mcp_close_signal = asyncio.Event()
+        self._mcp_start_task = asyncio.create_task(self._start_pool_impl(deferred=True))
+        return self._mcp_start_task
+
+    async def ensure_pool_ready(self) -> None:
+        """Await the deferred pool start if one is in flight.
+
+        Call this before reading :attr:`mcp_tool_pool` when the host used
+        :meth:`start_pool_deferred`. If the pool was started synchronously
+        via :meth:`start`, this is a no-op. If no start was ever scheduled,
+        runs :meth:`start` inline (back-compat for hosts that never
+        deferred).
+
+        If the deferred start failed, the exception is raised once and
+        cached — subsequent calls re-raise the cached exception so the
+        caller fails loudly but doesn't re-await a completed task.
+        """
+        if self._mcp_start_exc is not None:
+            raise self._mcp_start_exc
+        if self._mcp_started_event is not None:
+            # Deferred start: wait for the pool to be constructed (not for
+            # the task to finish — the task is long-lived and only ends at
+            # teardown). Cache the exception once if the build phase failed.
+            try:
+                await self._mcp_started_event.wait()
+            except BaseException as exc:  # pylint: disable=broad-except
+                self._mcp_start_exc = exc
+                raise
+            if self._mcp_start_exc is not None:
+                raise self._mcp_start_exc
+            # If the build phase failed, the task ended with an exception
+            # (the finally still set the event). Cache + re-raise once.
+            if (
+                self._mcp_start_task is not None
+                and self._mcp_start_task.done()
+                and not self._mcp_started
+            ):
+                exc = self._mcp_start_task.exception()
+                if exc is not None:
+                    self._mcp_start_exc = exc
+                    raise exc
+            return
+        if self._mcp_start_task is not None:
+            # Sync-start fallback path: the task is a completed no-op or
+            # an already-finished start task. Awaiting it is safe.
+            try:
+                await self._mcp_start_task
+            except BaseException as exc:
+                self._mcp_start_exc = exc
+                raise
+            return
+        if not self._mcp_started:
+            await self.start()
+
+    async def _start_pool_impl(self, *, deferred: bool) -> None:
+        """Shared pool-start implementation for start() and deferred start.
+
+        For the sync path (``deferred=False``), this builds the pool and
+        returns; ``aclose()`` later closes it in the caller's task (the
+        same task, so the anyio cross-task rule is satisfied).
+
+        For the deferred path (``deferred=True``), this builds the pool,
+        signals ``_mcp_started_event`` so ``ensure_pool_ready`` can return,
+        then stays alive until ``aclose`` sets ``_mcp_close_signal``. The
+        teardown runs in THIS task because the MCP ``stdio_client`` contexts
+        entered during ``pool.start()`` bind anyio cancel scopes to this
+        task; anyio forbids exiting them from a different task (see
+        debugging.md). Signaling the started event is wrapped in try/finally
+        so a build-phase failure or early return never leaves
+        ``ensure_pool_ready`` blocked on the event.
+        """
+        try:
+            await self._build_pool()
+        finally:
+            # On the deferred path the started event MUST be set whether or
+            # not the build succeeded — otherwise ensure_pool_ready blocks
+            # forever. The cached exception is recorded by ensure_pool_ready
+            # when it re-raises via the event-wait path, and by the finally
+            # below for the failure case.
+            if deferred and self._mcp_started_event is not None:
+                self._mcp_started_event.set()
+        if not deferred:
+            return
+        # Deferred: only the successful-build path reaches here. If the
+        # build failed, _mcp_started is still False and there is no live
+        # pool to keep alive — exit so aclose's task-await returns.
+        if not self._mcp_started:
+            return
+        # Stay alive so THIS task owns the teardown. aclose() sets the
+        # close signal and awaits this task. The pool's anyio cancel scopes
+        # were entered above (in this task) and can only be exited here.
+        assert self._mcp_close_signal is not None
+        # Cancellation may arrive at two points: while waiting on the
+        # close signal, or during pool.aclose(). Both must be handled so
+        # teardown completes (kill MCP subprocesses, exit anyio cancel
+        # scopes in THIS owning task) and the task ends cleanly instead
+        # of propagating a CancelledError that asyncio.shield in aclose()
+        # would re-raise past its `except Exception` (CancelledError is
+        # BaseException, not Exception, since 3.8+). This happens on
+        # asyncio.run shutdown (Ctrl+C): the main task is cancelled, then
+        # asyncio.run cancels all remaining tasks including this one.
+        # We cannot shield pool.aclose() (would run it in a different task
+        # and trip anyio's cross-task cancel-scope guard — the original
+        # bug, see deferred-start-owns-teardown.md). AsyncExitStack.aclose
+        # closes remaining contexts best-effort even when interrupted, so
+        # subprocesses are still killed. After catching, finish
+        # synchronously so the task completes normally.
+        try:
+            await self._mcp_close_signal.wait()
+        except asyncio.CancelledError:
+            logger.debug(
+                "HostRuntime: close-signal wait cancelled during deferred "
+                "teardown; proceeding to pool cleanup"
+            )
+        if self._mcp_tool_pool is not None:
+            try:
+                await self._mcp_tool_pool.aclose()
+            except asyncio.CancelledError:
+                logger.debug(
+                    "HostRuntime: pool aclose cancelled during deferred "
+                    "teardown; subprocess cleanup best-effort"
+                )
+            self._mcp_tool_pool = None
+        self._mcp_started = False
+        logger.debug("HostRuntime: MCP pool closed (deferred teardown)")
+
+    async def _build_pool(self) -> None:
+        """Construct and start the MCP pool (shared by sync and deferred)."""
+        if self._mcp_started:
+            return
+
+        if not self._mcp_warm_configs:
+            logger.debug("HostRuntime.start: no warm configs; pool will be None")
+            self._mcp_started = True
+            return
+
+        from kernel.tools.mcp_client import MCPToolPool  # noqa: PLC0415
+
+        # The pool MUST carry both warm AND cold configs. Cold servers (e.g.
+        # mem0, lisa-guard) are lazily connected on first scoped dispatch
+        # (memory.* aliases route to the default backend, which may be cold).
+        # If cold configs are omitted from the pool, server-scoped dispatch
+        # (_call_tool_scoped) cannot resolve the server_id and returns
+        # "Unknown MCP server '<pack>.mem0'" — breaking all memory operations
+        # when the default backend is a cold HTTP server. The `warm` flag on
+        # each config controls eager-vs-lazy start; cold servers stay down
+        # at start() and connect best-effort on first call.
+        self._mcp_tool_pool = MCPToolPool([*self._mcp_warm_configs, *self._mcp_cold_configs])
+        try:
+            await self._mcp_tool_pool.start()
+        except BaseException:
+            # start() failed — the pool may have partially-started warm
+            # servers with open subprocesses. Close the pool to kill them,
+            # then re-raise so the caller knows startup failed.
+            try:
+                await self._mcp_tool_pool.aclose()
+            except Exception:  # pylint: disable=broad-except
+                logger.debug("HostRuntime: pool aclose after failed start", exc_info=True)
+            self._mcp_tool_pool = None
+            raise
+        # Register ambient resolvers + the generic ``memory.*`` synthetic
+        # aliases on the now-live pool. This MUST run after ``start()`` so
+        # the alias handlers forward to live server sessions and the
+        # proxy's ambient resolvers are in place before the first turn.
+        # Without this, transport hosts that call ``runtime.start()``
+        # directly (cli, web) would never register
+        # ``memory.add`` / ``memory.search`` / ``memory.list`` — the
+        # learning-pack operations (recall_memory,
+        # synthesize_and_store_learning) reach them via
+        # ``ctx.execute_tool_fn`` and fail with "Tool 'memory.list' is not
+        # registered on any MCP server".
+        from host.memory_aliases import register_memory_aliases  # noqa: PLC0415
+
+        register_memory_aliases(
+            self._mcp_tool_pool,
+            memory_config=self.memory_config,
+            memory_config_pack_slug=self.memory_config_pack_slug,
+            user_slug=self.config.user_slug,
+            current_mode_id=self.current_mode_id,
+            app_id="lisa-host",
+        )
+        # Register generic aliases declared in pack MCP manifests so the
+        # model sees stable tool names (e.g. ``cloudflare.search``) instead
+        # of filesystem-derived namespaced ids.
+        from host.mcp_pool import register_mcp_aliases  # noqa: PLC0415
+
+        register_mcp_aliases(self._mcp_tool_pool)
+        self._mcp_started = True
+        logger.info(
+            "HostRuntime: MCP pool started with %d warm server(s)",
+            len(self._mcp_warm_configs),
+        )
+
+    async def aclose(self) -> None:
+        """Close the MCP tool pool in the same event loop that started it.
+
+        Must be called from the same event loop that called ``start()``
+        or ``start_pool_deferred()``. If a deferred start is still in
+        flight, it is awaited first so the pool is fully constructed
+        before we close it. After this, the runtime is no longer usable
+        — construct a new one for a fresh session.
+        """
+        # Deferred-start path: the long-lived start task owns the anyio
+        # cancel scopes (it entered the MCP stdio_client contexts). It must
+        # close the pool in its own task. Signal it to tear down and await
+        # the task (shielded so a cancellation of the caller doesn't leave
+        # the teardown half-done and orphan MCP subprocesses).
+        if (
+            self._mcp_start_task is not None
+            and not self._mcp_start_task.done()
+            and self._mcp_close_signal is not None
+        ):
+            # If the build phase is still in flight, wait for it first so
+            # the pool is fully constructed before we ask for teardown.
+            if self._mcp_started_event is not None and not self._mcp_started_event.is_set():
+                try:
+                    await self._mcp_started_event.wait()
+                except Exception:  # pylint: disable=broad-except
+                    logger.debug(
+                        "HostRuntime: deferred build failed during aclose",
+                        exc_info=True,
+                    )
+            self._mcp_close_signal.set()
+            try:
+                await asyncio.shield(self._mcp_start_task)
+            except asyncio.CancelledError:
+                # Cancellation of the aclose() caller (Ctrl+C /
+                # asyncio.run shutdown) propagates here. The start_task
+                # owns the real teardown and swallows CancelledError around
+                # both close_signal.wait() and pool.aclose() so subprocesses
+                # are killed best-effort and the task ends normally. We MUST
+                # NOT re-raise here: propagating CancelledError out of
+                # aclose() during asyncio.run shutdown surfaces as the ugly
+                # "Cancelled via cancel scope ... by <Task _start_pool_impl>"
+                # traceback. Suppress so aclose returns cleanly; asyncio.run
+                # will then cancel + await the start task, whose own handlers
+                # finish teardown. See deferred-start-owns-teardown.md.
+                logger.debug(
+                    "HostRuntime: aclose cancelled while awaiting "
+                    "deferred start task teardown; suppressing (start task "
+                    "finishes teardown best-effort)"
+                )
+            except Exception:  # pylint: disable=broad-except
+                # The task may raise the cached build-phase exception or a
+                # teardown error; we're tearing down either way.
+                logger.debug(
+                    "HostRuntime: deferred start task ended during aclose",
+                    exc_info=True,
+                )
+            self._mcp_start_task = None
+            self._mcp_start_exc = None
+            self._mcp_started_event = None
+            self._mcp_close_signal = None
+            logger.debug("HostRuntime: MCP pool closed (deferred)")
+            return
+        # Sync-start path (start() was called directly, or the deferred
+        # task already finished): close the pool inline in this task, which
+        # is the same task that entered the MCP anyio cancel scopes.
+        if self._mcp_tool_pool is not None:
+            await self._mcp_tool_pool.aclose()
+            self._mcp_tool_pool = None
+        self._mcp_started = False
+        self._mcp_start_task = None
+        self._mcp_start_exc = None
+        self._mcp_started_event = None
+        self._mcp_close_signal = None
+        logger.debug("HostRuntime: MCP pool closed")
+
+    # ── State snapshot ────────────────────────────────────────────────
+
+    @property
+    def state_snapshot(self) -> dict[str, Any] | None:
+        return self._state_snapshot
+
+    @state_snapshot.setter
+    def state_snapshot(self, value: dict[str, Any] | None) -> None:
+        self._state_snapshot = value
+
+    # ── Diagnostics ───────────────────────────────────────────────────
+
+    def set_last_turn_context(self, ctx: TurnContext) -> None:
+        self.last_turn_context = ctx
+
+    # ── Restart ───────────────────────────────────────────────────────
+
+    def request_restart(self, reason: str) -> None:
+        self.restart_required = True
+        self.restart_reason = reason

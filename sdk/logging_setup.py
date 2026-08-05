@@ -3,7 +3,7 @@
 This module is the single source of truth for stdlib ``logging``
 configuration across all hosts (CLI, web) and the first-party MCP
 servers. It replaces the per-host ``_configure_root_logging`` duplicates
-and the bespoke JSONL writer in ``hosts/core/turn_logging.py``.
+and the bespoke JSONL writer in ``host/turn_logging.py``.
 
 Public surface
 --------------

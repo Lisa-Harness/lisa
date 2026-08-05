@@ -419,7 +419,7 @@ A real host must inject concrete implementations for these seams:
 | Transport adapter | Host-owned | Teams, Slack, WebSocket, console |
 | Scheduler | Host-owned | For signal connector polling and heartbeat jobs |
 
-The shared host runtime (`hosts/core`) is the reference host. It wires a minimal subset of these seams for local development and pack authoring, shared by the CLI and web transport hosts.
+The shared host runtime (`host`) is the reference host. It wires a minimal subset of these seams for local development and pack authoring, shared by the CLI and web transport hosts.
 
 ## Privacy Model
 

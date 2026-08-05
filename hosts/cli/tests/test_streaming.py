@@ -6,7 +6,7 @@ The original test exercised ``little_lisa.parse_streaming_option`` and
 ``little_lisa._initialize_runtime`` (which wrote to ``_RUNTIME_STATE``).
 In the new structure:
 
-- ``parse_streaming_option`` lives in ``hosts.core.config_resolver``.
+- ``parse_streaming_option`` lives in ``host.config_resolver``.
 - Runtime configuration is a frozen ``HostConfig`` constructed via
   ``HostConfig.from_env(streaming=...)``; the streaming mode and delay
   are exposed as ``config.streaming.mode`` and
@@ -15,9 +15,8 @@ In the new structure:
 
 from __future__ import annotations
 
-
-from hosts.core.config import HostConfig, StreamingConfig
-from hosts.core.config_resolver import parse_streaming_option
+from host.config import HostConfig
+from host.config_resolver import parse_streaming_option
 
 
 def test_parse_streaming_option_accepts_mode_and_optional_delay() -> None:

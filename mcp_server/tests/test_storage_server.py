@@ -105,9 +105,7 @@ async def test_read_file_range_roundtrip(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
     await mcp.call_tool("write_file", {"path": "range.txt", "content": "0123456789"})
-    result = await mcp.call_tool(
-        "read_file_range", {"path": "range.txt", "start": 2, "length": 4}
-    )
+    result = await mcp.call_tool("read_file_range", {"path": "range.txt", "start": 2, "length": 4})
     data = json.loads(_tool_text(result))
     assert data["content"] == "2345"
     assert data["start"] == 2

@@ -9,8 +9,6 @@ seam (spec §6.2) are verified directly.
 
 from __future__ import annotations
 
-import logging
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -244,9 +242,7 @@ async def test_default_delegate_fn_passes_sub_turn_kind_delegate(
         lambda mode_id: set(),
     )
 
-    await _default_delegate_fn(
-        spec, hooks=hooks, turn_budget=None, execution_policy=None, depth=0
-    )
+    await _default_delegate_fn(spec, hooks=hooks, turn_budget=None, execution_policy=None, depth=0)
     assert captured["sub_turn_kind"] == "delegate"
     assert captured["suppress_routing_hint"] is True
     assert captured["delegate_depth"] == 0  # child runs at parent's depth; its children are depth+1
@@ -274,9 +270,7 @@ async def test_default_delegate_fn_uses_custom_max_iterations(
         lambda mode_id: set(),
     )
 
-    await _default_delegate_fn(
-        spec, hooks=hooks, turn_budget=None, execution_policy=None, depth=0
-    )
+    await _default_delegate_fn(spec, hooks=hooks, turn_budget=None, execution_policy=None, depth=0)
     assert captured["max_tool_iterations"] == 25
 
 

@@ -418,8 +418,8 @@ are removed from `WorkflowModeConfig`.
 | `kernel/turn_runner.py:TurnResult` | Add `handoff_to: str \| None = None` and `fork_results: list[ForkChildResult] \| None = None` |
 | `kernel/turn_runner.py` system prompt assembly | Add capability-manifest-aware proactive hint injection (conditional, zero-cost when not needed) |
 | `kernel/turn_runner.py` fork execution | Add `asyncio.TaskGroup` fan-out in the `transition_stage` interception path for `fork:` targets. Each child runs in an isolated session with its own mode's system prompt + tool surface. |
-| `hosts/core/handle_message.py` `_execute_mode_turn` | Check `TurnResult.handoff_to`, persist `current_mode_id` update |
-| `hosts/core/handle_message.py` `_route_model_turn` | Remove router planner call; NL turns go directly to `current_mode_id` |
+| `host/handle_message.py` `_execute_mode_turn` | Check `TurnResult.handoff_to`, persist `current_mode_id` update |
+| `host/handle_message.py` `_route_model_turn` | Remove router planner call; NL turns go directly to `current_mode_id` |
 | `kernel/router.py` `plan_route` | Remove (hard cutover) |
 | `kernel/router.py` `_try_router_shortcut`, `_try_router_clarification` | Remove |
 | `kernel/router.py` fast-path regex | Keep as zero-cost pre-turn hint that short-circuits to a mode without a tool-call round-trip |
