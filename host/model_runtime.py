@@ -25,6 +25,8 @@ class StubModelDefinition:
 
     reasoning_model: bool = False
 
+    thinking_model: bool = False
+
     context_window: int = 0
 
     completion_api: str = "chat_completions"
@@ -355,6 +357,7 @@ def resolve_model(
         model_id=resolved.model_id,
         provider=resolved.provider,
         reasoning_model=resolved.reasoning_model,
+        thinking_model=resolved.thinking_model,
         context_window=resolved.context_window,
         completion_api=resolved.completion_api,
         capabilities=tuple(resolved.capabilities),

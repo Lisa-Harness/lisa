@@ -182,7 +182,11 @@ class EmbeddingGateway(Protocol):
         """Execute one embeddings request for the given provider request."""
 
 
-def normalize_openai_messages(messages: ChatMessages) -> ChatMessages:
+def normalize_openai_messages(
+    messages: ChatMessages,
+    *,
+    require_thought_signature: bool = False,
+) -> ChatMessages:
     """Clone one chat history with OpenAI-compatible tool-call payloads.
 
     Also guarantees every ``assistant`` message carries a string ``content``.
@@ -205,6 +209,21 @@ def normalize_openai_messages(messages: ChatMessages) -> ChatMessages:
     here, at the single chokepoint every OpenAI-compatible request passes
     through, keeps the payload well-formed regardless of which break path
     left the history dangling.
+
+    When ``require_thought_signature`` is True (Gemini thinking models via
+    the OpenAI-compatible endpoint), assistant ``tool_calls`` entries that
+    lack a ``thought_signature`` are also pruned. Gemini 2.5 Pro / 3.x
+    models think by default and emit a ``thoughtSignature`` on every
+    ``functionCall`` part; the signature must be echoed verbatim on the
+    next turn. The kernel synthesizes ``transition_stage`` tool calls
+    (planned handoff, forced fork, forced plan) with no signature — those
+    calls have no model reasoning to sign. Sending them to Gemini yields
+    ``400 INVALID_ARGUMENT: Function call is missing a thought_signature in
+    functionCall parts``. Stripping the signature-less call (and its
+    matching tool result) converts the assistant turn into a plain text
+    message, which Gemini accepts. The synthesized handoff's effect is
+    already reflected in the system-prompt swap and tool-surface rebuild
+    that happened in-loop; the message-history tool call is cosmetic.
     """
 
     # Collect every tool_call_id that has a matching tool-result message.
@@ -213,6 +232,33 @@ def normalize_openai_messages(messages: ChatMessages) -> ChatMessages:
         for message in messages
         if str(message.get("role", "") or "") == "tool"
     }
+
+    # When Gemini thinking-model round-tripping is required, collect the
+    # ids of tool_calls that carry a ``thought_signature`` (top-level or
+    # nested under ``function``). Only those survive pruning; calls the
+    # kernel synthesized (planned handoff / forced fork / forced plan) have
+    # no signature and must be stripped to avoid the 400.
+    signed_ids: set[str] = set()
+    if require_thought_signature:
+        for message in messages:
+            if str(message.get("role", "") or "") != "assistant":
+                continue
+            raw_tool_calls = message.get("tool_calls")
+            if not isinstance(raw_tool_calls, list):
+                continue
+            for tool_call in raw_tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                call_id = str(tool_call.get("id", "") or "")
+                if not call_id:
+                    continue
+                thought_sig = tool_call.get("thought_signature")
+                if not thought_sig:
+                    fn_payload = tool_call.get("function")
+                    if isinstance(fn_payload, dict):
+                        thought_sig = fn_payload.get("thought_signature")
+                if thought_sig:
+                    signed_ids.add(call_id)
 
     normalized_messages: ChatMessages = []
     for message in messages:
@@ -228,6 +274,20 @@ def normalize_openai_messages(messages: ChatMessages) -> ChatMessages:
                 if not isinstance(tool_call, dict)
                 or str(tool_call.get("id", "") or "") in answered_ids
             ]
+            # Gemini thinking models: further prune any tool_call that lacks
+            # a ``thought_signature``. The kernel's synthesized
+            # ``transition_stage`` calls (planned handoff / forced fork /
+            # forced plan) have no model reasoning to sign and would trigger
+            # ``400 INVALID_ARGUMENT: Function call is missing a
+            # thought_signature``. Drop them and their matching tool
+            # results so the history stays well-formed for Gemini.
+            if require_thought_signature:
+                pruned = [
+                    tool_call
+                    for tool_call in pruned
+                    if not isinstance(tool_call, dict)
+                    or str(tool_call.get("id", "") or "") in signed_ids
+                ]
             # Only normalize the tool-call payloads we keep; drop the key
             # entirely when nothing remains so the message is a plain text
             # assistant turn (valid) instead of an empty ``tool_calls: []``.
@@ -241,6 +301,29 @@ def normalize_openai_messages(messages: ChatMessages) -> ChatMessages:
             else:
                 normalized_message.pop("tool_calls", None)
         normalized_messages.append(normalized_message)
+    # When signature-less tool_calls are pruned, the matching ``role: tool``
+    # result messages become orphaned (no assistant tool_call references
+    # them). Gemini does not reject orphaned tool results outright, but
+    # strict OpenAI backends do, so drop them for parity with the existing
+    # orphaned-tool-call pruning. This keeps the payload well-formed for
+    # every backend, not just Gemini.
+    if require_thought_signature:
+        retained_assistant_ids = set()
+        for message in normalized_messages:
+            if str(message.get("role", "") or "") != "assistant":
+                continue
+            raw_tool_calls = message.get("tool_calls")
+            if not isinstance(raw_tool_calls, list):
+                continue
+            for tool_call in raw_tool_calls:
+                if isinstance(tool_call, dict):
+                    retained_assistant_ids.add(str(tool_call.get("id", "") or ""))
+        normalized_messages = [
+            message
+            for message in normalized_messages
+            if str(message.get("role", "") or "") != "tool"
+            or str(message.get("tool_call_id", "") or "") in retained_assistant_ids
+        ]
     return normalized_messages
 
 

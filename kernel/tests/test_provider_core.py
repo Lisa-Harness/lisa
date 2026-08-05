@@ -410,6 +410,124 @@ def test_normalize_drops_empty_tool_calls_list() -> None:
     assert normalized[0]["content"] == ""
 
 
+# ── normalize_openai_messages: Gemini thought_signature pruning ────────
+
+
+def test_normalize_strips_signature_less_tool_calls_for_gemini() -> None:
+    """A synthesized transition_stage call (no thought_signature) is pruned
+    when ``require_thought_signature=True`` so Gemini thinking models do not
+    reject the next request with ``400 INVALID_ARGUMENT: Function call is
+    missing a thought_signature`` (2026-08-05 incident).
+
+    The kernel synthesizes ``transition_stage`` calls for planned handoffs,
+    forced forks, and forced plans. These calls have no model reasoning to
+    sign, so they carry no ``thought_signature``. Gemini 2.5 Pro / 3.x
+    models require every ``functionCall`` part to carry a signature; sending
+    one without it is a hard 400. The pruning converts the assistant turn
+    into a plain text message and drops the matching tool result.
+    """
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "do a multi-step thing"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_signed",
+                    "type": "function",
+                    "thought_signature": "sig_model_abc",
+                    "function": {"name": "recall_memory", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_signed", "content": "ok"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_planned_handoff",
+                    "type": "function",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": '{"target_stage_id":"plan"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_planned_handoff",
+            "content": "Handed off to mode: plan.",
+        },
+    ]
+    normalized = normalize_openai_messages(messages, require_thought_signature=True)
+    # The signed call is preserved.
+    first_assistant = normalized[1]
+    assert "tool_calls" in first_assistant
+    assert first_assistant["tool_calls"][0]["id"] == "call_signed"
+    # The signature-less synthesized call is stripped: the second assistant
+    # message becomes a plain text turn with no tool_calls.
+    second_assistant = normalized[3]
+    assert "tool_calls" not in second_assistant
+    assert second_assistant["content"] == ""
+    # The orphaned tool result for the stripped call is also dropped.
+    tool_msgs = [m for m in normalized if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["call_signed"]
+
+
+def test_normalize_keeps_signed_calls_when_require_thought_signature_true() -> None:
+    """A call that carries a thought_signature survives Gemini pruning."""
+
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_ok",
+                    "type": "function",
+                    "thought_signature": "sig_real",
+                    "function": {"name": "recall_memory", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_ok", "content": "ok"},
+    ]
+    normalized = normalize_openai_messages(messages, require_thought_signature=True)
+    assert "tool_calls" in normalized[0]
+    assert normalized[0]["tool_calls"][0]["id"] == "call_ok"
+    assert normalized[0]["tool_calls"][0]["thought_signature"] == "sig_real"
+
+
+def test_normalize_require_thought_signature_false_keeps_unsigned_calls() -> None:
+    """Without the Gemini flag, signature-less calls are kept (other backends
+    do not validate ``thought_signature`` and rely on the existing
+    orphaned-tool_call pruning only)."""
+
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_synth",
+                    "type": "function",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": '{"target_stage_id":"plan"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_synth", "content": "Handed off."},
+    ]
+    normalized = normalize_openai_messages(messages, require_thought_signature=False)
+    assert "tool_calls" in normalized[0]
+    assert normalized[0]["tool_calls"][0]["id"] == "call_synth"
+
+
 # ── Temperature passed through ─────────────────────────────────────────
 
 

@@ -129,6 +129,25 @@ def normalize_google_base_url(base_url: str) -> str:
     return _provider_normalize_google_base_url(base_url, _DEFAULT_GOOGLE_OPENAI_BASE_URL)
 
 
+def _requires_thought_signature(model_def: StubModelDefinition) -> bool:
+    """Return True for Gemini thinking models on the OpenAI-compatible endpoint.
+
+    Gemini 2.5 Pro / 3.x models think by default and emit a
+    ``thoughtSignature`` on every ``functionCall`` part. The signature must
+    be echoed verbatim on the next turn or Gemini rejects the request with
+    ``400 INVALID_ARGUMENT: Function call is missing a thought_signature``.
+    The kernel synthesizes ``transition_stage`` tool calls (planned handoff,
+    forced fork, forced plan) with no signature; those calls must be pruned
+    before the request reaches Gemini. Only Google-provider thinking
+    models are affected — OpenAI / Azure / Ollama do not validate
+    ``thought_signature``.
+    """
+
+    if model_def.provider != "google":
+        return False
+    return bool(getattr(model_def, "thinking_model", False))
+
+
 def completion_response_format_name(response_format: type[Any] | None) -> str:
     """Return the __name__ of the response_format type, or empty string."""
     if response_format is None:
@@ -934,9 +953,18 @@ async def complete_live_openai_compatible(
     # yield) after appending an assistant message with tool_calls but
     # before attaching the tool result; that dangling history is replayed
     # here. See /memories/repo/orphaned-tool-calls-400.md.
+    #
+    # Gemini thinking models (2.5 Pro / 3.x) additionally require every
+    # ``functionCall`` part to carry a ``thought_signature``; the kernel's
+    # synthesized ``transition_stage`` calls have none and would trigger
+    # ``400 INVALID_ARGUMENT: Function call is missing a thought_signature``.
+    # Pass ``require_thought_signature`` so the chokepoint prunes them.
     from kernel.provider_core import normalize_openai_messages
 
-    kwargs["messages"] = normalize_openai_messages(messages)
+    kwargs["messages"] = normalize_openai_messages(
+        messages,
+        require_thought_signature=_requires_thought_signature(model_def),
+    )
     try:
         if stream_stage:
             await tport.on_stage("model_call", {"label": stage_label})
@@ -1174,7 +1202,12 @@ async def _stream_openai_compatible_chunks(
     # Prune orphaned tool_calls before the streaming request reaches a
     # strict OpenAI-compatible backend. See the non-streaming path in
     # ``complete_live_openai_compatible`` for the full rationale.
-    kwargs["messages"] = normalize_openai_messages(messages)
+    # Gemini thinking models also need signature-less synthesized calls
+    # pruned (see ``_requires_thought_signature``).
+    kwargs["messages"] = normalize_openai_messages(
+        messages,
+        require_thought_signature=_requires_thought_signature(model_def),
+    )
     kwargs["stream"] = True
     kwargs["stream_options"] = {"include_usage": True}
 

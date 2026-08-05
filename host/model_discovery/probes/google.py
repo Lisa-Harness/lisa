@@ -90,6 +90,40 @@ _NON_CHAT_MODEL_MARKERS = (
 _CHAT_METHOD = "generateContent"
 
 
+def _is_gemini_thinking_model_id(lowered_id: str) -> bool:
+    """Return True for Gemini model ids that think by default.
+
+    Per Google's Gemini thinking docs, reasoning cannot be turned off for
+    Gemini 2.5 Pro or any Gemini 3 model, and Gemini 2.5 Flash / 2.5 Flash-Lite
+    default to thinking-on. These models emit ``thoughtSignature`` on every
+    ``functionCall`` part and require it to be echoed verbatim on the next
+    turn; failing to do so yields ``400 INVALID_ARGUMENT``. They neither
+    advertise a ``"thinking"`` method in ``supportedGenerationMethods`` nor
+    carry ``"thinking"`` in their id, so the method/id checks miss them.
+
+    Covers:
+      - ``gemini-2.5-pro``, ``gemini-2.5-flash``, ``gemini-2.5-flash-lite``
+      - ``gemini-3-*``, ``gemini-3.1-*``, ``gemini-3.5-*``, ``gemini-3.6-*``
+
+    Excludes:
+      - ``gemini-2.0-*`` (thinking off by default)
+      - ``gemini-flash-latest`` / ``gemini-pro-latest`` (ambiguous; left off
+        because the pinned version is what determines thinking-on-by-default)
+      - Embedding / image / TTS / video models (already filtered upstream)
+    """
+
+    if not lowered_id.startswith("gemini-"):
+        return False
+    # Gemini 3.x family — all think by default.
+    if lowered_id.startswith("gemini-3"):
+        return True
+    # Gemini 2.5 family — all think by default (Pro cannot turn it off;
+    # Flash / Flash-Lite default to thinking-on).
+    if lowered_id.startswith("gemini-2.5-"):
+        return True
+    return False
+
+
 def _is_chat_model(model_id: str, row: dict) -> bool:
     """Return True when ``row`` describes a practical chat-completion model.
 
@@ -179,7 +213,20 @@ def _enrich_google_model(model_id: str, row: dict) -> DiscoveredModel:
 
     # Google exposes thinking via the "thinking" method or model-id markers.
     methods_list = methods if isinstance(methods, list) else []
-    thinking_model = "thinking" in methods_list or "thinking" in model_id.lower()
+    # Gemini 2.5 and 3.x models think by default — Google's docs state
+    # "Reasoning cannot be turned off for Gemini 2.5 Pro or 3 models." These
+    # models do not advertise a "thinking" method and do not carry "thinking"
+    # in their id, so the method/id checks alone miss them. Without this,
+    # gemini-3.6-flash (the default model) is treated as a non-thinking model,
+    # and the kernel does not round-trip ``thought_signature`` on synthesized
+    # ``transition_stage`` calls — Gemini rejects the next request with
+    # ``400 INVALID_ARGUMENT: Function call is missing a thought_signature``.
+    lowered_id = model_id.lower()
+    thinking_model = (
+        "thinking" in methods_list
+        or "thinking" in lowered_id
+        or _is_gemini_thinking_model_id(lowered_id)
+    )
 
     # Context window is the input token limit (Google also reports output).
     context_window = 0

@@ -416,6 +416,61 @@ class TestGoogleProbe:
         assert result.models[0].model_id == "gemini-2.5-flash"
 
     @pytest.mark.asyncio
+    async def test_gemini_3_models_detected_as_thinking(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Gemini 3.x and 2.5 models think by default and must be flagged.
+
+        Per Google's docs, reasoning cannot be turned off for Gemini 2.5 Pro
+        or any Gemini 3 model. They neither advertise a ``"thinking"`` method
+        nor carry ``"thinking"`` in their id, so the method/id checks alone
+        miss them. Without ``thinking_model=True``, the host does not
+        round-trip ``thought_signature`` and Gemini rejects synthesized
+        ``transition_stage`` calls with ``400 INVALID_ARGUMENT: Function call
+        is missing a thought_signature`` (2026-08-05 incident).
+        """
+
+        monkeypatch.setenv("LISA_GOOGLE_API_KEY", _FAKE_KEY)
+        transport = httpx.MockTransport(
+            lambda req: httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {
+                            "name": "models/gemini-3.6-flash",
+                            "supportedGenerationMethods": [
+                                "generateContent",
+                                "countTokens",
+                            ],
+                        },
+                        {
+                            "name": "models/gemini-2.5-flash",
+                            "supportedGenerationMethods": [
+                                "generateContent",
+                                "countTokens",
+                            ],
+                        },
+                        {
+                            "name": "models/gemini-2.0-flash",
+                            "supportedGenerationMethods": [
+                                "generateContent",
+                                "countTokens",
+                            ],
+                        },
+                    ]
+                },
+            )
+        )
+        result = await GoogleProbe().probe(_client(transport), timeout=5.0)
+        assert result.status is ProbeStatus.OK
+        by_id = {m.model_id: m for m in result.models}
+        # Gemini 3.x and 2.5 think by default → must be flagged.
+        assert by_id["gemini-3.6-flash"].thinking_model is True
+        assert by_id["gemini-2.5-flash"].thinking_model is True
+        # Gemini 2.0 has thinking off by default → must NOT be flagged.
+        assert by_id["gemini-2.0-flash"].thinking_model is False
+
+    @pytest.mark.asyncio
     async def test_strips_v1beta3_models_suffix_from_base_url(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

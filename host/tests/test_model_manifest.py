@@ -186,3 +186,41 @@ def test_load_manifest_rejects_negative_context_window(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="context_window must be a non-negative integer"):
         model_manifest.load_model_manifest(manifest_file)
+
+
+def test_load_manifest_preserves_thinking_model_flag(tmp_path: Path) -> None:
+    """``thinking_model: true`` on a Gemini model survives manifest loading.
+
+    The host's ``_requires_thought_signature`` gate reads
+    ``StubModelDefinition.thinking_model`` (forwarded from
+    ``ManifestModelEntry.thinking_model`` via ``resolve_model``) to decide
+    whether to prune signature-less synthesized ``transition_stage`` calls
+    for Gemini thinking models. If the flag is dropped during resolution,
+    Gemini 2.5 Pro / 3.x models reject the next request with
+    ``400 INVALID_ARGUMENT: Function call is missing a thought_signature``
+    (2026-08-05 incident).
+    """
+
+    manifest_file = tmp_path / "models.yaml"
+    manifest_file.write_text(
+        textwrap.dedent(
+            """\
+            version: 1
+            mode_models:
+              default: gemini-flash
+            models:
+              - key: gemini-flash
+                model_id: gemini-3.6-flash
+                provider: google
+                display_name: Gemini 3.6 Flash
+                thinking_model: true
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = model_manifest.load_model_manifest(manifest_file)
+
+    model = manifest.find_model("gemini-3.6-flash")
+    assert model is not None
+    assert model.thinking_model is True
