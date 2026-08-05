@@ -644,7 +644,10 @@ def _build_repl_prompt_session(
         multiline=True,
         key_bindings=bindings,
         prompt_continuation=[("class:prompt-continuation", "… ")],
-        bottom_toolbar=lambda: _repl_bottom_toolbar(transport, session_context=runtime.config.session_context),
+        bottom_toolbar=lambda: _repl_bottom_toolbar(
+            transport,
+            session_name=runtime.session_plan.manifest.name,
+        ),
         style=Style.from_dict(_REPL_PROMPT_STYLE) if Style is not None else None,
     )
 
@@ -663,7 +666,7 @@ _REPL_PROMPT_STYLE = {
 }
 
 
-def _repl_bottom_toolbar(transport: RichTransport, *, session_context: str = "") -> Any:
+def _repl_bottom_toolbar(transport: RichTransport, *, session_name: str = "") -> Any:
     """Render the bottom toolbar: session name + live char/line count + hints.
 
     Called by prompt_toolkit on every buffer mutation (and on explicit
@@ -701,9 +704,9 @@ def _repl_bottom_toolbar(transport: RichTransport, *, session_context: str = "")
         detail_label = "detail:off"
     thinking_label = "thinking:off" if transport.thinking_collapsed else "thinking:on"
 
-    # The session-context name anchors the toolbar so you always know which
-    # session plan is driving the current turn.
-    session_label = session_context.strip() if session_context and session_context.strip() else "session"
+    # The session-context name (from its front matter) anchors the toolbar so
+    # you always know which session plan is driving the current turn.
+    session_label = session_name.strip() if session_name and session_name.strip() else "session"
 
     return FormattedText(
         [
