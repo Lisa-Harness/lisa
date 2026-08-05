@@ -1788,8 +1788,13 @@ class BlockDiagnostic(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
 
-    reason: Literal["capability_gate", "input_guard", "output_guard"] = Field(
-        description="Which gate produced the block.",
+    reason: Literal["capability_gate", "input_guard", "output_guard", "lifecycle_failure"] = Field(
+        description=(
+            "Which gate produced the block. ``lifecycle_failure`` covers "
+            "non-guard failures (entry/plan/fork) that set ``blocked=True`` "
+            "with no ``block_origin`` — distinct from an output-guard "
+            "block so the parent surfaces the actual cause."
+        ),
     )
     resolved_model_id: str = Field(
         default="",

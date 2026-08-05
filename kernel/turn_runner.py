@@ -101,7 +101,7 @@ from kernel.slice import (
     build_policy_for_trigger,
     resolve_mode_for_trigger,
 )
-from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool
+from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool, bare_tool_name
 from kernel.tools.registry import execute_tool, get_tool_catalog
 from kernel.tools.schema_translator import (
     mcp_tool_to_openai_function,
@@ -5457,6 +5457,32 @@ async def _run_turn_inner(
                                 artifact_id=_dispatched_artifact_id,
                             )
                         )
+                elif _state.action_tool_ids and _dispatched_effect == "read":
+                    # Opaque MCP write tool: not in the in-process operation
+                    # or tool catalog (so ``_dispatched_effect`` defaulted to
+                    # "read"), but present in the sub-turn's action-tool set.
+                    # MCP failures are returned as ``MCPToolResult(is_error=True)``
+                    # rather than raised, so check success before emitting a
+                    # receipt — a failed MCP write must not satisfy the
+                    # completion contract (the 2026-08-04 audit finding).
+                    # ``bare_tool_name`` normalizes the namespaced dispatched
+                    # name (``lisa-storage.write_file``) to match the bare
+                    # authored action id (``write_file``).
+                    _bare = bare_tool_name(tool_name)
+                    if _bare in _state.action_tool_ids:
+                        _mcp_succeeded = True
+                        # ``mcp_result`` is bound on both MCP dispatch branches
+                        # above; the in-process branches do not set it.
+                        if "mcp_result" in locals() and hasattr(mcp_result, "is_error"):
+                            _mcp_succeeded = not getattr(mcp_result, "is_error", False)
+                        if _mcp_succeeded:
+                            _state.effect_receipts.append(
+                                EffectReceipt(
+                                    effect="write",
+                                    capability_id=tool_name,
+                                    artifact_id="",
+                                )
+                            )
                 # Sync the ledger counts to _state so the per-iteration
                 # budget briefing can report per-target remaining calls.
                 _state.call_ledger_counts = dict(ledger.counts)

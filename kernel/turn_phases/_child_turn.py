@@ -74,9 +74,14 @@ def classify_child_turn(
     """
     _clog = logging.getLogger(__name__)
 
-    # 1. Blocked (capability gate / input guard / output guard).
+    # 1. Blocked (capability gate / input guard / output guard / lifecycle).
+    # ``block_origin`` is empty for non-guard lifecycle failures (entry/plan/
+    # fork failures that set ``blocked=True`` directly). Default to
+    # ``lifecycle_failure`` — not ``output_guard`` — so the parent surfaces
+    # the actual cause instead of misattributing an entry-op failure to the
+    # output guard (the 2026-08-04 audit finding 4).
     if child_result.blocked:
-        _block_reason = child_result.block_origin or "output_guard"
+        _block_reason = child_result.block_origin or "lifecycle_failure"
         if _block_reason == "capability_gate":
             _clog.warning(
                 "child turn mode=%s was blocked by the capability gate "
@@ -158,32 +163,23 @@ def classify_child_turn(
             effect_receipts=tuple(child_result.effect_receipts),
         )
 
-    # A mode with a completion contract must produce evidence it invoked a
-    # side-effecting action tool. Evidence comes from two sources:
+    # A mode with a completion contract must produce an ``EffectReceipt``
+    # proving a side-effecting action tool actually landed its write.
+    # Receipts are collected at dispatch time only on *successful* writes
+    # — a failed write (``ToolResult.error`` non-empty or MCP ``is_error``)
+    # emits no receipt, so a read-only or failed call never satisfies the
+    # contract. Opaque MCP write tools (not in the in-process catalog) also
+    # emit a receipt on success via the ``action_tool_ids`` membership check
+    # at dispatch time, so the receipt is the single source of truth.
     #
-    # 1) ``EffectReceipt`` — collected at dispatch time from the capability's
-    #    declared ``effect`` on a *successful* write. This is the primary,
-    #    strongest evidence: it only fires when a write actually landed
-    #    (a failed write emits no receipt), so a read-only or failed call
-    #    never satisfies the contract.
-    #
-    # 2) ``called_tool_names`` matching an action tool — the *fallback* for
-    #    opaque MCP tools (e.g. ``lisa-storage.write_file``) that are not
-    #    present in the in-process tool catalog and therefore cannot declare
-    #    an effect or emit a receipt at dispatch. ``mode_completion_effects``
-    #    already restricts the action set to write-effect tools (filtering
-    #    out resolvable read tools), so a name match against an action id is
-    #    a write-intent match. ``bare_tool_name`` strips the ``server_id.``
-    #    prefix so ``lisa-storage.write_file`` matches the authored ``write_file``.
-    #
-    # Receipt ``capability_id`` is recorded as the dispatched namespaced MCP
-    # name; ``bare_tool_name`` normalizes it to match the bare action id.
+    # A bare ``called_tool_names`` match is NOT sufficient: it records the
+    # attempted name before success is known, so a failed MCP write would
+    # false-positive as completion. Only receipts count.
     # lazy: avoids top-level MCP import
     from kernel.tools.mcp_client import bare_tool_name  # noqa: PLC0415
 
-    called_bare = {bare_tool_name(n) for n in child_result.called_tool_names}
     receipt_ids = {bare_tool_name(r.capability_id) for r in child_result.effect_receipts}
-    has_write_effect = bool(receipt_ids & action_tool_ids) or bool(called_bare & action_tool_ids)
+    has_write_effect = bool(receipt_ids & action_tool_ids)
 
     if has_write_effect:
         return ChildTurnOutcome(

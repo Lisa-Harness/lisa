@@ -1955,14 +1955,45 @@ async def test_run_turn_fork_namespaced_action_tool_not_flagged_no_tools() -> No
             tool_calls=[],
         )
 
+    # Wire a stub MCP pool whose ``call_tool`` succeeds (``is_error`` absent)
+    # so the receipt-capture branch at dispatch time emits an ``EffectReceipt``
+    # for the namespaced write tool. Without a working pool the dispatch
+    # returns ``is_error=True`` ("not registered"), no receipt is emitted,
+    # and the receipt-only completion contract correctly flags the child
+    # ``no_tools`` — the test would then exercise the failure path, not the
+    # namespaced-success path it exists to guard.
+    from kernel.tools.mcp_client import MCPToolResult
+
+    class _StubPool:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+            return []
+
+        async def call_tool(self, tool_id: str, _args: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(tool_id=tool_id, output_text="Wrote doc.md")
+
+        async def __aenter__(self) -> _StubPool:
+            return self
+
+        async def __aexit__(self, *_a: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
     hooks = _build_minimal_hooks(two_step)
+    hooks.mcp_tool_pool = _StubPool()
     result = await run_turn(mode_id="default", query="write a markdown guide", hooks=hooks)
 
     assert result.fork_results is not None
     assert len(result.fork_results) == 1
     child = result.fork_results[0]
     # The child called its mode's action tool (write_file) under the
-    # namespaced ambient form, so it must be ok — not no_tools.
+    # namespaced ambient form, and the stub pool succeeded, so the
+    # receipt-capture path emitted an ``EffectReceipt`` — the child is
+    # ok, not no_tools.
     assert child.status == "ok"
     assert child.target.mode_id == "markdown"
 
