@@ -15,7 +15,6 @@ dependencies = [
     "lisa-pack-recovery",
     "lisa-host-core",
     "lisa-host-cli",
-    "lisa-host-web",
     "lisa-host",
     "rich>=13.7.0",
     "typer>=0.12.3",
@@ -67,7 +66,6 @@ members = [
     "sdk/packs/recovery",
     "hosts/core",
     "hosts/cli",
-    "hosts/web",
     "packaging/lisa-host",
 ]
 
@@ -94,7 +92,6 @@ lisa-pack-markdown = { path = "../lisa-packs/markdown" }
 lisa-pack-letta = { path = "../lisa-packs/letta" }
 lisa-host-core = { workspace = true }
 lisa-host-cli = { workspace = true }
-lisa-host-web = { workspace = true }
 lisa-host = { workspace = true }
 
 [tool.pytest.ini_options]
@@ -218,7 +215,6 @@ forbidden_modules = [
     "hosts",
     "hosts.core",
     "hosts.cli",
-    "hosts.web",
 ]
 
 # SDK must not import host transports (cli/web) or mcp_server internals.
@@ -231,14 +227,13 @@ type = "forbidden"
 source_modules = ["sdk"]
 forbidden_modules = [
     "hosts.cli",
-    "hosts.web",
     "mcp_server",
 ]
 
 # Bundled reference packs may import hosts.core (transport-neutral runtime
 # services) but must not import host transports (cli/web).
 [[tool.importlinter.contracts]]
-name = "SDK packs do not import host transports (cli/web)"
+name = "SDK packs do not import host transports (cli)"
 type = "forbidden"
 source_modules = [
     "sdk.packs.core",
@@ -248,31 +243,27 @@ source_modules = [
 ]
 forbidden_modules = [
     "hosts.cli",
-    "hosts.web",
 ]
 
-# Host layering: cli → web → core. CLI is the top-level orchestrator that
-# can launch any host (it imports hosts.web.server for the `desktop`
-# subcommand); web wraps core; core must not import either transport.
-# The sdk/mcp_server/kernel dependency direction is enforced by the
-# forbidden contracts above (kernel forbids hosts; sdk and mcp_server
-# forbid host transports). Packs importing hosts.core is a deliberate,
-# constrained exception documented in docs/BOUNDARIES.md.
+# Host layering: cli → core. The CLI host wraps the transport-neutral
+# runtime; core must not import the transport. The sdk/mcp_server/kernel
+# dependency direction is enforced by the forbidden contracts above
+# (kernel forbids hosts; sdk and mcp_server forbid host transports). Packs
+# importing hosts.core is a deliberate, constrained exception documented
+# in docs/BOUNDARIES.md.
 [[tool.importlinter.contracts]]
-name = "Host layering (cli → web → core)"
+name = "Host layering (cli → core)"
 type = "layers"
 layers = [
     "hosts.cli",
-    "hosts.web",
     "hosts.core",
 ]
 
-# mcp_server may use kernel/sdk but must not depend on host transport.
+# mcp_server may use kernel/sdk but must not depend on host transports.
 [[tool.importlinter.contracts]]
 name = "mcp_server does not import host transports"
 type = "forbidden"
 source_modules = ["mcp_server"]
 forbidden_modules = [
     "hosts.cli",
-    "hosts.web",
 ]

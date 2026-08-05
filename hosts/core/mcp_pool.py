@@ -23,11 +23,9 @@ never in this module.
 from __future__ import annotations
 
 import dataclasses
-import json
 import logging
 import os
 import re
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -50,18 +48,10 @@ from hosts.core.content_roots import (
     load_pack_policy_dict,
     sdk_content_roots,
     seed_bundled_packs_lock,
-    unique_paths,
 )
 from hosts.core.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
-
-# ── Environment-variable name constants ──────────────────────────────
-# Shared with the child ``lisa-content`` / ``lisa-catalog`` MCP servers
-# so they receive the same provider-preference and disabled-pack signals.
-
-_LISA_SESSION_PROVIDER_SELECTIONS_ENV = "LISA_SESSION_PROVIDER_SELECTIONS"
-_LISA_DISABLED_PACKS_ENV = "LISA_DISABLED_PACKS"
 
 # Venv root containing the console-script entry points (lisa-context,
 # lisa-catalog, etc.). In repo mode this is <repo>/.venv; in tool-install
@@ -75,27 +65,26 @@ from hosts.core.paths import venv_root as _venv_root  # noqa: E402
 FRAMEWORK_ROOT = _venv_root()
 
 
-def _inject_packs_venv_pythonpath(data_dir: Path, env: dict[str, str]) -> None:
-    """Add the packs venv site-packages to the child MCP server env.
+def _resolve_packs_venv_site_packages(data_dir: Path) -> Path | None:
+    """Resolve the packs venv site-packages directory for a host data_dir.
 
-    Sets ``LISA_PACKS_VENV_SITE_PACKAGES`` so the child's
-    ``mcp_server._packs_venv_site`` module can call ``site.addsitedir()``
-    on it, activating the editable-install ``__editable__.*.pth`` files
-    that register meta-path finders for ``lisa_packs.<name>`` → source
-    directory mappings.
+    Returns the site-packages path if it exists, otherwise ``None``. The
+    result is forwarded to :func:`sdk.mcp_host.build_content_mcp_config`
+    so the child ``lisa-content`` / ``lisa-catalog`` MCP servers inherit
+    the packs-venv site-packages via ``LISA_PACKS_VENV_SITE_PACKAGES`` and
+    can import editable-installed packs (``lisa_packs.<name>``).
 
-    The host process calls ``inject_packs_venv_site_packages()`` at
-    startup to put the packs venv on ``sys.path``, but child processes
-    (``lisa-content``, ``lisa-catalog``) are fresh interpreters that only
-    inherit env vars. Without this, operation modules like
-    ``lisa_packs.markdown.operations.forge.forge_document`` raise
-    ``ModuleNotFoundError: No module named 'lisa_packs'`` in the child.
+    The host process calls ``inject_packs_venv_site_packages()`` at startup
+    to put the packs venv on ``sys.path``, but child processes are fresh
+    interpreters that only inherit env vars — without this, operation
+    modules like ``lisa_packs.markdown.operations.forge.forge_document``
+    raise ``ModuleNotFoundError: No module named 'lisa_packs'`` in the child.
     """
     packs_venv = _packs_venv_for(data_dir)
     site_packages = _packs_venv_site_packages(packs_venv)
     if not site_packages.is_dir():
-        return
-    env["LISA_PACKS_VENV_SITE_PACKAGES"] = str(site_packages)
+        return None
+    return site_packages
 
 
 # ── Shared discovery cache ─────────────────────────────────────────
@@ -201,136 +190,54 @@ def build_content_mcp_config(
 ) -> MCPClientConfig:
     """Build an MCPClientConfig that spawns lisa-content for discovered pack roots.
 
-    The kernel calls ``list_modes``, ``list_operations``, and
-    ``read_authored_text`` on this server to discover and load all content
-    packs. The server does all filesystem access; the kernel never touches
-    the filesystem directly.
+    Thin host-side wrapper over :func:`sdk.mcp_host.build_content_mcp_config`
+    that resolves the packs-venv site-packages via this host's path machinery
+    (``hosts.core.paths``) and forwards it. The pure projection logic lives
+    in the SDK so external hosts can reuse it without depending on
+    ``hosts.core``.
 
-    ``SDK_CONTENT_ROOTS`` includes both the pack root (for modes/operations
-    discovery) and the ``content/`` subdirectory (so ``read_authored_text``
-    can resolve authored text assets like ``prompts/system-prompt.md`` without a
-    ``content/`` prefix). When ``overlays_dir`` is set and exists, it is
-    prepended so overlay content takes precedence over pack content.
-
-    Args:
-        data_dir: Host data directory (passed to the child as ``--data-dir``).
-        content_roots: Active SDK content roots (pack roots + configured roots).
-        disabled_packs: Normalized pack names to exclude in the child process.
-        provider_selections: Explicit SessionPlan ownership decisions.
-        overlays_dir: Optional user-authored overlays directory. When set and
-            the directory exists, it is prepended to ``SDK_CONTENT_ROOTS`` and
-            the ``LISA_OVERLAY_ROOT`` env var is set so the catalog server can
-            identify overlay entries for precedence logic.
+    See :func:`sdk.mcp_host.build_content_mcp_config` for the full
+    parameter contract; only the host-owned ``packs_venv_site_packages``
+    resolution is added here.
     """
-    roots_for_child = content_roots
-    subdir_roots = [root / "content" for root in roots_for_child if (root / "content").is_dir()]
-    configured_roots = unique_paths([*roots_for_child, *subdir_roots])
-    env: dict[str, str] = {
-        "SDK_CONTENT_ROOTS": os.pathsep.join(str(root) for root in configured_roots)
-    }
+    from sdk.mcp_host import build_content_mcp_config as _build  # noqa: PLC0415
 
-    # Prepend the overlays directory so overlay content takes precedence.
-    # The catalog server uses LISA_OVERLAY_ROOT to identify which entries
-    # are overlay-authored and should auto-win in duplicate resolution.
-    if overlays_dir is not None and overlays_dir.is_dir():
-        env["SDK_CONTENT_ROOTS"] = (
-            str(overlays_dir) + os.pathsep + env["SDK_CONTENT_ROOTS"]
-        )
-        env["LISA_OVERLAY_ROOT"] = str(overlays_dir)
-    elif overlays_dir is not None:
-        logger.warning(
-            "Overlays directory '%s' does not exist — overlays disabled.",
-            overlays_dir,
-        )
-
-    # Pass disabled pack names to the lisa-content child process so that
-    # entry-point discovery in the child also excludes disabled packs.
-    if disabled_packs:
-        env[_LISA_DISABLED_PACKS_ENV] = os.pathsep.join(sorted(disabled_packs))
-
-    selection_payload = session_provider_selection_payload(provider_selections)
-    if any(selection_payload.values()):
-        env[_LISA_SESSION_PROVIDER_SELECTIONS_ENV] = json.dumps(
-            selection_payload,
-            ensure_ascii=True,
-            sort_keys=True,
-        )
-    # Inject the packs venv site-packages into the child's PYTHONPATH so
-    # editable-installed packs (lisa_packs.<name>) are importable in the
-    # lisa-content / lisa-catalog subprocesses. The host calls
-    # inject_packs_venv_site_packages() at CLI startup, but the child
-    # processes are fresh Python interpreters that don't inherit sys.path
-    # modifications — only env vars. Without this, operation modules like
-    # ``lisa_packs.markdown.operations.forge.forge_document`` raise
-    # ``ModuleNotFoundError: No module named 'lisa_packs'`` in the child.
-    _inject_packs_venv_pythonpath(data_dir, env)
-
-    # Route this server's logs to <data_dir>/lisa-content.jsonl. The
-    # content/catalog servers are built directly here rather than via
-    # kernel.mcp_launch.compiler (which sets this for spec-driven servers),
-    # so without this the child's configure_logging falls back to
-    # ``<cwd>/lisa-content.jsonl`` — i.e. the project root — because these
-    # configs leave cwd=None and the child inherits the host's cwd.
-    env.setdefault("LISA_MCP_LOG_PATH", str(Path(data_dir) / "lisa-content.jsonl"))
-    return MCPClientConfig(
-        server_id="lisa-content",
-        command=sys.executable,
-        args=[
-            "-m",
-            "mcp_server.content.server",
-            "--data-dir",
-            str(data_dir),
-        ],
-        env=env,
-        runtime_kind="python",
+    return _build(
+        data_dir=data_dir,
+        content_roots=content_roots,
+        disabled_packs=disabled_packs,
+        provider_selections=provider_selections,
+        packs_venv_site_packages=_resolve_packs_venv_site_packages(data_dir),
+        overlays_dir=overlays_dir,
     )
 
 
 def session_provider_selection_payload(
     selections: ProviderSelections,
 ) -> dict[str, dict[str, str]]:
-    """Convert immutable plan ownership choices into child-process payload data."""
+    """Convert immutable plan ownership choices into child-process payload data.
 
-    return {
-        "modes": dict(selections.modes),
-        "operations": dict(selections.operations),
-        "tools": dict(selections.tools),
-    }
+    Re-exported from :mod:`sdk.mcp_host.content_servers` for back-compat of
+    existing ``hosts.core.mcp_pool`` call sites. New code should import from
+    ``sdk.mcp_host`` directly.
+    """
+    from sdk.mcp_host import (  # noqa: PLC0415
+        session_provider_selection_payload as _payload,
+    )
+
+    return _payload(selections)
 
 
 def build_catalog_mcp_config(*, content_config: MCPClientConfig, data_dir: Path) -> MCPClientConfig:
     """Build an MCPClientConfig that spawns lisa-catalog for catalog tools.
 
-    The kernel calls ``list_modes``, ``list_operations``, and ``list_tools``
-    on this server to discover and load all content-pack catalogs. The
-    server does all filesystem access; the kernel never touches the
-    filesystem directly.
-
-    Shares the same env/roots setup as the content server — the only
-    difference is the module (``mcp_server.catalog.server`` vs
-    ``mcp_server.content.server``).
+    Thin host-side wrapper over :func:`sdk.mcp_host.build_catalog_mcp_config`.
+    The pure projection logic lives in the SDK so external hosts can reuse
+    it without depending on ``hosts.core``.
     """
-    # Reuse the content server's env (which already sets SDK_CONTENT_ROOTS,
-    # LISA_DISABLED_PACKS, the packs-venv PYTHONPATH, and LISA_MCP_LOG_PATH),
-    # but override the log path so this server writes to its own file. Like
-    # build_content_mcp_config, this is built directly rather than via
-    # kernel.mcp_launch.compiler, so without this the child's
-    # configure_logging falls back to ``<cwd>/lisa-catalog.jsonl`` (project
-    # root) since cwd is None and inherited from the host.
-    env = dict(content_config.env)
-    env["LISA_MCP_LOG_PATH"] = str(Path(data_dir) / "lisa-catalog.jsonl")
-    return MCPClientConfig(
-        server_id="lisa-catalog",
-        command=content_config.command,
-        args=[
-            "-m",
-            "mcp_server.catalog.server",
-            "--data-dir",
-            str(data_dir),
-        ],
-        env=env,
-        runtime_kind="python",
-    )
+    from sdk.mcp_host import build_catalog_mcp_config as _build  # noqa: PLC0415
+
+    return _build(content_config=content_config, data_dir=data_dir)
 
 
 def resolve_default_mcp_tool_ids(
@@ -536,9 +443,7 @@ def setup_framework(
         load_manifest_or_none as _load_manifest_or_none,
     )
 
-    runtime.manifest = _load_manifest_or_none(
-        data_dir=runtime.data_dir, path=runtime.models_path
-    )
+    runtime.manifest = _load_manifest_or_none(data_dir=runtime.data_dir, path=runtime.models_path)
 
 
 def configure_runtime(runtime: HostRuntime) -> None:

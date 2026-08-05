@@ -135,9 +135,6 @@ _ALLOWLIST: dict[str, tuple[str, ...]] = {
     "hosts/core/commands/_packs.py": (
         "packs_venv.parent.mkdir(parents=True, exist_ok=True)",
     ),
-    "hosts/web/tray.py": (
-        "path.mkdir(parents=True, exist_ok=True)",
-    ),
     "kernel/token_usage.py": (
         'self._path.open("a"',
         "self._path.parent.mkdir(parents=True, exist_ok=True)",

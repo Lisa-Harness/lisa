@@ -389,8 +389,7 @@ def _run_default_no_args_mode(
 ) -> None:
     """Launch the REPL when no subcommand is given.
 
-    For now, the default no-args mode is the interactive REPL. A
-    tray-first desktop launch is a future ``hosts/web`` concern.
+    The default no-args mode is the interactive REPL.
     """
     runtime = _initialize_runtime_or_exit(
         debug=debug,
@@ -1339,99 +1338,6 @@ async def _run_once_with_teardown(runtime: HostRuntime, message: str) -> bool:
     finally:
         await runtime.aclose()
     return runtime.restart_required
-
-
-# ---------------------------------------------------------------------------
-# web command (localhost web host)
-# ---------------------------------------------------------------------------
-
-
-WebHostOption = Annotated[
-    str,
-    typer.Option("--host", help="Bind address for the web server. Default: 127.0.0.1"),
-]
-WebPortOption = Annotated[
-    int,
-    typer.Option("--port", help="Bind port for the web server. Default: 8765"),
-]
-WebTokenOption = Annotated[
-    str,
-    typer.Option(
-        "--token",
-        help="Auth token for web API requests. Default: generated at startup.",
-    ),
-]
-NoOpenBrowserOption = Annotated[
-    bool,
-    typer.Option("--no-open-browser", help="Do not open a browser tab on startup."),
-]
-
-
-@app.command("desktop", help="Run the localhost web host with the desktop chat UI.")
-def _desktop_command(
-    web_host: WebHostOption = "127.0.0.1",
-    web_port: WebPortOption = 8765,
-    web_token: WebTokenOption = "",
-    no_open_browser: NoOpenBrowserOption = False,
-    debug: DebugOption = False,
-    log_level: LogLevelOption = "",
-    log: LogOption = "",
-    no_log: NoLogOption = False,
-    data_dir: DataDirOption = "",
-    thread_dir: ThreadDirOption = "",
-    no_thread: NoThreadOption = False,
-    session_context: SessionContextOption = "",
-    session_context_refresh: SessionContextRefreshOption = False,
-    timezone: TimezoneOption = "",
-    state_snapshot: StateSnapshotOption = "",
-    streaming: StreamingOption = "none",
-    host_log: HostLogOption = "",
-) -> None:
-    """Run the localhost web host until interrupted.
-
-    This is a thin delegate to :mod:`hosts.web.main`, reusing the same
-    ``run_web_server`` path that the standalone ``lisa-web desktop`` entry
-    point uses. The runtime lifecycle (``start()``/``aclose()``) is bound
-    to the aiohttp server's ``on_startup``/``on_cleanup`` hooks.
-
-    The server exits cleanly when the user closes the browser tab
-    (heartbeat watchdog in :mod:`hosts.web.server`).
-    """
-    try:
-        from hosts.web.server import generate_web_token, run_web_server
-    except ImportError as exc:
-        console.print(
-            f"[red]lisa-host-web is not installed: {exc}[/red]\n"
-            "Install it with: uv pip install -e hosts/web",
-        )
-        raise typer.Exit(code=2) from exc
-
-    runtime = _initialize_runtime_or_exit(
-        debug=debug,
-        log_level=log_level,
-        log_path=log,
-        no_log=no_log,
-        data_dir=data_dir,
-        thread_dir=thread_dir,
-        no_thread=no_thread,
-        user_slug=session_context,
-        session_context_refresh=session_context_refresh,
-        timezone=timezone,
-        state_snapshot_path=state_snapshot,
-        streaming=streaming,
-        host_log_path=host_log,
-    )
-    if runtime is None:
-        return
-
-    token = web_token.strip() or generate_web_token()
-    run_web_server(
-        runtime=runtime,
-        host=web_host,
-        port=web_port,
-        token=token,
-        open_browser=not no_open_browser,
-    )
 
 
 # ---------------------------------------------------------------------------

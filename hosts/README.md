@@ -1,6 +1,6 @@
 # Hosts Guide
 
-The Lisa framework ships **two transport hosts** — CLI and web — that all share a single transport-neutral runtime (`hosts/core`). Each host is a thin transport adapter that wires the same `HostRuntime` and calls the same `handle_message` dispatcher. The runtime never imports Rich, Typer, aiohttp, or any transport-specific code.
+The Lisa framework ships a terminal CLI host that wraps a single transport-neutral runtime (`hosts/core`). The host is a thin transport adapter that wires the same `HostRuntime` and calls the same `handle_message` dispatcher. The runtime never imports Rich, Typer, or any transport-specific code.
 
 ## Architecture
 
@@ -8,7 +8,6 @@ The Lisa framework ships **two transport hosts** — CLI and web — that all sh
 flowchart TD
   subgraph TransportHosts
     CLI[hosts/cli<br/>Typer + Rich REPL<br/>Entry point: lisa]
-    Web[hosts/web<br/>aiohttp + tray<br/>Entry point: lisa-web]
   end
 
   subgraph SharedRuntime
@@ -31,7 +30,6 @@ flowchart TD
   end
 
   CLI --> Core
-  Web --> Core
 
   Core --> TR
   Core --> FD
@@ -46,7 +44,7 @@ flowchart TD
   TOOLS --> Storage
 ```
 
-All three transport hosts import only from `hosts.core`. The kernel and SDK never import from any host. The transport boundary is enforced by the `TransportCallbacks` protocol — `hosts.core` calls `on_stage`, `on_text_chunk`, `on_response`, `on_debug_context`, and `on_error`; the transport host implements those methods to render in its native surface.
+The terminal host imports only from `hosts.core`. The kernel and SDK never import from any host. The transport boundary is enforced by the `TransportCallbacks` protocol — `hosts.core` calls `on_stage`, `on_text_chunk`, `on_response`, `on_debug_context`, and `on_error`; the transport host implements those methods to render in its native surface.
 
 ## Package Layout
 
@@ -54,7 +52,6 @@ All three transport hosts import only from `hosts.core`. The kernel and SDK neve
 | --- | --- | --- | --- |
 | `hosts/core` | Transport-neutral runtime: config, runtime state, provider dispatch, MCP pool, command dispatch, context assembly | — (library) | None |
 | `hosts/cli` | Terminal REPL with Rich rendering | `lisa` | Rich + prompt_toolkit + Typer |
-| `hosts/web` | Localhost web server with browser UI + system tray | `lisa-web` | aiohttp |
 
 ## Quick Start
 
@@ -88,21 +85,6 @@ uv run lisa mcp            # list MCP server tools
 # Signal collection (bottom half — run on a timer or cron)
 uv run lisa intake
 ```
-
-### Web (localhost browser)
-
-```powershell
-# Start the web server (opens a browser tab automatically)
-uv run lisa desktop
-
-# Custom host/port
-uv run lisa desktop --host 0.0.0.0 --port 9000
-
-# Without auto-opening a browser
-uv run lisa desktop --no-open-browser
-```
-
-The standalone `lisa-web desktop` entry point runs the same code. The server prints a URL with an auth token: `http://127.0.0.1:8765/?token=<generated-token>`. See `web/README.md` for the full API reference.
 
 ## Core Runtime
 
