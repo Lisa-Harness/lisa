@@ -294,6 +294,16 @@ class RichTransport:
         # Running counters for the graphic column.
         self._handoff_count: int = 0
         self._tool_call_count: int = 0
+        # ── Live status-header state (persistent, updated per stage) ─────
+        # A fixed status bar rendered at the top of the Live region so
+        # mode / model / token count stay visible and update instantly while
+        # the turn runs — the guard against runaway sessions. The header is
+        # owned by the transport, so it re-renders on every on_stage refresh
+        # without waiting for the next prompt-toolkit status-line pass.
+        self._status_current_model: str = ""
+        self._status_model_provider: str = ""
+        self._status_turn_tokens: int = 0
+        self._status_session_tokens: int = 0
         # Index of the in-flight tool row, so its completion updates in place.
         self._open_tool_row: int | None = None
         # Index of the in-flight model row, so its completion updates in place.
@@ -305,7 +315,9 @@ class RichTransport:
 
     # ── Live region lifecycle ───────────────────────────────────────
 
-    def start_thinking(self, stage: str = "dispatch") -> None:
+    def start_thinking(
+        self, stage: str = "dispatch", *, session_tokens: int = 0
+    ) -> None:
         """Start the flowing transcript so the user sees the turn is active.
 
         The default stage is ``dispatch`` — the pre-pipeline phase where
@@ -313,6 +325,10 @@ class RichTransport:
         It uses a distinct spinner (``dots2``) so "still deciding" reads
         differently from "model is generating" once the first ``model_call``
         arrives and switches to ``dots``.
+
+        ``session_tokens`` seeds the live status header's cumulative session
+        token count (the runtime's pre-turn total), so the header shows the
+        real running total rather than starting at zero each turn.
         """
         self.stop_thinking()
         self._thinking_stage = stage
@@ -324,6 +340,10 @@ class RichTransport:
         self._iteration_durations = []
         self._handoff_count = 0
         self._tool_call_count = 0
+        self._status_current_model = ""
+        self._status_model_provider = ""
+        self._status_turn_tokens = 0
+        self._status_session_tokens = session_tokens
         self._open_tool_row = None
         self._open_model_row = None
         self._open_thinking_row = None
@@ -400,15 +420,39 @@ class RichTransport:
             return _MIN_VISIBLE_ROWS
         return max(_MIN_VISIBLE_ROWS, height - _RESERVED_BELOW_LINES)
 
-    def _render_live_display(self) -> Group:
-        """Build the Live renderable: the most recent transcript rows.
+    def _render_status_header(self) -> Text:
+        """Render the persistent live status bar (mode · model · tokens).
 
-        The transcript scrolls from the top; the most recent rows are shown.
-        The active (last) row gets a trailing spinner. Thinking rows render
-        collapsed (a compact ``▸ Thinking… N char`` summary) or expanded (the
-        full segment body, dimmed) per the global ``thinking_collapsed`` flag.
+        This is the always-on guard against runaway sessions: it sits at the
+        top of the Live region and updates on every stage event, so the mode,
+        active model, and turn/session token counts are visible and current
+        for the whole turn — not just once above the input prompt.
         """
-        renderables: list[Any] = []
+        parts: list[str] = []
+        if self._current_mode:
+            parts.append(f"mode {self._current_mode}")
+        if self._status_current_model:
+            model = self._status_current_model
+            if self._status_model_provider:
+                model = f"{self._status_model_provider}:{model}"
+            parts.append(model)
+        parts.append(
+            f"tokens {self._status_turn_tokens}/{self._status_session_tokens}"
+        )
+        text = " │ ".join(parts)
+        return Text(text, style="bold " + STYLE_STAGE)
+
+    def _render_live_display(self) -> Group:
+        """Build the Live renderable: the live status header + recent transcript rows.
+
+        The status header is fixed at the top and updates in place on every
+        stage event (mode, model, token counters). Below it the transcript
+        scrolls; the most recent rows are shown and the active (last) row gets
+        a trailing spinner. Thinking rows render collapsed (a compact
+        ``▸ Thinking… N char`` summary) or expanded (the full dimmed segment
+        body) per the global ``thinking_collapsed`` flag.
+        """
+        renderables: list[Any] = [self._render_status_header()]
         rows = self._rows[-self._live_height():]
         for i, row in enumerate(rows):
             is_active = row.active and self._live is not None and i == len(rows) - 1
@@ -684,6 +728,14 @@ class RichTransport:
             iter_raw = data.get("_state.iteration")
         iter_count = int(iter_raw) if iter_raw not in (None, "", 0) else 0
 
+        # Update the persistent live status header so mode/model stay current
+        # the instant the model call begins (model_call_complete below adds
+        # token totals).
+        if data.get("model_id") not in (None, "", 0):
+            self._status_current_model = str(data["model_id"])
+            provider = data.get("provider")
+            self._status_model_provider = str(provider) if provider not in (None, "") else ""
+
         if label == "model_call":
             graphic = _pip_counter(iter_count, max_iter)
             self._open_model_row = len(self._rows)
@@ -708,6 +760,12 @@ class RichTransport:
                     f"{graphic}  {spark or _block_bar(float(dur_raw))} "
                     f"{round(float(dur_raw), 3)}ms"
                 )
+            # Accumulate the model call's token usage into the live header so
+            # the running total updates instantly and guards runaway sessions.
+            total_raw = data.get("_state.total_tokens") or data.get("total_tokens")
+            if total_raw not in (None, "", 0):
+                self._status_turn_tokens += int(total_raw)
+                self._status_session_tokens += int(total_raw)
 
         idx = self._open_model_row
         if idx is not None and idx < len(self._rows):

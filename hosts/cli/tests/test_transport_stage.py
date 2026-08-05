@@ -706,3 +706,75 @@ def test_live_height_floor_and_reserve() -> None:
     assert transport._live_height() == 24 - 4
     transport.console.size = (80, 5)
     assert transport._live_height() == 6
+
+
+# ── live status header ───────────────────────────────────────────────
+
+
+def test_status_header_renders_mode_model_tokens() -> None:
+    """The status header shows mode, model, and turn/session token counts."""
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("dispatch", session_tokens=500)
+    transport._current_mode = "coding"
+    transport._status_current_model = "haiku"
+    transport._status_model_provider = "anthropic"
+    transport._status_turn_tokens = 120
+    transport._status_session_tokens = 620
+
+    text = transport._render_status_header()
+    plain = text.plain
+    assert "mode coding" in plain
+    assert "anthropic:haiku" in plain
+    assert "tokens 120/620" in plain
+
+
+def test_status_header_session_seeded_from_baseline() -> None:
+    """start_thinking(session_tokens=...) seeds the cumulative session total."""
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("dispatch", session_tokens=1234)
+    assert transport._status_session_tokens == 1234
+    assert transport._status_turn_tokens == 0
+    assert transport._status_current_model == ""
+
+
+@pytest.mark.asyncio
+async def test_model_call_updates_live_status_header() -> None:
+    """model_call sets the active model; model_call_complete adds token totals."""
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("model_call", session_tokens=100)
+
+    await transport.on_stage(
+        "model_call",
+        {"mode_id": "coding", "model_id": "haiku", "provider": "anthropic", "iteration": 1},
+    )
+    assert transport._status_current_model == "haiku"
+    assert transport._status_model_provider == "anthropic"
+    assert transport._status_turn_tokens == 0
+    assert transport._status_session_tokens == 100
+
+    await transport.on_stage(
+        "model_call_complete",
+        {"model_id": "haiku", "iteration": 1, "_state.total_tokens": 120, "duration_ms": 340},
+    )
+    assert transport._status_turn_tokens == 120
+    assert transport._status_session_tokens == 220
+    header = transport._render_status_header().plain
+    assert "tokens 120/220" in header
+
+
+@pytest.mark.asyncio
+async def test_live_display_includes_status_header() -> None:
+    """The Live display leads with the status header renderable."""
+    console = Console(quiet=True, force_terminal=False)
+    transport = RichTransport(console=console, debug=False)
+    transport.start_thinking("dispatch", session_tokens=10)
+    transport._current_mode = "default"
+
+    display = transport._render_live_display()
+    renderables = list(display.renderables)
+    assert len(renderables) >= 2
+    header = renderables[0]
+    assert "mode default" in header.plain

@@ -47,17 +47,6 @@ STYLE_BORDER_RESPONSE = "dark_sea_green4"
 STYLE_BORDER_CONTEXT = "gold3"
 STYLE_RULE = "grey42"
 STYLE_PROMPT = "bold steel_blue3"
-STYLE_STATUS_INFO = "bright_white on steel_blue3"
-STYLE_STATUS_METRIC = "bright_white on grey27"
-STYLE_STATUS_DEBUG_ON = "black on dark_khaki"
-STYLE_STATUS_DEBUG_OFF = "bright_white on grey35"
-STYLE_STATUS_SEPARATOR = "grey42"
-
-# ── Status-line compact levels ───────────────────────────────────────
-_STATUS_COMPACT_FULL = 0
-_STATUS_COMPACT_ABBREVIATED = 1
-_STATUS_COMPACT_TRIMMED = 2
-_STATUS_COMPACT_MINIMAL = 3
 
 # ── REPL file history ────────────────────────────────────────────────
 _REPL_HISTORY_FILE_NAME = "repl_history.txt"
@@ -329,7 +318,6 @@ async def _read_repl_input(console: Console, prompt_session: Any) -> str | None:
     turn and returns to the prompt — that path never reaches here.
     """
     try:
-        _render_status_line(console)
         if prompt_session is not None:
             cursor = ModalCursorShapeConfig() if ModalCursorShapeConfig is not None else None
             return (
@@ -370,7 +358,7 @@ async def _process_repl_turn(
     # phase (command parse, start_mode bypass, current_mode_id selection).
     # There is no separate router; handoff is mid-turn via transition_stage.
     if isinstance(transport, RichTransport):
-        transport.start_thinking("dispatch")
+        transport.start_thinking("dispatch", session_tokens=runtime.tokens.session_total_tokens)
     try:
         result = await handle_message(runtime, message, transport)
     except (asyncio.CancelledError, KeyboardInterrupt):
@@ -796,140 +784,6 @@ def _invalidate_repl_toolbar(event: Any) -> None:
         event.app.invalidate()
     except Exception:  # pylint: disable=broad-except
         pass
-
-
-# ── Status line ──────────────────────────────────────────────────────
-
-
-def _render_status_line(console: Console) -> None:
-    """Render a powerline-style status row above the input prompt."""
-    from rich.cells import cell_len
-
-    left = Text()
-    segments = _fitted_status_segments(console)
-    for index, (label, style) in enumerate(segments):
-        left.append(f" {label} ", style=style)
-        if index < len(segments) - 1:
-            left.append("", style=STYLE_STATUS_SEPARATOR)
-
-    left_width = cell_len(left.plain)
-    padding = max(1, int(console.size.width) - left_width)
-    line = Text()
-    line.append(left)
-    line.append(" " * padding)
-    console.print(line, no_wrap=True)
-
-
-def _status_segments(
-    runtime_console: Console, compact_level: int = _STATUS_COMPACT_FULL
-) -> list[tuple[str, str]]:
-    """Build status segments from the runtime's route preview + token counters.
-
-    Note: this reads from a module-global placeholder runtime set by
-    ``run_repl``. We avoid threading the runtime through every status call
-    by stashing it on the console via a private attribute.
-    """
-    runtime: HostRuntime | None = getattr(runtime_console, "_lisa_runtime", None)
-    if runtime is None:
-        return [("init", STYLE_STATUS_METRIC)]
-
-    user = (runtime.config.user_slug or "").strip()
-    user_segment = (f"👤 {user}", STYLE_STATUS_INFO) if user else None
-    mode_id = runtime.current_mode_id
-    stage_id = runtime.current_stage_id
-    mode_badge = f"mode {mode_id}{'' if stage_id == '-' else '/' + stage_id}"
-    mode_badge_short = f"m {mode_id}{'' if stage_id == '-' else '/' + stage_id}"
-    model_badge = f"{runtime.next_model_provider}:{runtime.next_model_id}"
-    turn_token_total = runtime.tokens.turn_total_tokens
-    session_token_total = runtime.tokens.session_total_tokens
-    token_badge = f"tokens {turn_token_total}/{session_token_total}"
-    token_badge_short = f"tc {turn_token_total}/{session_token_total}"
-    debug_enabled = runtime.config.debug
-
-    if compact_level <= _STATUS_COMPACT_FULL:
-        return _finalize_status_segments(
-            segments=[
-                (mode_badge, STYLE_STATUS_METRIC),
-                (model_badge, STYLE_STATUS_METRIC),
-                (token_badge, STYLE_STATUS_METRIC),
-            ],
-            user_segment=user_segment,
-            debug_enabled=debug_enabled,
-            abbreviated_debug=False,
-        )
-    if compact_level == _STATUS_COMPACT_ABBREVIATED:
-        return _finalize_status_segments(
-            segments=[
-                (mode_badge_short, STYLE_STATUS_METRIC),
-                (model_badge, STYLE_STATUS_METRIC),
-                (token_badge_short, STYLE_STATUS_METRIC),
-            ],
-            user_segment=user_segment,
-            debug_enabled=debug_enabled,
-            abbreviated_debug=True,
-        )
-    if compact_level == _STATUS_COMPACT_TRIMMED:
-        return _finalize_status_segments(
-            segments=[
-                (mode_badge_short, STYLE_STATUS_METRIC),
-                (model_badge, STYLE_STATUS_METRIC),
-                (token_badge_short, STYLE_STATUS_METRIC),
-            ],
-            user_segment=None,
-            debug_enabled=debug_enabled,
-            abbreviated_debug=True,
-        )
-    return _finalize_status_segments(
-        segments=[
-            (mode_badge_short, STYLE_STATUS_METRIC),
-            (model_badge, STYLE_STATUS_METRIC),
-            (token_badge_short, STYLE_STATUS_METRIC),
-        ],
-        user_segment=None,
-        debug_enabled=debug_enabled,
-        abbreviated_debug=True,
-    )
-
-
-def _finalize_status_segments(
-    *,
-    segments: list[tuple[str, str]],
-    user_segment: tuple[str, str] | None,
-    debug_enabled: bool,
-    abbreviated_debug: bool,
-) -> list[tuple[str, str]]:
-    if user_segment is not None:
-        segments.insert(1, user_segment)
-    if debug_enabled:
-        debug_label = "dbg on" if abbreviated_debug else "debug on"
-        segments.append((debug_label, STYLE_STATUS_DEBUG_ON))
-    return segments
-
-
-def _estimated_status_line_width(segments: list[tuple[str, str]]) -> int:
-    """Estimate rendered width for status segments and separators."""
-    from rich.cells import cell_len
-
-    if not segments:
-        return 0
-    label_width = sum(cell_len(label) + 2 for label, _ in segments)
-    separator_width = max(0, len(segments) - 1)
-    return label_width + separator_width
-
-
-def _fitted_status_segments(console: Console) -> list[tuple[str, str]]:
-    """Return the richest status segments that fit the current terminal width."""
-    max_width = max(0, int(console.size.width) - 1)
-    for compact_level in (
-        _STATUS_COMPACT_FULL,
-        _STATUS_COMPACT_ABBREVIATED,
-        _STATUS_COMPACT_TRIMMED,
-        _STATUS_COMPACT_MINIMAL,
-    ):
-        segments = _status_segments(console, compact_level)
-        if _estimated_status_line_width(segments) <= max_width:
-            return segments
-    return _status_segments(console, _STATUS_COMPACT_MINIMAL)
 
 
 __all__ = ["run_repl"]
