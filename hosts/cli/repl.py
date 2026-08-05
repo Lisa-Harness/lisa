@@ -624,9 +624,10 @@ def _build_repl_prompt_session(
     """Build a prompt_toolkit PromptSession with history + completion.
 
     Returns ``None`` when prompt_toolkit is unavailable. When available,
-    the session is multi-line: Enter submits the turn, Ctrl+J inserts
-    a newline (chat-box semantics). A bottom toolbar shows live char/line
-    count and control hints while the prompt is active.
+    the session is multi-line: Enter submits the turn, Ctrl+Enter inserts
+    a newline (chat-box semantics). A bottom toolbar shows the session
+    name, live char/line count, and control hints while the prompt is
+    active.
     """
     if PromptSession is None or FileHistory is None or WordCompleter is None:
         return None
@@ -643,7 +644,7 @@ def _build_repl_prompt_session(
         multiline=True,
         key_bindings=bindings,
         prompt_continuation=[("class:prompt-continuation", "… ")],
-        bottom_toolbar=lambda: _repl_bottom_toolbar(transport),
+        bottom_toolbar=lambda: _repl_bottom_toolbar(transport, session_context=runtime.config.session_context),
         style=Style.from_dict(_REPL_PROMPT_STYLE) if Style is not None else None,
     )
 
@@ -662,8 +663,8 @@ _REPL_PROMPT_STYLE = {
 }
 
 
-def _repl_bottom_toolbar(transport: RichTransport) -> Any:
-    """Render the bottom toolbar: live char/line count + control hints.
+def _repl_bottom_toolbar(transport: RichTransport, *, session_context: str = "") -> Any:
+    """Render the bottom toolbar: session name + live char/line count + hints.
 
     Called by prompt_toolkit on every buffer mutation (and on explicit
     invalidation from the Ctrl+O / Ctrl+Y toggles). Returns
@@ -700,11 +701,17 @@ def _repl_bottom_toolbar(transport: RichTransport) -> Any:
         detail_label = "detail:off"
     thinking_label = "thinking:off" if transport.thinking_collapsed else "thinking:on"
 
+    # The session-context name anchors the toolbar so you always know which
+    # session plan is driving the current turn.
+    session_label = session_context.strip() if session_context and session_context.strip() else "session"
+
     return FormattedText(
         [
+            ("class:bottom-toolbar", f" {session_label} "),
+            ("class:bottom-toolbar.text", "│ "),
             (
                 "class:bottom-toolbar",
-                " Enter submit · newline Ctrl+J · ↑/↓ history · Tab complete ",
+                " Enter submit · newline Ctrl+Enter · ↑/↓ history · Tab complete ",
             ),
             ("class:bottom-toolbar.text", "│ "),
             ("class:bottom-toolbar.hint", "Ctrl+O "),
@@ -725,12 +732,12 @@ def _build_repl_key_bindings(transport: RichTransport) -> Any:
     """Build chat-box key bindings for the multi-line REPL prompt.
 
     - Enter: submit the current buffer (chat-box semantics).
-    - Ctrl+J: insert a newline (for multi-line input). Ctrl+J is a reliable
-      single-chord newline in prompt_toolkit; unlike Esc-prefixed sequences
-      it cannot be mistaken for an Alt modifier and leak stray characters
-      into the buffer (the previous ``Esc→Enter`` binding could emit a
-      stage/call fragment into the input area when the escape timed out
-      without a follow-up key).
+    - Ctrl+Enter: insert a newline (for multi-line input). Ctrl+Enter is a
+      reliable single-chord newline in prompt_toolkit; unlike Esc-prefixed
+      sequences it cannot be mistaken for an Alt modifier and leak stray
+      characters into the buffer (the previous ``Esc→Enter`` binding could
+      emit a stage/call fragment into the input area when the escape timed
+      out without a follow-up key).
     - Ctrl+Y: expand/collapse ALL visible thinking segments in the transcript.
       Thinking is rendered as multiple interspersed rows that interleave with
       the tool calls (a tool/model event closes the current segment). The
@@ -755,7 +762,7 @@ def _build_repl_key_bindings(transport: RichTransport) -> Any:
     def _submit(event: Any) -> None:
         event.current_buffer.validate_and_handle()
 
-    @bindings.add("c-j")
+    @bindings.add("c-enter")
     def _newline(event: Any) -> None:
         event.current_buffer.insert_text("\n")
 
