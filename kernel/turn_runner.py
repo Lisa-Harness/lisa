@@ -46,6 +46,7 @@ from kernel.ipsar_fsm import (
     run_mode_pre_turn_operations,
 )
 from kernel.models import (
+    BlockDiagnostic,
     CallLedger,
     CapabilityManifest,
     CheckpointBundle,
@@ -566,6 +567,12 @@ class TurnResult:
     when the block came from a non-guard lifecycle failure (entry/plan/fork).
     The child-turn classifier reads this to build an accurate
     ``BlockDiagnostic`` instead of assuming every block is a capability gate."""
+    block_diagnostic: BlockDiagnostic | None = None
+    """Structured reason a turn was blocked, when the block came from a gate
+    that produces one (currently the capability gate). Carried on the
+    ``TurnResult`` so the child-turn classifier and hosts surface the
+    structured truth (resolved model, missing capabilities) instead of
+    flattening it into response text."""
     transitioned_to: str | None = None
     """When the model called ``transition_stage`` during this turn, the new
     ``stage_id``. None when no transition occurred or the mode is not a
@@ -1147,10 +1154,9 @@ async def _default_delegate_fn(
     discarded" framing) and the midpoint write-nudge fires.
 
     Per spec §6.1, the ``status`` predicate reuses the fork-child
-    action-tool-floor helper (``_fork_mode_action_tool_ids`` /
-    ``_fork_mode_requires_tools``) — a child that made 17 read-only calls
-    but never invoked a side-effecting action tool is ``no_tools``, not
-    ``ok``.
+    action-tool-floor helper (``mode_completion_effects``) — a child that
+    made 17 read-only calls but never invoked a side-effecting action tool
+    is ``no_tools``, not ``ok``.
 
     Per spec §6.2, the child passes ``sub_turn_kind="delegate"`` so the
     seam already in place emits the delegate-variant briefing.
@@ -1209,6 +1215,13 @@ async def _default_delegate_fn(
             # Thread the recursion depth so the child's own delegate
             # children are depth+1 (bounded by delegate_max_depth).
             delegate_depth=depth,
+            # Apply the delegate target's stage and model-alias overrides
+            # so a delegate child runs the requested stage and model rather
+            # than the target mode's defaults. Previously both
+            # ``DelegationSpec.stage_id`` and ``DelegationSpec.model_alias``
+            # were parsed but never applied to the child turn.
+            stage_id_override=spec.stage_id or None,
+            preferred_model_id=spec.model_alias or None,
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
 
@@ -1671,6 +1684,7 @@ async def run_turn(
     yield_policy_override: YieldPolicy | None = None,
     sub_turn_kind: str | None = None,
     delegate_depth: int = 0,
+    stage_id_override: str | None = None,
 ) -> TurnResult:
     """Execute one conversational turn with the full model+tool loop.
 
@@ -1699,8 +1713,8 @@ async def run_turn(
     avoid a ``no_tools`` abort, and the turn loop injects a one-shot
     midpoint write-nudge (see ``_build_sub_turn_contract`` and the
     midpoint nudge in ``_run_turn_inner``). The action-tool set is
-    resolved from the mode's authored allowlist via
-    ``_fork_mode_action_tool_ids`` (shared with the fork-child validator).
+    resolved from the mode's declared completion effects via
+    ``mode_completion_effects`` (shared with the child-turn classifier).
 
     This is the single turn loop shared by lightweight hosts and the production app.
     Both call the same function — they differ only in which `TurnHooks` they
@@ -1815,6 +1829,7 @@ async def run_turn(
             yield_policy_override=yield_policy_override,
             sub_turn_kind=sub_turn_kind,
             delegate_depth=delegate_depth,
+            stage_id_override=stage_id_override,
         )
     pool = MCPToolPool(hooks.mcp_tool_servers)
     await pool.start()
@@ -1841,6 +1856,7 @@ async def run_turn(
             suppress_routing_hint=suppress_routing_hint,
             sub_turn_kind=sub_turn_kind,
             delegate_depth=delegate_depth,
+            stage_id_override=stage_id_override,
         )
     finally:
         await pool.aclose()
@@ -1870,6 +1886,7 @@ async def _run_turn_with_approval(
     yield_policy_override: YieldPolicy | None = None,
     sub_turn_kind: str | None = None,
     delegate_depth: int = 0,
+    stage_id_override: str | None = None,
 ) -> TurnResult:
     """Convert an approval interruption into a host-renderable turn result."""
 
@@ -1897,6 +1914,7 @@ async def _run_turn_with_approval(
             yield_policy_override=yield_policy_override,
             sub_turn_kind=sub_turn_kind,
             delegate_depth=delegate_depth,
+            stage_id_override=stage_id_override,
         )
     except ApprovalRequired as required:
         # Preserve the mid-turn handoff across the approval boundary. The
@@ -2040,6 +2058,7 @@ async def _run_turn_inner(
     yield_policy_override: YieldPolicy | None = None,
     sub_turn_kind: str | None = None,
     delegate_depth: int = 0,
+    stage_id_override: str | None = None,
 ) -> TurnResult:
     """Inner turn loop that owns the MCPToolPool lifecycle via the caller."""
 
@@ -2128,7 +2147,7 @@ async def _run_turn_inner(
     # canonical resolver shared with the child-turn classifier, so the
     # briefing names the same action tools the validator checks —
     # including ``mode_allowlist``-admitted operations the old
-    # ``_fork_mode_action_tool_ids`` missed.
+    # authored-only resolver missed.
     if sub_turn_kind:
         _state.sub_turn_kind = sub_turn_kind
         try:
@@ -2491,10 +2510,19 @@ async def _run_turn_inner(
     else:
         mode_instruction = get_mode_system_intro(mode_id)
     stage_instruction: str | None = None
-    if is_workflow and hooks.workflow_session is not None:
-        session = hooks.workflow_session()
-        if session is not None and session.stage_id in mode_config.stages:
-            stage_instruction = get_required_stage_instruction(mode_id, session.stage_id)
+    if is_workflow:
+        # Resolve the stage for the instruction body. An explicit child
+        # ``stage_id_override`` (from a fork/delegate target) wins over the
+        # live workflow session's stage so a child can be pinned to a
+        # specific stage. Without an override, read the session's current
+        # stage as before.
+        _stage_for_instruction = stage_id_override or ""
+        if not _stage_for_instruction and hooks.workflow_session is not None:
+            session = hooks.workflow_session()
+            if session is not None:
+                _stage_for_instruction = str(getattr(session, "stage_id", "") or "")
+        if _stage_for_instruction in mode_config.stages:
+            stage_instruction = get_required_stage_instruction(mode_id, _stage_for_instruction)
     system_prompt = assemble_system(mode_instruction, stage_instruction)
 
     # Build tool schemas for this turn — MCP tools + in-process operations.
@@ -5937,7 +5965,6 @@ from kernel.turn_phases._fork import (  # noqa: F401
     _build_minimal_context,
     _execute_fork_fanout,
     _fork_child_budget,
-    _fork_mode_action_tool_ids,
     _fork_mode_requires_tools,
     _fork_yield_policy_override,
     _run_fork_child,

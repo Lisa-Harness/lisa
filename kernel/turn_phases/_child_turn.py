@@ -103,7 +103,8 @@ def classify_child_turn(
             tool_call_count=child_result.tool_call_count,
             called_tool_names=tuple(sorted(child_result.called_tool_names)),
             effect_receipts=tuple(child_result.effect_receipts),
-            block_diagnostic=BlockDiagnostic(
+            block_diagnostic=child_result.block_diagnostic
+            or BlockDiagnostic(
                 reason=_block_reason,  # type: ignore[arg-type]
                 message=child_result.response_text,
             ),

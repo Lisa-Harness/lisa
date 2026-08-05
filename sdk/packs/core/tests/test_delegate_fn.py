@@ -17,7 +17,7 @@ import pytest
 
 from kernel.config import settings as _kernel_settings
 from kernel.delegation import DelegationResult, DelegationSpec
-from kernel.models import YieldAction
+from kernel.models import EffectReceipt, YieldAction
 from kernel.turn_runner import TurnHooks, TurnResult, _default_delegate_fn
 
 
@@ -69,18 +69,19 @@ async def test_default_delegate_fn_ok_status_with_action_tool(
             response_text="learned rust",
             tool_call_count=1,
             called_tool_names={"synthesize_and_store_learning"},
+            effect_receipts=[
+                EffectReceipt(effect="write", capability_id="synthesize_and_store_learning")
+            ],
         )
 
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
-    # Patch the action-tool resolver so the child's mode "requires tools"
-    # and the called name matches the action set.
+    # Patch the canonical action-tool resolver so the child's mode
+    # "requires tools" and the receipt/called-name matches the action set.
+    # ``mode_completion_effects`` is the single source now; the old
+    # ``_fork_mode_action_tool_ids`` no longer exists.
     monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_action_tool_ids",
+        "kernel.turn_runner.mode_completion_effects",
         lambda mode_id: {"synthesize_and_store_learning"} if mode_id == "remember" else set(),
-    )
-    monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_requires_tools",
-        lambda mode_id: mode_id == "remember",
     )
 
     result = await _default_delegate_fn(
@@ -116,12 +117,8 @@ async def test_default_delegate_fn_no_tools_when_only_read_calls(
 
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
     monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_action_tool_ids",
+        "kernel.turn_runner.mode_completion_effects",
         lambda mode_id: {"synthesize_and_store_learning"} if mode_id == "remember" else set(),
-    )
-    monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_requires_tools",
-        lambda mode_id: mode_id == "remember",
     )
 
     result = await _default_delegate_fn(
@@ -146,12 +143,8 @@ async def test_default_delegate_fn_ok_for_read_only_mode(
 
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
     monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_action_tool_ids",
+        "kernel.turn_runner.mode_completion_effects",
         lambda mode_id: set(),
-    )
-    monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_requires_tools",
-        lambda mode_id: False,
     )
 
     result = await _default_delegate_fn(
@@ -184,7 +177,7 @@ async def test_default_delegate_fn_interrupted_on_harness_yield(
 
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
     monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_action_tool_ids",
+        "kernel.turn_runner.mode_completion_effects",
         lambda mode_id: {"synthesize_and_store_learning"} if mode_id == "remember" else set(),
     )
 
@@ -217,7 +210,7 @@ async def test_default_delegate_fn_model_yield_propagates_question(
 
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
     monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_action_tool_ids",
+        "kernel.turn_runner.mode_completion_effects",
         lambda mode_id: set(),
     )
 
@@ -247,12 +240,8 @@ async def test_default_delegate_fn_passes_sub_turn_kind_delegate(
 
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
     monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_action_tool_ids",
+        "kernel.turn_runner.mode_completion_effects",
         lambda mode_id: set(),
-    )
-    monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_requires_tools",
-        lambda mode_id: False,
     )
 
     await _default_delegate_fn(
@@ -281,12 +270,8 @@ async def test_default_delegate_fn_uses_custom_max_iterations(
 
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
     monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_action_tool_ids",
+        "kernel.turn_runner.mode_completion_effects",
         lambda mode_id: set(),
-    )
-    monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_requires_tools",
-        lambda mode_id: False,
     )
 
     await _default_delegate_fn(
@@ -310,7 +295,7 @@ async def test_default_delegate_fn_error_on_exception(
 
     monkeypatch.setattr("kernel.turn_runner.run_turn", fake_run_turn)
     monkeypatch.setattr(
-        "kernel.turn_phases._fork._fork_mode_action_tool_ids",
+        "kernel.turn_runner.mode_completion_effects",
         lambda mode_id: set(),
     )
 

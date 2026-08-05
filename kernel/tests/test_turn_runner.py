@@ -1808,33 +1808,6 @@ def test_fork_mode_requires_tools_true_for_action_modes() -> None:
     assert _fork_mode_requires_tools("nonexistent_mode") is False
 
 
-def test_fork_mode_action_tool_ids_returns_authored_action_tools() -> None:
-    """``_fork_mode_action_tool_ids`` returns the authored *side-effecting*
-    operation/tool ids for action modes and an empty set for modes whose
-    authored tools are all read-effect (ponder) or absent (default)."""
-    from kernel.turn_runner import _fork_mode_action_tool_ids
-
-    markdown_actions = _fork_mode_action_tool_ids("markdown")
-    # markdown declares markdown_forge_document / markdown_generate as
-    # authored operations/tools — at least one must be present.
-    assert "markdown_forge_document" in markdown_actions or "markdown_generate" in markdown_actions
-    # remember declares synthesize_and_store_learning (write-effect) as an
-    # authored action operation — a child that persists learning via that
-    # op must NOT be flagged no_tools (the 2026-08-01 fork:remember,markdown
-    # regression: remember told to use synthesize_and_store_learning was
-    # wrongly flagged because only the memory.* tools were recognized).
-    remember_actions = _fork_mode_action_tool_ids("remember")
-    assert "synthesize_and_store_learning" in remember_actions
-    # ponder's only authored operation is web_search (read-effect) — it
-    # must be excluded because ponder's output is its response text, not a
-    # side-effect. A child that gathers evidence via fetch_page and
-    # produces an opinion has done its job.
-    assert _fork_mode_action_tool_ids("ponder") == set()
-    # Chat-only modes have no authored action tools.
-    assert _fork_mode_action_tool_ids("default") == set()
-    assert _fork_mode_action_tool_ids("nonexistent_mode") == set()
-
-
 @pytest.mark.asyncio
 async def test_run_turn_fork_marks_no_tools_child_when_action_tool_skipped() -> None:
     """A fork child that makes tool calls but none of its mode's authored

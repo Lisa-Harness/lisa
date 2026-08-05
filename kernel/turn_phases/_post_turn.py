@@ -22,7 +22,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from kernel.models import OperationResult, ToolExecutionContext, ToolResult
+from kernel.models import BlockDiagnostic, OperationResult, ToolExecutionContext, ToolResult
 
 if TYPE_CHECKING:
     from kernel.turn_runner import TurnResult
@@ -95,7 +95,17 @@ def _validate_model_capabilities(
     from kernel.turn_runner import TurnResult as _TurnResult  # noqa: PLC0415
 
     return _CapabilityGateBlock(
-        result=_TurnResult(response_text=message, blocked=True, block_origin="capability_gate"),
+        result=_TurnResult(
+            response_text=message,
+            blocked=True,
+            block_origin="capability_gate",
+            block_diagnostic=BlockDiagnostic(
+                reason="capability_gate",
+                resolved_model_id=model_id,
+                missing_capabilities=tuple(sorted(missing)),
+                message=message,
+            ),
+        ),
         missing=missing,
     )
 

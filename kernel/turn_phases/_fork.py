@@ -70,64 +70,6 @@ def _fork_mode_requires_tools(mode_id: str) -> bool:
         return False
 
 
-def _fork_mode_action_tool_ids(mode_id: str) -> set[str]:
-    """Return the authored *side-effecting* action tool ids a fork child must invoke.
-
-    The subset of the mode's ``allowed_operation_ids`` /
-    ``allowed_tool_ids`` whose ``effect`` is ``write`` or
-    ``external_write`` — the tools that actually *land* the mode's work
-    on disk or in memory (e.g. ``markdown_forge_document``, ``write_file``,
-    ``synthesize_and_store_learning``, ``coding_apply_patch``). A fork
-    child that completes without invoking any of these hallucinated its
-    success: it did read-only fetches / searches but never wrote, learned,
-    or applied anything.
-
-    Read-effect authored tools (e.g. ``ponder``'s ``web_search``) are
-    intentionally excluded. A reasoning mode's *output* is its response
-    text (the opinion/analysis), not a side-effect; its authored
-    ``web_search`` is one research aid among several (``fetch_page`` is
-    another), so demanding it specifically would false-positive on a child
-    that gathered evidence via ``fetch_page`` and produced a real opinion.
-    The 2026-07-27 third run hit exactly this: ``ponder`` called
-    ``fetch_page`` 3 times and was wrongly flagged ``no_tools`` because it
-    skipped ``web_search``. Only side-effecting tools are load-bearing for
-    "did the child do its job?"
-    """
-    mode_config = get_workflow_catalog().get(mode_id)
-    if mode_config is None:
-        return set()
-    authored_ops = set(mode_config.authored_allowed_operation_ids)
-    authored_tools = set(mode_config.authored_allowed_tool_ids)
-    if not authored_ops and not authored_tools:
-        return set()
-    # Resolve operation effects via the in-process operation catalog. Tools
-    # are loaded from the catalog MCP server (a separate process) and are
-    # not reliably present in the in-process tool catalog during a fork
-    # child turn, so a tool id not found in the operation catalog is
-    # treated as a candidate action tool (conservative: include it). This
-    # correctly excludes ``ponder``'s ``web_search`` (an operation,
-    # read-effect) while including ``markdown``'s ``write_file`` /
-    # ``markdown_generate`` (tools, not in the op catalog → included).
-    from kernel.operations.registry import get_operation_catalog as _get_ops  # noqa: PLC0415
-
-    op_catalog = _get_ops()
-    result: set[str] = set()
-    for op_id in authored_ops:
-        op_def = op_catalog.get(op_id)
-        if op_def is None:
-            # Unknown operation — include it (can't prove it's read-only).
-            result.add(op_id)
-            continue
-        effect = str(getattr(op_def, "effect", "read") or "read")
-        if effect in ("write", "external_write"):
-            result.add(op_id)
-    # Tools not resolvable in-process: include them. A mode that authors a
-    # tool in its allowlist did so because the tool does its work; we only
-    # exclude operations we can prove are read-effect.
-    result.update(authored_tools)
-    return result
-
-
 def _fork_yield_policy_override(mode_id: str) -> YieldPolicy | None:
     """Return the mode's ``fork_yield_policy`` to apply when forked, or ``None``.
 
@@ -216,9 +158,15 @@ async def _run_fork_child_turn(
             # midpoint write-nudge. Without this, a fork child sees only
             # ``iters: 49/50`` and read-loops to the cap without writing
             # (the 2026-08-03 incident). The ``action_tool_ids`` are
-            # resolved from the mode's authored allowlist inside
-            # ``_run_turn_inner`` via ``_fork_mode_action_tool_ids``.
+            # resolved from the mode's declared completion effects inside
+            # ``_run_turn_inner`` via ``mode_completion_effects``.
             sub_turn_kind="fork",
+            # Pin the child to the target's stage so a forked workflow
+            # stage runs its own stage instruction rather than the mode's
+            # default (or the parent session's current stage). Previously
+            # ``ForkTarget.stage_id`` was parsed and telemetry-only but
+            # never applied to the child turn.
+            stage_id_override=target.stage_id or None,
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
         # ── Shared child-turn classification ───────────────────────────

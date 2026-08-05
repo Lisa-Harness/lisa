@@ -248,7 +248,7 @@ class _TurnState:
     block in the budget briefing and the midpoint write-nudge below."""
     action_tool_ids: set[str] = field(default_factory=set)
     """The side-effecting action tools this sub-turn's mode declares
-    (from ``_fork_mode_action_tool_ids``). Empty for the parent turn and
+    (from ``mode_completion_effects``). Empty for the parent turn and
     for read-only modes. The briefing names these as the success
     criterion; the midpoint nudge fires when the child is past its
     iteration midpoint with zero of these called."""
