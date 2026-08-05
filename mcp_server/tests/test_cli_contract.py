@@ -22,6 +22,8 @@ ALL_SERVERS: list[tuple[str, str, bool]] = [
     ("mcp_server.guard.server", "lisa-guard", False),
     ("mcp_server.content.server", "lisa-content", False),
     ("mcp_server.catalog.server", "lisa-catalog", False),
+    ("mcp_server.storage.server", "lisa-storage", True),
+    ("mcp_server.fetch.server", "lisa-fetch", False),
 ]
 
 

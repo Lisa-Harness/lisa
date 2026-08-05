@@ -22,6 +22,12 @@ Tools (13 total):
 writes. ``--deny-glob`` (repeatable) + ``LISA_STORAGE_DENY_GLOBS`` env add
 glob patterns to the file-sandbox denylist.
 
+Error contract: the SDK backend returns ``json.dumps({"error": ...})``
+strings on failure (its contract is locked by ``sdk/storage/tests``). This
+server seam parses those returns and raises :class:`ToolError` so the MCP
+client sees a structured ``CallToolResult(is_error=True)`` instead of a
+success-shaped JSON error body. Success results pass through unchanged.
+
 Storage is an MCP feature, not a kernel seam — there is no ``BlobIO``
 Protocol in ``kernel/seams/protocols.py``. Hosts that need full blob
 semantics (leases, content-type, range reads) wire their own MCP server;
@@ -30,26 +36,121 @@ the kernel does not care.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.context import Context
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp_types import ToolAnnotations
 
-from mcp_server.config.cli import build_parser, configure_logging, resolve_data_dir
 from sdk.storage import StorageBackend
 
-__all__ = ["init_storage", "main", "mcp"]
+__all__ = ["StorageDeps", "init_storage", "main", "mcp", "set_deps_for_test"]
 
 logger = logging.getLogger(__name__)
 
-mcp = MCPServer("Lisa Storage Server")
 
-_backend: StorageBackend | None = None
+# ── Lifespan deps ───────────────────────────────────────────────────────────
 
 
-# ── Initialization ──────────────────────────────────────────────────────────
+@dataclass
+class StorageDeps:
+    """Server-scoped dependencies owned by the lifespan.
+
+    Constructed from the resolved ``--data-dir`` / ``--readonly`` /
+    ``--deny-glob`` CLI args. The backend is stateless beyond paths, so
+    no teardown is needed.
+    """
+
+    backend: StorageBackend
+
+
+# Test seam: populated by the lifespan in production, or by
+# ``set_deps_for_test`` in tests (direct ``call_tool`` does not run the
+# lifespan). This is an explicit seam, not a hidden production singleton.
+_deps: StorageDeps | None = None
+
+
+def set_deps_for_test(deps: StorageDeps) -> None:
+    """Test-only seam: inject ``StorageDeps`` without spawning stdio.
+
+    The lifespan owns this in production; tests bypass it because the
+    SDK's direct ``call_tool`` path does not run the lifespan.
+    """
+    global _deps  # noqa: PLW0603 — test seam; lifespan owns this in production
+    _deps = deps
+
+
+def _resolve_deps(ctx: Context[Any, Any] | None) -> StorageDeps:
+    """Return the active deps, preferring lifespan context when available.
+
+    The lifespan context is populated during a real stdio session; the
+    test seam is the fallback for direct ``call_tool`` invocations.
+    """
+    if ctx is not None:
+        try:
+            rc = ctx.request_context
+            deps = rc.lifespan_context
+            if isinstance(deps, StorageDeps):
+                return deps
+        except ValueError:
+            pass  # direct call_tool path — no request_context
+    if _deps is None:
+        raise ToolError("lisa-storage is not initialized. Call set_deps_for_test(deps).")
+    return _deps
+
+
+# ── CLI config holder (populated by _init before run()) ────────────────────
+
+
+@dataclass
+class _StorageConfig:
+    data_dir: Path = Path()
+    readonly: bool = False
+    deny_globs: tuple[str, ...] = ()
+
+
+_cfg = _StorageConfig()
+
+
+@asynccontextmanager
+async def _lifespan(app: MCPServer[Any]) -> AsyncIterator[StorageDeps]:
+    """Construct the storage backend from resolved CLI config and yield it."""
+    deps = StorageDeps(
+        backend=StorageBackend(
+            _cfg.data_dir,
+            readonly=_cfg.readonly,
+            deny_globs=_cfg.deny_globs,
+        )
+    )
+    yield deps
+
+
+mcp = MCPServer("Lisa Storage Server", lifespan=_lifespan)
+
+
+def _raise_on_error(raw: str) -> str:
+    """Convert a backend error-string into a ``ToolError``.
+
+    The SDK backend returns ``json.dumps({"error": ...})`` on failure and
+    a success JSON string otherwise. Parse and raise on the ``error`` key
+    so the MCP client sees ``CallToolResult(is_error=True)``. Success
+    results pass through unchanged.
+    """
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+    if isinstance(parsed, dict) and "error" in parsed:
+        raise ToolError(str(parsed["error"]))
+    return raw
 
 
 def init_storage(
@@ -60,35 +161,26 @@ def init_storage(
 ) -> None:
     """Initialize the storage server with a resolved data directory.
 
-    Called by ``main()`` after arg parsing. Tests may call this directly.
-    Creates the ``files/`` and ``checkpoints/`` subdirectories if they
-    don't already exist (unless ``readonly`` is True, in which case the
-    directories must pre-exist or reads will return empty/error results).
-
-    Args:
-        deny_globs: Glob patterns (forward-slash, ``fnmatch`` syntax)
-            matched against the relative path within the ``files/`` sandbox.
-            Any match denies read/write/list/stat/delete/make_dir on that
-            path. Empty by default (no denial). Glob syntax is portable
-            (``*.db``, ``threads/**``, ``repl_history.txt``).
+    Kept as a thin back-compat shim for tests that call ``init_storage``
+    directly. Tests should prefer :func:`set_deps_for_test` with a
+    :class:`StorageDeps` instance.
     """
-    global _backend
-    _backend = StorageBackend(data_dir, readonly=readonly, deny_globs=deny_globs)
-
-
-def _backend_instance() -> StorageBackend:
-    """Return the active backend, raising if uninitialized."""
-    if _backend is None:
-        raise RuntimeError("lisa-storage is not initialized. Call init_storage(data_dir).")
-    backend: StorageBackend = _backend
-    return backend
+    set_deps_for_test(
+        StorageDeps(
+            backend=StorageBackend(data_dir, readonly=readonly, deny_globs=deny_globs),
+        )
+    )
 
 
 # ── File I/O tools ──────────────────────────────────────────────────────────
 
 
-@mcp.tool()
-async def read_file(path: str, encoding: str = "utf-8") -> str:
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def read_file(
+    path: str,
+    encoding: str = "utf-8",
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
     """Read a text file from the files sandbox.
 
     Args:
@@ -96,18 +188,19 @@ async def read_file(path: str, encoding: str = "utf-8") -> str:
         encoding: Text encoding to use (default ``utf-8``).
 
     Returns:
-        The file content as a string, or a JSON error object if the path
+        The file content as a string. Raises :class:`ToolError` if the path
         is unsafe or the file doesn't exist.
     """
-    return _backend_instance().read_file(path, encoding=encoding)
+    return _raise_on_error(_resolve_deps(ctx).backend.read_file(path, encoding=encoding))
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 async def read_file_range(
     path: str,
     start: int = 0,
     length: int = 4096,
     encoding: str = "utf-8",
+    ctx: Context[StorageDeps, Any] | None = None,
 ) -> str:
     """Read a char-bounded slice of a text file from the files sandbox.
 
@@ -122,26 +215,39 @@ async def read_file_range(
         encoding: Text encoding (default ``utf-8``).
 
     Returns:
-        JSON object ``{"content", "start", "length", "total", "eof"}``,
-        or a JSON error object if the path is unsafe or the file is missing.
+        JSON object ``{"content", "start", "length", "total", "eof"}``.
+        Raises :class:`ToolError` if the path is unsafe or the file is missing.
     """
-    return _backend_instance().read_file_range(path, start=start, length=length, encoding=encoding)
+    return _raise_on_error(
+        _resolve_deps(ctx).backend.read_file_range(
+            path, start=start, length=length, encoding=encoding
+        )
+    )
 
 
-@mcp.tool()
-async def write_file(path: str, content: str) -> str:
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+async def write_file(
+    path: str,
+    content: str,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
     """Write text content to a file in the files sandbox.
 
     Creates parent directories as needed. Respects ``--readonly``.
 
     Returns:
-        JSON object with ``ok``, ``path``, and ``bytes``.
+        JSON object with ``ok``, ``path``, and ``bytes``. Raises
+        :class:`ToolError` on readonly or write failure.
     """
-    return _backend_instance().write_file(path, content)
+    return _raise_on_error(_resolve_deps(ctx).backend.write_file(path, content))
 
 
-@mcp.tool()
-async def append_file(path: str, content: str) -> str:
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+async def append_file(
+    path: str,
+    content: str,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
     """Append text content to a file in the files sandbox.
 
     Creates parent directories and the file if absent. Respects
@@ -150,86 +256,117 @@ async def append_file(path: str, content: str) -> str:
 
     Returns:
         JSON object with ``ok``, ``path``, and ``bytes`` (the new total
-        file size).
+        file size). Raises :class:`ToolError` on readonly or append failure.
     """
-    return _backend_instance().append_file(path, content)
+    return _raise_on_error(_resolve_deps(ctx).backend.append_file(path, content))
 
 
-@mcp.tool()
-async def list_files(prefix: str = "") -> str:
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def list_files(
+    prefix: str = "",
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
     """List files under a prefix in the files sandbox.
 
-    Returns a JSON array of relative paths (using forward slashes).
+    Returns a JSON array of relative paths (using forward slashes). Raises
+    :class:`ToolError` if the prefix is unsafe or denied by policy.
     """
-    return _backend_instance().list_files(prefix)
+    return _raise_on_error(_resolve_deps(ctx).backend.list_files(prefix))
 
 
-@mcp.tool()
-async def delete_file(path: str) -> str:
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+async def delete_file(
+    path: str,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
     """Delete a file from the files sandbox.
 
-    Fails on directories (use ``make_dir`` is not reversible here —
-    delete is files-only). Respects ``--readonly``.
+    Fails on directories (delete is files-only). Respects ``--readonly``.
+    Raises :class:`ToolError` on readonly, not-found, or delete failure.
     """
-    return _backend_instance().delete_file(path)
+    return _raise_on_error(_resolve_deps(ctx).backend.delete_file(path))
 
 
-@mcp.tool()
-async def stat_file(path: str) -> str:
-    """Return file metadata (size, modified timestamp, is_dir) for a path."""
-    return _backend_instance().stat_file(path)
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def stat_file(
+    path: str,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
+    """Return file metadata (size, modified timestamp, is_dir) for a path.
+
+    Raises :class:`ToolError` if the path is unsafe or not found.
+    """
+    return _raise_on_error(_resolve_deps(ctx).backend.stat_file(path))
 
 
-@mcp.tool()
-async def make_dir(path: str) -> str:
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+async def make_dir(
+    path: str,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
     """Create a directory (and parents) in the files sandbox.
 
-    Respects ``--readonly``.
+    Respects ``--readonly``. Raises :class:`ToolError` on readonly or
+    make_dir failure.
     """
-    return _backend_instance().make_dir(path)
+    return _raise_on_error(_resolve_deps(ctx).backend.make_dir(path))
 
 
 # ── Checkpoint tools ────────────────────────────────────────────────────────
 
 
-@mcp.tool()
-async def save_checkpoint(bundle: dict[str, Any]) -> str:
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+async def save_checkpoint(
+    bundle: dict[str, Any],
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
     """Persist a checkpoint bundle as JSON under the checkpoints directory.
 
     The ``bundle`` is a serialized :class:`~kernel.models.CheckpointBundle`
     (or any JSON-serializable dict). If ``checkpoint_id`` is present in the
     bundle, it is used as the filename stem; otherwise a new ID is generated.
 
-    Returns a JSON object with ``checkpoint_id``.
+    Returns a JSON object with ``checkpoint_id``. Raises :class:`ToolError`
+    on readonly or save failure.
     """
-    return _backend_instance().save_checkpoint(bundle)
+    return _raise_on_error(_resolve_deps(ctx).backend.save_checkpoint(bundle))
 
 
-@mcp.tool()
-async def restore_checkpoint(checkpoint_id: str) -> str:
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def restore_checkpoint(
+    checkpoint_id: str,
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
     """Load a checkpoint bundle by ID and return it as a JSON string.
 
-    Returns the full bundle dict, or a JSON error object if not found.
+    Returns the full bundle dict. Raises :class:`ToolError` if not found or
+    on restore failure.
     """
-    return _backend_instance().restore_checkpoint(checkpoint_id)
+    return _raise_on_error(_resolve_deps(ctx).backend.restore_checkpoint(checkpoint_id))
 
 
-@mcp.tool()
-async def list_checkpoints(prefix: str = "") -> str:
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def list_checkpoints(
+    prefix: str = "",
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
     """List saved checkpoints as a JSON array of summary objects.
 
     Each entry contains ``checkpoint_id``, ``label``, ``created_at``,
     ``stage_id``, ``turn_count``, and ``mode_id`` (extracted from the
     stored JSON). Sorted by ``created_at`` descending (newest first).
     """
-    return _backend_instance().list_checkpoints(prefix)
+    return _raise_on_error(_resolve_deps(ctx).backend.list_checkpoints(prefix))
 
 
 # ── Model manifest tools ────────────────────────────────────────────────────
 
 
-@mcp.tool()
-async def read_model_manifest(which: str = "proposal") -> str:
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def read_model_manifest(
+    which: str = "proposal",
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
     """Read the active or proposed model manifest as text.
 
     Args:
@@ -237,14 +374,18 @@ async def read_model_manifest(which: str = "proposal") -> str:
             ``models.proposed.yaml`` (default ``"proposal"``).
 
     Returns:
-        The manifest file content as text, or a JSON error object if the
+        The manifest file content as text. Raises :class:`ToolError` if the
         kind is invalid or the file does not exist.
     """
-    return _backend_instance().read_model_manifest(which)
+    return _raise_on_error(_resolve_deps(ctx).backend.read_model_manifest(which))
 
 
-@mcp.tool()
-async def write_model_manifest(content: str, which: str = "proposal") -> str:
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+async def write_model_manifest(
+    content: str,
+    which: str = "proposal",
+    ctx: Context[StorageDeps, Any] | None = None,
+) -> str:
     """Write text content to the active or proposed model manifest.
 
     Creates the parent directory if needed. Respects ``--readonly``.
@@ -255,25 +396,17 @@ async def write_model_manifest(content: str, which: str = "proposal") -> str:
             ``models.proposed.yaml`` (default ``"proposal"``).
 
     Returns:
-        JSON object with ``ok``, ``which``, and ``bytes``.
+        JSON object with ``ok``, ``which``, and ``bytes``. Raises
+        :class:`ToolError` on readonly or write failure.
     """
-    return _backend_instance().write_model_manifest(content, which)
+    return _raise_on_error(_resolve_deps(ctx).backend.write_model_manifest(content, which))
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────
 
 
-def main() -> None:
-    """Entry point for the lisa-storage MCP server (stdio transport).
-
-    Parses the standard CLI contract via the shared argparse helper.
-    ``--data-dir`` is required; the files and checkpoints subdirectories
-    are derived from it. ``--readonly`` disables all write operations.
-    ``--deny-glob`` (repeatable) adds glob patterns to the file-sandbox
-    denylist; ``LISA_STORAGE_DENY_GLOBS`` (comma-separated) is merged in
-    too, so hosts can set policy via env without editing the launch YAML.
-    """
-    parser = build_parser("lisa-storage", supports_readonly=True)
+def _add_storage_args(parser: Any) -> None:
+    """Add ``--deny-glob`` (repeatable) to the standard parser."""
     parser.add_argument(
         "--deny-glob",
         action="append",
@@ -281,24 +414,48 @@ def main() -> None:
         help="Glob pattern to deny in the files sandbox (repeatable). "
         "Matched against forward-slash relative paths via fnmatch.",
     )
-    args = parser.parse_args()
 
-    log = configure_logging(args.log_level, server_name="lisa-storage")
-    data_dir = resolve_data_dir(args.data_dir)
 
+def _init(args: Any) -> None:
+    """Populate ``_cfg`` from parsed args so the lifespan can build the backend."""
     env_globs = [
         g.strip() for g in os.getenv("LISA_STORAGE_DENY_GLOBS", "").split(",") if g.strip()
     ]
-    deny_globs = (*args.deny_glob, *env_globs)
-    log.info(
-        "lisa-storage starting (data_dir=%s, readonly=%s, deny_globs=%s)",
-        data_dir,
-        args.readonly,
-        deny_globs,
+    _cfg.data_dir = Path(args.data_dir)
+    _cfg.readonly = bool(getattr(args, "readonly", False))
+    _cfg.deny_globs = (*args.deny_glob, *env_globs)
+    # Also populate the test seam so the server is usable immediately after
+    # init (the lifespan only runs during a real stdio session).
+    set_deps_for_test(
+        StorageDeps(
+            backend=StorageBackend(
+                _cfg.data_dir,
+                readonly=_cfg.readonly,
+                deny_globs=_cfg.deny_globs,
+            )
+        )
     )
 
-    init_storage(data_dir, readonly=args.readonly, deny_globs=deny_globs)
-    mcp.run(transport=args.transport)
+
+def main() -> None:
+    """Entry point for the lisa-storage MCP server (stdio transport).
+
+    Parses the standard CLI contract via the shared ``run()`` helper.
+    ``--data-dir`` is required; the files and checkpoints subdirectories
+    are derived from it. ``--readonly`` disables all write operations.
+    ``--deny-glob`` (repeatable) adds glob patterns to the file-sandbox
+    denylist; ``LISA_STORAGE_DENY_GLOBS`` (comma-separated) is merged in
+    too, so hosts can set policy via env without editing the launch YAML.
+    """
+    from mcp_server.config.cli import run
+
+    run(
+        "lisa-storage",
+        mcp,
+        _init,
+        supports_readonly=True,
+        add_args=_add_storage_args,
+    )
 
 
 if __name__ == "__main__":

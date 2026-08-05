@@ -20,9 +20,13 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
-__all__ = ["build_parser", "configure_logging", "resolve_data_dir"]
+from mcp.server.mcpserver import MCPServer
+
+__all__ = ["build_parser", "configure_logging", "resolve_data_dir", "run"]
 
 
 def build_parser(server_name: str, *, supports_readonly: bool = False) -> argparse.ArgumentParser:
@@ -134,3 +138,35 @@ def configure_logging(level: str, *, server_name: str) -> logging.Logger:
         host_kind=None,
     )
     return logging.getLogger(server_name)
+
+
+def run(
+    server_name: str,
+    mcp_server: MCPServer[Any],
+    init: Callable[[argparse.Namespace], None],
+    *,
+    supports_readonly: bool = False,
+    add_args: Callable[[argparse.ArgumentParser], None] | None = None,
+) -> None:
+    """Run one first-party MCP server with the standard CLI contract.
+
+    Replaces the copy-pasted ``main()`` body shared by every server. Builds
+    the standard parser (via :func:`build_parser`), optionally extends it
+    with server-specific args, parses argv, configures logging, calls
+    ``init(args)`` to let the server populate its lifespan config, then
+    runs the stdio server. ``init`` is the only server-specific seam; it
+    receives the parsed namespace and must stash any resolved config onto
+    the server's lifespan config holder before the lifespan closure reads
+    it.
+    """
+    parser = build_parser(server_name, supports_readonly=supports_readonly)
+    if add_args is not None:
+        add_args(parser)
+    args = parser.parse_args()
+
+    log = configure_logging(args.log_level, server_name=server_name)
+    data_dir = resolve_data_dir(args.data_dir)
+    log.info("%s starting (data_dir=%s)", server_name, data_dir)
+
+    init(args)
+    mcp_server.run(transport=args.transport)

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 
 def _tool_text(result: Any) -> str:
@@ -135,18 +136,16 @@ async def test_append_file_roundtrip(storage_setup: None) -> None:
 async def test_read_absent_returns_error(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
-    result = await mcp.call_tool("read_file", {"path": "nonexistent.txt"})
-    data = json.loads(_tool_text(result))
-    assert "error" in data
+    with pytest.raises(ToolError):
+        await mcp.call_tool("read_file", {"path": "nonexistent.txt"})
 
 
 @pytest.mark.asyncio
 async def test_traversal_rejected(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
-    result = await mcp.call_tool("read_file", {"path": "../../../etc/passwd"})
-    data = json.loads(_tool_text(result))
-    assert "error" in data
+    with pytest.raises(ToolError):
+        await mcp.call_tool("read_file", {"path": "../../../etc/passwd"})
 
 
 @pytest.mark.asyncio
@@ -156,9 +155,8 @@ async def test_absolute_path_rejected(storage_setup: None) -> None:
     # Use a platform-appropriate absolute path that survives the
     # leading-separator strip and is caught by is_absolute().
     abs_path = str(Path("evil.txt").resolve())
-    result = await mcp.call_tool("write_file", {"path": abs_path, "content": "bad"})
-    data = json.loads(_tool_text(result))
-    assert "error" in data
+    with pytest.raises(ToolError):
+        await mcp.call_tool("write_file", {"path": abs_path, "content": "bad"})
 
 
 @pytest.mark.asyncio
@@ -205,9 +203,8 @@ async def test_delete_file(storage_setup: None) -> None:
     data = json.loads(_tool_text(result))
     assert data["ok"] is True
 
-    read_result = await mcp.call_tool("read_file", {"path": "trash.txt"})
-    data = json.loads(_tool_text(read_result))
-    assert "error" in data
+    with pytest.raises(ToolError):
+        await mcp.call_tool("read_file", {"path": "trash.txt"})
 
 
 @pytest.mark.asyncio
@@ -215,9 +212,8 @@ async def test_delete_directory_fails(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
     await mcp.call_tool("make_dir", {"path": "mydir"})
-    result = await mcp.call_tool("delete_file", {"path": "mydir"})
-    data = json.loads(_tool_text(result))
-    assert "error" in data
+    with pytest.raises(ToolError):
+        await mcp.call_tool("delete_file", {"path": "mydir"})
 
 
 @pytest.mark.asyncio
@@ -236,27 +232,24 @@ async def test_make_dir(storage_setup: None) -> None:
 async def test_readonly_blocks_write(storage_readonly: None) -> None:
     from mcp_server.storage.server import mcp
 
-    result = await mcp.call_tool("write_file", {"path": "test.txt", "content": "x"})
-    data = json.loads(_tool_text(result))
-    assert "error" in data
+    with pytest.raises(ToolError, match="read-only"):
+        await mcp.call_tool("write_file", {"path": "test.txt", "content": "x"})
 
 
 @pytest.mark.asyncio
 async def test_readonly_blocks_delete(storage_readonly: None) -> None:
     from mcp_server.storage.server import mcp
 
-    result = await mcp.call_tool("delete_file", {"path": "test.txt"})
-    data = json.loads(_tool_text(result))
-    assert "error" in data
+    with pytest.raises(ToolError):
+        await mcp.call_tool("delete_file", {"path": "test.txt"})
 
 
 @pytest.mark.asyncio
 async def test_readonly_blocks_make_dir(storage_readonly: None) -> None:
     from mcp_server.storage.server import mcp
 
-    result = await mcp.call_tool("make_dir", {"path": "newdir"})
-    data = json.loads(_tool_text(result))
-    assert "error" in data
+    with pytest.raises(ToolError, match="read-only"):
+        await mcp.call_tool("make_dir", {"path": "newdir"})
 
 
 # ── Checkpoints ─────────────────────────────────────────────────────────────
@@ -290,9 +283,8 @@ async def test_save_restore_checkpoint_roundtrip(storage_setup: None) -> None:
 async def test_restore_missing_checkpoint_returns_error(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
-    result = await mcp.call_tool("restore_checkpoint", {"checkpoint_id": "nonexistent"})
-    data = json.loads(_tool_text(result))
-    assert "error" in data
+    with pytest.raises(ToolError):
+        await mcp.call_tool("restore_checkpoint", {"checkpoint_id": "nonexistent"})
 
 
 @pytest.mark.asyncio
@@ -324,9 +316,8 @@ async def test_list_checkpoints_empty(storage_setup: None) -> None:
 async def test_readonly_blocks_save_checkpoint(storage_readonly: None) -> None:
     from mcp_server.storage.server import mcp
 
-    result = await mcp.call_tool("save_checkpoint", {"bundle": {"label": "x"}})
-    data = json.loads(_tool_text(result))
-    assert "error" in data
+    with pytest.raises(ToolError, match="read-only"):
+        await mcp.call_tool("save_checkpoint", {"bundle": {"label": "x"}})
 
 
 # ── Model manifest ──────────────────────────────────────────────────────────
@@ -354,20 +345,16 @@ async def test_write_read_model_manifest_roundtrip(storage_setup: None) -> None:
 async def test_read_model_manifest_not_found(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
-    result = await mcp.call_tool("read_model_manifest", {"which": "active"})
-    data = json.loads(_tool_text(result))
-    assert "error" in data
-    assert "not found" in data["error"]
+    with pytest.raises(ToolError, match="not found"):
+        await mcp.call_tool("read_model_manifest", {"which": "active"})
 
 
 @pytest.mark.asyncio
 async def test_read_model_manifest_invalid_kind(storage_setup: None) -> None:
     from mcp_server.storage.server import mcp
 
-    result = await mcp.call_tool("read_model_manifest", {"which": "bogus"})
-    data = json.loads(_tool_text(result))
-    assert "error" in data
-    assert "active" in data["error"]
+    with pytest.raises(ToolError, match="active"):
+        await mcp.call_tool("read_model_manifest", {"which": "bogus"})
 
 
 @pytest.mark.asyncio
@@ -387,12 +374,11 @@ async def test_write_model_manifest_active(storage_setup: None) -> None:
 async def test_readonly_blocks_write_model_manifest(storage_readonly: None) -> None:
     from mcp_server.storage.server import mcp
 
-    result = await mcp.call_tool(
-        "write_model_manifest",
-        {"content": "version: 1\n", "which": "proposal"},
-    )
-    data = json.loads(_tool_text(result))
-    assert "error" in data
+    with pytest.raises(ToolError, match="read-only"):
+        await mcp.call_tool(
+            "write_model_manifest",
+            {"content": "version: 1\n", "which": "proposal"},
+        )
 
 
 # ── Glob denylist ───────────────────────────────────────────────────────────
@@ -416,10 +402,8 @@ async def test_deny_blocks_write_denied_glob(storage_with_deny: Path) -> None:
     from mcp_server.storage.server import mcp
 
     for denied in ("secret.db", "threads/abc.jsonl", "repl_history.txt"):
-        result = await mcp.call_tool("write_file", {"path": denied, "content": "x"})
-        data = json.loads(_tool_text(result))
-        assert "error" in data, denied
-        assert "denied by policy" in data["error"], denied
+        with pytest.raises(ToolError, match="denied by policy"):
+            await mcp.call_tool("write_file", {"path": denied, "content": "x"})
 
 
 @pytest.mark.asyncio
@@ -427,10 +411,8 @@ async def test_deny_blocks_read_denied_glob(storage_with_deny: Path) -> None:
     from mcp_server.storage.server import mcp
 
     for denied in ("secret.db", "threads/abc.jsonl", "repl_history.txt"):
-        result = await mcp.call_tool("read_file", {"path": denied})
-        data = json.loads(_tool_text(result))
-        assert "error" in data, denied
-        assert "denied by policy" in data["error"], denied
+        with pytest.raises(ToolError, match="denied by policy"):
+            await mcp.call_tool("read_file", {"path": denied})
 
 
 @pytest.mark.asyncio
@@ -442,10 +424,8 @@ async def test_deny_blocks_delete_and_stat(storage_with_deny: Path) -> None:
         ("stat_file", {"path": "secret.db"}),
         ("make_dir", {"path": "threads/new"}),
     ):
-        result = await mcp.call_tool(tool, args)
-        data = json.loads(_tool_text(result))
-        assert "error" in data, tool
-        assert "denied by policy" in data["error"], tool
+        with pytest.raises(ToolError, match="denied by policy"):
+            await mcp.call_tool(tool, args)
 
 
 @pytest.mark.asyncio
@@ -469,10 +449,8 @@ async def test_deny_rejects_denied_prefix(storage_with_deny: Path) -> None:
     from mcp_server.storage.server import mcp
 
     # A prefix that itself matches a deny glob is rejected outright.
-    result = await mcp.call_tool("list_files", {"prefix": "repl_history.txt"})
-    data = json.loads(_tool_text(result))
-    assert "error" in data
-    assert "denied by policy" in data["error"]
+    with pytest.raises(ToolError, match="denied by policy"):
+        await mcp.call_tool("list_files", {"prefix": "repl_history.txt"})
 
 
 @pytest.mark.asyncio

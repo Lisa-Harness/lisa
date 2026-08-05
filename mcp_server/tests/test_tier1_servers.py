@@ -96,9 +96,8 @@ async def test_guard_configured(guard_setup: None) -> None:
 
 @pytest.fixture
 def content_setup() -> None:
-    from mcp_server.content.server import init_content, reset_content_state
+    from mcp_server.content.server import init_content
 
-    reset_content_state()
     init_content()
 
 
@@ -239,9 +238,8 @@ async def test_content_cache_invalidates_on_roots_change(tmp_path: Path) -> None
 
 @pytest.fixture
 def catalog_setup() -> None:
-    from mcp_server.catalog.server import init_catalog, reset_catalog_state
+    from mcp_server.catalog.server import init_catalog
 
-    reset_catalog_state()
     init_catalog()
 
 
@@ -343,7 +341,7 @@ async def test_catalog_diagnostics_detects_missing_mode_config(tmp_path: Path, m
     mode_dir.mkdir(parents=True, exist_ok=True)
 
     init_catalog(extra_roots=[root])
-    monkeypatch.setattr(server, "_all_roots", lambda: [root])
+    monkeypatch.setattr(server, "_all_roots", lambda ctx=None: [root])
     result = await mcp.call_tool("list_catalog_diagnostics", {})
     data = json.loads(_tool_text(result))
     mode_issues = data["mode_issues"]
@@ -366,7 +364,7 @@ async def test_catalog_diagnostics_detects_missing_operation_metadata(
     (ops_dir / "orphan.py").write_text("# no yml sibling\n", encoding="utf-8")
 
     init_catalog(extra_roots=[root])
-    monkeypatch.setattr(server, "_all_roots", lambda: [root])
+    monkeypatch.setattr(server, "_all_roots", lambda ctx=None: [root])
     result = await mcp.call_tool("list_catalog_diagnostics", {})
     data = json.loads(_tool_text(result))
     op_issues = data["operation_issues"]
@@ -388,7 +386,7 @@ async def test_catalog_diagnostics_detects_missing_tool_metadata(
     (tools_dir / "broken_tool.py").write_text("# no tool yml sibling\n", encoding="utf-8")
 
     init_catalog(extra_roots=[root])
-    monkeypatch.setattr(server, "_all_roots", lambda: [root])
+    monkeypatch.setattr(server, "_all_roots", lambda ctx=None: [root])
     result = await mcp.call_tool("list_catalog_diagnostics", {})
     data = json.loads(_tool_text(result))
     tool_issues = data["tool_issues"]
@@ -411,7 +409,7 @@ async def test_catalog_diagnostics_clean_report(tmp_path: Path, monkeypatch) -> 
     )
 
     init_catalog(extra_roots=[root])
-    monkeypatch.setattr(server, "_all_roots", lambda: [root])
+    monkeypatch.setattr(server, "_all_roots", lambda ctx=None: [root])
     result = await mcp.call_tool("list_catalog_diagnostics", {})
     data = json.loads(_tool_text(result))
     assert data["mode_issues"] == []

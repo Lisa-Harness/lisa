@@ -332,3 +332,14 @@ class SqliteMemoryStore:
 
         lines = [f"- {record.content}" for _, record in top]
         return "\n".join(lines)
+
+    def close(self) -> None:
+        """Close the underlying SQLite connection.
+
+        Called by the lisa-memory MCP server's lifespan teardown so the
+        connection is released cleanly when the stdio session ends. Safe
+        to call when the store was never initialized (no-op).
+        """
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None

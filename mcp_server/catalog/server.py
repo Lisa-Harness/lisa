@@ -26,29 +26,21 @@ from __future__ import annotations
 import json
 import logging
 import os
-import warnings
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-
-# Suppress a benign runpy RuntimeWarning emitted by the console-script
-# launcher. ``lisa-catalog`` is entered via ``runpy.run_module``, which
-# imports ``mcp_server.catalog`` (the package) to locate ``server`` and
-# then execs ``server`` as ``__main__``. The side-effect import of
-# ``mcp_server._packs_venv_site`` below re-enters the package path, and
-# runpy warns that the package is in ``sys.modules`` before ``server``
-# finished executing. The "unpredictable behaviour" it warns about only
-# occurs if ``server`` re-imports itself as ``__main__`` mid-execution —
-# it does not — so the warning is a false alarm for this entry-point
-# pattern. Suppressed narrowly (one message, one category) so real
-# RuntimeWarnings still surface.
-warnings.filterwarnings(
-    "ignore",
-    message=r".*found in sys.modules after import of package.*",
-    category=RuntimeWarning,
-)
+from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.context import Context
+from mcp_types import ToolAnnotations
 
-import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
+# Suppress a benign runpy RuntimeWarning + activate packs venv site-packages.
+# See ``mcp_server/_entrypoint.py`` for the full rationale. Imported
+# side-effect-first at the top so the packs venv is on sys.path before any
+# `from sdk.content import ...` triggers catalog loading.
+import mcp_server._entrypoint  # noqa: F401 — shared stdio entrypoint shim
 from sdk.content import (
     build_catalog_diagnostics_json,
     build_mode_catalog_json,
@@ -63,41 +55,88 @@ from sdk.content import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["init_catalog", "main", "mcp"]
+__all__ = ["CatalogDeps", "init_catalog", "main", "mcp", "set_deps_for_test"]
 
-mcp = MCPServer("Lisa Catalog Server")
-
-_extra_roots: list[Path] = []
+# ── Lifespan deps ───────────────────────────────────────────────────────────
 
 
-def reset_catalog_state() -> None:
-    """Reset all mutable server state (for test isolation)."""
-    global _extra_roots
-    _extra_roots = []
+@dataclass
+class CatalogDeps:
+    """Server-scoped dependencies owned by the lifespan."""
+
+    extra_roots: list[Path] | None = None
+
+
+# Test seam: populated by the lifespan in production, or by
+# ``set_deps_for_test`` in tests (direct ``call_tool`` does not run the
+# lifespan). This is an explicit seam, not a hidden production singleton.
+_deps: CatalogDeps | None = None
+
+
+def set_deps_for_test(deps: CatalogDeps) -> None:
+    """Test-only seam: inject ``CatalogDeps`` without spawning stdio.
+
+    The lifespan owns this in production; tests bypass it because the
+    SDK's direct ``call_tool`` path does not run the lifespan.
+    """
+    global _deps  # noqa: PLW0603 — test seam; lifespan owns this in production
+    _deps = deps
+
+
+def _resolve_deps(ctx: Context[Any, Any] | None) -> CatalogDeps:
+    """Return the active deps, preferring lifespan context when available."""
+    if ctx is not None:
+        try:
+            rc = ctx.request_context
+            deps = rc.lifespan_context
+            if isinstance(deps, CatalogDeps):
+                return deps
+        except ValueError:
+            pass  # direct call_tool path — no request_context
+    if _deps is None:
+        raise RuntimeError("lisa-catalog is not initialized. Call init_catalog().")
+    return _deps
+
+
+def _all_roots(ctx: Context[Any, Any] | None = None) -> list[Path]:
+    """Return the current discovered content roots."""
+    return resolve_content_roots(_resolve_deps(ctx).extra_roots or [])
+
+
+# ── CLI config holder (populated by _init before run()) ────────────────────
+
+
+@asynccontextmanager
+async def _lifespan(app: MCPServer[Any]) -> AsyncIterator[CatalogDeps]:
+    """Yield the resolved extra roots for catalog discovery."""
+    yield CatalogDeps()
+
+
+mcp = MCPServer("Lisa Catalog Server", lifespan=_lifespan)
 
 
 def init_catalog(extra_roots: list[Path] | None = None) -> None:
     """Initialize the catalog server with optional extra roots.
 
-    Called by ``main()`` after arg parsing. Tests may call this directly.
+    Kept as a thin back-compat shim. Tests should prefer
+    :func:`set_deps_for_test` with a :class:`CatalogDeps` instance.
     """
-    global _extra_roots
-    _extra_roots = list(extra_roots) if extra_roots else []
+    set_deps_for_test(CatalogDeps(extra_roots=list(extra_roots) if extra_roots else None))
 
 
-def _all_roots() -> list[Path]:
-    return resolve_content_roots(_extra_roots)
-
-
-@mcp.tool()
-async def list_content_roots() -> str:
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def list_content_roots(
+    ctx: Context[CatalogDeps, Any] | None = None,
+) -> str:
     """Return a JSON array of all discovered content root paths."""
-    roots = _all_roots()
+    roots = _all_roots(ctx)
     return json.dumps([str(r) for r in roots])
 
 
-@mcp.tool()
-async def list_modes() -> str:
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def list_modes(
+    ctx: Context[CatalogDeps, Any] | None = None,
+) -> str:
     """Return the full workflow mode catalog as JSON.
 
     Scans all discovered content roots for ``modes/`` subdirectories, parses
@@ -118,9 +157,9 @@ async def list_modes() -> str:
     root take automatic precedence over pack entries with the same
     ``mode_id``.
     """
-    mode_roots = resolve_mode_roots(_all_roots())
-    operation_roots = resolve_operation_roots(_all_roots())
-    tool_roots = resolve_tool_roots(_all_roots())
+    mode_roots = resolve_mode_roots(_all_roots(ctx))
+    operation_roots = resolve_operation_roots(_all_roots(ctx))
+    tool_roots = resolve_tool_roots(_all_roots(ctx))
     operation_catalog_json = build_operation_catalog_json(operation_roots)
     tool_catalog_json = build_tool_catalog_json(tool_roots)
     default_mcp_tool_ids = _read_default_mcp_tools_env()
@@ -162,8 +201,10 @@ def _read_overlay_root_env() -> Path | None:
     return path if path.is_dir() else None
 
 
-@mcp.tool()
-async def list_operations() -> str:
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def list_operations(
+    ctx: Context[CatalogDeps, Any] | None = None,
+) -> str:
     """Return the full operation catalog as JSON.
 
     Scans all discovered content roots for ``operations/`` subdirectories,
@@ -171,12 +212,14 @@ async def list_operations() -> str:
     operation definitions, and returns a JSON object mapping
     ``operation_id`` to a serializable operation definition dict.
     """
-    operation_roots = resolve_operation_roots(_all_roots())
+    operation_roots = resolve_operation_roots(_all_roots(ctx))
     return build_operation_catalog_json(operation_roots)
 
 
-@mcp.tool()
-async def list_tools() -> str:
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def list_tools(
+    ctx: Context[CatalogDeps, Any] | None = None,
+) -> str:
     """Return the full internal tool catalog as JSON.
 
     Scans all discovered content roots for ``tools/`` subdirectories,
@@ -185,19 +228,21 @@ async def list_tools() -> str:
     The kernel imports the implementation module locally using the
     ``module_path`` field (same pattern as operations).
     """
-    tool_roots = resolve_tool_roots(_all_roots())
+    tool_roots = resolve_tool_roots(_all_roots(ctx))
     return build_tool_catalog_json(tool_roots)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(idempotent_hint=True))
 async def invalidate_catalog() -> str:
     """Clear the mode/operation/tool catalog caches after content roots change."""
     invalidate_catalog_cache()
     return json.dumps({"ok": True})
 
 
-@mcp.tool()
-async def list_catalog_diagnostics() -> str:
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def list_catalog_diagnostics(
+    ctx: Context[CatalogDeps, Any] | None = None,
+) -> str:
     """Return a diagnostics report for content root discovery and catalog scan failures.
 
     Re-scans entry points to capture load failures and missing directories,
@@ -206,7 +251,7 @@ async def list_catalog_diagnostics() -> str:
     Use this to inspect *why* a pack contributed nothing instead of seeing an
     empty catalog with no explanation.
     """
-    all_roots = _all_roots()
+    all_roots = _all_roots(ctx)
     mode_roots = resolve_mode_roots(all_roots)
     operation_roots = resolve_operation_roots(all_roots)
     tool_roots = resolve_tool_roots(all_roots)
@@ -218,23 +263,20 @@ async def list_catalog_diagnostics() -> str:
     )
 
 
+def _init(args: Any) -> None:
+    """Populate the test seam so the server is usable after init."""
+    set_deps_for_test(CatalogDeps())
+
+
 def main() -> None:
     """Entry point for the lisa-catalog MCP server (stdio transport).
 
-    Parses the standard CLI contract via the shared argparse helper.
+    Parses the standard CLI contract via the shared ``run()`` helper.
     ``--readonly`` is not applicable (catalog server is read-only by design).
     """
-    from mcp_server.config.cli import build_parser, configure_logging, resolve_data_dir
+    from mcp_server.config.cli import run
 
-    parser = build_parser("lisa-catalog")
-    args = parser.parse_args()
-
-    log = configure_logging(args.log_level, server_name="lisa-catalog")
-    data_dir = resolve_data_dir(args.data_dir)
-    log.info("lisa-catalog starting (data_dir=%s)", data_dir)
-
-    init_catalog()
-    mcp.run(transport=args.transport)
+    run("lisa-catalog", mcp, _init)
 
 
 if __name__ == "__main__":

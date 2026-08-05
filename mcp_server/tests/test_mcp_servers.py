@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 
 def _tool_text(result: Any) -> str:
@@ -128,11 +129,11 @@ async def test_memory_get_memory_by_id(memory_env: Path) -> None:
 async def test_memory_get_memory_not_found(memory_env: Path) -> None:
     from mcp_server.memory.server import mcp
 
-    result = await mcp.call_tool(
-        "get_memory",
-        {"memory_id": 9999, "user_slug": "alice"},
-    )
-    assert _tool_text(result) == "No memory found."
+    with pytest.raises(ToolError, match="No memory found"):
+        await mcp.call_tool(
+            "get_memory",
+            {"memory_id": 9999, "user_slug": "alice"},
+        )
 
 
 @pytest.mark.asyncio
@@ -145,11 +146,11 @@ async def test_memory_get_memory_cross_surface_is_not_found(memory_env: Path) ->
     )
     memory_id = int(_tool_text(add_result).rsplit("ID ", 1)[-1])
     # A different surface cannot read alice's record.
-    result = await mcp.call_tool(
-        "get_memory",
-        {"memory_id": memory_id, "user_slug": "alice", "surface_id": "surface-b"},
-    )
-    assert _tool_text(result) == "No memory found."
+    with pytest.raises(ToolError, match="No memory found"):
+        await mcp.call_tool(
+            "get_memory",
+            {"memory_id": memory_id, "user_slug": "alice", "surface_id": "surface-b"},
+        )
 
 
 @pytest.mark.asyncio
@@ -167,11 +168,11 @@ async def test_memory_delete_memory_by_id(memory_env: Path) -> None:
     )
     assert f"Deleted memory {memory_id}" in _tool_text(delete_result)
     # Subsequent get returns not-found.
-    get_result = await mcp.call_tool(
-        "get_memory",
-        {"memory_id": memory_id, "user_slug": "alice"},
-    )
-    assert _tool_text(get_result) == "No memory found."
+    with pytest.raises(ToolError, match="No memory found"):
+        await mcp.call_tool(
+            "get_memory",
+            {"memory_id": memory_id, "user_slug": "alice"},
+        )
 
 
 @pytest.mark.asyncio
@@ -184,11 +185,11 @@ async def test_memory_delete_memory_cross_surface_is_not_found(memory_env: Path)
     )
     memory_id = int(_tool_text(add_result).rsplit("ID ", 1)[-1])
     # A different surface cannot delete alice's record.
-    result = await mcp.call_tool(
-        "delete_memory",
-        {"memory_id": memory_id, "user_slug": "alice", "surface_id": "surface-b"},
-    )
-    assert _tool_text(result) == "No memory found."
+    with pytest.raises(ToolError, match="No memory found"):
+        await mcp.call_tool(
+            "delete_memory",
+            {"memory_id": memory_id, "user_slug": "alice", "surface_id": "surface-b"},
+        )
 
 
 @pytest.mark.asyncio

@@ -14,90 +14,121 @@ from __future__ import annotations
 
 import json
 import logging
-import warnings
-from pathlib import Path
-
-# Suppress a benign runpy RuntimeWarning emitted by the console-script
-# launcher. See ``mcp_server/catalog/server.py`` for the full rationale.
-warnings.filterwarnings(
-    "ignore",
-    message=r".*found in sys.modules after import of package.*",
-    category=RuntimeWarning,
-)
-
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from dataclasses import replace as _policy_replace
+from pathlib import Path
+from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.context import Context
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp_types import ToolAnnotations
 
-import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
+# Suppress a benign runpy RuntimeWarning + activate packs venv site-packages.
+# See ``mcp_server/_entrypoint.py`` for the full rationale. Imported
+# side-effect-first at the top so the packs venv is on sys.path before any
+# `from sdk.content import ...` triggers catalog loading.
+import mcp_server._entrypoint  # noqa: F401 — shared stdio entrypoint shim
 from sdk.content import ContentFetcher, FetchPolicy
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["init_fetch", "main", "mcp", "reset_fetch_state"]
+__all__ = ["FetchDeps", "init_fetch", "main", "mcp", "set_deps_for_test"]
 
-mcp = MCPServer("Lisa Fetch Server")
-
-_fetcher: ContentFetcher | None = None
+# ── Lifespan deps ───────────────────────────────────────────────────────────
 
 
-def reset_fetch_state() -> None:
-    """Reset all mutable server state (for test isolation)."""
-    global _fetcher
-    _fetcher = None
+@dataclass
+class FetchDeps:
+    """Server-scoped dependencies owned by the lifespan.
 
-
-def _fetcher_instance() -> ContentFetcher:
-    """Return the active fetcher, raising if uninitialized.
-
-    Mirrors ``mcp_server.storage._backend_instance``: the server requires an
-    explicit ``--data-dir`` via the CLI contract. There is deliberately NO
-    CWD-relative ``Path("artifacts")`` fallback — that resolves differently
-    depending on the process working directory and re-nests caches under a
-    subdirectory (the 2026-07-30 ``artifacts/files/artifacts/files``
-    incident). ``init_fetch`` must be called first (as ``main()`` does).
+    Carries the fetcher and a copy of its default policy so per-call
+    overrides can be built without reaching into the fetcher's private
+    ``_default_policy`` attribute (decoupling the server from the SDK
+    class internals).
     """
-    if _fetcher is None:
-        raise RuntimeError("lisa-fetch is not initialized. Call init_fetch(data_dir).")
-    f: ContentFetcher = _fetcher
-    return f
+
+    fetcher: ContentFetcher
+    default_policy: FetchPolicy = field(default_factory=FetchPolicy)
 
 
-def init_fetch(
-    data_dir: Path,
-    *,
-    default_policy: FetchPolicy | None = None,
-    allowed_hosts: set[str] | None = None,
-    allow_http: bool = False,
-) -> None:
-    """Initialize the fetch server.
+# Test seam: populated by the lifespan in production, or by
+# ``set_deps_for_test`` in tests (direct ``call_tool`` does not run the
+# lifespan). This is an explicit seam, not a hidden production singleton.
+_deps: FetchDeps | None = None
 
-    Called by ``main()`` after arg parsing. Tests may call this directly.
+
+def set_deps_for_test(deps: FetchDeps) -> None:
+    """Test-only seam: inject ``FetchDeps`` without spawning stdio.
+
+    The lifespan owns this in production; tests bypass it because the
+    SDK's direct ``call_tool`` path does not run the lifespan.
     """
-    global _fetcher
-    _fetcher = ContentFetcher(
-        data_dir,
-        default_policy=default_policy or FetchPolicy(),
-        allowed_hosts=allowed_hosts,
-        allow_http=allow_http,
-    )
+    global _deps  # noqa: PLW0603 — test seam; lifespan owns this in production
+    _deps = deps
 
 
-@mcp.tool()
+def _resolve_deps(ctx: Context[Any, Any] | None) -> FetchDeps:
+    """Return the active deps, preferring lifespan context when available."""
+    if ctx is not None:
+        try:
+            rc = ctx.request_context
+            deps = rc.lifespan_context
+            if isinstance(deps, FetchDeps):
+                return deps
+        except ValueError:
+            pass  # direct call_tool path — no request_context
+    if _deps is None:
+        raise ToolError("lisa-fetch is not initialized. Call set_deps_for_test(deps).")
+    return _deps
+
+
+# ── CLI config holder (populated by _init before run()) ────────────────────
+
+
+@dataclass
+class _FetchConfig:
+    data_dir: Path = Path()
+
+
+_cfg = _FetchConfig()
+
+
+@asynccontextmanager
+async def _lifespan(app: MCPServer[Any]) -> AsyncIterator[FetchDeps]:
+    """Construct the fetcher from resolved CLI config and yield it.
+
+    The server owns a ``FetchPolicy`` copy in deps so per-call overrides
+    can be built via ``dataclasses.replace`` without reaching into the
+    fetcher's private ``_default_policy`` attribute.
+    """
+    fetcher = ContentFetcher(_cfg.data_dir)
+    yield FetchDeps(fetcher=fetcher, default_policy=fetcher._default_policy)  # type: ignore[reportPrivateUsage]
+
+
+mcp = MCPServer("Lisa Fetch Server", lifespan=_lifespan)
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 async def fetch_url(
     url: str,
     ttl_seconds: float | None = None,
     force_refresh: bool = False,
     max_bytes: int | None = None,
+    ctx: Context[FetchDeps, Any] | None = None,
 ) -> str:
     """Fetch one http(s) URL and return its text, caching per the effective policy.
 
     Optional overrides build a per-call :class:`FetchPolicy` on top of the
     server default. SSRF rejection (scheme/host/private-IP) raises a
-    ``ValueError`` surfaced as an MCP error. On a network failure with a
-    valid stale cache, the stale content is returned.
+    :class:`ToolError` (surfaced from the SDK fetcher's ``ValueError``).
+    On a network failure with a valid stale cache, the stale content is
+    returned.
     """
-    base = _fetcher_instance()._default_policy
+    deps = _resolve_deps(ctx)
+    base = deps.default_policy
     overrides: dict[str, object] = {}
     if ttl_seconds is not None:
         overrides["ttl_seconds"] = ttl_seconds
@@ -106,7 +137,7 @@ async def fetch_url(
     if max_bytes is not None:
         overrides["max_bytes"] = max_bytes
     policy = _policy_replace(base, **overrides) if overrides else base
-    result = await _fetcher_instance().fetch(url, policy=policy)
+    result = await deps.fetcher.fetch(url, policy=policy)
     return json.dumps(
         {
             "url": result.url,
@@ -121,26 +152,51 @@ async def fetch_url(
     )
 
 
-@mcp.tool()
-async def invalidate_fetch_cache(url: str | None = None) -> str:
+@mcp.tool(annotations=ToolAnnotations(idempotent_hint=True))
+async def invalidate_fetch_cache(
+    url: str | None = None,
+    ctx: Context[FetchDeps, Any] | None = None,
+) -> str:
     """Clear the fetch cache. If ``url`` is given, clear only that entry."""
-    _fetcher_instance().invalidate(url)
+    _resolve_deps(ctx).fetcher.invalidate(url)
     return json.dumps({"ok": True})
+
+
+def init_fetch(
+    data_dir: Path,
+    *,
+    default_policy: FetchPolicy | None = None,
+    allowed_hosts: set[str] | None = None,
+    allow_http: bool = False,
+) -> None:
+    """Initialize the fetch server.
+
+    Kept as a thin back-compat shim. Tests should prefer
+    :func:`set_deps_for_test` with a :class:`FetchDeps` instance.
+    """
+    fetcher = ContentFetcher(
+        data_dir,
+        default_policy=default_policy or FetchPolicy(),
+        allowed_hosts=allowed_hosts,
+        allow_http=allow_http,
+    )
+    set_deps_for_test(FetchDeps(fetcher=fetcher, default_policy=fetcher._default_policy))  # type: ignore[reportPrivateUsage]
+
+
+def _init(args: Any) -> None:
+    """Populate ``_cfg`` from parsed args so the lifespan can build the fetcher."""
+    _cfg.data_dir = Path(args.data_dir)
+    # Also populate the test seam so the server is usable immediately after
+    # init (the lifespan only runs during a real stdio session).
+    fetcher = ContentFetcher(_cfg.data_dir)
+    set_deps_for_test(FetchDeps(fetcher=fetcher, default_policy=fetcher._default_policy))  # type: ignore[reportPrivateUsage]
 
 
 def main() -> None:
     """Entry point for the lisa-fetch MCP server (stdio transport)."""
-    from mcp_server.config.cli import build_parser, configure_logging, resolve_data_dir
+    from mcp_server.config.cli import run
 
-    parser = build_parser("lisa-fetch")
-    args = parser.parse_args()
-
-    log = configure_logging(args.log_level, server_name="lisa-fetch")
-    data_dir = resolve_data_dir(args.data_dir)
-    log.info("lisa-fetch starting (data_dir=%s)", data_dir)
-
-    init_fetch(data_dir)
-    mcp.run(transport=args.transport)
+    run("lisa-fetch", mcp, _init)
 
 
 if __name__ == "__main__":

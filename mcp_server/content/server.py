@@ -20,97 +20,141 @@ from __future__ import annotations
 
 import json
 import logging
-import warnings
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-
-# Suppress a benign runpy RuntimeWarning emitted by the console-script
-# launcher. See ``mcp_server/catalog/server.py`` for the full rationale;
-# ``lisa-content`` has the same side-effect import + entry-point pattern.
-warnings.filterwarnings(
-    "ignore",
-    message=r".*found in sys.modules after import of package.*",
-    category=RuntimeWarning,
-)
+from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.context import Context
+from mcp_types import ToolAnnotations
 
-import mcp_server._packs_venv_site  # noqa: F401 — activates packs venv .pth files
+# Suppress a benign runpy RuntimeWarning + activate packs venv site-packages.
+# See ``mcp_server/_entrypoint.py`` for the full rationale. Imported
+# side-effect-first at the top so the packs venv is on sys.path before any
+# `from sdk.content import ...` triggers catalog loading.
+import mcp_server._entrypoint  # noqa: F401 — shared stdio entrypoint shim
 from sdk.content import ContentReader
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["init_content", "main", "mcp"]
+__all__ = ["ContentDeps", "init_content", "main", "mcp", "set_deps_for_test"]
 
-mcp = MCPServer("Lisa Content Server")
-
-_reader: ContentReader | None = None
+# ── Lifespan deps ───────────────────────────────────────────────────────────
 
 
-def reset_content_state() -> None:
-    """Reset all mutable server state (for test isolation)."""
-    global _reader
-    _reader = ContentReader()
+@dataclass
+class ContentDeps:
+    """Server-scoped dependencies owned by the lifespan."""
+
+    reader: ContentReader
 
 
-def _reader_instance() -> ContentReader:
-    global _reader
-    if _reader is None:
-        _reader = ContentReader()
-    reader: ContentReader = _reader
-    return reader
+# Test seam: populated by the lifespan in production, or by
+# ``set_deps_for_test`` in tests (direct ``call_tool`` does not run the
+# lifespan). This is an explicit seam, not a hidden production singleton.
+_deps: ContentDeps | None = None
+
+
+def set_deps_for_test(deps: ContentDeps) -> None:
+    """Test-only seam: inject ``ContentDeps`` without spawning stdio.
+
+    The lifespan owns this in production; tests bypass it because the
+    SDK's direct ``call_tool`` path does not run the lifespan.
+    """
+    global _deps  # noqa: PLW0603 — test seam; lifespan owns this in production
+    _deps = deps
+
+
+def _resolve_deps(ctx: Context[Any, Any] | None) -> ContentDeps:
+    """Return the active deps, preferring lifespan context when available."""
+    if ctx is not None:
+        try:
+            rc = ctx.request_context
+            deps = rc.lifespan_context
+            if isinstance(deps, ContentDeps):
+                return deps
+        except ValueError:
+            pass  # direct call_tool path — no request_context
+    if _deps is None:
+        raise RuntimeError("lisa-content is not initialized. Call init_content().")
+    return _deps
+
+
+# ── CLI config holder (populated by _init before run()) ────────────────────
+
+
+@dataclass
+class _ContentConfig:
+    extra_roots: list[Path] | None = None
+
+
+_cfg = _ContentConfig()
+
+
+@asynccontextmanager
+async def _lifespan(app: MCPServer[Any]) -> AsyncIterator[ContentDeps]:
+    """Construct the content reader from resolved CLI config and yield it."""
+    yield ContentDeps(reader=ContentReader(extra_roots=_cfg.extra_roots))
+
+
+mcp = MCPServer("Lisa Content Server", lifespan=_lifespan)
 
 
 def init_content(extra_roots: list[Path] | None = None) -> None:
     """Initialize the content server with optional extra roots.
 
-    Called by ``main()`` after arg parsing. Tests may call this directly.
+    Kept as a thin back-compat shim. Tests should prefer
+    :func:`set_deps_for_test` with a :class:`ContentDeps` instance.
     """
-    global _reader
-    _reader = ContentReader(extra_roots=extra_roots)
+    set_deps_for_test(ContentDeps(reader=ContentReader(extra_roots=extra_roots)))
 
 
-def _all_roots() -> list[Path]:
-    """Return the current discovered content roots (delegates to the reader)."""
-    return _reader_instance().roots()
-
-
-@mcp.tool()
-def read_authored_text(relative_path: str) -> str:
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+def read_authored_text(
+    relative_path: str,
+    ctx: Context[ContentDeps, Any] | None = None,
+) -> str:
     """Return the first matching authored text asset, or empty string."""
-    return _reader_instance().read_authored_text(relative_path)
+    return _resolve_deps(ctx).reader.read_authored_text(relative_path)
 
 
-@mcp.tool()
-async def list_content_roots() -> str:
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def list_content_roots(
+    ctx: Context[ContentDeps, Any] | None = None,
+) -> str:
     """Return a JSON array of all discovered content root paths."""
-    roots = _reader_instance().roots()
+    roots = _resolve_deps(ctx).reader.roots()
     return json.dumps([str(r) for r in roots])
 
 
-@mcp.tool()
-async def invalidate_cache() -> str:
+@mcp.tool(annotations=ToolAnnotations(idempotent_hint=True))
+async def invalidate_cache(
+    ctx: Context[ContentDeps, Any] | None = None,
+) -> str:
     """Clear the file-read cache after content roots change."""
-    _reader_instance().invalidate()
+    _resolve_deps(ctx).reader.invalidate()
     return json.dumps({"ok": True})
+
+
+def _init(args: Any) -> None:
+    """Populate ``_cfg`` from parsed args so the lifespan can build the reader."""
+    _cfg.extra_roots = None
+    # Also populate the test seam so the server is usable immediately after
+    # init (the lifespan only runs during a real stdio session).
+    set_deps_for_test(ContentDeps(reader=ContentReader()))
 
 
 def main() -> None:
     """Entry point for the lisa-content MCP server (stdio transport).
 
-    Parses the standard CLI contract via the shared argparse helper.
+    Parses the standard CLI contract via the shared ``run()`` helper.
     ``--readonly`` is not applicable (content server is read-only by design).
     """
-    from mcp_server.config.cli import build_parser, configure_logging, resolve_data_dir
+    from mcp_server.config.cli import run
 
-    parser = build_parser("lisa-content")
-    args = parser.parse_args()
-
-    log = configure_logging(args.log_level, server_name="lisa-content")
-    data_dir = resolve_data_dir(args.data_dir)
-    log.info("lisa-content starting (data_dir=%s)", data_dir)
-
-    init_content()
-    mcp.run(transport=args.transport)
+    run("lisa-content", mcp, _init)
 
 
 if __name__ == "__main__":

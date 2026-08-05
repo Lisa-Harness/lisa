@@ -20,54 +20,105 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.context import Context
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp_types import ToolAnnotations
 
 from kernel.models import MemoryWriteRequest
 from sdk.memory.store import SqliteMemoryStore
 
-__all__ = ["get_store", "init_store", "main", "mcp"]
+__all__ = ["MemoryDeps", "init_store", "main", "mcp", "set_deps_for_test"]
 
 logger = logging.getLogger(__name__)
 
-mcp = MCPServer("Lisa Memory Server")
-_store: Any | None = None
+
+# ── Lifespan deps ───────────────────────────────────────────────────────────
 
 
-def get_store(data_dir: Path) -> SqliteMemoryStore:
-    """Build the memory store from a resolved data directory.
+@dataclass
+class MemoryDeps:
+    """Server-scoped dependencies owned by the lifespan."""
 
-    The db path is derived exclusively from ``--data-dir``
-    (via ``data_dir / "memory.db"``); no env-var fallback, no hardcoded default.
+    store: SqliteMemoryStore
+
+
+# Test seam: populated by the lifespan in production, or by
+# ``set_deps_for_test`` in tests (direct ``call_tool`` does not run the
+# lifespan). This is an explicit seam, not a hidden production singleton.
+_deps: MemoryDeps | None = None
+
+
+def set_deps_for_test(deps: MemoryDeps) -> None:
+    """Test-only seam: inject ``MemoryDeps`` without spawning stdio.
+
+    The lifespan owns this in production; tests bypass it because the
+    SDK's direct ``call_tool`` path does not run the lifespan.
     """
-    store: SqliteMemoryStore = SqliteMemoryStore(db_path=data_dir / "memory.db")
-    return store
+    global _deps  # noqa: PLW0603 — test seam; lifespan owns this in production
+    _deps = deps
 
 
-def _store_instance() -> SqliteMemoryStore:
-    global _store
-    if _store is None:
-        raise RuntimeError(
-            "lisa_memory store is not initialized. "
-            "Call init_store(data_dir) from main() before serving tools."
-        )
-    store: SqliteMemoryStore = _store
-    return store
+def _resolve_deps(ctx: Context[Any, Any] | None) -> MemoryDeps:
+    """Return the active deps, preferring lifespan context when available."""
+    if ctx is not None:
+        try:
+            rc = ctx.request_context
+            deps = rc.lifespan_context
+            if isinstance(deps, MemoryDeps):
+                return deps
+        except ValueError:
+            pass  # direct call_tool path — no request_context
+    if _deps is None:
+        raise ToolError("lisa-memory is not initialized. Call set_deps_for_test(deps).")
+    return _deps
+
+
+# ── CLI config holder (populated by _init before run()) ────────────────────
+
+
+@dataclass
+class _MemoryConfig:
+    data_dir: Path = Path()
+
+
+_cfg = _MemoryConfig()
+
+
+@asynccontextmanager
+async def _lifespan(app: MCPServer[Any]) -> AsyncIterator[MemoryDeps]:
+    """Construct the memory store from resolved CLI config and yield it.
+
+    Tears down the SQLite connection on exit so the file handle is released
+    cleanly when the stdio session ends.
+    """
+    deps = MemoryDeps(store=SqliteMemoryStore(db_path=_cfg.data_dir / "memory.db"))
+    try:
+        yield deps
+    finally:
+        deps.store.close()
+
+
+mcp = MCPServer("Lisa Memory Server", lifespan=_lifespan)
 
 
 def init_store(data_dir: Path) -> None:
-    """Initialize the module-level store from a resolved data directory.
+    """Initialize the memory store from a resolved data directory.
 
-    Called by :func:`main` after parsing ``--data-dir``. Tests may call this
-    directly with a ``tmp_path`` to pin the store without spawning the server.
+    Kept as a thin back-compat shim for tests that call ``init_store``
+    directly. Tests should prefer :func:`set_deps_for_test` with a
+    :class:`MemoryDeps` instance.
     """
-    global _store
-    _store = get_store(data_dir)
+    set_deps_for_test(MemoryDeps(store=SqliteMemoryStore(db_path=data_dir / "memory.db")))
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations())
 async def add_memory(
     user_slug: str,
     content: str,
@@ -79,6 +130,7 @@ async def add_memory(
     instruction_id: str = "mcp.v1",
     content_json: dict[str, Any] | None = None,
     salience: float = 0.0,
+    ctx: Context[MemoryDeps, Any] | None = None,
 ) -> str:
     """Store a new memory snippet scoped to the provided user identity and surface.
 
@@ -101,9 +153,9 @@ async def add_memory(
             created this memory.
         instruction_id: Provenance tag for the instruction version.
         content_json: Structured metadata dict stored alongside content.
-        salience: Ranking weight (0.0–1.0) for recall ordering.
+        salience: Ranking weight (0.0-1.0) for recall ordering.
     """
-    store = _store_instance()
+    store = _resolve_deps(ctx).store
     record = await store.record_memory(
         MemoryWriteRequest(
             user_slug=user_slug,
@@ -121,7 +173,7 @@ async def add_memory(
     return f"Memory stored with ID {record.id}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 async def search_memory(
     user_slug: str,
     query: str,
@@ -129,6 +181,7 @@ async def search_memory(
     workspace_id: str = "default",
     surface_id: str = "",
     limit: int = 5,
+    ctx: Context[MemoryDeps, Any] | None = None,
 ) -> str:
     """Search for surface-scoped memories for a specific user.
 
@@ -137,8 +190,9 @@ async def search_memory(
     The recall engine uses lexical-overlap ranking with a salience boost.
     When no query tokens match any stored content, the most recent records
     are returned (ordered by id DESC) so the caller always gets context.
+    Returns ``"No relevant memories found."`` when the scoped store is empty.
     """
-    store = _store_instance()
+    store = _resolve_deps(ctx).store
     result = await store.recall(
         query=query,
         user_slug=user_slug,
@@ -152,21 +206,22 @@ async def search_memory(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 async def get_memory(
     memory_id: int | str,
     user_slug: str,
     memory_scope: str = "personal",
     workspace_id: str = "default",
     surface_id: str = "",
+    ctx: Context[MemoryDeps, Any] | None = None,
 ) -> str:
     """Fetch a single memory record by id, scoped to the caller's surface.
 
-    Returns the record as a JSON object, or ``"No memory found."`` when no
+    Returns the record as a JSON object. Raises :class:`ToolError` when no
     record matches the id within the caller's surface scope. Cross-surface
     reads are impossible — the scope filters are applied server-side.
     """
-    store = _store_instance()
+    store = _resolve_deps(ctx).store
     record = await store.get_memory(
         memory_id=memory_id,
         user_slug=user_slug,
@@ -175,26 +230,27 @@ async def get_memory(
         surface_id=surface_id,
     )
     if record is None:
-        return "No memory found."
+        raise ToolError("No memory found.")
     return json.dumps(record.model_dump(mode="json"), default=str)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
 async def delete_memory(
     memory_id: int | str,
     user_slug: str,
     memory_scope: str = "personal",
     workspace_id: str = "default",
     surface_id: str = "",
+    ctx: Context[MemoryDeps, Any] | None = None,
 ) -> str:
     """Delete a single memory record by id, scoped to the caller's surface.
 
-    Returns ``"Deleted memory <id>."`` on success, or ``"No memory found."``
+    Returns ``"Deleted memory <id>."`` on success. Raises :class:`ToolError`
     when no record matched the id within the caller's surface scope.
     Cross-surface deletion is impossible — the scope filters are applied
     server-side.
     """
-    store = _store_instance()
+    store = _resolve_deps(ctx).store
     deleted = await store.delete_memory(
         memory_id=memory_id,
         user_slug=user_slug,
@@ -203,20 +259,21 @@ async def delete_memory(
         surface_id=surface_id,
     )
     if not deleted:
-        return "No memory found."
+        raise ToolError("No memory found.")
     return f"Deleted memory {memory_id}."
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 async def list_memories(
     user_slug: str,
     memory_scope: str = "personal",
     workspace_id: str = "default",
     surface_id: str = "",
     limit: int = 20,
+    ctx: Context[MemoryDeps, Any] | None = None,
 ) -> str:
     """Returns a raw JSON array string of memory records."""
-    store = _store_instance()
+    store = _resolve_deps(ctx).store
     records = await store.list_memories(
         user_slug=user_slug,
         workspace_id=workspace_id,
@@ -227,23 +284,23 @@ async def list_memories(
     return json.dumps([r.model_dump(mode="json") for r in records], default=str)
 
 
+def _init(args: Any) -> None:
+    """Populate ``_cfg`` from parsed args so the lifespan can build the store."""
+    _cfg.data_dir = Path(args.data_dir)
+    # Also populate the test seam so the server is usable immediately after
+    # init (the lifespan only runs during a real stdio session).
+    set_deps_for_test(MemoryDeps(store=SqliteMemoryStore(db_path=_cfg.data_dir / "memory.db")))
+
+
 def main() -> None:
     """Entry point for the lisa-memory MCP server (stdio transport).
 
-    Parses the standard CLI contract via the shared argparse helper.
+    Parses the standard CLI contract via the shared ``run()`` helper.
     ``--data-dir`` is required; the store's SQLite file is derived from it.
     """
-    from mcp_server.config.cli import build_parser, configure_logging, resolve_data_dir
+    from mcp_server.config.cli import run
 
-    parser = build_parser("lisa-memory")
-    args = parser.parse_args()
-
-    log = configure_logging(args.log_level, server_name="lisa-memory")
-    data_dir = resolve_data_dir(args.data_dir)
-    log.info("lisa-memory starting (data_dir=%s)", data_dir)
-
-    init_store(data_dir)
-    mcp.run(transport=args.transport)
+    run("lisa-memory", mcp, _init, supports_readonly=True)
 
 
 if __name__ == "__main__":

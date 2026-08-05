@@ -18,9 +18,15 @@ contract consistency; the broker does not persist anything today.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.context import Context
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp_types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 from kernel.models import (
@@ -33,12 +39,75 @@ from sdk.context.context_broker import (
     select_ranked_context,
 )
 
-__all__ = ["BrokerContextRequest", "main", "mcp"]
+__all__ = ["BrokerContextRequest", "ContextDeps", "main", "mcp", "set_deps_for_test"]
 
 logger = logging.getLogger(__name__)
 
-mcp = MCPServer("Lisa Context Server")
-_SERVER_TIMEZONE = "UTC"
+
+# ── Lifespan deps ───────────────────────────────────────────────────────────
+
+
+@dataclass
+class ContextDeps:
+    """Server-scoped dependencies owned by the lifespan.
+
+    Carries the IANA timezone for ambient-facts rendering. The broker is
+    stateless, so this is the only per-server config.
+    """
+
+    timezone: str = "UTC"
+
+
+# Test seam: populated by the lifespan in production, or by
+# ``set_deps_for_test`` in tests (direct ``call_tool`` does not run the
+# lifespan). This is an explicit seam, not a hidden production singleton.
+_deps: ContextDeps | None = None
+
+
+def set_deps_for_test(deps: ContextDeps) -> None:
+    """Test-only seam: inject ``ContextDeps`` without spawning stdio.
+
+    The lifespan owns this in production; tests bypass it because the
+    SDK's direct ``call_tool`` path does not run the lifespan.
+    """
+    global _deps  # noqa: PLW0603 — test seam; lifespan owns this in production
+    _deps = deps
+
+
+def _resolve_deps(ctx: Context[Any, Any] | None) -> ContextDeps:
+    """Return the active deps, preferring lifespan context when available."""
+    if ctx is not None:
+        try:
+            rc = ctx.request_context
+            deps = rc.lifespan_context
+            if isinstance(deps, ContextDeps):
+                return deps
+        except ValueError:
+            pass  # direct call_tool path — no request_context
+    if _deps is None:
+        # Default to UTC for the test path when no seam was set.
+        return ContextDeps()
+    return _deps
+
+
+# ── CLI config holder (populated by _init before run()) ────────────────────
+
+
+@dataclass
+class _ContextConfig:
+    timezone: str = "UTC"
+
+
+_cfg = _ContextConfig()
+
+
+@asynccontextmanager
+async def _lifespan(app: MCPServer[Any]) -> AsyncIterator[ContextDeps]:
+    """Yield the resolved timezone for ambient-facts rendering."""
+    yield ContextDeps(timezone=_cfg.timezone)
+
+
+mcp = MCPServer("Lisa Context Server", lifespan=_lifespan)
 
 
 class BrokerContextRequest(BaseModel):
@@ -70,16 +139,21 @@ def _state_from_request(request: BrokerContextRequest) -> UnifiedState:
     """Build a ``UnifiedState`` from the request's ``state`` field.
 
     Fails closed: if ``state`` is present but malformed (not a valid
-    ``UnifiedState``), a ``ValidationError`` propagates to the caller. If
-    ``state`` is absent or empty, an empty state is used explicitly.
+    ``UnifiedState``), a :class:`ToolError` propagates to the caller with
+    the validation path so the host gets a usable message instead of an
+    opaque internal error. If ``state`` is absent or empty, an empty state
+    is used explicitly.
     """
     state_data = request.state
     if not state_data:
         return UnifiedState(compiled_at="", context_markdown="")
-    return UnifiedState.model_validate(state_data)
+    try:
+        return UnifiedState.model_validate(state_data)
+    except Exception as exc:
+        raise ToolError(f"malformed state: {exc}") from exc
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 async def broker_context(
     query: str,
     mode_id: str = "default",
@@ -92,13 +166,14 @@ async def broker_context(
     state: dict[str, Any] | None = None,
     mode_provider_id: str = "",
     context_evidence_packs: list[str] | None = None,
+    ctx: Context[ContextDeps, Any] | None = None,
 ) -> str:
     """Return a brokered context packet and markdown for the current turn.
 
     Each argument maps to a field on :class:`BrokerContextRequest`. The
     ``state`` argument carries the caller-supplied ``UnifiedState`` snapshot
-    used for evidence selection. Malformed ``state`` raises a validation
-    error instead of silently degrading to an empty state.
+    used for evidence selection. Malformed ``state`` raises a
+    :class:`ToolError` instead of silently degrading to an empty state.
 
     ``mode_provider_id`` and ``context_evidence_packs`` carry the active
     mode's pack-scoped evidence boundary so the broker can filter extension
@@ -127,11 +202,12 @@ async def broker_context(
         mode_provider_id=request.mode_provider_id,
         context_evidence_packs=request.context_evidence_packs or None,
     )
+    deps = _resolve_deps(ctx)
     response = ContextBrokerResponse(
         packet=packet,
         packet_markdown=(
             "## Ambient Facts\n\n"
-            + build_ambient_facts(timezone=_SERVER_TIMEZONE, host_name="lisa-context")
+            + build_ambient_facts(timezone=deps.timezone, host_name="lisa-context")
             + "\n\n"
             + render_context_packet_markdown(packet)
         ),
@@ -140,36 +216,35 @@ async def broker_context(
     return response.model_dump_json()
 
 
-def main() -> None:
-    """Entry point for the lisa-context MCP server (stdio transport).
-
-    Parses the standard CLI contract via the shared argparse helper. The
-    broker is stateless, so ``--data-dir`` is accepted for contract
-    consistency but unused today.
-    """
-    from mcp_server.config.cli import build_parser, configure_logging, resolve_data_dir
-
-    parser = build_parser("lisa-context", supports_readonly=True)
+def _add_context_args(parser: Any) -> None:
+    """Add ``--timezone`` to the standard parser."""
     parser.add_argument(
         "--timezone",
         type=str,
         default="UTC",
         help="IANA timezone for ambient facts (for example, UTC or America/New_York).",
     )
-    args = parser.parse_args()
 
-    global _SERVER_TIMEZONE
-    _SERVER_TIMEZONE = str(args.timezone or "UTC")
 
-    log = configure_logging(args.log_level, server_name="lisa-context")
-    data_dir = resolve_data_dir(args.data_dir)
-    log.info(
-        "lisa-context starting (data_dir=%s, readonly=%s, timezone=%s)",
-        data_dir,
-        args.readonly,
-        _SERVER_TIMEZONE,
-    )
-    mcp.run(transport=args.transport)
+def _init(args: Any) -> None:
+    """Populate ``_cfg`` from parsed args so the lifespan can read the timezone."""
+    _cfg.timezone = str(getattr(args, "timezone", None) or "UTC")
+    # Also populate the test seam so the server is usable immediately after
+    # init (the lifespan only runs during a real stdio session).
+    set_deps_for_test(ContextDeps(timezone=_cfg.timezone))
+
+
+def main() -> None:
+    """Entry point for the lisa-context MCP server (stdio transport).
+
+    Parses the standard CLI contract via the shared ``run()`` helper. The
+    broker is stateless, so ``--data-dir`` is accepted for contract
+    consistency but unused today. ``--timezone`` selects the IANA timezone
+    for ambient-facts rendering.
+    """
+    from mcp_server.config.cli import run
+
+    run("lisa-context", mcp, _init, supports_readonly=True, add_args=_add_context_args)
 
 
 if __name__ == "__main__":
