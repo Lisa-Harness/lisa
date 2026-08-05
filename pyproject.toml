@@ -14,7 +14,7 @@ dependencies = [
     "lisa-pack-compaction",
     "lisa-pack-recovery",
     "lisa-host-runtime",
-    "lisa-host",
+    "lisa-host-cli",
     "rich>=13.7.0",
     "typer>=0.12.3",
 ]
@@ -64,7 +64,6 @@ members = [
     "sdk/packs/compaction",
     "sdk/packs/recovery",
     "host",
-    "packaging/lisa-host",
 ]
 
 [tool.uv.sources]
@@ -89,8 +88,7 @@ lisa-pack-search = { path = "../lisa-packs/search" }
 lisa-pack-markdown = { path = "../lisa-packs/markdown" }
 lisa-pack-letta = { path = "../lisa-packs/letta" }
 lisa-host-runtime = { workspace = true }
-lisa-host = { workspace = true }
-lisa-cli = { path = "../lisa-cli/hosts/cli" }
+lisa-host-cli = { path = "../lisa-hosts/cli/hosts/cli" }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

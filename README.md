@@ -1,6 +1,6 @@
 # Lisa Framework
 
-The public Lisa framework packages: runtime-neutral kernel contracts, an author-facing SDK, a set of public packs, two transport hosts (CLI, web), and the MCP servers. This workspace is intentionally separate from the private production Lisa Teams bot app.
+The public Lisa framework packages: runtime-neutral kernel contracts, an author-facing SDK, a set of public packs, the terminal CLI host, and the MCP servers. This workspace is intentionally separate from the private production Lisa Teams bot app.
 
 ## What Is Included
 
@@ -11,7 +11,7 @@ The public Lisa framework packages: runtime-neutral kernel contracts, an author-
 - `sdk/packs/introspect/`: operational self-model and reflective self-assessment operations.
 - `sdk/packs/checkpoint/`: LLM-enriched checkpoint/restore operations.
 - `host/`: the shared transport-neutral runtime (`HostConfig`, `HostRuntime`, `TransportCallbacks`, provider gateways) used by transport hosts.
-- `../lisa-cli/`: the terminal host (separate repo). Entry point: `lisa`. Provides the REPL, `once`, `verify`, `modes`, `models`, `operations`, `tools`, `mcp`, `pack`, and `intake` commands. Distribution: `lisa-cli` (`uv tool install lisa-cli`).
+- `../lisa-hosts/cli/`: the terminal host (submodule of the `lisa-hosts` umbrella repo). Entry point: `lisa`. Provides the REPL, `once`, `verify`, `modes`, `models`, `operations`, `tools`, `mcp`, `pack`, and `intake` commands. Distribution: `lisa-host-cli` (`uv tool install lisa-host-cli`); meta-package `lisa-host` (`uv tool install lisa-host`).
 - `mcp_server/`: MCP (Model Context Protocol) servers that expose Lisa's surface-scoped tools over stdio — `lisa-context`, `lisa-content`, `lisa-catalog`, `lisa-memory`, `lisa-guard`, `lisa-storage`.
 
 ## What Is Excluded
@@ -32,8 +32,6 @@ uv run lisa models
 uv run lisa once "/search public sdk design"
 uv run lisa once "/markdown Draft a short extension checklist"
 uv run lisa once "/discuss capability tradeoffs"
-uv run lisa cli
-uv run lisa desktop
 uv run lisa
 ```
 
@@ -60,10 +58,9 @@ Key CLI options:
 - `--state-snapshot <file.json>` injects compact local snapshot context into prompt assembly.
 - `--version` prints the lisa version and exits.
 
-On Windows, you can package a standalone executable:
+On Windows, you can package a standalone executable (from the `../lisa-hosts/cli/` checkout):
 
 ```powershell
-uv sync --extra dev
 uv run pyinstaller --name lisa --onefile hosts/cli/main.py
 ```
 
@@ -82,9 +79,8 @@ The root `pyproject.toml` defines a public-only `uv` workspace. The workspace me
 - `lisa-pack-checkpoint` (`sdk/packs/checkpoint/`)
 - `lisa-pack-compaction` (`sdk/packs/compaction/`)
 - `lisa-host-runtime` (`host/`)
-- `lisa-host-cli` (`hosts/cli/`) — entry point `lisa`
-- `lisa-host-web` (`hosts/web/`) — entry point `lisa-web`
-- `lisa-host` (`packaging/lisa-host/`)
+- `lisa-host-cli` (`../lisa-hosts/cli/hosts/cli/`) — entry point `lisa` (submodule of the `lisa-hosts` umbrella repo)
+- `lisa-host` (`../lisa-hosts/packaging/lisa-host/`) — meta-package (`uv tool install lisa-host`)
 
 External public packs resolve from the sibling `../lisa-packs/` checkout and are pulled in with `uv sync --extra ext`: `lisa-pack-brave-search`, `lisa-pack-letta`, `lisa-pack-markdown`, `lisa-pack-mem0`, `lisa-pack-okf`, `lisa-pack-search`.
 

@@ -5,6 +5,9 @@ This checklist governs the release readiness of two repositories:
 - **lisa** — `github.com/Lisa-Framework/lisa` (private core framework)
 - **lisa-packs** — `github.com/Lisa-Framework/lisa-packs` (public pack registry)
 
+Host distribution release (lisa-host-cli, lisa-host meta-package) is governed
+by `../lisa-hosts/docs/RELEASE_CHECKLIST.md`.
+
 Each section applies to one or both repositories as indicated. Items are marked with checkboxes for tracking. Complete all items before tagging a release.
 
 ______________________________________________________________________

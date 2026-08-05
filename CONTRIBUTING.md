@@ -58,7 +58,8 @@ uv run lisa verify
 | `lisa-sdk` | `sdk/` | Author-facing helpers for packs and integration contracts |
 | `lisa-pack-*` | `sdk/packs/` | Public mode/operation packs |
 | `lisa-host-runtime` | `host/` | Transport-neutral host runtime |
-| `lisa-cli` | `../lisa-cli/` | Terminal host CLI (separate repo) |
+| `lisa-host-cli` | `../lisa-hosts/cli/hosts/cli/` | Terminal host CLI (submodule of `lisa-hosts` umbrella repo) |
+| `lisa-host` | `../lisa-hosts/packaging/lisa-host/` | Meta-package (`uv tool install lisa-host`) |
 
 ## Commit Conventions
 
@@ -72,4 +73,3 @@ uv run lisa verify
 ## Questions?
 
 Open a discussion or issue on GitHub.
-
