@@ -624,7 +624,7 @@ def _build_repl_prompt_session(
     """Build a prompt_toolkit PromptSession with history + completion.
 
     Returns ``None`` when prompt_toolkit is unavailable. When available,
-    the session is multi-line: Enter submits the turn, Ctrl+Enter inserts
+    the session is multi-line: Enter submits the turn, Ctrl+J inserts
     a newline (chat-box semantics). A bottom toolbar shows the session
     name, live char/line count, and control hints while the prompt is
     active.
@@ -711,7 +711,7 @@ def _repl_bottom_toolbar(transport: RichTransport, *, session_context: str = "")
             ("class:bottom-toolbar.text", "│ "),
             (
                 "class:bottom-toolbar",
-                " Enter submit · newline Ctrl+Enter · ↑/↓ history · Tab complete ",
+                " Enter submit · newline Ctrl+J · ↑/↓ history · Tab complete ",
             ),
             ("class:bottom-toolbar.text", "│ "),
             ("class:bottom-toolbar.hint", "Ctrl+O "),
@@ -732,12 +732,15 @@ def _build_repl_key_bindings(transport: RichTransport) -> Any:
     """Build chat-box key bindings for the multi-line REPL prompt.
 
     - Enter: submit the current buffer (chat-box semantics).
-    - Ctrl+Enter: insert a newline (for multi-line input). Ctrl+Enter is a
-      reliable single-chord newline in prompt_toolkit; unlike Esc-prefixed
-      sequences it cannot be mistaken for an Alt modifier and leak stray
-      characters into the buffer (the previous ``Esc→Enter`` binding could
-      emit a stage/call fragment into the input area when the escape timed
-      out without a follow-up key).
+    - Ctrl+J: insert a newline (for multi-line input). In a raw terminal
+      there is no ``ControlEnter`` key — Ctrl+Enter and Enter both transmit
+      the same byte (CR / ``ControlM``), so prompt_toolkit treats them as one
+      key. Ctrl+J (``ControlJ`` / LF) is the distinguishable newline chord; it
+      is a reliable single-chord binding that, unlike Esc-prefixed sequences,
+      cannot be mistaken for an Alt modifier and leak stray characters into
+      the buffer (the previous ``Esc→Enter`` binding could emit a stage/call
+      fragment into the input area when the escape timed out without a
+      follow-up key).
     - Ctrl+Y: expand/collapse ALL visible thinking segments in the transcript.
       Thinking is rendered as multiple interspersed rows that interleave with
       the tool calls (a tool/model event closes the current segment). The
@@ -762,7 +765,7 @@ def _build_repl_key_bindings(transport: RichTransport) -> Any:
     def _submit(event: Any) -> None:
         event.current_buffer.validate_and_handle()
 
-    @bindings.add("c-enter")
+    @bindings.add("c-j")
     def _newline(event: Any) -> None:
         event.current_buffer.insert_text("\n")
 
