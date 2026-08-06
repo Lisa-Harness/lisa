@@ -750,6 +750,48 @@ ambient `default_available` capabilities. This ensures the advertiser
 (`build_operation_tool_schemas`) and the validator see the same action-tool
 set.
 
+### Fork vs delegate
+
+Fork and delegate share the same child-turn infrastructure —
+`classify_child_turn`, the `sub_turn_kind` contract seam, the
+`mode_completion_effects` action-tool resolver, and the
+`ForkChildResult` / `DelegationResult` status union. The differences are
+narrow and mostly flow from one irreducible axis: **cardinality**.
+
+| Axis | fork | delegate |
+| --- | --- | --- |
+| Parent stays alive | No — parent turn ends after fan-out | Yes — parent waits and consumes the child's result |
+| Children | N (parallel fan-out) | 1 (sequential) |
+| Concurrency | `asyncio.TaskGroup` — N children run at once | one `run_turn` awaited sequentially |
+| Budget per child | `TurnBudget ÷ N` (every axis halved by child count) | full remaining parent budget |
+| Result shape | `list[ForkChildResult]` | one `DelegationResult` |
+| Sub-turn contract | `prompts/sub_turn/fork_contract.md` — "your output is discarded as unverified" | `prompts/sub_turn/delegate_contract.md` — "return `status=no_tools` so your parent can decide" |
+| Recursion | not bounded (fork children suppress routing hints; no re-fork) | bounded by `delegate_max_depth`; children may themselves delegate |
+| Yield policy | dedicated `fork_yield_policy` (background) — the user cannot answer a mid-turn question while N children run | foreground `yield_policy` (no override) |
+| Trigger | routing syntax — `fork:mode,mode,...` via `transition_stage` | pack operation — LLM tool call with structured `Parameters` |
+
+**Why the parent-lives distinction exists.** Fork is routed via
+`transition_stage("fork:...")` — a *terminal* routing decision. The parent
+hands off and ends; the fan-out results replace what the parent would have
+produced. Delegate is a pack operation (`sdk/packs/core/operations/delegation/`)
+the model calls mid-turn: the parent stays in the tool loop, awaits the
+child's `DelegationResult`, and can make further decisions from the child's
+output (e.g. delegate to `search` for evidence, then synthesize).
+
+**Why fork needs its own yield policy.** Fork children run concurrently
+with no interactive channel — the user cannot answer one child's question
+without blocking the others. A mode that allows inline asks in the
+foreground may forbid them when forked via `fork_yield_policy:
+{ allowed: false }` in `_mode.md`. Delegate children run sequentially while
+the parent waits, so they inherit the mode's foreground `yield_policy`.
+
+**Why delegate needs recursion bounding.** A delegate child can itself
+call `delegate`, forming an agent tree of arbitrary depth.
+`_default_delegate_fn` threads `delegate_depth` and enforces
+`delegate_max_depth` (`kernel/config.py`), returning `status="max_depth"`
+at the cap. Fork children suppress routing hints and do not re-fork, so
+no depth bound is needed today.
+
 ---
 
 ## 10. Model Manifest Integration
