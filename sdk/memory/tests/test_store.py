@@ -521,3 +521,218 @@ async def test_recall_isolates_by_user_scope_and_surface(tmp_path: Path) -> None
     assert "nadia postgres note" in nadia_personal
     assert "adam channel postgres note" in adam_channel
     assert "adam postgres note" not in adam_channel
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: schema cutover — new columns, retirement, salience, count, embeddings
+# ---------------------------------------------------------------------------
+
+
+def test_schema_has_consolidation_columns(tmp_path: Path) -> None:
+    """The hard-cutover schema materializes the model's consolidation fields."""
+    store = _store(tmp_path)
+    assert store._conn is not None
+    cols = {row[1] for row in store._conn.execute("PRAGMA table_info(memories)").fetchall()}
+    for col in (
+        "memory_kind",
+        "status",
+        "supersedes_id",
+        "evidence_ids",
+        "confidence",
+        "merge_count",
+        "valid_until",
+    ):
+        assert col in cols, f"missing column: {col}"
+
+
+def test_schema_version_is_set_and_recreates_on_bump(tmp_path: Path) -> None:
+    """user_version tracks SCHEMA_VERSION; a stale DB is recreated."""
+    db = tmp_path / "memory.db"
+    s1 = SqliteMemoryStore(db_path=db)
+    assert s1._conn is not None
+    assert s1._conn.execute("PRAGMA user_version").fetchone()[0] >= 2
+    # Insert a legacy row by force-dropping to an old version, then reopen —
+    # the store must recreate and drop the stale data.
+    s1._conn.execute("DROP TABLE memories")
+    s1._conn.execute("PRAGMA user_version = 0")
+    s1._conn.commit()
+    s1.close()
+    s2 = SqliteMemoryStore(db_path=db)
+    assert s2._conn is not None
+    assert s2._conn.execute("PRAGMA user_version").fetchone()[0] >= 2
+    # Table recreated with the new columns.
+    cols = {row[1] for row in s2._conn.execute("PRAGMA table_info(memories)").fetchall()}
+    assert "memory_kind" in cols
+
+
+@pytest.mark.asyncio
+async def test_record_memory_persists_memory_kind_and_status(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    record = await store.record_memory(
+        MemoryWriteRequest(
+            user_slug="adam",
+            content="semantic fact",
+            memory_kind="semantic",
+            confidence=0.8,
+            evidence_ids=[1, 2, 3],
+            supersedes_id=1,
+        )
+    )
+    assert record.memory_kind == "semantic"
+    assert record.status == "active"
+    assert record.confidence == 0.8
+    assert record.evidence_ids == [1, 2, 3]
+    assert record.supersedes_id == 1
+
+
+@pytest.mark.asyncio
+async def test_retire_memory_flips_status_and_is_scoped(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    record = await store.record_memory(_write(content="episodic note"))
+    # Wrong scope cannot retire.
+    assert await store.retire_memory(
+        memory_id=record.id, user_slug="nadia"
+    ) is False
+    # Correct scope retires.
+    assert await store.retire_memory(memory_id=record.id, user_slug="adam") is True
+    fetched = await store.get_memory(memory_id=record.id, user_slug="adam")
+    assert fetched is not None
+    assert fetched.status == "retired"
+    # Re-retiring an already-retired record is a no-op (status='active' guard).
+    assert await store.retire_memory(memory_id=record.id, user_slug="adam") is False
+
+
+@pytest.mark.asyncio
+async def test_list_memories_filters_by_kind_and_status(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.record_memory(_write(content="episodic one"))
+    await store.record_memory(_write(content="episodic two"))
+    sem = await store.record_memory(
+        MemoryWriteRequest(user_slug="adam", content="semantic fact", memory_kind="semantic")
+    )
+    await store.retire_memory(memory_id=sem.id, user_slug="adam")
+
+    # Default status='active' excludes the retired semantic record.
+    active = await store.list_memories(user_slug="adam")
+    assert all(r.status == "active" for r in active)
+    assert len(active) == 2
+    # Filter by kind.
+    episodic = await store.list_memories(user_slug="adam", memory_kind="episodic")
+    assert all(r.memory_kind == "episodic" for r in episodic)
+    # status=None surfaces the retired record.
+    all_records = await store.list_memories(user_slug="adam", status=None)
+    assert any(r.status == "retired" for r in all_records)
+
+
+@pytest.mark.asyncio
+async def test_count_memories_filters_by_kind_and_status(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    await store.record_memory(_write(content="episodic one"))
+    await store.record_memory(_write(content="episodic two"))
+    sem = await store.record_memory(
+        MemoryWriteRequest(user_slug="adam", content="semantic fact", memory_kind="semantic")
+    )
+    await store.retire_memory(memory_id=sem.id, user_slug="adam")
+
+    assert await store.count_memories(user_slug="adam") == 2  # active only
+    assert (
+        await store.count_memories(user_slug="adam", memory_kind="episodic") == 2
+    )
+    assert (
+        await store.count_memories(user_slug="adam", memory_kind="semantic") == 0
+    )  # retired
+    assert (
+        await store.count_memories(user_slug="adam", status=None) == 3
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_salience_is_clamped_and_scoped(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    record = await store.record_memory(_write(content="note", salience=0.3))
+    assert await store.update_salience(
+        memory_id=record.id, salience=1.5, user_slug="adam"
+    ) is True
+    fetched = await store.get_memory(memory_id=record.id, user_slug="adam")
+    assert fetched is not None
+    assert fetched.salience == 1.0  # clamped
+    # Wrong scope.
+    assert await store.update_salience(
+        memory_id=record.id, salience=0.2, user_slug="nadia"
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_recall_excludes_retired_by_default(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    a = await store.record_memory(_write(content="active postgres note"))
+    b = await store.record_memory(_write(content="retired postgres note"))
+    await store.retire_memory(memory_id=b.id, user_slug="adam")
+
+    result = await store.recall("postgres", user_slug="adam", limit=5)
+    assert "active postgres note" in result
+    assert "retired postgres note" not in result
+    # status=None surfaces the retired one.
+    all_result = await store.recall(
+        "postgres", user_slug="adam", limit=5, status=None
+    )
+    assert "retired postgres note" in all_result
+    del a
+
+
+# ---------------------------------------------------------------------------
+# Embedding seam (sqlite-vec)
+# ---------------------------------------------------------------------------
+
+
+class _StubEmbeddingProvider:
+    """Deterministic embedding provider: hashes content to a fixed vector."""
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        out: list[list[float]] = []
+        for text in texts:
+            # Stable 4-d vector from the text; dimension matches the store below.
+            base = [float(ord(ch) % 7) for ch in (text + "padding")][:4]
+            while len(base) < 4:
+                base.append(0.0)
+            out.append(base)
+        return out
+
+
+@pytest.mark.asyncio
+async def test_embedding_write_and_semantic_recall(tmp_path: Path) -> None:
+    store = SqliteMemoryStore(
+        db_path=tmp_path / "memory.db",
+        embedding_provider=_StubEmbeddingProvider(),  # type: ignore[arg-type]
+        embedding_dimension=4,
+    )
+    if not store._vec_available:
+        pytest.skip("sqlite-vec not available in this environment")
+    await store.record_memory(_write(content="we chose postgres for analytics"))
+    await store.record_memory(_write(content="the weather is sunny today"))
+
+    # Query that lexically overlaps "postgres" but should rank the
+    # postgres record first via semantic proximity too.
+    result = await store.recall(
+        "postgres analytics database", user_slug="adam", limit=2
+    )
+    assert "we chose postgres for analytics" in result
+
+
+@pytest.mark.asyncio
+async def test_embedding_failure_does_not_block_write(tmp_path: Path) -> None:
+    class _BrokenProvider:
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            raise RuntimeError("embedding service down")
+
+    store = SqliteMemoryStore(
+        db_path=tmp_path / "memory.db",
+        embedding_provider=_BrokenProvider(),  # type: ignore[arg-type]
+        embedding_dimension=4,
+    )
+    # The write must succeed despite the embedding provider raising.
+    record = await store.record_memory(_write(content="survives embedding failure"))
+    assert record.content == "survives embedding failure"
+    # Lexical recall still works.
+    result = await store.recall("survives", user_slug="adam", limit=1)
+    assert "survives embedding failure" in result

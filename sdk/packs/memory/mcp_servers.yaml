@@ -19,6 +19,7 @@ memory:
         list: list_memories
         get: get_memory
         delete: delete_memory
+        retire: retire_memory
 servers:
   - server_id: lisa-memory
     runtime_kind: venv_bin
@@ -36,3 +37,4 @@ servers:
         - get_memory
         - delete_memory
         - list_memories
+        - retire_memory

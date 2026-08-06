@@ -126,20 +126,27 @@ async def add_memory(
     workspace_id: str = "default",
     surface_id: str = "",
     memory_tier: str = "daily",
+    memory_kind: str = "episodic",
     operation_id: str = "mcp.add_memory",
     instruction_id: str = "mcp.v1",
     content_json: dict[str, Any] | None = None,
     salience: float = 0.0,
+    supersedes_id: int | None = None,
+    evidence_ids: list[int] | None = None,
+    confidence: float = 1.0,
+    valid_until: str | None = None,
     ctx: Context[MemoryDeps, Any] | None = None,
 ) -> str:
     """Store a new memory snippet scoped to the provided user identity and surface.
 
     Enforces Lisa's surface-scoped privacy isolation.
 
-    Optional metadata fields (``memory_tier``, ``operation_id``,
-    ``instruction_id``, ``content_json``, ``salience``) let callers control
-    retention, provenance, and ranking. When omitted, sensible defaults
-    are applied so the tool remains usable as a simple "store this" call.
+    Optional metadata fields (``memory_tier``, ``memory_kind``,
+    ``operation_id``, ``instruction_id``, ``content_json``, ``salience``,
+    ``supersedes_id``, ``evidence_ids``, ``confidence``, ``valid_until``)
+    let callers control retention, provenance, ranking, and consolidation
+    supersession. When omitted, sensible defaults are applied so the tool
+    remains usable as a simple "store this" call.
 
     Args:
         user_slug: The user identity to scope the memory to.
@@ -149,11 +156,18 @@ async def add_memory(
         surface_id: Surface isolation key (e.g. channel id).
         memory_tier: Retention tier (``daily``, ``weekly``, ``long_term``,
             ``permanent``). Controls TTL expiry.
+        memory_kind: Cognitive kind (``episodic``, ``semantic``,
+            ``procedural``, ``reflection``, ``preference``).
         operation_id: Provenance tag identifying the operation that
             created this memory.
         instruction_id: Provenance tag for the instruction version.
         content_json: Structured metadata dict stored alongside content.
         salience: Ranking weight (0.0-1.0) for recall ordering.
+        supersedes_id: Id of the record this one supersedes (consolidation).
+        evidence_ids: Ids of the records this one was derived from.
+        confidence: Confidence in the memory (0.0-1.0).
+        valid_until: Optional semantic-validity bound (ISO 8601); overrides
+            the tier TTL when set.
     """
     store = _resolve_deps(ctx).store
     record = await store.record_memory(
@@ -166,8 +180,13 @@ async def add_memory(
             operation_id=operation_id,
             instruction_id=instruction_id,
             memory_tier=memory_tier,  # type: ignore[arg-type]
+            memory_kind=memory_kind,  # type: ignore[arg-type]
             content_json=content_json or {"source": "mcp_tool"},
             salience=salience,
+            supersedes_id=supersedes_id,
+            evidence_ids=evidence_ids or [],
+            confidence=confidence,
+            valid_until=valid_until,
         )
     )
     return f"Memory stored with ID {record.id}"
@@ -181,16 +200,22 @@ async def search_memory(
     workspace_id: str = "default",
     surface_id: str = "",
     limit: int = 5,
+    memory_kind: str | None = None,
+    status: str | None = "active",
     ctx: Context[MemoryDeps, Any] | None = None,
 ) -> str:
     """Search for surface-scoped memories for a specific user.
 
     Records from other surfaces or users cannot be accessed.
 
-    The recall engine uses lexical-overlap ranking with a salience boost.
-    When no query tokens match any stored content, the most recent records
-    are returned (ordered by id DESC) so the caller always gets context.
+    The recall engine uses lexical-overlap ranking with a salience boost,
+    falling back to semantic KNN when embeddings are available. When no
+    query tokens match any stored content, the most recent records are
+    returned (ordered by id DESC) so the caller always gets context.
     Returns ``"No relevant memories found."`` when the scoped store is empty.
+
+    ``status`` defaults to ``"active"`` so retired/superseded records
+    drop out of recall automatically; pass ``None`` to include all.
     """
     store = _resolve_deps(ctx).store
     result = await store.recall(
@@ -200,6 +225,8 @@ async def search_memory(
         memory_scope=memory_scope,
         surface_id=surface_id,
         limit=limit,
+        memory_kind=memory_kind,
+        status=status,
     )
     if not result:
         return "No relevant memories found."
@@ -270,9 +297,16 @@ async def list_memories(
     workspace_id: str = "default",
     surface_id: str = "",
     limit: int = 20,
+    memory_kind: str | None = None,
+    status: str | None = "active",
     ctx: Context[MemoryDeps, Any] | None = None,
 ) -> str:
-    """Returns a raw JSON array string of memory records."""
+    """Returns a raw JSON array string of memory records.
+
+    ``status`` defaults to ``"active"`` so retired records are excluded;
+    pass ``None`` to list all statuses. ``memory_kind`` filters by
+    ``episodic``/``semantic``/… when given.
+    """
     store = _resolve_deps(ctx).store
     records = await store.list_memories(
         user_slug=user_slug,
@@ -280,8 +314,43 @@ async def list_memories(
         memory_scope=memory_scope,
         surface_id=surface_id,
         limit=limit,
+        memory_kind=memory_kind,
+        status=status,
     )
     return json.dumps([r.model_dump(mode="json") for r in records], default=str)
+
+
+@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
+async def retire_memory(
+    memory_id: int | str,
+    user_slug: str,
+    memory_scope: str = "personal",
+    workspace_id: str = "default",
+    surface_id: str = "",
+    ctx: Context[MemoryDeps, Any] | None = None,
+) -> str:
+    """Retire a memory record by id, scoped to the caller's surface.
+
+    Retirement (not deletion) preserves the audit trail — the record
+    stays queryable with ``status=None`` but drops out of the default
+    ``status="active"`` recall pool. Used by consolidation to retire
+    episodic originals after a semantic successor is written.
+
+    Returns ``"Retired memory <id>."`` on success. Raises
+    :class:`ToolError` when no active record matched the id within the
+    caller's surface scope.
+    """
+    store = _resolve_deps(ctx).store
+    retired = await store.retire_memory(
+        memory_id=memory_id,
+        user_slug=user_slug,
+        workspace_id=workspace_id,
+        memory_scope=memory_scope,
+        surface_id=surface_id,
+    )
+    if not retired:
+        raise ToolError("No active memory found.")
+    return f"Retired memory {memory_id}."
 
 
 def _init(args: Any) -> None:

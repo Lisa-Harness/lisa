@@ -432,6 +432,51 @@ class ModelManifestRef(_StrictSessionModel):
     path: str = Field(min_length=1)
 
 
+class MemoryConsolidationTuning(_StrictSessionModel):
+    """Episodic-pressure-triggered, slice-driven memory consolidation knobs.
+
+    When ``enabled`` is ``False`` (the default), no automatic consolidation
+    fires and episodic records accumulate until TTL expiry. When ``True``,
+    a host that wires the memory-consolidation slice provider counts
+    active episodic records each turn and fires the configured
+    ``consolidate_operation`` (default: ``consolidate_semantic``) when the
+    episodic-count pressure (count / ``max_records``) crosses a threshold,
+    paid for out of the post-turn slice pressure budget rather than the
+    user's turn latency.
+
+    Thresholds are fractions of ``max_records`` (``0.0``-``1.0``). The
+    pressure curve (``kernel.slice``) decides whether a between-thresholds
+    turn actually runs the consolidation; the ``hard_threshold`` overrides
+    the curve when episodic pressure is critical.
+    """
+
+    enabled: bool = False
+    trigger: Literal["post_turn", "pre_turn", "explicit", "never"] = "post_turn"
+    pressure_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    hard_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    min_interval_turns: int = Field(default=8, ge=0)
+    batch_size: int = Field(default=10, ge=1)
+    min_episodic_count: int = Field(default=5, ge=1)
+    max_records: int = Field(default=200, ge=1)
+    preferred_model_id: str = "default"
+    consolidate_operation: str = "consolidate_semantic"
+
+    @model_validator(mode="after")
+    def _validate_thresholds(self) -> MemoryConsolidationTuning:
+        if self.hard_threshold < self.pressure_threshold:
+            raise ValueError(
+                "memory.consolidation.hard_threshold must be >= "
+                "memory.consolidation.pressure_threshold"
+            )
+        return self
+
+
+class MemoryContextPlan(_StrictSessionModel):
+    """Memory-store policy on the session context plan."""
+
+    consolidation: MemoryConsolidationTuning = Field(default_factory=MemoryConsolidationTuning)
+
+
 class ContextPlan(_StrictSessionModel):
     """The session-owned context mapper policy."""
 
@@ -440,6 +485,7 @@ class ContextPlan(_StrictSessionModel):
     ranking: ContextRankingPlan = Field(default_factory=ContextRankingPlan)
     budget: ContextBudgetPlan = Field(default_factory=ContextBudgetPlan)
     history: ContextHistoryPlan = Field(default_factory=ContextHistoryPlan)
+    memory: MemoryContextPlan = Field(default_factory=MemoryContextPlan)
     models: ModelManifestRef | None = None
     conflict_policy: Literal["prefer_authority", "surface_conflict", "drop_lower_authority"] = (
         "prefer_authority"

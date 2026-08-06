@@ -21,7 +21,17 @@ from typing import Any, Protocol, runtime_checkable
 
 from kernel.models import MemoryRecord, MemoryWriteRequest
 
-__all__ = ["DEFAULT_TTL_DAYS", "EmbeddingProvider", "SqliteMemoryStore"]
+try:  # optional: semantic recall via sqlite-vec. Absent → lexical-only.
+    import sqlite_vec as _sqlite_vec
+except Exception:  # pragma: no cover - import-time guard  # pylint: disable=broad-except
+    _sqlite_vec = None  # type: ignore[assignment]
+
+__all__ = [
+    "DEFAULT_TTL_DAYS",
+    "SCHEMA_VERSION",
+    "EmbeddingProvider",
+    "SqliteMemoryStore",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +41,12 @@ DEFAULT_TTL_DAYS: dict[str, int | None] = {
     "long_term": 365,
     "permanent": None,
 }
+
+#: Schema version recorded in ``PRAGMA user_version``. Bumping this triggers a
+#: hard recreate of the ``memories`` table (drop + create) per the project's
+#: no-compat/migration rule — dev DBs are expendable, and external backends
+#: (Mem0) own their own schemas. Add one for every material schema change.
+SCHEMA_VERSION: int = 2
 
 
 @runtime_checkable
@@ -67,6 +83,20 @@ def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
     except (json.JSONDecodeError, TypeError):
         content_json = {}
     user_slug = row["user_slug"]
+    raw_evidence = row["evidence_ids"] or "[]"
+    try:
+        evidence_ids = [int(eid) for eid in json.loads(raw_evidence)] if isinstance(
+            raw_evidence, str
+        ) else list(raw_evidence or [])
+    except (json.JSONDecodeError, TypeError, ValueError):
+        evidence_ids = []
+    supersedes_id = row["supersedes_id"]
+    valid_until = row["valid_until"]
+    if valid_until is None:
+        # TTL expiry is the default validity bound. An explicit valid_until
+        # (set on write) overrides it for semantic-validity windows that
+        # differ from the tier TTL.
+        valid_until = row["expires_at"]
     return MemoryRecord(
         id=row["id"],
         workspace_id=row["workspace_id"],
@@ -86,7 +116,12 @@ def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
         created_at=row["created_at"],
         access_count=row["access_count"],
         last_accessed_at=row["last_accessed_at"],
-        valid_until=row["expires_at"],
+        valid_until=valid_until,
+        memory_kind=row["memory_kind"],
+        confidence=row["confidence"],
+        evidence_ids=evidence_ids,
+        supersedes_id=int(supersedes_id) if supersedes_id is not None else None,
+        status=row["status"],
     )
 
 
@@ -100,6 +135,7 @@ class SqliteMemoryStore:
     default_ttl_days: dict[str, int | None] = field(default_factory=lambda: dict(DEFAULT_TTL_DAYS))
 
     _conn: sqlite3.Connection | None = field(default=None, init=False, repr=False)
+    _vec_available: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         path = Path(self.db_path)
@@ -109,8 +145,37 @@ class SqliteMemoryStore:
         self._conn = conn
         self._init_schema()
 
+    def _load_vec_extension(self) -> bool:
+        """Load the ``sqlite-vec`` extension and return True if available.
+
+        Wrapped in try/except so hosts without the wheel (or where the
+        SQLite build lacks extension loading) degrade to lexical-only
+        recall. A warning is logged once at construction; the
+        ``_vec_available`` flag gates every downstream vec0 path.
+        """
+        assert self._conn is not None
+        if _sqlite_vec is None:
+            return False
+        try:
+            self._conn.enable_load_extension(True)
+            self._conn.load_extension(_sqlite_vec.loadable_path())
+            return True
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "sqlite-vec extension unavailable; semantic recall disabled: %s", exc
+            )
+            return False
+
     def _init_schema(self) -> None:
         assert self._conn is not None
+        # Hard cutover on schema version bump: drop and recreate. Per the
+        # project contract there are no compatibility shims — dev DBs are
+        # expendable and external backends own their schemas. The
+        # user_version pragma is the single source of truth.
+        current = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if current != SCHEMA_VERSION:
+            self._conn.executescript("DROP TABLE IF EXISTS memories;")
+            self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS memories (
@@ -124,11 +189,18 @@ class SqliteMemoryStore:
                 operation_id TEXT NOT NULL DEFAULT '',
                 instruction_id TEXT NOT NULL DEFAULT '',
                 memory_tier TEXT NOT NULL DEFAULT 'long_term',
+                memory_kind TEXT NOT NULL DEFAULT 'episodic',
+                status TEXT NOT NULL DEFAULT 'active',
+                supersedes_id INTEGER,
+                evidence_ids TEXT NOT NULL DEFAULT '[]',
+                confidence REAL NOT NULL DEFAULT 1.0,
+                merge_count INTEGER NOT NULL DEFAULT 0,
                 content TEXT NOT NULL,
                 content_json TEXT DEFAULT '{}',
                 salience REAL NOT NULL DEFAULT 0.5,
                 created_at TEXT NOT NULL,
                 expires_at TEXT,
+                valid_until TEXT,
                 access_count INTEGER NOT NULL DEFAULT 0,
                 last_accessed_at TEXT
             );
@@ -141,8 +213,20 @@ class SqliteMemoryStore:
 
             CREATE INDEX IF NOT EXISTS idx_memories_expires
                 ON memories(expires_at) WHERE expires_at IS NOT NULL;
+
+            CREATE INDEX IF NOT EXISTS idx_memories_kind_status
+                ON memories(user_slug, workspace_id, memory_scope, surface_id,
+                            memory_kind, status);
             """
         )
+        self._vec_available = self._load_vec_extension()
+        if self._vec_available:
+            dim = int(self.embedding_dimension)
+            self._conn.execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0("
+                f"memory_id INTEGER PRIMARY KEY, embedding float[{dim}])"
+            )
+            self._conn.commit()
 
     async def record_memory(self, request: MemoryWriteRequest | Any) -> MemoryRecord:
         write = (
@@ -159,9 +243,10 @@ class SqliteMemoryStore:
             """
             INSERT INTO memories (
                 entry_id, user_slug, workspace_id, memory_scope, surface_id, agent_id,
-                operation_id, instruction_id, memory_tier, content, content_json,
-                salience, created_at, expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                operation_id, instruction_id, memory_tier, memory_kind, status,
+                supersedes_id, evidence_ids, confidence, merge_count, content,
+                content_json, salience, created_at, expires_at, valid_until
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry_id,
@@ -173,11 +258,18 @@ class SqliteMemoryStore:
                 write.operation_id,
                 write.instruction_id,
                 write.memory_tier,
+                write.memory_kind,
+                "active",
+                write.supersedes_id,
+                json.dumps([int(eid) for eid in write.evidence_ids], default=str),
+                float(write.confidence),
+                0,
                 write.content,
                 json.dumps(write.content_json or {}, default=str),
                 write.salience,
                 created_at,
                 expires_at,
+                write.valid_until,
             ),
         )
         self._conn.commit()
@@ -187,7 +279,39 @@ class SqliteMemoryStore:
         ).fetchone()
         if row is None:
             raise RuntimeError("Failed to persist memory record")
-        return _row_to_record(row)
+        record = _row_to_record(row)
+        # Opportunistic embedding write: best-effort, never blocks the
+        # memory record. An embedding failure (provider down, dimension
+        # mismatch) logs and continues — the row is already durable in
+        # ``memories``; semantic recall simply won't find it until the
+        # embedding is backfilled.
+        await self._write_embedding(record.id, write.content)
+        return record
+
+    async def _write_embedding(self, memory_id: int, content: str) -> None:
+        """Persist an embedding for ``content`` into the ``memory_vec`` table.
+
+        Best-effort: no-op when no provider or when ``sqlite-vec`` is
+        unavailable. Failures are logged and swallowed so a memory write
+        never fails because of the embedding sidecar.
+        """
+        if self.embedding_provider is None or not self._vec_available:
+            return
+        assert self._conn is not None
+        try:
+            vectors = await self.embedding_provider.embed([content])
+            if not vectors:
+                return
+            vec = vectors[0]
+            self._conn.execute(
+                "INSERT OR REPLACE INTO memory_vec (memory_id, embedding) VALUES (?, ?)",
+                (int(memory_id), json.dumps([float(x) for x in vec])),
+            )
+            self._conn.commit()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "embedding write failed for memory_id=%s: %s", memory_id, exc
+            )
 
     async def list_memories(
         self,
@@ -197,16 +321,36 @@ class SqliteMemoryStore:
         memory_scope: str = "personal",
         surface_id: str = "",
         limit: int = 20,
+        memory_kind: str | None = None,
+        status: str | None = "active",
     ) -> list[MemoryRecord]:
+        """List memories for a surface, optionally filtered by kind and status.
+
+        ``status`` defaults to ``"active"`` so retired/superseded records
+        drop out of the common listing automatically. Pass ``None`` to
+        include all statuses (used by consolidation and admin views).
+        ``memory_kind`` filters by ``episodic``/``semantic``/… when given.
+        """
         assert self._conn is not None
+        where = (
+            "user_slug = ? AND workspace_id = ? AND memory_scope = ? AND surface_id = ?"
+        )
+        params: list[Any] = [user_slug, workspace_id, memory_scope, surface_id]
+        if memory_kind is not None:
+            where += " AND memory_kind = ?"
+            params.append(memory_kind)
+        if status is not None:
+            where += " AND status = ?"
+            params.append(status)
+        params.append(limit)
         rows = self._conn.execute(
-            """
+            f"""
             SELECT * FROM memories
-            WHERE user_slug = ? AND workspace_id = ? AND memory_scope = ? AND surface_id = ?
+            WHERE {where}
             ORDER BY id DESC
             LIMIT ?
             """,
-            (user_slug, workspace_id, memory_scope, surface_id, limit),
+            tuple(params),
         ).fetchall()
         return [_row_to_record(row) for row in rows]
 
@@ -265,6 +409,195 @@ class SqliteMemoryStore:
         self._conn.commit()
         return cursor.rowcount > 0
 
+    async def retire_memory(
+        self,
+        *,
+        memory_id: int | str,
+        user_slug: str,
+        workspace_id: str = "default",
+        memory_scope: str = "personal",
+        surface_id: str = "",
+    ) -> bool:
+        """Mark a memory record retired, scoped to the caller's surface.
+
+        Retirement (not deletion) preserves the audit trail — the record
+        stays queryable with ``status=None`` but drops out of the default
+        ``status='active'`` recall pool. Used by consolidation to retire
+        episodic originals after a semantic successor is written. Returns
+        ``True`` when a row was updated.
+        """
+        assert self._conn is not None
+        cursor = self._conn.execute(
+            """
+            UPDATE memories
+            SET status = 'retired'
+            WHERE id = ? AND user_slug = ? AND workspace_id = ?
+              AND memory_scope = ? AND surface_id = ? AND status = 'active'
+            """,
+            (int(memory_id), user_slug, workspace_id, memory_scope, surface_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def update_salience(
+        self,
+        *,
+        memory_id: int | str,
+        salience: float,
+        user_slug: str,
+        workspace_id: str = "default",
+        memory_scope: str = "personal",
+        surface_id: str = "",
+    ) -> bool:
+        """Update a record's salience, scoped to the caller's surface.
+
+        Hook for decay-aware dynamic salience (the consolidation slice
+        boosts the semantic successor's salience; a future enhancement
+        can decay on recall access). Returns ``True`` when a row was
+        updated.
+        """
+        assert self._conn is not None
+        cursor = self._conn.execute(
+            """
+            UPDATE memories
+            SET salience = ?
+            WHERE id = ? AND user_slug = ? AND workspace_id = ?
+              AND memory_scope = ? AND surface_id = ?
+            """,
+            (
+                float(max(0.0, min(1.0, salience))),
+                int(memory_id),
+                user_slug,
+                workspace_id,
+                memory_scope,
+                surface_id,
+            ),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def count_memories(
+        self,
+        *,
+        user_slug: str,
+        workspace_id: str = "default",
+        memory_scope: str = "personal",
+        surface_id: str = "",
+        memory_kind: str | None = None,
+        status: str | None = "active",
+    ) -> int:
+        """Count memories for a surface, optionally filtered by kind and status.
+
+        Used by the consolidation slice to compute episodic pressure
+        (episodic-active count / ``memory_max_records``) without pulling
+        rows. Defaults to ``status='active'`` to match ``list_memories``.
+        """
+        assert self._conn is not None
+        where = (
+            "user_slug = ? AND workspace_id = ? AND memory_scope = ? AND surface_id = ?"
+        )
+        params: list[Any] = [user_slug, workspace_id, memory_scope, surface_id]
+        if memory_kind is not None:
+            where += " AND memory_kind = ?"
+            params.append(memory_kind)
+        if status is not None:
+            where += " AND status = ?"
+            params.append(status)
+        row = self._conn.execute(
+            f"SELECT COUNT(*) FROM memories WHERE {where}", tuple(params)
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    async def _semantic_pool(
+        self,
+        *,
+        query: str,
+        user_slug: str,
+        workspace_id: str,
+        memory_scope: str,
+        surface_id: str,
+        memory_kind: str | None,
+        status: str | None,
+        now_iso: str,
+        recall_pool: int,
+    ) -> list[sqlite3.Row]:
+        """KNN candidate pool over ``memory_vec``, re-ranked by the caller.
+
+        Returns an empty list when embeddings are unavailable or the
+        query is empty — the caller falls back to the lexical pool.
+        """
+        assert self._conn is not None
+        if self.embedding_provider is None or not self._vec_available or not query.strip():
+            return []
+        try:
+            vectors = await self.embedding_provider.embed([query])
+            if not vectors:
+                return []
+            where = (
+                "m.user_slug = ? AND m.workspace_id = ? "
+                "AND m.memory_scope = ? AND m.surface_id = ?"
+            )
+            params: list[Any] = [user_slug, workspace_id, memory_scope, surface_id]
+            if memory_kind is not None:
+                where += " AND m.memory_kind = ?"
+                params.append(memory_kind)
+            if status is not None:
+                where += " AND m.status = ?"
+                params.append(status)
+            params.append(now_iso)
+            params.append(json.dumps([float(x) for x in vectors[0]]))
+            params.append(recall_pool)
+            return self._conn.execute(
+                f"""
+                SELECT m.* FROM memories m
+                JOIN memory_vec v ON v.memory_id = m.id
+                WHERE {where}
+                  AND (m.expires_at IS NULL OR m.expires_at >= ?)
+                ORDER BY v.embedding MATCH ? KNN ?
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("semantic recall failed; falling back to lexical: %s", exc)
+            return []
+
+    def _lexical_pool(
+        self,
+        *,
+        user_slug: str,
+        workspace_id: str,
+        memory_scope: str,
+        surface_id: str,
+        memory_kind: str | None,
+        status: str | None,
+        now_iso: str,
+        recall_pool: int,
+    ) -> list[sqlite3.Row]:
+        """Recent-rows candidate pool for lexical recall ranking."""
+        assert self._conn is not None
+        where = (
+            "user_slug = ? AND workspace_id = ? AND memory_scope = ? "
+            "AND surface_id = ? AND (expires_at IS NULL OR expires_at >= ?)"
+        )
+        params: list[Any] = [user_slug, workspace_id, memory_scope, surface_id, now_iso]
+        if memory_kind is not None:
+            where += " AND memory_kind = ?"
+            params.append(memory_kind)
+        if status is not None:
+            where += " AND status = ?"
+            params.append(status)
+        params.append(recall_pool)
+        return self._conn.execute(
+            f"""
+            SELECT * FROM memories
+            WHERE {where}
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+
     async def recall(self, query: str, **kwargs: Any) -> str:
         user_slug = str(kwargs.get("user_slug") or "").strip() or "default"
         workspace_id = str(kwargs.get("workspace_id") or "default").strip() or "default"
@@ -272,22 +605,36 @@ class SqliteMemoryStore:
         surface_id = str(kwargs.get("surface_id") or "").strip()
         limit = int(kwargs.get("limit", 5) or 5)
         recall_pool = int(kwargs.get("recall_pool", 40) or 40)
+        memory_kind = kwargs.get("memory_kind")
+        status = kwargs.get("status", "active")
 
         assert self._conn is not None
 
         tokens = {token.strip().lower() for token in query.split() if token.strip()}
         now_iso = _now_iso()
 
-        rows = self._conn.execute(
-            """
-            SELECT * FROM memories
-            WHERE user_slug = ? AND workspace_id = ? AND memory_scope = ? AND surface_id = ?
-              AND (expires_at IS NULL OR expires_at >= ?)
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (user_slug, workspace_id, memory_scope, surface_id, now_iso, recall_pool),
-        ).fetchall()
+        rows = await self._semantic_pool(
+            query=query,
+            user_slug=user_slug,
+            workspace_id=workspace_id,
+            memory_scope=memory_scope,
+            surface_id=surface_id,
+            memory_kind=memory_kind,
+            status=status,
+            now_iso=now_iso,
+            recall_pool=recall_pool,
+        )
+        if not rows:
+            rows = self._lexical_pool(
+                user_slug=user_slug,
+                workspace_id=workspace_id,
+                memory_scope=memory_scope,
+                surface_id=surface_id,
+                memory_kind=memory_kind,
+                status=status,
+                now_iso=now_iso,
+                recall_pool=recall_pool,
+            )
         if not rows:
             return ""
 

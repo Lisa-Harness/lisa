@@ -28,3 +28,6 @@ testpaths = ["tests"]
 
 [project.entry-points."lisa.extensions.content_roots"]
 memory = "sdk.packs.memory:get_content_root"
+
+[project.entry-points."lisa.extensions.slice_providers"]
+memory_consolidation = "sdk.packs.memory.slice_provider:get_slice_provider_factory"

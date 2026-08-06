@@ -1,0 +1,10 @@
+type: Lisa Operation
+title: Consolidate Episodic Memories into Semantic
+description: Cluster related episodic memory records and distill them into a single durable semantic fact, then retire the originals. Invoked by the memory-consolidation slice; not user-facing by default.
+tags: [memory, consolidation, semantic, reflection]
+status: stable
+generated: { by: human:adam, at: 2026-08-06T00:00:00Z }
+operation_id: consolidate_semantic
+exportable: true
+default_available: false
+effect: write
