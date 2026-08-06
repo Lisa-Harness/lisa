@@ -247,11 +247,37 @@ async def test_adhoc_multistep_chain_creates_durable_instance() -> None:
     persists it via ``workflow_instance_updater``. Without this, the
     ephemeral ``chain_satisfied`` set resets on the next turn and a
     yield → "continue" resume skips the middle step.
+
+    2026-08-06 zombie-instance fix: persistence is deferred to the first
+    successful ``transition_stage`` handoff. The stub model issues one
+    ``transition_stage(search)`` call so the deferred persist fires; a
+    stub that returns no tool calls would leave no instance (the
+    transactional contract — a turn that fails before any handoff must
+    not leave a zombie).
     """
     active_instance: list[WorkflowInstance | None] = [None]
     saved_instances: list[WorkflowInstance] = []
+    _handoff_issued = {"flag": False}
 
     async def complete(**_kwargs: Any) -> _StubCompletion:
+        # First iteration: issue the transition_stage call the routing
+        # hint asked for so the deferred ad-hoc persist fires. After that,
+        # return a plain completion to end the turn.
+        if not _handoff_issued["flag"]:
+            _handoff_issued["flag"] = True
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_handoff",
+                        "type": "function",
+                        "function": {
+                            "name": "transition_stage",
+                            "arguments": '{"target_stage_id": "search"}',
+                        },
+                    }
+                ],
+            )
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
@@ -278,13 +304,17 @@ async def test_adhoc_multistep_chain_creates_durable_instance() -> None:
             hooks=hooks,
         )
 
-    assert saved_instances, "an ad-hoc WorkflowInstance must be created for a multi-step chain"
+    assert saved_instances, "an ad-hoc WorkflowInstance must be created on the first handoff"
     instance = saved_instances[0]
     assert instance.spawned_from == "adhoc"
     mode_ids = [s.mode_id for s in instance.declared_steps]
     assert mode_ids == ["search", "coding", "markdown"]
-    assert instance.current_step_id == instance.declared_steps[0].step_id
-    assert instance.current_mode_id == "search"
+    # The first step (search) is complete after the deferred persist; the
+    # pointer has advanced to the next step (coding).
+    assert "search_0" in instance.completed_steps or any(
+        s.mode_id == "search" and s.step_id in instance.completed_steps
+        for s in instance.declared_steps
+    )
 
 
 @pytest.mark.asyncio
@@ -389,4 +419,53 @@ async def test_adhoc_skipped_when_plan_escalation_fires() -> None:
     assert not adhoc_instances, (
         "ad-hoc instance must not be created when plan escalation fires "
         f"(got {len(adhoc_instances)} ad-hoc instance(s))"
+    )
+
+
+@pytest.mark.asyncio
+async def test_adhoc_chain_not_persisted_when_no_handoff_occurs() -> None:
+    """A multi-step chain that never hands off must not persist an instance.
+
+    The 2026-08-06 zombie-instance incident: at 17:58 a failed fork
+    persisted an ad-hoc ``WorkflowInstance`` whose creation fork errored
+    (``RouterRequest`` TypeError, then ``is_fork_target`` NameError). The
+    instance was never rolled back and drove every subsequent turn's
+    "plan-driven next step" against the user's actual intent. The fix
+    defers ad-hoc persistence to the first successful ``transition_stage``
+    handoff; a turn that ends without any handoff (model returns a plain
+    completion, or the turn fails) leaves no instance in the store.
+    """
+    active_instance: list[WorkflowInstance | None] = [None]
+    saved_instances: list[WorkflowInstance] = []
+
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        # Plain completion — no transition_stage call. The ad-hoc steps
+        # are compiled at turn start but never persisted.
+        return _StubCompletion(content="Done.")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow_instance = lambda: active_instance[0]
+
+    def _wi_updater(instance: WorkflowInstance) -> None:
+        saved_instances.append(instance)
+        active_instance[0] = instance
+
+    hooks.workflow_instance_updater = _wi_updater
+
+    catalog = _catalog_with_chain()
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
+        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
+        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
+    ):
+        await run_turn(
+            mode_id="default",
+            query="search the web then read your code then write a markdown",
+            hooks=hooks,
+        )
+
+    assert not saved_instances, (
+        "no WorkflowInstance must be persisted when no handoff occurred "
+        f"(got {len(saved_instances)} instance(s)) — deferred persist prevents "
+        "zombie instances from failed turns"
     )

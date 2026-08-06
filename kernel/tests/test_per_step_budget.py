@@ -291,7 +291,12 @@ async def test_step_counter_resets_on_handoff() -> None:
     assert advanced.current_step_id == "coding_1"
     # The turn completed (did not hit the per-step cap, which would have
     # synthesized a second handoff). The model produced text in coding.
-    assert result.response_text == "Done coding."
+    # The instance is now active (persisted on the first handoff via the
+    # deferred-persist path), so the post-turn progress renderer appends
+    # a ``## Workflow progress`` block — assert the prefix, not equality.
+    assert result.response_text.startswith("Done coding."), (
+        f"expected 'Done coding.' prefix, got: {result.response_text!r}"
+    )
 
 
 @pytest.mark.asyncio

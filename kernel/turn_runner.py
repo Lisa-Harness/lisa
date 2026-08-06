@@ -2896,26 +2896,28 @@ async def _run_turn_inner(
                         _adhoc_steps = ()
                         _log.debug("ad-hoc chain compile failed: %s", adhoc_exc)
                     if len(_adhoc_steps) >= 2:
-                        try:
-                            _adhoc_instance = WorkflowInstance(
-                                declared_steps=_adhoc_steps,
-                                current_step_id=_adhoc_steps[0].step_id,
-                                current_mode_id=_adhoc_steps[0].mode_id,
-                                spawned_from="adhoc",
-                            )
-                            hooks.workflow_instance_updater(_adhoc_instance)
-                            _log.info(
-                                "persisted ad-hoc WorkflowInstance instance_id=%s "
-                                "steps=%d first=%s (chain survives yield→resume)",
-                                _adhoc_instance.instance_id,
-                                len(_adhoc_steps),
-                                _adhoc_steps[0].mode_id,
-                            )
-                        except Exception as wi_exc:  # pylint: disable=broad-except
-                            _log.warning(
-                                "ad-hoc WorkflowInstance creation/persist failed: %s",
-                                wi_exc,
-                            )
+                        # ── Deferred persist (the 2026-08-06 zombie fix) ──
+                        # Stash the compiled steps on ``_state`` instead of
+                        # persisting immediately. The instance is persisted
+                        # only after the first successful ``transition_stage``
+                        # handoff (see the durable-advancement block below).
+                        # This makes ad-hoc instance creation transactional
+                        # with the first real handoff: if the turn fails
+                        # before any handoff succeeds (router TypeError,
+                        # fork NameError, entry-op failure, user Ctrl+C),
+                        # the steps die with ``_state`` and no zombie
+                        # ``WorkflowInstance`` is left in the durable store
+                        # to hijack the next turn. The 2026-08-01
+                        # yield→resume fix is preserved because a yield
+                        # happens mid-turn, after at least one handoff has
+                        # already persisted the instance.
+                        _state.pending_adhoc_steps = tuple(_adhoc_steps)
+                        _log.info(
+                            "deferred ad-hoc WorkflowInstance steps=%d "
+                            "first=%s (persist on first handoff)",
+                            len(_adhoc_steps),
+                            _adhoc_steps[0].mode_id,
+                        )
         # ── Forced-fork enforcer: precompute the deterministic fork target.
         # When the routing hint names a fork target, the kernel already
         # decided the routing. The model is the executor. If it refuses to
@@ -4765,14 +4767,89 @@ async def _run_turn_inner(
                                             _wi = hooks.workflow_instance()
                                         except Exception:  # pylint: disable=broad-except
                                             _wi = None
-                                        if _wi is not None and getattr(_wi, "current_step_id", ""):
+                                        # ── Deferred ad-hoc persist ──
+                                        # First successful handoff with
+                                        # pending ad-hoc steps and no active
+                                        # instance: materialize and persist
+                                        # the instance now. The first step
+                                        # (the entry mode we handed *from*)
+                                        # is marked complete, and the
+                                        # pointer is advanced to the target
+                                        # we just handed off to. This is the
+                                        # transactional commit point for the
+                                        # steps compiled at turn start — if
+                                        # the turn had failed before this
+                                        # handoff, the steps would have died
+                                        # with ``_state`` (the 2026-08-06
+                                        # zombie-instance fix).
+                                        if (
+                                            _wi is None
+                                            and _state.pending_adhoc_steps
+                                        ):
+                                            try:
+                                                from kernel.workflow_instance import (
+                                                    advance_step as _advance_step,
+                                                )
+
+                                                _first_step = _state.pending_adhoc_steps[0]
+                                                _adhoc_instance = WorkflowInstance(
+                                                    declared_steps=_state.pending_adhoc_steps,
+                                                    current_step_id=_first_step.step_id,
+                                                    current_mode_id=_first_step.mode_id,
+                                                    spawned_from="adhoc",
+                                                )
+                                                _adhoc_instance = _advance_step(
+                                                    _adhoc_instance,
+                                                    _first_step.step_id,
+                                                )
+                                                hooks.workflow_instance_updater(_adhoc_instance)
+                                                _state.pending_adhoc_steps = ()
+                                                _log.info(
+                                                    "persisted ad-hoc WorkflowInstance "
+                                                    "instance_id=%s steps=%d "
+                                                    "(deferred, on first handoff to %s)",
+                                                    _adhoc_instance.instance_id,
+                                                    len(_adhoc_instance.declared_steps),
+                                                    target_stage,
+                                                )
+                                                _wi = _adhoc_instance
+                                                _deferred_just_persisted = True
+                                            except Exception as adhoc_exc:  # pylint: disable=broad-except
+                                                _log.warning(
+                                                    "deferred ad-hoc WorkflowInstance "
+                                                    "persist failed: %s",
+                                                    adhoc_exc,
+                                                )
+                                                _state.pending_adhoc_steps = ()
+                                                _wi = None
+                                                _deferred_just_persisted = False
+                                        else:
+                                            _deferred_just_persisted = False
+                                        if (
+                                            _wi is not None
+                                            and getattr(_wi, "current_step_id", "")
+                                        ):
                                             try:
                                                 from kernel.workflow_instance import (
                                                     advance_step,
                                                 )
 
-                                                _advanced = advance_step(_wi, _wi.current_step_id)
-                                                hooks.workflow_instance_updater(_advanced)
+                                                # When the deferred persist
+                                                # just fired, ``_wi`` already
+                                                # reflects the handoff (first
+                                                # step complete, pointer at
+                                                # the target). Skip the
+                                                # redundant ``advance_step``;
+                                                # the hint below reads
+                                                # ``_wi.current_step_id``
+                                                # directly.
+                                                if _deferred_just_persisted:
+                                                    _advanced = _wi
+                                                else:
+                                                    _advanced = advance_step(
+                                                        _wi, _wi.current_step_id
+                                                    )
+                                                    hooks.workflow_instance_updater(_advanced)
                                                 # ── Declared next-step hint ──
                                                 # When an instance is active
                                                 # and has a remaining step

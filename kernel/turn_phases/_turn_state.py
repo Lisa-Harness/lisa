@@ -123,6 +123,23 @@ class _TurnState:
     # ── Chain routing accumulator ────────────────────────────────────
     chain_satisfied: set[str] = field(default_factory=set)
 
+    # ── Deferred ad-hoc workflow-instance steps ───────────────────────
+    # Compiled at turn start from the routing hint's multi-step chain,
+    # but NOT persisted until the first successful ``transition_stage``
+    # handoff. Deferring persistence makes ad-hoc instance creation
+    # transactional with the first real handoff: if the turn fails
+    # before any handoff succeeds (router TypeError, fork NameError,
+    # entry-op failure, user Ctrl+C), the steps die with ``_state`` and
+    # no zombie ``WorkflowInstance`` is left in the durable store to
+    # hijack the next turn (the 2026-08-06 incident: a failed fork at
+    # 17:58 persisted an instance that drove every subsequent turn's
+    # "plan-driven next step" against the user's actual intent). The
+    # 2026-08-01 yield→resume fix is preserved because a yield happens
+    # mid-turn, after at least one handoff has already persisted the
+    # instance. Empty tuple when no ad-hoc chain was compiled or after
+    # the deferred persist has fired.
+    pending_adhoc_steps: tuple[Any, ...] = field(default_factory=tuple)
+
     # ── Hard-failure / loop-guard state ───────────────────────────────
     entry_failed: bool = False
     """True when an entry operation for a handoff target failed this turn
