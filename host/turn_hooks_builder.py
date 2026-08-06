@@ -25,6 +25,7 @@ from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from kernel.operations.registry import execute_operation
 from kernel.pack_configuration import SessionPackConfigurationResolver
 from kernel.provider_gateway_discovery import discover_provider_gateway_factories
+from kernel.seams.host_adapter import build_callable_host
 from kernel.seams.protocols import ContentRegistry
 from kernel.slice import SliceOutcome, SliceTuning
 from kernel.turn_runner import CheckpointTuning, ContextSeams, TurnHooks
@@ -466,15 +467,17 @@ def build_turn_hooks(
                         mode_id=mode_id,
                         query=query,
                         response=response_text,
-                        complete_fn=_complete,
-                        resolve_model_fn=_resolve_model,
-                        read_authored_text_fn=getattr(
-                            content_registry() if content_registry else None,
-                            "read_authored_text",
-                            None,
+                        host=build_callable_host(
+                            complete_fn=_complete,
+                            resolve_model_fn=_resolve_model,
+                            read_authored_text_fn=getattr(
+                                content_registry() if content_registry else None,
+                                "read_authored_text",
+                                None,
+                            ),
+                            execute_tool_fn=_execute_tool,
+                            execute_operation_fn=_execute_operation,
                         ),
-                        execute_tool_fn=_execute_tool,
-                        execute_operation_fn=_execute_operation,
                         params={
                             "content": (f"User asked:\n{query}\n\nLisa answered:\n{response_text}"),
                             "salience": trigger_salience,
@@ -528,7 +531,10 @@ def build_turn_hooks(
             ctx = OperationExecutionContext(
                 operation_id="self_model",
                 user_slug=runtime.config.user_slug,
-                introspect_fn=_introspect_fn,
+                host=build_callable_host(
+                    resolve_model_fn=_resolve_model,
+                    introspect_fn=_introspect_fn,
+                ),
                 extra={"timezone": runtime.config.timezone},
             )
             result = await execute_operation("self_model", ctx)
