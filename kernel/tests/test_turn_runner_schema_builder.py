@@ -392,6 +392,100 @@ def test_build_in_process_tool_schemas_filters_by_mode_allowlist() -> None:
     assert "nonexistent_tool" not in names
 
 
+# ── _rebuild_tool_schemas_for_mode: transition_stage after handoff ───
+
+
+@pytest.mark.asyncio
+async def test_rebuild_includes_transition_stage_for_chat_mode_with_routing_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A handoff into a chat mode with routing targets keeps transition_stage.
+
+    Regression for the 2026-08-06 ``okf`` loop: ``_rebuild_tool_schemas_for_mode``
+    only advertised ``transition_stage`` for workflow target modes, so a
+    ``plan → okf → markdown`` chain dropped the tool after handing off to
+    ``okf`` (a chat mode with routing targets). The model could not call
+    ``transition_stage(markdown)`` and looped until the stuck-in-stage cap.
+    The rebuild must mirror Phase-1 assembly: advertise the tool when
+    ``is_workflow_for_target OR has_routing_targets``.
+    """
+    from kernel.turn_phases import _tool_schemas as _ts
+    from kernel.turn_runner import _rebuild_tool_schemas_for_mode
+
+    mode_config = _make_mode_config(
+        mode_id="okf",
+        mode_kind="chat",
+        allowed_tool_ids=["lisa-storage.read_file"],
+        tools_authoritative=True,
+    )
+
+    # Stub MCP pool: no tools (we only care about transition_stage).
+    class _EmptyPool:
+        configs: list[Any] = []
+
+        async def list_tools(self, **_: Any) -> list[Any]:
+            return []
+
+    # Pretend okf has routing targets (it can hand off to markdown).
+    monkeypatch.setattr(_ts, "get_routing_targets", lambda mode_id: ["markdown"] if mode_id == "okf" else [])
+    # No operations or pack tools; transition_stage comes only from the
+    # rebuild's explicit append.
+    monkeypatch.setattr(_ts, "build_operation_tool_schemas", lambda *a, **k: [])
+    monkeypatch.setattr(_ts, "get_operation_catalog", lambda: {})
+    monkeypatch.setattr(_ts, "get_tool_catalog", lambda: {})
+
+    schemas = await _rebuild_tool_schemas_for_mode(
+        "okf",
+        mode_config,
+        pool=_EmptyPool(),  # type: ignore[arg-type]
+        hooks=TurnHooks(),
+        is_workflow_for_target=False,
+    )
+    names = {_tool_schema_name(s) for s in schemas}
+    assert "transition_stage" in names
+
+
+@pytest.mark.asyncio
+async def test_rebuild_excludes_transition_stage_for_chat_mode_without_routing_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A chat mode with no routing targets does not get transition_stage.
+
+    Guards against over-advertising: the fix must not add the tool for
+    single-mode chat turns (no handoffs available).
+    """
+    from kernel.turn_phases import _tool_schemas as _ts
+    from kernel.turn_runner import _rebuild_tool_schemas_for_mode
+
+    mode_config = _make_mode_config(
+        mode_id="discuss",
+        mode_kind="chat",
+        allowed_tool_ids=[],
+        tools_authoritative=True,
+    )
+
+    class _EmptyPool:
+        configs: list[Any] = []
+
+        async def list_tools(self, **_: Any) -> list[Any]:
+            return []
+
+    monkeypatch.setattr(_ts, "get_routing_targets", lambda mode_id: [])
+    monkeypatch.setattr(_ts, "build_operation_tool_schemas", lambda *a, **k: [])
+    monkeypatch.setattr(_ts, "get_operation_catalog", lambda: {})
+    monkeypatch.setattr(_ts, "get_tool_catalog", lambda: {})
+
+    schemas = await _rebuild_tool_schemas_for_mode(
+        "discuss",
+        mode_config,
+        pool=_EmptyPool(),  # type: ignore[arg-type]
+        hooks=TurnHooks(),
+        is_workflow_for_target=False,
+    )
+    names = {_tool_schema_name(s) for s in schemas}
+    assert "transition_stage" not in names
+
+
 # ── Schema assembly end-to-end via run_turn ───────────────────────────
 
 

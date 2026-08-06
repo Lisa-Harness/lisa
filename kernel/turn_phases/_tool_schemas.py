@@ -277,9 +277,18 @@ async def _rebuild_tool_schemas_for_mode(
         )
     )
     new_tool_schemas.extend(_build_in_process_tool_schemas(target_mode_config))
-    if is_workflow_for_target:
-        new_tool_schemas.extend(get_transition_tool_schema())
     target_has_routing = bool(get_routing_targets(target_mode_id)) if target_mode_config else False
+    # Advertise ``transition_stage`` whenever the target can actually
+    # hand off: workflow modes (FSM stage advancement) AND chat/action
+    # modes with routing targets (mid-turn mode handoffs). This mirrors
+    # the Phase-1 assembly in ``_run_turn_inner`` — without it, a
+    # handoff into a chat mode with routing targets (e.g. ``okf`` in a
+    # ``plan → okf → markdown`` chain) drops ``transition_stage`` from
+    # the rebuilt surface, so the model cannot call it to advance to
+    # the next step and loops until the stuck-in-stage cap yields
+    # (2026-08-06 ``okf`` loop incident).
+    if is_workflow_for_target or target_has_routing:
+        new_tool_schemas.extend(get_transition_tool_schema())
     new_tool_schemas, _ = _prune_model_tool_schemas(
         tool_schemas=new_tool_schemas,
         mode_config=target_mode_config,
