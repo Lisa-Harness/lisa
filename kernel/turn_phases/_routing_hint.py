@@ -367,30 +367,29 @@ def _format_remaining_steps(remaining_steps: list[str]) -> str:
     return "(none — this is the final step)"
 
 
-def _compute_fork_target_string(
+def _compute_fork_targets(
     *,
     query: str,
     routing_targets: list[str],
     mode_config: WorkflowModeConfig | None = None,
     extra_satisfied: set[str] | None = None,
-) -> str | None:
-    """Return the deterministic ``fork:mode,mode,...`` target for this query.
+) -> list[str] | None:
+    """Return the deterministic fork target mode-id list for this query.
 
     This is the pure, prose-free core of the routing-hint fork branch. It
     recomputes the same intent-gap / disjoint-coverage decision that
     ``_compute_capability_routing_hint`` narrates as a hint, and returns
-    the bare ``fork:`` target string (or ``None`` when the routing decision
+    the list of target ``mode_id``s (or ``None`` when the routing decision
     is a single handoff, a sequential chain, or no gap at all).
 
     The kernel uses this in two places:
 
     1. ``_compute_capability_routing_hint`` wraps it in the advisory prose
-       the model sees ("Hand off by calling ``transition_stage`` with
-       target_stage_id ``fork:...``").
+       the model sees ("Call the ``fork`` operation with targets …").
     2. The turn runner's **fork enforcer** uses it to detect that a fork
-       hint is active and, when the model refuses to call
-       ``transition_stage`` itself, force the fork deterministically (see
-       the 2026-07-27 incident in ``docs/lessons/``).
+       hint is active and, when the model refuses to call the ``fork``
+       operation itself, force the fork deterministically (see the
+       2026-07-27 incident in ``docs/lessons/``).
 
     Tag-blind: the kernel only inspects opaque pack-authored intent-tag
     sets and routing target ids. It names no intent vocabulary here.
@@ -498,16 +497,16 @@ def _build_fork_target(
     routing_targets: list[str],
     catalog: Any,
     gap_intents: set[str],
-) -> str | None:
-    """Build the ``fork:`` target string from disjoint-coverage targets.
+) -> list[str] | None:
+    """Build the fork target mode-id list from disjoint-coverage targets.
 
-    Returns the ``fork:mode,mode,...`` string when at least two targets
-    each cover a disjoint subset of ``gap_intents`` and together cover all
+    Returns the list of ``mode_id``s when at least two targets each
+    cover a disjoint subset of ``gap_intents`` and together cover all
     of them; otherwise ``None``. Refuses the fork when the gap mixes a
     producer intent with a consumer intent (sequential dependency — see
     ``_fork_has_producer_consumer_mix``), so the caller falls back to a
     single handoff and chains the rest via post-handoff hints. Extracted
-    from the fork branch to keep ``_compute_fork_target_string`` and
+    from the fork branch to keep ``_compute_fork_targets`` and
     ``_compute_capability_routing_hint`` under the McCabe complexity cap.
     """
     # Sequential-dependency guard: a producer/consumer intent mix means a
@@ -526,7 +525,7 @@ def _build_fork_target(
             partial_targets.append(target_id)
             covered_intents.update(overlap)
     if len(partial_targets) >= 2 and covered_intents == gap_intents:
-        return f"fork:{','.join(partial_targets)}"
+        return partial_targets
     return None
 
 
@@ -759,22 +758,24 @@ def _compute_capability_routing_hint(
             # entry mode's satisfies, and the covering-target loop above
             # shadowed ``mode_config`` with the last target's config.
             # ``current_satisfied`` is the authoritative gap baseline here.
-            fork_target = _compute_fork_target_string(
+            fork_modes = _compute_fork_targets(
                 query=query,
                 routing_targets=routing_targets,
                 mode_config=None,
                 extra_satisfied=current_satisfied,
             )
-            if fork_target is not None:
-                # Purely mechanical: name the tool and the fork target id. The
-                # kernel does not narrate tool-policy semantics ("mode-scoped
-                # tools", "rejected") or the fork's internal mechanics — the
-                # model reads each child mode's own _mode.md body after the
-                # fork. Same prose-blind contract as the single-handoff branch.
+            if fork_modes is not None:
+                # Purely mechanical: name the operation and the target
+                # mode ids. The kernel does not narrate tool-policy
+                # semantics ("mode-scoped tools", "rejected") or the
+                # fork's internal mechanics — the model reads each child
+                # mode's own _mode.md body after the fork. Same
+                # prose-blind contract as the single-handoff branch.
+                target_list = ", ".join(fork_modes)
                 hint = (
                     "## Routing Hint\n\n"
-                    f"Hand off by calling `transition_stage` with "
-                    f"target_stage_id `{fork_target}`."
+                    f"Call the `fork` operation with targets "
+                    f"[{target_list}] to fan out in parallel."
                 )
                 return hint
             # Fork refused — when the gap mixes a producer intent with a

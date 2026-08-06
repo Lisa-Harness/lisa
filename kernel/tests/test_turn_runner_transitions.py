@@ -610,12 +610,12 @@ async def test_workflow_transition_invalid_target_produces_error_output() -> Non
 # section of ``docs/ROUTER_DESIGN.md``.
 
 
-def test_compute_fork_target_string_returns_none_without_routing_targets() -> None:
+def test_compute_fork_targets_returns_none_without_routing_targets() -> None:
     """With no routing_targets, no fork target is computed."""
-    from kernel.turn_phases._routing_hint import _compute_fork_target_string
+    from kernel.turn_phases._routing_hint import _compute_fork_targets
 
     assert (
-        _compute_fork_target_string(
+        _compute_fork_targets(
             query="anything",
             routing_targets=[],
             mode_config=None,
@@ -624,13 +624,13 @@ def test_compute_fork_target_string_returns_none_without_routing_targets() -> No
     )
 
 
-def test_compute_fork_target_string_returns_none_when_no_gap() -> None:
+def test_compute_fork_targets_returns_none_when_no_gap() -> None:
     """When the current mode already satisfies all detected intents, no fork."""
     from kernel.ipsar_fsm import get_workflow_catalog
-    from kernel.turn_phases._routing_hint import _compute_fork_target_string
+    from kernel.turn_phases._routing_hint import _compute_fork_targets
 
     catalog = get_workflow_catalog()
-    target = _compute_fork_target_string(
+    target = _compute_fork_targets(
         query="hello",  # no detectable intents
         routing_targets=["remember", "markdown"],
         mode_config=catalog.get("default"),

@@ -1369,36 +1369,7 @@ def get_routing_targets(
     return transitions.get(mode_id, [])
 
 
-def parse_fork_target_string(fork_str: str) -> list[tuple[str, str]]:
-    """Parse a ``fork:mode_id/stage_id,mode_id,...`` string into target pairs.
 
-    Each segment is ``mode_id`` or ``mode_id/stage_id``. The stage_id is
-    empty string when not specified (the caller defaults to start_stage_id).
-
-    Returns a list of (mode_id, stage_id) tuples. Returns an empty list
-    when the input is empty or malformed.
-    """
-    body = fork_str.strip()
-    if body.startswith("fork:"):
-        body = body[5:]
-    if not body:
-        return []
-    targets: list[tuple[str, str]] = []
-    for segment in body.split(","):
-        segment = segment.strip()
-        if not segment:
-            continue
-        if "/" in segment:
-            mode_id, stage_id = segment.split("/", 1)
-            targets.append((mode_id.strip(), stage_id.strip()))
-        else:
-            targets.append((segment, ""))
-    return targets
-
-
-def is_fork_target(target_stage_id: str) -> bool:
-    """Return True when ``target_stage_id`` is a fork fan-out target."""
-    return target_stage_id.strip().lower().startswith("fork:")
 
 
 def get_stage_config(session: WorkflowSessionState) -> WorkflowStageConfig:
@@ -1447,20 +1418,17 @@ def get_transition_tool_schema() -> list[dict[str, object]]:
         build_strict_openai_function_tool(
             name="transition_stage",
             description=(
-                "Switch modes, fan out a parallel sub-workflow, or advance a "
-                "workflow stage. Use `target_stage_id` with one of three forms: "
-                "(1) a mode id like `coding`, `search`, or `markdown` to hand off "
-                "the rest of this turn to that mode (use this when the current "
-                "mode lacks the tools the request needs — e.g. hand off to "
-                "`markdown` to write a document); "
-                "(2) `fork:mode,mode,...` to run each named mode as a parallel "
-                "child with its own tools (use this when the request has "
-                "independent concurrent goals — e.g. `fork:remember,markdown`); "
-                "(3) a workflow stage id to advance the current mode's FSM. "
-                "When a Routing Hint is present in the system prompt, follow it "
-                "by calling this tool with the suggested target. If user input "
-                "is still missing, call `yield` to ask the user instead of "
-                "calling this tool."
+                "Switch modes or advance a workflow stage. Use "
+                "`target_stage_id` with one of two forms: "
+                "(1) a mode id like `coding`, `search`, or `markdown` to "
+                "hand off the rest of this turn to that mode (use this "
+                "when the current mode lacks the tools the request needs "
+                "— e.g. hand off to `markdown` to write a document); "
+                "(2) a workflow stage id to advance the current mode's "
+                "FSM. When a Routing Hint is present in the system prompt, "
+                "follow it by calling this tool with the suggested target. "
+                "If user input is still missing, call `yield` to ask the "
+                "user instead of calling this tool."
             ),
             parameters_schema=WorkflowTransitionRequest,
         )

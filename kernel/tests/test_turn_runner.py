@@ -2443,40 +2443,6 @@ async def test_routing_fsm_synthesis() -> None:
             assert rid in default_targets, f"default should be able to hand off to {rid}"
 
 
-def test_parse_fork_target_string() -> None:
-    """The fork target parser handles mode_id and mode_id/stage_id syntax."""
-    from kernel.ipsar_fsm import parse_fork_target_string
-
-    # Simple mode_ids
-    assert parse_fork_target_string("fork:coding,markdown") == [
-        ("coding", ""),
-        ("markdown", ""),
-    ]
-    # mode_id/stage_id pairs
-    assert parse_fork_target_string("fork:coding/implement,ponder/review") == [
-        ("coding", "implement"),
-        ("ponder", "review"),
-    ]
-    # Mixed
-    assert parse_fork_target_string("fork:search,coding/implement") == [
-        ("search", ""),
-        ("coding", "implement"),
-    ]
-    # Empty
-    assert parse_fork_target_string("") == []
-    assert parse_fork_target_string("fork:") == []
-
-
-def test_is_fork_target() -> None:
-    """The fork target detector recognizes fork: prefix."""
-    from kernel.ipsar_fsm import is_fork_target
-
-    assert is_fork_target("fork:coding,markdown") is True
-    assert is_fork_target("FORK:coding") is True
-    assert is_fork_target("coding") is False
-    assert is_fork_target("reason") is False
-
-
 @pytest.mark.asyncio
 async def test_run_turn_mode_handoff_preserves_chat_history() -> None:
     """When the model hands off to another mode, the chat history (messages

@@ -5,7 +5,8 @@
 Delegate a sequential sub-turn to another mode. The parent turn stays
 alive, waits for the child's structured result, and can use the child's
 output to make further decisions. This is the sequential counterpart to
-`fork` (which fans out in parallel and discards the parent).
+the `fork` operation (which fans out in parallel and returns all
+children's results to the parent for synthesis).
 
 ## When to call
 
@@ -22,7 +23,8 @@ Do NOT call `delegate` when:
 
 - You just need to hand off to another mode and end your turn. Use
   `transition_stage` for that.
-- You need parallel fan-out to multiple modes. Use `fork` for that.
+- You need parallel fan-out to multiple modes. Call the `fork` operation
+  for that.
 
 ## Available Modes
 

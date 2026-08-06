@@ -134,11 +134,11 @@ class PlanWorkflowOutput(BaseModel):
         default="",
         description=(
             "Backward-compatible single target: the first step's mode_id "
-            "when steps is non-empty, or a single mode_id / "
-            "'fork:mode1,mode2,...' for the legacy single-target case. "
-            "Empty when no mode matches. Computed from steps[0].mode_id "
-            "by the caller when steps is populated; set directly only when "
-            "the model returns no steps (weak-model fallback)."
+            "when steps is non-empty, or a single mode_id for the "
+            "single-target case. Empty when no mode matches. Computed "
+            "from steps[0].mode_id by the caller when steps is populated; "
+            "set directly only when the model returns no steps "
+            "(weak-model fallback)."
         ),
     )
     rationale: str = Field(

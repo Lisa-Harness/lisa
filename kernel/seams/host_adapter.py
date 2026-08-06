@@ -31,6 +31,7 @@ class _CallableHost:
         "_delegate_fn",
         "_execute_operation_fn",
         "_execute_tool_fn",
+        "_fork_fn",
         "_generate_image_fn",
         "_introspect_fn",
         "_read_authored_text_fn",
@@ -48,6 +49,7 @@ class _CallableHost:
         generate_image_fn: Any = None,
         introspect_fn: Any = None,
         delegate_fn: Any = None,
+        fork_fn: Any = None,
     ) -> None:
         self._complete_fn = complete_fn
         self._resolve_model_fn = resolve_model_fn
@@ -57,6 +59,7 @@ class _CallableHost:
         self._generate_image_fn = generate_image_fn
         self._introspect_fn = introspect_fn
         self._delegate_fn = delegate_fn
+        self._fork_fn = fork_fn
 
     async def complete(
         self,
@@ -115,6 +118,11 @@ class _CallableHost:
             raise RuntimeError("OperationHost.delegate is not wired on this host")
         return await self._delegate_fn(spec)
 
+    async def fork(self, spec: Any) -> Any:
+        if self._fork_fn is None:
+            raise RuntimeError("OperationHost.fork is not wired on this host")
+        return await self._fork_fn(spec)
+
 
 def build_callable_host(
     *,
@@ -126,6 +134,7 @@ def build_callable_host(
     generate_image_fn: Any = None,
     introspect_fn: Any = None,
     delegate_fn: Any = None,
+    fork_fn: Any = None,
 ) -> _CallableHost:
     """Construct a ``_CallableHost`` from the legacy callable seams."""
     return _CallableHost(
@@ -137,4 +146,5 @@ def build_callable_host(
         generate_image_fn=generate_image_fn,
         introspect_fn=introspect_fn,
         delegate_fn=delegate_fn,
+        fork_fn=fork_fn,
     )

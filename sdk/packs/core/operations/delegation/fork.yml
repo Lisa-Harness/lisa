@@ -1,0 +1,16 @@
+operation_id: fork
+description: >
+  Fan out a parallel sub-turn to multiple modes, wait for all children,
+  and return their structured results to the parent. Unlike delegate
+  (sequential, single child), fork runs every target concurrently via an
+  asyncio.TaskGroup and the parent turn stays alive to synthesize across
+  the children's outputs. Each child runs as a sub_turn_kind="fork" turn
+  with its own budget and action-tool validation.
+pack_id: lisa-pack-core
+effect: read
+execution_kind: runtime
+timeout_seconds: 120
+max_calls_per_turn: 5
+preferred_model_id: default
+exportable: true
+default_available: true

@@ -1515,10 +1515,10 @@ class WorkflowTransitionRequest(BaseModel):
 
     target_stage_id: str = Field(
         description=(
-            "The target to move to. One of three forms: a mode id "
+            "The target to move to. One of two forms: a mode id "
             "(e.g. `coding`, `search`, `markdown`) to hand off mid-turn; "
-            "`fork:mode,mode,...` to fan out parallel children; or a "
-            "workflow stage id to advance the current mode's FSM."
+            "or a workflow stage id to advance the current mode's FSM. "
+            "Parallel fan-out is owned by the `fork` operation."
         )
     )
     rationale: str = Field(default="", description="Why this transition is needed.")
@@ -1634,6 +1634,60 @@ class ForkChildResult(BaseModel):
     # propagate the question to the user (model_yield) or to render the
     # interruption framing (interrupted). ``None`` for non-yield statuses.
     yield_action: YieldAction | None = None
+
+
+class ForkSpec(BaseModel):
+    """Input contract for a fork fan-out.
+
+    The pack-level ``fork`` operation builds this from LLM-supplied
+    parameters and hands it to the injected ``fork_fn``. The kernel's
+    default implementation (``_default_fork_fn`` in
+    :mod:`kernel.turn_runner``) fans the targets out in parallel via
+    ``_execute_fork_fanout``, reusing the shared child-turn
+    infrastructure (budget division, ``classify_child_turn``,
+    ``fork_yield_policy_override``) that the legacy ``fork:`` routing
+    syntax used inline. Unlike :class:`DelegationSpec`, fork carries a
+    ``list`` of targets and does not bound recursion depth — fork
+    children do not themselves fork.
+    """
+
+    targets: list[ForkTarget] = Field(
+        description=(
+            "The routable modes to fan out to, one entry per parallel "
+            "child. Each ``mode_id`` must be a routable mode from the "
+            "installed catalog; ``stage_id`` defaults to the mode's "
+            "start stage; ``query`` is the scoped input for that child."
+        ),
+    )
+    max_tool_iterations: int = Field(
+        default=0,
+        description=(
+            "Optional per-child iteration cap override applied to every "
+            "child. 0 means use the kernel default "
+            "(``fork_child_max_tool_iterations``)."
+        ),
+        ge=0,
+    )
+    model_alias: str = Field(
+        default="",
+        description=(
+            "Optional model alias override applied to every child turn. "
+            "Empty means use each target mode's resolved model."
+        ),
+    )
+
+
+class ForkResult(BaseModel):
+    """Structured result of a fork fan-out.
+
+    The pack-level ``fork`` operation returns this as its ``output_json``
+    payload. The parent mode reads ``children`` to synthesize across the
+    parallel outputs; ``succeeded`` is the count of children whose status
+    is ``ok`` so the parent can frame partial failures without recomputing.
+    """
+
+    children: list[ForkChildResult] = Field(default_factory=list)
+    succeeded: int = 0
 
 
 # ---------------------------------------------------------------------------

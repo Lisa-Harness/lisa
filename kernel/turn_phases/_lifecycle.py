@@ -206,11 +206,14 @@ class _TurnStateView:
     # the boolean). True when TurnBudget tool-call / token / wall-time
     # limits are exceeded.
     budget_exhausted: bool = False
-    # Forced-fork enforcer state: when non-empty, the kernel has a
-    # deterministic ``fork:`` target the model refused to call
-    # ``transition_stage`` for. ``non_fork_tool_dispatches`` counts
-    # consecutive non-transition tool dispatches since the target was set.
-    forced_fork_target: str = ""
+    # Forced-fork enforcer state: when non-None, the kernel has a
+    # deterministic fork target mode-id list the model refused to call
+    # the ``fork`` operation for. ``non_fork_tool_dispatches`` counts
+    # consecutive non-``fork`` tool dispatches since the target was set.
+    # The enforcer itself runs in ``turn_runner.py``'s tool-dispatch loop
+    # (it synthesizes a ``fork`` operation call); this field is carried
+    # for diagnostic visibility only.
+    forced_fork_target: list[str] | None = None
     non_fork_tool_dispatches: int = 0
     # Forced-plan enforcer state: mirrors forced-fork for the ``plan``
     # routing-escalation target.
@@ -420,24 +423,6 @@ def resolve_lifecycle_action(
                 f"handoff loop guard: {state.handoff_count} handoffs "
                 f"(cap={settings.max_handoffs_per_turn})"
             ),
-        )
-
-    # ── 2c. Forced-fork enforcer (Phase 4) ───────────────────────────────
-    # The kernel computed a deterministic ``fork:`` target (the routing hint
-    # named it) and the model refused to call ``transition_stage`` — instead
-    # burning iterations on read-only tools. After the cap of non-transition
-    # dispatches, the kernel takes over and forces the fork itself.
-    if (
-        state.forced_fork_target
-        and state.non_fork_tool_dispatches >= settings.forced_fork_non_fork_tool_cap
-    ):
-        return TransitionAction(
-            target_mode_id=state.forced_fork_target,
-            rationale=(
-                "kernel-forced fork: the model did not call transition_stage "
-                "after the routing hint named this fork target."
-            ),
-            forced=True,
         )
 
     # ── 2d. Forced-plan enforcer (Phase 4) ────────────────────────────────

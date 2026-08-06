@@ -104,6 +104,7 @@ async def _run_fork_child_turn(
     execution_policy: ExecutionPolicy | None,
     started: float,
     logger_override: logging.Logger | None,
+    max_tool_iterations: int = 0,
 ) -> tuple[ForkChildResult, str, int]:
     """Run one fork child turn and map the outcome to a ``ForkChildResult``.
 
@@ -131,7 +132,9 @@ async def _run_fork_child_turn(
             mode_id=target.mode_id,
             query=target.query,
             hooks=hooks,
-            max_tool_iterations=_kernel_settings.fork_child_max_tool_iterations,
+            max_tool_iterations=(
+                max_tool_iterations or _kernel_settings.fork_child_max_tool_iterations
+            ),
             turn_budget=child_budget,
             execution_policy=execution_policy,
             logger_override=_flog,
@@ -269,6 +272,7 @@ async def _run_fork_child(
     hooks: TurnHooks,
     emit_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
     logger_override: logging.Logger | None,
+    max_tool_iterations: int = 0,
 ) -> None:
     """Run one fork child: emit start, run the child turn, store result, emit complete.
 
@@ -295,6 +299,7 @@ async def _run_fork_child(
         execution_policy=execution_policy,
         started=started,
         logger_override=_flog,
+        max_tool_iterations=max_tool_iterations,
     )
     results[idx] = result
     if emit_stage is not None:
@@ -323,6 +328,7 @@ async def _execute_fork_fanout(
     turn_start_mono: float,
     logger_override: logging.Logger | None,
     emit_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    max_tool_iterations: int = 0,
 ) -> list[ForkChildResult]:
     """Execute a parallel fork fan-out to heterogeneous modes.
 
@@ -368,6 +374,7 @@ async def _execute_fork_fanout(
             hooks=hooks,
             emit_stage=emit_stage,
             logger_override=_flog,
+            max_tool_iterations=max_tool_iterations,
         )
 
     try:
@@ -427,6 +434,7 @@ def _build_minimal_context(
     session_plan_digest: str = "",
     data_dir: str = "",
     delegate_fn: Any = None,
+    fork_fn: Any = None,
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for the turn runner."""
     host = build_callable_host(
@@ -436,6 +444,7 @@ def _build_minimal_context(
         execute_tool_fn=execute_tool_fn,
         execute_operation_fn=execute_operation_fn,
         delegate_fn=delegate_fn,
+        fork_fn=fork_fn,
     )
     return OperationExecutionContext(
         workspace_id=workspace_id,

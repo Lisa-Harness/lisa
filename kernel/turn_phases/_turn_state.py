@@ -160,13 +160,13 @@ class _TurnState:
     ``duplicate_hint_count`` never increments. When a cycle is detected
     the hint is suppressed so the ``handoff_count`` backstop fires
     immediately instead of wasting model round-trips on the oscillation."""
-    forced_fork_target: str = ""
-    """The deterministic ``fork:mode,mode,...`` target the kernel will
-    execute itself if the model refuses to call ``transition_stage``.
+    forced_fork_target: list[str] | None = None
+    """The deterministic fork target mode-id list the kernel will execute
+    itself if the model refuses to call the ``fork`` operation.
     Populated when a fork routing hint is active (see
-    ``_compute_fork_target_string``); consumed by the forced-fork
-    enforcer in the turn loop. Empty when the routing decision is a
-    single handoff, a sequential chain, or no gap at all."""
+    ``_compute_fork_targets``); consumed by the forced-fork enforcer in
+    the turn loop. ``None`` when the routing decision is a single
+    handoff, a sequential chain, or no gap at all."""
     pending_planned_handoff: str = ""
     """A ``target_stage_id`` produced by a planner action mode's entry
     operation (e.g. ``plan_workflow``) during a mid-turn handoff. When
@@ -204,10 +204,10 @@ class _TurnState:
     rationally routes around (the 2026-07-30 plan→ponder→markdown bounce:
     the hint said ``discuss`` twice, the model went to ``ponder`` twice)."""
     non_fork_tool_dispatches: int = 0
-    """Count of tool dispatches this turn that were NOT
-    ``transition_stage`` with the expected ``fork:`` target, while a
-    ``forced_fork_target`` is set. The enforcer fires when this reaches
-    ``forced_fork_non_fork_tool_cap`` (``kernel.config.Settings``)."""
+    """Count of tool dispatches this turn that were NOT the ``fork``
+    operation, while a ``forced_fork_target`` is set. The enforcer fires
+    when this reaches ``forced_fork_non_fork_tool_cap``
+    (``kernel.config.Settings``)."""
     forced_plan_target: str = ""
     """The ``plan`` mode_id the kernel will hand off to itself if the
     model refuses to call ``transition_stage`` after a plan-escalation

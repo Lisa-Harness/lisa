@@ -38,10 +38,8 @@ from kernel.ipsar_fsm import (
     get_transition_tool_schema,
     get_workflow_catalog,
     get_yield_tool_schema,
-    is_fork_target,
     is_routable_mode,
     is_terminal_stage,
-    parse_fork_target_string,
     run_mode_entry_operations,
     run_mode_pre_turn_operations,
 )
@@ -56,6 +54,8 @@ from kernel.models import (
     DelegationStatus,
     EffectReceipt,
     ForkChildResult,
+    ForkResult,
+    ForkSpec,
     ForkTarget,
     MemoryScope,
     OperationExecutionContext,
@@ -581,10 +581,10 @@ class TurnResult:
     ``current_mode_id`` and persist the mode switch. None when no handoff
     occurred. See ``docs/ROUTING_RFC_HANDOFF.md``."""
     fork_results: list[ForkChildResult] | None = None
-    """When the model called ``transition_stage`` with a ``fork:`` target,
-    the collected results from all parallel child runs. None when no fork
-    occurred. The host and subsequent stages read this to synthesize from
-    the fan-out outputs."""
+    """When the ``fork`` operation ran this turn, the collected results
+    from all parallel child runs. None when no fork occurred. The host
+    and subsequent stages read this to synthesize from the fan-out
+    outputs."""
     workflow_terminated: bool = False
     """True when the transition moved the session to a terminal stage. The
     loop forces one final no-tools completion using the terminal stage's
@@ -841,6 +841,22 @@ class TurnHooks:
     fails loudly. The kernel wires ``_default_delegate_fn`` at turn
     start, so hosts that want the default behavior leave this ``None``
     and the kernel fills it in.
+    """
+
+    fork_fn: Callable[..., Awaitable[ForkResult]] | None = None
+    """Execute a parallel fork fan-out. Default: ``_default_fork_fn``
+    (wraps :func:`_execute_fork_fanout` from
+    :mod:`kernel.turn_phases._fork`, fanning the targets out via an
+    ``asyncio.TaskGroup`` and classifying each child via the shared
+    ``classify_child_turn``). The pack-level ``fork`` operation calls
+    this with a :class:`ForkSpec` and awaits a :class:`ForkResult`.
+
+    A host overrides this to inject a custom fan-out backend (e.g. a
+    pooled agent runtime) without touching the pack handler. ``None``
+    means the kernel has not wired fork; the fork operation fails
+    loudly. The kernel wires ``_default_fork_fn`` at turn start, so
+    hosts that want the default behavior leave this ``None`` and the
+    kernel fills it in.
     """
 
     # ── Post-turn side effects ───────────────────────────────────────────
@@ -1276,6 +1292,82 @@ async def _default_delegate_fn(
             duration_ms=elapsed_ms,
             depth=depth + 1,
         )
+
+
+async def _default_fork_fn(
+    spec: ForkSpec,
+    *,
+    hooks: TurnHooks,
+    pool: MCPToolPool,
+    resolve_model: Callable[[str], Any],
+    complete: Callable[..., Awaitable[Any]],
+    exec_op: Callable[..., Awaitable[OperationResult]],
+    turn_budget: TurnBudget | None,
+    execution_policy: ExecutionPolicy | None,
+    turn_start_mono: float,
+    logger_override: logging.Logger | None = None,
+    emit_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    max_tool_iterations_override: int = 0,
+) -> ForkResult:
+    """Run a parallel fork fan-out by wrapping ``_execute_fork_fanout``.
+
+    The default implementation reuses the existing fork orchestrator from
+    :mod:`kernel.turn_phases._fork`: budget division, ``asyncio.TaskGroup``
+    fan-out, per-child ``run_turn`` recursion as ``sub_turn_kind="fork"``,
+    and the shared ``classify_child_turn`` classifier. The pack-level
+    ``fork`` operation calls this via ``ctx.host.fork(spec)``.
+
+    Unlike :func:`_default_delegate_fn`, fork does not bound recursion
+    depth — fork children do not themselves fork. The per-child
+    iteration cap comes from ``spec.max_tool_iterations`` when non-zero,
+    else falls back to ``fork_child_max_tool_iterations``. An explicit
+    ``max_tool_iterations_override`` (threaded from the parent turn's
+    own cap when wired) takes precedence over both so a fork child can
+    never exceed the parent turn's iteration envelope.
+    """
+    _flog = logger_override or logger
+    if not spec.targets:
+        return ForkResult(children=[], succeeded=0)
+
+    # Apply the per-child iteration cap. Precedence: explicit override
+    # (parent turn cap) > spec > kernel default. A non-zero override
+    # always wins so a fork child cannot exceed the parent's envelope.
+    child_max_iters = (
+        max_tool_iterations_override
+        or spec.max_tool_iterations
+        or _kernel_settings.fork_child_max_tool_iterations
+    )
+
+    try:
+        children = await _execute_fork_fanout(
+            fork_targets=spec.targets,
+            hooks=hooks,
+            pool=pool,
+            resolve_model=resolve_model,
+            complete=complete,
+            exec_op=exec_op,
+            turn_budget=turn_budget,
+            execution_policy=execution_policy,
+            turn_start_mono=turn_start_mono,
+            logger_override=_flog,
+            emit_stage=emit_stage,
+            max_tool_iterations=child_max_iters,
+        )
+    except TimeoutError:
+        # ``_execute_fork_fanout`` catches per-child timeouts and maps
+        # them to ``ForkChildResult(status="timeout")``; a bare
+        # ``TimeoutError`` here means the orchestrator itself was
+        # cancelled. Surface every child as cancelled.
+        children = [
+            ForkChildResult(
+                target=t,
+                status="cancelled",
+                error_message="Fork fan-out was cancelled.",
+            )
+            for t in spec.targets
+        ]
+    succeeded = sum(1 for r in children if r.status == "ok")
+    return ForkResult(children=children, succeeded=succeeded)
 
 
 async def _default_on_turn_complete(
@@ -2172,6 +2264,45 @@ async def _run_turn_inner(
     async def _emit_stage(label: str, data: dict[str, Any] | None = None) -> None:
         await _emit_stage_fn(_state, _on_stage_hook, _log, label, data)
 
+    # ── Fork hook wiring ──────────────────────────────────────────────
+    # Build the ``fork_fn`` closure that the pack-level ``fork`` operation
+    # calls via ``ctx.host.fork(spec)``. Built after ``_emit_stage`` is
+    # defined (unlike ``_delegate_fn``) because the fan-out emits fork
+    # stage events through it.
+    if hooks.fork_fn is not None:
+        _fork_fn: Callable[..., Awaitable[ForkResult]] = hooks.fork_fn
+    else:
+
+        async def _fork_fn(
+            spec: ForkSpec,
+            *,
+            _hooks: TurnHooks = hooks,
+            _pool: MCPToolPool = pool,
+            _resolve_model: Callable[[str], Any] = resolve_model,
+            _complete: Callable[..., Awaitable[Any]] = complete,
+            _exec_op: Callable[..., Awaitable[OperationResult]] = exec_op,
+            _budget: TurnBudget | None = turn_budget,
+            _policy: ExecutionPolicy | None = execution_policy,
+            _turn_start: float = turn_start_mono,
+            _logr: logging.Logger | None = logger_override,
+            _emit: Callable[[str, dict[str, Any]], Awaitable[None]] | None = _emit_stage,
+            _max_iters: int = max_tool_iterations,
+        ) -> ForkResult:
+            return await _default_fork_fn(
+                spec,
+                hooks=_hooks,
+                pool=_pool,
+                resolve_model=_resolve_model,
+                complete=_complete,
+                exec_op=_exec_op,
+                turn_budget=_budget,
+                execution_policy=_policy,
+                turn_start_mono=_turn_start,
+                logger_override=_logr,
+                emit_stage=_emit,
+                max_tool_iterations_override=_max_iters,
+            )
+
     async def _mcp_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
         return await _mcp_tool_executor_fn(tool_id, _ctx, pool)
 
@@ -2211,6 +2342,7 @@ async def _run_turn_inner(
             session_plan_digest=hooks.session_plan_digest,
             data_dir=hooks.data_dir,
             delegate_fn=_delegate_fn,
+            fork_fn=_fork_fn,
         )
         result = await run_mode_entry_operations(
             mode_id,
@@ -2448,6 +2580,7 @@ async def _run_turn_inner(
         session_plan_digest=hooks.session_plan_digest,
         data_dir=hooks.data_dir,
         delegate_fn=_delegate_fn,
+        fork_fn=_fork_fn,
     )
     pre_result = await run_mode_pre_turn_operations(
         mode_id,
@@ -2775,20 +2908,18 @@ async def _run_turn_inner(
                                 wi_exc,
                             )
         # ── Forced-fork enforcer: precompute the deterministic fork target.
-        # When the routing hint names a ``fork:`` target, the kernel already
+        # When the routing hint names a fork target, the kernel already
         # decided the routing. The model is the executor. If it refuses to
-        # call ``transition_stage`` — instead burning iterations on read-only
-        # tools or returning empty completions (the 2026-07-27 incident) —
-        # the turn loop forces the fork itself rather than begging via
-        # nudges. Stored on ``_state`` and consumed in the tool-dispatch
-        # branch; re-computed after each handoff by the chained-hint block.
-        _state.forced_fork_target = (
-            _compute_fork_target_string(
-                query=query,
-                routing_targets=get_routing_targets(mode_id) if mode_config else [],
-                mode_config=mode_config,
-            )
-            or ""
+        # call the ``fork`` operation — instead burning iterations on
+        # read-only tools or returning empty completions (the 2026-07-27
+        # incident) — the turn loop forces the fork itself rather than
+        # begging via nudges. Stored on ``_state`` and consumed in the
+        # tool-dispatch branch; re-computed after each handoff by the
+        # chained-hint block.
+        _state.forced_fork_target = _compute_fork_targets(
+            query=query,
+            routing_targets=get_routing_targets(mode_id) if mode_config else [],
+            mode_config=mode_config,
         )
         _state.non_fork_tool_dispatches = 0
         # ── Forced-plan enforcer: precompute the plan-escalation target.
@@ -2853,6 +2984,7 @@ async def _run_turn_inner(
                 session_plan_digest=hooks.session_plan_digest,
                 data_dir=hooks.data_dir,
                 delegate_fn=_delegate_fn,
+                fork_fn=_fork_fn,
             )
             recall_ctx.params = {
                 "query": query,
@@ -3224,7 +3356,7 @@ async def _run_turn_inner(
                 )
                 # Clear the forced-fork/plan enforcer state so it does
                 # not re-fire after the forced transition is applied.
-                _state.forced_fork_target = ""
+                _state.forced_fork_target = None
                 _state.non_fork_tool_dispatches = 0
                 _state.forced_plan_target = ""
                 _state.non_plan_tool_dispatches = 0
@@ -3559,15 +3691,15 @@ async def _run_turn_inner(
             # ``plan`` mode returned empty content on iteration 7 with a
             # fork hint active, ending the turn with no fork ever running
             # and the iteration-cap fallback hallucinating the tool call
-            # as prose. Synthesize the ``transition_stage(fork:...)`` call
-            # ourselves and dispatch it on this iteration instead of
-            # accepting the empty turn.
+            # as prose. Synthesize a ``fork`` operation call ourselves
+            # and dispatch it on this iteration instead of accepting the
+            # empty turn.
             _synthesized_fork = False
             if _state.forced_fork_target:
                 _log.warning(
                     "model returned no tool calls with a forced fork "
                     "pending (mode=%s, iteration=%d); kernel synthesizing "
-                    "fork target=%s",
+                    "fork targets=%s",
                     mode_id,
                     _state.iteration,
                     _state.forced_fork_target,
@@ -3576,15 +3708,13 @@ async def _run_turn_inner(
                     "id": f"forced_fork_empty_{_state.iteration}",
                     "type": "function",
                     "function": {
-                        "name": _TRANSITION_TOOL_NAME,
+                        "name": "fork",
                         "arguments": json.dumps(
                             {
-                                "target_stage_id": _state.forced_fork_target,
-                                "rationale": (
-                                    "Kernel-forced fork: the model returned no "
-                                    "tool calls after the routing hint named "
-                                    "this fork target."
-                                ),
+                                "targets": [
+                                    {"mode_id": mid, "query": query}
+                                    for mid in (_state.forced_fork_target or [])
+                                ],
                             }
                         ),
                     },
@@ -3594,7 +3724,7 @@ async def _run_turn_inner(
                 # message we attach below stays well-formed.
                 assistant_msg["tool_calls"] = [synth_call]
                 tool_calls = [synth_call]
-                _state.forced_fork_target = ""
+                _state.forced_fork_target = None
                 _state.non_fork_tool_dispatches = 0
                 _synthesized_fork = True
 
@@ -3690,28 +3820,29 @@ async def _run_turn_inner(
             tool_call_id = str(tool_call.get("id") or "")
 
             # ── Forced-fork enforcer ──────────────────────────────────
-            # When the kernel has computed a deterministic ``fork:`` target
-            # (``_state.forced_fork_target``) and the model refuses to call
-            # ``transition_stage`` — instead burning iterations on read-only
-            # tools (``fetch_page``, ``web_search``) or returning empty
-            # completions — the kernel forces the fork itself. The routing
-            # hint already encodes the routing decision; the model is the
-            # executor. When the executor won't execute a deterministic
-            # next step, the kernel takes over rather than begging via
-            # nudges (the 2026-07-27 incident: ``plan`` mode burned 5
-            # ``fetch_page`` calls then returned empty, ending the turn
-            # with no fork ever running and the model hallucinating the
-            # tool call as prose in the iteration-cap fallback).
+            # When the kernel has computed a deterministic fork target
+            # list (``_state.forced_fork_target``) and the model refuses
+            # to call the ``fork`` operation — instead burning iterations
+            # on read-only tools (``fetch_page``, ``web_search``) or
+            # returning empty completions — the kernel forces the fork
+            # itself. The routing hint already encodes the routing
+            # decision; the model is the executor. When the executor
+            # won't execute a deterministic next step, the kernel takes
+            # over rather than begging via nudges (the 2026-07-27
+            # incident: ``plan`` mode burned 5 ``fetch_page`` calls then
+            # returned empty, ending the turn with no fork ever running
+            # and the model hallucinating the tool call as prose in the
+            # iteration-cap fallback).
             #
-            # Detection: a forced fork target is set AND the model called a
-            # non-``transition_stage`` tool. Each such dispatch increments
+            # Detection: a forced fork target is set AND the model called
+            # a non-``fork`` tool. Each such dispatch increments
             # ``non_fork_tool_dispatches``; at the cap, the kernel
-            # synthesizes the ``transition_stage(fork:...)`` call itself by
-            # overriding the current tool call's name/arguments and letting
-            # the existing transition interception handle the fan-out.
-            # ``transition_stage`` calls (fork or otherwise) reset the
-            # counter and never trigger the enforcer.
-            if _state.forced_fork_target and tool_name != _TRANSITION_TOOL_NAME:
+            # synthesizes the ``fork`` operation call itself by
+            # overriding the current tool call's name/arguments and
+            # letting the operation dispatch below handle the fan-out.
+            # ``fork`` operation calls reset the counter and never
+            # trigger the enforcer.
+            if _state.forced_fork_target and tool_name != "fork":
                 _state.non_fork_tool_dispatches += 1
                 if _state.non_fork_tool_dispatches >= (
                     _kernel_settings.forced_fork_non_fork_tool_cap
@@ -3719,17 +3850,18 @@ async def _run_turn_inner(
                     _log.warning(
                         "model refused to fork (mode=%s, iteration=%d, "
                         "non_fork_tool_dispatches=%d); kernel forcing fork "
-                        "target=%s",
+                        "targets=%s",
                         mode_id,
                         _state.iteration,
                         _state.non_fork_tool_dispatches,
                         _state.forced_fork_target,
                     )
-                    # Synthesize the fork call. Mutate the current
-                    # ``tool_call`` dict IN PLACE — it is the same object
-                    # referenced by the assistant message already appended
-                    # to ``messages`` (``assistant_msg["tool_calls"] =
-                    # tool_calls`` above). Overriding ``function.name`` /
+                    # Synthesize the fork operation call. Mutate the
+                    # current ``tool_call`` dict IN PLACE — it is the
+                    # same object referenced by the assistant message
+                    # already appended to ``messages``
+                    # (``assistant_msg["tool_calls"] = tool_calls``
+                    # above). Overriding ``function.name`` /
                     # ``function.arguments`` here keeps the assistant
                     # message and the tool result message consistent, so
                     # the provider sees a well-formed tool_call → tool
@@ -3740,37 +3872,27 @@ async def _run_turn_inner(
                     # was rejected by the provider with ``Invalid
                     # parameter: 'tool_call_id' not found in 'tool_calls'
                     # of previous message``).
-                    tool_call["function"]["name"] = _TRANSITION_TOOL_NAME
-                    tool_call["function"]["arguments"] = json.dumps(
-                        {
-                            "target_stage_id": _state.forced_fork_target,
-                            "rationale": (
-                                "Kernel-forced fork: the model did not call "
-                                "transition_stage after the routing hint "
-                                "named this fork target."
-                            ),
-                        }
-                    )
-                    tool_name = _TRANSITION_TOOL_NAME
+                    tool_call["function"]["name"] = "fork"
                     tool_arguments = {
-                        "target_stage_id": _state.forced_fork_target,
-                        "rationale": (
-                            "Kernel-forced fork: the model did not call "
-                            "transition_stage after the routing hint named "
-                            "this fork target."
-                        ),
+                        "targets": [
+                            {"mode_id": mid, "query": query}
+                            for mid in (_state.forced_fork_target or [])
+                        ],
                     }
+                    tool_call["function"]["arguments"] = json.dumps(tool_arguments)
+                    tool_name = "fork"
                     # tool_call_id stays the original — already set above
                     # from ``tool_call.get("id")``.
-                    # The enforcer fires once per turn; clear the target so
-                    # a subsequent model-issued fork on a later iteration
-                    # is not re-enforced and so the post-fork hint
-                    # recomputation can set a fresh target if needed.
-                    _state.forced_fork_target = ""
+                    # The enforcer fires once per turn; clear the target
+                    # so a subsequent model-issued fork on a later
+                    # iteration is not re-enforced and so the post-fork
+                    # hint recomputation can set a fresh target if
+                    # needed.
+                    _state.forced_fork_target = None
                     _state.non_fork_tool_dispatches = 0
-                    # Fall through: the transition interception below now
-                    # sees ``tool_name == _TRANSITION_TOOL_NAME`` and
-                    # dispatches the fork.
+                    # Fall through: the operation dispatch below now
+                    # sees ``tool_name == "fork"`` and dispatches the
+                    # fan-out.
 
             # ── Forced-plan enforcer ────────────────────────────────
             # When the kernel has computed a plan-escalation target
@@ -4017,10 +4139,11 @@ async def _run_turn_inner(
                 # workflow_session_updater.
                 #
                 # Unified FSM routing (see docs/ROUTING_RFC_HANDOFF.md):
-                # transition_stage now handles three target kinds:
-                #   1. fork:mode/stage,... — parallel fan-out to heterogeneous modes
-                #   2. mode_id (routable) — mid-turn mode switch (handoff)
-                #   3. workflow stage — existing apply_transition path
+                # transition_stage handles two target kinds:
+                #   1. mode_id (routable) — mid-turn mode switch (handoff)
+                #   2. workflow stage — existing apply_transition path
+                # Parallel fan-out is owned by the ``fork`` operation
+                # (dispatched as a tool below, not via transition_stage).
                 if tool_name == _TRANSITION_TOOL_NAME:
                     target_stage = str(tool_arguments.get("target_stage_id") or "").strip()
                     rationale = str(tool_arguments.get("rationale") or "").strip()
@@ -4058,11 +4181,7 @@ async def _run_turn_inner(
                     # (the 2026-07-25 ``crew/`` directory) as the "answer" to
                     # a research question. Reject the handoff and force the
                     # model to surface the failure instead.
-                    if (
-                        _state.entry_failed
-                        and target_stage == "coding"
-                        and not target_stage.startswith("fork:")
-                    ):
+                    if _state.entry_failed and target_stage == "coding":
                         tool_output = (
                             "Cannot route to `coding` mode: the search/research "
                             f"backend failed this turn ({_state.entry_failed_mode}: "
@@ -4085,364 +4204,6 @@ async def _run_turn_inner(
                         )
                         continue
 
-                    # ── Case A: fork fan-out ──────────────────────────────
-                    if is_fork_target(target_stage):
-                        # The model honored the routing hint and called
-                        # ``transition_stage`` itself. Clear the forced-fork
-                        # and forced-plan enforcer state so it does not
-                        # re-fire on a later iteration (e.g. the post-fork
-                        # synthesis turn that returns text without tool
-                        # calls).
-                        _state.forced_fork_target = ""
-                        _state.non_fork_tool_dispatches = 0
-                        _state.forced_plan_target = ""
-                        _state.non_plan_tool_dispatches = 0
-                        fork_targets_raw = parse_fork_target_string(target_stage)
-                        fork_results_list: list[ForkChildResult] = []
-                        if not fork_targets_raw:
-                            tool_output = "Fork target has no valid mode/stage pairs."
-                        else:
-                            catalog = get_workflow_catalog()
-                            # Build ForkTarget list, validating mode_ids
-                            fork_targets: list[ForkTarget] = []
-                            queries = tool_arguments.get("queries") or []
-                            if not isinstance(queries, list):
-                                queries = []
-                            for idx, (f_mode_id, f_stage_id) in enumerate(fork_targets_raw):
-                                f_mode = catalog.get(f_mode_id)
-                                if f_mode is None:
-                                    tool_output = f"Fork target mode '{f_mode_id}' not found."
-                                    break
-                                resolved_stage = f_stage_id or f_mode.start_stage_id
-                                f_query = (
-                                    queries[idx]
-                                    if idx < len(queries) and isinstance(queries[idx], str)
-                                    else query
-                                )
-                                fork_targets.append(
-                                    ForkTarget(
-                                        mode_id=f_mode_id,
-                                        stage_id=resolved_stage,
-                                        query=f_query,
-                                    )
-                                )
-                            else:
-                                # All targets valid — execute fan-out
-                                fork_results_list = await _execute_fork_fanout(
-                                    fork_targets=fork_targets,
-                                    hooks=hooks,
-                                    pool=pool,
-                                    resolve_model=resolve_model,
-                                    complete=complete,
-                                    exec_op=exec_op,
-                                    turn_budget=turn_budget,
-                                    execution_policy=execution_policy,
-                                    turn_start_mono=turn_start_mono,
-                                    logger_override=_log,
-                                    emit_stage=_emit_stage,
-                                )
-                                fork_results = fork_results_list
-                                succeeded = sum(1 for r in fork_results_list if r.status == "ok")
-                                # Mirror to ``_state`` so the post-loop
-                                # terminal-failure check can detect a
-                                # ``no_tools`` child and break the ``while``
-                                # loop (the ``for``-loop ``break`` inside the
-                                # fork block only exits the inner tool loop).
-                                _state.fork_results = fork_results_list
-                                # Surface failed children (timeout, error,
-                                # no_tools, cancelled) explicitly so the
-                                # parent model does not claim false success or
-                                # hallucinate a deferred response it cannot
-                                # deliver. The framework is strictly
-                                # turn-by-turn — there is no background
-                                # scheduler, so a failed child's work is lost
-                                # unless the user re-issues the request.
-                                failed_children = [r for r in fork_results_list if r.status != "ok"]
-                                # A ``no_tools`` child is a hallucinated
-                                # success: its mode declares action tools
-                                # but it made zero tool calls, so nothing
-                                # landed on disk/memory. The 2026-07-18 fix
-                                # labelled it; the remaining gap (2026-07-25
-                                # incident) was that the parent still handed
-                                # the label to the model as advisory prose,
-                                # which the model could paraphrase into a
-                                # false "completed". When any child is
-                                # ``no_tools``, abort the user-facing turn
-                                # with a deterministic failure instead of
-                                # ``continue``-ing. The model cannot be
-                                # trusted to surface it honestly.
-                                has_no_tools = any(r.status == "no_tools" for r in failed_children)
-                                # A force-yielded child (iteration cap /
-                                # stuck-in-stage / budget) was interrupted,
-                                # not hallucinating. Treat it as a
-                                # deterministic failure like ``no_tools``
-                                # (the model cannot be trusted to surface
-                                # a partial result honestly) but with
-                                # distinct "interrupted" messaging. See
-                                # the 2026-08-02 fan-out regression. The legacy
-                                # ``"yielded"`` status and the new
-                                # ``"interrupted"`` status both take this path
-                                # (the cutover renames the bucket; both mean
-                                # "harness force-yielded, not the model").
-                                has_yielded = any(
-                                    r.status in ("yielded", "interrupted") for r in failed_children
-                                )
-                                # A child the model voluntarily yielded from
-                                # (it called the ``yield`` tool to ask the
-                                # user a question) is *not* a failure — it is
-                                # an honest punt. The parent propagates the
-                                # child's ``YieldAction`` (question + context)
-                                # to the user as the turn's own yield so the
-                                # host renders it with proper yield UX. This
-                                # is the 2026-08-02 fix: previously the parent
-                                # overwrote ``content`` with a generic
-                                # "Re-issue the request" string and discarded
-                                # the child's question for both model-yield
-                                # and harness-yield.
-                                has_model_yield = any(
-                                    r.status == "model_yield" for r in failed_children
-                                )
-                                # A ``blocked`` child was stopped by the
-                                # capability gate (the router declined to
-                                # escalate to a model with the required
-                                # capabilities). This is a deterministic
-                                # failure — the parent must not report false
-                                # success. The messaging names the actual
-                                # cause (missing capability / router declined)
-                                # instead of the old "model too weak" framing
-                                # (the 2026-08-04 audit finding 3.1).
-                                has_blocked = any(r.status == "blocked" for r in failed_children)
-                                if failed_children:
-                                    failure_parts: list[str] = []
-                                    for r in failed_children:
-                                        if r.status == "no_tools":
-                                            failure_parts.append(
-                                                f"{r.target.mode_id} (no tool calls; "
-                                                f"{r.error_message})"
-                                            )
-                                        elif r.status == "blocked":
-                                            failure_parts.append(
-                                                f"{r.target.mode_id} (blocked; {r.error_message})"
-                                            )
-                                        elif r.status == "yielded":
-                                            failure_parts.append(
-                                                f"{r.target.mode_id} (interrupted; "
-                                                f"{r.error_message})"
-                                            )
-                                        elif r.status == "timeout":
-                                            failure_parts.append(
-                                                f"{r.target.mode_id} (timed out; "
-                                                f"{r.error_message or 'child turn timed out'})"
-                                            )
-                                        elif r.status == "cancelled":
-                                            failure_parts.append(
-                                                f"{r.target.mode_id} (cancelled; "
-                                                f"{r.error_message or 'child turn was cancelled'})"
-                                            )
-                                        else:
-                                            failure_parts.append(
-                                                f"{r.target.mode_id} ({r.status}; "
-                                                f"{r.error_message})"
-                                            )
-                                    tool_output = (
-                                        f"Fork fan-out: {succeeded}/{len(fork_targets)} "
-                                        f"children succeeded. The following children failed "
-                                        f"(their results are NOT available — the framework is "
-                                        f"turn-by-turn with no background scheduler, so a "
-                                        f"failed child's work is lost; re-issue the request "
-                                        f"to retry): {'; '.join(failure_parts)}. "
-                                        f"Do not tell the user you will report back later — "
-                                        f"you cannot. Report the failure and suggest re-issuing."
-                                    )
-                                else:
-                                    child_parts: list[str] = []
-                                    for r in fork_results_list:
-                                        child_parts.append(
-                                            f"### {r.target.mode_id}\n{r.output_text}"
-                                        )
-                                    tool_output = (
-                                        f"Fork fan-out completed: "
-                                        f"{succeeded}/{len(fork_targets)} children "
-                                        f"succeeded.\n\n"
-                                        f"{chr(10).join(child_parts)}"
-                                    )
-                        await _emit_stage(
-                            "tool_dispatch_complete",
-                            {
-                                "tool": tool_name,
-                                "tool_kind": "transition",
-                                "_state.iteration": _state.iteration,
-                                "tool_calls_so_far": _state.total_tool_calls,
-                                "ok": True,
-                                "transition": "fork",
-                                "fork_children": len(fork_results_list) if fork_results_list else 0,
-                                "duration_ms": int(
-                                    (time.monotonic() - _tool_dispatch_started) * 1000
-                                ),
-                            },
-                        )
-                        # ── Mark fork children's intents as satisfied ──
-                        # Without this, the post-fork routing-hint recomputation
-                        # runs against the entry mode's ``satisfies_intents``
-                        # (typically empty for ``default``), re-detects the
-                        # original query's intents as a gap, and re-emits the
-                        # exact ``fork:...`` hint. The model obligingly calls
-                        # ``transition_stage`` again → another fan-out → more
-                        # duplicate artifacts. Mirrors the handoff branch's
-                        # ``_state.chain_satisfied.update(...)`` so the next
-                        # hint is computed against the union of every mode the
-                        # turn has already run (entry + fork children). Only
-                        # ``ok`` children contribute their intents — a
-                        # failed/``no_tools`` child satisfied nothing. Tag-
-                        # blind: the kernel only unions opaque pack-authored
-                        # intent-tag sets.
-                        if fork_results_list:
-                            for r in fork_results_list:
-                                if r.status != "ok":
-                                    continue
-                                child_mode = catalog.get(r.target.mode_id)
-                                if child_mode is None:
-                                    continue
-                                _state.chain_satisfied.update(child_mode.satisfies_intents)
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "name": tool_name,
-                                "content": tool_output,
-                            }
-                        )
-                        # If any fork child is ``no_tools`` (hallucinated
-                        # success) or ``yielded``/``interrupted`` (harness
-                        # force-yielded before completing its action tools),
-                        # abort the user-facing turn with a deterministic
-                        # failure. Do NOT ``continue`` and hand the failure to
-                        # the model as advice — the model can paraphrase it
-                        # into a false "completed" (the 2026-07-25 incident).
-                        # Surface the failure directly. ``no_tools`` and
-                        # ``interrupted`` get distinct messaging: the former
-                        # is a hallucinated success, the latter an honest
-                        # interruption (the 2026-08-02 fan-out regression).
-                        #
-                        # A ``model_yield`` child is NOT a failure: the model
-                        # called the ``yield`` tool to ask the user a question
-                        # (an honest punt, not a hallucination). Propagate the
-                        # child's ``YieldAction`` to the parent turn's
-                        # ``yielded`` so the host renders the question with the
-                        # normal yield UX. When more than one child model-yielded,
-                        # surface the first (ordered by fork target index) —
-                        # the user answers one question per turn.
-                        #
-                        # Precedence: a hard sibling failure (blocked, no_tools,
-                        # interrupted) wins over a voluntary yield. A child's
-                        # clarification question is only useful when the rest of
-                        # the fan-out actually completed; surfacing the question
-                        # and then silently marking the turn blocked hides the
-                        # actionable failure (2026-08-04 audit finding).
-                        if (
-                            has_model_yield
-                            and not has_no_tools
-                            and not has_yielded
-                            and not has_blocked
-                        ):
-                            model_yield_children = [
-                                r for r in fork_results_list if r.status == "model_yield"
-                            ]
-                            _propagated = model_yield_children[0].yield_action
-                            if _propagated is not None:
-                                _pending_yield = _propagated
-                                content = _propagated.question
-                                _yielded = True
-                                _log.info(
-                                    "turn lifecycle: propagating fork child "
-                                    "model-yield (mode=%s, target=%s)",
-                                    _propagated.target_mode_id or "(in-place)",
-                                    model_yield_children[0].target.mode_id,
-                                )
-                                break
-                            # Defensive: a model_yield child without a
-                            # ``yield_action`` (should not happen —
-                            # ``_run_fork_child_turn`` always sets it). Fall
-                            # through to the deterministic abort below.
-                            _log.warning(
-                                "fork child %s reported model_yield but carried "
-                                "no yield_action; falling back to interrupt framing",
-                                model_yield_children[0].target.mode_id,
-                            )
-                        if has_no_tools or has_yielded or has_blocked:
-                            interrupted_modes = [
-                                r.target.mode_id
-                                for r in fork_results_list
-                                if r.status in ("yielded", "interrupted")
-                            ]
-                            # Per-child detail that distinguishes the two
-                            # no_tools shapes: a child that made ZERO tool
-                            # calls hallucinated success on iteration 1 (the
-                            # model produced text claiming done without ever
-                            # invoking a tool); a child that made read-only
-                            # calls gathered evidence but never committed to
-                            # a write. The local model (ollama) is the common
-                            # cause — suggest switching to a more capable
-                            # model so the child follows the sub-turn contract
-                            # and actually invokes its action tools.
-                            no_tools_detail = [
-                                (
-                                    f"{r.target.mode_id} "
-                                    f"({'0 tool calls — hallucinated success' if r.duration_ms and not r.called_tool_names else f'{len(r.called_tool_names)} read-only calls, never wrote'})"
-                                )
-                                for r in fork_results_list
-                                if r.status == "no_tools"
-                            ]
-                            model_hint = (
-                                "The local model may be too weak to follow the "
-                                "sub-turn contract; retry with a more capable "
-                                "model (e.g. a frontier cloud model) or re-issue."
-                            )
-                            if has_blocked:
-                                blocked_detail = [
-                                    f"{r.target.mode_id} ({r.error_message})"
-                                    for r in fork_results_list
-                                    if r.status == "blocked"
-                                ]
-                                content = (
-                                    "Fork fan-out was blocked before completing: "
-                                    "the following children were stopped before "
-                                    "producing output "
-                                    f"({'; '.join(blocked_detail)}). Resolve the "
-                                    "reported block and re-issue the request."
-                                )
-                            elif has_no_tools and has_yielded:
-                                content = (
-                                    "Fork fan-out could not verify its work: the "
-                                    f"following children were interrupted before "
-                                    f"completing their action tools "
-                                    f"({', '.join(interrupted_modes)}), and the "
-                                    "following hallucinated their output "
-                                    f"({', '.join(no_tools_detail)}). Nothing was "
-                                    "written to disk or memory. "
-                                    f"{model_hint}"
-                                )
-                            elif has_no_tools:
-                                content = (
-                                    "Fork fan-out could not verify its work: the "
-                                    "following children hallucinated their output "
-                                    f"({', '.join(no_tools_detail)}), so nothing "
-                                    "was written to disk or memory. "
-                                    f"{model_hint}"
-                                )
-                            else:
-                                content = (
-                                    "Fork fan-out was interrupted: the following "
-                                    "children were force-yielded by the turn lifecycle "
-                                    "(iteration cap / stuck-in-stage / budget) before "
-                                    f"completing their action tools "
-                                    f"({', '.join(interrupted_modes)}), so their output "
-                                    "is partial. Re-issue the request, or raise "
-                                    "FORK_CHILD_MAX_TOOL_ITERATIONS."
-                                )
-                            break
-                        continue
-
                     # ── Case B: mode handoff (routing FSM) ────────────────
                     if is_routable_mode(target_stage):
                         # The model honored the routing hint (chose a single
@@ -4450,7 +4211,7 @@ async def _run_turn_inner(
                         # forced-fork and forced-plan enforcer state; the
                         # post-handoff hint recomputation below will set a
                         # fresh target if the new mode still leaves a gap.
-                        _state.forced_fork_target = ""
+                        _state.forced_fork_target = None
                         _state.non_fork_tool_dispatches = 0
                         _state.forced_plan_target = ""
                         _state.non_plan_tool_dispatches = 0
@@ -5211,14 +4972,11 @@ async def _run_turn_inner(
                                         # Refresh the forced-fork target for the
                                         # new mode so the enforcer tracks the
                                         # post-handoff routing decision.
-                                        _state.forced_fork_target = (
-                                            _compute_fork_target_string(
-                                                query=query,
-                                                routing_targets=get_routing_targets(target_stage),
-                                                mode_config=target_mode_config,
-                                                extra_satisfied=_state.chain_satisfied,
-                                            )
-                                            or ""
+                                        _state.forced_fork_target = _compute_fork_targets(
+                                            query=query,
+                                            routing_targets=get_routing_targets(target_stage),
+                                            mode_config=target_mode_config,
+                                            extra_satisfied=_state.chain_satisfied,
                                         )
                                         _state.non_fork_tool_dispatches = 0
                                         # Refresh the forced-plan target for
@@ -5240,7 +4998,7 @@ async def _run_turn_inner(
                                     _state.last_hint_text = ""
                                     # No remaining gap → no forced fork or
                                     # forced plan.
-                                    _state.forced_fork_target = ""
+                                    _state.forced_fork_target = None
                                     _state.non_fork_tool_dispatches = 0
                                     _state.forced_plan_target = ""
                                     _state.non_plan_tool_dispatches = 0
@@ -6027,7 +5785,7 @@ from kernel.turn_phases._post_turn import (  # noqa: F401
 )
 from kernel.turn_phases._routing_hint import (  # noqa: F401
     _compute_capability_routing_hint,
-    _compute_fork_target_string,
+    _compute_fork_targets,
     _detect_query_intents,
     _first_target_for_earliest_intent,
     _format_remaining_steps,
