@@ -18,6 +18,7 @@ requires-python = ">=3.11"
 dependencies = [
     "lisa-kernel",
     "httpx>=0.27.0",
+    "openai>=1.59.0",
     "pydantic>=2.13.4",
     "sqlite-vec>=0.1.9",
     # SQLite-backed on-disk cache for the SDK ContentFetcher primitive
@@ -59,4 +60,10 @@ lisa-router = "sdk.router:get_router_factory"
 
 [project.entry-points."lisa.extensions.model_router_configs"]
 lisa-router = "sdk.router.default_config:get_default_router_config"
+
+# Built-in provider gateways — a runtime ProviderGatewayProvider backend,
+# not a pack. See sdk/providers/ and the kernel's ProviderGatewayProvider
+# protocol. Discovered via kernel.provider_gateway_discovery.
+[project.entry-points."lisa.extensions.provider_gateways"]
+sdk = "sdk.providers:get_provider_gateway_provider_factory"
 

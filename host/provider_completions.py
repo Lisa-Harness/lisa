@@ -213,14 +213,14 @@ def _to_anthropic_tools(
     Anthropic tool names must match ``^[a-zA-Z0-9_-]{1,128}$``. The host's
     tool ids are namespaced with a ``.`` separator (``server_id.tool_name``)
     which violates that pattern, so names are sanitized via the kernel's
-    :func:`kernel.provider_core._sanitize_anthropic_tool_name` before being
+    :func:`sdk.providers.anthropic_gateway._sanitize_anthropic_tool_name` before being
     sent. Returns a tuple of ``(anthropic_tools, sanitized_to_original)``
     so response parsing can restore the original (namespaced) tool name from
     the sanitized name Anthropic echoes back in ``tool_use`` blocks.
     """
     if not tools:
         return [], {}
-    from kernel.provider_core import _sanitize_anthropic_tool_name
+    from sdk.providers.anthropic_gateway import _sanitize_anthropic_tool_name
 
     translated: list[dict[str, Any]] = []
     sanitized_to_original: dict[str, str] = {}

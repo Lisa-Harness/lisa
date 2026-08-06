@@ -53,7 +53,7 @@ from kernel.models import (
     WorkflowTransitionRequest,
     YieldPolicy,
 )
-from kernel.openai_function_tools import build_strict_openai_function_tool
+from kernel.function_tools import build_strict_openai_function_tool
 from kernel.tools.mcp_client import MCPClientConfig
 
 logger = logging.getLogger(__name__)

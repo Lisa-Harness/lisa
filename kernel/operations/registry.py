@@ -31,7 +31,7 @@ from kernel.models import (
     OperationResult,
     ToolExecutionTelemetry,
 )
-from kernel.openai_function_tools import build_strict_openai_function_tool
+from kernel.function_tools import build_strict_openai_function_tool
 from kernel.pack_configuration import EMPTY_PACK_CONFIGURATION
 from kernel.telemetry import get_tracer, mark_span_failed, set_span_attributes
 from kernel.tools.mcp_client import MCPClientConfig

@@ -75,7 +75,7 @@ from kernel.operations.registry import (
     mode_completion_effects,
 )
 from kernel.operations.structured_output import completion_content
-from kernel.provider_core import (
+from kernel.provider_contracts import (
     StreamedChunk,
     StreamedCompletion,
     _aggregate_streamed_chunks,
@@ -630,10 +630,14 @@ def _lazy_model_policy() -> ModelPolicy:
     return ManifestModelPolicy()
 
 
-def _lazy_provider_gateways() -> ProviderGatewayProvider:
-    from kernel.context import KernelProviderGatewayProvider
-
-    return KernelProviderGatewayProvider()
+def _lazy_provider_gateways() -> ProviderGatewayProvider | None:
+    # The kernel ships no default gateway provider. Concrete gateway
+    # implementations live in the SDK (sdk/providers/) and are discovered
+    # via the lisa.extensions.provider_gateways entry-point group. Hosts
+    # wire the discovered ProviderGatewayProvider into ContextSeams; when
+    # nothing is discovered, this stays None and a model call will fail
+    # with a clear error.
+    return None
 
 
 def _lazy_event_bus() -> EventBus:
@@ -684,7 +688,12 @@ class ContextSeams:
     ``preferred_model_id`` — preserving today's behavior. Hosts wire a
     discovered ``ModelRouter`` (from ``lisa.extensions.model_routers``) here
     to enable per-iteration model selection without extra model calls."""
-    provider_gateways: ProviderGatewayProvider = field(default_factory=_lazy_provider_gateways)
+    provider_gateways: ProviderGatewayProvider | None = field(default_factory=_lazy_provider_gateways)
+    """Provider gateway dispatch. When ``None`` (default), the kernel ships
+    no gateways — concrete implementations are discovered via
+    ``lisa.extensions.provider_gateways`` (SDK ships the reference backends)
+    and wired by the host. A model call with no gateway wired fails with a
+    clear error."""
     event_bus: EventBus = field(default_factory=_lazy_event_bus)
     data_sanitizer: DataSanitizer = field(default_factory=_lazy_data_sanitizer)
     extension_evidence_builder: ExtensionEvidenceBuilder = field(

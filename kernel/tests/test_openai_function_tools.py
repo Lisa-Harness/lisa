@@ -1,4 +1,4 @@
-"""Tests for kernel/openai_function_tools.py — strict-mode schema gating.
+"""Tests for kernel/function_tools.py — strict-mode schema gating.
 
 Locks in the behavior of :func:`build_strict_openai_function_tool`: strict
 mode stays on for clean schemas and turns off for schemas OpenAI strict mode
@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from kernel.openai_function_tools import (
+from kernel.function_tools import (
     _has_additional_properties_true,
     _has_union_items,
     _strict_incompatible,

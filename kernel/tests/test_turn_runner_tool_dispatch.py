@@ -823,7 +823,7 @@ def test_extract_completion_usage_defaults_to_zero() -> None:
 
 def test_streamed_completion_adapter_bridges_content_and_tool_calls() -> None:
     """StreamedCompletionAdapter exposes content, tool_calls, and usage."""
-    from kernel.provider_core import StreamedCompletion
+    from kernel.provider_contracts import StreamedCompletion
     from kernel.turn_runner import StreamedCompletionAdapter
 
     aggregated = StreamedCompletion(
@@ -840,7 +840,7 @@ def test_streamed_completion_adapter_bridges_content_and_tool_calls() -> None:
 
 def test_streamed_completion_adapter_repr() -> None:
     """The repr includes content and finish_reason for debugging."""
-    from kernel.provider_core import StreamedCompletion
+    from kernel.provider_contracts import StreamedCompletion
     from kernel.turn_runner import StreamedCompletionAdapter
 
     aggregated = StreamedCompletion(

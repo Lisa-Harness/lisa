@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from kernel.ipsar_fsm import get_routing_targets, get_transition_tool_schema
-from kernel.openai_function_tools import build_strict_openai_function_tool
+from kernel.function_tools import build_strict_openai_function_tool
 from kernel.operations.registry import build_operation_tool_schemas, get_operation_catalog
 from kernel.tools.mcp_client import MCPToolPool
 from kernel.tools.registry import get_tool_catalog

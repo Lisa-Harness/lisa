@@ -412,8 +412,11 @@ class ModelRouter(Protocol):
 class ProviderGatewayProvider(Protocol):
     """Return a ``ProviderGateway`` for a given provider name.
 
-    Replaces direct ``app.providers`` imports. The default implementation
-    returns the gateways shipped in ``kernel.provider_core``.
+    The kernel ships no default implementation — concrete gateway backends
+    live in the SDK (``sdk/providers/``) and are discovered via the
+    ``lisa.extensions.provider_gateways`` entry-point group. Hosts wire the
+    discovered ``ProviderGatewayProvider`` into ``ContextSeams``; third-party
+    packs can register their own under the same entry-point group.
     """
 
     def gateway_for(self, provider: str) -> Any | None: ...

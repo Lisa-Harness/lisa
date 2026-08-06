@@ -2,7 +2,7 @@
 
 Covers ``GoogleGeminiGateway.complete`` message translation, tool-use
 extraction, system-prompt extraction, usage extraction, embed, and
-``KernelProviderGatewayProvider.gateway_for`` routing for ``google``.
+``SdkProviderGatewayProvider.gateway_for`` routing for ``google``.
 """
 
 from __future__ import annotations
@@ -11,12 +11,12 @@ from typing import Any
 
 import pytest
 
-from kernel.context.provider_gateway_provider import KernelProviderGatewayProvider
-from kernel.provider_core import (
+from kernel.provider_contracts import (
     CompletionRequest,
     CompletionResult,
-    GoogleGeminiGateway,
 )
+from sdk.providers import SdkProviderGatewayProvider
+from sdk.providers.google_gateway import GoogleGeminiGateway
 
 # ── Test helpers ──────────────────────────────────────────────────────
 
@@ -378,12 +378,12 @@ def test_supports_gemini_model() -> None:
 
 
 def test_gateway_for_google_returns_gemini_gateway() -> None:
-    provider = KernelProviderGatewayProvider()
+    provider = SdkProviderGatewayProvider()
     assert provider.gateway_for("google") is GoogleGeminiGateway
 
 
 def test_gateway_for_anthropic_still_returns_anthropic_gateway() -> None:
-    from kernel.provider_core import AnthropicGateway
+    from sdk.providers.anthropic_gateway import AnthropicGateway
 
-    provider = KernelProviderGatewayProvider()
+    provider = SdkProviderGatewayProvider()
     assert provider.gateway_for("anthropic") is AnthropicGateway

@@ -819,7 +819,7 @@ def _build_responses_payload(
     tool definitions into Responses function tools. Structured-output hints
     become ``text.format``. Codex models use ``max_output_tokens``.
     """
-    from kernel.provider_core import (
+    from sdk.providers.openai_gateway import (
         _normalize_openai_response_format,
         _normalize_openai_response_tool,
         build_openai_responses_input,
@@ -856,7 +856,7 @@ async def complete_live_responses(
     response_format_name: str,
 ) -> StubCompletion:
     """Execute a Responses-API provider completion (e.g. Codex on Azure)."""
-    from kernel.provider_core import (
+    from sdk.providers.openai_gateway import (
         extract_responses_content,
         extract_responses_tool_calls,
         extract_responses_usage,
@@ -959,7 +959,7 @@ async def complete_live_openai_compatible(
     # synthesized ``transition_stage`` calls have none and would trigger
     # ``400 INVALID_ARGUMENT: Function call is missing a thought_signature``.
     # Pass ``require_thought_signature`` so the chokepoint prunes them.
-    from kernel.provider_core import normalize_openai_messages
+    from sdk.providers.openai_gateway import normalize_openai_messages
 
     kwargs["messages"] = normalize_openai_messages(
         messages,
@@ -1062,7 +1062,7 @@ async def complete_live_stream(
     This is the streaming counterpart of :func:`complete_live`. It is wired
     as ``TurnHooks.complete_stream`` when ``config.streaming.mode`` is
     ``"text"`` or ``"hybrid"``. The turn runner iterates the async generator
-    this function returns, yielding :class:`kernel.provider_core.StreamedChunk`
+    this function returns, yielding :class:`kernel.provider_contracts.StreamedChunk`
     objects; this function calls ``transport.on_text_chunk`` for each text
     delta so the host surface renders tokens as they arrive.
 
@@ -1186,8 +1186,8 @@ async def _stream_openai_compatible_chunks(
     response_format: type[Any] | None,
 ) -> Any:
     """Yield ``StreamedChunk`` objects from an OpenAI-compatible streaming endpoint."""
-    from kernel.provider_core import (
-        StreamedChunk,
+    from kernel.provider_contracts import StreamedChunk
+    from sdk.providers.openai_gateway import (
         extract_openai_completion_usage,
         normalize_openai_messages,
     )
@@ -1252,7 +1252,7 @@ async def _stream_anthropic_chunks(
     tools: list[dict[str, Any]] | None,
 ) -> Any:
     """Yield ``StreamedChunk`` objects from the Anthropic Messages SSE stream."""
-    from kernel.provider_core import StreamedChunk
+    from kernel.provider_contracts import StreamedChunk
 
     api_key = (
         os.getenv(LISA_ANTHROPIC_API_KEY_ENV, "").strip()
@@ -1348,7 +1348,7 @@ async def _stream_anthropic_chunks(
 
 def _make_completion_usage(usage_data: dict[str, Any]) -> Any:
     """Build a ``CompletionUsage`` from an Anthropic usage dict (streaming)."""
-    from kernel.provider_core import CompletionUsage
+    from kernel.provider_contracts import CompletionUsage
 
     prompt_tokens = int(usage_data.get("input_tokens", 0) or 0)
     completion_tokens = int(usage_data.get("output_tokens", 0) or 0)

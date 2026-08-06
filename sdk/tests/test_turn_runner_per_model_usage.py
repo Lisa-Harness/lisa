@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from kernel.models import WorkflowModeConfig
-from kernel.provider_core import StreamedChunk
+from kernel.provider_contracts import StreamedChunk
 from kernel.turn_runner import TurnHooks, TurnResult, run_turn
 
 # ── Stubs ─────────────────────────────────────────────────────────────

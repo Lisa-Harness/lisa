@@ -24,6 +24,7 @@ from kernel.model_router_discovery import discover_model_router_factories
 from kernel.models import OperationExecutionContext, OperationResult, ToolResult
 from kernel.operations.registry import execute_operation
 from kernel.pack_configuration import SessionPackConfigurationResolver
+from kernel.provider_gateway_discovery import discover_provider_gateway_factories
 from kernel.seams.protocols import ContentRegistry
 from kernel.slice import SliceOutcome, SliceTuning
 from kernel.turn_runner import CheckpointTuning, ContextSeams, TurnHooks
@@ -228,6 +229,49 @@ def build_turn_hooks(
             if router is not None:
                 logger.info("active model router: %s", entry.pack_name)
                 return router
+        return None
+
+    # ── Provider gateway discovery ────────────────────────────────
+    # Discover pack-registered provider gateway providers
+    # (lisa.extensions.provider_gateways) and wire the first non-None
+    # result into ContextSeams. The SDK ships the reference backends
+    # (OpenAI, Azure, Anthropic, Google, Bedrock) under this group;
+    # third-party packs can register their own. When no provider is
+    # discovered, provider_gateways stays None.
+    def _discover_active_provider_gateways() -> Any:
+        for entry in discover_provider_gateway_factories():
+            try:
+                loaded = entry.provider
+                # The entry point may yield a factory-factory (zero-arg
+                # callable returning the real ProviderGatewayProvider) or
+                # the instance directly. Detect via inspect.signature,
+                # same as the model-router pattern.
+                import inspect as _inspect
+
+                if callable(loaded) and not hasattr(loaded, "gateway_for"):
+                    try:
+                        sig = _inspect.signature(loaded)
+                        min_params = sum(
+                            1
+                            for p in sig.parameters.values()
+                            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+                            and p.default is p.empty
+                        )
+                    except (ValueError, TypeError):
+                        min_params = 0
+                    if min_params == 0:
+                        loaded = loaded()
+                if loaded is not None:
+                    logger.info("active provider gateway provider: %s", entry.pack_name)
+                    return loaded
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning(
+                    "provider gateway entry %r failed: %s",
+                    entry.pack_name,
+                    exc,
+                    exc_info=True,
+                )
+                continue
         return None
 
     # ── Completion ────────────────────────────────────────────────
@@ -746,6 +790,7 @@ def build_turn_hooks(
         context_seams=ContextSeams(
             content_registry=cast("Any", content_registry() or None),
             model_router=_discover_active_router(),
+            provider_gateways=_discover_active_provider_gateways(),
         ),
         # Forward the kernel's fine-grained stage events to the transport so
         # the CLI/web stage line can show model_call, tool_dispatch,

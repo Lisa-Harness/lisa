@@ -2,7 +2,7 @@
 
 Covers ``BedrockGateway.complete`` message translation, tool-use extraction,
 system-prompt extraction, usage extraction, ImportError when boto3 is missing,
-and ``KernelProviderGatewayProvider.gateway_for`` routing for ``aws``.
+and ``SdkProviderGatewayProvider.gateway_for`` routing for ``aws``.
 
 All tests stub the boto3 client — no AWS credentials or network access required.
 """
@@ -16,12 +16,12 @@ from typing import Any
 
 import pytest
 
-from kernel.context.provider_gateway_provider import KernelProviderGatewayProvider
-from kernel.provider_core import (
-    BedrockGateway,
+from kernel.provider_contracts import (
     CompletionRequest,
     CompletionResult,
 )
+from sdk.providers import SdkProviderGatewayProvider
+from sdk.providers.bedrock_gateway import BedrockGateway
 
 # ── Test helpers ──────────────────────────────────────────────────────
 
@@ -299,12 +299,12 @@ def test_supports_bedrock_model() -> None:
 
 
 def test_gateway_for_aws_returns_bedrock_gateway() -> None:
-    provider = KernelProviderGatewayProvider()
+    provider = SdkProviderGatewayProvider()
     assert provider.gateway_for("aws") is BedrockGateway
 
 
 def test_gateway_for_google_still_returns_gemini_gateway() -> None:
-    from kernel.provider_core import GoogleGeminiGateway
+    from sdk.providers.google_gateway import GoogleGeminiGateway
 
-    provider = KernelProviderGatewayProvider()
+    provider = SdkProviderGatewayProvider()
     assert provider.gateway_for("google") is GoogleGeminiGateway
