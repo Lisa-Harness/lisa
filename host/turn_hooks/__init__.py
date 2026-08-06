@@ -7,15 +7,23 @@ dependencies) explicitly as parameters, returning the hook callable.
 """
 
 from host.turn_hooks._auto_capture import (
+    AUTO_CAPTURE_TIERS,
     COMMITMENT_PATTERNS,
+    DEFAULT_TIER_THRESHOLD_DAILY,
+    DEFAULT_TIER_THRESHOLD_WEEKLY,
     WRITE_EFFECT_TOOL_PREFIXES,
     WRITE_EFFECT_TOOL_SUFFIXES,
+    classify_memory_tier,
     should_auto_capture,
 )
 
 __all__ = [
+    "AUTO_CAPTURE_TIERS",
     "COMMITMENT_PATTERNS",
+    "DEFAULT_TIER_THRESHOLD_DAILY",
+    "DEFAULT_TIER_THRESHOLD_WEEKLY",
     "WRITE_EFFECT_TOOL_PREFIXES",
     "WRITE_EFFECT_TOOL_SUFFIXES",
+    "classify_memory_tier",
     "should_auto_capture",
 ]

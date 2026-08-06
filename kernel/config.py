@@ -286,6 +286,12 @@ class Settings(BaseSettings):
     # ── Memory auto-capture (post-turn learning) ───────────────────────
     memory_auto_capture_enabled: bool = True
     memory_auto_capture_min_salience: float = 0.5
+    # Salience → tier cut points for auto-captured learnings (see
+    # ``host.turn_hooks.classify_memory_tier``). Below ``daily_threshold``
+    # is ``daily``; between the two is ``weekly``; at/above
+    # ``weekly_threshold`` is ``long_term``.
+    memory_auto_capture_daily_threshold: float = 0.65
+    memory_auto_capture_weekly_threshold: float = 0.8
 
     # ── Passive intelligence ────────────────────────────────────────────
     passive_intelligence_enabled: bool = True

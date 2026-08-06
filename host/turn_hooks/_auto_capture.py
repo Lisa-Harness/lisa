@@ -40,6 +40,23 @@ WRITE_EFFECT_TOOL_PREFIXES: tuple[str, ...] = (
 
 WRITE_EFFECT_TOOL_SUFFIXES: tuple[str, ...] = ("_create", "_update", "_delete", "_write", "_save")
 
+# ── Salience → tier mapping ──────────────────────────────────────────────
+#
+# Auto-captured learnings are workflow state by default: a write-effect tool
+# call or a soft commitment ("I prefer …") is task-specific context that
+# rarely survives a week, let alone a year. Persisting it as ``long_term``
+# (365-day TTL) pollutes long-term recall with ephemeral noise. Only the
+# strongest signals — explicit approval granted (salience 0.8) or firm
+# commitment language ("from now on", "decided") — earn a long-term slot.
+# The thresholds are overridable via config (see ``classify_memory_tier``).
+DEFAULT_TIER_THRESHOLD_DAILY: float = 0.65
+DEFAULT_TIER_THRESHOLD_WEEKLY: float = 0.8
+
+# Valid retention tiers for auto-captured memories. ``permanent`` is
+# intentionally excluded — that tier is reserved for explicit, curated
+# records (e.g. dispute resolutions), not opportunistic capture.
+AUTO_CAPTURE_TIERS: tuple[str, ...] = ("daily", "weekly", "long_term")
+
 
 # ── Trigger detection ────────────────────────────────────────────────────
 
@@ -107,3 +124,34 @@ def should_auto_capture(  # noqa: C901,PLR0912
     if max_salience <= 0.0:
         return False, 0.0
     return True, max_salience
+
+
+def classify_memory_tier(
+    salience: float,
+    daily_threshold: float = DEFAULT_TIER_THRESHOLD_DAILY,
+    weekly_threshold: float = DEFAULT_TIER_THRESHOLD_WEEKLY,
+) -> str:
+    """Map an auto-capture salience score onto a retention tier.
+
+    Auto-captured learnings are workflow state by default; only the
+    strongest signals earn a long-term slot. The mapping is:
+
+    - ``salience < daily_threshold``  → ``daily``   (7-day TTL)
+    - ``daily_threshold ≤ salience < weekly_threshold`` → ``weekly`` (30-day TTL)
+    - ``salience ≥ weekly_threshold`` → ``long_term`` (365-day TTL)
+
+    Thresholds default to 0.65 / 0.8 so that soft commitments and
+    write-effect tool calls (salience 0.6–0.7) land in ``daily``/``weekly``,
+    while explicit approvals (0.8) and firm commitments ("from now on",
+    0.7) still reach ``long_term`` when they clear the weekly band. Callers
+    override the thresholds via ``HostConfig.memory_auto_capture_*`` knobs
+    rather than hard-coding new cut points here.
+    """
+    # Clamp negatives so a malformed salience never silently promotes a
+    # record past the daily band.
+    score = max(0.0, float(salience))
+    if score < daily_threshold:
+        return "daily"
+    if score < weekly_threshold:
+        return "weekly"
+    return "long_term"

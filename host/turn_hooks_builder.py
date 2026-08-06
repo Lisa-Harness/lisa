@@ -421,7 +421,13 @@ def build_turn_hooks(
     # The trigger policy (commitment patterns, write-effect prefixes/suffixes,
     # and the detection function) now lives in host.turn_hooks._auto_capture
     # so it is independently testable without constructing a HostRuntime.
-    from host.turn_hooks._auto_capture import should_auto_capture as _should_auto_capture
+    # ``classify_memory_tier`` maps the trigger salience onto a retention tier
+    # so workflow-state captures (write-effect tools, soft commitments) land
+    # in ``daily``/``weekly`` rather than polluting ``long_term`` recall.
+    from host.turn_hooks._auto_capture import (
+        classify_memory_tier as _classify_memory_tier,
+        should_auto_capture as _should_auto_capture,
+    )
 
     async def _on_turn_complete(
         mode_id: str,
@@ -453,6 +459,11 @@ def build_turn_hooks(
                 should_capture
                 and trigger_salience >= runtime.config.memory_auto_capture_min_salience
             ):
+                memory_tier = _classify_memory_tier(
+                    trigger_salience,
+                    daily_threshold=runtime.config.memory_auto_capture_daily_threshold,
+                    weekly_threshold=runtime.config.memory_auto_capture_weekly_threshold,
+                )
                 try:
                     capture_ctx = OperationExecutionContext(
                         workspace_id=runtime.session_plan.manifest.name,
@@ -481,13 +492,14 @@ def build_turn_hooks(
                         params={
                             "content": (f"User asked:\n{query}\n\nLisa answered:\n{response_text}"),
                             "salience": trigger_salience,
-                            "memory_tier": "long_term",
+                            "memory_tier": memory_tier,
                         },
                     )
                     await _execute_operation("synthesize_and_store_learning", capture_ctx)
                     logger.debug(
-                        "auto-capture stored learning salience=%.1f mode=%s",
+                        "auto-capture stored learning salience=%.2f tier=%s mode=%s",
                         trigger_salience,
+                        memory_tier,
                         mode_id,
                     )
                 except Exception as exc:  # pylint: disable=broad-except

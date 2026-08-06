@@ -168,6 +168,14 @@ class HostConfig:
     # ── Memory auto-capture (post-turn learning) ───────────────────────
     memory_auto_capture_enabled: bool = True
     memory_auto_capture_min_salience: float = 0.5
+    # Salience → tier cut points for auto-captured learnings (see
+    # ``classify_memory_tier``). Below ``daily_threshold`` is ``daily``;
+    # between the two is ``weekly``; at/above ``weekly_threshold`` is
+    # ``long_term``. Workflow-state captures (write-effect tools, soft
+    # commitments) thus expire quickly rather than polluting long-term
+    # recall for a year.
+    memory_auto_capture_daily_threshold: float = 0.65
+    memory_auto_capture_weekly_threshold: float = 0.8
 
     # ── Execution policy ───────────────────────────────────────────────
     execution_policy: ExecutionPolicy = field(default_factory=default_interactive_execution_policy)
