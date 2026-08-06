@@ -19,9 +19,9 @@ from kernel.models import (
     ToolExecutionContext,
 )
 from sdk.config import settings
+from sdk.packs.memory.utils.memory_recall import build_memory_recall_answer
 
 logger = logging.getLogger(__name__)
-from sdk.packs.memory.utils.memory_recall import build_memory_recall_answer
 
 
 class Parameters(BaseModel):
@@ -63,6 +63,17 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # backend's search engine — setting it only on ToolExecutionContext.query
     # is not enough; it must also be in parameters (which is what
     # _mcp_tool_executor forwards to the pool).
+    #
+    # The same applies to the scope fields: the memory.search synthetic alias
+    # forwards ONLY the `parameters` dict to the native search_memory backend
+    # (see kernel.tools.synthetic.mcp_alias_tool — its handler closes over
+    # `arguments`, never the ToolExecutionContext). Setting surface_id /
+    # workspace_id / memory_scope on the ToolExecutionContext alone leaves
+    # them at the native tool's defaults (surface_id="", workspace_id="default"),
+    # so the store's scoped WHERE clause (user_slug, workspace_id,
+    # memory_scope, surface_id) returns zero rows — recall reports "No memory
+    # matches found" even when the store is full. Mirror the synthesize path,
+    # which passes all three scope fields explicitly in parameters.
     try:
         tool_result = await ctx.host.execute_tool(
             "memory.search",
@@ -78,6 +89,9 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                 parameters={
                     "query": raw_query,
                     "user_slug": ctx.user_slug,
+                    "workspace_id": ctx.workspace_id,
+                    "surface_id": ctx.surface_id,
+                    "memory_scope": ctx.memory_scope,
                     "limit": max(1, min(limit, 20)),
                 },
             ),

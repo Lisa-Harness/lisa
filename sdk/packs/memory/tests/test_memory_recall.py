@@ -4,7 +4,12 @@ import json
 
 import pytest
 
-from kernel.models import MemoryRecord, OperationExecutionContext, ToolResult
+from kernel.models import (
+    MemoryRecord,
+    OperationExecutionContext,
+    ToolExecutionContext,
+    ToolResult,
+)
 from kernel.seams.host_adapter import build_callable_host
 from sdk.packs.memory.operations.memory.recall import execute
 from sdk.packs.memory.utils.memory_recall import build_memory_recall_answer
@@ -93,7 +98,52 @@ async def test_recall_operation_uses_memory_list_and_returns_ranked_evidence() -
 
 
 @pytest.mark.asyncio
-async def test_recall_operation_handles_missing_tool_executor() -> None:
+async def test_recall_operation_forwards_scope_fields_in_parameters() -> None:
+    """Regression: the memory.search synthetic alias forwards ONLY the
+    ``parameters`` dict to the native ``search_memory`` backend — it never
+    reads ``ToolExecutionContext`` scope fields. When recall_memory set
+    surface_id / workspace_id / memory_scope on the ToolExecutionContext but
+    omitted them from parameters, the store's scoped WHERE clause (user_slug,
+    workspace_id, memory_scope, surface_id) filtered against the native tool's
+    defaults (workspace_id="default", surface_id=""), so memories stored under
+    the real surface/workspace returned "No memory matches found" even with a
+    full store. The scope fields must be in parameters, mirroring
+    synthesize_and_store_learning."""
+    captured: dict[str, object] = {}
+
+    async def execute_tool(tool_id: str, ctx: ToolExecutionContext) -> ToolResult:
+        captured["tool_id"] = tool_id
+        captured["parameters"] = dict(ctx.parameters)
+        return ToolResult(
+            tool_id=tool_id,
+            output_text=json.dumps([]),
+        )
+
+    ctx = OperationExecutionContext(
+        operation_id="recall_memory",
+        user_slug="testing",
+        user_id="testing",
+        workspace_id="testing",
+        surface_id="host-console",
+        memory_scope="personal",
+        params={"query": "workflow instance durability", "limit": 5},
+        host=build_callable_host(execute_tool_fn=execute_tool),
+    )
+
+    result = await execute(ctx)
+
+    assert captured["tool_id"] == "memory.search"
+    params = captured["parameters"]
+    # The scope fields must reach the backend via parameters, not just the
+    # ToolExecutionContext. The native search_memory tool keys on these.
+    assert params["query"] == "workflow instance durability"
+    assert params["user_slug"] == "testing"
+    assert params["workspace_id"] == "testing"
+    assert params["surface_id"] == "host-console"
+    assert params["memory_scope"] == "personal"
+    assert params["limit"] == 5
+    # No records returned -> found is False.
+    assert result.output_json["found"] is False
     ctx = OperationExecutionContext(
         operation_id="recall_memory",
         params={"query": "postgres"},
