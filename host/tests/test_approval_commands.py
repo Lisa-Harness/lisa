@@ -492,3 +492,199 @@ def test_affirmative_resume_uses_session_resume_phrases() -> None:
         assert not _is_affirmative_resume("proceed with the plan")
     finally:
         reset_routing_vocabulary()
+
+
+# ── Approval ↔ recovery settlement linkage ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_approve_settles_paired_stalled_recovery_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``/approve`` unblocks the paired recovery stall left by the model turn.
+
+    Regression for the 2026-08-06 zombie-stall incident: the model-turn path
+    settles a recovery record as ``stalled`` with ``blocks_workflow=True``
+    before raising ``ApprovalRequired``. ``/approve`` re-executes through a
+    fresh registry path that never touched the recovery service, so the
+    stall stayed and re-yielded on every subsequent turn. The fix links the
+    two stores by ``target_id`` + identity and settles the paired record on
+    successful approve (and on deny).
+    """
+
+    runtime = HostRuntime(
+        HostConfig.from_env(
+            data_dir=str(tmp_path),
+            user_slug="user",
+            surface_type="personal_dm",
+            surface_id="surface",
+        )
+    )
+    identity = _identity(runtime)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_create_worktree",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={"summary": "learn the repo"},
+        identity=identity,
+        pack_config={"workspace_root": "."},
+        safe_preview="create an isolated coding worktree",
+    )
+    await runtime.approval_service.request(invocation)
+
+    # Simulate the model-turn path: it began a recovery record for the same
+    # target, then settled it as ``stalled`` / ``blocks_workflow=True`` when
+    # the tool raised ``ApprovalRequired``.
+    from kernel.recovery import RecoveryIdentity, RecoveryRecord
+
+    recovery_identity = RecoveryIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id="user",
+        user_slug="user",
+        surface_type=runtime.config.surface_type,
+        surface_id=runtime.config.surface_id,
+        memory_scope=cast(MemoryScope, runtime.config.memory_scope),
+        session_plan_digest=runtime.session_plan.plan_digest,
+    )
+    started = await runtime.recovery_service.begin(
+        RecoveryRecord(
+            identity=recovery_identity,
+            conversation_id="host-console",
+            mode_id="coding",
+            stage_id="remember_1",
+            target_kind="pack_tool",
+            target_id="coding_create_worktree",
+            effect="write",
+            parameters={"summary": "learn the repo"},
+            retry_policy="confirm",
+        )
+    )
+    await runtime.recovery_service.settle(
+        started.work_item_id,
+        recovery_identity,
+        state="stalled",
+        last_error="approval required",
+        failure_scope="workflow",
+        retry_policy="confirm",
+        blocks_workflow=True,
+    )
+
+    async def execute_saved(*, invocation: ApprovalInvocation, hooks: object) -> ToolResult:
+        _ = hooks
+        return ToolResult(output_text="worktree created")
+
+    handle_message_module = importlib.import_module("host.handle_message")
+    monkeypatch.setattr(handle_message_module, "execute_approved_invocation", execute_saved)
+    monkeypatch.setattr(
+        handle_message_module,
+        "build_turn_hooks",
+        lambda _runtime, **_kwargs: TurnHooks(
+            approval_service=runtime.approval_service,
+            workspace_id=runtime.session_plan.manifest.name,
+            user_id="user",
+            user_slug="user",
+            surface_type="personal_dm",
+            surface_id="surface",
+            memory_scope=runtime.config.memory_scope,
+            session_plan_digest=runtime.session_plan.plan_digest,
+        ),
+    )
+
+    result = await handle_message(runtime, f"/approve {invocation.request_id}", NullTransport())
+
+    assert result.text == "worktree created"
+    # The paired stall must be cleared so subsequent turns route to the model
+    # instead of re-yielding the zombie stall.
+    settled = await runtime.recovery_service.get(started.work_item_id, recovery_identity)
+    assert settled is not None
+    assert settled.state == "succeeded"
+    assert settled.blocks_workflow is False
+
+
+@pytest.mark.asyncio
+async def test_deny_settles_paired_stalled_recovery_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``/deny`` dismisses the paired recovery stall so the workflow advances."""
+
+    runtime = HostRuntime(
+        HostConfig.from_env(
+            data_dir=str(tmp_path),
+            user_slug="user",
+            surface_type="personal_dm",
+            surface_id="surface",
+        )
+    )
+    identity = _identity(runtime)
+    invocation = build_approval_invocation(
+        target_kind="tool",
+        target_id="coding_create_worktree",
+        pack_id="lisa-pack-coding",
+        effect="write",
+        parameters={"summary": "learn the repo"},
+        identity=identity,
+        pack_config={},
+        safe_preview="create an isolated coding worktree",
+    )
+    await runtime.approval_service.request(invocation)
+
+    from kernel.recovery import RecoveryIdentity, RecoveryRecord
+
+    recovery_identity = RecoveryIdentity(
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id="user",
+        user_slug="user",
+        surface_type=runtime.config.surface_type,
+        surface_id=runtime.config.surface_id,
+        memory_scope=cast(MemoryScope, runtime.config.memory_scope),
+        session_plan_digest=runtime.session_plan.plan_digest,
+    )
+    started = await runtime.recovery_service.begin(
+        RecoveryRecord(
+            identity=recovery_identity,
+            conversation_id="host-console",
+            mode_id="coding",
+            stage_id="remember_1",
+            target_kind="pack_tool",
+            target_id="coding_create_worktree",
+            effect="write",
+            parameters={"summary": "learn the repo"},
+            retry_policy="confirm",
+        )
+    )
+    await runtime.recovery_service.settle(
+        started.work_item_id,
+        recovery_identity,
+        state="stalled",
+        last_error="approval required",
+        failure_scope="workflow",
+        retry_policy="confirm",
+        blocks_workflow=True,
+    )
+
+    handle_message_module = importlib.import_module("host.handle_message")
+    monkeypatch.setattr(
+        handle_message_module,
+        "build_turn_hooks",
+        lambda _runtime, **_kwargs: TurnHooks(
+            approval_service=runtime.approval_service,
+            workspace_id=runtime.session_plan.manifest.name,
+            user_id="user",
+            user_slug="user",
+            surface_type="personal_dm",
+            surface_id="surface",
+            memory_scope=runtime.config.memory_scope,
+            session_plan_digest=runtime.session_plan.plan_digest,
+        ),
+    )
+
+    result = await handle_message(runtime, f"/deny {invocation.request_id}", NullTransport())
+
+    assert "Denied approval request" in result.text
+    settled = await runtime.recovery_service.get(started.work_item_id, recovery_identity)
+    assert settled is not None
+    assert settled.state == "cancelled"
+    assert settled.blocks_workflow is False

@@ -221,7 +221,8 @@ async def test_retry_confirm_item_prompts_for_approval() -> None:
         runtime, f"/retry {record.work_item_id}", f"/retry {record.work_item_id}"
     )
 
-    assert "requires explicit approval" in result
+    assert "effectful" in result
+    assert "/skip " in result or "/cancel " in result
     settled = await service.get(record.work_item_id, _identity())
     assert settled is not None
     assert settled.state == "stalled"

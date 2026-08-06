@@ -186,14 +186,24 @@ async def handle_retry(runtime: Any, stripped: str, message: str) -> str:
         )
 
     if record.retry_policy == "confirm":
+        # There is no stored ApprovalInvocation on the recovery record (the
+        # approval and recovery stores are independent and share no id), so
+        # ``/retry`` cannot replay an effectful action directly. Two real
+        # paths forward: (a) re-issue the original request so the model
+        # re-attempts the full turn and mints a fresh, approve-able action;
+        # (b) dismiss the stall with /skip or /cancel so the workflow can
+        # advance past this step. The previous text pointed at
+        # ``/approve-after-review`` — a command that does not exist.
         return (
             f"Work item {work_item_id} targets {record.target_kind}:"
             f"{record.target_id} with effect='{record.effect}'.\n"
-            "This action is effectful or indeterminate and requires "
-            "explicit approval before replay.\n"
-            f"To proceed, run: /approve-after-review {work_item_id}\n"
-            "Or re-issue the original request to let the model "
-            "re-attempt the full turn."
+            "This action is effectful and cannot be replayed from a recovery "
+            "record (the approval and recovery stores share no id).\n"
+            "To proceed, either:\n"
+            "  - re-issue your original request so the model re-attempts the "
+            "full turn and mints a fresh approval, or\n"
+            f"  - run `/skip {work_item_id}` or `/cancel {work_item_id}` to "
+            "dismiss this stall and advance the workflow."
         )
 
     # Safe (read-only) retry: settle as succeeded placeholder for now.

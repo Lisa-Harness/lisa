@@ -402,10 +402,23 @@ def resolve_lifecycle_action(
     if blocking is not None:
         target = _resolve_yield_target(mode_yield_policy, instance=workflow_instance)
         detail = blocking.last_error or f"{blocking.target_kind} {blocking.target_id} stalled"
+        work_item_id = str(getattr(blocking, "work_item_id", "") or "")
+        # Print the literal slash commands with the work-item id so the user
+        # has a concrete, copy-pasteable escape. The historical prompt
+        # ("Retry, skip, or revise?") implied bare words work, but only the
+        # explicit ``/retry|/skip|/cancel <id>`` forms are real commands, and
+        # ``/retry`` on a confirm-policy record directs the user to re-issue
+        # the request or /skip it. Keep the prompt actionable, not a riddle.
+        commands_hint = (
+            f"Run /skip {work_item_id} or /cancel {work_item_id} to dismiss, "
+            f"or /retry {work_item_id} to retry. Otherwise rephrase your request."
+            if work_item_id
+            else "Run /stalls to see open work items, or rephrase your request."
+        )
         return YieldAction(
             question=(
                 f"A previous step stalled and needs your input to continue. "
-                f"Stall: {detail}. Retry, skip, or revise?"
+                f"Stall: {detail}. {commands_hint}"
             ),
             context=f"Recovery record blocks workflow step '{blocking.step_id}'.",
             target_mode_id=target,

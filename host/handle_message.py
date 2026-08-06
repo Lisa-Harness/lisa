@@ -35,7 +35,12 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from kernel.approval import ApprovalIdentity, ApprovalRequired, render_approval_request
+from kernel.approval import (
+    ApprovalIdentity,
+    ApprovalInvocation,
+    ApprovalRequired,
+    render_approval_request,
+)
 from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.operations.registry import OperationExecutionError
@@ -544,6 +549,16 @@ async def _handle_approval_command(
     identity = _approval_identity(runtime)
     if not approve:
         if await runtime.approval_service.deny(request_id, identity):
+            # Denying the approval also unblocks the paired recovery record:
+            # the original model-turn stall was ``blocks_workflow=True`` and
+            # would otherwise re-yield on every subsequent turn. Settle it
+            # as cancelled so the workflow can advance.
+            await _settle_paired_recovery_record(
+                runtime,
+                record.invocation,
+                state="cancelled",
+                last_error="denied by operator",
+            )
             return f"Denied approval request {request_id}."
         return f"Approval request {request_id} is not pending for this session."
 
@@ -558,8 +573,109 @@ async def _handle_approval_command(
         return render_approval_request(required.invocation)
     except Exception as exc:  # pylint: disable=broad-except
         logger.error("approved action %s failed: %s", request_id, exc)
+        await _settle_paired_recovery_record(
+            runtime, record.invocation, state="stalled", last_error=f"{type(exc).__name__}: {exc}"
+        )
         return f"Approved action failed: {type(exc).__name__}: {exc}"
+    # The approved action executed against the real registry, which consumes
+    # the receipt. But the *model-turn* path that originally raised
+    # ``ApprovalRequired`` also settled a paired recovery record as
+    # ``stalled`` with ``blocks_workflow=True`` (turn_runner.py). The approval
+    # and recovery stores are independent with no shared id, so approving the
+    # action left the stall permanently blocking every subsequent turn. Settle
+    # the paired record now so the workflow unblocks.
+    await _settle_paired_recovery_record(
+        runtime,
+        record.invocation,
+        state="succeeded",
+        result_preview=_approval_result_text(result)[:240],
+    )
     return _approval_result_text(result)
+
+
+async def _settle_paired_recovery_record(
+    runtime: HostRuntime,
+    invocation: ApprovalInvocation,
+    *,
+    state: str,
+    last_error: str = "",
+    result_preview: str = "",
+) -> None:
+    """Settle the recovery record paired to an approved invocation.
+
+    The model-turn path raises ``ApprovalRequired`` *after* the recovery
+    service has already ``begin``-ed a record for the same target. Approving
+    via ``/approve`` re-executes through a fresh registry path that does not
+    touch the recovery service, so the original record stays ``stalled`` and
+    ``blocks_workflow=True`` — the zombie stall that re-yields on every
+    subsequent turn. This correlates by ``target_id`` + identity
+    (``session_plan_digest`` is part of the recovery identity) and settles
+    the first open stalled match. Correlation is deliberately by target id,
+    not approval request id: the two stores never share an id.
+    """
+
+    recovery_service = getattr(runtime, "recovery_service", None)
+    if recovery_service is None or not hasattr(recovery_service, "list_open"):
+        return
+    recovery_identity = _recovery_identity_for_invocation(runtime, invocation)
+    if recovery_identity is None:
+        return
+    try:
+        open_records = await recovery_service.list_open(recovery_identity)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.debug("paired-recovery list_open failed for %s: %s", invocation.request_id, exc)
+        return
+    for open_record in open_records:
+        if open_record.target_id != invocation.target_id:
+            continue
+        if getattr(open_record, "state", "") != "stalled":
+            continue
+        try:
+            await recovery_service.settle(
+                open_record.work_item_id,
+                recovery_identity,
+                state=state,  # type: ignore[arg-type]
+                last_error=last_error,
+                result_preview=result_preview,
+                blocks_workflow=False,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                "paired-recovery settle failed for %s (work item %s): %s",
+                invocation.request_id,
+                open_record.work_item_id,
+                exc,
+            )
+        return
+
+
+def _recovery_identity_for_invocation(
+    runtime: HostRuntime,
+    invocation: ApprovalInvocation,
+) -> Any | None:
+    """Build the recovery identity scoped to an approval invocation.
+
+    ``ApprovalIdentity`` and ``RecoveryIdentity`` carry the same fields with
+    the same scoping; ``session_plan_digest`` is part of both, so a record
+    minted mid-turn matches the invocation that paused for the same turn.
+    Returns ``None`` when the digests diverge (stale approval from a prior
+    session plan) so the caller can skip settlement safely.
+    """
+
+    from kernel.recovery import RecoveryIdentity  # noqa: PLC0415
+
+    if invocation.session_plan_digest != runtime.session_plan.plan_digest:
+        return None
+    identity = invocation.identity
+    return RecoveryIdentity(
+        workspace_id=identity.workspace_id,
+        user_id=identity.user_id,
+        user_slug=identity.user_slug,
+        surface_type=identity.surface_type,  # type: ignore[arg-type]
+        surface_id=identity.surface_id,
+        memory_scope=identity.memory_scope,  # type: ignore[arg-type]
+        session_plan_digest=identity.session_plan_digest,
+    )
 
 
 # ── Model turn routing ────────────────────────────────────────────────
