@@ -113,8 +113,6 @@ exclude = [
     "**/*egg-info*/",
     "**/__pycache__/",
     ".venv/",
-    "debug_err.py",
-    "test_mcp.py",
 ]
 ignore_names = [
     "main",
@@ -157,8 +155,8 @@ ignore_decorators = [
 # import-linter — enforces the architectural boundaries documented in
 # docs/BOUNDARIES.md.  Run with:  uv run lint-imports
 #
-# The codebase uses root-level import paths (kernel, sdk, host, hosts.cli ,
-# mcp_server) rather than installed distribution names, so we use those here.
+# The codebase uses root-level import paths (kernel, sdk, host, mcp_server)
+# rather than installed distribution names, so we use those here.
 # ---------------------------------------------------------------------------
 [tool.importlinter]
 root_packages = [

@@ -19,12 +19,14 @@ def _wire_sub_turn_content_registry() -> None:
     """Wire a directory-based content registry for the sub-turn contract assets.
 
     ``kernel.context.sub_turn_contract`` loads the fork/delegate contract and
-    midpoint-nudge prose from authored Markdown under
-    ``sdk/packs/core/content/prompts/sub_turn/``. Production wires the
-    ``MCPContentRegistry`` at host startup (``host.mcp_pool``); kernel
-    unit tests that call ``_build_sub_turn_contract`` directly need the same
-    registry. A lightweight direct-file registry avoids spawning the catalog
-    MCP subprocess for these unit tests.
+    midpoint-nudge prose from authored Markdown. Production wires the
+    ``MCPContentRegistry`` at host startup (``host.mcp_pool``) against the
+    ``sdk/packs/core`` content root; kernel unit tests that call
+    ``_build_sub_turn_contract`` directly need the same prose but must not
+    depend on the ``sdk`` package (kernel is runtime-neutral). The canonical
+    prompt assets are mirrored under ``kernel/testing/fixtures/sub_turn/`` so
+    the kernel test suite is self-contained. A lightweight direct-file
+    registry avoids spawning the catalog MCP subprocess for these unit tests.
     """
 
     class _DirContentRegistry:
@@ -34,12 +36,10 @@ def _wire_sub_turn_content_registry() -> None:
         def read_authored_text(self, relative_path: str) -> str:
             return (self._root / relative_path).read_text(encoding="utf-8")
 
-    core_root = (
-        Path(__file__).resolve().parents[1] / ".." / "sdk" / "packs" / "core" / "content"
-    ).resolve()
+    fixtures_root = (Path(__file__).resolve().parents[1] / "testing" / "fixtures").resolve()
     from kernel.context.sub_turn_contract import set_content_registry
 
-    set_content_registry(_DirContentRegistry(core_root))
+    set_content_registry(_DirContentRegistry(fixtures_root))
     yield
 
 

@@ -33,3 +33,6 @@ htmlcov/
 artifacts/
 
 lisa-catalog.jsonl
+lisa-memory.jsonl
+lisa-content.jsonl
+lisa-guard.jsonl

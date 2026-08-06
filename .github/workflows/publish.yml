@@ -29,12 +29,12 @@ jobs:
           uv build --package lisa-kernel
           uv build --package lisa-sdk
           uv build --package lisa-mcp-servers
-          uv build --package lisa-pack-cloudflare
-          uv build --package lisa-pack-github
-          uv build --package lisa-pack-stripe
           uv build --package lisa-pack-core
+          uv build --package lisa-pack-introspect
           uv build --package lisa-pack-memory
-          uv build --package lisa-pack-search
+          uv build --package lisa-pack-checkpoint
+          uv build --package lisa-pack-compaction
+          uv build --package lisa-pack-recovery
           uv build --package lisa-host-runtime
 
       - name: Publish to PyPI

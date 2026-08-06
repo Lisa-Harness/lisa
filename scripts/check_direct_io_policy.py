@@ -6,7 +6,7 @@ allowlisted by file + snippet, or migrated behind the storage seam.
 
 Scope
 -----
-In-tree packages (``kernel/``, ``hosts/``, ``sdk/``, ``mcp_server/``): scans
+In-tree packages (``kernel/``, ``host/``, ``sdk/``, ``mcp_server/``): scans
 write/mutation primitives only. Reads are a separate, larger follow-up because
 the codebase has dozens of legitimate read callsites.
 
@@ -196,7 +196,7 @@ _EXTERNAL_PACK_DIRS: tuple[str, ...] = ("lisa-packs", "lisa-packs-wip")
 
 
 def _iter_in_tree_files(root: Path) -> list[Path]:
-    """Runtime .py files in kernel/hosts/sdk/mcp_server (excl. tests)."""
+    """Runtime .py files in kernel/host/sdk/mcp_server (excl. tests)."""
     files: list[Path] = []
     for top in _IN_TREE_ROOTS:
         top_dir = root / top

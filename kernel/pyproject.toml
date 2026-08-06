@@ -43,6 +43,6 @@ pythonpath = [".."]
 testpaths = ["tests"]
 markers = [
     "live: hits real external signal or provider APIs and prints a tester-visible summary",
-    "integration: multi-module in-process test; may require Azurite on localhost:10000",
+    "integration: multi-module in-process test; may require local services",
     "eval: deterministic agent regression evals (no model calls, no I/O)",
 ]

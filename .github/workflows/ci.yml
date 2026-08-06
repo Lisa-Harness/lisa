@@ -31,10 +31,10 @@ jobs:
         run: uv sync --extra dev
 
       - name: Format check (ruff)
-        run: uv run ruff format --check kernel sdk mcp_server host
+        run: uv run ruff format --check .
 
       - name: Lint (ruff)
-        run: uv run ruff check kernel sdk mcp_server host
+        run: uv run ruff check .
 
       - name: Direct I/O policy (allowlist)
         run: uv run python scripts/check_direct_io_policy.py

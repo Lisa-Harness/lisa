@@ -1,4 +1,4 @@
-"""Vulture false-positive allowlist for lisa_framework.
+"""Vulture false-positive allowlist for lisa.
 
 These symbols are live at runtime but invisible to static analysis because
 they are reached via dynamic dispatch (entry-point loading, getattr, importlib)
