@@ -14,9 +14,6 @@ dependencies = [
     "lisa-pack-compaction",
     "lisa-pack-recovery",
     "lisa-host-runtime",
-    "lisa-host-cli",
-    "rich>=13.7.0",
-    "typer>=0.12.3",
 ]
 
 [project.optional-dependencies]
@@ -30,23 +27,6 @@ dev = [
     "ruff>=0.8.0",
     "types-PyYAML>=6.0",
     "vulture>=2.11",
-]
-ext = [
-    # Public external packs (resolve from ../lisa-packs/ via [tool.uv.sources]).
-    # Install with `uv sync --extra ext`. Requires the lisa-packs sibling checkout.
-    "lisa-pack-brave-search",
-    "lisa-pack-markdown",
-    "lisa-pack-okf",
-    "lisa-pack-search",
-]
-wip = [
-    # WIP external packs (resolve from ../lisa-packs-wip/). Install with
-    # `uv sync --extra wip`. Requires the lisa-packs-wip sibling checkout.
-    "lisa-pack-cloudflare",
-    "lisa-pack-coding",
-    "lisa-pack-github",
-    "lisa-pack-gmail",
-    "lisa-pack-stripe",
 ]
 
 [tool.uv]
@@ -71,24 +51,12 @@ lisa-kernel = { workspace = true }
 lisa-sdk = { workspace = true }
 lisa-mcp-servers = { workspace = true }
 lisa-pack-memory = { workspace = true }
-lisa-pack-coding = { path = "../lisa-packs-wip/coding" }
-lisa-pack-cloudflare = { path = "../lisa-packs-wip/cloudflare" }
-lisa-pack-github = { path = "../lisa-packs-wip/github" }
-lisa-pack-stripe = { path = "../lisa-packs-wip/stripe" }
 lisa-pack-core = { workspace = true }
 lisa-pack-introspect = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
 lisa-pack-compaction = { workspace = true }
 lisa-pack-recovery = { workspace = true }
-lisa-pack-okf = { path = "../lisa-packs/okf" }
-lisa-pack-mem0 = { path = "../lisa-packs/mem0" }
-lisa-pack-brave-search = { path = "../lisa-packs/brave_search" }
-lisa-pack-gmail = { path = "../lisa-packs-wip/gmail" }
-lisa-pack-search = { path = "../lisa-packs/search" }
-lisa-pack-markdown = { path = "../lisa-packs/markdown" }
-lisa-pack-letta = { path = "../lisa-packs/letta" }
 lisa-host-runtime = { workspace = true }
-lisa-host-cli = { path = "../lisa-hosts/cli/hosts/cli" }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
