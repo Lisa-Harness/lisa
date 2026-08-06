@@ -226,3 +226,159 @@ async def test_fork_falls_back_to_ctx_query_for_target_query(
     assert result.output_json["succeeded"] == 0
     assert len(captured) == 1
     assert captured[0].targets[0].query == "remember the meeting notes"
+
+
+@pytest.mark.asyncio
+async def test_fork_propagates_child_per_model_usage_to_output_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fork operation's ``output_json`` carries the aggregated child
+    per-model / per-mode token usage so the parent turn can merge it into
+    its own ``_state.per_model_usage``.
+
+    Regression for the 2026-08-06 /tokens summary bug: a multi-model fork
+    showed only the parent's resolved default model because the fork
+    operation discarded the children's ``per_model_usage``. The fix adds
+    ``per_model_usage`` / ``per_mode_usage`` to ``ForkChildResult`` and
+    ``ForkResult`` and aggregates them in ``_default_fork_fn``; the fork
+    operation handler ``model_dump``s them into ``output_json``.
+    """
+    _patched_catalog(monkeypatch, {"remember", "markdown"})
+
+    async def fake_fork_fn(spec: ForkSpec) -> ForkResult:
+        return ForkResult(
+            children=[
+                ForkChildResult(
+                    target=spec.targets[0],
+                    status="ok",
+                    output_text="remembered",
+                    duration_ms=10,
+                    per_model_usage=[
+                        {
+                            "model_id": "remember-model",
+                            "prompt_tokens": 40,
+                            "completion_tokens": 20,
+                            "total_tokens": 60,
+                            "cached_tokens": 0,
+                            "reasoning_tokens": 0,
+                            "duration_ms": 10.0,
+                            "latency_ms": 0,
+                        }
+                    ],
+                    per_mode_usage=[
+                        {
+                            "mode_id": "remember",
+                            "prompt_tokens": 40,
+                            "completion_tokens": 20,
+                            "total_tokens": 60,
+                            "cached_tokens": 0,
+                            "reasoning_tokens": 0,
+                            "duration_ms": 10.0,
+                            "latency_ms": 0,
+                        }
+                    ],
+                ),
+                ForkChildResult(
+                    target=spec.targets[1],
+                    status="ok",
+                    output_text="wrote doc",
+                    duration_ms=20,
+                    per_model_usage=[
+                        {
+                            "model_id": "markdown-model",
+                            "prompt_tokens": 30,
+                            "completion_tokens": 15,
+                            "total_tokens": 45,
+                            "cached_tokens": 0,
+                            "reasoning_tokens": 0,
+                            "duration_ms": 20.0,
+                            "latency_ms": 0,
+                        }
+                    ],
+                    per_mode_usage=[
+                        {
+                            "mode_id": "markdown",
+                            "prompt_tokens": 30,
+                            "completion_tokens": 15,
+                            "total_tokens": 45,
+                            "cached_tokens": 0,
+                            "reasoning_tokens": 0,
+                            "duration_ms": 20.0,
+                            "latency_ms": 0,
+                        }
+                    ],
+                ),
+            ],
+            succeeded=2,
+            # Aggregated by _default_fork_fn in production; here the fake
+            # supplies the pre-aggregated form the parent turn loop reads.
+            per_model_usage=[
+                {
+                    "model_id": "remember-model",
+                    "prompt_tokens": 40,
+                    "completion_tokens": 20,
+                    "total_tokens": 60,
+                    "cached_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "duration_ms": 10.0,
+                    "latency_ms": 0,
+                },
+                {
+                    "model_id": "markdown-model",
+                    "prompt_tokens": 30,
+                    "completion_tokens": 15,
+                    "total_tokens": 45,
+                    "cached_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "duration_ms": 20.0,
+                    "latency_ms": 0,
+                },
+            ],
+            per_mode_usage=[
+                {
+                    "mode_id": "remember",
+                    "prompt_tokens": 40,
+                    "completion_tokens": 20,
+                    "total_tokens": 60,
+                    "cached_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "duration_ms": 10.0,
+                    "latency_ms": 0,
+                },
+                {
+                    "mode_id": "markdown",
+                    "prompt_tokens": 30,
+                    "completion_tokens": 15,
+                    "total_tokens": 45,
+                    "cached_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "duration_ms": 20.0,
+                    "latency_ms": 0,
+                },
+            ],
+        )
+
+    ctx = _ctx_with_host(
+        params={
+            "targets": [
+                {"mode_id": "remember", "query": "save this"},
+                {"mode_id": "markdown", "query": "write a doc"},
+            ],
+        },
+        fork_fn=fake_fork_fn,
+    )
+    result = await fork_mod.execute(ctx)
+    assert isinstance(result, OperationResult)
+    # The parent turn loop reads these two keys from output_json and
+    # merges them into _state.per_model_usage / per_mode_usage.
+    assert "per_model_usage" in result.output_json
+    assert "per_mode_usage" in result.output_json
+    model_ids = {e["model_id"] for e in result.output_json["per_model_usage"]}
+    assert model_ids == {"remember-model", "markdown-model"}
+    mode_ids = {e["mode_id"] for e in result.output_json["per_mode_usage"]}
+    assert mode_ids == {"remember", "markdown"}
+    # Each child's per-model usage rides the child row too (for inspection).
+    child_model_ids = {
+        e["model_id"] for child in result.output_json["children"] for e in child.get("per_model_usage", [])
+    }
+    assert child_model_ids == {"remember-model", "markdown-model"}

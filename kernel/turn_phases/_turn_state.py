@@ -408,6 +408,61 @@ def record_model_usage(
         mode_entry["latency_ms"] = mode_entry.get("latency_ms", 0) + lat
 
 
+def merge_child_usage(
+    state: _TurnState,
+    *,
+    per_model_usage: list[dict[str, Any]] | None,
+    per_mode_usage: list[dict[str, Any]] | None,
+) -> None:
+    """Merge a fork/delegate child's per-model/per-mode usage into the parent.
+
+    Fork and delegate operations return ``ForkResult`` / ``DelegationResult``
+    carrying the child turn's ``per_model_usage`` / ``per_mode_usage`` (every
+    model / mode the child actually called). The parent turn loop calls this
+    after the operation returns so ``/tokens`` attributes the child's tokens
+    to the child's models/modes — not just the parent's resolved default.
+
+    Without this, a multi-model fork or delegate shows only the parent's
+    model in the per-model breakdown (the 2026-08-06 regression). Empty /
+    ``None`` lists are no-ops (timeout / error / cancelled children, or
+    operations that do not carry usage).
+    """
+    for entry in per_model_usage or []:
+        mid = str(entry.get("model_id", "") or "-").strip() or "-"
+        target = state.per_model_usage.setdefault(mid, {"model_id": mid})
+        target["prompt_tokens"] = target.get("prompt_tokens", 0) + _int(entry.get("prompt_tokens", 0))
+        target["completion_tokens"] = target.get("completion_tokens", 0) + _int(entry.get("completion_tokens", 0))
+        target["total_tokens"] = target.get("total_tokens", 0) + _int(entry.get("total_tokens", 0))
+        target["cached_tokens"] = target.get("cached_tokens", 0) + _int(entry.get("cached_tokens", 0))
+        target["reasoning_tokens"] = target.get("reasoning_tokens", 0) + _int(entry.get("reasoning_tokens", 0))
+        target["duration_ms"] = target.get("duration_ms", 0.0) + _float(entry.get("duration_ms", 0.0))
+        target["latency_ms"] = target.get("latency_ms", 0) + _int(entry.get("latency_ms", 0))
+    for entry in per_mode_usage or []:
+        mid = str(entry.get("mode_id", "") or "-").strip() or "-"
+        target = state.per_mode_usage.setdefault(mid, {"mode_id": mid})
+        target["prompt_tokens"] = target.get("prompt_tokens", 0) + _int(entry.get("prompt_tokens", 0))
+        target["completion_tokens"] = target.get("completion_tokens", 0) + _int(entry.get("completion_tokens", 0))
+        target["total_tokens"] = target.get("total_tokens", 0) + _int(entry.get("total_tokens", 0))
+        target["cached_tokens"] = target.get("cached_tokens", 0) + _int(entry.get("cached_tokens", 0))
+        target["reasoning_tokens"] = target.get("reasoning_tokens", 0) + _int(entry.get("reasoning_tokens", 0))
+        target["duration_ms"] = target.get("duration_ms", 0.0) + _float(entry.get("duration_ms", 0.0))
+        target["latency_ms"] = target.get("latency_ms", 0) + _int(entry.get("latency_ms", 0))
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _float(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def budget_forces_final(
     state: _TurnState,
     turn_budget: TurnBudget | None,

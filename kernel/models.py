@@ -1634,6 +1634,18 @@ class ForkChildResult(BaseModel):
     # propagate the question to the user (model_yield) or to render the
     # interruption framing (interrupted). ``None`` for non-yield statuses.
     yield_action: YieldAction | None = None
+    # Per-model token usage for every model the child turn actually called,
+    # mirroring ``TurnResult.per_model_usage``. The parent fork-result
+    # aggregator merges this into ``ForkResult.per_model_usage`` so the
+    # parent turn can attribute tokens to every child model, not just the
+    # parent's resolved default. Empty for ``timeout`` / ``error`` /
+    # ``cancelled`` (no child turn ran).
+    per_model_usage: list[dict[str, Any]] = Field(default_factory=list)
+    # Per-mode token usage mirroring ``TurnResult.per_mode_usage``. The
+    # parent merges this into ``ForkResult.per_mode_usage`` so a fork's
+    # tokens attribute to the child modes that ran, not the parent's
+    # entry mode.
+    per_mode_usage: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ForkSpec(BaseModel):
@@ -1688,6 +1700,19 @@ class ForkResult(BaseModel):
 
     children: list[ForkChildResult] = Field(default_factory=list)
     succeeded: int = 0
+    # Per-model token usage aggregated across every child turn
+    # (``children[*].per_model_usage`` merged by ``model_id``). The parent
+    # turn loop reads this from the fork operation's ``output_json`` and
+    # merges it into its own ``_state.per_model_usage`` so ``/tokens``
+    # reports every model a fork actually called — not just the parent's
+    # resolved default. Without this, a multi-model fork shows only the
+    # parent's model in the per-model breakdown.
+    per_model_usage: list[dict[str, Any]] = Field(default_factory=list)
+    # Per-mode token usage aggregated across every child turn
+    # (``children[*].per_mode_usage`` merged by ``mode_id``). The parent
+    # merges this into ``_state.per_mode_usage`` so fork tokens attribute
+    # to the child modes, not the parent's entry mode.
+    per_mode_usage: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1779,6 +1804,16 @@ class DelegationResult(BaseModel):
     # The root parent is depth 0; a direct delegate child is depth 1.
     # Bounded by ``delegate_max_depth``.
     depth: int = 0
+    # Per-model token usage for every model the delegate child actually
+    # called, mirroring ``TurnResult.per_model_usage``. The parent turn
+    # loop reads this from the delegate operation's ``output_json`` and
+    # merges it into ``_state.per_model_usage`` so ``/tokens`` reports the
+    # delegate child's model(s), not just the parent's resolved default.
+    per_model_usage: list[dict[str, Any]] = Field(default_factory=list)
+    # Per-mode token usage mirroring ``TurnResult.per_mode_usage``. The
+    # parent merges this into ``_state.per_mode_usage`` so a delegate's
+    # tokens attribute to the child mode that ran.
+    per_mode_usage: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1898,6 +1933,15 @@ class ChildTurnOutcome(BaseModel):
     effect_receipts: tuple[EffectReceipt, ...] = Field(default_factory=tuple)
     yield_action: YieldAction | None = None
     block_diagnostic: BlockDiagnostic | None = None
+    # Per-model token usage carried from the child ``TurnResult`` so the
+    # fork/delegate adapters can propagate it to ``ForkChildResult`` /
+    # ``DelegationResult`` and the parent turn can merge it into its
+    # ``_state.per_model_usage``. Tuple of plain dicts (frozen model).
+    per_model_usage: tuple[dict[str, Any], ...] = Field(default_factory=tuple)
+    # Per-mode token usage carried from the child ``TurnResult``; mirrors
+    # ``per_model_usage``. The parent merges this into
+    # ``_state.per_mode_usage``.
+    per_mode_usage: tuple[dict[str, Any], ...] = Field(default_factory=tuple)
 
 
 # ---------------------------------------------------------------------------

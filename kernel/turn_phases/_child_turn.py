@@ -33,7 +33,7 @@ DESIGN — re-exported by ``kernel.turn_runner``:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kernel.models import (
     BlockDiagnostic,
@@ -74,6 +74,21 @@ def classify_child_turn(
     """
     _clog = logging.getLogger(__name__)
 
+    # Carry the child's per-model / per-mode token usage onto the outcome so
+    # the fork/delegate adapters can propagate it to ``ForkChildResult`` /
+    # ``DelegationResult`` and the parent turn can merge it into its own
+    # ``_state`` ledger. Without this, ``/tokens`` attributes every fork /
+    # delegate child's tokens to the parent's resolved default model — the
+    # 2026-08-06 regression: a multi-model turn showed only one model.
+    _usage_kwargs: dict[str, Any] = {
+        "per_model_usage": tuple(
+            dict(entry) for entry in getattr(child_result, "per_model_usage", []) or []
+        ),
+        "per_mode_usage": tuple(
+            dict(entry) for entry in getattr(child_result, "per_mode_usage", []) or []
+        ),
+    }
+
     # 1. Blocked (capability gate / input guard / output guard / lifecycle).
     # ``block_origin`` is empty for non-guard lifecycle failures (entry/plan/
     # fork failures that set ``blocked=True`` directly). Default to
@@ -108,6 +123,7 @@ def classify_child_turn(
                 reason=_block_reason,  # type: ignore[arg-type]
                 message=child_result.response_text,
             ),
+            **_usage_kwargs,
         )
 
     # 2. Model yield (the model called the ``yield`` tool voluntarily).
@@ -127,6 +143,7 @@ def classify_child_turn(
                 called_tool_names=tuple(sorted(child_result.called_tool_names)),
                 effect_receipts=tuple(child_result.effect_receipts),
                 yield_action=_ya,
+                **_usage_kwargs,
             )
         # 3. Interrupted (harness force-yielded: iteration cap / budget / stuck).
         _clog.warning(
@@ -148,6 +165,7 @@ def classify_child_turn(
             called_tool_names=tuple(sorted(child_result.called_tool_names)),
             effect_receipts=tuple(child_result.effect_receipts),
             yield_action=_ya,
+            **_usage_kwargs,
         )
 
     # 4. Completion-contract validation.
@@ -162,6 +180,7 @@ def classify_child_turn(
             tool_call_count=child_result.tool_call_count,
             called_tool_names=tuple(sorted(child_result.called_tool_names)),
             effect_receipts=tuple(child_result.effect_receipts),
+            **_usage_kwargs,
         )
 
     # A mode with a completion contract must produce an ``EffectReceipt``
@@ -190,6 +209,7 @@ def classify_child_turn(
             tool_call_count=child_result.tool_call_count,
             called_tool_names=tuple(sorted(child_result.called_tool_names)),
             effect_receipts=tuple(child_result.effect_receipts),
+            **_usage_kwargs,
         )
 
     # No write-effect receipt and the mode requires one. Distinguish
@@ -222,4 +242,5 @@ def classify_child_turn(
         tool_call_count=child_result.tool_call_count,
         called_tool_names=tuple(sorted(child_result.called_tool_names)),
         effect_receipts=tuple(child_result.effect_receipts),
+        **_usage_kwargs,
     )

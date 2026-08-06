@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Literal, cast
@@ -1276,6 +1276,8 @@ async def _default_delegate_fn(
             duration_ms=outcome.duration_ms,
             yield_action=outcome.yield_action,
             depth=depth + 1,
+            per_model_usage=[dict(e) for e in outcome.per_model_usage],
+            per_mode_usage=[dict(e) for e in outcome.per_mode_usage],
         )
     except TimeoutError:
         elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -1301,6 +1303,47 @@ async def _default_delegate_fn(
             duration_ms=elapsed_ms,
             depth=depth + 1,
         )
+
+
+_USAGE_AGG_FIELDS: tuple[str, ...] = (
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cached_tokens",
+    "reasoning_tokens",
+    "duration_ms",
+    "latency_ms",
+)
+
+
+def _aggregate_child_usage(
+    sources: Iterable[list[dict[str, Any]]],
+    *,
+    key_field: str,
+) -> list[dict[str, Any]]:
+    """Merge per-child usage lists into one list keyed by ``key_field``.
+
+    ``key_field`` is ``"model_id"`` for per-model usage, ``"mode_id"`` for
+    per-mode. Entries with the same key across children (and across a
+    child's own iterations) sum their counters into one row, mirroring the
+    per-model accumulator on ``_TurnState``. Returns a list (not a dict) so
+    it serializes cleanly into ``ForkResult.per_model_usage`` /
+    ``ForkResult.per_mode_usage`` and from there into the fork operation's
+    ``output_json``.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for source in sources:
+        for entry in source or []:
+            key = str(entry.get(key_field, "") or "-").strip() or "-"
+            target = merged.setdefault(key, {key_field: key})
+            for field_name in _USAGE_AGG_FIELDS:
+                current = target.get(field_name, 0) or 0
+                incoming = entry.get(field_name, 0) or 0
+                if isinstance(incoming, float) or isinstance(current, float):
+                    target[field_name] = float(current) + float(incoming)
+                else:
+                    target[field_name] = int(current) + int(incoming)
+    return list(merged.values())
 
 
 async def _default_fork_fn(
@@ -1376,7 +1419,21 @@ async def _default_fork_fn(
             for t in spec.targets
         ]
     succeeded = sum(1 for r in children if r.status == "ok")
-    return ForkResult(children=children, succeeded=succeeded)
+    # Aggregate each child's per-model / per-mode token usage so the parent
+    # turn can merge them into its ``_state`` ledger. Without this, a
+    # multi-model fork reports only the parent's resolved default model in
+    # ``/tokens`` — the 2026-08-06 regression. Same-model entries across
+    # children (and across a child's own iterations) merge into one row.
+    return ForkResult(
+        children=children,
+        succeeded=succeeded,
+        per_model_usage=_aggregate_child_usage(
+            (r.per_model_usage for r in children), key_field="model_id"
+        ),
+        per_mode_usage=_aggregate_child_usage(
+            (r.per_mode_usage for r in children), key_field="mode_id"
+        ),
+    )
 
 
 async def _default_on_turn_complete(
@@ -2220,6 +2277,9 @@ async def _run_turn_inner(
     )
     from kernel.turn_phases._turn_state import (
         mcp_tool_executor as _mcp_tool_executor_fn,
+    )
+    from kernel.turn_phases._turn_state import (
+        merge_child_usage as _merge_child_usage_fn,
     )
     from kernel.turn_phases._turn_state import (
         record_model_usage as _record_model_usage_fn,
@@ -5249,6 +5309,42 @@ async def _run_turn_inner(
                     )
                     op_result = await exec_op(tool_name, op_ctx)
                     tool_output = _stringify_result(op_result)
+                    # Fork/delegate operations carry the child turns'
+                    # per-model / per-mode token usage in ``output_json``
+                    # (``ForkResult`` / ``DelegationResult``). Merge it
+                    # into this turn's ``_state`` so ``/tokens`` reports
+                    # every model/mode the children actually called — not
+                    # just the parent's resolved default. Without this, a
+                    # multi-model fork shows only the parent's model
+                    # (the 2026-08-06 regression). Operations that do not
+                    # carry usage (no ``per_model_usage`` key) are no-ops.
+                    op_json = getattr(op_result, "output_json", None)
+                    if isinstance(op_json, dict) and (
+                        op_json.get("per_model_usage") or op_json.get("per_mode_usage")
+                    ):
+                        _merge_child_usage_fn(
+                            _state,
+                            per_model_usage=op_json.get("per_model_usage"),
+                            per_mode_usage=op_json.get("per_mode_usage"),
+                        )
+                    # The fork operation's ``output_json`` is a
+                    # ``ForkResult`` dump carrying ``children``. Restore
+                    # ``_state.fork_results`` from it so the parent
+                    # ``TurnResult.fork_results`` reflects the fan-out
+                    # (the 2026-08-06 regression: the fork: routing-syntax
+                    # extraction dropped the inline assignment that used
+                    # to set this). Only the ``fork`` operation carries
+                    # ``children``; other operations are no-ops.
+                    if (
+                        isinstance(op_json, dict)
+                        and tool_name == "fork"
+                        and isinstance(op_json.get("children"), list)
+                    ):
+                        _state.fork_results = [
+                            ForkChildResult.model_validate(child)
+                            for child in op_json["children"]
+                            if isinstance(child, dict)
+                        ]
                 elif tool_name in tool_catalog:
                     # In-process tool (pack-contributed): dispatch via the
                     # tool registry, which imports the implementation module
@@ -5823,7 +5919,7 @@ async def _run_turn_inner(
         block_origin=_block_origin,
         transitioned_to=transitioned_to,
         handoff_to=handoff_to,
-        fork_results=fork_results,
+        fork_results=_state.fork_results if _state.fork_results else fork_results,
         workflow_terminated=workflow_terminated,
         yielded=_pending_yield if _yielded else None,
         per_model_usage=list(_state.per_model_usage.values()),

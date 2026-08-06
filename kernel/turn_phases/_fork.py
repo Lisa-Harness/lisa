@@ -212,6 +212,8 @@ async def _run_fork_child_turn(
                 called_tool_names=list(outcome.called_tool_names),
                 yield_action=outcome.yield_action,
                 duration_ms=outcome.duration_ms,
+                per_model_usage=[dict(e) for e in outcome.per_model_usage],
+                per_mode_usage=[dict(e) for e in outcome.per_mode_usage],
             ),
             _fork_status,
             elapsed_ms,
