@@ -64,6 +64,10 @@ class RouterRequest:
     budget_remaining: int | None
     query: str = ""
     last_tool_result: str | None = None
+    #: ``True`` when at least one tool has returned a result this turn.
+    #: Distinct from ``last_tool_result`` (the *most recent* result text),
+    #: which may be empty even when earlier tools returned results.
+    has_tool_result: bool = False
     required_capabilities: tuple[str, ...] = ()
     mode_id: str = ""
     effective_model: RouterModelRef | None = None
@@ -293,6 +297,15 @@ class OperationHost(Protocol):
     implementation (``_default_delegate_fn``) recurses into ``run_turn``
     as a ``sub_turn_kind="delegate"`` child; a host may override
     ``TurnHooks.delegate_fn`` to inject a custom delegation backend.
+
+    ``fork`` runs a parallel fan-out via the injected ``fork_fn``. The
+    pack-level ``fork`` operation calls ``ctx.host.fork(spec)`` with a
+    :class:`~kernel.models.ForkSpec` and awaits a
+    :class:`~kernel.models.ForkResult`. The default implementation
+    (``_default_fork_fn``) wraps ``_execute_fork_fanout``, fanning the
+    targets out via an ``asyncio.TaskGroup`` and classifying each child
+    via the shared ``classify_child_turn``; a host may override
+    ``TurnHooks.fork_fn`` to inject a custom fan-out backend.
     """
 
     async def complete(
@@ -319,6 +332,8 @@ class OperationHost(Protocol):
     def introspect(self, **kwargs: Any) -> Any: ...
 
     async def delegate(self, spec: Any) -> Any: ...
+
+    async def fork(self, spec: Any) -> Any: ...
 
 
 # ── Context seams ───────────────────────────────────────────────────────────

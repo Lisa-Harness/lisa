@@ -175,7 +175,10 @@ def test_compound_and_with_last_tool_result() -> None:
     router = LisaRouter(manifest)
     assert router.choose(_req(iteration=1, last_tool_result=None)).model_id == "gemma4:cloud"
     assert router.choose(_req(iteration=2, last_tool_result=None)).model_id == "gemma4:cloud"
-    assert router.choose(_req(iteration=2, last_tool_result="result")).model_id == "gpt-5.4"
+    assert (
+        router.choose(_req(iteration=2, last_tool_result="result", has_tool_result=True)).model_id
+        == "gpt-5.4"
+    )
 
 
 def test_compound_or() -> None:
@@ -432,6 +435,38 @@ def test_router_rule_rejects_multiple_actions() -> None:
             load_model_manifest(pathlib.Path(f.name))
 
 
+def test_loader_rejects_mode_id_use_value() -> None:
+    """A hand-authored ``use: <mode_id>`` is rejected by the manifest loader.
+
+    The loader validates ``use`` against the known concrete model set only —
+    it does **not** resolve mode ids via ``mode_models`` (that resolution
+    happens in the ``/models discover`` emit layer, which rewrites symbolic
+    refs to concrete ids before writing YAML). Locks the A12/A13 contract:
+    the doc must not claim the loader resolves mode ids.
+    """
+    import pathlib
+    import tempfile
+
+    import yaml
+
+    from kernel.model_manifest import load_model_manifest
+
+    payload = {
+        "version": 1,
+        "models": [{"model_id": "m1", "provider": "openai"}],
+        "mode_models": {"default": "m1"},
+        "router": {
+            "backend": "lisa-router",
+            "rules": [{"when": "turn.iteration > 1", "use": "default"}],
+        },
+    }
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        yaml.dump(payload, f)
+        f.flush()
+        with pytest.raises(ValueError, match="references unknown model"):
+            load_model_manifest(pathlib.Path(f.name))
+
+
 def test_manifest_parses_structured_reliability() -> None:
     """``structured_reliability`` flows from the manifest into the model entry."""
     import pathlib
@@ -480,3 +515,82 @@ def test_manifest_rejects_out_of_range_structured_reliability() -> None:
         f.flush()
         with pytest.raises(ValueError, match="range"):
             load_model_manifest(pathlib.Path(f.name))
+
+
+# ── has_tool_result turn-level semantics (A22 regression) ──────────────────
+
+
+def test_has_tool_result_true_when_any_tool_returned_even_if_last_empty() -> None:
+    """``turn.has_tool_result`` reflects turn-level state, not just the last result.
+
+    A turn where an earlier tool returned text but the most recent tool
+    returned an empty string must still report ``has_tool_result == true``.
+    This is the A22 fix: previously the binding was derived from
+    ``last_tool_result != ""`` and could lie when the last result was empty.
+    """
+    manifest = _manifest(
+        rules=(
+            RouterRule(
+                when="turn.iteration > 1 && turn.has_tool_result",
+                use="gpt-5.4",
+            ),
+        ),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    # Earlier tool returned text, but the *last* result is empty — the turn
+    # has still received a tool result, so has_tool_result must be True.
+    decision = router.choose(
+        _req(iteration=2, last_tool_result="", has_tool_result=True)
+    )
+    assert decision is not None
+    assert decision.model_id == "gpt-5.4"
+
+
+def test_has_tool_result_false_when_no_tool_returned() -> None:
+    """No tool has returned a result this turn → has_tool_result is False."""
+    manifest = _manifest(
+        rules=(
+            RouterRule(
+                when="turn.iteration > 1 && turn.has_tool_result",
+                use="gpt-5.4",
+            ),
+        ),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    decision = router.choose(
+        _req(iteration=2, last_tool_result=None, has_tool_result=False)
+    )
+    assert decision is not None
+    assert decision.model_id == "gemma4:cloud"
+
+
+def test_has_tool_result_defaults_false_when_omitted() -> None:
+    """``RouterRequest.has_tool_result`` defaults to False (no tools yet)."""
+    manifest = _manifest(
+        rules=(
+            RouterRule(when="turn.has_tool_result", use="gpt-5.4"),
+        ),
+        fallback="gemma4:cloud",
+    )
+    router = LisaRouter(manifest)
+    # _req() omits has_tool_result → default False → no match → fallback.
+    decision = router.choose(_req(iteration=1))
+    assert decision is not None
+    assert decision.model_id == "gemma4:cloud"
+
+
+# ── Dead re-export removal (A49 regression) ────────────────────────────────
+
+
+def test_router_module_does_not_reexport_router_model_ref() -> None:
+    """``RouterModelRef`` is not re-exported from ``sdk.router.router``.
+
+    It lives in ``kernel.seams.protocols``; the former ``__all__`` entry was
+    dead surface (no consumer imported it from here).
+    """
+    import sdk.router.router as router_mod
+
+    assert "RouterModelRef" not in getattr(router_mod, "__all__", [])
+    assert not hasattr(router_mod, "RouterModelRef")

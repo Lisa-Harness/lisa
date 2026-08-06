@@ -24,7 +24,8 @@ Supported CEL bindings (see ``router/README.md`` for the full guide):
 - ``turn.budget_remaining`` — remaining tool-call budget, or ``-1`` when
   unlimited/unknown (CEL has no nullable int; ``-1`` is the sentinel).
 - ``turn.last_tool_result`` — the last tool result text, or ``""`` when
-  none. Use ``turn.has_tool_result`` for a boolean.
+  none. Use ``turn.has_tool_result`` for a boolean that is true when *any*
+  tool has returned a result this turn (not just the last one).
 - ``route.query`` — the user query text.
 - ``route.mode_id`` — the active mode id.
 - ``route.required_capabilities`` — a list of required capability names.
@@ -65,7 +66,6 @@ from kernel.model_manifest import ModelManifest, RouterRule
 from kernel.seams.protocols import (
     ModelRouter,
     RouterDecision,
-    RouterModelRef,
     RouterRequest,
 )
 
@@ -176,7 +176,7 @@ def _build_activation(req: RouterRequest) -> dict[str, Any]:
         "tool_calls_so_far": req.tool_calls_so_far,
         "budget_remaining": budget_val,
         "last_tool_result": last_result,
-        "has_tool_result": last_result != "",
+        "has_tool_result": bool(req.has_tool_result),
     }
     route_ctx: dict[str, Any] = {
         "query": req.query,
@@ -215,4 +215,4 @@ def _build_activation(req: RouterRequest) -> dict[str, Any]:
     }
 
 
-__all__ = ["LisaRouter", "RouterModelRef"]
+__all__ = ["LisaRouter"]

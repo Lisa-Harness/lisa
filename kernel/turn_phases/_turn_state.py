@@ -70,6 +70,11 @@ class _TurnState:
 
     # ── Router-relevant state ────────────────────────────────────────
     last_tool_result_text: str | None = None
+    # Count of tools that have returned a result this turn. Drives
+    # ``RouterRequest.has_tool_result`` so router rules see turn-level
+    # "any tool returned" state rather than just the last result text
+    # (which may be empty even when earlier tools returned results).
+    tool_results_received: int = 0
     required_capabilities: tuple[str, ...] = ()
     # Metadata of the model effective in the preceding iteration. Set after
     # the first completion; on iteration 1 the router receives the static
@@ -465,6 +470,7 @@ def resolve_iteration_model(
             ),
             query=query,
             last_tool_result=state.last_tool_result_text,
+            has_tool_result=state.tool_results_received > 0,
             required_capabilities=state.required_capabilities,
             mode_id=mode_id,
             effective_model=effective_ref,

@@ -340,6 +340,38 @@ class TestRouterBlock:
         assert router["rules"][0]["use"] == "gpt-5-mini"
         assert router["fallback"] == "gpt-5"
 
+    def test_discover_regenerates_router_block_from_pack_default(self) -> None:
+        """``/models discover`` regenerates the router block from the pack default
+        on every run — it does not preserve a previously hand-edited block.
+
+        Locks the A26 contract: ``build_manifest_payload`` has no
+        ``existing_router`` input and always seeds from the pack-declared
+        config. "User wins" means editing the active ``models.yaml`` directly
+        or the proposal before ``/models apply`` — not re-running discover.
+        """
+        models = (DiscoveredModel(model_id="gpt-5", provider="openai"),)
+        pack_config = {
+            "backend": "lisa-router",
+            "rules": [{"when": '"code" in route.required_capabilities', "use": "default"}],
+            "fallback": "default",
+        }
+        # ``build_manifest_payload`` takes no active-manifest argument, so a
+        # prior hand-edited router block cannot be passed in — the pack
+        # default is the only source. Two consecutive calls yield the same
+        # block, proving regenerate-from-scratch (no merge with prior state).
+        with patch(
+            "kernel.model_router_config_discovery.discover_pack_router_config",
+            return_value=pack_config,
+        ):
+            first = build_manifest_payload(models)["router"]
+        with patch(
+            "kernel.model_router_config_discovery.discover_pack_router_config",
+            return_value=pack_config,
+        ):
+            second = build_manifest_payload(models)["router"]
+        assert first == second
+        assert first["rules"][0]["use"] == "gpt-5"
+
 
 class TestRouterPresetAnnotations:
     """Tests for ``_router_preset_annotations`` and annotation injection."""

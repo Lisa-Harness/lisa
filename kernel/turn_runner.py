@@ -5627,6 +5627,7 @@ async def _run_turn_inner(
 
             # Track the latest tool result for the model router.
             _state.last_tool_result_text = str(tool_output)
+            _state.tool_results_received += 1
 
             tool_result_msg: dict[str, Any] = {
                 "role": "tool",

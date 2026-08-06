@@ -110,9 +110,14 @@ router:
   path.
 - **`rules`** — ordered list of `{when, <action>}` entries evaluated
   first-match-wins. `<action>` is exactly one of:
-  - `use: <model_id>` — route this iteration to the named model. The id is
-    fed back through `resolve_model()`, so it may be a concrete model id
-    or a mode id (the manifest resolves it via `mode_models`).
+  - `use: <model_id>` — route this iteration to the named model. In a
+    hand-authored `models.yaml` this must be a **concrete model id**
+    (the manifest loader validates `use` against the known model set and
+    rejects unknown refs at load time). The turn loop then feeds the id
+    back through `resolve_model()`. Symbolic mode-id refs (e.g.
+    `"default"`) are only supported in pack-declared default configs and
+    are resolved to concrete model ids by `/models discover` *before* the
+    YAML is written — they never reach the loader.
   - `finish: <reason_slug>` — stop the tool loop and force one final
     no-tools completion. The value is a short slug for telemetry/audit
     (e.g. `tool_budget_exhausted`); it is **not** a model id.
@@ -120,7 +125,10 @@ router:
     terminal stage, then produce its closing summary. Only valid when a
     workflow is active; otherwise the action is logged and skipped.
   A rule with zero or more than one action is rejected at manifest load
-  time (`RouterRule.action_kind()`).
+  time by `_parse_router_config` (`kernel/model_manifest.py`) with
+  `"must include one of"` / `"exactly one"`. `RouterRule.action_kind()`
+  is the selector the engine uses at `choose()` time to build the
+  matching decision — it assumes exactly one action is set.
 - **`fallback`** — the model used when no rule matches. It is
   model-selection-only — a terminal action (`finish`/`transition_to`)
   cannot be a fallback. If empty, the router returns `None` and the loop
@@ -205,8 +213,13 @@ automatically — you don't have to hand-write the YAML:
   are resolved to concrete model ids against the discovered model set.
   Rules referencing models not in the discovered set are stripped, so the
   proposal always loads cleanly.
-- A user-provided `router:` block in `models.yaml` always wins. The pack
-  default is only seeded when the user has not written one.
+- `/models discover` regenerates `models.proposed.yaml` from scratch on
+  every run, seeding the pack-declared `router:` block (with symbolic
+  refs resolved to concrete model ids). A user who wants to keep their
+  hand-edited `router:` block should edit the active `models.yaml`
+  directly, or edit the proposal and run `/models apply` without
+  re-running `/models discover --force` (which overwrites the proposal,
+  including any hand-edited `router:` block, with the pack default).
 
 The built-in `lisa-router` backend ships a minimal default config — one
 rule escalating code-capable turns to the `default` model, with `default`
@@ -233,7 +246,7 @@ expressions through three CEL namespaces. Bindings are populated from
 | `turn.tool_calls_so_far` | int | tool calls dispatched so far this turn |
 | `turn.budget_remaining` | int | remaining tool-call budget, or `-1` when unlimited/unknown (CEL has no nullable int; `-1` is the sentinel) |
 | `turn.last_tool_result` | string | last tool result text, or `""` when none |
-| `turn.has_tool_result` | bool | `true` when at least one tool has returned a result this turn |
+| `turn.has_tool_result` | bool | `true` when at least one tool has returned a result this turn (turn-level state, distinct from `turn.last_tool_result`, which is only the *most recent* result text and may be empty even when earlier tools returned results) |
 
 ### `route.*` — the route/request that started the turn
 
