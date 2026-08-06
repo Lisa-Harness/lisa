@@ -645,6 +645,8 @@ async def execute_operation(
         else None,
         generate_image_fn=_existing_host._generate_image_fn if _existing_host is not None else None,
         introspect_fn=_existing_host._introspect_fn if _existing_host is not None else None,
+        delegate_fn=_existing_host._delegate_fn if _existing_host is not None else None,
+        fork_fn=_existing_host._fork_fn if _existing_host is not None else None,
     )
     module = definition.implementation_module
     if module is None:
