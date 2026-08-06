@@ -212,13 +212,16 @@ async def search_memory(
     falling back to semantic KNN when embeddings are available. When no
     query tokens match any stored content, the most recent records are
     returned (ordered by id DESC) so the caller always gets context.
-    Returns ``"No relevant memories found."`` when the scoped store is empty.
+    Returns a JSON array of memory records (the canonical
+    ``list[MemoryRecord]`` shape, matching ``list_memories`` /
+    ``get_memory``) so the ``recall_memory`` operation can ``json.loads``
+    the result. Returns ``"[]"`` when the scoped store is empty.
 
     ``status`` defaults to ``"active"`` so retired/superseded records
     drop out of recall automatically; pass ``None`` to include all.
     """
     store = _resolve_deps(ctx).store
-    result = await store.recall(
+    records = await store.recall_records(
         query=query,
         user_slug=user_slug,
         workspace_id=workspace_id,
@@ -228,9 +231,9 @@ async def search_memory(
         memory_kind=memory_kind,
         status=status,
     )
-    if not result:
-        return "No relevant memories found."
-    return result
+    if not records:
+        return "[]"
+    return json.dumps([r.model_dump(mode="json") for r in records], default=str)
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))

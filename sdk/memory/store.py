@@ -680,6 +680,90 @@ class SqliteMemoryStore:
         lines = [f"- {record.content}" for _, record in top]
         return "\n".join(lines)
 
+    async def recall_records(self, query: str, **kwargs: Any) -> list[MemoryRecord]:
+        """Rank and return the matching memory records (no prose rendering).
+
+        Same ranking and opportunistic access tracking as :meth:`recall`,
+        but returns the structured records instead of a bullet-list string.
+        The MCP ``search_memory`` tool serializes this to a JSON array so
+        the ``recall_memory`` operation (which does ``json.loads`` on the
+        tool result) can validate the records — :meth:`recall`'s prose
+        output is not JSON-parseable and left ``recall_memory`` reporting
+        "No memory matches found" against a full store.
+        """
+        user_slug = str(kwargs.get("user_slug") or "").strip() or "default"
+        workspace_id = str(kwargs.get("workspace_id") or "default").strip() or "default"
+        memory_scope = str(kwargs.get("memory_scope") or "personal").strip() or "personal"
+        surface_id = str(kwargs.get("surface_id") or "").strip()
+        limit = int(kwargs.get("limit", 5) or 5)
+        recall_pool = int(kwargs.get("recall_pool", 40) or 40)
+        memory_kind = kwargs.get("memory_kind")
+        status = kwargs.get("status", "active")
+
+        assert self._conn is not None
+
+        tokens = {token.strip().lower() for token in query.split() if token.strip()}
+        now_iso = _now_iso()
+
+        rows = await self._semantic_pool(
+            query=query,
+            user_slug=user_slug,
+            workspace_id=workspace_id,
+            memory_scope=memory_scope,
+            surface_id=surface_id,
+            memory_kind=memory_kind,
+            status=status,
+            now_iso=now_iso,
+            recall_pool=recall_pool,
+        )
+        if not rows:
+            rows = self._lexical_pool(
+                user_slug=user_slug,
+                workspace_id=workspace_id,
+                memory_scope=memory_scope,
+                surface_id=surface_id,
+                memory_kind=memory_kind,
+                status=status,
+                now_iso=now_iso,
+                recall_pool=recall_pool,
+            )
+        if not rows:
+            return []
+
+        ranked: list[tuple[float, MemoryRecord]] = []
+        for row in rows:
+            record = _row_to_record(row)
+            haystack_lower = (
+                f"{record.content} {json.dumps(record.content_json, ensure_ascii=True)}"
+            ).lower()
+            if tokens:
+                haystack_tokens = {tok for tok in haystack_lower.split()}
+                overlap = len(tokens & haystack_tokens)
+                content_word_count = max(len(haystack_tokens), 1)
+                lexical = overlap / max(len(tokens), 1) * (1.0 - 1.0 / content_word_count)
+            else:
+                lexical = 1.0
+            salience_boost = max(record.salience, 0.0) * 0.2
+            ranked.append((lexical + salience_boost, record))
+
+        ranked.sort(key=lambda item: (item[0], item[1].id), reverse=True)
+        top = ranked[: max(1, min(limit, 8))]
+
+        top_ids = [record.id for _, record in top]
+        if top_ids:
+            placeholders = ",".join("?" * len(top_ids))
+            self._conn.execute(
+                f"""
+                UPDATE memories
+                SET access_count = access_count + 1, last_accessed_at = ?
+                WHERE id IN ({placeholders})
+                """,
+                (now_iso, *top_ids),
+            )
+            self._conn.commit()
+
+        return [record for _, record in top]
+
     def close(self) -> None:
         """Close the underlying SQLite connection.
 
