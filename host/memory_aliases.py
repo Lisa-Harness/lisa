@@ -349,12 +349,23 @@ def _backend_result_maps(
 def _memory_schemas() -> tuple[
     dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]
 ]:
-    """Return the (add, search, list, get, delete) input schemas shared by all surfaces."""
+    """Return the (add, search, list, get, delete) input schemas shared by all surfaces.
+
+    These are the model-facing schemas for the generic ``memory.*`` aliases.
+    ``user_slug`` is intentionally ABSENT from every schema: it is an ambient
+    identity field, not a model-controllable parameter. The host registers a
+    resolver for it (``register_memory_aliases`` → ``set_ambient_resolver``)
+    and the proxy injects the active user at dispatch time. Exposing it here
+    would force the model to invent a slug (it has no source of truth) — the
+    bug Lisa hit when she complained "I need a user_slug to run
+    memory.search". The native backend tools carry the same field and the
+    per-server ``proxy_policy.ambient`` strips it from their schemas too, so
+    no memory path leaks the ambient field to the model.
+    """
     add_schema = {
         "type": "object",
         "properties": {
             "content": {"type": "string", "description": "Memory content to store."},
-            "user_slug": {"type": "string", "default": "default"},
             "memory_scope": {"type": "string", "default": "personal"},
             "memory_tier": {"type": "string", "default": "daily"},
         },
@@ -364,7 +375,6 @@ def _memory_schemas() -> tuple[
         "type": "object",
         "properties": {
             "query": {"type": "string"},
-            "user_slug": {"type": "string", "default": "default"},
             "limit": {"type": "integer", "default": 5},
         },
         "required": ["query"],
@@ -372,7 +382,6 @@ def _memory_schemas() -> tuple[
     list_schema = {
         "type": "object",
         "properties": {
-            "user_slug": {"type": "string", "default": "default"},
             "limit": {"type": "integer", "default": 20},
         },
     }
@@ -380,7 +389,6 @@ def _memory_schemas() -> tuple[
         "type": "object",
         "properties": {
             "memory_id": {"type": "integer", "description": "The memory record id."},
-            "user_slug": {"type": "string", "default": "default"},
         },
         "required": ["memory_id"],
     }
@@ -388,7 +396,6 @@ def _memory_schemas() -> tuple[
         "type": "object",
         "properties": {
             "memory_id": {"type": "integer", "description": "The memory record id to delete."},
-            "user_slug": {"type": "string", "default": "default"},
         },
         "required": ["memory_id"],
     }

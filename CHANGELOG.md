@@ -4,6 +4,40 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+#### `memory.*` aliases no longer surface `user_slug` to the model
+
+- **Root cause:** the generic `memory.add` / `memory.search` /
+  `memory.list` / `memory.get` / `memory.delete` synthetic aliases
+  declared `user_slug` as a settable parameter in their model-facing
+  input schemas (`host/memory_aliases.py :: _memory_schemas`). The model
+  has no source of truth for the active user slug, so it was forced to
+  invent one — the "I need a user_slug to run memory.search" complaint.
+  The native `lisa-memory` tools (`add_memory`, `search_memory`, …)
+  carried the same field and had **no `proxy_policy.ambient`** entry in
+  `sdk/packs/memory/mcp_servers.yaml`, so the proxy never stripped it
+  from their schemas either.
+- **Fix (two surfaces, same boundary):**
+  1. `host/memory_aliases.py :: _memory_schemas` — drop `user_slug` from
+     all five generic-alias schemas. `user_slug` is an ambient identity
+     field, not a model-controllable parameter.
+  2. `sdk/packs/memory/mcp_servers.yaml` — add a `proxy_policy.ambient`
+     block (`user_slug: user_slug`) to the `lisa-memory` server so the
+     proxy strips `user_slug` from the native tools' model-facing
+     schemas and injects the runtime-resolved value at dispatch time
+     (top-level, since lisa-memory has no `filters` parameter and
+     `structured_filters` is left false).
+- **Dispatch path (unchanged):** the ambient resolver registered by
+  `host/memory_aliases.py :: register_memory_aliases`
+  (`set_ambient_resolver("user_slug", lambda: user_slug)`) supplies the
+  active user. The proxy's `_apply_proxy_policy_for_server` injects it
+  into outgoing arguments on both the namespaced and server-scoped
+  paths, overriding any model-supplied value as defense in depth. The
+  `memory.search` operation path (`recall_memory`,
+  `synthesize_and_store_learning`) already passes `user_slug` explicitly
+  in `parameters`, so it is unaffected.
+
 ### Added
 
 #### Unified child-turn classification with effect receipts

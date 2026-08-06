@@ -38,3 +38,13 @@ servers:
         - delete_memory
         - list_memories
         - retire_memory
+    # proxy_policy strips the ambient identity field (user_slug) from the
+    # native tools' model-facing schema and injects it from the host
+    # runtime at dispatch time. The model never sees or sets user_slug —
+    # the ambient resolver registered by register_memory_aliases supplies
+    # the active user. Without this, the native add_memory / search_memory
+    # tools would surface user_slug as a settable parameter and the model
+    # would be forced to invent one (it has no source of truth).
+    proxy_policy:
+      ambient:
+        user_slug: user_slug
