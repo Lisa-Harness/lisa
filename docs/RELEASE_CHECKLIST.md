@@ -23,8 +23,7 @@ ______________________________________________________________________
 - [ ] `CODE_OF_CONDUCT.md` present
 - [ ] `.gitignore` reviewed for stale or overly broad entries
 - [ ] No secrets, API keys, or `.env` files committed (scan history if necessary)
-- [ ] Install scripts (`install.ps1`, `install.sh`) write `LISA_*` env vars (not legacy `LITTLE_LISA_*`) to the repo-root `.env` (fixed 2026-07-27; verify before release)
-- [ ] Docs and install scripts reference the `lisa` CLI and `lisa intake` bottom-half command — no `little-lisa` / `little-lisa bottom --tick` references remain
+- [ ] Docs reference the `lisa` CLI (shipped by `lisa-host-cli`) — no `little-lisa` references remain
 - [ ] Branch protection enabled on `main`
 - [ ] Default branch is `main`
 - [ ] Stale branches pruned or archived
