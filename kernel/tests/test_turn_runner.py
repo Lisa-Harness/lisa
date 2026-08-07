@@ -444,6 +444,89 @@ async def test_run_turn_non_planner_action_mode_entry_op_no_target_not_plan_fail
 
 
 @pytest.mark.asyncio
+async def test_run_turn_search_action_mode_phase1_returns_entry_op_result_not_plan_failure() -> None:
+    """A non-routing action mode entered at turn start (e.g. the recursive
+    ``run_turn(mode_id="search")`` from ``plan``'s kernel-driven handoff,
+    or a ``/search`` direct command) must return its entry-op result
+    directly and NOT trip the Phase 1 plan-failure recovery path.
+
+    Regression for the 2026-08-06 ``plan → search`` workflow stall: the
+    planner persisted a 2-step ``[search, ...]`` WorkflowInstance and
+    handed off to ``search``; the recursive turn re-entered Phase 1,
+    ran ``web_search`` (which returns search results, not a routing
+    target), read an empty ``target_stage_id``, and fell into the
+    plan-failure branch — logging "plan_workflow returned no target
+    (mode=search)" and hard-stopping with a bogus recovery prompt on
+    every planned search step. The mid-turn handoff path already gated
+    on ``is_routing_entry_op``; the Phase 1 path did not. The fix mirrors
+    that gate: a non-routing action mode's entry-op output IS the turn
+    output.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+    from kernel.routing_vocabulary import (
+        is_plan_reliable_for_model,
+        reset_plan_reliability,
+    )
+
+    reset_plan_reliability()
+    # ``search`` is an action mode whose entry op is ``web_search`` — NOT a
+    # planner. Its entry op returns search results, not a routing target.
+    search_cfg = WorkflowModeConfig(
+        mode_id="search",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["web_search"],
+        satisfies_intents=["research"],
+        routing_intent_tags=["research"],
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {"default": default_cfg, "search": search_cfg}
+
+    briefing = "### Research Briefing: agent frameworks\n\nCore consensus here."
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        # web_search returns its own output shape — no target_stage_id.
+        return OperationResult(
+            output_text=briefing,
+            output_json={
+                "operation_id": "web_search",
+                "core_consensus": "Core consensus here.",
+                "sources": ["https://example.com"],
+            },
+        )
+
+    # The model must NOT be reached — a Phase 1 action mode returns after
+    # its entry op. A reached model would indicate the turn fell through to
+    # the tool-dispatch loop instead of returning the entry-op result.
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        raise AssertionError("Phase 1 action mode must not reach the model")
+
+    hooks = _build_minimal_hooks(complete)
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(
+            mode_id="search",
+            query="search for agent frameworks",
+            hooks=hooks,
+            preferred_model_id="test-search-model",
+        )
+
+    # The entry-op briefing is the turn output — verbatim.
+    assert result.response_text == briefing
+    assert result.tool_call_count == 0
+    # The model was NOT marked unreliable for planning — web_search's lack
+    # of a target_stage_id is not a plan failure.
+    assert is_plan_reliable_for_model("test-search-model")
+    reset_plan_reliability()
+
+
+@pytest.mark.asyncio
 async def test_run_turn_planner_with_steps_renders_visible_plan_and_persists_instance() -> None:
     """When plan_workflow returns a ``steps`` array (Option B visible plan),
     the turn runner:
@@ -4224,8 +4307,8 @@ def test_turn_state_has_loop_guard_fields() -> None:
     assert state.last_hint_text == ""
     assert state.duplicate_hint_count == 0
     assert state.hint_target_history == []
-    assert state.forced_plan_target == ""
-    assert state.non_plan_tool_dispatches == 0
+    assert state.forced_transition_target == ""
+    assert state.non_transition_tool_dispatches == 0
 
 
 @pytest.mark.asyncio
@@ -4233,7 +4316,7 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
     """When a plan-escalation routing hint is active and the model calls
     non-``transition_stage`` tools instead of handing off to ``plan``,
     the kernel forces the plan handoff after
-    ``forced_plan_non_transition_tool_cap`` non-transition dispatches.
+    ``forced_transition_non_transition_tool_cap`` non-transition dispatches.
 
     Regression for the 2026-07-30 incident: the model burned 15
     iterations of tool-cycling in ``default`` mode (≈400k tokens) before
@@ -4286,7 +4369,7 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
             # transition_stage call. Return harmless text.
             return _StubCompletion(content="Planning...")
         # default mode: the model does read-only fetches instead of
-        # handing off to plan. After forced_plan_non_transition_tool_cap
+        # handing off to plan. After forced_transition_non_transition_tool_cap
         # (default 2) non-transition dispatches, the kernel forces the
         # plan handoff.
         return _StubCompletion(
@@ -4338,6 +4421,119 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
         f"expected the forced-plan enforcer to fire early; got {call_count} "
         "model calls (the model burned the full iteration budget)"
     )
+
+
+@pytest.mark.asyncio
+async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_completion() -> None:
+    """When a post-handoff hint names a non-plan target (``search``) and
+    the model in the current mode (``remember``) returns text without
+    calling ``transition_stage``, the kernel synthesizes the handoff
+    itself instead of ending the turn with the model's prose.
+
+    Regression for the 2026-08-07 ``plan → remember → search`` stall: the
+    weak model in ``remember`` returned "budget exhausted" text without
+    calling ``transition_stage``, so ``search`` never ran. The old
+    forced-plan enforcer only fired for ``plan`` targets; the generalized
+    forced-transition enforcer captures ANY non-fork routing target.
+    """
+
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+
+    default_cfg = _mode_config(mode_id="default")
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    remember_cfg = _mode_config(
+        mode_id="remember",
+        satisfies_intents=["remember"],
+        routing_intent_tags=["remember"],
+    )
+    search_cfg = _mode_config(
+        mode_id="search",
+        satisfies_intents=["research"],
+        routing_intent_tags=["research"],
+    )
+    patched_catalog = {
+        "default": default_cfg,
+        "plan": plan_cfg,
+        "remember": remember_cfg,
+        "search": search_cfg,
+    }
+
+    plan_entry_calls = 0
+    search_reached = False
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        nonlocal search_reached
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        msgs = str([m.get("content", "") for m in kwargs["messages"]])
+        # In search mode (reached after the forced handoff): return results.
+        if "Handed off to mode: search" in msgs or "`search`" in sys_content and "search" in sys_content:
+            search_reached = True
+            return _StubCompletion(content="Search results from web_search.")
+        # In remember mode: the weak model returns text WITHOUT calling
+        # transition_stage — the bug. The kernel must force the handoff.
+        if "Handed off to mode: remember" in msgs:
+            return _StubCompletion(
+                content="I remembered the framework. Budget exhausted; "
+                "I cannot complete the search step."
+            )
+        # default mode: hand off to plan as the hint directs.
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_default_1",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": json.dumps(
+                            {"target_stage_id": "plan", "rationale": "escalate"}
+                        ),
+                    },
+                }
+            ],
+        )
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        nonlocal plan_entry_calls
+        plan_entry_calls += 1
+        return OperationResult(
+            output_text="remember then search",
+            output_json={
+                "target_stage_id": "remember",
+                "rationale": "capture knowledge first",
+                "steps": [
+                    {"step_id": "s1", "mode_id": "remember"},
+                    {"step_id": "s2", "mode_id": "search"},
+                ],
+            },
+        )
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.memory_recall_enabled = False
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(
+            mode_id="default",
+            query="remember what you know then search the web for similar frameworks",
+            hooks=hooks,
+        )
+
+    # The kernel forced the remember→search handoff even though the model
+    # returned text without calling transition_stage. Search ran.
+    assert search_reached, "search mode was never reached — the forced-transition enforcer did not fire"
+    assert "Search results from web_search." in result.response_text
 
 
 @pytest.mark.asyncio

@@ -36,8 +36,8 @@ class _State:
     budget_exhausted: bool = False
     forced_fork_target: str = ""
     non_fork_tool_dispatches: int = 0
-    forced_plan_target: str = ""
-    non_plan_tool_dispatches: int = 0
+    forced_transition_target: str = ""
+    non_transition_tool_dispatches: int = 0
     handoff_count: int = 0
     # Stuck-in-chat-mode guard (2026-08-05): mirrors _TurnStateView.
     has_routing_targets: bool = False
@@ -379,27 +379,60 @@ def test_forced_fork_enforcer_not_triggered_without_target() -> None:
 # ── Phase 4: Forced-plan enforcer ───────────────────────────────────────────
 
 
-def test_forced_plan_enforcer_fires_at_cap() -> None:
-    """When the forced-plan target is set and non-plan dispatches hit the cap,
-    force a TransitionAction to plan."""
+def test_forced_transition_enforcer_fires_at_cap() -> None:
+    """When the forced-transition target is set and non-transition dispatches
+    hit the cap, force a TransitionAction to the target."""
     action = resolve_lifecycle_action(
-        state=_State(forced_plan_target="plan", non_plan_tool_dispatches=3),
+        state=_State(
+            forced_transition_target="plan",
+            non_transition_tool_dispatches=3,
+        ),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(forced_plan_non_transition_tool_cap=3),
+        settings=LifecycleResolverSettings(
+            forced_transition_non_transition_tool_cap=3,
+        ),
     )
     assert isinstance(action, TransitionAction)
     assert action.forced
     assert action.target_mode_id == "plan"
 
 
-def test_forced_plan_enforcer_not_triggered_below_cap() -> None:
+def test_forced_transition_enforcer_fires_for_non_plan_target() -> None:
+    """The generalized enforcer fires for ANY routing target, not just plan.
+
+    Regression for the 2026-08-07 ``plan → remember → search`` stall: the
+    old plan-only enforcer left ``search`` unreachable when the weak model
+    in ``remember`` returned text without calling ``transition_stage``.
+    """
+    action = resolve_lifecycle_action(
+        state=_State(
+            forced_transition_target="search",
+            non_transition_tool_dispatches=3,
+        ),
+        mode_id="remember",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(
+            forced_transition_non_transition_tool_cap=3,
+        ),
+    )
+    assert isinstance(action, TransitionAction)
+    assert action.forced
+    assert action.target_mode_id == "search"
+
+
+def test_forced_transition_enforcer_not_triggered_below_cap() -> None:
     """Below the cap, the enforcer does not fire."""
     action = resolve_lifecycle_action(
-        state=_State(forced_plan_target="plan", non_plan_tool_dispatches=2),
+        state=_State(
+            forced_transition_target="plan",
+            non_transition_tool_dispatches=2,
+        ),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(forced_plan_non_transition_tool_cap=3),
+        settings=LifecycleResolverSettings(
+            forced_transition_non_transition_tool_cap=3,
+        ),
     )
     assert isinstance(action, ContinueAction)
 

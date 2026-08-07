@@ -25,7 +25,7 @@ Design constraints (mirroring the codebase conventions):
 - No compat: this is the hard cutover from the guard collage to one resolver.
   The guard constants (``stage_nudge_threshold``, ``stage_nudge_cap``,
   ``per_step_max_iterations``, ``per_step_max_tool_calls``,
-  ``forced_fork_non_fork_tool_cap``, ``forced_plan_non_transition_tool_cap``, ``duplicate_hint_limit``,
+  ``forced_fork_non_fork_tool_cap``, ``forced_transition_non_transition_tool_cap``, ``duplicate_hint_limit``,
   ``hint_cycle_min_len``, ``hint_override_limit``, ``max_handoffs_per_turn``)
   remain on ``kernel.config.Settings`` but their semantics flip from
   "force a silent final" to "force a :class:`YieldAction` or
@@ -139,9 +139,9 @@ class LifecycleResolverSettings:
     per_step_max_tool_calls: int = 12
     stage_nudge_threshold: int = 4
     stage_nudge_cap: int = 6
-    # Forced-fork/plan enforcer caps (Phase 4 extension).
+    # Forced-fork/transition enforcer caps (Phase 4 extension).
     forced_fork_non_fork_tool_cap: int = 3
-    forced_plan_non_transition_tool_cap: int = 3
+    forced_transition_non_transition_tool_cap: int = 3
     max_handoffs_per_turn: int = 5
     # Stuck-in-chat-mode guard (2026-08-05): mirrors the workflow
     # stuck-in-stage cap for chat/action modes that received a routing
@@ -215,10 +215,10 @@ class _TurnStateView:
     # for diagnostic visibility only.
     forced_fork_target: list[str] | None = None
     non_fork_tool_dispatches: int = 0
-    # Forced-plan enforcer state: mirrors forced-fork for the ``plan``
-    # routing-escalation target.
-    forced_plan_target: str = ""
-    non_plan_tool_dispatches: int = 0
+    # Forced-transition enforcer state: mirrors forced-fork for any
+    # single-handoff routing target (``plan``, ``search``, ``remember`` …).
+    forced_transition_target: str = ""
+    non_transition_tool_dispatches: int = 0
     # Handoff-loop backstop: total mid-turn mode handoffs this turn.
     handoff_count: int = 0
     # Stuck-in-chat-mode guard (2026-08-05): True when the current mode
@@ -438,19 +438,22 @@ def resolve_lifecycle_action(
             ),
         )
 
-    # ── 2d. Forced-plan enforcer (Phase 4) ────────────────────────────────
-    # Mirrors the forced-fork enforcer for the ``plan`` routing-escalation
-    # target. Bounds the pre-plan token burn to roughly
-    # ``cap x per-iteration-tokens`` instead of the full iteration budget.
+    # ── 2d. Forced-transition enforcer (Phase 4) ───────────────────────
+    # Mirrors the forced-fork enforcer for any single-handoff routing
+    # target (``plan``, ``search``, ``remember`` …). Bounds the pre-handoff
+    # token burn to roughly ``cap x per-iteration-tokens`` instead of the
+    # full iteration budget. Generalized 2026-08-07 from the plan-only
+    # enforcer so a weak model that refuses to call ``transition_stage``
+    # for ANY next step is forced after the cap.
     if (
-        state.forced_plan_target
-        and state.non_plan_tool_dispatches >= settings.forced_plan_non_transition_tool_cap
+        state.forced_transition_target
+        and state.non_transition_tool_dispatches >= settings.forced_transition_non_transition_tool_cap
     ):
         return TransitionAction(
-            target_mode_id=state.forced_plan_target,
+            target_mode_id=state.forced_transition_target,
             rationale=(
-                "kernel-forced plan handoff: the model did not call "
-                "transition_stage after the routing hint named plan."
+                "kernel-forced transition handoff: the model did not call "
+                "transition_stage after the routing hint named a target."
             ),
             forced=True,
         )
