@@ -486,7 +486,12 @@ def load_catalog_from_disk(
         mode_front_matter = _apply_mode_overrides(mode_dir, mode_front_matter)
 
         mode_id = _require_str_field(mode_front_matter, "mode_id", mode_config_path)
-        start_stage_id = _require_str_field(mode_front_matter, "start_stage_id", mode_config_path)
+        # ``start_stage_id`` is authored by workflow modes (it must name a
+        # stage in the graph). Stageless modes (chat/action) omit it — the
+        # loader synthesizes a one-stage graph after construction (see
+        # ``synthesize_stage_graph``), so every catalog mode has a stage
+        # pointer regardless of kind.
+        start_stage_id = str(mode_front_matter.get("start_stage_id", "") or "")
         mode_kind = cast(
             ModeKind,
             _require_str_field(mode_front_matter, "mode_kind", mode_config_path),
@@ -517,6 +522,17 @@ def load_catalog_from_disk(
                     continue
                 raise WorkflowValidationError(
                     f"Front-matter in '{stage_path}' is missing required field 'stage_id'."
+                )
+            if mode_kind in {"chat", "action"}:
+                # Stage files are workflow-mode authoring. A chat/action mode
+                # with a stage file is a contradiction (the stage graph would
+                # be ignored pre-synthesis and is rejected here rather than
+                # silently half-loaded). Want stages? Declare
+                # ``mode_kind: workflow``.
+                raise WorkflowValidationError(
+                    f"Mode '{mode_id}' is mode_kind '{mode_kind}' but declares a "
+                    f"stage file '{stage_path}' — only workflow modes define FSM "
+                    "stages."
                 )
 
             stage_id = _require_str_field(stage_front_matter, "stage_id", stage_path)
@@ -891,6 +907,11 @@ def load_catalog_from_disk(
             fork_yield_policy=fork_yield_policy,
             extra_front_matter=extra_front_matter,
         )
+        # Synthesize a one-stage graph for stageless (chat/action) modes so
+        # every catalog mode carries a stage pointer. Runs post-construction,
+        # pre-validation: validation treats the synthesized graph as a fixed
+        # point (chat/action stage checks are skipped by kind).
+        synthesize_stage_graph(catalog[mode_id])
         resolved_provider_id = catalog[mode_id].mode_provider_id
         if not resolved_provider_id and (
             entry_operation_ids
@@ -1067,10 +1088,12 @@ def validate_workflow_mode(mode: WorkflowModeConfig) -> None:
     _validate_mode_operation_bindings(mode)
 
     if mode.mode_kind in {"chat", "action"}:
-        if mode.stages:
-            raise WorkflowValidationError(
-                f"Non-workflow mode '{mode.mode_id}' cannot define FSM stages."
-            )
+        # Chat/action modes carry a synthesized one-stage graph (see
+        # ``synthesize_stage_graph``) — there are no authored FSM invariants
+        # to check. Authored stage files on a chat/action mode are rejected
+        # at load time (the disk loader and the SDK catalog builder), before
+        # synthesis, so by validation time a stage graph on a non-workflow
+        # mode is always the synthesized fixed point.
         return
 
     if mode.start_stage_id not in mode.stages:
@@ -1226,6 +1249,38 @@ def _collect_reachable_stages(mode: WorkflowModeConfig) -> set[str]:
     return visited
 
 
+def synthesize_stage_graph(mode: WorkflowModeConfig) -> WorkflowModeConfig:
+    """Give a stageless (chat/action) mode a synthesized one-stage graph.
+
+    Every catalog mode carries a stage graph after catalog load — the turn
+    loop never branches on "does this mode have stages":
+
+    - ``chat`` / ``action`` modes with no authored stage files get one
+      non-terminal stage named after the mode (``stage_id == mode_id``),
+      with an empty ``instruction_body`` (the mode-level body from
+      ``_mode.md`` stays at mode level — the synthesized stage is a
+      pointer target, not a content carrier).
+    - Modes with an authored graph (workflow modes) are returned unchanged.
+
+    Idempotent: a mode that already has stages (including a previously
+    synthesized graph) is a fixed point. ``start_stage_id`` is set to the
+    synthesized stage, overriding the historical ``"none"`` placeholder.
+    """
+    if mode.stages:
+        return mode
+    stage_id = mode.mode_id
+    mode.stages = {
+        stage_id: WorkflowStageConfig(
+            stage_id=stage_id,
+            description=mode.description,
+            allow_user_questions=True,
+            terminal=False,
+        )
+    }
+    mode.start_stage_id = stage_id
+    return mode
+
+
 def load_stage_instruction_markdown(stage: WorkflowStageConfig) -> str:
     """Return the instruction prose for a stage.
 
@@ -1343,23 +1398,6 @@ def enter_mode(
             "last_progressed_at": now,
         }
     )
-
-
-def is_fsm_mode(mode_id: str) -> bool:
-    """Return True when the given mode_id corresponds to a known FSM workflow mode.
-
-    Chat/action modes (those with no stages, e.g. 'default') are excluded even
-    though they are present in the catalog — they carry description/hooks but
-    have no FSM stage graph and must not enter the workflow turn path.
-
-    Args:
-        mode_id: The route mode string returned by ipsar.parse_route().
-
-    Returns:
-        True if mode_id is present in the loaded workflow catalog AND has stages.
-    """
-    mode = get_workflow_catalog().get(mode_id)
-    return mode is not None and bool(mode.stages)
 
 
 def is_terminal_stage(position: WorkflowPosition) -> bool:

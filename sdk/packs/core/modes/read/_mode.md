@@ -1,7 +1,6 @@
 ---
 mode_id: read
 mode_provider_id: lisa-pack-core
-start_stage_id: none
 mode_kind: chat
 require_query: true
 routable: true

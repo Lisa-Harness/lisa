@@ -353,6 +353,28 @@ def _load_one_mode(
         if stage_dict is not None:
             stages[stage_dict["stage_id"]] = stage_dict
 
+    # Stage files are workflow-mode authoring. A chat/action mode with an
+    # authored stage file is a contradiction — the kernel synthesizes a
+    # one-stage graph for stageless modes at load, and an authored graph on
+    # a non-workflow mode would bypass every workflow invariant. Reject it
+    # here (the kernel's disk loader does the same); want stages? Declare
+    # ``mode_kind: workflow``.
+    mode_kind = str(front_matter.get("mode_kind", "workflow") or "workflow")
+    if stages and mode_kind in {"chat", "action"}:
+        if strict:
+            raise CatalogCollisionError(
+                f"Mode '{mode_id}' is mode_kind '{mode_kind}' but declares "
+                f"stage files {sorted(stages)} — only workflow modes define "
+                "FSM stages."
+            )
+        logger.warning(
+            "Skipping mode '%s': mode_kind '%s' cannot declare stage files %s",
+            mode_id,
+            mode_kind,
+            sorted(stages),
+        )
+        return None
+
     # Resolve mode-relative file references (workshop planner/synthesis prompts).
     workshop_planner_prompt_file = _resolve_mode_relative_file(
         mode_dir,

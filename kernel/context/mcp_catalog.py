@@ -160,7 +160,13 @@ def _require_start_stage_id(data: dict[str, Any]) -> str:
 
 
 def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
-    """Deserialize one mode dict from JSON into a ``WorkflowModeConfig``."""
+    """Deserialize one mode dict from JSON into a ``WorkflowModeConfig``.
+
+    Stageless (chat/action) modes get a synthesized one-stage graph via
+    ``kernel.ipsar_fsm.synthesize_stage_graph`` so the kernel never
+    branches on "does this mode have stages" — every catalog mode has a
+    stage pointer regardless of kind.
+    """
 
     stages = {
         stage_id: _deserialize_stage(stage_dict)
@@ -170,7 +176,7 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         DefaultIntentBridge(**bridge) for bridge in (data.get("default_intent_bridges") or [])
     ]
 
-    return WorkflowModeConfig(
+    mode = WorkflowModeConfig(
         mode_id=data["mode_id"],
         start_stage_id=_require_start_stage_id(data),
         stages=stages,
@@ -206,6 +212,10 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         mode_provider_id=str(data.get("mode_provider_id", "") or ""),
         context_evidence_packs=[str(p) for p in (data.get("context_evidence_packs") or [])],
     )
+
+    from kernel.ipsar_fsm import synthesize_stage_graph  # noqa: PLC0415
+
+    return synthesize_stage_graph(mode)
 
 
 def _deserialize_stage(data: dict[str, Any]) -> WorkflowStageConfig:
