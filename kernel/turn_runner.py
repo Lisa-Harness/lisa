@@ -35,9 +35,7 @@ from kernel.ipsar_fsm import (
     get_required_mode_intro,
     get_required_stage_instruction,
     get_routing_targets,
-    get_transition_tool_schema,
     get_workflow_catalog,
-    get_yield_tool_schema,
     is_routable_mode,
     is_terminal_stage,
     run_mode_entry_operations,
@@ -68,7 +66,6 @@ from kernel.models import (
     YieldPolicy,
 )
 from kernel.operations.registry import (
-    build_operation_tool_schemas,
     execute_operation,
     get_operation_catalog,
     mode_completion_effects,
@@ -104,7 +101,6 @@ from kernel.slice import (
 from kernel.tools.mcp_client import MCPClientConfig, MCPToolPool, bare_tool_name
 from kernel.tools.registry import execute_tool, get_tool_catalog
 from kernel.tools.schema_translator import (
-    mcp_tool_to_openai_function,
     openai_tool_call_to_mcp,
 )
 from kernel.workflow_instance import (
@@ -2750,96 +2746,43 @@ async def _run_turn_inner(
             stage_instruction = get_required_stage_instruction(mode_id, _stage_for_instruction)
     system_prompt = assemble_system(mode_instruction, stage_instruction)
 
-    # Build tool schemas for this turn — MCP tools + in-process operations.
+    # Build the tool surface for this turn via the single shared assembler
+    # (kernel.turn_phases._tool_schemas.build_tool_surface). The post-handoff
+    # rebuild path calls the same function, so a mode's surface at turn start
+    # is byte-identical to its surface after a mid-turn handoff — the
+    # 2026-08-06 ``okf`` loop (rebuild dropped ``transition_stage``) and the
+    # latent yield-drop (rebuild never advertised ``yield``) both came from
+    # the two paths drifting apart.
+    #
     # Done BEFORE assemble_user_context so the capability manifest reflects
     # exactly what the model will see this turn (closes the Tooling Paradox:
     # self-knowledge context now matches the injected function schema).
-    # MCP tools are translated from the pool's discovered tool surface.
-    # Operations are advertised directly from the in-process catalog so the
-    # model sees their real Parameters schema (not an arguments_json wrapper
-    # from a subprocess). Both are dispatched in-process: MCP tools via
-    # pool.call_tool, operations via hooks.execute_operation.
-    # Compute which cold servers could contribute allowed tools so we only
-    # spawn servers the active mode can use. When the mode has no
-    # allowed_tool_ids and is not authoritative (all tools pass), connect
-    # every cold server as before. When authoritative with an allowlist,
-    # only connect servers whose namespaced prefix appears in the allowlist.
-    allowed_server_ids: set[str] | None = None
-    if mode_config and mode_config.allowed_tool_ids:
-        allowed_set = set(mode_config.allowed_tool_ids)
-        allowed_server_ids = {
-            c.server_id
-            for c in getattr(pool, "configs", [])
-            if any(t.startswith(c.server_id + ".") for t in allowed_set)
-        }
-    elif mode_config and mode_config.tools_authoritative and not mode_config.allowed_tool_ids:
-        # Authoritative with empty allowlist = no tools; no cold servers needed.
-        allowed_server_ids = set()
-
-    mcp_tools = await pool.list_tools(allowed_server_ids=allowed_server_ids)
-    # Apply mode-level tool allowlist.
-    # When tools_authoritative is True (default), empty allowed_tool_ids
-    # means no tools are advertised. When False, empty means all pass.
-    if mode_config and (mode_config.allowed_tool_ids or mode_config.tools_authoritative):
-        allowed = set(mode_config.allowed_tool_ids)
-        mcp_tools = [t for t in mcp_tools if t.name in allowed]
-    tool_schemas: list[dict[str, Any]] = [
-        mcp_tool_to_openai_function(
-            name=spec.name,
-            description=spec.description,
-            input_schema=spec.input_schema,
-        )
-        for spec in mcp_tools
-    ]
-    operation_catalog = get_operation_catalog()
-    tool_catalog = get_tool_catalog()
-    tool_schemas.extend(
-        build_operation_tool_schemas(
-            mode_id,
-            tools_authoritative=bool(mode_config and mode_config.tools_authoritative),
-        )
-    )
-    # Advertise in-process (pack-contributed) tools alongside MCP tools and
-    # operations. Pack tools are dispatched in-process via execute_tool, not
-    # through the MCP pool.
-    tool_schemas.extend(_build_in_process_tool_schemas(mode_config))
-
-    # Workflow modes: advertise the transition_stage tool so the model can
-    # advance the FSM. The turn loop intercepts this tool call before the
-    # operation/tool/MCP dispatch branches and calls apply_transition.
+    #
+    # ``yield`` advertisement follows the resolved policy: advertised whenever
+    # the mode's ``yield_policy`` allows it (``allowed=True``, the default for
+    # chat modes) OR when the mode names a ``fallback_mode``. When the model
+    # calls ``yield``, the dispatch loop intercepts it (same pattern as
+    # ``transition_stage``) — it does NOT dispatch to any executor; it breaks
+    # the loop with the question as the turn content and stamps
+    # ``CheckpointBundle.lifecycle_state="yielded"``.
     is_workflow = (
         mode_config is not None
         and mode_config.mode_kind == "workflow"
         and hooks.workflow_session is not None
     )
-    # Unified FSM routing: also advertise transition_stage for chat/action
-    # modes that have routing targets (mode handoffs) or fork targets. This
-    # lets the model hand off between modes mid-turn via the same mechanism
-    # as workflow stage advancement. See docs/ROUTING_RFC_HANDOFF.md.
+    # Unified FSM routing: ``transition_stage`` is also advertised for
+    # chat/action modes that have routing targets (mode handoffs) or fork
+    # targets. See docs/ROUTING_RFC_HANDOFF.md.
     has_routing_targets = bool(get_routing_targets(mode_id)) if mode_config else False
-    if is_workflow or has_routing_targets:
-        tool_schemas.extend(get_transition_tool_schema())
-    # ── Unified turn lifecycle: advertise the yield tool ──────────────
-    # ``yield`` is a first-class terminal action the model calls to ask the
-    # user a question. It is advertised whenever the mode's ``yield_policy``
-    # allows it (``allowed=True``, the default for chat modes) OR when the
-    # mode has a ``fallback_mode`` (action modes that forbid inline asks but
-    # name a redirect target). When the model calls ``yield``, the dispatch
-    # loop intercepts it (same pattern as ``transition_stage``) — it does
-    # NOT dispatch to any executor; it breaks the loop with the question as
-    # the turn content and stamps ``CheckpointBundle.lifecycle_state="yielded"``.
     _yield_policy_for_tools = _resolve_yield_policy(mode_config, _yield_policy_override)
-    if _yield_policy_for_tools.allowed or _yield_policy_for_tools.fallback_mode:
-        tool_schemas.extend(get_yield_tool_schema())
-
-    # Apply one final model-facing prune pass so the payload sent to the
-    # provider cannot include stale/duplicate/disallowed tool schemas.
-    tool_schemas, tool_prune_stats = _prune_model_tool_schemas(
-        tool_schemas=tool_schemas,
-        mode_config=mode_config,
-        is_workflow=is_workflow,
-        has_routing_targets=has_routing_targets,
+    tool_schemas, tool_prune_stats = await build_tool_surface(
+        mode_config,
+        pool=pool,
+        yield_policy=_yield_policy_for_tools,
+        workflow_session_available=hooks.workflow_session is not None,
     )
+    operation_catalog = get_operation_catalog()
+    tool_catalog = get_tool_catalog()
     _log.info(
         "tool schema mode=%s in=%d out=%d dup=%d disallowed=%d invalid=%d "
         "is_workflow=%s has_routing=%s names=[%s]",
@@ -4488,7 +4431,16 @@ async def _run_turn_inner(
                                         target_stage,
                                         ctx_exc,
                                     )
-                                # Rebuild tool schemas for the new mode
+                                # Rebuild tool schemas for the new mode via
+                                # the same assembler Phase 1 used. Resolve the
+                                # yield policy exactly as Phase 1 does
+                                # (override wins, else the target mode's
+                                # authored policy) so the rebuilt surface
+                                # advertises (or omits) ``yield`` identically
+                                # to a turn that started in this mode —
+                                # previously the rebuild never added
+                                # ``yield``, so a mode handed off mid-turn
+                                # silently lost the ability to ask.
                                 tool_schemas = await _rebuild_tool_schemas_for_mode(
                                     target_stage,
                                     target_mode_config,
@@ -4497,6 +4449,9 @@ async def _run_turn_inner(
                                     is_workflow_for_target=(
                                         target_mode_config.mode_kind == "workflow"
                                         and hooks.workflow_session is not None
+                                    ),
+                                    yield_policy=_resolve_yield_policy(
+                                        target_mode_config, _yield_policy_override
                                     ),
                                 )
                                 # Recompile capability manifest for new surface
@@ -6042,4 +5997,5 @@ from kernel.turn_phases._tool_schemas import (  # noqa: F401
     _prune_model_tool_schemas,
     _rebuild_tool_schemas_for_mode,
     _tool_schema_name,
+    build_tool_surface,
 )

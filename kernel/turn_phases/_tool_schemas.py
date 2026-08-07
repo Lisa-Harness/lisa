@@ -18,8 +18,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from kernel.ipsar_fsm import get_routing_targets, get_transition_tool_schema
 from kernel.function_tools import build_strict_openai_function_tool
+from kernel.ipsar_fsm import get_routing_targets, get_transition_tool_schema, get_yield_tool_schema
+from kernel.models import YieldPolicy
 from kernel.operations.registry import build_operation_tool_schemas, get_operation_catalog
 from kernel.tools.mcp_client import MCPToolPool
 from kernel.tools.registry import get_tool_catalog
@@ -37,6 +38,7 @@ __all__ = [
     "_prune_model_tool_schemas",
     "_rebuild_tool_schemas_for_mode",
     "_tool_schema_name",
+    "build_tool_surface",
 ]
 
 # The tool name the model calls to request a workflow stage transition.
@@ -226,43 +228,71 @@ def _prune_model_tool_schemas(
     return pruned, stats
 
 
-async def _rebuild_tool_schemas_for_mode(
-    target_mode_id: str,
-    target_mode_config: Any,
+async def build_tool_surface(
+    mode_config: Any,
     *,
     pool: MCPToolPool,
-    hooks: TurnHooks,
-    is_workflow_for_target: bool,
-) -> list[dict[str, Any]]:
-    """Rebuild the tool schema list for a new mode after a mid-turn handoff.
+    yield_policy: YieldPolicy,
+    workflow_session_available: bool,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Build the complete model-facing tool surface for one mode.
 
-    Mirrors the tool assembly logic in ``_run_turn_inner`` Phase 1 but
-    without re-running pre-turn operations or the input guard. The new
-    mode's ``allowed_tool_ids`` and ``tools_authoritative`` determine the
-    tool surface.
+    This is the ONLY tool-surface assembler. Both the Phase-1 assembly in
+    ``_run_turn_inner`` and the post-handoff rebuild call it, so the surface
+    a mode gets at turn start is byte-identical to the surface it gets after
+    a mid-turn handoff. The 2026-08-06 ``okf`` loop incident (rebuild dropped
+    ``transition_stage`` for chat modes with routing targets) and the latent
+    yield-drop (rebuild never advertised ``yield``) both came from two paths
+    drifting apart; there is now one path.
+
+    The ``transition_stage`` / ``yield`` advertisement conditions are computed
+    here — never passed in by callers:
+
+    - ``transition_stage`` is advertised when the mode is a workflow with a
+      wired session (intra-mode stage advancement) OR the mode has routing
+      targets (inter-mode handoffs).
+    - ``yield`` is advertised when the resolved yield policy allows inline
+      asks or names a fallback mode.
+
+    Args:
+        mode_config: The target mode's ``WorkflowModeConfig`` (or None).
+        pool: The turn's MCP tool pool (for cold-server selection + listing).
+        yield_policy: The yield policy resolved for this turn (the fork
+            fan-out passes the mode's ``fork_yield_policy`` so children follow
+            the background policy).
+        workflow_session_available: True when the host wired
+            ``hooks.workflow_session`` — a property of the turn, not the mode.
+
+    Returns:
+        ``(schemas, prune_stats)`` — the pruned OpenAI tool schemas and the
+        prune-pass counters (for the caller's log line).
     """
+    mode_id = str(getattr(mode_config, "mode_id", "") or "") if mode_config else ""
+
+    # ── Cold-server selection + MCP tool listing ────────────────────────
+    # When the mode has an allowlist, only connect servers whose namespaced
+    # prefix appears in it. Authoritative-with-empty-allowlist means no tools
+    # — no cold servers needed.
     allowed_server_ids: set[str] | None = None
-    if target_mode_config and target_mode_config.allowed_tool_ids:
-        allowed_set = set(target_mode_config.allowed_tool_ids)
+    if mode_config and mode_config.allowed_tool_ids:
+        allowed_set = set(mode_config.allowed_tool_ids)
         allowed_server_ids = {
             c.server_id
             for c in getattr(pool, "configs", [])
             if any(t.startswith(c.server_id + ".") for t in allowed_set)
         }
-    elif (
-        target_mode_config
-        and target_mode_config.tools_authoritative
-        and not target_mode_config.allowed_tool_ids
-    ):
+    elif mode_config and mode_config.tools_authoritative and not mode_config.allowed_tool_ids:
         allowed_server_ids = set()
 
     mcp_tools = await pool.list_tools(allowed_server_ids=allowed_server_ids)
-    if target_mode_config and (
-        target_mode_config.allowed_tool_ids or target_mode_config.tools_authoritative
-    ):
-        allowed = set(target_mode_config.allowed_tool_ids)
+    # Apply mode-level tool allowlist. When tools_authoritative is True
+    # (default), empty allowed_tool_ids means no tools are advertised. When
+    # False, empty means all pass.
+    if mode_config and (mode_config.allowed_tool_ids or mode_config.tools_authoritative):
+        allowed = set(mode_config.allowed_tool_ids)
         mcp_tools = [t for t in mcp_tools if t.name in allowed]
-    new_tool_schemas: list[dict[str, Any]] = [
+
+    tool_schemas: list[dict[str, Any]] = [
         mcp_tool_to_openai_function(
             name=spec.name,
             description=spec.description,
@@ -270,29 +300,72 @@ async def _rebuild_tool_schemas_for_mode(
         )
         for spec in mcp_tools
     ]
-    new_tool_schemas.extend(
+    # Operations are advertised directly from the in-process catalog so the
+    # model sees their real Parameters schema.
+    tool_schemas.extend(
         build_operation_tool_schemas(
-            target_mode_id,
-            tools_authoritative=bool(target_mode_config and target_mode_config.tools_authoritative),
+            mode_id,
+            tools_authoritative=bool(mode_config and mode_config.tools_authoritative),
         )
     )
-    new_tool_schemas.extend(_build_in_process_tool_schemas(target_mode_config))
-    target_has_routing = bool(get_routing_targets(target_mode_id)) if target_mode_config else False
-    # Advertise ``transition_stage`` whenever the target can actually
-    # hand off: workflow modes (FSM stage advancement) AND chat/action
-    # modes with routing targets (mid-turn mode handoffs). This mirrors
-    # the Phase-1 assembly in ``_run_turn_inner`` — without it, a
-    # handoff into a chat mode with routing targets (e.g. ``okf`` in a
-    # ``plan → okf → markdown`` chain) drops ``transition_stage`` from
-    # the rebuilt surface, so the model cannot call it to advance to
-    # the next step and loops until the stuck-in-stage cap yields
-    # (2026-08-06 ``okf`` loop incident).
-    if is_workflow_for_target or target_has_routing:
-        new_tool_schemas.extend(get_transition_tool_schema())
-    new_tool_schemas, _ = _prune_model_tool_schemas(
-        tool_schemas=new_tool_schemas,
-        mode_config=target_mode_config,
-        is_workflow=is_workflow_for_target,
-        has_routing_targets=target_has_routing,
+    # In-process (pack-contributed) tools alongside MCP tools and operations.
+    tool_schemas.extend(_build_in_process_tool_schemas(mode_config))
+
+    # ── Lifecycle tools (transition_stage / yield) ──────────────────────
+    is_workflow = (
+        mode_config is not None
+        and mode_config.mode_kind == "workflow"
+        and workflow_session_available
     )
-    return new_tool_schemas
+    has_routing_targets = bool(get_routing_targets(mode_id)) if mode_config else False
+    if is_workflow or has_routing_targets:
+        tool_schemas.extend(get_transition_tool_schema())
+    if yield_policy.allowed or yield_policy.fallback_mode:
+        tool_schemas.extend(get_yield_tool_schema())
+
+    # ── Final prune pass ────────────────────────────────────────────────
+    return _prune_model_tool_schemas(
+        tool_schemas=tool_schemas,
+        mode_config=mode_config,
+        is_workflow=is_workflow,
+        has_routing_targets=has_routing_targets,
+    )
+
+
+async def _rebuild_tool_schemas_for_mode(
+    target_mode_id: str,
+    target_mode_config: Any,
+    *,
+    pool: MCPToolPool,
+    hooks: TurnHooks,
+    is_workflow_for_target: bool,
+    yield_policy: YieldPolicy | None = None,
+) -> list[dict[str, Any]]:
+    """Rebuild the tool schema list for a new mode after a mid-turn handoff.
+
+    Thin wrapper over :func:`build_tool_surface` — kept for the existing test
+    imports (``from kernel.turn_runner import _rebuild_tool_schemas_for_mode``).
+    Runs no pre-turn operations and no input guard; the surface is identical
+    to what Phase-1 assembly would produce for the same mode.
+
+    ``hooks`` is retained for signature compatibility but unused — the surface
+    depends only on the mode config, the pool, and the resolved yield policy.
+    ``is_workflow_for_target`` is retained for signature compatibility; the
+    caller computes it as ``mode_kind == "workflow" and
+    hooks.workflow_session is not None``, which is exactly the
+    ``workflow_session_available`` input the builder needs for a workflow
+    mode (for non-workflow modes the builder's own mode_kind check gates the
+    condition, so passing the flag through is correct for both cases).
+    ``yield_policy`` must be the policy the caller already resolved for the
+    target mode (via ``_resolve_yield_policy`` — override wins, else the
+    mode's authored policy); when None the builder uses the empty default
+    (inline asks allowed), matching the foreground default.
+    """
+    del hooks  # Unused: the surface depends on mode config + pool only.
+    schemas, _stats = await build_tool_surface(
+        target_mode_config,
+        pool=pool,
+        yield_policy=yield_policy if yield_policy is not None else YieldPolicy(),
+        workflow_session_available=is_workflow_for_target,
+    )
+    return schemas

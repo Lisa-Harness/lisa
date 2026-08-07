@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 
+from kernel.models import YieldPolicy
 from kernel.turn_runner import (
     TurnHooks,
     _build_in_process_tool_schemas,
@@ -484,6 +485,121 @@ async def test_rebuild_excludes_transition_stage_for_chat_mode_without_routing_t
     )
     names = {_tool_schema_name(s) for s in schemas}
     assert "transition_stage" not in names
+
+
+# ── build_tool_surface: Phase-1/rebuild parity (Phase 1 unification) ──
+
+
+class _EmptyPool:
+    """MCP pool stub with no tools (only lifecycle tools matter here).
+
+    No ``configs`` attribute: the builder reads it via ``getattr(pool,
+    "configs", [])``, so absence exercises the same empty-server path.
+    """
+
+    async def list_tools(self, **_: Any) -> list[Any]:
+        return []
+
+
+def _isolate_surface(monkeypatch: pytest.MonkeyPatch, routing: dict[str, list[str]]) -> None:
+    """Point the surface builder's catalog reads at empty/stubbed sources."""
+    from kernel.turn_phases import _tool_schemas as _ts
+
+    monkeypatch.setattr(_ts, "get_routing_targets", lambda mode_id: routing.get(mode_id, []))
+    monkeypatch.setattr(_ts, "build_operation_tool_schemas", lambda *a, **k: [])
+    monkeypatch.setattr(_ts, "get_operation_catalog", lambda: {})
+    monkeypatch.setattr(_ts, "get_tool_catalog", lambda: {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode_kind", "session_wired"),
+    [("workflow", True), ("workflow", False), ("chat", False), ("action", False)],
+    ids=["workflow-with-session", "workflow-no-session", "chat", "action"],
+)
+async def test_rebuild_surface_is_identical_to_phase1_surface(
+    monkeypatch: pytest.MonkeyPatch,
+    mode_kind: str,
+    session_wired: bool,
+) -> None:
+    """The post-handoff rebuild produces the Phase-1 surface for the same mode.
+
+    Pins the Phase-1 unification: ``_rebuild_tool_schemas_for_mode`` is a thin
+    wrapper over ``build_tool_surface`` and must not add, drop, or reorder a
+    single schema. If this fails, the two assembly paths have drifted again —
+    the class of bug behind the 2026-08-06 ``okf`` loop and the latent
+    yield-drop.
+    """
+    from kernel.turn_runner import _rebuild_tool_schemas_for_mode, build_tool_surface
+
+    mode_config = _make_mode_config(
+        mode_id="parity",
+        mode_kind=mode_kind,
+        allowed_tool_ids=["lisa-storage.read_file"],
+        tools_authoritative=True,
+    )
+    _isolate_surface(monkeypatch, {"parity": ["markdown"]})
+    policy = YieldPolicy()
+
+    phase1_schemas, _ = await build_tool_surface(
+        mode_config,
+        pool=_EmptyPool(),  # type: ignore[arg-type]
+        yield_policy=policy,
+        workflow_session_available=session_wired,
+    )
+    rebuilt = await _rebuild_tool_schemas_for_mode(
+        "parity",
+        mode_config,
+        pool=_EmptyPool(),  # type: ignore[arg-type]
+        hooks=TurnHooks(),
+        is_workflow_for_target=session_wired,
+        yield_policy=policy,
+    )
+    assert rebuilt == phase1_schemas
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("policy", "expect_yield"),
+    [
+        (YieldPolicy(), True),  # default: inline asks allowed
+        (YieldPolicy(allowed=False, fallback_mode="discuss"), True),  # fallback redirect
+        (YieldPolicy(allowed=False), False),  # forbidden, no fallback
+    ],
+    ids=["default-allowed", "fallback-redirect", "forbidden-no-fallback"],
+)
+async def test_rebuild_advertises_yield_identically_to_phase1(
+    monkeypatch: pytest.MonkeyPatch,
+    policy: Any,
+    expect_yield: bool,
+) -> None:
+    """The rebuilt surface advertises ``yield`` under the same policy rule as
+    Phase 1 (``allowed OR fallback_mode``).
+
+    Regression for the latent asymmetry found during the Phase-1 unification:
+    the old rebuild path never advertised ``yield`` at all, so a mode handed
+    off mid-turn silently lost the ability to ask the user a question.
+    """
+    from kernel.turn_runner import _rebuild_tool_schemas_for_mode
+
+    mode_config = _make_mode_config(
+        mode_id="chatty",
+        mode_kind="chat",
+        allowed_tool_ids=[],
+        tools_authoritative=True,
+    )
+    _isolate_surface(monkeypatch, {})
+
+    schemas = await _rebuild_tool_schemas_for_mode(
+        "chatty",
+        mode_config,
+        pool=_EmptyPool(),  # type: ignore[arg-type]
+        hooks=TurnHooks(),
+        is_workflow_for_target=False,
+        yield_policy=policy,
+    )
+    names = {_tool_schema_name(s) for s in schemas}
+    assert ("yield" in names) is expect_yield
 
 
 # ── Schema assembly end-to-end via run_turn ───────────────────────────
