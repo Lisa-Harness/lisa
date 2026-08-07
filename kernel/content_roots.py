@@ -71,7 +71,10 @@ def discover_installed_content_roots(
         try:
             root_loader = ep.load()
             candidate = Path(root_loader())
-        except (ImportError, AttributeError, OSError, ValueError):
+        except Exception:  # noqa: BLE001
+            # ep.load() executes foreign entry-point code; a broken pack can
+            # raise anything (ImportError, RuntimeError from module init, ...).
+            # Skip it rather than aborting discovery for every other pack.
             logger.warning("Failed to load content root entry-point %r", ep.name, exc_info=True)
             continue
         if candidate.is_dir():
