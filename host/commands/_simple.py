@@ -23,6 +23,7 @@ from host.commands._render import (
     format_help,
     render_capability_debug,
     render_capability_help,
+    render_command_help,
     render_debug_context,
     render_debug_self,
 )
@@ -78,14 +79,24 @@ async def handle_help_command(
     lowered: str,
     message: str,
 ) -> str:
-    """Handle ``/help`` and ``/help capabilities``."""
+    """Handle ``/help``, ``/help capabilities``, and ``/help <command>``.
+
+    ``/help`` (or ``/help`` with an empty topic) renders the pack-aware
+    overview via :func:`format_help`. Any non-empty topic delegates to
+    :func:`render_command_help`, which resolves built-in host commands
+    (``pack``, ``models``, ``mcp``, ``modes``, ``operations``, ``tools``,
+    etc.) to dedicated help text and pack-registered commands to the
+    pack's own ``help_text``.
+    """
     help_topic = ""
     if lowered.startswith("/help"):
         help_topic = stripped[5:].strip().lower()
-    if help_topic in {"capabilities", "capability"}:
+    if not help_topic:
+        response_text = format_help(runtime)
+    elif help_topic in {"capabilities", "capability"}:
         response_text = render_capability_help(runtime)
     else:
-        response_text = format_help()
+        response_text = render_command_help(runtime, help_topic)
     return handle_simple_command(runtime, message, "help", response_text)
 
 

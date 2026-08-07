@@ -403,6 +403,47 @@ class TestHandleMessage:
         assert result.text in received  # transport received the response
 
     @pytest.mark.asyncio
+    async def test_help_pack_subcommand(self, tmp_path: Path) -> None:
+        """/help pack returns the dedicated pack-command guidance."""
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+        result = await handle_message(runtime, "/help pack")
+        assert isinstance(result, HostCommandResult)
+        assert "## /pack" in result.text
+        assert "/pack list" in result.text
+        assert "/pack install" in result.text
+
+    @pytest.mark.asyncio
+    async def test_help_models_subcommand(self, tmp_path: Path) -> None:
+        """/help models delegates to the models help text."""
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+        result = await handle_message(runtime, "/help models")
+        assert isinstance(result, HostCommandResult)
+        assert "## /models" in result.text
+        assert "/models discover" in result.text
+
+    @pytest.mark.asyncio
+    async def test_help_mcp_subcommand(self, tmp_path: Path) -> None:
+        """/help mcp returns the MCP introspection guidance."""
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+        result = await handle_message(runtime, "/help mcp")
+        assert isinstance(result, HostCommandResult)
+        assert "## /mcp" in result.text
+        assert "/mcp <server_id>" in result.text
+
+    @pytest.mark.asyncio
+    async def test_help_unknown_subcommand(self, tmp_path: Path) -> None:
+        """/help <unknown> falls back to a pointer rather than the overview."""
+        config = HostConfig.from_env(data_dir=str(tmp_path))
+        runtime = HostRuntime(config)
+        result = await handle_message(runtime, "/help nosuchcommand")
+        assert isinstance(result, HostCommandResult)
+        assert "No help available" in result.text
+        assert "/help" in result.text
+
+    @pytest.mark.asyncio
     async def test_model_turn_no_content_registry(self, tmp_path: Path) -> None:
         """Without setup_framework, a model turn fails gracefully with an error result."""
         config = HostConfig.from_env(data_dir=str(tmp_path))

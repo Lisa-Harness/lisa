@@ -1393,7 +1393,82 @@ def test_verify_check_provider_keys_reports_google_key(
 
 def test_simple_help_mentions_quit_command() -> None:
     output = commands.format_help()
-    assert "/quit exits the interactive console loop." in output
+    assert "/quit" in output
+
+
+def test_help_overview_mentions_inventory_and_pack_commands() -> None:
+    """The pack-aware overview lists the inventory commands and the pack-command pointer."""
+    output = commands.format_help()
+    assert "/modes" in output
+    assert "/operations" in output
+    assert "/tools" in output
+    assert "/mcp" in output
+    assert "/help <command>" in output
+
+
+def test_help_overview_lists_pack_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The overview surfaces pack-registered commands under a 'Pack commands' header."""
+    from kernel.host_commands import HostCommandSpec, PackCommandEntry
+
+    render_mod = sys.modules["host.commands._render"]
+
+    def _fake_entries() -> list[PackCommandEntry]:
+        return [
+            PackCommandEntry(
+                pack_name="lisa-pack-test",
+                specs=[
+                    HostCommandSpec(
+                        prefix="/test-cmd",
+                        handler=_unused_handler,  # type: ignore[arg-type]
+                        help_text="/test-cmd <arg> does the thing.",
+                    ),
+                ],
+            ),
+        ]
+
+    monkeypatch.setattr(render_mod, "_pack_command_entries", _fake_entries)
+    output = commands.format_help()
+    assert "Pack commands:" in output
+    assert "/test-cmd <arg> does the thing." in output
+
+
+def test_render_command_help_delegates_to_pack_help_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """/help <pack-command> surfaces the pack's own help_text."""
+    from kernel.host_commands import HostCommandSpec, PackCommandEntry
+
+    render_mod = sys.modules["host.commands._render"]
+
+    def _fake_entries() -> list[PackCommandEntry]:
+        return [
+            PackCommandEntry(
+                pack_name="lisa-pack-test",
+                specs=[
+                    HostCommandSpec(
+                        prefix="/test-cmd",
+                        handler=_unused_handler,  # type: ignore[arg-type]
+                        help_text="/test-cmd <arg> does the thing.",
+                    ),
+                ],
+            ),
+        ]
+
+    monkeypatch.setattr(render_mod, "_pack_command_entries", _fake_entries)
+    config = HostConfig.from_env(data_dir=str(tmp_path))
+    runtime = HostRuntime(config)
+    output = commands.render_command_help(runtime, "test-cmd")
+    assert "## /test-cmd" in output
+    assert "/test-cmd <arg> does the thing." in output
+    assert "Pack: lisa-pack-test" in output
+
+
+async def _unused_handler(*_args: object) -> str:  # pragma: no cover
+    """Placeholder handler for PackCommandSpec in tests (never invoked)."""
+    return ""
 
 
 # ── Turn context ──────────────────────────────────────────────────────
