@@ -190,6 +190,7 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         command_pattern=data.get("command_pattern", ""),
         require_query=data.get("require_query", False),
         entry_operation_ids=data.get("entry_operation_ids", []),
+        entry_op_kind=data.get("entry_op_kind", "work"),
         pre_turn_operation_ids=data.get("pre_turn_operation_ids", []),
         post_turn_operation_ids=data.get("post_turn_operation_ids", []),
         allowed_operation_ids=data.get("allowed_operation_ids", []),

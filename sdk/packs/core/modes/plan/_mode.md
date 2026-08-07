@@ -15,6 +15,11 @@ routing_intent_keywords:
     - chain
     - orchestrate
 entry_operation_ids: [plan_workflow]
+# plan_workflow returns a routing contract (output_json.target_stage_id +
+# optional steps); the kernel drives the handoff from the result shape and
+# treats an empty target as a plan failure. Non-routing action modes (e.g.
+# search/web_search) leave this at the default `work`.
+entry_op_kind: routing
 command_pattern: '^(?:/)?plan(?:[\s,:;]+(?P<query>.+))?$'
 required_capabilities: [reasoning, tools]
 yield_policy:

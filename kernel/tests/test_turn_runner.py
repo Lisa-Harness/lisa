@@ -119,6 +119,7 @@ async def test_run_turn_planner_action_mode_drives_handoff_without_model_transit
         mode_kind="action",
         routable=True,
         entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )
@@ -200,6 +201,7 @@ async def test_plan_action_mode_propagates_handoff_to_advance_host_mode() -> Non
         mode_kind="action",
         routable=True,
         entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )
@@ -264,6 +266,7 @@ async def test_run_turn_planner_action_mode_empty_target_falls_back_to_text() ->
         mode_kind="action",
         routable=True,
         entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )
@@ -316,7 +319,10 @@ async def test_run_turn_non_planner_action_mode_entry_op_no_target_not_plan_fail
     failed plan, marked the model unreliable for planning, and hard-stopped
     the turn. The fix gates the kernel-driven handoff on the target being
     ``plan`` (or its entry op being ``plan_workflow``), so non-planner
-    action modes are left to run their entry op and proceed normally.
+    action modes are left to run their entry op and proceed normally. The
+    Phase 4 cutover replaced that op-id check with the declared contract:
+    ``search`` does not declare ``entry_op_kind: routing``, so its entry
+    result is plain work output, never a failed plan.
     """
     from unittest.mock import patch
 
@@ -396,6 +402,7 @@ async def test_run_turn_non_planner_action_mode_entry_op_no_target_not_plan_fail
         mode_kind="action",
         routable=True,
         entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )
@@ -458,9 +465,9 @@ async def test_run_turn_search_action_mode_phase1_returns_entry_op_result_not_pl
     plan-failure branch — logging "plan_workflow returned no target
     (mode=search)" and hard-stopping with a bogus recovery prompt on
     every planned search step. The mid-turn handoff path already gated
-    on ``is_routing_entry_op``; the Phase 1 path did not. The fix mirrors
-    that gate: a non-routing action mode's entry-op output IS the turn
-    output.
+    on the mode's declared routing contract (``entry_op_kind``); the
+    Phase 1 path did not. The fix mirrors that gate: a non-routing
+    action mode's entry-op output IS the turn output.
     """
     from unittest.mock import patch
 
@@ -548,6 +555,7 @@ async def test_run_turn_planner_with_steps_renders_visible_plan_and_persists_ins
         mode_kind="action",
         routable=True,
         entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )
@@ -641,6 +649,7 @@ async def test_run_turn_planner_without_steps_no_plan_block_no_instance() -> Non
         mode_kind="action",
         routable=True,
         entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )
@@ -899,6 +908,7 @@ async def test_run_turn_mid_turn_handoff_to_planner_drives_next_handoff() -> Non
         mode_kind="action",
         routable=True,
         entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )
@@ -1024,6 +1034,7 @@ async def test_plan_mid_turn_handoff_resumes_active_instance() -> None:
         mode_kind="action",
         routable=True,
         entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )
@@ -4044,6 +4055,7 @@ async def test_plan_entry_op_timeout_marks_model_unreliable() -> None:
         mode_kind="action",
         routable=True,
         entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )
@@ -4336,6 +4348,7 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
         mode_kind="action",
         routable=True,
         entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )
@@ -4448,6 +4461,7 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
         mode_kind="action",
         routable=True,
         entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
         satisfies_intents=["plan"],
         routing_intent_tags=["plan"],
     )

@@ -464,30 +464,22 @@ def _next_remaining_step_mode_id(hooks: Any) -> str:
     return step.mode_id if step is not None else ""
 
 
-#: The set of operation ids whose ``output_json`` carries a routing
-#: contract (``target_stage_id`` + optional ``steps``). ``plan_workflow``
-#: is the sole member today; ``delegate`` will join this set when it lands.
-#: Used by ``is_routing_entry_op`` to generalize the planner-specific
-#: defensive branches to any routing-capable action-mode entry op.
-_ROUTING_ENTRY_OP_IDS: frozenset[str] = frozenset({"plan_workflow"})
+def _promises_routing_contract(mode_config: Any) -> bool:
+    """Return True when the mode declares ``entry_op_kind: routing``.
 
-
-def is_routing_entry_op(mode_config: Any) -> bool:
-    """Return True when ``mode_config`` declares a routing-capable entry op.
-
-    A routing entry op returns ``output_json["target_stage_id"]`` (and
-    optionally ``output_json["steps"]``) so the kernel can drive the
-    handoff itself instead of waiting for the model to call
-    ``transition_stage``. ``plan_workflow`` is the sole implementor today;
-    ``delegate`` will join when it lands. Non-routing action modes (e.g.
-    ``search``/``web_search``) return their own output shape (search
-    results) with no routing target — this predicate correctly excludes
-    them so the kernel does not misread their output as a failed plan.
+    The declaration governs *failure diagnosis only*: when a
+    routing-declared entry op returns an empty ``target_stage_id``, the
+    turn terminates with a deterministic recovery prompt and the model is
+    marked unreliable for planning. The handoff itself is data-driven —
+    any non-empty ``target_stage_id`` in an entry-op result is honored,
+    declared or not. Work entry ops (the default; e.g. ``web_search``)
+    return their own output shape and are never misread as failed
+    planners (the 2026-08-06 ``plan → search`` stall). ``plan_workflow``
+    is the sole routing implementor today; a future ``delegate`` op joins
+    by declaring ``entry_op_kind: routing`` in its mode front matter — no
+    kernel code change.
     """
-    if mode_config is None:
-        return False
-    entry_op_ids = getattr(mode_config, "entry_operation_ids", None) or []
-    return any(op_id in _ROUTING_ENTRY_OP_IDS for op_id in entry_op_ids)
+    return getattr(mode_config, "entry_op_kind", "") == "routing"
 
 
 def _active_instance_resume_target(hooks: Any) -> str:
@@ -2427,32 +2419,32 @@ async def _run_turn_inner(
             ledger=ledger,
             execution_policy=execution_policy,
         )
-        # ── Non-routing action modes: entry op IS the turn output ───────
-        # Only routing entry ops (``plan_workflow``) return a routing
-        # contract (``output_json["target_stage_id"]``). Other action
-        # modes (e.g. ``search``/``web_search``) return their own output
-        # shape (search results, briefings) with NO routing target by
-        # design. The kernel-driven handoff and the plan-failure recovery
-        # path below assume the entry op is a planner; applying them to a
-        # non-routing action mode misreads the empty ``target_stage_id`` as
-        # a failed plan, marks the model unreliable for planning, and
-        # hard-stops the turn with a bogus recovery prompt — the 2026-08-06
-        # ``plan → search`` workflow stall (every planned ``search`` step
-        # terminated with "plan_workflow returned no target (mode=search)")
-        # because the recursive ``run_turn(mode_id="search")`` re-entered
-        # this Phase 1 block and treated ``web_search``'s results as a
-        # planner failure. The mid-turn handoff path already gates on
-        # ``is_routing_entry_op`` (see ~line 4484); mirror that gate here
-        # so a non-routing action mode's entry-op result is the turn's
-        # output and the turn ends cleanly.
-        if not is_routing_entry_op(mode_config):
+        # ── Data-driven routing contract ─────────────────────────────
+        # The entry-op result itself declares whether it carries a routing
+        # decision: a non-empty ``output_json["target_stage_id"]`` IS the
+        # routing contract — no op-id list, no mode-name check (the
+        # hardcoded ``_ROUTING_ENTRY_OP_IDS`` frozenset is deleted). When
+        # the target is empty, the mode's declared ``entry_op_kind``
+        # decides what an empty result means: ``routing`` modes promised a
+        # routing contract, so an empty target is a plan failure (handled
+        # by the recovery block below); ``work`` modes (the default — e.g.
+        # ``search``/``web_search``) return their own output shape and that
+        # output IS the turn's result. Misreading a work mode's empty
+        # target as a failed plan was the 2026-08-06 ``plan → search``
+        # stall (every planned ``search`` step terminated with
+        # "plan_workflow returned no target (mode=search)").
+        planned_target = str((result.output_json or {}).get("target_stage_id", "") or "").strip()
+        promises_routing = _promises_routing_contract(mode_config)
+        if not planned_target and not promises_routing:
+            # Work entry op: the result IS the turn output; the turn ends
+            # cleanly with no routing semantics applied.
             entry_text = (result.output_text or "").strip()
             return TurnResult(
                 response_text=entry_text,
                 tool_call_count=0,
                 iteration_count=1,
             )
-        # ── Kernel-driven handoff for planner action modes ──────────────
+        # ── Kernel-driven handoff for routing entry ops ──────────────
         # When an action mode's entry operation returns a routing target
         # (``output_json["target_stage_id"]``), the kernel drives the
         # handoff itself instead of asking the model to call
@@ -2465,14 +2457,12 @@ async def _run_turn_inner(
         # to load and the chain stalled (the 2026-07-28 incident).
         #
         # The kernel persists the coordinator decision *from the plan
-        # result* (not from a successful ``transition_stage`` tool call),
-        # then recursively runs the turn against the target mode with
-        # routing hints suppressed so the target does not re-plan. The
-        # target mode's own entry operations run in the recursive call.
-        # An empty ``target_stage_id`` (no routable mode matched, no model
-        # wiring, or a parse failure) falls through to the user-facing
-        # text return — the planner legitimately reports it cannot route.
-        planned_target = str((result.output_json or {}).get("target_stage_id", "") or "").strip()
+        # result* (not from a successful ``transition_stage`` tool call)
+        # and sets ``pending_planned_handoff`` so the loop's synthesis
+        # block drives the handoff through the same transition_stage
+        # interception the model-driven path uses (Phase 3: one
+        # transition). An empty ``target_stage_id`` from a routing-declared
+        # mode falls through to the plan-failure recovery block below.
         # The visible plan block (rendered markdown) from plan_workflow's
         # output_text. When the model returned a ``steps`` array, this is a
         # ``## Plan`` block the user sees before the first step executes.
@@ -2537,7 +2527,8 @@ async def _run_turn_inner(
         # user plan failed and offers concrete next steps. Mark the model
         # unreliable for planning so the hint generator stops escalating
         # to ``plan`` for it (see ``routing_vocabulary.is_plan_reliable``).
-        # Only reached when the planner produced NO target — a successful
+        # Only reached when a routing-declared planner produced NO target
+        # (work modes returned their entry-op output above) — a successful
         # plan stages ``pending_planned_handoff`` above and falls through
         # to the main loop without entering this block.
         if not planned_target:
@@ -4435,10 +4426,10 @@ async def _run_turn_inner(
                                 # mirrors the turn-start resume path
                                 # (``_coordinator_routing_hint``) for the
                                 # mid-turn handoff case.
-                                _is_routing_entry_op = is_routing_entry_op(target_mode_config)
+                                _promises_routing = _promises_routing_contract(target_mode_config)
                                 _plan_resume_target = (
                                     _active_instance_resume_target(hooks)
-                                    if _is_routing_entry_op
+                                    if _promises_routing
                                     else ""
                                 )
                                 if _plan_resume_target:
@@ -4488,34 +4479,23 @@ async def _run_turn_inner(
                                         # from the plan result so a later
                                         # ``proceed`` can resume the chain.
                                         #
-                                        # IMPORTANT: only ``plan`` mode's
-                                        # entry op (``plan_workflow``)
-                                        # returns a ``target_stage_id``.
-                                        # Other action modes (e.g.
-                                        # ``search`` with ``web_search``)
-                                        # return their own output shape
-                                        # (search results), which has no
-                                        # routing target. Applying the
-                                        # kernel-driven handoff to every
-                                        # action-mode entry op misreads
-                                        # ``web_search`` output as a failed
-                                        # plan and hard-stops the turn — the
-                                        # 2026-07-30 ``search`` incident
-                                        # (``plan_workflow in mid-turn
-                                        # handoff returned no target
-                                        # (mode=search)``). Gate the
-                                        # routing-entry-op logic on
-                                        # ``is_routing_entry_op`` so only
-                                        # ops that return routing decisions
-                                        # are affected.
-                                        _planned_next = ""
-                                        if _is_routing_entry_op:
-                                            _planned_next = str(
-                                                (entry_result.output_json or {}).get(
-                                                    "target_stage_id", ""
-                                                )
-                                                or ""
-                                            ).strip()
+                                        # Data-driven: a non-empty
+                                        # ``target_stage_id`` in the
+                                        # entry-op result IS the routing
+                                        # contract, so the kernel drives
+                                        # the next handoff for any op that
+                                        # returns one — no op-id list. Work
+                                        # ops (``web_search``) return their
+                                        # own output shape with no routing
+                                        # target and are never misread as
+                                        # failed plans (the 2026-07-30
+                                        # ``search`` incident).
+                                        _planned_next = str(
+                                            (entry_result.output_json or {}).get(
+                                                "target_stage_id", ""
+                                            )
+                                            or ""
+                                        ).strip()
                                         if _planned_next:
                                             _state.pending_planned_handoff = _planned_next
                                             if hooks.route_coordinator is not None:
@@ -4554,7 +4534,7 @@ async def _run_turn_inner(
                                                 target_stage,
                                                 _planned_next,
                                             )
-                                        elif _is_routing_entry_op:
+                                        elif _promises_routing:
                                             # ── Plan failure mid-turn ──
                                             # The planner returned no
                                             # ``target_stage_id`` (parse
@@ -4571,8 +4551,9 @@ async def _run_turn_inner(
                                             # so the user re-issues or
                                             # names a target directly.
                                             #
-                                            # Only fire for planner handoffs.
-                                            # A non-planner action mode (e.g.
+                                            # Only fire for modes that
+                                            # declared a routing contract.
+                                            # A work action mode (e.g.
                                             # ``search``/``web_search``) has
                                             # no ``target_stage_id`` by
                                             # design — that is NOT a plan
@@ -4628,7 +4609,7 @@ async def _run_turn_inner(
                                         # "no target" branch above already
                                         # marks unreliable; this mirrors it
                                         # for the exception path.
-                                        if _is_routing_entry_op:
+                                        if _promises_routing:
                                             from kernel.routing_vocabulary import (
                                                 mark_plan_unreliable_for_model,
                                             )

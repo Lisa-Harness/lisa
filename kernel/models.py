@@ -1353,6 +1353,17 @@ class WorkflowModeConfig(BaseModel):
     # pre/post-turn slots — a deterministic compute step no longer needs an
     # operation wrapper to participate in the lifecycle.
     entry_operation_ids: list[str] = Field(default_factory=list)
+    # Entry-op contract. ``work`` (default): the entry op's output IS the
+    # mode's output (search results, briefings) and the turn ends there.
+    # ``routing``: the entry op promises to return a routing contract in
+    # ``output_json`` (``target_stage_id`` + optional ``steps``) and the
+    # kernel drives the handoff itself; an empty target from a
+    # routing-declared op is a plan failure with a deterministic recovery
+    # prompt. The handoff trigger is the result shape (non-empty
+    # ``target_stage_id``); this declaration only authorizes plan-failure
+    # diagnosis. Authored in ``_mode.md`` front matter as ``entry_op_kind``;
+    # only meaningful for ``action`` modes (validated at catalog load).
+    entry_op_kind: Literal["work", "routing"] = "work"
     pre_turn_operation_ids: list[str] = Field(default_factory=list)
     post_turn_operation_ids: list[str] = Field(default_factory=list)
     allowed_operation_ids: list[str] = Field(default_factory=list)

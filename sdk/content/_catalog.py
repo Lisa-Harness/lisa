@@ -436,6 +436,7 @@ def _load_one_mode(
         "command_pattern": str(front_matter.get("command_pattern", "") or ""),
         "require_query": bool(front_matter.get("require_query", False)),
         "entry_operation_ids": [str(o) for o in (front_matter.get("entry_operation_ids") or [])],
+        "entry_op_kind": str(front_matter.get("entry_op_kind", "work") or "work"),
         "pre_turn_operation_ids": [
             str(o) for o in (front_matter.get("pre_turn_operation_ids") or [])
         ],

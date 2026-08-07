@@ -301,6 +301,7 @@ _MODE_OVERRIDES_PROTECTED_KEYS: frozenset[str] = frozenset(
         "command_pattern",
         "require_query",
         "entry_operation_ids",
+        "entry_op_kind",
         "pre_turn_operation_ids",
         "post_turn_operation_ids",
         "allowed_operation_ids",
@@ -553,6 +554,16 @@ def load_catalog_from_disk(
             str(operation_id)
             for operation_id in (mode_front_matter.get("entry_operation_ids") or [])
         ]
+        entry_op_kind = str(mode_front_matter.get("entry_op_kind", "work") or "work")
+        if entry_op_kind not in ("work", "routing"):
+            raise WorkflowValidationError(
+                f"entry_op_kind must be 'work' or 'routing' in {mode_config_path}"
+            )
+        if entry_op_kind == "routing" and mode_kind != "action":
+            raise WorkflowValidationError(
+                f"entry_op_kind 'routing' requires mode_kind 'action' in "
+                f"{mode_config_path}: only action modes run entry operations"
+            )
         pre_turn_operation_ids = [
             str(operation_id)
             for operation_id in (mode_front_matter.get("pre_turn_operation_ids") or [])
@@ -859,6 +870,7 @@ def load_catalog_from_disk(
             command_pattern=command_pattern,
             require_query=require_query,
             entry_operation_ids=entry_operation_ids,
+            entry_op_kind=entry_op_kind,
             pre_turn_operation_ids=pre_turn_operation_ids,
             post_turn_operation_ids=post_turn_operation_ids,
             allowed_operation_ids=allowed_operation_ids,
