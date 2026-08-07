@@ -202,23 +202,6 @@ class Settings(BaseSettings):
     # prompt tokens each after hint suppression). Override via
     # ``HINT_OVERRIDE_LIMIT``.
     hint_override_limit: int = 5
-    # Stuck-in-chat-mode guard: after this many iterations in one
-    # chat/action mode without a handoff (``step_iteration`` since the
-    # last ``transition_stage``), the resolver forces a yield so the
-    # user can redirect. This mirrors the workflow stuck-in-stage cap
-    # (``stage_nudge_cap``) but applies to non-workflow modes that
-    # received a routing hint and are not acting on it — the gap the
-    # 2026-08-05 markdown token burn exposed (``is_workflow=False`` so
-    # the workflow guards never fired). Override via
-    # ``CHAT_STUCK_MODE_CAP``.
-    chat_stuck_mode_cap: int = 10
-    # Soft nudge threshold for the same condition: after this many
-    # iterations in one chat/action mode without a handoff, the
-    # resolver emits an advisory ``ContinueAction`` nudge ("consider
-    # yielding if blocked"). Must be less than
-    # ``chat_stuck_mode_cap``. Override via
-    # ``CHAT_STUCK_MODE_THRESHOLD``.
-    chat_stuck_mode_threshold: int = 6
     # Budget briefing: inject a compact, per-iteration budget status
     # block into the system prompt so the model can self-scope its
     # work within the remaining iteration / tool-call / per-target
@@ -370,8 +353,6 @@ class Settings(BaseSettings):
         "duplicate_hint_limit",
         "hint_cycle_min_len",
         "hint_override_limit",
-        "chat_stuck_mode_cap",
-        "chat_stuck_mode_threshold",
         "budget_briefing_enabled",
         "context_budget_default_total_tokens",
         "context_budget_deep_total_tokens",

@@ -3277,7 +3277,12 @@ async def _run_turn_inner(
                 _open_records = []
 
         # Build the turn-state view for the resolver.
-        _turns_in_stage = 0
+        # ``turns_in_stage`` is the unified stall counter: the workflow
+        # session's per-stage turn count for workflow modes, the per-step
+        # iteration counter (reset on every ``transition_stage``) for
+        # chat/action modes. One counter drives the resolver's single
+        # stuck-in-stage guard pair regardless of mode kind.
+        _turns_in_stage = _state.step_iteration
         if is_workflow and hooks.workflow_session is not None:
             _wf_sess = hooks.workflow_session()
             if _wf_sess is not None:
@@ -3320,8 +3325,6 @@ async def _run_turn_inner(
             forced_fork_non_fork_tool_cap=_kernel_settings.forced_fork_non_fork_tool_cap,
             forced_transition_non_transition_tool_cap=_kernel_settings.forced_transition_non_transition_tool_cap,
             max_handoffs_per_turn=_max_handoffs_per_turn,
-            chat_stuck_mode_threshold=_kernel_settings.chat_stuck_mode_threshold,
-            chat_stuck_mode_cap=_kernel_settings.chat_stuck_mode_cap,
         )
         _resolver_state = _TSV(
             iteration=_state.iteration,
@@ -3335,7 +3338,6 @@ async def _run_turn_inner(
             forced_transition_target=_state.forced_transition_target,
             non_transition_tool_dispatches=_state.non_transition_tool_dispatches,
             handoff_count=_state.handoff_count,
-            has_routing_targets=has_routing_targets,
         )
         _active_instance_for_resolver: Any = None
         if hooks.workflow_instance is not None:
@@ -3352,7 +3354,6 @@ async def _run_turn_inner(
             router_decision=_state.pending_router_decision,
             workflow_instance=_active_instance_for_resolver,
             recovery_records=_open_records,
-            is_workflow=is_workflow,
         )
 
         # ── Apply the lifecycle action ───────────────────────────────

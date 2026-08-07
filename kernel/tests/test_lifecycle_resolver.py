@@ -39,8 +39,6 @@ class _State:
     forced_transition_target: str = ""
     non_transition_tool_dispatches: int = 0
     handoff_count: int = 0
-    # Stuck-in-chat-mode guard (2026-08-05): mirrors _TurnStateView.
-    has_routing_targets: bool = False
 
 
 @dataclass
@@ -229,7 +227,7 @@ def test_per_step_budget_exhausted_no_next_step_falls_through() -> None:
     assert isinstance(action, ContinueAction)
 
 
-# ── Stuck-in-stage cap ──────────────────────────────────────────────────────
+# ── Stuck-in-stage cap (unified across mode kinds) ─────────────────────────
 
 
 def test_stage_cap_forces_yield_for_workflow_mode() -> None:
@@ -238,10 +236,9 @@ def test_stage_cap_forces_yield_for_workflow_mode() -> None:
         mode_id="ponder",
         mode_yield_policy=YieldPolicy(allowed=True),
         settings=LifecycleResolverSettings(stage_nudge_cap=6),
-        is_workflow=True,
     )
     assert isinstance(action, YieldAction)
-    assert "6 turns" in action.question
+    assert "6 iterations" in action.question
 
 
 def test_stage_cap_forces_finish_for_action_mode_without_escape() -> None:
@@ -250,21 +247,38 @@ def test_stage_cap_forces_finish_for_action_mode_without_escape() -> None:
         mode_id="coding",
         mode_yield_policy=YieldPolicy(allowed=False, fallback_mode=""),
         settings=LifecycleResolverSettings(stage_nudge_cap=6),
-        is_workflow=True,
     )
     assert isinstance(action, FinishAction)
 
 
-def test_stage_cap_ignored_for_non_workflow_mode() -> None:
-    """Chat modes don't track turns_in_stage; the cap only fires for workflows."""
+def test_stage_cap_fires_for_chat_mode_too() -> None:
+    """The guard is mode-kind blind: a chat mode stuck at the cap yields.
+
+    The 2026-08-05 markdown burn happened because the workflow guard was
+    gated on ``is_workflow`` and chat modes slipped through. The unified
+    guard reads the same counter for every mode kind (the loop feeds it
+    from the workflow session for workflow modes, the per-step counter for
+    chat/action modes)."""
     action = resolve_lifecycle_action(
-        state=_State(turns_in_stage=6),
-        mode_id="default",
-        mode_yield_policy=YieldPolicy(),
+        state=_State(turns_in_stage=10),
+        mode_id="markdown",
+        mode_yield_policy=YieldPolicy(allowed=True),
         settings=LifecycleResolverSettings(stage_nudge_cap=6),
-        is_workflow=False,
     )
+    assert isinstance(action, YieldAction)
+    assert "markdown" in action.context
+
+
+def test_stage_cap_ignored_below_cap() -> None:
+    action = resolve_lifecycle_action(
+        state=_State(turns_in_stage=5),
+        mode_id="ponder",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(stage_nudge_threshold=4, stage_nudge_cap=6),
+    )
+    # At 5 with threshold 4: the soft nudge fires, not the cap.
     assert isinstance(action, ContinueAction)
+    assert action.nudge != ""
 
 
 # ── Stuck-in-stage threshold (soft nudge) ───────────────────────────────────
@@ -276,7 +290,6 @@ def test_stage_threshold_emits_continue_with_nudge() -> None:
         mode_id="ponder",
         mode_yield_policy=YieldPolicy(),
         settings=LifecycleResolverSettings(stage_nudge_threshold=4, stage_nudge_cap=6),
-        is_workflow=True,
     )
     assert isinstance(action, ContinueAction)
     assert action.nudge != ""
@@ -475,76 +488,20 @@ def test_budget_exhausted_not_triggered_when_false() -> None:
     assert isinstance(action, ContinueAction)
 
 
-# ── Stuck-in-chat-mode cap (2026-08-05) ─────────────────────────────────────
-
-
-def test_chat_stuck_mode_cap_forces_yield_for_routable_chat_mode() -> None:
-    """A chat mode with routing targets that doesn't advance past
-    ``chat_stuck_mode_cap`` iterations yields instead of burning the
-    global iteration budget."""
-    action = resolve_lifecycle_action(
-        state=_State(step_iteration=10, has_routing_targets=True),
-        mode_id="markdown",
-        mode_yield_policy=YieldPolicy(allowed=True),
-        settings=LifecycleResolverSettings(chat_stuck_mode_cap=10),
-        is_workflow=False,
-    )
-    assert isinstance(action, YieldAction)
-    assert "10 iterations" in action.question
-    assert "markdown" in action.context
-
-
-def test_chat_stuck_mode_cap_forces_finish_for_action_mode_without_escape() -> None:
-    """An action mode that forbids yield and names no fallback finishes."""
-    action = resolve_lifecycle_action(
-        state=_State(step_iteration=10, has_routing_targets=True),
-        mode_id="coding",
-        mode_yield_policy=YieldPolicy(allowed=False, fallback_mode=""),
-        settings=LifecycleResolverSettings(chat_stuck_mode_cap=10),
-        is_workflow=False,
-    )
-    assert isinstance(action, FinishAction)
-    assert action.strip_tools is True
-    assert "10 iterations" in action.reason
-
-
-def test_chat_stuck_mode_cap_ignored_for_mode_without_routing_targets() -> None:
-    """A single-mode chat turn with no routing targets is bounded only by
-    the global iteration cap, not the stuck-in-chat-mode guard."""
-    action = resolve_lifecycle_action(
-        state=_State(step_iteration=10, has_routing_targets=False),
-        mode_id="discuss",
-        mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(chat_stuck_mode_cap=10),
-        is_workflow=False,
-    )
-    assert isinstance(action, ContinueAction)
-
-
-def test_chat_stuck_mode_cap_ignored_for_workflow_mode() -> None:
-    """Workflow modes use the stage_nudge_cap, not the chat-mode guard."""
-    action = resolve_lifecycle_action(
-        state=_State(step_iteration=10, turns_in_stage=1, has_routing_targets=True),
-        mode_id="ponder",
-        mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(chat_stuck_mode_cap=10, stage_nudge_cap=6),
-        is_workflow=True,
-    )
-    assert isinstance(action, ContinueAction)
-
-
-def test_chat_stuck_mode_threshold_emits_continue_with_nudge() -> None:
-    """Below the cap, the threshold emits an advisory nudge."""
-    action = resolve_lifecycle_action(
-        state=_State(step_iteration=6, has_routing_targets=True),
-        mode_id="markdown",
-        mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(
-            chat_stuck_mode_threshold=6, chat_stuck_mode_cap=10
-        ),
-        is_workflow=False,
-    )
-    assert isinstance(action, ContinueAction)
-    assert action.nudge != ""
-    assert "transition_stage" in action.nudge
-    assert "yield" in action.nudge
+# ── Stuck-in-chat-mode cap (2026-08-05, subsumed by the unified guard) ─────
+#
+# The chat-stuck guards were deleted in the Phase-2 unification: the resolver
+# now reads ONE counter (``turns_in_stage``, fed by the loop from the workflow
+# session for workflow modes and from the per-step counter for chat/action
+# modes) and applies ONE threshold/cap pair to every mode kind. The cases the
+# chat-stuck block covered map onto the unified guard as follows:
+#
+# - routable chat mode past the cap → ``test_stage_cap_fires_for_chat_mode_too``
+# - action mode without escape → ``test_stage_cap_forces_finish_for_action_mode_without_escape``
+# - below the cap → ``test_stage_threshold_emits_continue_with_nudge``
+# - single-mode chat turn (no transitions) → the counter keeps rising, so the
+#   unified cap bounds it at ``stage_nudge_cap``; the global iteration cap is
+#   the ultimate ceiling either way.
+#
+# Nothing here needs a chat-specific settings pair; ``chat_stuck_mode_cap`` /
+# ``chat_stuck_mode_threshold`` are deleted from ``kernel.config.Settings``.
