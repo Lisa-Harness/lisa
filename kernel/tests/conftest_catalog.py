@@ -105,7 +105,7 @@ def _make_catalog_mcp_config(*, log_path: Path) -> MCPClientConfig:
         env={
             "SDK_CONTENT_ROOTS": ";".join(str(r) for r in content_roots),
             "LISA_SESSION_PROVIDER_SELECTIONS": (
-                '{"modes":{"default":"lisa-pack-core"},'
+                '{"modes":{"default":"lisa-pack-core","read":"lisa-pack-core"},'
                 '"tools":{"web_search":"lisa-pack-brave-search"}}'
             ),
             "LISA_MCP_LOG_PATH": str(log_path),
