@@ -963,8 +963,8 @@ name = "lisa-kernel"
 version = "0.1.0"
 source = { editable = "kernel" }
 dependencies = [
+    { name = "httpx" },
     { name = "mcp" },
-    { name = "openai" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
     { name = "pydantic" },
@@ -988,8 +988,8 @@ memory = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "mcp", specifier = ">=2.0.0" },
-    { name = "openai", specifier = ">=1.59.0" },
     { name = "opentelemetry-api", specifier = ">=1.40.0,<2.0.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.40.0,<2.0.0" },
     { name = "pydantic", specifier = ">=2.7.0" },
@@ -1187,6 +1187,7 @@ dependencies = [
     { name = "diskcache" },
     { name = "httpx" },
     { name = "lisa-kernel" },
+    { name = "openai" },
     { name = "pydantic" },
     { name = "sqlite-vec" },
     { name = "wcmatch" },
@@ -1206,6 +1207,7 @@ requires-dist = [
     { name = "diskcache", specifier = ">=5.6" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "lisa-kernel", editable = "kernel" },
+    { name = "openai", specifier = ">=1.59.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
