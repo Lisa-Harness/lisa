@@ -186,13 +186,20 @@ class _TurnState:
     handoff, a sequential chain, or no gap at all."""
     pending_planned_handoff: str = ""
     """A ``target_stage_id`` produced by a planner action mode's entry
-    operation (e.g. ``plan_workflow``) during a mid-turn handoff. When
-    set, the turn loop synthesizes a ``transition_stage`` tool call for
-    this target at the top of the next iteration — before calling the
-    model — so the kernel drives the next handoff deterministically
-    instead of begging the model to call ``transition_stage`` (the
-    2026-07-28 stall: the model in ``plan`` mode read the plan result
-    and stopped). Cleared after the synthesized dispatch."""
+    operation (e.g. ``plan_workflow``) — either at Phase 1 (turn start) or
+    during a mid-turn handoff. When set, the turn loop synthesizes a
+    ``transition_stage`` tool call for this target at the top of the next
+    iteration — before calling the model — so the kernel drives the next
+    handoff deterministically instead of begging the model to call
+    ``transition_stage`` (the 2026-07-28 stall: the model in ``plan`` mode
+    read the plan result and stopped). Cleared after the synthesized
+    dispatch."""
+    plan_prefix: str = ""
+    """The rendered plan block (``## Plan ...``) staged by the Phase-1
+    planner path when the planner returned a steps array. Prepended to the
+    turn's final content so the user sees the plan before the first step's
+    output — the in-loop replacement for the deleted recursive call's
+    ``step_result.response_text`` prepend."""
     plan_failed: bool = False
     """True when a planner action mode's entry operation returned an empty
     ``target_stage_id`` (parse failure, model error, no wiring). Once set,
