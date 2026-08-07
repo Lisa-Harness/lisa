@@ -25,7 +25,7 @@ Design constraints (mirroring the codebase conventions):
 - No compat: this is the hard cutover from the guard collage to one resolver.
   The guard constants (``stage_nudge_threshold``, ``stage_nudge_cap``,
   ``per_step_max_iterations``, ``per_step_max_tool_calls``,
-  ``forced_fork_non_fork_tool_cap``, ``forced_transition_non_transition_tool_cap``, ``duplicate_hint_limit``,
+  ``forced_action_non_compliant_cap``, ``duplicate_hint_limit``,
   ``hint_cycle_min_len``, ``hint_override_limit``, ``max_handoffs_per_turn``)
   remain on ``kernel.config.Settings`` but their semantics flip from
   "force a silent final" to "force a :class:`YieldAction` or
@@ -139,9 +139,10 @@ class LifecycleResolverSettings:
     per_step_max_tool_calls: int = 12
     stage_nudge_threshold: int = 4
     stage_nudge_cap: int = 6
-    # Forced-fork/transition enforcer caps (Phase 4 extension).
-    forced_fork_non_fork_tool_cap: int = 3
-    forced_transition_non_transition_tool_cap: int = 3
+    # Unified forced-action enforcer cap (Phase 5): non-compliant tool
+    # dispatches before the kernel synthesizes the expected fork/transition
+    # call itself.
+    forced_action_non_compliant_cap: int = 3
     max_handoffs_per_turn: int = 5
 
 
@@ -200,19 +201,16 @@ class _TurnStateView:
     # the boolean). True when TurnBudget tool-call / token / wall-time
     # limits are exceeded.
     budget_exhausted: bool = False
-    # Forced-fork enforcer state: when non-None, the kernel has a
-    # deterministic fork target mode-id list the model refused to call
-    # the ``fork`` operation for. ``non_fork_tool_dispatches`` counts
-    # consecutive non-``fork`` tool dispatches since the target was set.
-    # The enforcer itself runs in ``turn_runner.py``'s tool-dispatch loop
-    # (it synthesizes a ``fork`` operation call); this field is carried
-    # for diagnostic visibility only.
-    forced_fork_target: list[str] | None = None
-    non_fork_tool_dispatches: int = 0
-    # Forced-transition enforcer state: mirrors forced-fork for any
-    # single-handoff routing target (``plan``, ``search``, ``remember`` …).
-    forced_transition_target: str = ""
-    non_transition_tool_dispatches: int = 0
+    # Unified forced-action enforcer view (Phase 5): a comma-joined
+    # target string for a pending deterministic routing decision
+    # (``fork:a,b`` for a fan-out, ``plan``/``search``/… for a single
+    # handoff) plus the count of consecutive tool dispatches that were
+    # not the expected tool. The enforcer itself runs in
+    # ``turn_runner.py``'s tool-dispatch loop (it synthesizes the
+    # ``fork``/``transition_stage`` call); these fields are carried for
+    # diagnostic visibility only.
+    forced_action_target: str = ""
+    forced_action_non_compliant_dispatches: int = 0
     # Handoff-loop backstop: total mid-turn mode handoffs this turn.
     handoff_count: int = 0
 
@@ -432,18 +430,24 @@ def resolve_lifecycle_action(
         )
 
     # ── 2d. Forced-transition enforcer (Phase 4) ───────────────────────
-    # Mirrors the forced-fork enforcer for any single-handoff routing
-    # target (``plan``, ``search``, ``remember`` …). Bounds the pre-handoff
-    # token burn to roughly ``cap x per-iteration-tokens`` instead of the
-    # full iteration budget. Generalized 2026-08-07 from the plan-only
-    # enforcer so a weak model that refuses to call ``transition_stage``
-    # for ANY next step is forced after the cap.
+    # Bounds the pre-handoff token burn to roughly
+    # ``cap x per-iteration-tokens`` instead of the full iteration budget
+    # when the model refuses to call ``transition_stage`` for a hinted
+    # single-handoff target (``plan``, ``search``, ``remember`` …).
+    # Generalized 2026-08-07 from the plan-only enforcer so a weak model
+    # that refuses to call ``transition_stage`` for ANY next step is
+    # forced after the cap. The fork (multi-target) shape has no resolver
+    # guard — the dispatch-loop enforcer is the single synthesis site
+    # (Phase 5; the pre-Phase-5 fork guard here and the loop enforcer
+    # were dual paths for one decision).
     if (
-        state.forced_transition_target
-        and state.non_transition_tool_dispatches >= settings.forced_transition_non_transition_tool_cap
+        state.forced_action_target
+        and not state.forced_action_target.startswith("fork:")
+        and state.forced_action_non_compliant_dispatches
+        >= settings.forced_action_non_compliant_cap
     ):
         return TransitionAction(
-            target_mode_id=state.forced_transition_target,
+            target_mode_id=state.forced_action_target,
             rationale=(
                 "kernel-forced transition handoff: the model did not call "
                 "transition_stage after the routing hint named a target."

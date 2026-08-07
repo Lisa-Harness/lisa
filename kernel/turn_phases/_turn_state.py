@@ -35,6 +35,40 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class ForcedAction:
+    """A deterministic routing decision the kernel will execute itself if
+    the model refuses to.
+
+    One enforcer for both shapes (Phase 5): a fan-out (``kind == "fork"``,
+    several targets, expected tool ``fork``) or a single handoff
+    (``kind == "transition"``, one target, expected tool
+    ``transition_stage``). The dispatch loop increments
+    ``non_compliant_dispatches`` on every tool call that is not
+    ``expected_tool``; at ``forced_action_non_compliant_cap`` the kernel
+    synthesizes the call itself. The kind is *derived* from the target
+    list — ``targets`` is the only state.
+    """
+
+    targets: list[str]
+    non_compliant_dispatches: int = 0
+
+    @property
+    def kind(self) -> str:
+        """``"fork"`` for a multi-target fan-out, else ``"transition"``."""
+        return "fork" if len(self.targets) > 1 else "transition"
+
+    @property
+    def expected_tool(self) -> str:
+        """The tool the model is expected to call for this routing shape."""
+        return "fork" if self.kind == "fork" else "transition_stage"
+
+    @property
+    def target_csv(self) -> str:
+        """The targets as a comma-joined string (fork payload building)."""
+        return ",".join(self.targets)
+
+
+@dataclass
 class _TurnState:
     """Mutable per-turn counters and accumulators.
 
@@ -177,13 +211,6 @@ class _TurnState:
     ``duplicate_hint_count`` never increments. When a cycle is detected
     the hint is suppressed so the ``handoff_count`` backstop fires
     immediately instead of wasting model round-trips on the oscillation."""
-    forced_fork_target: list[str] | None = None
-    """The deterministic fork target mode-id list the kernel will execute
-    itself if the model refuses to call the ``fork`` operation.
-    Populated when a fork routing hint is active (see
-    ``_compute_fork_targets``); consumed by the forced-fork enforcer in
-    the turn loop. ``None`` when the routing decision is a single
-    handoff, a sequential chain, or no gap at all."""
     pending_planned_handoff: str = ""
     """A ``target_stage_id`` produced by a planner action mode's entry
     operation (e.g. ``plan_workflow``) — either at Phase 1 (turn start) or
@@ -227,36 +254,20 @@ class _TurnState:
     has its own routing judgment, and continuing to hint is noise the model
     rationally routes around (the 2026-07-30 plan→ponder→markdown bounce:
     the hint said ``discuss`` twice, the model went to ``ponder`` twice)."""
-    non_fork_tool_dispatches: int = 0
-    """Count of tool dispatches this turn that were NOT the ``fork``
-    operation, while a ``forced_fork_target`` is set. The enforcer fires
-    when this reaches ``forced_fork_non_fork_tool_cap``
-    (``kernel.config.Settings``)."""
-    forced_transition_target: str = ""
-    """The mode_id the kernel will hand off to itself if the model
-    refuses to call ``transition_stage`` after a routing hint names a
-    non-fork target. Populated when the turn-start or post-handoff
-    routing hint names any routable target (``plan``, ``search``,
-    ``remember`` …) that is not a fork fan-out; consumed by the
-    forced-transition enforcer in the turn loop. Empty when the
-    routing decision is a fork, no gap, or the hint is suppressed.
-    Mirrors ``forced_fork_target`` for the single-handoff path.
-
-    Generalized 2026-08-07 from ``forced_plan_target`` (which only
-    captured the ``plan`` escalation target). The 2026-08-07
-    ``plan → remember → search`` stall: the post-handoff hint named
-    ``search`` as the next step, but the weak model in ``remember``
-    returned text without calling ``transition_stage``. The old
-    enforcer only fired for ``plan`` targets, so the turn ended with
-    the model's "budget exhausted" prose and ``search`` never ran.
-    Capturing ANY non-fork routing target lets the enforcer
-    synthesize the handoff for every chained step, not just plan."""
-    non_transition_tool_dispatches: int = 0
-    """Count of tool dispatches this turn that were NOT
-    ``transition_stage`` while a ``forced_transition_target`` is set.
-    The enforcer fires when this reaches
-    ``forced_transition_non_transition_tool_cap``
-    (``kernel.config.Settings``)."""
+    forced_action: ForcedAction | None = None
+    """The one forced-action enforcer (Phase 5). Set whenever a routing
+    hint encodes a deterministic routing decision the kernel will execute
+    itself if the model refuses: a ``fork:<csv>`` target (kind ``fork``)
+    or any single-handoff target — ``plan``, ``search``, ``remember`` …
+    (kind ``transition``). The dispatch loop increments
+    ``non_compliant_dispatches`` on every tool call that is not the
+    expected tool (``fork`` / ``transition_stage``); at
+    ``forced_action_non_compliant_cap`` the kernel synthesizes the call
+    itself. ``None`` when there is no pending deterministic routing
+    decision. Replaces the pre-Phase-5 ``forced_fork_target`` /
+    ``non_fork_tool_dispatches`` / ``forced_transition_target`` /
+    ``non_transition_tool_dispatches`` quartet — two enforcers that
+    differed only in tool name and target arity."""
     called_tool_names: set[str] = field(default_factory=set)
     """Names of every tool actually dispatched this turn (operations,
     pack tools, MCP tools). Used by the fork-child validator to confirm

@@ -168,10 +168,7 @@ def apply_routing(
     state.step_tool_calls = 0
     # 2. Forced-action enforcer state: clear so a completed handoff does not
     # re-fire on the next iteration.
-    state.forced_fork_target = None
-    state.non_fork_tool_dispatches = 0
-    state.forced_transition_target = ""
-    state.non_transition_tool_dispatches = 0
+    state.forced_action = None
     # 3. Coordinator decision: persist for /proceed resumption.
     save_route_decision(
         hooks,

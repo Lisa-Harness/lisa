@@ -34,10 +34,11 @@ class _State:
     turns_in_stage: int = 0
     # Phase 4 extension fields (defaults match _TurnStateView).
     budget_exhausted: bool = False
-    forced_fork_target: str = ""
-    non_fork_tool_dispatches: int = 0
-    forced_transition_target: str = ""
-    non_transition_tool_dispatches: int = 0
+    # Unified forced-action enforcer view (Phase 5): comma-joined target
+    # string (``fork:a,b`` fan-out or a single-handoff mode id) plus the
+    # count of consecutive non-compliant tool dispatches.
+    forced_action_target: str = ""
+    forced_action_non_compliant_dispatches: int = 0
     handoff_count: int = 0
 
 
@@ -350,60 +351,27 @@ def test_handoff_loop_backstop_not_triggered_within_cap() -> None:
     assert isinstance(action, ContinueAction)
 
 
-# ── Phase 4: Forced-fork enforcer ───────────────────────────────────────────
-
-
-def test_forced_fork_enforcer_fires_at_cap() -> None:
-    """When the forced-fork target is set and non-fork dispatches hit the cap,
-    force a TransitionAction to the fork target."""
-    action = resolve_lifecycle_action(
-        state=_State(forced_fork_target="fork:search,markdown", non_fork_tool_dispatches=3),
-        mode_id="default",
-        mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(forced_fork_non_fork_tool_cap=3),
-    )
-    assert isinstance(action, TransitionAction)
-    assert action.forced
-    assert action.target_mode_id == "fork:search,markdown"
-
-
-def test_forced_fork_enforcer_not_triggered_below_cap() -> None:
-    """Below the cap, the enforcer does not fire."""
-    action = resolve_lifecycle_action(
-        state=_State(forced_fork_target="fork:search,markdown", non_fork_tool_dispatches=2),
-        mode_id="default",
-        mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(forced_fork_non_fork_tool_cap=3),
-    )
-    assert isinstance(action, ContinueAction)
-
-
-def test_forced_fork_enforcer_not_triggered_without_target() -> None:
-    """No forced-fork target means no enforcer."""
-    action = resolve_lifecycle_action(
-        state=_State(forced_fork_target="", non_fork_tool_dispatches=10),
-        mode_id="default",
-        mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(forced_fork_non_fork_tool_cap=3),
-    )
-    assert isinstance(action, ContinueAction)
-
-
-# ── Phase 4: Forced-plan enforcer ───────────────────────────────────────────
+# ── Phase 5: Unified forced-action enforcer ────────────────────────────
+#
+# One enforcer drives both shapes (fork fan-out and single-handoff
+# transition); the resolver guard fires only for the transition shape. The
+# fork shape is enforced solely by the dispatch-loop enforcer in
+# ``turn_runner.py`` — a pre-Phase-5 dual path (resolver guard AND loop
+# enforcer for one decision) was collapsed into the single loop site.
 
 
 def test_forced_transition_enforcer_fires_at_cap() -> None:
-    """When the forced-transition target is set and non-transition dispatches
-    hit the cap, force a TransitionAction to the target."""
+    """When the forced-action target is a single handoff and non-compliant
+    dispatches hit the cap, force a TransitionAction to the target."""
     action = resolve_lifecycle_action(
         state=_State(
-            forced_transition_target="plan",
-            non_transition_tool_dispatches=3,
+            forced_action_target="plan",
+            forced_action_non_compliant_dispatches=3,
         ),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
         settings=LifecycleResolverSettings(
-            forced_transition_non_transition_tool_cap=3,
+            forced_action_non_compliant_cap=3,
         ),
     )
     assert isinstance(action, TransitionAction)
@@ -420,13 +388,13 @@ def test_forced_transition_enforcer_fires_for_non_plan_target() -> None:
     """
     action = resolve_lifecycle_action(
         state=_State(
-            forced_transition_target="search",
-            non_transition_tool_dispatches=3,
+            forced_action_target="search",
+            forced_action_non_compliant_dispatches=3,
         ),
         mode_id="remember",
         mode_yield_policy=YieldPolicy(),
         settings=LifecycleResolverSettings(
-            forced_transition_non_transition_tool_cap=3,
+            forced_action_non_compliant_cap=3,
         ),
     )
     assert isinstance(action, TransitionAction)
@@ -438,13 +406,51 @@ def test_forced_transition_enforcer_not_triggered_below_cap() -> None:
     """Below the cap, the enforcer does not fire."""
     action = resolve_lifecycle_action(
         state=_State(
-            forced_transition_target="plan",
-            non_transition_tool_dispatches=2,
+            forced_action_target="plan",
+            forced_action_non_compliant_dispatches=2,
         ),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
         settings=LifecycleResolverSettings(
-            forced_transition_non_transition_tool_cap=3,
+            forced_action_non_compliant_cap=3,
+        ),
+    )
+    assert isinstance(action, ContinueAction)
+
+
+def test_forced_action_fork_shape_not_resolver_enforced() -> None:
+    """A ``fork:``-shaped forced action never fires the resolver guard.
+
+    Replaces the pre-Phase-5 ``test_forced_fork_enforcer_fires_at_cap``
+    (a standing baseline failure): that test expected a resolver
+    ``TransitionAction`` for a fork target, but the fork enforcer has
+    always lived in the turn_runner dispatch loop — it synthesizes a
+    ``fork`` operation call, not a ``transition_stage``. The resolver now
+    explicitly excludes the fork shape; the loop enforcer is the single
+    synthesis site for both shapes.
+    """
+    action = resolve_lifecycle_action(
+        state=_State(
+            forced_action_target="fork:search,markdown",
+            forced_action_non_compliant_dispatches=3,
+        ),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(
+            forced_action_non_compliant_cap=3,
+        ),
+    )
+    assert isinstance(action, ContinueAction)
+
+
+def test_forced_action_enforcer_not_triggered_without_target() -> None:
+    """No forced action means no enforcer, even above the cap."""
+    action = resolve_lifecycle_action(
+        state=_State(forced_action_target="", forced_action_non_compliant_dispatches=10),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(
+            forced_action_non_compliant_cap=3,
         ),
     )
     assert isinstance(action, ContinueAction)

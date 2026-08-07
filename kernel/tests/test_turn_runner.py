@@ -4319,8 +4319,7 @@ def test_turn_state_has_loop_guard_fields() -> None:
     assert state.last_hint_text == ""
     assert state.duplicate_hint_count == 0
     assert state.hint_target_history == []
-    assert state.forced_transition_target == ""
-    assert state.non_transition_tool_dispatches == 0
+    assert state.forced_action is None
 
 
 @pytest.mark.asyncio
@@ -4328,7 +4327,7 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
     """When a plan-escalation routing hint is active and the model calls
     non-``transition_stage`` tools instead of handing off to ``plan``,
     the kernel forces the plan handoff after
-    ``forced_transition_non_transition_tool_cap`` non-transition dispatches.
+    ``forced_action_non_compliant_cap`` non-transition dispatches.
 
     Regression for the 2026-07-30 incident: the model burned 15
     iterations of tool-cycling in ``default`` mode (≈400k tokens) before
@@ -4382,7 +4381,7 @@ async def test_forced_plan_enforcer_when_model_refuses_to_hand_off() -> None:
             # transition_stage call. Return harmless text.
             return _StubCompletion(content="Planning...")
         # default mode: the model does read-only fetches instead of
-        # handing off to plan. After forced_transition_non_transition_tool_cap
+        # handing off to plan. After forced_action_non_compliant_cap
         # (default 2) non-transition dispatches, the kernel forces the
         # plan handoff.
         return _StubCompletion(
