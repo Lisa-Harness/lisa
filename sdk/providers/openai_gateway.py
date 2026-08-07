@@ -38,6 +38,97 @@ from kernel.token_usage import coerce_non_negative_int
 # ── Message normalization ────────────────────────────────────────────────
 
 
+def _contiguous_tool_result_ids(messages: ChatMessages) -> set[str]:
+    """Return ids of ``role: tool`` results in contiguous post-assistant blocks.
+
+    For each assistant message with ``tool_calls``, collects the
+    ``tool_call_id``s of the contiguous ``role: tool`` block immediately
+    following it (stopping at the first non-tool message). A result that
+    appears after an intervening non-tool message is NOT included — strict
+    OpenAI backends reject such non-contiguous pairings.
+    """
+    contiguous_ids: set[str] = set()
+    for index, message in enumerate(messages):
+        if str(message.get("role", "") or "") != "assistant":
+            continue
+        raw_tool_calls = message.get("tool_calls")
+        if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
+            continue
+        for follower in messages[index + 1 :]:
+            if str(follower.get("role", "") or "") != "tool":
+                break
+            contiguous_ids.add(str(follower.get("tool_call_id", "") or ""))
+    return contiguous_ids
+
+
+def _retained_assistant_tool_call_ids(messages: ChatMessages) -> set[str]:
+    """Return every ``id`` referenced by a retained assistant ``tool_calls`` list."""
+    retained_ids: set[str] = set()
+    for message in messages:
+        if str(message.get("role", "") or "") != "assistant":
+            continue
+        raw_tool_calls = message.get("tool_calls")
+        if not isinstance(raw_tool_calls, list):
+            continue
+        for tool_call in raw_tool_calls:
+            if isinstance(tool_call, dict):
+                retained_ids.add(str(tool_call.get("id", "") or ""))
+    return retained_ids
+
+
+def _enforce_tool_result_contiguity(messages: ChatMessages) -> ChatMessages:
+    """Prune assistant ``tool_calls`` whose results are not contiguous.
+
+    Strict OpenAI-compatible backends (Azure OpenAI, OpenAI) require every
+    ``role: tool`` result for an assistant's ``tool_calls`` to immediately
+    follow that assistant message. A non-tool message (e.g. a ``user``
+    nudge the turn loop appends mid-batch after a ``transition_stage``
+    handoff) between the assistant ``tool_calls`` and a later tool result
+    breaks the pairing and is rejected with ``An assistant message with
+    'tool_calls' must be followed by tool messages responding to each
+    'tool_call_id'`` (a 400 that kills the whole turn, the 2026-08-06
+    ``plan → okf`` incident).
+
+    The ``answered_ids`` prune in :func:`normalize_openai_messages` only
+    checks a result exists ANYWHERE; it does not enforce ordering. This
+    pass computes the contiguous ``role: tool`` block immediately after
+    each assistant message and prunes any retained ``tool_call`` whose id
+    is NOT in that block (converting the assistant turn to plain text),
+    then drops the now-orphaned trailing tool results so every backend
+    accepts the payload regardless of which mid-batch break path left the
+    history interleaved.
+    """
+    contiguous_answered_ids = _contiguous_tool_result_ids(messages)
+    if not contiguous_answered_ids:
+        return messages
+    for message in messages:
+        if str(message.get("role", "") or "") != "assistant":
+            continue
+        raw_tool_calls = message.get("tool_calls")
+        if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
+            continue
+        contiguous_kept = [
+            tool_call
+            for tool_call in raw_tool_calls
+            if not isinstance(tool_call, dict)
+            or str(tool_call.get("id", "") or "") in contiguous_answered_ids
+        ]
+        if contiguous_kept:
+            message["tool_calls"] = contiguous_kept
+        else:
+            message.pop("tool_calls", None)
+    # Drop tool results whose id is no longer referenced by any retained
+    # assistant tool_call (the calls pruned above). Strict backends reject
+    # orphaned tool results too.
+    retained_assistant_ids = _retained_assistant_tool_call_ids(messages)
+    return [
+        message
+        for message in messages
+        if str(message.get("role", "") or "") != "tool"
+        or str(message.get("tool_call_id", "") or "") in retained_assistant_ids
+    ]
+
+
 def normalize_openai_messages(
     messages: ChatMessages,
     *,
@@ -157,6 +248,9 @@ def normalize_openai_messages(
             else:
                 normalized_message.pop("tool_calls", None)
         normalized_messages.append(normalized_message)
+
+    normalized_messages = _enforce_tool_result_contiguity(normalized_messages)
+
     # When signature-less tool_calls are pruned, the matching ``role: tool``
     # result messages become orphaned (no assistant tool_call references
     # them). Gemini does not reject orphaned tool results outright, but
