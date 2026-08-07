@@ -466,7 +466,7 @@ async def test_authoritative_mode_empty_tool_ids_means_no_mcp_tools() -> None:
 
 
 def test_prune_model_tool_schemas_dedupes_and_filters_non_workflow_transition() -> None:
-    """Final prune pass removes duplicates and transition tool in non-workflow modes."""
+    """Final prune pass removes duplicates and the transition tool when not advertised."""
     mode_config = SimpleNamespace(
         mode_id="default",
         allowed_tool_ids=[],
@@ -485,7 +485,7 @@ def test_prune_model_tool_schemas_dedupes_and_filters_non_workflow_transition() 
     pruned, stats = _prune_model_tool_schemas(
         tool_schemas=schemas,
         mode_config=mode_config,
-        is_workflow=False,
+        allow_transition_stage=False,
     )
 
     names = [schema["function"]["name"] for schema in pruned]

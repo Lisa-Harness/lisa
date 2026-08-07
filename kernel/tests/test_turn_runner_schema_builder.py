@@ -253,7 +253,7 @@ def test_prune_deduplicates_same_tool_name() -> None:
     pruned, stats = _prune_model_tool_schemas(
         tool_schemas=schemas,
         mode_config=mode_config,
-        is_workflow=False,
+        allow_transition_stage=False,
     )
     assert len(pruned) == 1
     assert stats["dropped_duplicate"] == 1
@@ -266,7 +266,7 @@ def test_prune_drops_invalid_schemas_without_function_name() -> None:
     pruned, stats = _prune_model_tool_schemas(
         tool_schemas=schemas,
         mode_config=mode_config,
-        is_workflow=False,
+        allow_transition_stage=False,
     )
     assert len(pruned) == 0
     assert stats["dropped_invalid"] == 2
@@ -279,36 +279,33 @@ def test_prune_excludes_transition_tool_for_non_workflow_non_routing() -> None:
     pruned, stats = _prune_model_tool_schemas(
         tool_schemas=schemas,
         mode_config=mode_config,
-        is_workflow=False,
-        has_routing_targets=False,
+        allow_transition_stage=False,
     )
     assert len(pruned) == 0
     assert stats["dropped_disallowed"] == 1
 
 
 def test_prune_includes_transition_tool_for_workflow() -> None:
-    """transition_stage is kept when is_workflow=True."""
+    """transition_stage is kept when allow_transition_stage=True."""
     mode_config = _make_mode_config(tools_authoritative=False)
     schemas = [_make_tool_schema("transition_stage")]
     pruned, _ = _prune_model_tool_schemas(
         tool_schemas=schemas,
         mode_config=mode_config,
-        is_workflow=True,
-        has_routing_targets=False,
+        allow_transition_stage=True,
     )
     assert len(pruned) == 1
     assert _tool_schema_name(pruned[0]) == "transition_stage"
 
 
 def test_prune_includes_transition_tool_for_routing_targets() -> None:
-    """transition_stage is kept when has_routing_targets=True (even if not workflow)."""
+    """transition_stage is kept when allow_transition_stage=True (edges or routing)."""
     mode_config = _make_mode_config(tools_authoritative=False)
     schemas = [_make_tool_schema("transition_stage")]
     pruned, _ = _prune_model_tool_schemas(
         tool_schemas=schemas,
         mode_config=mode_config,
-        is_workflow=False,
-        has_routing_targets=True,
+        allow_transition_stage=True,
     )
     assert len(pruned) == 1
 
@@ -325,8 +322,7 @@ def test_prune_stats_track_all_categories() -> None:
     _, stats = _prune_model_tool_schemas(
         tool_schemas=schemas,
         mode_config=mode_config,
-        is_workflow=False,
-        has_routing_targets=False,
+        allow_transition_stage=False,
     )
     assert stats["input_count"] == 4
     assert stats["output_count"] == 1
@@ -345,7 +341,7 @@ def test_prune_respects_mode_allowlist_for_mcp_tools() -> None:
     pruned, stats = _prune_model_tool_schemas(
         tool_schemas=schemas,
         mode_config=mode_config,
-        is_workflow=False,
+        allow_transition_stage=False,
     )
     names = [_tool_schema_name(s) for s in pruned]
     assert "allowed_tool" in names
@@ -359,7 +355,7 @@ def test_prune_none_mode_config_passes_all() -> None:
     pruned, stats = _prune_model_tool_schemas(
         tool_schemas=schemas,
         mode_config=None,
-        is_workflow=False,
+        allow_transition_stage=False,
     )
     assert len(pruned) == 2
     assert stats["output_count"] == 2
@@ -408,7 +404,7 @@ async def test_rebuild_includes_transition_stage_for_chat_mode_with_routing_targ
     ``okf`` (a chat mode with routing targets). The model could not call
     ``transition_stage(markdown)`` and looped until the stuck-in-stage cap.
     The rebuild must mirror Phase-1 assembly: advertise the tool when
-    ``is_workflow_for_target OR has_routing_targets``.
+    the target has routing targets or stage edges.
     """
     from kernel.turn_phases import _tool_schemas as _ts
     from kernel.turn_runner import _rebuild_tool_schemas_for_mode
@@ -439,8 +435,6 @@ async def test_rebuild_includes_transition_stage_for_chat_mode_with_routing_targ
         "okf",
         mode_config,
         pool=_EmptyPool(),  # type: ignore[arg-type]
-        hooks=TurnHooks(),
-        is_workflow_for_target=False,
     )
     names = {_tool_schema_name(s) for s in schemas}
     assert "transition_stage" in names
@@ -480,8 +474,6 @@ async def test_rebuild_excludes_transition_stage_for_chat_mode_without_routing_t
         "discuss",
         mode_config,
         pool=_EmptyPool(),  # type: ignore[arg-type]
-        hooks=TurnHooks(),
-        is_workflow_for_target=False,
     )
     names = {_tool_schema_name(s) for s in schemas}
     assert "transition_stage" not in names
@@ -513,14 +505,12 @@ def _isolate_surface(monkeypatch: pytest.MonkeyPatch, routing: dict[str, list[st
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("mode_kind", "session_wired"),
-    [("workflow", True), ("workflow", False), ("chat", False), ("action", False)],
-    ids=["workflow-with-session", "workflow-no-session", "chat", "action"],
+    "mode_kind",
+    ["workflow", "chat", "action"],
 )
 async def test_rebuild_surface_is_identical_to_phase1_surface(
     monkeypatch: pytest.MonkeyPatch,
     mode_kind: str,
-    session_wired: bool,
 ) -> None:
     """The post-handoff rebuild produces the Phase-1 surface for the same mode.
 
@@ -528,7 +518,8 @@ async def test_rebuild_surface_is_identical_to_phase1_surface(
     wrapper over ``build_tool_surface`` and must not add, drop, or reorder a
     single schema. If this fails, the two assembly paths have drifted again —
     the class of bug behind the 2026-08-06 ``okf`` loop and the latent
-    yield-drop.
+    yield-drop. Phase 6c: the surface no longer depends on session/position
+    wiring — only on the mode config — so there is no session axis to vary.
     """
     from kernel.turn_runner import _rebuild_tool_schemas_for_mode, build_tool_surface
 
@@ -545,14 +536,11 @@ async def test_rebuild_surface_is_identical_to_phase1_surface(
         mode_config,
         pool=_EmptyPool(),  # type: ignore[arg-type]
         yield_policy=policy,
-        workflow_position_available=session_wired,
     )
     rebuilt = await _rebuild_tool_schemas_for_mode(
         "parity",
         mode_config,
         pool=_EmptyPool(),  # type: ignore[arg-type]
-        hooks=TurnHooks(),
-        is_workflow_for_target=session_wired,
         yield_policy=policy,
     )
     assert rebuilt == phase1_schemas
@@ -594,8 +582,6 @@ async def test_rebuild_advertises_yield_identically_to_phase1(
         "chatty",
         mode_config,
         pool=_EmptyPool(),  # type: ignore[arg-type]
-        hooks=TurnHooks(),
-        is_workflow_for_target=False,
         yield_policy=policy,
     )
     names = {_tool_schema_name(s) for s in schemas}

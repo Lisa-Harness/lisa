@@ -133,7 +133,6 @@ def test_should_checkpoint_disabled_tuning() -> None:
         _should_checkpoint(
             tuning=CheckpointTuning(enabled=False),
             transitioned_to="next_stage",
-            is_workflow=True,
             hooks=hooks,
         )
         is False
@@ -147,7 +146,6 @@ def test_should_checkpoint_none_tuning() -> None:
         _should_checkpoint(
             tuning=None,
             transitioned_to="next_stage",
-            is_workflow=True,
             hooks=hooks,
         )
         is False
@@ -161,7 +159,6 @@ def test_should_checkpoint_on_transition() -> None:
         _should_checkpoint(
             tuning=CheckpointTuning(enabled=True, on_stage_transition=True),
             transitioned_to="next_stage",
-            is_workflow=True,
             hooks=hooks,
         )
         is True
@@ -175,7 +172,6 @@ def test_should_checkpoint_transition_disabled() -> None:
         _should_checkpoint(
             tuning=CheckpointTuning(enabled=True, on_stage_transition=False),
             transitioned_to="next_stage",
-            is_workflow=True,
             hooks=hooks,
         )
         is False

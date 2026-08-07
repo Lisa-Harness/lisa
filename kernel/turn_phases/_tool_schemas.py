@@ -16,7 +16,7 @@ DESIGN — Re-exported by ``kernel.turn_runner``:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from kernel.function_tools import build_strict_openai_function_tool
 from kernel.ipsar_fsm import get_routing_targets, get_transition_tool_schema, get_yield_tool_schema
@@ -25,9 +25,6 @@ from kernel.operations.registry import build_operation_tool_schemas, get_operati
 from kernel.tools.mcp_client import MCPToolPool
 from kernel.tools.registry import get_tool_catalog
 from kernel.tools.schema_translator import mcp_tool_to_openai_function
-
-if TYPE_CHECKING:
-    from kernel.turn_runner import TurnHooks
 
 __all__ = [
     "_TRANSITION_TOOL_NAME",
@@ -136,8 +133,7 @@ def _prune_model_tool_schemas(
     *,
     tool_schemas: list[dict[str, Any]],
     mode_config: Any,
-    is_workflow: bool,
-    has_routing_targets: bool = False,
+    allow_transition_stage: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Apply one final model-facing prune pass over assembled tool schemas.
 
@@ -172,7 +168,7 @@ def _prune_model_tool_schemas(
         seen_names.add(name)
 
         if name == _TRANSITION_TOOL_NAME:
-            if is_workflow or has_routing_targets:
+            if allow_transition_stage:
                 pruned.append(schema)
             else:
                 dropped_disallowed += 1
@@ -233,7 +229,6 @@ async def build_tool_surface(
     *,
     pool: MCPToolPool,
     yield_policy: YieldPolicy,
-    workflow_position_available: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Build the complete model-facing tool surface for one mode.
 
@@ -248,9 +243,11 @@ async def build_tool_surface(
     The ``transition_stage`` / ``yield`` advertisement conditions are computed
     here — never passed in by callers:
 
-    - ``transition_stage`` is advertised when the mode is a workflow with a
-      wired position (intra-mode stage advancement) OR the mode has routing
-      targets (inter-mode handoffs).
+    - ``transition_stage`` is advertised when the mode's stage graph has
+      outgoing edges (intra-mode stage advancement) OR the mode has routing
+      targets (inter-mode handoffs). With synthesized stage graphs every
+      catalog mode has stages, so the edge check is what distinguishes a
+      real FSM from the single-stage fixed point.
     - ``yield`` is advertised when the resolved yield policy allows inline
       asks or names a fallback mode.
 
@@ -260,8 +257,6 @@ async def build_tool_surface(
         yield_policy: The yield policy resolved for this turn (the fork
             fan-out passes the mode's ``fork_yield_policy`` so children follow
             the background policy).
-        workflow_position_available: True when the host wired
-            ``hooks.workflow_position`` — a property of the turn, not the mode.
 
     Returns:
         ``(schemas, prune_stats)`` — the pruned OpenAI tool schemas and the
@@ -312,13 +307,14 @@ async def build_tool_surface(
     tool_schemas.extend(_build_in_process_tool_schemas(mode_config))
 
     # ── Lifecycle tools (transition_stage / yield) ──────────────────────
-    is_workflow = (
-        mode_config is not None
-        and mode_config.mode_kind == "workflow"
-        and workflow_position_available
+    has_stage_edges = (
+        any(bool(s.allowed_next_stages) for s in mode_config.stages.values())
+        if mode_config
+        else False
     )
     has_routing_targets = bool(get_routing_targets(mode_id)) if mode_config else False
-    if is_workflow or has_routing_targets:
+    allow_transition_stage = has_stage_edges or has_routing_targets
+    if allow_transition_stage:
         tool_schemas.extend(get_transition_tool_schema())
     if yield_policy.allowed or yield_policy.fallback_mode:
         tool_schemas.extend(get_yield_tool_schema())
@@ -327,8 +323,7 @@ async def build_tool_surface(
     return _prune_model_tool_schemas(
         tool_schemas=tool_schemas,
         mode_config=mode_config,
-        is_workflow=is_workflow,
-        has_routing_targets=has_routing_targets,
+        allow_transition_stage=allow_transition_stage,
     )
 
 
@@ -337,8 +332,6 @@ async def _rebuild_tool_schemas_for_mode(
     target_mode_config: Any,
     *,
     pool: MCPToolPool,
-    hooks: TurnHooks,
-    is_workflow_for_target: bool,
     yield_policy: YieldPolicy | None = None,
 ) -> list[dict[str, Any]]:
     """Rebuild the tool schema list for a new mode after a mid-turn handoff.
@@ -348,24 +341,15 @@ async def _rebuild_tool_schemas_for_mode(
     Runs no pre-turn operations and no input guard; the surface is identical
     to what Phase-1 assembly would produce for the same mode.
 
-    ``hooks`` is retained for signature compatibility but unused — the surface
-    depends only on the mode config, the pool, and the resolved yield policy.
-    ``is_workflow_for_target`` is retained for signature compatibility; the
-    caller computes it as ``mode_kind == "workflow" and
-    hooks.workflow_position is not None``, which is exactly the
-    ``workflow_position_available`` input the builder needs for a workflow
-    mode (for non-workflow modes the builder's own mode_kind check gates the
-    condition, so passing the flag through is correct for both cases).
     ``yield_policy`` must be the policy the caller already resolved for the
     target mode (via ``_resolve_yield_policy`` — override wins, else the
     mode's authored policy); when None the builder uses the empty default
     (inline asks allowed), matching the foreground default.
     """
-    del hooks  # Unused: the surface depends on mode config + pool only.
+    del target_mode_id  # The mode config carries the id; kept for call-site clarity.
     schemas, _stats = await build_tool_surface(
         target_mode_config,
         pool=pool,
         yield_policy=yield_policy if yield_policy is not None else YieldPolicy(),
-        workflow_position_available=is_workflow_for_target,
     )
     return schemas

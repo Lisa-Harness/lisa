@@ -1105,6 +1105,22 @@ def validate_workflow_mode(mode: WorkflowModeConfig) -> None:
             f"Mode '{mode.mode_id}' has unknown start stage '{mode.start_stage_id}'."
         )
 
+    # Workflow modes carry authored instructions at both levels — an empty
+    # body would silently run the model modeless/stageless. Enforced here
+    # (load time) so the turn loop can read both levels leniently: a mode
+    # that reached runtime is known to have bodies.
+    if not (mode.instruction_body or "").strip():
+        raise WorkflowValidationError(
+            f"Workflow mode '{mode.mode_id}' has an empty instruction_body in its "
+            "_mode.md — workflow modes require authored instructions."
+        )
+    for stage_id, stage in mode.stages.items():
+        if not (stage.instruction_body or "").strip():
+            raise WorkflowValidationError(
+                f"Mode '{mode.mode_id}' stage '{stage_id}' has an empty "
+                "instruction_body — workflow stages require authored instructions."
+            )
+
     terminal_stages = [stage for stage in mode.stages.values() if stage.terminal]
     if not terminal_stages:
         raise WorkflowValidationError(

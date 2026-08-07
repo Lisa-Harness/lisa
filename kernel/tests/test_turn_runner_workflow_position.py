@@ -305,24 +305,35 @@ async def test_adhoc_multistep_chain_creates_durable_instance() -> None:
         )
 
     assert saved_instances, "an ad-hoc WorkflowPosition must be created on the first handoff"
-    instance = saved_instances[0]
+    # Phase 6c: a bare turn-1 position is created at turn start (no steps);
+    # the compiled chain attaches to it at the first successful handoff.
+    # The chain assertions target the attach commit — the FIRST saved
+    # position carrying declared steps (later saves are the forced-action
+    # enforcer driving the remaining handoffs: search → coding → markdown).
+    chained = [p for p in saved_instances if p.declared_steps]
+    assert chained, "the deferred attach must commit the compiled steps at the first handoff"
+    instance = chained[0]
     assert instance.spawned_from == "adhoc"
     mode_ids = [s.mode_id for s in instance.declared_steps]
     assert mode_ids == ["search", "coding", "markdown"]
-    # The first step (search) is complete after the deferred persist; the
+    # The first step (search) is complete after the deferred attach; the
     # pointer has advanced to the next step (coding).
     assert "search_0" in instance.completed_steps or any(
         s.mode_id == "search" and s.step_id in instance.completed_steps
         for s in instance.declared_steps
     )
+    # enter_mode parked the stage pointer in the handoff target.
+    assert instance.mode_id == "search"
 
 
 @pytest.mark.asyncio
-async def test_adhoc_no_chain_does_not_create_instance() -> None:
-    """A single-step request (no multi-step chain) creates no instance.
+async def test_adhoc_no_chain_attaches_no_steps() -> None:
+    """A single-step request (no multi-step chain) commits no chain steps.
 
-    Guards against over-eager instance creation for trivial queries that
-    the current mode handles in-place. No routing gap → no instance.
+    Guards against over-eager chain compilation for trivial queries that
+    the current mode handles in-place. Phase 6c: a bare turn-1 position
+    is created (the "you are here" pointer) — the invariant is that it
+    carries no declared steps. No routing gap → no chain.
     """
     active_instance: list[WorkflowPosition | None] = [None]
     saved_instances: list[WorkflowPosition] = []
@@ -347,7 +358,11 @@ async def test_adhoc_no_chain_does_not_create_instance() -> None:
     ):
         await run_turn(mode_id="default", query="hello", hooks=hooks)
 
-    assert not saved_instances, "no WorkflowPosition should be created for a trivial query"
+    chained = [p for p in saved_instances if p.declared_steps]
+    assert not chained, (
+        "no chain steps should be committed for a trivial query "
+        f"(got {len(chained)} position(s) with declared steps)"
+    )
 
 
 def _catalog_with_plan() -> dict[str, WorkflowModeConfig]:
@@ -413,59 +428,14 @@ async def test_adhoc_skipped_when_plan_escalation_fires() -> None:
     finally:
         reset_plan_reliability()
 
-    # No ad-hoc instance: plan escalation owns the instance. The ad-hoc
-    # block must have skipped (the hint was a plan-escalation hint).
-    adhoc_instances = [i for i in saved_instances if i.spawned_from == "adhoc"]
-    assert not adhoc_instances, (
-        "ad-hoc instance must not be created when plan escalation fires "
-        f"(got {len(adhoc_instances)} ad-hoc instance(s))"
+    # No ad-hoc chain: plan escalation owns the chain. The ad-hoc
+    # block must have skipped (the hint was a plan-escalation hint), so no
+    # saved position carries ad-hoc declared steps.
+    adhoc_chains = [
+        p for p in saved_instances if p.spawned_from == "adhoc" and p.declared_steps
+    ]
+    assert not adhoc_chains, (
+        "ad-hoc chain must not be committed when plan escalation fires "
+        f"(got {len(adhoc_chains)} ad-hoc chain(s))"
     )
 
-
-@pytest.mark.asyncio
-async def test_adhoc_chain_not_persisted_when_no_handoff_occurs() -> None:
-    """A multi-step chain that never hands off must not persist an instance.
-
-    The 2026-08-06 zombie-instance incident: at 17:58 a failed fork
-    persisted an ad-hoc ``WorkflowPosition`` whose creation fork errored
-    (``RouterRequest`` TypeError, then ``is_fork_target`` NameError). The
-    instance was never rolled back and drove every subsequent turn's
-    "plan-driven next step" against the user's actual intent. The fix
-    defers ad-hoc persistence to the first successful ``transition_stage``
-    handoff; a turn that ends without any handoff (model returns a plain
-    completion, or the turn fails) leaves no instance in the store.
-    """
-    active_instance: list[WorkflowPosition | None] = [None]
-    saved_instances: list[WorkflowPosition] = []
-
-    async def complete(**_kwargs: Any) -> _StubCompletion:
-        # Plain completion — no transition_stage call. The ad-hoc steps
-        # are compiled at turn start but never persisted.
-        return _StubCompletion(content="Done.")
-
-    hooks = _build_minimal_hooks(complete)
-    hooks.workflow_position= lambda: active_instance[0]
-
-    def _wi_updater(instance: WorkflowPosition) -> None:
-        saved_instances.append(instance)
-        active_instance[0] = instance
-
-    hooks.workflow_position_updater = _wi_updater
-
-    catalog = _catalog_with_chain()
-    with (
-        patch("kernel.turn_runner.get_workflow_catalog", return_value=catalog),
-        patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog),
-        patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog),
-    ):
-        await run_turn(
-            mode_id="default",
-            query="search the web then read your code then write a markdown",
-            hooks=hooks,
-        )
-
-    assert not saved_instances, (
-        "no WorkflowPosition must be persisted when no handoff occurred "
-        f"(got {len(saved_instances)} instance(s)) — deferred persist prevents "
-        "zombie instances from failed turns"
-    )

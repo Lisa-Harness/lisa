@@ -34,8 +34,6 @@ from kernel.ipsar_fsm import (
     create_position,
     enter_mode,
     get_mode_system_intro,
-    get_required_mode_intro,
-    get_required_stage_instruction,
     get_routing_targets,
     get_workflow_catalog,
     is_routable_mode,
@@ -109,6 +107,7 @@ from kernel.workflow_position import (
     WorkflowStep,
     _step_id_for,
     advance_step,
+    note_turn,
 )
 
 logger = logging.getLogger(__name__)
@@ -1501,7 +1500,6 @@ def _should_checkpoint(
     *,
     tuning: CheckpointTuning | None,
     transitioned_to: str | None,
-    is_workflow: bool,
     hooks: TurnHooks,
 ) -> bool:
     """Return True when this turn qualifies for an automatic checkpoint.
@@ -1509,14 +1507,14 @@ def _should_checkpoint(
     Rules (all require ``tuning.enabled`` and ``hooks.on_checkpoint`` wired):
     - Stage transition: ``transitioned_to is not None`` and
       ``tuning.on_stage_transition`` is True.
-    - Every-N-turns: ``tuning.every_n_turns > 0`` and the current workflow
-      session's ``turn_count`` is a positive multiple of ``every_n_turns``.
+    - Every-N-turns: ``tuning.every_n_turns > 0`` and the current
+      position's ``turn_count`` is a positive multiple of ``every_n_turns``.
     """
     if tuning is None or not tuning.enabled:
         return False
     if transitioned_to is not None and tuning.on_stage_transition:
         return True
-    if tuning.every_n_turns > 0 and is_workflow and hooks.workflow_position is not None:
+    if tuning.every_n_turns > 0 and hooks.workflow_position is not None:
         position = hooks.workflow_position()
         if position is not None:
             count = getattr(position, "turn_count", 0)
@@ -1610,10 +1608,10 @@ def _build_recovery_identity(hooks: TurnHooks) -> RecoveryIdentity:
     )
 
 
-def _current_recovery_stage_id(*, hooks: TurnHooks, is_workflow: bool) -> str:
-    """Return current workflow stage id when available, else empty."""
+def _current_recovery_stage_id(*, hooks: TurnHooks) -> str:
+    """Return the position's current stage id when available, else empty."""
 
-    if not is_workflow or hooks.workflow_position is None:
+    if hooks.workflow_position is None:
         return ""
     try:
         position = hooks.workflow_position()
@@ -2353,14 +2351,53 @@ async def _run_turn_inner(
     async def _mcp_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
         return await _mcp_tool_executor_fn(tool_id, _ctx, pool)
 
+    # ── Turn-start position (Phase 6c: one mode model) ───────────────
+    # Every turn in a catalog mode has a ``WorkflowPosition``: the single
+    # durable object carrying the inter-mode plan (declared/completed
+    # steps) and the intra-mode stage pointer (``stage_id`` /
+    # ``turn_count``). Created fresh when absent or parked on a terminal
+    # stage (resume-after-exit starts fresh); re-parked with steps
+    # preserved when the turn's mode differs from the position's mode (a
+    # manual mode switch mid-chain must not strand the chain, and the
+    # stage pointer must follow the mode the turn actually runs in);
+    # otherwise the per-stage turn counter increments. Fork/delegate
+    # children skip this — they run inside the parent's position and must
+    # not persist their own. Position handling is best-effort: a mode
+    # outside the catalog (or a broken hook) must not break the turn.
+    if hooks.workflow_position is not None and not sub_turn_kind:
+        try:
+            _start_position = hooks.workflow_position()
+        except Exception:  # pylint: disable=broad-except
+            _start_position = None
+        try:
+            if _start_position is None or getattr(
+                _start_position, "terminal_reached", False
+            ):
+                _next_position = create_position(mode_id)
+            elif getattr(_start_position, "mode_id", "") != mode_id:
+                _next_position = note_turn(enter_mode(_start_position, mode_id))
+            else:
+                _next_position = note_turn(_start_position)
+            if hooks.workflow_position_updater is not None:
+                hooks.workflow_position_updater(_next_position)
+        except Exception as position_exc:  # pylint: disable=broad-except
+            _log.debug(
+                "turn-start position handling skipped for mode=%s: %s",
+                mode_id,
+                position_exc,
+            )
+
     # ── Phase 1: Pre-turn ─────────────────────────────────────────────
     pre_briefing = ""
-    if (
-        mode_config is not None
-        and mode_config.mode_kind == "action"
-        and mode_config.entry_operation_ids
-    ):
-        # Action modes run entry operations and return immediately
+    if mode_config is not None and mode_config.entry_operation_ids:
+        # Stage-entry operations (Phase 6c): entering a mode's start stage
+        # runs its entry ops, regardless of mode kind. The result-shape
+        # contract decides what the output means: a non-empty
+        # ``output_json["target_stage_id"]`` is a routing contract and the
+        # kernel drives the handoff; anything else IS the turn's output
+        # (``entry_op_kind: work`` — the default). A mode that needs setup
+        # work without turn-ending output declares ``pre_turn_operation_ids``
+        # instead.
         ctx = _build_minimal_context(
             mode_id=mode_id,
             query=query,
@@ -2638,38 +2675,38 @@ async def _run_turn_inner(
     if pre_turn_outcome is not None:
         hooks.last_slice_finished_at = time.monotonic()
 
-    # Assemble prompts — workflow modes inject the current stage's
-    # instruction_body alongside the mode-level intro. Without this, the
-    # loaded stage instructions (inquire.md, reason.md, etc.) are never
-    # injected and the FSM is dead at runtime. The host wires
-    # ``hooks.workflow_position`` to return the current position; when absent
-    # or not a workflow mode, the loop falls back to mode-level only (the
-    # historical behavior for chat and action modes).
-    #
-    # Workflow modes require non-empty mode and stage instruction bodies —
-    # an empty body would silently run the model modeless/stageless. Chat
-    # and action modes use the lenient ``get_mode_system_intro`` which
-    # returns "" for unknown modes (membership-check contract) so a chat
-    # mode with no authored body can still rely on the base system prompt.
-    is_workflow = mode_config is not None and mode_config.mode_kind == "workflow"
-    if is_workflow:
-        mode_instruction = get_required_mode_intro(mode_id)
-    else:
-        mode_instruction = get_mode_system_intro(mode_id)
+    # Assemble prompts — one mode model (Phase 6c). Every catalog mode
+    # carries a stage graph (synthesized for stageless modes) and every
+    # turn has a position, so instruction injection is uniform: the mode
+    # body is the mode intro, and the current stage's body injects when
+    # the stage carries one. Synthesized stages have no body, so
+    # chat/action prompts are byte-identical to before. Workflow-mode
+    # body invariants are enforced at catalog load (validate_workflow_mode),
+    # so the reads here are lenient.
+    mode_instruction = get_mode_system_intro(mode_id)
     stage_instruction: str | None = None
-    if is_workflow:
+    if mode_config is not None:
         # Resolve the stage for the instruction body. An explicit child
         # ``stage_id_override`` (from a fork/delegate target) wins over the
         # live position's stage so a child can be pinned to a
         # specific stage. Without an override, read the position's current
-        # stage as before.
+        # stage — only when the position is parked in this turn's mode
+        # (a stale or child-scoped hook must not inject another mode's
+        # stage).
         _stage_for_instruction = stage_id_override or ""
         if not _stage_for_instruction and hooks.workflow_position is not None:
             _position_for_instruction = hooks.workflow_position()
-            if _position_for_instruction is not None:
-                _stage_for_instruction = str(getattr(_position_for_instruction, "stage_id", "") or "")
+            if (
+                _position_for_instruction is not None
+                and getattr(_position_for_instruction, "mode_id", "") == mode_id
+            ):
+                _stage_for_instruction = str(
+                    getattr(_position_for_instruction, "stage_id", "") or ""
+                )
         if _stage_for_instruction in mode_config.stages:
-            stage_instruction = get_required_stage_instruction(mode_id, _stage_for_instruction)
+            _stage_body = mode_config.stages[_stage_for_instruction].instruction_body
+            if _stage_body.strip():
+                stage_instruction = _stage_body
     system_prompt = assemble_system(mode_instruction, stage_instruction)
 
     # Build the tool surface for this turn via the single shared assembler
@@ -2691,34 +2728,29 @@ async def _run_turn_inner(
     # ``transition_stage``) — it does NOT dispatch to any executor; it breaks
     # the loop with the question as the turn content and stamps
     # ``CheckpointBundle.lifecycle_state="yielded"``.
-    is_workflow = (
-        mode_config is not None
-        and mode_config.mode_kind == "workflow"
-        and hooks.workflow_position is not None
-    )
-    # Unified FSM routing: ``transition_stage`` is also advertised for
-    # chat/action modes that have routing targets (mode handoffs) or fork
-    # targets. See docs/ROUTING_RFC_HANDOFF.md.
+    #
+    # Unified FSM routing: ``transition_stage`` is advertised when the
+    # mode's stage graph has edges (intra-mode advancement) or the mode
+    # has routing targets (inter-mode handoffs) — computed inside the
+    # assembler. See docs/ROUTING_RFC_HANDOFF.md.
     has_routing_targets = bool(get_routing_targets(mode_id)) if mode_config else False
     _yield_policy_for_tools = _resolve_yield_policy(mode_config, _yield_policy_override)
     tool_schemas, tool_prune_stats = await build_tool_surface(
         mode_config,
         pool=pool,
         yield_policy=_yield_policy_for_tools,
-        workflow_position_available=hooks.workflow_position is not None,
     )
     operation_catalog = get_operation_catalog()
     tool_catalog = get_tool_catalog()
     _log.info(
         "tool schema mode=%s in=%d out=%d dup=%d disallowed=%d invalid=%d "
-        "is_workflow=%s has_routing=%s names=[%s]",
+        "has_routing=%s names=[%s]",
         mode_id,
         tool_prune_stats["input_count"],
         tool_prune_stats["output_count"],
         tool_prune_stats["dropped_duplicate"],
         tool_prune_stats["dropped_disallowed"],
         tool_prune_stats["dropped_invalid"],
-        is_workflow,
         has_routing_targets,
         ", ".join(_tool_schema_name(s) for s in tool_schemas),
     )
@@ -2833,7 +2865,15 @@ async def _run_turn_inner(
                     _existing_position = hooks.workflow_position()
                 except Exception:  # pylint: disable=broad-except
                     _existing_position = None
-                if _existing_position is None:
+                # Phase 6c: turn-1 creation means a bare position always
+                # exists when the hooks are wired. The compile gate is "no
+                # chain in flight" — the position carries no declared steps
+                # — not "no position". A mid-chain position (declared steps
+                # present) owns the routing; a bare position takes the
+                # compiled chain.
+                if _existing_position is None or not getattr(
+                    _existing_position, "declared_steps", ()
+                ):
                     try:
                         from kernel.workflow_position import (
                             compile_steps_from_routing_targets,
@@ -3196,17 +3236,23 @@ async def _run_turn_inner(
         # iteration counter (reset on every ``transition_stage``) for
         # chat/action modes. One counter drives the resolver's single
         # stuck-in-stage guard pair regardless of mode kind.
+        # Build the turn-state view for the resolver.
+        # ``turns_in_stage`` is the unified stall counter (Phase 6c): the
+        # position's durable per-stage turn count (previous turns) plus
+        # this turn's per-step iteration counter. One counter across turns
+        # and iterations drives the resolver's single stuck-in-stage guard
+        # pair — no mode-kind gate.
         _turns_in_stage = _state.step_iteration
-        if is_workflow and hooks.workflow_position is not None:
+        if hooks.workflow_position is not None:
             _wf_position = hooks.workflow_position()
             if _wf_position is not None:
-                _turns_in_stage = _wf_position.turn_count
+                _turns_in_stage = max(0, _wf_position.turn_count - 1) + _state.step_iteration
                 await _emit_stage(
                     "workflow_stage",
                     {
                         "mode_id": mode_id,
                         "stage_id": _wf_position.stage_id,
-                        "turn_count": _turns_in_stage,
+                        "turn_count": _wf_position.turn_count,
                         "_state.iteration": _state.iteration,
                     },
                 )
@@ -3458,7 +3504,7 @@ async def _run_turn_inner(
                 effective_tools = None
             elif _router_decision.transition_to.strip():
                 _target_stage = _router_decision.transition_to.strip()
-                if is_workflow and hooks.workflow_position is not None:
+                if hooks.workflow_position is not None:
                     _wf_position = hooks.workflow_position()
                     if _wf_position is not None:
                         try:
@@ -3485,10 +3531,12 @@ async def _run_turn_inner(
                             )
                     else:
                         _log.warning(
-                            "router transition_to action but no active workflow session; ignoring"
+                            "router transition_to action but no active workflow position; ignoring"
                         )
                 else:
-                    _log.warning("router transition_to action but not in a workflow mode; ignoring")
+                    _log.warning(
+                        "router transition_to action but no workflow position hook wired; ignoring"
+                    )
                 effective_tools = None
 
         # ── Kernel-driven planned handoff synthesis ───────────────────
@@ -3929,7 +3977,6 @@ async def _run_turn_inner(
                             mode_id=mode_id,
                             stage_id=_current_recovery_stage_id(
                                 hooks=hooks,
-                                is_workflow=is_workflow,
                             ),
                             workflow_instance_id=_wi_id,
                             step_id=_wi_step_id,
@@ -4059,6 +4106,66 @@ async def _run_turn_inner(
                         _log.warning(
                             "rejected coding handoff after entry failure (failed_mode=%s)",
                             _state.entry_failed_mode,
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "name": tool_name,
+                                "content": tool_output,
+                            }
+                        )
+                        continue
+
+                    # ── Unified target resolution (Phase 6c) ──────────
+                    # One resolution order for every mode kind: the target
+                    # resolves against the current mode's stage graph first
+                    # (intra-mode stage advance, validated against the
+                    # current stage's allowed_next_stages), then against
+                    # routable mode ids (inter-mode handoff). Both advance
+                    # the same WorkflowPosition. Stage ids shadow mode ids
+                    # within their own mode (ponder's ``exit`` wins over a
+                    # hypothetical ``exit`` mode).
+                    if mode_config is not None and target_stage in mode_config.stages:
+                        position_fn = hooks.workflow_position
+                        current_position = position_fn() if position_fn is not None else None
+                        if current_position is None:
+                            tool_output = "No active workflow position; cannot transition."
+                        else:
+                            try:
+                                transition_req = WorkflowTransitionRequest(
+                                    target_stage_id=target_stage,
+                                    rationale=rationale,
+                                    required_missing_inputs=(
+                                        list(missing) if isinstance(missing, list) else []
+                                    ),
+                                )
+                                updated_position = apply_stage_transition(
+                                    current_position, transition_req
+                                )
+                                if hooks.workflow_position_updater is not None:
+                                    hooks.workflow_position_updater(updated_position)
+                                transitioned_to = updated_position.stage_id
+                                tool_output = (
+                                    f"Transitioned to stage: {updated_position.stage_id}."
+                                    + (f" Rationale: {rationale}" if rationale else "")
+                                )
+                            except Exception as trans_exc:  # pylint: disable=broad-except
+                                tool_output = (
+                                    f"Transition failed: {type(trans_exc).__name__}: {trans_exc}"
+                                )
+                        await _emit_stage(
+                            "tool_dispatch_complete",
+                            {
+                                "tool": tool_name,
+                                "tool_kind": "transition",
+                                "_state.iteration": _state.iteration,
+                                "tool_calls_so_far": _state.total_tool_calls,
+                                "ok": transitioned_to is not None,
+                                "transition": "workflow_stage",
+                                "transitioned_to": transitioned_to,
+                                "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
+                            },
                         )
                         messages.append(
                             {
@@ -4246,11 +4353,6 @@ async def _run_turn_inner(
                                     target_stage,
                                     target_mode_config,
                                     pool=pool,
-                                    hooks=hooks,
-                                    is_workflow_for_target=(
-                                        target_mode_config.mode_kind == "workflow"
-                                        and hooks.workflow_position is not None
-                                    ),
                                     yield_policy=_resolve_yield_policy(
                                         target_mode_config, _yield_policy_override
                                     ),
@@ -4617,71 +4719,78 @@ async def _run_turn_inner(
                                             _position = hooks.workflow_position()
                                         except Exception:  # pylint: disable=broad-except
                                             _position = None
-                                        # ── Deferred ad-hoc persist ──
+                                        # ── Deferred ad-hoc attach ──
                                         # First successful handoff with
-                                        # pending ad-hoc steps and no active
-                                        # position: materialize and persist
-                                        # the position now. The first step
-                                        # (the entry mode we handed *from*)
-                                        # is marked complete, and the
-                                        # pointer is advanced to the target
-                                        # we just handed off to. This is the
-                                        # transactional commit point for the
-                                        # steps compiled at turn start — if
+                                        # pending ad-hoc steps: commit the
+                                        # steps compiled at turn start onto
+                                        # the live position (turn-1
+                                        # creation means a bare position
+                                        # already exists; the steps attach
+                                        # to it). This is the transactional
+                                        # commit point for the steps — if
                                         # the turn had failed before this
                                         # handoff, the steps would have died
                                         # with ``_state`` (the 2026-08-06
-                                        # zombie-instance fix).
-                                        if (
-                                            _position is None
-                                            and _state.pending_adhoc_steps
-                                        ):
+                                        # zombie fix). The first step (the
+                                        # handoff target) is marked visited
+                                        # and the pointer advances to the
+                                        # step after.
+                                        _attached_adhoc = False
+                                        if _state.pending_adhoc_steps:
                                             try:
                                                 _first_step = _state.pending_adhoc_steps[0]
-                                                _adhoc_position = create_position(
-                                                    _first_step.mode_id,
-                                                    steps=_state.pending_adhoc_steps,
-                                                    spawned_from="adhoc",
-                                                )
-                                                _adhoc_position = advance_step(
-                                                    _adhoc_position,
+                                                if _position is None:
+                                                    _position = create_position(
+                                                        _first_step.mode_id,
+                                                        steps=_state.pending_adhoc_steps,
+                                                        spawned_from="adhoc",
+                                                    )
+                                                else:
+                                                    _position = _position.model_copy(
+                                                        update={
+                                                            "declared_steps": (
+                                                                _state.pending_adhoc_steps
+                                                            ),
+                                                            "current_step_id": (
+                                                                _first_step.step_id
+                                                            ),
+                                                            "spawned_from": "adhoc",
+                                                        }
+                                                    )
+                                                _position = advance_step(
+                                                    _position,
                                                     _first_step.step_id,
                                                 )
                                                 _state.pending_adhoc_steps = ()
+                                                _attached_adhoc = True
                                                 _log.info(
-                                                    "persisted ad-hoc WorkflowPosition "
-                                                    "position_id=%s steps=%d "
-                                                    "(deferred, on first handoff to %s)",
-                                                    _adhoc_position.position_id,
-                                                    len(_adhoc_position.declared_steps),
+                                                    "committed ad-hoc steps onto "
+                                                    "WorkflowPosition position_id=%s "
+                                                    "steps=%d (deferred, on first "
+                                                    "handoff to %s)",
+                                                    _position.position_id,
+                                                    len(_position.declared_steps),
                                                     target_stage,
                                                 )
-                                                _position = _adhoc_position
-                                                _deferred_just_persisted = True
                                             except Exception as adhoc_exc:  # pylint: disable=broad-except
                                                 _log.warning(
                                                     "deferred ad-hoc WorkflowPosition "
-                                                    "persist failed: %s",
+                                                    "attach failed: %s",
                                                     adhoc_exc,
                                                 )
                                                 _state.pending_adhoc_steps = ()
-                                                _position = None
-                                                _deferred_just_persisted = False
-                                        else:
-                                            _deferred_just_persisted = False
                                         if _position is not None:
                                             try:
-                                                # When the deferred persist
-                                                # just fired, ``_position``
-                                                # already reflects the handoff
-                                                # (first step complete,
-                                                # pointer at the target). Skip
-                                                # the redundant
-                                                # ``advance_step``; the hint
-                                                # below reads
+                                                # When the ad-hoc attach just
+                                                # fired, ``_position`` already
+                                                # reflects the handoff (first
+                                                # step visited, pointer at the
+                                                # step after). Skip the
+                                                # redundant ``advance_step``;
+                                                # the hint below reads
                                                 # ``_position.current_step_id``
                                                 # directly.
-                                                if not _deferred_just_persisted and getattr(
+                                                if not _attached_adhoc and getattr(
                                                     _position, "current_step_id", ""
                                                 ):
                                                     _position = advance_step(
@@ -5028,39 +5137,10 @@ async def _run_turn_inner(
                             )
                             break
                         continue
-                    if is_workflow:
-                        position_fn = hooks.workflow_position
-                        current_position = position_fn() if position_fn is not None else None
-                        if current_position is None:
-                            tool_output = "No active workflow position; cannot transition."
-                        else:
-                            try:
-                                transition_req = WorkflowTransitionRequest(
-                                    target_stage_id=target_stage,
-                                    rationale=rationale,
-                                    required_missing_inputs=(
-                                        list(missing) if isinstance(missing, list) else []
-                                    ),
-                                )
-                                updated_position = apply_stage_transition(
-                                    current_position, transition_req
-                                )
-                                if hooks.workflow_position_updater is not None:
-                                    hooks.workflow_position_updater(updated_position)
-                                transitioned_to = updated_position.stage_id
-                                tool_output = (
-                                    f"Transitioned to stage: {updated_position.stage_id}."
-                                    + (f" Rationale: {rationale}" if rationale else "")
-                                )
-                            except Exception as trans_exc:  # pylint: disable=broad-except
-                                tool_output = (
-                                    f"Transition failed: {type(trans_exc).__name__}: {trans_exc}"
-                                )
-                    else:
-                        tool_output = (
-                            f"Unknown transition target: '{target_stage}'. "
-                            f"It is not a routable mode, a fork target, or a workflow stage."
-                        )
+                    tool_output = (
+                        f"Unknown transition target: '{target_stage}'. "
+                        f"It is not a stage in mode '{mode_id}' or a routable mode."
+                    )
                     await _emit_stage(
                         "tool_dispatch_complete",
                         {
@@ -5068,8 +5148,8 @@ async def _run_turn_inner(
                             "tool_kind": "transition",
                             "_state.iteration": _state.iteration,
                             "tool_calls_so_far": _state.total_tool_calls,
-                            "ok": transitioned_to is not None,
-                            "transition": "workflow_stage" if is_workflow else "unknown",
+                            "ok": False,
+                            "transition": "unknown",
                             "transitioned_to": transitioned_to,
                             "duration_ms": int((time.monotonic() - _tool_dispatch_started) * 1000),
                         },
@@ -5502,10 +5582,10 @@ async def _run_turn_inner(
                 _log.warning("_state.iteration-cap final completion failed: %s", exc)
             content = content or "The model did not produce a final response."
 
-    # Terminal-stage handling: if the model transitioned to a terminal
-    # stage during this turn, force one final no-tools completion using the
+    # Terminal-stage handling: if the turn ended parked on a terminal
+    # stage, force one final no-tools completion using the
     # terminal stage's instruction so the model produces a closing summary.
-    if transitioned_to is not None and is_workflow:
+    if transitioned_to is not None:
         terminal_position = hooks.workflow_position() if hooks.workflow_position else None
         if terminal_position is not None and is_terminal_stage(terminal_position):
             terminal_stage_config = mode_config.stages.get(terminal_position.stage_id)
@@ -5629,7 +5709,6 @@ async def _run_turn_inner(
         should_checkpoint = _should_checkpoint(
             tuning=tuning,
             transitioned_to=transitioned_to,
-            is_workflow=is_workflow,
             hooks=hooks,
         )
         if should_checkpoint:

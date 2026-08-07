@@ -59,6 +59,7 @@ __all__ = [
     "advance_step",
     "compile_steps_from_routing_targets",
     "is_complete",
+    "note_turn",
     "remaining_steps",
     "render_workflow_progress",
 ]
@@ -182,6 +183,17 @@ def is_complete(position: WorkflowPosition) -> bool:
     )
     stage_open = bool(position.stage_id) and not position.terminal_reached
     return not steps_open and not stage_open
+
+
+def note_turn(position: WorkflowPosition) -> WorkflowPosition:
+    """Return a new position with ``turn_count`` incremented by one.
+
+    Called once per turn at turn start by the turn loop. ``turn_count``
+    counts turns spent in the current stage — the lifecycle resolver's
+    unified stall counter. It resets on every stage or mode advance
+    (``apply_stage_transition`` / ``enter_mode`` in ``kernel/ipsar_fsm.py``).
+    """
+    return position.model_copy(update={"turn_count": position.turn_count + 1})
 
 
 def advance_step(

@@ -915,7 +915,6 @@ def test_should_checkpoint_false_when_disabled() -> None:
         _should_checkpoint(
             tuning=None,
             transitioned_to="reason",
-            is_workflow=True,
             hooks=hooks,
         )
         is False
@@ -926,7 +925,6 @@ def test_should_checkpoint_false_when_disabled() -> None:
         _should_checkpoint(
             tuning=tuning,
             transitioned_to="reason",
-            is_workflow=True,
             hooks=hooks,
         )
         is False
@@ -944,7 +942,6 @@ def test_should_checkpoint_true_on_stage_transition() -> None:
         _should_checkpoint(
             tuning=tuning,
             transitioned_to="reason",
-            is_workflow=True,
             hooks=hooks,
         )
         is True
@@ -961,7 +958,6 @@ def test_should_checkpoint_false_on_transition_when_disabled() -> None:
         _should_checkpoint(
             tuning=tuning,
             transitioned_to="reason",
-            is_workflow=True,
             hooks=hooks,
         )
         is False
@@ -985,7 +981,6 @@ def test_should_checkpoint_true_on_every_n_turns() -> None:
         _should_checkpoint(
             tuning=tuning,
             transitioned_to=None,
-            is_workflow=True,
             hooks=hooks,
         )
         is True
@@ -1009,7 +1004,6 @@ def test_should_checkpoint_false_when_turn_count_not_multiple() -> None:
         _should_checkpoint(
             tuning=tuning,
             transitioned_to=None,
-            is_workflow=True,
             hooks=hooks,
         )
         is False
@@ -1017,7 +1011,7 @@ def test_should_checkpoint_false_when_turn_count_not_multiple() -> None:
 
 
 def test_should_checkpoint_false_when_not_workflow_for_n_turns() -> None:
-    """every_n_turns only applies to workflow modes."""
+    """every_n_turns requires a wired workflow position (Phase 6c: no mode-kind gate)."""
     from kernel.turn_runner import CheckpointTuning, TurnHooks, _should_checkpoint
 
     hooks = TurnHooks()
@@ -1026,7 +1020,6 @@ def test_should_checkpoint_false_when_not_workflow_for_n_turns() -> None:
         _should_checkpoint(
             tuning=tuning,
             transitioned_to=None,
-            is_workflow=False,
             hooks=hooks,
         )
         is False
