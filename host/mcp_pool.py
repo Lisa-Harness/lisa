@@ -417,7 +417,7 @@ def setup_framework(
     # when an active instance is resuming, so the first post-restart turn
     # starts in the instance's current step's mode. Moved here from
     # ``HostRuntime.__init__`` so construction stays side-effect-free.
-    runtime._boot_load_active_workflow_instance()  # pylint: disable=protected-access
+    runtime._boot_load_active_workflow_position()  # pylint: disable=protected-access
 
     # ── Model manifest pre-load ──────────────────────────────────────
     # Load the model manifest once at startup so mode_models overrides

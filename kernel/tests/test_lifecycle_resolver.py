@@ -201,7 +201,7 @@ def test_per_step_budget_exhausted_forces_transition_to_next_step() -> None:
         mode_id="search",
         mode_yield_policy=YieldPolicy(),
         settings=LifecycleResolverSettings(per_step_max_iterations=8),
-        workflow_instance=_Instance(),
+        workflow_position=_Instance(),
     )
     assert isinstance(action, TransitionAction)
     assert action.target_mode_id == "coding"
@@ -216,7 +216,7 @@ def test_per_step_budget_exhausted_no_next_step_falls_through() -> None:
         mode_id="coding",
         mode_yield_policy=YieldPolicy(),
         settings=LifecycleResolverSettings(per_step_max_iterations=8),
-        workflow_instance=_Instance(
+        workflow_position=_Instance(
             current_step_id="s2",
             current_mode_id="coding",
             declared_steps=(_Step("s1", "search"), _Step("s2", "coding")),

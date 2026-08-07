@@ -1449,28 +1449,28 @@ class WorkflowModeConfig(BaseModel):
     fork_yield_policy: YieldPolicy | None = None
 
 
-class WorkflowSessionState(BaseModel):
-    """Tracks active workflow state for a user while a mode session is running."""
+# The durable workflow object is ``WorkflowPosition`` (kernel/workflow_position.py):
+# inter-mode plan + intra-mode stage pointer in one frozen model. It lives in
+# its own module (not here) because its step compiler depends on the routing
+# vocabulary, which must stay importable without the full models module.
 
-    user_id: str
-    user_slug: str = "default"
-    mode_id: WorkflowModeId
-    stage_id: str
-    entered_at: str
-    turn_count: int = 0
-    stage_data: dict[str, Any] = Field(default_factory=dict)
+# Checkpoint format version. ``2`` = WorkflowPosition merge (2026-08-07):
+# the separate ``workflow_session_state`` + ``workflow_instance`` bundle
+# fields collapsed into one ``workflow_position``. Restore rejects any other
+# version loudly — no compat path for pre-merge bundles (hard cutover).
+CHECKPOINT_SCHEMA_VERSION = 2
 
 
 class CheckpointBundle(BaseModel):
     """Serialized snapshot of kernel + host state at a named point.
 
     The kernel builds this from ``UnifiedState`` (via the host's
-    ``state_provider``) and ``WorkflowSessionState`` (via the host's
-    ``workflow_session`` hook) at checkpoint time. The host's
+    ``state_provider``) and the ``WorkflowPosition`` (via the host's
+    ``workflow_position`` hook) at checkpoint time. The host's
     ``on_checkpoint`` hook persists it — typically by calling
     ``save_checkpoint`` on the ``lisa-storage`` MCP server through the
     tool pool. On restore, the host deserializes the bundle and feeds
-    the ``unified_state`` and ``workflow_session_state`` dicts back into
+    the ``unified_state`` and ``workflow_position`` dicts back into
     the turn runner's next invocation.
 
     ``turn_history`` is host-owned: the kernel leaves it empty; the host
@@ -1481,22 +1481,31 @@ class CheckpointBundle(BaseModel):
     checkpoint-pack operation that calls the model to summarize the
     session at checkpoint time. They default to empty so the kernel's
     bare bundle still works without enrichment.
+
+    ``schema_version`` is the checkpoint format marker. Version 2 is the
+    WorkflowPosition merge (2026-08-07): the separate
+    ``workflow_session_state`` + ``workflow_instance`` fields collapsed
+    into one ``workflow_position``. Restore fails loud on any other
+    version — no compat path for pre-merge bundles (hard cutover).
     """
 
     checkpoint_id: str
     created_at: str
+    # Checkpoint format version — see CHECKPOINT_SCHEMA_VERSION. Older
+    # bundles are rejected at restore.
+    schema_version: int = CHECKPOINT_SCHEMA_VERSION
     label: str = ""
     mode_id: str = ""
     stage_id: str = ""
     turn_count: int = 0
     unified_state: dict[str, Any] = Field(default_factory=dict)
-    workflow_session_state: dict[str, Any] = Field(default_factory=dict)
-    # Serialized ``WorkflowInstance`` (the durable inter-mode workflow state)
-    # captured at checkpoint time. Populated by ``_build_checkpoint_bundle``
-    # from ``hooks.workflow_instance``; on restore, ``handle_restore``
-    # rehydrates it and sets ``current_mode_id`` from the instance's current
-    # step's mode. Empty when no multi-stage workflow is in flight.
-    workflow_instance: dict[str, Any] = Field(default_factory=dict)
+    # Serialized ``WorkflowPosition`` (the single durable workflow object:
+    # inter-mode plan + intra-mode stage pointer) captured at checkpoint
+    # time. Populated by ``_build_checkpoint_bundle`` from
+    # ``hooks.workflow_position``; on restore, ``handle_restore``
+    # rehydrates it and sets ``current_mode_id`` from the position's
+    # ``mode_id``. Empty when no workflow is in flight.
+    workflow_position: dict[str, Any] = Field(default_factory=dict)
     turn_history: list[dict[str, Any]] = Field(default_factory=list)
     # ── Enrichment fields (populated by checkpoint-pack operations) ──
     overview: str = ""

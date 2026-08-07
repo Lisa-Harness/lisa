@@ -5,7 +5,7 @@ Covers:
   - Output guard: blocking (safe fallback + guardrail.audit event),
     sanitization (output rewritten)
   - ContextSeams defaults (pass-through guards, in-process event bus)
-  - _build_checkpoint_bundle (state_provider + workflow_session integration)
+  - _build_checkpoint_bundle (state_provider + workflow_position integration)
   - _fire_slice (budget enforcement, error handling, outcome coercion)
 """
 
@@ -19,8 +19,8 @@ import pytest
 
 from kernel.models import (
     SurfaceContext,
-    WorkflowSessionState,
 )
+from kernel.workflow_position import WorkflowPosition
 from kernel.seams.protocols import GuardResult
 from kernel.slice import SliceMode, SliceOutcome, SlicePolicy, SliceTuning
 from kernel.turn_runner import (
@@ -281,12 +281,11 @@ async def test_default_input_guard_allows_everything() -> None:
 
 def test_build_checkpoint_bundle_returns_none_when_no_state() -> None:
     """_build_checkpoint_bundle returns None when neither state_provider nor
-    workflow_session is wired."""
+    workflow_position is wired."""
     hooks = TurnHooks()
     bundle = _build_checkpoint_bundle(
         mode_id="default",
         transitioned_to=None,
-        is_workflow=False,
         hooks=hooks,
     )
     assert bundle is None
@@ -302,7 +301,6 @@ def test_build_checkpoint_bundle_from_state_provider() -> None:
     bundle = _build_checkpoint_bundle(
         mode_id="default",
         transitioned_to=None,
-        is_workflow=False,
         hooks=hooks,
     )
     assert bundle is not None
@@ -311,21 +309,18 @@ def test_build_checkpoint_bundle_from_state_provider() -> None:
 
 
 def test_build_checkpoint_bundle_from_workflow_session() -> None:
-    """When workflow_session is wired, the bundle includes stage_id and turn_count."""
-    session = WorkflowSessionState(
-        user_id="u",
-        user_slug="s",
+    """When workflow_position is wired, the bundle includes stage_id and turn_count."""
+    session = WorkflowPosition(
         mode_id="ponder",
         stage_id="reason",
         entered_at="2026-01-01T00:00:00Z",
         turn_count=5,
     )
-    hooks = TurnHooks(workflow_session=lambda: session)
+    hooks = TurnHooks(workflow_position=lambda: session)
 
     bundle = _build_checkpoint_bundle(
         mode_id="ponder",
         transitioned_to="reason",
-        is_workflow=True,
         hooks=hooks,
     )
     assert bundle is not None
@@ -336,20 +331,17 @@ def test_build_checkpoint_bundle_from_workflow_session() -> None:
 
 def test_build_checkpoint_bundle_transitioned_to_used_as_stage_fallback() -> None:
     """When the workflow session has no stage_id, transitioned_to is used."""
-    session = WorkflowSessionState(
-        user_id="u",
-        user_slug="s",
+    session = WorkflowPosition(
         mode_id="ponder",
         stage_id="",
         entered_at="2026-01-01T00:00:00Z",
         turn_count=0,
     )
-    hooks = TurnHooks(workflow_session=lambda: session)
+    hooks = TurnHooks(workflow_position=lambda: session)
 
     bundle = _build_checkpoint_bundle(
         mode_id="ponder",
         transitioned_to="reason",
-        is_workflow=True,
         hooks=hooks,
     )
     assert bundle is not None
@@ -364,10 +356,10 @@ def test_build_checkpoint_bundle_generates_unique_id() -> None:
     hooks = TurnHooks(state_provider=lambda: state)
 
     bundle1 = _build_checkpoint_bundle(
-        mode_id="default", transitioned_to=None, is_workflow=False, hooks=hooks
+        mode_id="default", transitioned_to=None, hooks=hooks,
     )
     bundle2 = _build_checkpoint_bundle(
-        mode_id="default", transitioned_to=None, is_workflow=False, hooks=hooks
+        mode_id="default", transitioned_to=None, hooks=hooks,
     )
     assert bundle1 is not None
     assert bundle2 is not None
@@ -601,9 +593,7 @@ async def test_checkpoint_fires_on_stage_transition() -> None:
     async def on_checkpoint(bundle: Any) -> None:
         checkpoint_bundles.append(bundle)
 
-    session = WorkflowSessionState(
-        user_id="u",
-        user_slug="s",
+    session = WorkflowPosition(
         mode_id="ponder",
         stage_id="inquire",
         entered_at="2026-01-01T00:00:00Z",
@@ -632,8 +622,8 @@ async def test_checkpoint_fires_on_stage_transition() -> None:
     from kernel.turn_runner import CheckpointTuning
 
     hooks = _build_hooks(two_step)
-    hooks.workflow_session = lambda: session
-    hooks.workflow_session_updater = lambda updated: None
+    hooks.workflow_position = lambda: session
+    hooks.workflow_position_updater = lambda updated: None
     hooks.on_checkpoint = on_checkpoint
     hooks.checkpoint_tuning = CheckpointTuning(enabled=True, on_stage_transition=True)
 
@@ -672,9 +662,7 @@ async def test_checkpoint_failure_does_not_break_turn() -> None:
     async def failing_checkpoint(bundle: Any) -> None:
         raise RuntimeError("checkpoint storage failed")
 
-    session = WorkflowSessionState(
-        user_id="u",
-        user_slug="s",
+    session = WorkflowPosition(
         mode_id="ponder",
         stage_id="inquire",
         entered_at="2026-01-01T00:00:00Z",
@@ -703,8 +691,8 @@ async def test_checkpoint_failure_does_not_break_turn() -> None:
     from kernel.turn_runner import CheckpointTuning
 
     hooks = _build_hooks(two_step)
-    hooks.workflow_session = lambda: session
-    hooks.workflow_session_updater = lambda updated: None
+    hooks.workflow_position = lambda: session
+    hooks.workflow_position_updater = lambda updated: None
     hooks.on_checkpoint = failing_checkpoint
     hooks.checkpoint_tuning = CheckpointTuning(enabled=True, on_stage_transition=True)
 

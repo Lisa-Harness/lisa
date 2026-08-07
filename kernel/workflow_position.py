@@ -1,30 +1,28 @@
-"""First-class durable workflow instance for multi-stage workflows.
+"""The single durable workflow object: inter-mode plan + intra-mode pointer.
 
-The kernel already has four durability primitives, each scoped to a
-different boundary:
+The kernel's durability primitives, scoped by boundary:
 
 - ``RecoveryRecord`` (``kernel/recovery.py``) — one work item (tool dispatch).
 - ``CheckpointBundle`` (``kernel/models.py``) — one turn snapshot.
-- ``WorkflowSessionState`` (``kernel/models.py``) — one mode's intra-mode FSM.
 - ``chain_satisfied`` (``kernel/turn_phases/_turn_state.py``) — one NL turn's
-  ephemeral intent-chain accumulator.
+  ephemeral intent-chain accumulator (a projection of the position's
+  ``completed_steps``).
+- **``WorkflowPosition``** (this module) — the workflow itself: one object
+  that survives across modes, stages, turns, and host restarts and that
+  routing, checkpoint, recovery, and the iteration budget all reference.
 
-None of them is a *first-class object representing the multi-stage workflow
-this turn is executing*. There is no identity that survives across modes,
-turns, and host restarts and that routing, checkpoint, recovery, and the
-iteration budget all reference. The result (proven by the 2026-07-28
-glm-5.2 self-assessment run): a 6-stage chain starves its final step on a
-shared iteration budget, a stalled turn can't resume the *plan* (only the
-mode), recovery records can't block or skip workflow steps, and the
-canonical ``host`` host doesn't even wire the existing FSM/checkpoint
-hooks.
+``WorkflowPosition`` merges what used to be two objects that drifted apart:
+the inter-mode ``WorkflowInstance`` (declared steps, completed steps) and
+the intra-mode ``WorkflowSessionState`` (mode/stage pointer, per-stage turn
+count). The split produced the drift class of bugs: a mode handoff advanced
+the instance but left the session pointing at the old mode's stage; the
+resolver's stall counter was fed from two different units depending on mode
+kind; checkpoints serialized both and restores could rehydrate one without
+the other. One position object makes those splits unrepresentable.
 
-This module owns that missing object — **``WorkflowInstance``** — plus the
-pure helpers that advance it and the step compiler that derives steps from
-routing targets for ad-hoc workflows. The durable store contract lives in
-``kernel/workflow_instance_store.py`` (Protocol only); the file-backed
-implementation lives in ``host/workflow_instance_store.py``. The
-model and helpers are here.
+The durable store contract lives in ``kernel/workflow_position_store.py``
+(Protocol only); the file-backed implementation lives in
+``host/workflow_position_store.py``. The model and pure helpers are here.
 
 Design constraints (mirroring the codebase conventions):
 
@@ -33,12 +31,15 @@ Design constraints (mirroring the codebase conventions):
   ``_detect_query_intents``) so it never duplicates intent vocabulary or
   connector lists. It reads opaque pack-authored intent tags and routing
   target ids — it names no intent in code.
-- Frozen and immutable: ``advance_step`` returns a new instance, mirroring
-  ``RecoveryRecord`` / ``WorkflowSessionState`` immutability.
+- Frozen and immutable: every advance helper returns a new position,
+  mirroring ``RecoveryRecord`` immutability.
 - Ad-hoc and specified workflows share the shape: ``compile_steps_from_routing_targets``
-  produces steps for an ad-hoc instance at turn 1; ``PlanWorkflowOutput.steps``
-  produces steps for a specified instance. Both resume/checkpoint/recover
-  identically because they share the same ``WorkflowInstance`` model.
+  produces steps for an ad-hoc position at turn 1; ``PlanWorkflowOutput.steps``
+  produces steps for a specified position. Both resume/checkpoint/recover
+  identically because they share the same ``WorkflowPosition`` model.
+- Catalog-aware stage moves live in ``kernel/ipsar_fsm.py``
+  (``create_position`` / ``apply_stage_transition`` / ``enter_mode``); this
+  module stays catalog-free so it is importable before the catalog is wired.
 """
 
 from __future__ import annotations
@@ -52,8 +53,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from kernel.routing_vocabulary import get_consumer_intents, get_producer_intents
 
 __all__ = [
-    "WorkflowInstance",
-    "WorkflowInstanceOrigin",
+    "WorkflowPosition",
+    "WorkflowPositionOrigin",
     "WorkflowStep",
     "advance_step",
     "compile_steps_from_routing_targets",
@@ -63,10 +64,10 @@ __all__ = [
 ]
 
 
-WorkflowInstanceOrigin = Literal["adhoc", "session_plan", "plan_workflow_op"]
-"""How an instance was spawned.
+WorkflowPositionOrigin = Literal["adhoc", "session_plan", "plan_workflow_op"]
+"""How a position was spawned.
 
-``adhoc``: the host built the instance at turn 1 from the routing hint
+``adhoc``: the kernel built the position at turn 1 from the routing hint
 when no explicit plan was supplied (the common case for natural-language
 multi-step requests).
 
@@ -81,10 +82,11 @@ class WorkflowStep(BaseModel):
     """One declared step in a multi-stage workflow.
 
     A step is the *inter-mode* unit of progress: one step ≈ one mode
-    handoff. The intra-mode FSM stage pointer (``WorkflowSessionState``)
+    handoff. The intra-mode stage pointer (``WorkflowPosition.stage_id``)
     is orthogonal — a step may span multiple stages within its mode, but
-    the instance only advances when the model hands off to the next step's
-    mode (``transition_stage`` with a new ``mode_id`` target).
+    the position's step pointer only advances when the model hands off to
+    the next step's mode (``transition_stage`` with a new ``mode_id``
+    target).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
@@ -94,43 +96,58 @@ class WorkflowStep(BaseModel):
     satisfies_intents: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
     is_terminal: bool = False
-    spawned_from: WorkflowInstanceOrigin = "adhoc"
+    spawned_from: WorkflowPositionOrigin = "adhoc"
 
 
-class WorkflowInstance(BaseModel):
+class WorkflowPosition(BaseModel):
     """The durable, cross-mode, cross-turn execution of one workflow.
 
-    ``WorkflowInstance`` is the single durable inter-mode object.
-    ``WorkflowSessionState`` (per-mode FSM) stays as the intra-mode stage
-    pointer; they cross-reference by ``instance_id`` (added to the session
-    in a later phase). The instance survives host restart via
-    ``FileWorkflowInstanceStore``; the in-memory ``chain_satisfied``
-    accumulator on ``_TurnState`` is a *projection* of ``completed_steps`` —
-    hydrated at turn start and written back on each successful handoff.
+    One object carries both axes of workflow state:
 
-    Identity is stable across turns, modes, and restarts: ``instance_id``
+    - the **inter-mode plan**: ``declared_steps`` / ``completed_steps`` /
+      ``current_step_id`` — which mode handoffs remain. The in-memory
+      ``chain_satisfied`` accumulator on ``_TurnState`` is a *projection*
+      of ``completed_steps`` — hydrated at turn start and written back on
+      each successful handoff.
+    - the **intra-mode FSM pointer**: ``mode_id`` / ``stage_id`` /
+      ``turn_count`` / ``stage_data`` — where inside the current mode's
+      stage graph the workflow sits. ``turn_count`` is the number of turns
+      spent in the current stage (the resolver's unified stall counter);
+      it resets on every stage or mode advance.
+
+    Identity is stable across turns, modes, and restarts: ``position_id``
     is a uuid hex assigned at creation and never changed. The store keys
-    active instances by ``RecoveryIdentity`` (the same identity scope as
-    recovery records) so one user's active workflow is resumable per surface.
+    active positions by ``RecoveryIdentity`` (the same identity scope as
+    recovery records) so one user's active workflow is resumable per
+    surface. ``terminal_reached`` records that the pointer parked on a
+    terminal stage; a resume after exit starts a fresh position.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
 
-    instance_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    # ── Identity & provenance ────────────────────────────────────────
+    position_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     plan_digest: str = ""
+    spawned_from: WorkflowPositionOrigin = "adhoc"
+    resumed_count: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_progressed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # ── Inter-mode plan ──────────────────────────────────────────────
     declared_steps: tuple[WorkflowStep, ...] = ()
     completed_steps: tuple[str, ...] = ()
     current_step_id: str = ""
-    current_mode_id: str = ""
-    resumed_count: int = 0
-    spawned_from: WorkflowInstanceOrigin = "adhoc"
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    last_progressed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     # Per-step result previews (step_id -> short text). Populated from
     # ``RecoveryRecord.result_preview`` as steps complete; used by the
     # compaction/context layer as the "what we've done so far" summary
     # instead of re-reading ``CheckpointBundle.turn_history``.
     step_results: dict[str, str] = Field(default_factory=dict)
+    # ── Intra-mode FSM pointer (absorbed WorkflowSessionState) ───────
+    mode_id: str = ""
+    stage_id: str = ""
+    entered_at: str = ""
+    turn_count: int = 0
+    stage_data: dict[str, Any] = Field(default_factory=dict)
+    terminal_reached: bool = False
 
     def step_by_id(self, step_id: str) -> WorkflowStep | None:
         """Return the declared step with the given id, or ``None``."""
@@ -140,63 +157,77 @@ class WorkflowInstance(BaseModel):
         return None
 
 
-def remaining_steps(instance: WorkflowInstance) -> tuple[WorkflowStep, ...]:
+def remaining_steps(position: WorkflowPosition) -> tuple[WorkflowStep, ...]:
     """Return the declared steps not yet completed, in declared order.
 
     A step is remaining when its ``step_id`` is not in
     ``completed_steps``. ``is_terminal`` does not affect this — a terminal
     step is remaining until it completes.
     """
-    completed = set(instance.completed_steps)
-    return tuple(s for s in instance.declared_steps if s.step_id not in completed)
+    completed = set(position.completed_steps)
+    return tuple(s for s in position.declared_steps if s.step_id not in completed)
 
 
-def is_complete(instance: WorkflowInstance) -> bool:
-    """Return True when every declared step is completed."""
-    if not instance.declared_steps:
-        return True
-    return len(instance.completed_steps) >= len(instance.declared_steps)
+def is_complete(position: WorkflowPosition) -> bool:
+    """Return True when the position has no remaining work.
+
+    Complete means: every declared step is completed AND the intra-mode
+    pointer is either absent (no stage graph relevance) or parked on a
+    terminal stage (``terminal_reached``). A position with a live
+    non-terminal stage pointer stays active even with no declared steps —
+    that is the normal state of a single-mode turn.
+    """
+    steps_open = bool(position.declared_steps) and len(position.completed_steps) < len(
+        position.declared_steps
+    )
+    stage_open = bool(position.stage_id) and not position.terminal_reached
+    return not steps_open and not stage_open
 
 
 def advance_step(
-    instance: WorkflowInstance,
+    position: WorkflowPosition,
     step_id: str,
     *,
     result_preview: str = "",
-) -> WorkflowInstance:
-    """Return a new instance with ``step_id`` marked completed and the
+) -> WorkflowPosition:
+    """Return a new position with ``step_id`` marked completed and the
     current pointer advanced to the next remaining step.
 
     Idempotent: re-advancing an already-completed step is a no-op (the
     step set and pointer do not change), so recovery resume can call this
     safely. When advancing the last remaining step, ``current_step_id`` is
-    cleared (the workflow is complete; ``is_complete`` returns True).
+    cleared; ``mode_id`` keeps pointing at the mode the position is parked
+    in (mode identity is the stage pointer's concern, not the step
+    pointer's — the caller's ``enter_mode`` applies the mode move).
+    Completing a step declared ``is_terminal`` (the chain's last step)
+    sets ``terminal_reached`` so the host store clears the finished
+    position instead of leaving an all-done zombie active.
 
     ``result_preview`` (truncated to 240 chars, mirroring
     ``RecoveryRecord.result_preview``) is stored under ``step_results`` so
     the context layer can summarize what each step produced without
     re-reading the full turn history.
     """
-    step = instance.step_by_id(step_id)
+    step = position.step_by_id(step_id)
     if step is None:
-        return instance
-    completed = list(instance.completed_steps)
+        return position
+    completed = list(position.completed_steps)
     if step_id not in completed:
         completed.append(step_id)
-    remaining = [s for s in instance.declared_steps if s.step_id not in completed]
+    remaining = [s for s in position.declared_steps if s.step_id not in completed]
     next_step = remaining[0] if remaining else None
-    step_results = dict(instance.step_results)
+    step_results = dict(position.step_results)
     preview = (result_preview or "").strip()
     if preview:
         step_results[step_id] = preview[:240]
     now = datetime.now(UTC)
-    return instance.model_copy(
+    return position.model_copy(
         update={
             "completed_steps": tuple(completed),
             "current_step_id": next_step.step_id if next_step else "",
-            "current_mode_id": next_step.mode_id if next_step else "",
             "last_progressed_at": now,
             "step_results": step_results,
+            "terminal_reached": position.terminal_reached or step.is_terminal,
         }
     )
 
@@ -218,24 +249,24 @@ def compile_steps_from_routing_targets(
     query: str,
     routing_targets: list[str],
     catalog: dict[str, Any],
-    spawned_from: WorkflowInstanceOrigin = "adhoc",
+    spawned_from: WorkflowPositionOrigin = "adhoc",
 ) -> tuple[WorkflowStep, ...]:
     """Derive a producer-then-consumer step chain from the routing catalog.
 
     This is the ad-hoc path's step-derivation (and the plan-failure
     fallback): when no explicit ``PlanWorkflowOutput.steps`` is supplied,
-    the instance is built deterministically from the routing targets that
-    cover the query's detected intents. The ordering reuses the existing
+    the position's steps are built deterministically from the routing targets
+    that cover the query's detected intents. The ordering reuses the existing
     routing helpers so there is one truth for producer→consumer sequencing:
 
     1. Detect the query's intents (``_detect_query_intents``).
     2. For a sequential query, walk producer intents first then consumer
        intents, picking the earliest-keyword target for each remaining gap
        (``_first_target_for_earliest_intent``). This matches the
-       post-handoff hint chain order so the instance and the router agree.
+       post-handoff hint chain order so the position and the router agree.
     3. For a non-sequential multi-intent query that forks, flatten the fork
-       into one step per fork child (the instance does not model
-       parallelism yet; child instances are future work).
+       into one step per fork child (the position does not model
+       parallelism yet; child positions are future work).
     4. Mark the last step terminal.
 
     Tag-blind: the compiler reads opaque intent tags and never names them.
@@ -247,7 +278,7 @@ def compile_steps_from_routing_targets(
     """
     # Local import to avoid a kernel-boot-time cycle: _routing_hint imports
     # from this module's neighbors but not from here, so the deferred
-    # import keeps workflow_instance importable before the catalog is wired.
+    # import keeps workflow_position importable before the catalog is wired.
     from kernel.turn_phases._routing_hint import (  # noqa: PLC0415
         _detect_query_intents,
         _first_target_for_earliest_intent,
@@ -419,28 +450,28 @@ def _intents_by_earliest_keyword(
     return [intent for _, intent in positions]
 
 
-def render_workflow_progress(instance: WorkflowInstance) -> str:
+def render_workflow_progress(position: WorkflowPosition) -> str:
     """Render a short human-readable summary of completed and remaining steps.
 
-    Used by the host's context assembler (Phase 7) as the "work done so far"
+    Used by the host's context assembler as the "work done so far"
     summary — replacing re-reading ``CheckpointBundle.turn_history`` (which
     is host-owned UI/replay state the kernel never reads for routing). The
     summary lists each declared step with a checkmark (done) or a dash
     (remaining), plus the result preview when available.
 
-    Returns an empty string when the instance has no declared steps or is
+    Returns an empty string when the position has no declared steps or is
     complete (no progress to report).
     """
-    if not instance.declared_steps:
+    if not position.declared_steps:
         return ""
-    if is_complete(instance):
+    if is_complete(position):
         return ""
-    completed = set(instance.completed_steps)
+    completed = set(position.completed_steps)
     lines: list[str] = ["## Workflow progress"]
-    for step in instance.declared_steps:
+    for step in position.declared_steps:
         mark = "[x]" if step.step_id in completed else "[ ]"
         label = f"{mark} {step.mode_id}"
-        preview = instance.step_results.get(step.step_id, "")
+        preview = position.step_results.get(step.step_id, "")
         if preview:
             # Truncate the preview to keep the summary compact.
             label += f": {preview[:120]}"

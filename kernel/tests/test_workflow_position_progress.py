@@ -8,15 +8,15 @@ replaces re-reading ``CheckpointBundle.turn_history``) and the
 from __future__ import annotations
 
 from kernel.models import ContextPacket
-from kernel.workflow_instance import (
-    WorkflowInstance,
+from kernel.workflow_position import (
+    WorkflowPosition,
     WorkflowStep,
     render_workflow_progress,
 )
 
 
-def _instance() -> WorkflowInstance:
-    return WorkflowInstance(
+def _instance() -> WorkflowPosition:
+    return WorkflowPosition(
         declared_steps=(
             WorkflowStep(step_id="search_0", mode_id="search", satisfies_intents=("research",)),
             WorkflowStep(
@@ -29,7 +29,7 @@ def _instance() -> WorkflowInstance:
         ),
         completed_steps=("search_0",),
         current_step_id="coding_1",
-        current_mode_id="coding",
+        mode_id="coding",
         step_results={"search_0": "found 3 frameworks"},
     )
 
@@ -44,12 +44,12 @@ def test_render_workflow_progress_marks_completed_and_remaining() -> None:
 
 def test_render_workflow_progress_empty_when_no_steps() -> None:
     """An instance with no declared steps renders an empty summary."""
-    assert render_workflow_progress(WorkflowInstance()) == ""
+    assert render_workflow_progress(WorkflowPosition()) == ""
 
 
 def test_render_workflow_progress_empty_when_complete() -> None:
     """A complete instance renders an empty summary (nothing to report)."""
-    instance = WorkflowInstance(
+    instance = WorkflowPosition(
         declared_steps=(WorkflowStep(step_id="s_0", mode_id="search"),),
         completed_steps=("s_0",),
     )
@@ -59,7 +59,7 @@ def test_render_workflow_progress_empty_when_complete() -> None:
 def test_render_workflow_progress_truncates_long_preview() -> None:
     """The result preview is truncated to keep the summary compact."""
     long_preview = "x" * 300
-    instance = WorkflowInstance(
+    instance = WorkflowPosition(
         declared_steps=(
             WorkflowStep(step_id="s_0", mode_id="search"),
             WorkflowStep(step_id="c_1", mode_id="coding", is_terminal=True),

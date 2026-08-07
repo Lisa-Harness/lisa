@@ -19,8 +19,8 @@ import pytest
 from kernel.models import (
     CheckpointBundle,
     UnifiedState,
-    WorkflowSessionState,
 )
+from kernel.workflow_position import WorkflowPosition
 from kernel.turn_runner import (
     CheckpointTuning,
     TurnHooks,
@@ -63,7 +63,7 @@ def test_checkpoint_bundle_serialization_roundtrip() -> None:
         stage_id="gather",
         turn_count=5,
         unified_state={"compiled_at": "2026-07-11", "context_markdown": "hello"},
-        workflow_session_state={"mode_id": "research", "stage_id": "gather"},
+        workflow_position={"mode_id": "research", "stage_id": "gather"},
         turn_history=[{"role": "user", "content": "hi"}],
     )
     dumped = bundle.model_dump(mode="json")
@@ -84,7 +84,7 @@ def test_checkpoint_bundle_defaults() -> None:
     assert bundle.stage_id == ""
     assert bundle.turn_count == 0
     assert bundle.unified_state == {}
-    assert bundle.workflow_session_state == {}
+    assert bundle.workflow_position == {}
     assert bundle.turn_history == []
 
 
@@ -192,46 +192,42 @@ def test_build_checkpoint_bundle_with_state() -> None:
     bundle = _build_checkpoint_bundle(
         mode_id="default",
         transitioned_to=None,
-        is_workflow=False,
         hooks=hooks,
     )
     assert bundle is not None
     assert bundle.unified_state["compiled_at"] == "2026-07-11T00:00:00Z"
-    assert bundle.workflow_session_state == {}
+    assert bundle.workflow_position == {}
     assert bundle.checkpoint_id  # non-empty
     assert bundle.created_at  # non-empty
 
 
-def test_build_checkpoint_bundle_with_workflow_session() -> None:
-    """Bundle includes WorkflowSessionState when workflow_session is wired."""
-    session = WorkflowSessionState(
-        user_id="u1",
+def test_build_checkpoint_bundle_with_workflow_position() -> None:
+    """Bundle includes the WorkflowPosition when workflow_position is wired."""
+    session = WorkflowPosition(
         mode_id="research",
         stage_id="gather",
         entered_at="2026-07-11T00:00:00Z",
         turn_count=3,
     )
-    hooks = TurnHooks(workflow_session=lambda: session)
+    hooks = TurnHooks(workflow_position=lambda: session)
     bundle = _build_checkpoint_bundle(
         mode_id="research",
         transitioned_to="gather",
-        is_workflow=True,
         hooks=hooks,
     )
     assert bundle is not None
     assert bundle.stage_id == "gather"
     assert bundle.turn_count == 3
     assert bundle.mode_id == "research"
-    assert "mode_id" in bundle.workflow_session_state
+    assert "mode_id" in bundle.workflow_position
 
 
 def test_build_checkpoint_bundle_no_state_returns_none() -> None:
-    """Bundle is None when neither state_provider nor workflow_session is wired."""
+    """Bundle is None when neither state_provider nor workflow_position is wired."""
     hooks = TurnHooks()
     bundle = _build_checkpoint_bundle(
         mode_id="default",
         transitioned_to=None,
-        is_workflow=False,
         hooks=hooks,
     )
     assert bundle is None

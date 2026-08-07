@@ -6,7 +6,7 @@ state — for the host to restore.
 
 The operation itself does NOT restore state into the running session.
 Restoration is a host concern: the host reads the ``OperationResult`` and
-feeds the ``unified_state`` / ``workflow_session_state`` dicts back into
+feeds the ``unified_state`` / ``workflow_position`` dicts back into
 its runtime state and the turn runner's hooks. The operation is a pure
 load-and-return; the host is the restore executor.
 

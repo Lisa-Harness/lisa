@@ -545,7 +545,7 @@ async def test_rebuild_surface_is_identical_to_phase1_surface(
         mode_config,
         pool=_EmptyPool(),  # type: ignore[arg-type]
         yield_policy=policy,
-        workflow_session_available=session_wired,
+        workflow_position_available=session_wired,
     )
     rebuilt = await _rebuild_tool_schemas_for_mode(
         "parity",

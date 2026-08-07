@@ -1,4 +1,4 @@
-"""Phase 2 tests: wiring ``WorkflowInstance`` into the turn loop.
+"""Phase 2 tests: wiring ``WorkflowPosition`` into the turn loop.
 
 Covers the hydration of ``chain_satisfied`` from a durable instance at
 turn start and the advancement of the instance on a successful
@@ -16,7 +16,7 @@ import pytest
 
 from kernel.models import WorkflowModeConfig
 from kernel.turn_runner import TurnHooks, run_turn
-from kernel.workflow_instance import WorkflowInstance, WorkflowStep
+from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +75,9 @@ def _catalog_with_chain() -> dict[str, WorkflowModeConfig]:
     }
 
 
-def _instance_with_chain(current_step_id: str = "search_0") -> WorkflowInstance:
+def _instance_with_chain(current_step_id: str = "search_0") -> WorkflowPosition:
     """An instance mid-flight: search done, coding is the current step."""
-    return WorkflowInstance(
+    return WorkflowPosition(
         plan_digest="abc",
         declared_steps=(
             WorkflowStep(step_id="search_0", mode_id="search", satisfies_intents=("research",)),
@@ -97,7 +97,7 @@ def _instance_with_chain(current_step_id: str = "search_0") -> WorkflowInstance:
         ),
         completed_steps=("search_0",),
         current_step_id=current_step_id,
-        current_mode_id="coding",
+        mode_id="coding",
         spawned_from="adhoc",
     )
 
@@ -123,7 +123,7 @@ async def test_chain_satisfied_hydrates_from_instance_completed_steps() -> None:
         return _StubCompletion(content="Done coding.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_instance = lambda: instance
+    hooks.workflow_position= lambda: instance
     # No updater wired — we only test hydration here.
 
     catalog = _catalog_with_chain()
@@ -163,7 +163,7 @@ async def test_instance_advanced_on_successful_handoff() -> None:
     moves to markdown_2. The updater receives the advanced instance.
     """
     instance = _instance_with_chain(current_step_id="coding_1")
-    updated_instances: list[WorkflowInstance] = []
+    updated_instances: list[WorkflowPosition] = []
 
     call_count = 0
 
@@ -186,14 +186,14 @@ async def test_instance_advanced_on_successful_handoff() -> None:
         return _StubCompletion(content="Done writing.")
 
     hooks = _build_minimal_hooks(handoff_then_finish)
-    hooks.workflow_instance = lambda: instance
+    hooks.workflow_position= lambda: instance
 
-    def updater(updated: WorkflowInstance) -> None:
+    def updater(updated: WorkflowPosition) -> None:
         updated_instances.append(updated)
-        # Mutate in place so workflow_instance() sees the advanced state.
+        # Mutate in place so workflow_position() sees the advanced state.
         object.__setattr__(instance, "__dict__", updated.__dict__)
 
-    hooks.workflow_instance_updater = updater
+    hooks.workflow_position_updater = updater
 
     catalog = _catalog_with_chain()
     with (
@@ -213,18 +213,18 @@ async def test_instance_advanced_on_successful_handoff() -> None:
     advanced = updated_instances[-1]
     assert "coding_1" in advanced.completed_steps
     assert advanced.current_step_id == "markdown_2"
-    assert advanced.current_mode_id == "markdown"
+    assert advanced.mode_id == "markdown"
 
 
 @pytest.mark.asyncio
 async def test_no_instance_wired_preserves_ephemeral_behavior() -> None:
-    """When no workflow_instance hook is wired, the turn runs as before.
+    """When no workflow_position hook is wired, the turn runs as before.
 
     This is the no-compat-path guarantee: the ephemeral ``chain_satisfied``
     behavior is the "no instance wired" case, not a separate code path.
     """
     hooks = _build_minimal_hooks(_make_stub("Hello."))
-    # No workflow_instance / workflow_instance_updater wired.
+    # No workflow_position / workflow_position_updater wired.
     result = await run_turn(mode_id="default", query="hello", hooks=hooks)
     assert result.response_text == "Hello."
 
@@ -238,13 +238,13 @@ def _make_stub(text: str) -> Any:
 
 @pytest.mark.asyncio
 async def test_adhoc_multistep_chain_creates_durable_instance() -> None:
-    """A turn-1 multi-step ad-hoc chain persists a ``WorkflowInstance``.
+    """A turn-1 multi-step ad-hoc chain persists a ``WorkflowPosition``.
 
     The fix for the 2026-08-01 yield-then-continue skip: when the routing
     hint detects a multi-step chain at turn 1 (search → coding → markdown)
     and no instance is already active, the turn runner compiles the chain
-    into an ad-hoc ``WorkflowInstance`` (``spawned_from="adhoc"``) and
-    persists it via ``workflow_instance_updater``. Without this, the
+    into an ad-hoc ``WorkflowPosition`` (``spawned_from="adhoc"``) and
+    persists it via ``workflow_position_updater``. Without this, the
     ephemeral ``chain_satisfied`` set resets on the next turn and a
     yield → "continue" resume skips the middle step.
 
@@ -255,8 +255,8 @@ async def test_adhoc_multistep_chain_creates_durable_instance() -> None:
     transactional contract — a turn that fails before any handoff must
     not leave a zombie).
     """
-    active_instance: list[WorkflowInstance | None] = [None]
-    saved_instances: list[WorkflowInstance] = []
+    active_instance: list[WorkflowPosition | None] = [None]
+    saved_instances: list[WorkflowPosition] = []
     _handoff_issued = {"flag": False}
 
     async def complete(**_kwargs: Any) -> _StubCompletion:
@@ -281,16 +281,16 @@ async def test_adhoc_multistep_chain_creates_durable_instance() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    # Mirror the host wiring: ``workflow_instance`` returns the live active
+    # Mirror the host wiring: ``workflow_position`` returns the live active
     # ref (None at turn 1); the updater persists the advanced instance and
     # swaps the active ref in place.
-    hooks.workflow_instance = lambda: active_instance[0]
+    hooks.workflow_position= lambda: active_instance[0]
 
-    def _wi_updater(instance: WorkflowInstance) -> None:
+    def _wi_updater(instance: WorkflowPosition) -> None:
         saved_instances.append(instance)
         active_instance[0] = instance
 
-    hooks.workflow_instance_updater = _wi_updater
+    hooks.workflow_position_updater = _wi_updater
 
     catalog = _catalog_with_chain()
     with (
@@ -304,7 +304,7 @@ async def test_adhoc_multistep_chain_creates_durable_instance() -> None:
             hooks=hooks,
         )
 
-    assert saved_instances, "an ad-hoc WorkflowInstance must be created on the first handoff"
+    assert saved_instances, "an ad-hoc WorkflowPosition must be created on the first handoff"
     instance = saved_instances[0]
     assert instance.spawned_from == "adhoc"
     mode_ids = [s.mode_id for s in instance.declared_steps]
@@ -324,20 +324,20 @@ async def test_adhoc_no_chain_does_not_create_instance() -> None:
     Guards against over-eager instance creation for trivial queries that
     the current mode handles in-place. No routing gap → no instance.
     """
-    active_instance: list[WorkflowInstance | None] = [None]
-    saved_instances: list[WorkflowInstance] = []
+    active_instance: list[WorkflowPosition | None] = [None]
+    saved_instances: list[WorkflowPosition] = []
 
     async def complete(**_kwargs: Any) -> _StubCompletion:
         return _StubCompletion(content="Hello.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_instance = lambda: active_instance[0]
+    hooks.workflow_position= lambda: active_instance[0]
 
-    def _wi_updater(instance: WorkflowInstance) -> None:
+    def _wi_updater(instance: WorkflowPosition) -> None:
         saved_instances.append(instance)
         active_instance[0] = instance
 
-    hooks.workflow_instance_updater = _wi_updater
+    hooks.workflow_position_updater = _wi_updater
 
     catalog = _catalog_with_chain()
     with (
@@ -347,7 +347,7 @@ async def test_adhoc_no_chain_does_not_create_instance() -> None:
     ):
         await run_turn(mode_id="default", query="hello", hooks=hooks)
 
-    assert not saved_instances, "no WorkflowInstance should be created for a trivial query"
+    assert not saved_instances, "no WorkflowPosition should be created for a trivial query"
 
 
 def _catalog_with_plan() -> dict[str, WorkflowModeConfig]:
@@ -382,20 +382,20 @@ async def test_adhoc_skipped_when_plan_escalation_fires() -> None:
     """
     from kernel.routing_vocabulary import reset_plan_reliability
 
-    active_instance: list[WorkflowInstance | None] = [None]
-    saved_instances: list[WorkflowInstance] = []
+    active_instance: list[WorkflowPosition | None] = [None]
+    saved_instances: list[WorkflowPosition] = []
 
     async def complete(**_kwargs: Any) -> _StubCompletion:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_instance = lambda: active_instance[0]
+    hooks.workflow_position= lambda: active_instance[0]
 
-    def _wi_updater(instance: WorkflowInstance) -> None:
+    def _wi_updater(instance: WorkflowPosition) -> None:
         saved_instances.append(instance)
         active_instance[0] = instance
 
-    hooks.workflow_instance_updater = _wi_updater
+    hooks.workflow_position_updater = _wi_updater
 
     catalog = _catalog_with_plan()
     reset_plan_reliability()
@@ -427,7 +427,7 @@ async def test_adhoc_chain_not_persisted_when_no_handoff_occurs() -> None:
     """A multi-step chain that never hands off must not persist an instance.
 
     The 2026-08-06 zombie-instance incident: at 17:58 a failed fork
-    persisted an ad-hoc ``WorkflowInstance`` whose creation fork errored
+    persisted an ad-hoc ``WorkflowPosition`` whose creation fork errored
     (``RouterRequest`` TypeError, then ``is_fork_target`` NameError). The
     instance was never rolled back and drove every subsequent turn's
     "plan-driven next step" against the user's actual intent. The fix
@@ -435,8 +435,8 @@ async def test_adhoc_chain_not_persisted_when_no_handoff_occurs() -> None:
     handoff; a turn that ends without any handoff (model returns a plain
     completion, or the turn fails) leaves no instance in the store.
     """
-    active_instance: list[WorkflowInstance | None] = [None]
-    saved_instances: list[WorkflowInstance] = []
+    active_instance: list[WorkflowPosition | None] = [None]
+    saved_instances: list[WorkflowPosition] = []
 
     async def complete(**_kwargs: Any) -> _StubCompletion:
         # Plain completion — no transition_stage call. The ad-hoc steps
@@ -444,13 +444,13 @@ async def test_adhoc_chain_not_persisted_when_no_handoff_occurs() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_instance = lambda: active_instance[0]
+    hooks.workflow_position= lambda: active_instance[0]
 
-    def _wi_updater(instance: WorkflowInstance) -> None:
+    def _wi_updater(instance: WorkflowPosition) -> None:
         saved_instances.append(instance)
         active_instance[0] = instance
 
-    hooks.workflow_instance_updater = _wi_updater
+    hooks.workflow_position_updater = _wi_updater
 
     catalog = _catalog_with_chain()
     with (
@@ -465,7 +465,7 @@ async def test_adhoc_chain_not_persisted_when_no_handoff_occurs() -> None:
         )
 
     assert not saved_instances, (
-        "no WorkflowInstance must be persisted when no handoff occurred "
+        "no WorkflowPosition must be persisted when no handoff occurred "
         f"(got {len(saved_instances)} instance(s)) — deferred persist prevents "
         "zombie instances from failed turns"
     )

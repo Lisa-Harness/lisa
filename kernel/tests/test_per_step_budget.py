@@ -21,7 +21,7 @@ import pytest
 
 from kernel.models import WorkflowModeConfig
 from kernel.turn_runner import TurnHooks, run_turn
-from kernel.workflow_instance import WorkflowInstance, WorkflowStep
+from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,9 +74,9 @@ def _catalog_with_chain() -> dict[str, WorkflowModeConfig]:
     }
 
 
-def _instance_two_step(current_step_id: str = "search_0") -> WorkflowInstance:
+def _instance_two_step(current_step_id: str = "search_0") -> WorkflowPosition:
     """A two-step instance: search (current) → coding (remaining)."""
-    return WorkflowInstance(
+    return WorkflowPosition(
         plan_digest="abc",
         declared_steps=(
             WorkflowStep(step_id="search_0", mode_id="search", satisfies_intents=("research",)),
@@ -90,7 +90,7 @@ def _instance_two_step(current_step_id: str = "search_0") -> WorkflowInstance:
         ),
         completed_steps=(),
         current_step_id=current_step_id,
-        current_mode_id="search",
+        mode_id="search",
         spawned_from="adhoc",
     )
 
@@ -105,7 +105,7 @@ async def test_per_step_cap_forces_handoff_before_global_cap() -> None:
     remaining step) rather than looping until the global cap.
     """
     instance = _instance_two_step(current_step_id="search_0")
-    instances: list[WorkflowInstance] = []
+    instances: list[WorkflowPosition] = []
 
     call_count = 0
 
@@ -133,13 +133,13 @@ async def test_per_step_cap_forces_handoff_before_global_cap() -> None:
         return _StubCompletion(content="Done coding.")
 
     hooks = _build_minimal_hooks(loop_then_handoff)
-    hooks.workflow_instance = lambda: instance
+    hooks.workflow_position= lambda: instance
 
-    def updater(updated: WorkflowInstance) -> None:
+    def updater(updated: WorkflowPosition) -> None:
         instances.append(updated)
         object.__setattr__(instance, "__dict__", updated.__dict__)
 
-    hooks.workflow_instance_updater = updater
+    hooks.workflow_position_updater = updater
 
     catalog = _catalog_with_chain()
     with (
@@ -169,7 +169,7 @@ async def test_per_step_cap_forces_handoff_before_global_cap() -> None:
 async def test_global_cap_still_runs_final_completion() -> None:
     """With no instance wired, the per-step cap degrades to the global cap.
 
-    No ``workflow_instance`` hook → the per-step-cap intercept falls
+    No ``workflow_position`` hook → the per-step-cap intercept falls
     through and the existing empty-content final completion runs. The
     model produces a final answer (or the generic fallback), not a
     synthesized handoff.
@@ -198,7 +198,7 @@ async def test_global_cap_still_runs_final_completion() -> None:
         return _StubCompletion(content="Final answer.")
 
     hooks = _build_minimal_hooks(loop_tools_then_final)
-    # No workflow_instance wired.
+    # No workflow_position wired.
 
     catalog = _catalog_with_chain()
     with (
@@ -234,7 +234,7 @@ async def test_step_counter_resets_on_handoff() -> None:
     coding without the per-step cap firing prematurely.
     """
     instance = _instance_two_step(current_step_id="search_0")
-    instances: list[WorkflowInstance] = []
+    instances: list[WorkflowPosition] = []
 
     call_count = 0
 
@@ -259,13 +259,13 @@ async def test_step_counter_resets_on_handoff() -> None:
         return _StubCompletion(content="Done coding.")
 
     hooks = _build_minimal_hooks(handoff_then_finish)
-    hooks.workflow_instance = lambda: instance
+    hooks.workflow_position= lambda: instance
 
-    def updater(updated: WorkflowInstance) -> None:
+    def updater(updated: WorkflowPosition) -> None:
         instances.append(updated)
         object.__setattr__(instance, "__dict__", updated.__dict__)
 
-    hooks.workflow_instance_updater = updater
+    hooks.workflow_position_updater = updater
 
     catalog = _catalog_with_chain()
     with (
@@ -308,7 +308,7 @@ async def test_per_step_tool_call_cap_forces_handoff() -> None:
     handoff to the next remaining step.
     """
     instance = _instance_two_step(current_step_id="search_0")
-    instances: list[WorkflowInstance] = []
+    instances: list[WorkflowPosition] = []
 
     call_count = 0
 
@@ -333,13 +333,13 @@ async def test_per_step_tool_call_cap_forces_handoff() -> None:
         )
 
     hooks = _build_minimal_hooks(two_tools_then_text)
-    hooks.workflow_instance = lambda: instance
+    hooks.workflow_position= lambda: instance
 
-    def updater(updated: WorkflowInstance) -> None:
+    def updater(updated: WorkflowPosition) -> None:
         instances.append(updated)
         object.__setattr__(instance, "__dict__", updated.__dict__)
 
-    hooks.workflow_instance_updater = updater
+    hooks.workflow_position_updater = updater
 
     catalog = _catalog_with_chain()
     with (
@@ -367,7 +367,7 @@ async def test_per_step_tool_call_cap_forces_handoff() -> None:
 async def test_no_instance_per_step_cap_degrades_to_global() -> None:
     """No instance + per-step cap hit → existing fallback, no crash.
 
-    The per-step-cap intercept checks ``hooks.workflow_instance is not
+    The per-step-cap intercept checks ``hooks.workflow_position is not
     None``; when no instance is wired, it falls through to the existing
     empty-content final completion. This is the no-compat-path guarantee.
     """
@@ -392,7 +392,7 @@ async def test_no_instance_per_step_cap_degrades_to_global() -> None:
         return _StubCompletion(content="Final.")
 
     hooks = _build_minimal_hooks(always_tool)
-    # No workflow_instance wired.
+    # No workflow_position wired.
 
     catalog = _catalog_with_chain()
     with (

@@ -198,17 +198,14 @@ class HostRuntime:
         self.next_model_id: str = "-"
         self.next_model_provider: str = "-"
 
-        # ── Durable workflow-instance state ────────────────────────────
-        # The active ``WorkflowInstance`` for the current user/surface, or
-        # ``None`` when no multi-stage workflow is in flight. The instance is
-        # the durable inter-mode object that survives across modes, turns,
-        # and host restarts; the kernel hydrates ``chain_satisfied`` from
-        # its ``completed_steps`` at turn start so a resumed turn does not
-        # re-suggest already-completed steps. Boot-loaded below once the
-        # store is constructed. The per-mode intra-mode FSM pointer lives
-        # on ``_workflow_session`` (separate concern).
-        self._active_workflow_instance: Any = None
-        self._workflow_session: Any = None
+        # ── Durable workflow-position state ────────────────────────────
+        # The active ``WorkflowPosition`` for the current user/surface, or
+        # ``None`` when no workflow is in flight. The position is the single
+        # durable workflow object — inter-mode plan (declared/completed
+        # steps) plus intra-mode stage pointer (mode_id/stage_id/turn_count)
+        # — surviving across modes, turns, and host restarts. Boot-loaded
+        # below once the store is constructed.
+        self._workflow_position: Any = None
 
         # ── State snapshot ────────────────────────────────────────────
         self._state_snapshot: dict[str, Any] | None = None
@@ -250,15 +247,15 @@ class HostRuntime:
             self.data_dir / "code-change-artifacts.json"
         )
 
-        # ── Durable workflow-instance store ───────────────────────────
+        # ── Durable workflow-position store ───────────────────────────
         # Mirrors ``recovery_service``: same JSON-file-with-identity-scope
-        # pattern, same data_dir. The store keys active instances by
+        # pattern, same data_dir. The store keys active positions by
         # ``RecoveryIdentity`` (the same scope recovery records use); one
-        # user has at most one active (non-complete) instance per surface.
-        from host.workflow_instance_store import FileWorkflowInstanceStore  # noqa: PLC0415
+        # user has at most one active (non-complete) position per surface.
+        from host.workflow_position_store import FileWorkflowPositionStore  # noqa: PLC0415
 
-        self.workflow_instance_store = FileWorkflowInstanceStore(
-            self.data_dir / "workflow-instances.json"
+        self.workflow_position_store = FileWorkflowPositionStore(
+            self.data_dir / "workflow-positions.json"
         )
 
         # ── Token usage handler ───────────────────────────────────────
@@ -277,13 +274,12 @@ class HostRuntime:
         """Return the durable ``TokenUsageTelemetryHandler`` for this runtime."""
         return self._token_usage_handler
 
-    # ── Durable workflow-instance lifecycle ─────────────────────────
+    # ── Durable workflow-position lifecycle ─────────────────────────
     # The kernel calls these via the TurnHooks wiring:
-    # ``workflow_instance`` (lambda) returns ``self._active_workflow_instance``;
-    # ``workflow_instance_updater`` calls ``self._set_workflow_instance``;
-    # ``workflow_session`` / ``workflow_session_updater`` likewise for the
-    # intra-mode FSM pointer; ``on_checkpoint`` calls ``self._on_checkpoint``
-    # to persist a snapshot through the storage MCP tool pool.
+    # ``workflow_position`` (lambda) returns ``self._workflow_position``;
+    # ``workflow_position_updater`` calls ``self._set_workflow_position``;
+    # ``on_checkpoint`` calls ``self._on_checkpoint`` to persist a snapshot
+    # through the storage MCP tool pool.
 
     def _workflow_identity(self) -> Any:
         """Build the ``RecoveryIdentity`` scoping the active instance.
@@ -304,72 +300,65 @@ class HostRuntime:
             session_plan_digest=self.session_plan.plan_digest,
         )
 
-    def _boot_load_active_workflow_instance(self) -> None:
-        """Resume a mid-flight workflow instance from the durable store.
+    def _boot_load_active_workflow_position(self) -> None:
+        """Resume a mid-flight workflow position from the durable store.
 
         Called once at ``__init__`` after the store is constructed. When a
-        non-complete instance for this identity exists, restore it into
-        ``_active_workflow_instance`` and override ``current_mode_id`` from
-        the instance's current step's mode — so the first post-restart
-        turn starts in the right mode instead of the static ``start_mode``.
-        Safe to call on a fresh data_dir (the store returns ``None``).
+        non-complete position for this identity exists, restore it into
+        ``_workflow_position`` and override ``current_mode_id`` from the
+        position's ``mode_id`` — so the first post-restart turn starts in
+        the right mode instead of the static ``start_mode``. Safe to call
+        on a fresh data_dir (the store returns ``None``).
         """
         identity = self._workflow_identity()
         try:
-            instance = self.workflow_instance_store.load_active_sync(identity)
+            position = self.workflow_position_store.load_active_sync(identity)
         except Exception:  # pylint: disable=broad-except
             return
-        if instance is None:
+        if position is None:
             return
-        self._active_workflow_instance = instance
-        # Override the static start_mode init: a resuming instance starts
-        # in its current step's mode, not the plan's default entry mode.
-        current_mode = getattr(instance, "current_mode_id", "") or ""
+        self._workflow_position = position
+        # Override the static start_mode init: a resuming position starts
+        # in its parked mode, not the plan's default entry mode.
+        current_mode = getattr(position, "mode_id", "") or ""
         if current_mode:
             self.current_mode_id = current_mode
 
-    def _set_workflow_instance(self, updated: Any) -> None:
-        """Persist an advanced ``WorkflowInstance`` and update the active ref.
+    def _set_workflow_position(self, updated: Any) -> None:
+        """Persist an advanced ``WorkflowPosition`` and update the active ref.
 
-        Called by the kernel's ``workflow_instance_updater`` hook after a
-        successful ``transition_stage``. Persists to the durable store
-        (scoped by identity) and swaps the in-memory active ref in place so
-        ``workflow_instance()`` returns the advanced state. When the instance
-        is complete, clears the active ref so the next turn starts fresh.
+        Called by the kernel's ``workflow_position_updater`` hook after a
+        successful ``transition_stage`` or stage advance. Persists to the
+        durable store (scoped by identity) and swaps the in-memory active
+        ref in place so ``workflow_position()`` returns the advanced state.
+        When the position is complete (all steps done and parked on a
+        terminal stage, or no stage pointer), clears the active ref so the
+        next turn starts fresh. The checkpoint pack's ``handle_restore``
+        also calls this when restoring a bundle's ``workflow_position``.
 
         Uses the store's sync save/clear paths because the kernel calls this
         from within the running event loop (the async store methods'
         ``asyncio.Lock`` would deadlock against the running loop).
         """
-        self._active_workflow_instance = updated
-        from kernel.workflow_instance import is_complete  # noqa: PLC0415
+        self._workflow_position = updated
+        from kernel.workflow_position import is_complete  # noqa: PLC0415
 
         identity = self._workflow_identity()
         try:
-            self.workflow_instance_store.save_sync(updated, identity)
+            self.workflow_position_store.save_sync(updated, identity)
         except Exception:  # pylint: disable=broad-except
             pass
         if is_complete(updated):
             # Workflow done: clear the active ref so the next turn starts
-            # fresh (no instance to hydrate from).
-            self._active_workflow_instance = None
+            # fresh (no position to hydrate from).
+            self._workflow_position = None
             try:
-                self.workflow_instance_store.clear_sync(
-                    getattr(updated, "instance_id", ""),
+                self.workflow_position_store.clear_sync(
+                    getattr(updated, "position_id", ""),
                     identity,
                 )
             except Exception:  # pylint: disable=broad-except
                 pass
-
-    def _set_workflow_session(self, updated: Any) -> None:
-        """Persist an updated ``WorkflowSessionState`` (intra-mode FSM).
-
-        Called by the kernel's ``workflow_session_updater`` hook after a
-        successful workflow-stage transition. Held in memory on
-        ``_workflow_session``; the checkpoint pack's ``handle_restore``
-        also calls this when restoring a bundle's ``workflow_session_state``.
-        """
-        self._workflow_session = updated
 
     async def _on_checkpoint(self, bundle: Any) -> None:
         """Persist a ``CheckpointBundle`` via the storage MCP tool pool.

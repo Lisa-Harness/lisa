@@ -970,18 +970,16 @@ def test_should_checkpoint_false_on_transition_when_disabled() -> None:
 
 def test_should_checkpoint_true_on_every_n_turns() -> None:
     """_should_checkpoint returns True when turn_count is a multiple of every_n_turns."""
-    from kernel.models import WorkflowSessionState
+    from kernel.workflow_position import WorkflowPosition
     from kernel.turn_runner import CheckpointTuning, TurnHooks, _should_checkpoint
 
-    session = WorkflowSessionState(
-        user_id="u",
-        user_slug="s",
+    session = WorkflowPosition(
         mode_id="ponder",
         stage_id="reason",
         entered_at="2026-01-01T00:00:00Z",
         turn_count=10,
     )
-    hooks = TurnHooks(workflow_session=lambda: session)
+    hooks = TurnHooks(workflow_position=lambda: session)
     tuning = CheckpointTuning(enabled=True, every_n_turns=5, on_stage_transition=False)
     assert (
         _should_checkpoint(
@@ -996,18 +994,16 @@ def test_should_checkpoint_true_on_every_n_turns() -> None:
 
 def test_should_checkpoint_false_when_turn_count_not_multiple() -> None:
     """_should_checkpoint returns False when turn_count is not a multiple."""
-    from kernel.models import WorkflowSessionState
+    from kernel.workflow_position import WorkflowPosition
     from kernel.turn_runner import CheckpointTuning, TurnHooks, _should_checkpoint
 
-    session = WorkflowSessionState(
-        user_id="u",
-        user_slug="s",
+    session = WorkflowPosition(
         mode_id="ponder",
         stage_id="reason",
         entered_at="2026-01-01T00:00:00Z",
         turn_count=7,
     )
-    hooks = TurnHooks(workflow_session=lambda: session)
+    hooks = TurnHooks(workflow_position=lambda: session)
     tuning = CheckpointTuning(enabled=True, every_n_turns=5, on_stage_transition=False)
     assert (
         _should_checkpoint(

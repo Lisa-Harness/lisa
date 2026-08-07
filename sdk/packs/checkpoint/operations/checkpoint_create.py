@@ -52,9 +52,9 @@ class Parameters(BaseModel):
         description="Serialized UnifiedState to include. When empty, the "
         "operation reads from ctx.state_provider if available.",
     )
-    workflow_session_state: dict[str, Any] = Field(
+    workflow_position: dict[str, Any] = Field(
         default_factory=dict,
-        description="Serialized WorkflowSessionState to include. When empty, "
+        description="Serialized WorkflowPosition to include. When empty, "
         "the operation omits it.",
     )
     prompt: str = Field(
@@ -193,20 +193,23 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning("checkpoint: state_provider dump failed: %s", exc)
 
-    workflow_session_state = dict(parsed.workflow_session_state or {})
+    workflow_position = dict(parsed.workflow_position or {})
 
     # Enrichment: call the model to summarize the conversation.
     enrichment = await _enrich_checkpoint(ctx, turn_history, parsed.prompt)
 
+    from kernel.models import CHECKPOINT_SCHEMA_VERSION  # noqa: PLC0415
+
     bundle = {
         "checkpoint_id": _checkpoint_id(),
         "created_at": _now_iso(),
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "label": label,
         "mode_id": ctx.mode_id,
         "stage_id": str(ctx.stage_id or ""),
         "turn_count": len(turn_history),
         "unified_state": unified_state,
-        "workflow_session_state": workflow_session_state,
+        "workflow_position": workflow_position,
         "turn_history": turn_history,
         "overview": enrichment.overview,
         "work_done": enrichment.work_done,

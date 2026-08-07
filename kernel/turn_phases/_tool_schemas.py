@@ -233,7 +233,7 @@ async def build_tool_surface(
     *,
     pool: MCPToolPool,
     yield_policy: YieldPolicy,
-    workflow_session_available: bool,
+    workflow_position_available: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Build the complete model-facing tool surface for one mode.
 
@@ -249,7 +249,7 @@ async def build_tool_surface(
     here — never passed in by callers:
 
     - ``transition_stage`` is advertised when the mode is a workflow with a
-      wired session (intra-mode stage advancement) OR the mode has routing
+      wired position (intra-mode stage advancement) OR the mode has routing
       targets (inter-mode handoffs).
     - ``yield`` is advertised when the resolved yield policy allows inline
       asks or names a fallback mode.
@@ -260,8 +260,8 @@ async def build_tool_surface(
         yield_policy: The yield policy resolved for this turn (the fork
             fan-out passes the mode's ``fork_yield_policy`` so children follow
             the background policy).
-        workflow_session_available: True when the host wired
-            ``hooks.workflow_session`` — a property of the turn, not the mode.
+        workflow_position_available: True when the host wired
+            ``hooks.workflow_position`` — a property of the turn, not the mode.
 
     Returns:
         ``(schemas, prune_stats)`` — the pruned OpenAI tool schemas and the
@@ -315,7 +315,7 @@ async def build_tool_surface(
     is_workflow = (
         mode_config is not None
         and mode_config.mode_kind == "workflow"
-        and workflow_session_available
+        and workflow_position_available
     )
     has_routing_targets = bool(get_routing_targets(mode_id)) if mode_config else False
     if is_workflow or has_routing_targets:
@@ -352,8 +352,8 @@ async def _rebuild_tool_schemas_for_mode(
     depends only on the mode config, the pool, and the resolved yield policy.
     ``is_workflow_for_target`` is retained for signature compatibility; the
     caller computes it as ``mode_kind == "workflow" and
-    hooks.workflow_session is not None``, which is exactly the
-    ``workflow_session_available`` input the builder needs for a workflow
+    hooks.workflow_position is not None``, which is exactly the
+    ``workflow_position_available`` input the builder needs for a workflow
     mode (for non-workflow modes the builder's own mode_kind check gates the
     condition, so passing the flag through is correct for both cases).
     ``yield_policy`` must be the policy the caller already resolved for the
@@ -366,6 +366,6 @@ async def _rebuild_tool_schemas_for_mode(
         target_mode_config,
         pool=pool,
         yield_policy=yield_policy if yield_policy is not None else YieldPolicy(),
-        workflow_session_available=is_workflow_for_target,
+        workflow_position_available=is_workflow_for_target,
     )
     return schemas

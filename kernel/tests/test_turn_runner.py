@@ -225,7 +225,7 @@ async def test_plan_action_mode_propagates_handoff_to_advance_host_mode() -> Non
         )
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_instance_updater = lambda _instance: None
+    hooks.workflow_position_updater = lambda _instance: None
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -458,7 +458,7 @@ async def test_run_turn_search_action_mode_phase1_returns_entry_op_result_not_pl
     directly and NOT trip the Phase 1 plan-failure recovery path.
 
     Regression for the 2026-08-06 ``plan → search`` workflow stall: the
-    planner persisted a 2-step ``[search, ...]`` WorkflowInstance and
+    planner persisted a 2-step ``[search, ...]`` WorkflowPosition and
     handed off to ``search``; the recursive turn re-entered Phase 1,
     ran ``web_search`` (which returns search results, not a routing
     target), read an empty ``target_stage_id``, and fell into the
@@ -539,15 +539,15 @@ async def test_run_turn_planner_with_steps_renders_visible_plan_and_persists_ins
     the turn runner:
     1. Prepends the rendered plan markdown block to the response_text so
        the user sees the plan before the first step's output.
-    2. Creates a ``WorkflowInstance`` with ``spawned_from="plan_workflow_op"``
-       and persists it via ``workflow_instance_updater``.
+    2. Creates a ``WorkflowPosition`` with ``spawned_from="plan_workflow_op"``
+       and persists it via ``workflow_position_updater``.
     3. Normalizes ``target_stage_id`` to ``steps[0].mode_id`` and recurses
        into the first step.
     """
     from unittest.mock import patch
 
     from kernel.models import OperationResult
-    from kernel.workflow_instance import WorkflowInstance
+    from kernel.workflow_position import WorkflowPosition
 
     plan_cfg = WorkflowModeConfig(
         mode_id="plan",
@@ -594,13 +594,13 @@ async def test_run_turn_planner_with_steps_renders_visible_plan_and_persists_ins
     async def complete(**kwargs: Any) -> _StubCompletion:
         return _StubCompletion(content="Search results for rust async.")
 
-    saved_instances: list[WorkflowInstance] = []
+    saved_instances: list[WorkflowPosition] = []
 
-    def _wi_updater(instance: WorkflowInstance) -> None:
+    def _wi_updater(instance: WorkflowPosition) -> None:
         saved_instances.append(instance)
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_instance_updater = _wi_updater
+    hooks.workflow_position_updater = _wi_updater
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -621,8 +621,8 @@ async def test_run_turn_planner_with_steps_renders_visible_plan_and_persists_ins
     # The plan block comes BEFORE the step output.
     assert result.response_text.index("## Plan") < result.response_text.index("Search results")
 
-    # A WorkflowInstance was persisted with the correct steps.
-    assert len(saved_instances) == 1, "exactly one WorkflowInstance persisted"
+    # A WorkflowPosition was persisted with the correct steps.
+    assert len(saved_instances) == 1, "exactly one WorkflowPosition persisted"
     instance = saved_instances[0]
     assert instance.spawned_from == "plan_workflow_op"
     assert len(instance.declared_steps) == 2
@@ -630,18 +630,18 @@ async def test_run_turn_planner_with_steps_renders_visible_plan_and_persists_ins
     assert instance.declared_steps[1].mode_id == "markdown"
     assert instance.declared_steps[1].is_terminal
     assert instance.current_step_id == instance.declared_steps[0].step_id
-    assert instance.current_mode_id == "search"
+    assert instance.mode_id == "search"
 
 
 @pytest.mark.asyncio
 async def test_run_turn_planner_without_steps_no_plan_block_no_instance() -> None:
     """When plan_workflow returns no ``steps`` (weak-model fallback), the
-    turn runner does NOT create a WorkflowInstance and does NOT prepend a
+    turn runner does NOT create a WorkflowPosition and does NOT prepend a
     plan block — same as the pre-Option-B behavior. No regression."""
     from unittest.mock import patch
 
     from kernel.models import OperationResult
-    from kernel.workflow_instance import WorkflowInstance
+    from kernel.workflow_position import WorkflowPosition
 
     plan_cfg = WorkflowModeConfig(
         mode_id="plan",
@@ -670,13 +670,13 @@ async def test_run_turn_planner_without_steps_no_plan_block_no_instance() -> Non
     async def complete(**_kwargs: Any) -> _StubCompletion:
         return _StubCompletion(content="Search results.")
 
-    saved_instances: list[WorkflowInstance] = []
+    saved_instances: list[WorkflowPosition] = []
 
-    def _wi_updater(instance: WorkflowInstance) -> None:
+    def _wi_updater(instance: WorkflowPosition) -> None:
         saved_instances.append(instance)
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_instance_updater = _wi_updater
+    hooks.workflow_position_updater = _wi_updater
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -691,14 +691,14 @@ async def test_run_turn_planner_without_steps_no_plan_block_no_instance() -> Non
     # No plan block — the response is just the step output.
     assert "## Plan" not in result.response_text
     assert result.response_text == "Search results."
-    # No WorkflowInstance created (no steps to persist).
+    # No WorkflowPosition created (no steps to persist).
     assert len(saved_instances) == 0
 
 
 @pytest.mark.asyncio
 async def test_coordinator_routing_hint_uses_plan_instance_current_step_on_proceed() -> None:
     """When a ``/proceed`` resume query is sent and a
-    ``plan_workflow_op`` WorkflowInstance is active, the routing hint
+    ``plan_workflow_op`` WorkflowPosition is active, the routing hint
     reads the next target from the instance's ``current_step_id`` (which
     was advanced when the previous step completed), NOT from the
     coordinator's saved ``next_target`` (which points at the first step
@@ -706,7 +706,7 @@ async def test_coordinator_routing_hint_uses_plan_instance_current_step_on_proce
     path — the plan survives across turns and ``/proceed`` picks up the
     correct next step.
     """
-    from kernel.workflow_instance import WorkflowInstance, WorkflowStep
+    from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
     # Build an instance that has already completed step 0 (search) and
     # advanced to step 1 (markdown). The coordinator's saved
@@ -727,11 +727,11 @@ async def test_coordinator_routing_hint_uses_plan_instance_current_step_on_proce
             spawned_from="plan_workflow_op",
         ),
     )
-    active_instance = WorkflowInstance(
+    active_instance = WorkflowPosition(
         declared_steps=steps,
         completed_steps=("search_0",),
         current_step_id="markdown_1",
-        current_mode_id="markdown",
+        mode_id="markdown",
         spawned_from="plan_workflow_op",
     )
 
@@ -756,7 +756,7 @@ async def test_coordinator_routing_hint_uses_plan_instance_current_step_on_proce
 
     hooks = _build_minimal_hooks(complete)
     hooks.route_coordinator = coordinator
-    hooks.workflow_instance = lambda: active_instance
+    hooks.workflow_position= lambda: active_instance
 
     result = await run_turn(mode_id="default", query="proceed", hooks=hooks)
 
@@ -779,7 +779,7 @@ async def test_plan_instance_resume_hint_fires_without_route_coordinator() -> No
     even when ``route_coordinator`` is NOT wired.
 
     Regression for the 2026-08-01 incident: the host wires
-    ``workflow_instance`` (the durable cross-turn plan store) but never
+    ``workflow_position`` (the durable cross-turn plan store) but never
     wires ``route_coordinator`` (a legacy single-target persistence). The
     old guard ``if hooks.route_coordinator is None ... return ""`` short-
     circuited the whole resume path, so a continuation query like "proceed
@@ -787,7 +787,7 @@ async def test_plan_instance_resume_hint_fires_without_route_coordinator() -> No
     ``plan_workflow`` refused to route an execution request ("No installed
     mode provides a 'proceed with P0' capability").
     """
-    from kernel.workflow_instance import WorkflowInstance, WorkflowStep
+    from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
     steps = (
         WorkflowStep(
@@ -804,11 +804,11 @@ async def test_plan_instance_resume_hint_fires_without_route_coordinator() -> No
             spawned_from="plan_workflow_op",
         ),
     )
-    active_instance = WorkflowInstance(
+    active_instance = WorkflowPosition(
         declared_steps=steps,
         completed_steps=("search_0",),
         current_step_id="markdown_1",
-        current_mode_id="markdown",
+        mode_id="markdown",
         spawned_from="plan_workflow_op",
     )
 
@@ -820,8 +820,8 @@ async def test_plan_instance_resume_hint_fires_without_route_coordinator() -> No
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    # Production wiring: workflow_instance is set, route_coordinator is NOT.
-    hooks.workflow_instance = lambda: active_instance
+    # Production wiring: workflow_position is set, route_coordinator is NOT.
+    hooks.workflow_position= lambda: active_instance
     assert hooks.route_coordinator is None
 
     result = await run_turn(mode_id="default", query="proceed with P0", hooks=hooks)
@@ -834,11 +834,11 @@ async def test_plan_instance_resume_hint_fires_without_route_coordinator() -> No
 
 @pytest.mark.asyncio
 async def test_plan_progress_rendered_when_plan_instance_active() -> None:
-    """When a ``plan_workflow_op`` WorkflowInstance is active and has
+    """When a ``plan_workflow_op`` WorkflowPosition is active and has
     remaining steps, the turn result's ``response_text`` includes a
     ``## Workflow progress`` summary so the user sees which steps are
     done and which remain."""
-    from kernel.workflow_instance import WorkflowInstance, WorkflowStep
+    from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
     steps = (
         WorkflowStep(
@@ -855,11 +855,11 @@ async def test_plan_progress_rendered_when_plan_instance_active() -> None:
             spawned_from="plan_workflow_op",
         ),
     )
-    active_instance = WorkflowInstance(
+    active_instance = WorkflowPosition(
         declared_steps=steps,
         completed_steps=("search_0",),
         current_step_id="markdown_1",
-        current_mode_id="markdown",
+        mode_id="markdown",
         spawned_from="plan_workflow_op",
     )
 
@@ -867,7 +867,7 @@ async def test_plan_progress_rendered_when_plan_instance_active() -> None:
         return _StubCompletion(content="Drafted the markdown summary.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_instance = lambda: active_instance
+    hooks.workflow_position= lambda: active_instance
 
     result = await run_turn(mode_id="markdown", query="write the summary", hooks=hooks)
 
@@ -1025,7 +1025,7 @@ async def test_plan_mid_turn_handoff_resumes_active_instance() -> None:
     from unittest.mock import patch
 
     from kernel.models import OperationResult
-    from kernel.workflow_instance import WorkflowInstance, WorkflowStep
+    from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
     default_cfg = _mode_config(mode_id="default")
     plan_cfg = WorkflowModeConfig(
@@ -1063,11 +1063,11 @@ async def test_plan_mid_turn_handoff_resumes_active_instance() -> None:
             spawned_from="plan_workflow_op",
         ),
     )
-    active_instance = WorkflowInstance(
+    active_instance = WorkflowPosition(
         declared_steps=steps,
         completed_steps=("search_0",),
         current_step_id="markdown_1",
-        current_mode_id="markdown",
+        mode_id="markdown",
         spawned_from="plan_workflow_op",
     )
 
@@ -1105,7 +1105,7 @@ async def test_plan_mid_turn_handoff_resumes_active_instance() -> None:
         )
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_instance = lambda: active_instance
+    hooks.workflow_position= lambda: active_instance
 
     with (
         patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
@@ -1527,15 +1527,13 @@ async def test_run_turn_injects_workflow_stage_instruction() -> None:
             parts.append(stage_instruction)
         return "\n\n".join(parts)
 
-    def workflow_session() -> Any:
-        from kernel.models import WorkflowSessionState
+    def workflow_position() -> Any:
+        from kernel.workflow_position import WorkflowPosition
 
         mode = get_workflow_catalog().get("ponder")
         if mode is None:
             return None
-        return WorkflowSessionState(
-            user_id="test-user",
-            user_slug="test",
+        return WorkflowPosition(
             mode_id="ponder",
             stage_id="inquire",
             entered_at="2026-01-01T00:00:00Z",
@@ -1543,7 +1541,7 @@ async def test_run_turn_injects_workflow_stage_instruction() -> None:
 
     hooks = _build_minimal_hooks(complete)
     hooks.assemble_system_prompt = assemble_system
-    hooks.workflow_session = workflow_session
+    hooks.workflow_position = workflow_position
 
     result = await run_turn(mode_id="ponder", query="analyze this", hooks=hooks)
 
@@ -1557,28 +1555,26 @@ async def test_run_turn_injects_workflow_stage_instruction() -> None:
 @pytest.mark.asyncio
 async def test_run_turn_workflow_transition_dispatches_apply_transition() -> None:
     """When the model calls transition_stage, the loop intercepts it,
-    calls apply_transition, updates the session via workflow_session_updater,
+    calls apply_transition, updates the session via workflow_position_updater,
     and reports transitioned_to on the TurnResult.
     """
-    from kernel.models import WorkflowSessionState
+    from kernel.workflow_position import WorkflowPosition
 
-    updated_sessions: list[WorkflowSessionState] = []
+    updated_sessions: list[WorkflowPosition] = []
 
-    # Mutable session so workflow_session() always returns the latest state.
-    session = WorkflowSessionState(
-        user_id="test-user",
-        user_slug="test",
+    # Mutable session so workflow_position() always returns the latest state.
+    session = WorkflowPosition(
         mode_id="ponder",
         stage_id="inquire",
         entered_at="2026-01-01T00:00:00Z",
     )
 
-    def workflow_session() -> Any:
+    def workflow_position() -> Any:
         return session
 
-    def workflow_session_updater(updated: WorkflowSessionState) -> None:
+    def workflow_position_updater(updated: WorkflowPosition) -> None:
         updated_sessions.append(updated)
-        # Mutate in place so workflow_session() sees the new stage.
+        # Mutate in place so workflow_position() sees the new stage.
         session.stage_id = updated.stage_id
         session.turn_count = updated.turn_count
         session.stage_data = updated.stage_data
@@ -1604,8 +1600,8 @@ async def test_run_turn_workflow_transition_dispatches_apply_transition() -> Non
         return _StubCompletion(content="Done reasoning.")
 
     hooks = _build_minimal_hooks(two_step)
-    hooks.workflow_session = workflow_session
-    hooks.workflow_session_updater = workflow_session_updater
+    hooks.workflow_position = workflow_position
+    hooks.workflow_position_updater = workflow_position_updater
 
     result = await run_turn(mode_id="ponder", query="analyze this", hooks=hooks)
 
@@ -1621,18 +1617,16 @@ async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
     """After stage_nudge_threshold turns in the same stage, the loop
     injects a nudge user-message prompting the model to transition.
     """
-    from kernel.models import WorkflowSessionState
+    from kernel.workflow_position import WorkflowPosition
 
-    session = WorkflowSessionState(
-        user_id="test-user",
-        user_slug="test",
+    session = WorkflowPosition(
         mode_id="ponder",
         stage_id="inquire",
         entered_at="2026-01-01T00:00:00Z",
         turn_count=4,  # at the nudge threshold
     )
 
-    def workflow_session() -> Any:
+    def workflow_position() -> Any:
         return session
 
     captured_messages: list[dict[str, Any]] = []
@@ -1643,7 +1637,7 @@ async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(complete)
-    hooks.workflow_session = workflow_session
+    hooks.workflow_position = workflow_position
 
     result = await run_turn(mode_id="ponder", query="analyze this", hooks=hooks)
 

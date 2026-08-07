@@ -147,16 +147,16 @@ class LifecycleResolverSettings:
 
 
 @runtime_checkable
-class _WorkflowInstanceLike(Protocol):
-    """Structural shape the resolver needs from a ``WorkflowInstance``.
+class _WorkflowPositionLike(Protocol):
+    """Structural shape the resolver needs from a ``WorkflowPosition``.
 
-    The resolver does not import ``kernel.workflow_instance.WorkflowInstance``
+    The resolver does not import ``kernel.workflow_position.WorkflowPosition``
     to avoid a circular dependency; it reads the three attributes it needs via
     duck typing. The real model satisfies this protocol.
     """
 
     current_step_id: str
-    current_mode_id: str
+    mode_id: str
     declared_steps: tuple[Any, ...]
 
 
@@ -215,39 +215,39 @@ class _TurnStateView:
     handoff_count: int = 0
 
 
-def _has_next_step(instance: _WorkflowInstanceLike | None) -> bool:
-    """Return True when the instance has a remaining step after the current one.
+def _has_next_step(position: _WorkflowPositionLike | None) -> bool:
+    """Return True when the position has a remaining step after the current one.
 
-    Uses ``kernel.workflow_instance.is_complete`` when available (the real
+    Uses ``kernel.workflow_position.is_complete`` when available (the real
     model); falls back to a structural check (``declared_steps`` non-empty and
     ``current_step_id`` set) so the resolver stays import-light.
     """
-    if instance is None:
+    if position is None:
         return False
     try:
-        from kernel.workflow_instance import is_complete  # noqa: PLC0415
+        from kernel.workflow_position import is_complete  # noqa: PLC0415
 
-        return not is_complete(instance)
+        return not is_complete(position)
     except Exception:  # pylint: disable=broad-except
-        return bool(instance.declared_steps) and bool(instance.current_step_id)
+        return bool(position.declared_steps) and bool(position.current_step_id)
 
 
-def _next_step_mode_id(instance: _WorkflowInstanceLike | None) -> str:
+def _next_step_mode_id(position: _WorkflowPositionLike | None) -> str:
     """Return the mode id of the step following the current one, or "".
 
     Mirrors the selection in ``kernel.turn_runner._next_remaining_step``: the
     step immediately after ``current_step_id`` in declaration order, falling
     back to the first remaining step. Returns "" when there is no next step.
     """
-    if instance is None:
+    if position is None:
         return ""
     try:
-        from kernel.workflow_instance import remaining_steps  # noqa: PLC0415
+        from kernel.workflow_position import remaining_steps  # noqa: PLC0415
 
-        remaining = remaining_steps(instance)
+        remaining = remaining_steps(position)
         if not remaining:
             return ""
-        current = getattr(instance, "current_step_id", "") or ""
+        current = getattr(position, "current_step_id", "") or ""
         for step in remaining:
             if step.step_id != current:
                 return step.mode_id
@@ -282,13 +282,13 @@ def _stalled_blocking_record(
 def _resolve_yield_target(
     policy: YieldPolicy,
     *,
-    instance: _WorkflowInstanceLike | None,
+    position: _WorkflowPositionLike | None,
     fallback_default: str = "discuss",
 ) -> str:
     """Resolve the mode id a yield should route to.
 
     Priority: the policy's ``fallback_mode`` (explicit per-mode override) →
-    the instance's next-step mode (yield-in-place to continue the chain) →
+    the position's next-step mode (yield-in-place to continue the chain) →
     a hardcoded ``discuss`` last resort (only when the policy opted out of
     inline asks via ``allowed: false`` and named no fallback).
 
@@ -304,10 +304,10 @@ def _resolve_yield_target(
         return policy.fallback_mode
     if not policy.allowed:
         # Action mode that forbids inline asks but named no fallback. Use the
-        # instance's next step if there is one (yield to continue the chain),
+        # position's next step if there is one (yield to continue the chain),
         # else the hardcoded default. This is a misconfiguration surface; the
         # validator should warn, but we never hang the turn.
-        next_mode = _next_step_mode_id(instance)
+        next_mode = _next_step_mode_id(position)
         return next_mode or fallback_default
     # Chat mode with inline asks allowed: yield in place (empty target means
     # the harness surfaces the question in the current mode).
@@ -321,7 +321,7 @@ def resolve_lifecycle_action(
     mode_yield_policy: YieldPolicy,
     settings: LifecycleResolverSettings,
     router_decision: _RouterDecisionLike | None = None,
-    workflow_instance: _WorkflowInstanceLike | None = None,
+    workflow_position: _WorkflowPositionLike | None = None,
     recovery_records: list[_RecoveryRecordLike] | None = None,
 ) -> LifecycleAction:
     """Decide the turn's next action for one iteration.
@@ -391,7 +391,7 @@ def resolve_lifecycle_action(
     # ── 2. Recovery stall blocks the workflow ───────────────────────────
     blocking = _stalled_blocking_record(recovery_records)
     if blocking is not None:
-        target = _resolve_yield_target(mode_yield_policy, instance=workflow_instance)
+        target = _resolve_yield_target(mode_yield_policy, position=workflow_position)
         detail = blocking.last_error or f"{blocking.target_kind} {blocking.target_id} stalled"
         work_item_id = str(getattr(blocking, "work_item_id", "") or "")
         # Print the literal slash commands with the work-item id so the user
@@ -458,7 +458,7 @@ def resolve_lifecycle_action(
     # ── 3. Global iteration cap (the only true ceiling) ─────────────────
     if state.iteration >= settings.max_tool_iterations:
         if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
-            target = _resolve_yield_target(mode_yield_policy, instance=workflow_instance)
+            target = _resolve_yield_target(mode_yield_policy, position=workflow_position)
             question = (
                 mode_yield_policy.default_question
                 or "I've hit my iteration budget for this turn. How would you like me to proceed?"
@@ -482,7 +482,7 @@ def resolve_lifecycle_action(
     # is False and this is a no-op.
     if state.budget_exhausted:
         if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
-            target = _resolve_yield_target(mode_yield_policy, instance=workflow_instance)
+            target = _resolve_yield_target(mode_yield_policy, position=workflow_position)
             question = (
                 mode_yield_policy.default_question
                 or "I've hit a resource budget for this turn. How would you like me to proceed?"
@@ -504,10 +504,10 @@ def resolve_lifecycle_action(
     )
     if (
         step_budget_exhausted
-        and workflow_instance is not None
-        and _has_next_step(workflow_instance)
+        and workflow_position is not None
+        and _has_next_step(workflow_position)
     ):
-        next_mode = _next_step_mode_id(workflow_instance)
+        next_mode = _next_step_mode_id(workflow_position)
         if next_mode:
             return TransitionAction(
                 target_mode_id=next_mode,
@@ -528,7 +528,7 @@ def resolve_lifecycle_action(
     # now covering the chat-mode case the 2026-08-05 markdown burn exposed.
     if state.turns_in_stage >= settings.stage_nudge_cap:
         if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
-            target = _resolve_yield_target(mode_yield_policy, instance=workflow_instance)
+            target = _resolve_yield_target(mode_yield_policy, position=workflow_position)
             question = mode_yield_policy.default_question or (
                 f"I've been working in {mode_id} for {state.turns_in_stage} iterations "
                 f"and haven't advanced. Can you clarify what you need?"

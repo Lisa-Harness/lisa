@@ -16,10 +16,10 @@ from typing import Any, cast
 
 from kernel.host_commands import HostCommandSpec
 from kernel.models import (
+    CHECKPOINT_SCHEMA_VERSION,
     ConversationSurface,
     OperationExecutionContext,
     ToolResult,
-    WorkflowSessionState,
 )
 from kernel.operations.registry import execute_operation
 
@@ -166,6 +166,50 @@ async def handle_checkpoint(
 # ── /restore ─────────────────────────────────────────────────────────
 
 
+def _check_bundle_version(bundle_data: dict[str, Any]) -> str:
+    """Return "" when the bundle's schema version is current, else an error.
+
+    Hard cutover (schema_version 2, 2026-08-07): pre-merge bundles carried
+    separate ``workflow_session_state`` / ``workflow_instance`` dicts. They
+    are rejected loudly — no compat restore path.
+    """
+    version = bundle_data.get("schema_version", 1)
+    if version != CHECKPOINT_SCHEMA_VERSION:
+        return (
+            "Checkpoint uses an incompatible pre-merge format "
+            f"(schema_version={version}); restore is not supported. "
+            "Create a fresh checkpoint."
+        )
+    return ""
+
+
+def _restore_position(runtime: Any, bundle_data: dict[str, Any]) -> None:
+    """Restore the ``WorkflowPosition`` from a checkpoint bundle.
+
+    Rehydrates the single durable workflow object (inter-mode plan +
+    intra-mode stage pointer) and overrides ``current_mode_id`` from the
+    position's ``mode_id`` — so the next turn resumes in the mode the
+    workflow was parked in, not whatever mode was active before the
+    restore.
+    """
+    position_dict = bundle_data.get("workflow_position") or {}
+    if not isinstance(position_dict, dict) or not position_dict:
+        return
+    updater = getattr(runtime, "_set_workflow_position", None)
+    if updater is None:
+        logger.debug("restore: workflow position present but no updater wired on runtime")
+        return
+    try:
+        from kernel.workflow_position import WorkflowPosition  # noqa: PLC0415
+
+        position = WorkflowPosition.model_validate(position_dict)
+        updater(position)
+        if position.mode_id:
+            runtime.current_mode_id = position.mode_id
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("restore: workflow position restore failed: %s", exc)
+
+
 async def handle_proceed(
     runtime: Any,
     stripped: str,
@@ -272,35 +316,16 @@ async def handle_proceed(
     # Extract the question from the restored bundle.
     question = output_json.get("awaiting_input_question", "") or ""
 
-    # Restore unified_state, workflow_session, workflow_instance
-    # (mirrors handle_restore exactly).
+    version_error = _check_bundle_version(output_json)
+    if version_error:
+        return version_error
+
+    # Restore unified_state + workflow_position (mirrors handle_restore).
     unified_state_dict = output_json.get("unified_state") or {}
     if isinstance(unified_state_dict, dict) and unified_state_dict:
         runtime.state_snapshot = unified_state_dict
 
-    wf_session_dict = output_json.get("workflow_session_state") or {}
-    if isinstance(wf_session_dict, dict) and wf_session_dict:
-        try:
-            session = WorkflowSessionState.model_validate(wf_session_dict)
-            updater = getattr(runtime, "workflow_session_updater", None)
-            if callable(updater):
-                updater(session)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("proceed: workflow session restore failed: %s", exc)
-
-    wf_instance_dict = output_json.get("workflow_instance") or {}
-    if isinstance(wf_instance_dict, dict) and wf_instance_dict:
-        from kernel.workflow_instance import WorkflowInstance
-
-        try:
-            instance = WorkflowInstance.model_validate(wf_instance_dict)
-            instance_updater = getattr(runtime, "_set_workflow_instance", None)
-            if callable(instance_updater):
-                instance_updater(instance)
-                if instance.current_mode_id:
-                    runtime.current_mode_id = instance.current_mode_id
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("proceed: workflow instance restore failed: %s", exc)
+    _restore_position(runtime, output_json)
 
     # Check for stalled recovery records that block the workflow.
     stall_summary = ""
@@ -378,50 +403,15 @@ async def handle_restore(
         if not isinstance(bundle_data, dict):
             bundle_data = {}
 
+        version_error = _check_bundle_version(bundle_data)
+        if version_error:
+            return f"Restore failed: {version_error}"
+
         unified_state_dict = bundle_data.get("unified_state") or {}
         if unified_state_dict:
             runtime.state_snapshot = unified_state_dict
 
-        wf_session_dict = bundle_data.get("workflow_session_state") or {}
-        if wf_session_dict:
-            updater = getattr(runtime, "workflow_session_updater", None)
-            if updater is not None:
-                try:
-                    session = WorkflowSessionState.model_validate(wf_session_dict)
-                    updater(session)
-                except Exception as exc:  # pylint: disable=broad-except
-                    logger.warning("restore: workflow session restore failed: %s", exc)
-            else:
-                logger.debug(
-                    "restore: workflow session state present but no updater wired on runtime"
-                )
-
-        # ── Durable workflow-instance restore ───────────────────────────
-        # Rehydrate the inter-mode chain state (completed_steps,
-        # current_step_id) and override ``current_mode_id`` from the
-        # instance's current step's mode — the fix for the gap where a
-        # restore never changed the active mode, so the next turn ran in
-        # whatever mode was active before the restore instead of the
-        # workflow's current step's mode.
-        wf_instance_dict = bundle_data.get("workflow_instance") or {}
-        if wf_instance_dict:
-            instance_updater = getattr(runtime, "_set_workflow_instance", None)
-            if instance_updater is not None:
-                try:
-                    from kernel.workflow_instance import WorkflowInstance  # noqa: PLC0415
-
-                    instance = WorkflowInstance.model_validate(wf_instance_dict)
-                    instance_updater(instance)
-                    # Override current_mode_id from the instance's current step.
-                    current_mode = getattr(instance, "current_mode_id", "") or ""
-                    if current_mode:
-                        runtime.current_mode_id = current_mode
-                except Exception as exc:  # pylint: disable=broad-except
-                    logger.warning("restore: workflow instance restore failed: %s", exc)
-            else:
-                logger.debug(
-                    "restore: workflow instance state present but no updater wired on runtime"
-                )
+        _restore_position(runtime, bundle_data)
 
         return result.output_text or f"Restored checkpoint {checkpoint_id}"
     except Exception as exc:  # pylint: disable=broad-except

@@ -16,8 +16,8 @@ plan→markdown→re-plan loop and the 2026-08-07 plan→remember→search stall
 both trace to one origin missing a side effect another origin had.
 
 The applier is deliberately small: it validates the target, persists the
-``WorkflowInstance`` (creating one from a plan's steps when given), saves
-the coordinator decision, advances the durable instance, and resets the
+``WorkflowPosition`` (creating one from a plan's steps when given), saves
+the coordinator decision, advances the durable position, and resets the
 per-step counters. It does NOT rebuild the tool surface or run entry ops —
 those stay in the turn loop's existing handoff continuation, which every
 origin now funnels through.
@@ -35,12 +35,12 @@ from typing import Any, Literal
 
 from kernel.models import WorkflowTransitionRequest
 from kernel.seams.protocols import CoordinatorRouteDecision
-from kernel.workflow_instance import WorkflowInstance, WorkflowStep
+from kernel.workflow_position import WorkflowStep
 
 __all__ = [
     "RoutingSource",
     "apply_routing",
-    "persist_planned_instance",
+    "persist_planned_position",
     "save_route_decision",
 ]
 
@@ -100,36 +100,37 @@ def save_route_decision(
         )
 
 
-def persist_planned_instance(
+def persist_planned_position(
     hooks: Any,
     workflow_steps: tuple[WorkflowStep, ...],
     log: logging.Logger,
 ) -> None:
-    """Persist a plan's steps as a ``WorkflowInstance`` (spawned_from=plan).
+    """Persist a plan's steps as a ``WorkflowPosition`` (spawned_from=plan).
 
     No-op when there are no steps (weak-model fallback produced a bare
-    target) or no updater is wired. Failure-tolerant: instance persistence
+    target) or no updater is wired. Failure-tolerant: position persistence
     failure must not abort the handoff — the turn continues and the ad-hoc
     chain path covers the gap.
     """
-    if not workflow_steps or hooks.workflow_instance_updater is None:
+    if not workflow_steps or hooks.workflow_position_updater is None:
         return
     try:
-        instance = WorkflowInstance(
-            declared_steps=workflow_steps,
-            current_step_id=workflow_steps[0].step_id,
-            current_mode_id=workflow_steps[0].mode_id,
+        from kernel.ipsar_fsm import create_position  # noqa: PLC0415
+
+        position = create_position(
+            workflow_steps[0].mode_id,
+            steps=workflow_steps,
             spawned_from="plan_workflow_op",
         )
-        hooks.workflow_instance_updater(instance)
+        hooks.workflow_position_updater(position)
         log.info(
-            "persisted plan_workflow_op WorkflowInstance instance_id=%s steps=%d first=%s",
-            instance.instance_id,
+            "persisted plan_workflow_op WorkflowPosition position_id=%s steps=%d first=%s",
+            position.position_id,
             len(workflow_steps),
             workflow_steps[0].mode_id,
         )
     except Exception as exc:  # pylint: disable=broad-except
-        log.warning("WorkflowInstance creation/persist failed for plan: %s", exc)
+        log.warning("WorkflowPosition creation/persist failed for plan: %s", exc)
 
 
 def apply_routing(
@@ -157,10 +158,10 @@ def apply_routing(
        the turn loop, which owns the catalog read).
     4. Saving the coordinator route decision (``/proceed`` resumption).
 
-    Instance advancement (``advance_step``) stays in the turn loop's handoff
-    continuation because it needs the live instance from ``hooks``; the
-    applier keeps the counter/enforcer/coordinator bookkeeping that all three
-    origins must share.
+    Instance advancement (``advance_step`` + ``enter_mode``) stays in the
+    turn loop's handoff continuation because it needs the live position
+    from ``hooks``; the applier keeps the counter/enforcer/coordinator
+    bookkeeping that all three origins must share.
     """
     _log = log or logger
     # 1. Per-step counters: the new step gets a full sub-budget.

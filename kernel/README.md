@@ -212,8 +212,8 @@ sequenceDiagram
 
 | Hook | Purpose |
 | --- | --- |
-| `workflow_session` | Returns the current `WorkflowSessionState` for the active user/mode. Required for workflow FSM stages to be injected into prompts. |
-| `workflow_session_updater` | Persists an updated `WorkflowSessionState` after a `transition_stage` call. |
+| `workflow_position` | Returns the current `WorkflowPosition` for the active user/surface — the single durable workflow object (inter-mode plan + intra-mode stage pointer). Required for stage instructions to be injected into prompts. |
+| `workflow_position_updater` | Persists an updated `WorkflowPosition` after a `transition_stage` call (stage advance or mode handoff) or a turn-start position creation. |
 | `workflow_turn_runner` | Callable for workshop child-workflow execution. |
 | `workflow_session_factory` | Creates isolated child workflow sessions for workshop fan-out. |
 

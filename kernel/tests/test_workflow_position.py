@@ -1,4 +1,4 @@
-"""Tests for the durable ``WorkflowInstance`` model, helpers, and store.
+"""Tests for the durable ``WorkflowPosition`` model, helpers, and store.
 
 Covers Phase 1 of the durable-workflow-instance plan: model round-trip,
 step ordering (producer before consumer), ``advance_step`` immutability,
@@ -15,8 +15,8 @@ import pytest
 from kernel.models import WorkflowModeConfig
 from kernel.recovery import RecoveryIdentity
 from kernel.routing_vocabulary import reset_routing_vocabulary
-from kernel.workflow_instance import (
-    WorkflowInstance,
+from kernel.workflow_position import (
+    WorkflowPosition,
     WorkflowStep,
     advance_step,
     compile_steps_from_routing_targets,
@@ -101,7 +101,7 @@ def _reset_vocabulary() -> Any:
 
 def test_workflow_instance_model_round_trip() -> None:
     """An instance serializes and re-validates without loss."""
-    instance = WorkflowInstance(
+    instance = WorkflowPosition(
         plan_digest="abc",
         declared_steps=(
             WorkflowStep(step_id="search_0", mode_id="search", satisfies_intents=("research",)),
@@ -114,18 +114,18 @@ def test_workflow_instance_model_round_trip() -> None:
             ),
         ),
         current_step_id="search_0",
-        current_mode_id="search",
+        mode_id="search",
         spawned_from="adhoc",
     )
     data = instance.model_dump(mode="json")
-    restored = WorkflowInstance.model_validate(data)
+    restored = WorkflowPosition.model_validate(data)
     assert restored == instance
-    assert restored.instance_id == instance.instance_id
+    assert restored.position_id == instance.position_id
 
 
 def test_workflow_instance_is_frozen() -> None:
     """The instance is immutable; model_copy is the only mutation path."""
-    instance = WorkflowInstance(
+    instance = WorkflowPosition(
         declared_steps=(WorkflowStep(step_id="s_0", mode_id="search"),),
         current_step_id="s_0",
     )
@@ -134,34 +134,40 @@ def test_workflow_instance_is_frozen() -> None:
 
 
 def test_advance_step_marks_completed_and_advances_pointer() -> None:
-    """Advancing a step adds it to completed_steps and moves the pointer."""
-    instance = WorkflowInstance(
+    """Advancing a step adds it to completed_steps and moves the step pointer.
+
+    The mode pointer (``mode_id``) does NOT move — mode moves are
+    ``enter_mode``'s concern (kernel/ipsar_fsm.py), applied by the turn
+    loop's handoff continuation after the step advance.
+    """
+    position = WorkflowPosition(
         declared_steps=(
             WorkflowStep(step_id="search_0", mode_id="search"),
             WorkflowStep(step_id="coding_1", mode_id="coding", is_terminal=True),
         ),
         current_step_id="search_0",
-        current_mode_id="search",
+        mode_id="search",
     )
-    advanced = advance_step(instance, "search_0", result_preview="found 3 frameworks")
+    advanced = advance_step(position, "search_0", result_preview="found 3 frameworks")
     assert "search_0" in advanced.completed_steps
     assert advanced.current_step_id == "coding_1"
-    assert advanced.current_mode_id == "coding"
+    assert advanced.mode_id == "search"  # mode moves via enter_mode, not advance_step
+    assert not advanced.terminal_reached
     assert advanced.step_results["search_0"] == "found 3 frameworks"
     # Immutability: the original is unchanged.
-    assert instance.completed_steps == ()
-    assert instance.current_step_id == "search_0"
+    assert position.completed_steps == ()
+    assert position.current_step_id == "search_0"
 
 
 def test_advance_step_is_idempotent() -> None:
     """Re-advancing an already-completed step is a no-op for the pointer."""
-    instance = WorkflowInstance(
+    instance = WorkflowPosition(
         declared_steps=(
             WorkflowStep(step_id="search_0", mode_id="search"),
             WorkflowStep(step_id="coding_1", mode_id="coding", is_terminal=True),
         ),
         current_step_id="coding_1",
-        current_mode_id="coding",
+        mode_id="coding",
         completed_steps=("search_0",),
     )
     advanced = advance_step(instance, "search_0")
@@ -171,25 +177,32 @@ def test_advance_step_is_idempotent() -> None:
 
 
 def test_advance_step_last_step_clears_pointer() -> None:
-    """Advancing the last remaining step clears the current pointer."""
-    instance = WorkflowInstance(
+    """Advancing the terminal step clears the step pointer and marks the chain done.
+
+    Completing a step declared ``is_terminal`` sets ``terminal_reached`` so
+    the host store clears the finished position instead of leaving an
+    all-done zombie active. The mode pointer survives (the position is
+    still parked in the last mode until the host clears it).
+    """
+    position = WorkflowPosition(
         declared_steps=(
             WorkflowStep(step_id="search_0", mode_id="search"),
             WorkflowStep(step_id="coding_1", mode_id="coding", is_terminal=True),
         ),
         current_step_id="coding_1",
-        current_mode_id="coding",
+        mode_id="coding",
         completed_steps=("search_0",),
     )
-    advanced = advance_step(instance, "coding_1")
+    advanced = advance_step(position, "coding_1")
     assert is_complete(advanced)
     assert advanced.current_step_id == ""
-    assert advanced.current_mode_id == ""
+    assert advanced.terminal_reached
+    assert advanced.mode_id == "coding"
 
 
 def test_advance_step_unknown_step_is_noop() -> None:
     """Advancing a step id not in declared_steps returns the instance unchanged."""
-    instance = WorkflowInstance(
+    instance = WorkflowPosition(
         declared_steps=(WorkflowStep(step_id="search_0", mode_id="search"),),
         current_step_id="search_0",
     )
@@ -199,7 +212,7 @@ def test_advance_step_unknown_step_is_noop() -> None:
 
 def test_remaining_steps_excludes_completed() -> None:
     """remaining_steps returns only steps not in completed_steps."""
-    instance = WorkflowInstance(
+    instance = WorkflowPosition(
         declared_steps=(
             WorkflowStep(step_id="search_0", mode_id="search"),
             WorkflowStep(step_id="coding_1", mode_id="coding"),
@@ -213,7 +226,7 @@ def test_remaining_steps_excludes_completed() -> None:
 
 def test_is_complete_when_all_steps_completed() -> None:
     """is_complete is True when completed_steps covers all declared steps."""
-    instance = WorkflowInstance(
+    instance = WorkflowPosition(
         declared_steps=(WorkflowStep(step_id="a_0", mode_id="a"),),
         completed_steps=("a_0",),
     )
@@ -221,7 +234,7 @@ def test_is_complete_when_all_steps_completed() -> None:
 
 
 def test_is_complete_false_when_steps_remain() -> None:
-    instance = WorkflowInstance(
+    instance = WorkflowPosition(
         declared_steps=(
             WorkflowStep(step_id="a_0", mode_id="a"),
             WorkflowStep(step_id="b_1", mode_id="b"),
@@ -233,7 +246,7 @@ def test_is_complete_false_when_steps_remain() -> None:
 
 def test_is_complete_true_for_empty_declared_steps() -> None:
     """An instance with no declared steps is trivially complete."""
-    assert is_complete(WorkflowInstance())
+    assert is_complete(WorkflowPosition())
 
 
 # ── Step compiler ───────────────────────────────────────────────────────────
