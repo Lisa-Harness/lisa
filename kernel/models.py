@@ -35,15 +35,6 @@ CapabilityConstraintKind = Literal[
     "surface",
     "user",
 ]
-ModelRole = Literal[
-    "fast_chat",
-    "default_chat",
-    "deep_reasoning",
-    "pro_reasoning",
-    "code_reasoning",
-    "critic",
-    "distiller",
-]
 ModelCapability = Literal[
     "text",
     "structured_output",
@@ -57,18 +48,6 @@ ModelCapability = Literal[
 ModelCostTier = Literal["budget", "standard", "premium", "frontier"]
 ModelLatencyTier = Literal["low", "medium", "high", "batch"]
 OperationExecutionKind = Literal["runtime", "prompt"]
-
-
-class InferenceProfileDefinition(BaseModel):
-    """Runtime-neutral model policy for one named inference pipeline."""
-
-    profile_id: str
-    description: str = ""
-    owner_package: str = "app"
-    preferred_role: ModelRole | None = None
-    setting_name: str = ""
-    fallback_aliases: list[str] = Field(default_factory=list)
-    operator_only: bool = False
 
 
 class SurfaceContext(BaseModel):
@@ -1471,7 +1450,7 @@ class CheckpointBundle(BaseModel):
     #   the checkpoint is a durable record, not a resume point.
     # ``stalled``: a ``RecoveryRecord`` blocks the workflow; the harness forced
     #   a yield naming the stall. Resumable once the stall clears or is skipped.
-    lifecycle_state: Literal["working", "yielded", "committed", "stalled"] = "working"
+    lifecycle_state: Literal["working", "yielded", "committed", "stalled", "paused", "terminated"] = "working"
     # The question surfaced to the user when ``lifecycle_state`` is ``yielded``
     # or ``stalled``. Empty for ``working`` / ``committed``.
     awaiting_input_question: str = ""

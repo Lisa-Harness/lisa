@@ -871,6 +871,9 @@ def build_turn_hooks(
             enabled=True,
             on_stage_transition=True,
             every_n_turns=10,
+            timeout_seconds=float(
+                getattr(runtime.config, "checkpoint_timeout_seconds", 10.0) or 10.0
+            ),
         ),
         # Wire the content registry into context_seams so the turn runner's
         # _build_minimal_context can resolve read_authored_text_fn for

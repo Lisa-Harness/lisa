@@ -700,3 +700,54 @@ async def test_checkpoint_failure_does_not_break_turn() -> None:
 
     assert result.response_text == "Done."
     assert result.transitioned_to == "reason"
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_timeout_does_not_break_turn() -> None:
+    """A hanging on_checkpoint hook is cancelled by the timeout; turn completes.
+
+    Regression: an unresponsive MCP ``save_checkpoint`` subprocess can hang
+    the ``await hooks.on_checkpoint(bundle)`` indefinitely at ~0 CPU (no
+    exception to catch). The ``CheckpointTuning.timeout_seconds`` cap
+    converts that silent hang into a logged warning so turn finalization
+    proceeds.
+    """
+    import asyncio
+
+    hang_event = asyncio.Event()
+
+    async def hanging_checkpoint(bundle: Any) -> None:
+        await hang_event.wait()  # never set — simulates a stuck MCP call
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Done.")
+
+    session = WorkflowPosition(
+        mode_id="default",
+        stage_id="default",
+        entered_at="2026-01-01T00:00:00Z",
+        turn_count=10,
+    )
+
+    from kernel.turn_runner import CheckpointTuning
+
+    hooks = _build_hooks(complete)
+    hooks.workflow_position = lambda: session
+    hooks.workflow_position_updater = lambda updated: None
+    hooks.on_checkpoint = hanging_checkpoint
+    hooks.checkpoint_tuning = CheckpointTuning(
+        enabled=True,
+        every_n_turns=10,
+        on_stage_transition=False,
+        timeout_seconds=0.05,
+    )
+
+    start = time.monotonic()
+    result = await run_turn(mode_id="default", query="test", hooks=hooks)
+    elapsed = time.monotonic() - start
+
+    # The timeout cancels the hanging checkpoint; the turn completes in
+    # seconds, not minutes. Without the timeout this await hangs forever.
+    assert elapsed < 5.0, (
+        f"checkpoint timeout did not fire; turn took {elapsed:.2f}s"
+    )

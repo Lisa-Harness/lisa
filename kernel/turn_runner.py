@@ -812,6 +812,12 @@ class CheckpointTuning:
     on_stage_transition: bool = True
     every_n_turns: int = 0
     explicit: bool = True
+    timeout_seconds: float = 10.0
+    """Wall-clock cap on the ``on_checkpoint`` hook. The hook persists a
+    ``CheckpointBundle`` through an MCP tool call; an unresponsive MCP
+    subprocess can hang the await indefinitely at ~0 CPU (no exception to
+    catch). The timeout converts that silent hang into a logged warning so
+    turn finalization proceeds. Set to ``0`` to disable the timeout."""
 
     @classmethod
     def from_mapping(cls, mapping: dict[str, Any] | None) -> CheckpointTuning:
@@ -823,6 +829,7 @@ class CheckpointTuning:
             on_stage_transition=bool(mapping.get("on_stage_transition", True)),
             every_n_turns=int(mapping.get("every_n_turns", 0) or 0),
             explicit=bool(mapping.get("explicit", True)),
+            timeout_seconds=float(mapping.get("timeout_seconds", 10.0) or 0) or 10.0,
         )
 
 
@@ -1653,7 +1660,7 @@ def _build_checkpoint_bundle(
     mode_id: str,
     transitioned_to: str | None,
     hooks: TurnHooks,
-    lifecycle_state: Literal["working", "yielded", "committed", "stalled"] = "working",
+    lifecycle_state: Literal["working", "yielded", "committed", "stalled", "paused", "terminated"] = "working",
     awaiting_input_question: str = "",
 ) -> CheckpointBundle | None:
     """Build a CheckpointBundle from the current host state.
@@ -6183,7 +6190,25 @@ async def _run_turn_inner(
                     awaiting_input_question=_ckpt_question,
                 )
                 if bundle is not None:
-                    await hooks.on_checkpoint(bundle)
+                    import asyncio  # noqa: PLC0415
+
+                    _ckpt_timeout = float(
+                        getattr(tuning, "timeout_seconds", 10.0) or 0
+                    )
+                    if _ckpt_timeout > 0:
+                        try:
+                            await asyncio.wait_for(
+                                hooks.on_checkpoint(bundle),
+                                timeout=_ckpt_timeout,
+                            )
+                        except TimeoutError:
+                            _log.warning(
+                                "on_checkpoint hook timed out after %.1fs; "
+                                "turn finalization proceeds without a checkpoint",
+                                _ckpt_timeout,
+                            )
+                    else:
+                        await hooks.on_checkpoint(bundle)
             except Exception as exc:  # pylint: disable=broad-except
                 _log.warning("on_checkpoint hook failed: %s", exc)
 
