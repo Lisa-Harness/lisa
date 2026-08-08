@@ -842,6 +842,212 @@ async def test_plan_instance_resume_hint_fires_without_route_coordinator() -> No
 
 
 @pytest.mark.asyncio
+async def test_resume_in_flight_skips_work_entry_op_and_advances_plan() -> None:
+    """A continuation query ("proceed") while parked on a work entry-op
+    mode (e.g. ``search`` after a model-driven handoff) must NOT be fed to
+    that mode's entry op — it has no search intent and would be sent to
+    the backend as the query (the 2026-08-08 ``proceed`` → Brave
+    ``q=proceed+meaning`` incident). Instead the kernel skips the entry
+    op and synthesizes a ``transition_stage`` handoff to the plan's next
+    declared step, resuming the in-flight plan.
+
+    Regression for the 2026-08-08 incident: the plan's ``search`` step
+    already ran its entry op in the prior turn (parking ``current_step_id``
+    on ``search_1``); on "proceed" the turn must advance to ``markdown``,
+    not re-run ``web_search`` with "proceed" as the query.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+    from kernel.workflow_position import WorkflowPosition, WorkflowStep
+
+    # ``search`` is a work entry-op mode (entry_op_kind defaults to work);
+    # ``markdown`` is the next planned step.
+    search_cfg = WorkflowModeConfig(
+        mode_id="search",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["web_search"],
+        satisfies_intents=["research"],
+        routing_intent_tags=["research"],
+    )
+    markdown_cfg = WorkflowModeConfig(
+        mode_id="markdown",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["markdown_generate"],
+        satisfies_intents=["write"],
+        routing_intent_tags=["write"],
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {
+        "default": default_cfg,
+        "search": search_cfg,
+        "markdown": markdown_cfg,
+    }
+
+    # Active position parked on ``search``: ``remember_0`` done, the
+    # ``search`` step current (its entry op ran in the prior turn),
+    # ``markdown`` remaining. This is the post-handoff parked state.
+    steps = (
+        WorkflowStep(
+            step_id="remember_0",
+            mode_id="remember",
+            satisfies_intents=("remember",),
+            spawned_from="plan_workflow_op",
+        ),
+        WorkflowStep(
+            step_id="search_1",
+            mode_id="search",
+            satisfies_intents=("research",),
+            spawned_from="plan_workflow_op",
+        ),
+        WorkflowStep(
+            step_id="markdown_2",
+            mode_id="markdown",
+            satisfies_intents=("write",),
+            is_terminal=True,
+            spawned_from="plan_workflow_op",
+        ),
+    )
+    active_instance = WorkflowPosition(
+        declared_steps=steps,
+        completed_steps=("remember_0",),
+        current_step_id="search_1",
+        mode_id="search",
+        spawned_from="plan_workflow_op",
+    )
+
+    entry_op_calls: list[str] = []
+
+    async def fake_entry_ops(mode_id_entry: str, _ctx: Any, **_kwargs: Any) -> OperationResult:
+        entry_op_calls.append(mode_id_entry)
+        return OperationResult(
+            output_text="### Search results\n(none — should not run).",
+            output_json={"operation_id": "web_search", "results": []},
+        )
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        # The model is never asked to call transition_stage: the kernel
+        # synthesizes the handoff from ``pending_planned_handoff``. The
+        # stub just needs to return a plausible completion so the loop's
+        # tool-call dispatch sees the synthesized call.
+        return _StubCompletion(content="resuming plan")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow_position = lambda: active_instance
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(
+            mode_id="search",
+            query="proceed",
+            hooks=hooks,
+            preferred_model_id="test-resume-model",
+        )
+
+    # The parked work entry op (``search``'s ``web_search``) must NOT have
+    # run — "proceed" has no search intent and would have been sent to
+    # Brave as the query. ``markdown``'s entry op may run after the
+    # synthesized handoff lands; only ``search`` is gated.
+    assert "search" not in entry_op_calls, (
+        "resume-in-flight must skip the parked search entry op; got: "
+        f"{entry_op_calls}"
+    )
+    # The plan advances: the kernel synthesized a transition_stage
+    # handoff to ``markdown`` (the next declared step). The turn result
+    # carries the handoff and the position advanced past ``search``.
+    assert result.handoff_to == "markdown", (
+        f"resume-in-flight must advance the plan to markdown; got "
+        f"handoff_to={result.handoff_to!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_in_flight_does_not_fire_for_real_query() -> None:
+    """A real search query (not a continuation phrase) while parked on a
+    work entry-op mode with an active plan must still run the entry op —
+    the resume-in-flight gate only applies to bare imperatives like
+    "proceed". A query such as "search for agent frameworks" is genuine
+    work for the parked ``search`` step, not a plan resume.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+    from kernel.workflow_position import WorkflowPosition, WorkflowStep
+
+    search_cfg = WorkflowModeConfig(
+        mode_id="search",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["web_search"],
+        satisfies_intents=["research"],
+        routing_intent_tags=["research"],
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {"default": default_cfg, "search": search_cfg}
+
+    steps = (
+        WorkflowStep(
+            step_id="remember_0",
+            mode_id="remember",
+            satisfies_intents=("remember",),
+            spawned_from="plan_workflow_op",
+        ),
+        WorkflowStep(
+            step_id="search_1",
+            mode_id="search",
+            satisfies_intents=("research",),
+            spawned_from="plan_workflow_op",
+        ),
+    )
+    active_instance = WorkflowPosition(
+        declared_steps=steps,
+        completed_steps=("remember_0",),
+        current_step_id="search_1",
+        mode_id="search",
+        spawned_from="plan_workflow_op",
+    )
+
+    entry_op_calls: list[str] = []
+
+    async def fake_entry_ops(mode_id_entry: str, _ctx: Any, **_kwargs: Any) -> OperationResult:
+        entry_op_calls.append(mode_id_entry)
+        return OperationResult(
+            output_text="### Search results\nagent frameworks found.",
+            output_json={"operation_id": "web_search", "results": []},
+        )
+
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Summary of results.")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow_position = lambda: active_instance
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        await run_turn(
+            mode_id="search",
+            query="search for agent frameworks",
+            hooks=hooks,
+            preferred_model_id="test-search-model",
+        )
+
+    # A real query runs the parked mode's entry op — the gate does not
+    # skip it because the query is not a continuation phrase.
+    assert "search" in entry_op_calls, (
+        f"a real search query must run the search entry op; got: {entry_op_calls}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_plan_progress_rendered_when_plan_instance_active() -> None:
     """When a ``plan_workflow_op`` WorkflowPosition is active and has
     remaining steps, the turn result's ``response_text`` includes a
