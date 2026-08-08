@@ -83,13 +83,13 @@ def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
     except (json.JSONDecodeError, TypeError):
         content_json = {}
     user_slug = row["user_slug"]
-    raw_evidence = row["evidence_ids"] or "[]"
+    raw_evidence = row["item_ids"] or "[]"
     try:
-        evidence_ids = [int(eid) for eid in json.loads(raw_evidence)] if isinstance(
+        item_ids = [int(eid) for eid in json.loads(raw_evidence)] if isinstance(
             raw_evidence, str
         ) else list(raw_evidence or [])
     except (json.JSONDecodeError, TypeError, ValueError):
-        evidence_ids = []
+        item_ids = []
     supersedes_id = row["supersedes_id"]
     valid_until = row["valid_until"]
     if valid_until is None:
@@ -119,7 +119,7 @@ def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
         valid_until=valid_until,
         memory_kind=row["memory_kind"],
         confidence=row["confidence"],
-        evidence_ids=evidence_ids,
+        item_ids=item_ids,
         supersedes_id=int(supersedes_id) if supersedes_id is not None else None,
         status=row["status"],
     )
@@ -192,7 +192,7 @@ class SqliteMemoryStore:
                 memory_kind TEXT NOT NULL DEFAULT 'episodic',
                 status TEXT NOT NULL DEFAULT 'active',
                 supersedes_id INTEGER,
-                evidence_ids TEXT NOT NULL DEFAULT '[]',
+                item_ids TEXT NOT NULL DEFAULT '[]',
                 confidence REAL NOT NULL DEFAULT 1.0,
                 merge_count INTEGER NOT NULL DEFAULT 0,
                 content TEXT NOT NULL,
@@ -244,7 +244,7 @@ class SqliteMemoryStore:
             INSERT INTO memories (
                 entry_id, user_slug, workspace_id, memory_scope, surface_id, agent_id,
                 operation_id, instruction_id, memory_tier, memory_kind, status,
-                supersedes_id, evidence_ids, confidence, merge_count, content,
+                supersedes_id, item_ids, confidence, merge_count, content,
                 content_json, salience, created_at, expires_at, valid_until
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -261,7 +261,7 @@ class SqliteMemoryStore:
                 write.memory_kind,
                 "active",
                 write.supersedes_id,
-                json.dumps([int(eid) for eid in write.evidence_ids], default=str),
+                json.dumps([int(eid) for eid in write.item_ids], default=str),
                 float(write.confidence),
                 0,
                 write.content,

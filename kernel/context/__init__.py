@@ -13,7 +13,7 @@ reading; ``lisa-catalog`` handles mode/operation/tool catalogs and diagnostics.
 
 from kernel.context.data_sanitizer import PassThroughSanitizer
 from kernel.context.event_bus import InProcessEventBus
-from kernel.context.extension_evidence import NoOpExtensionEvidenceBuilder
+from kernel.context.extension_item import NoOpExtensionItemBuilder
 from kernel.context.input_guard import PassThroughInputGuard
 from kernel.context.mcp_catalog import MCPModeCatalog, MCPOperationCatalog
 from kernel.context.mcp_content_registry import MCPContentRegistry
@@ -29,7 +29,7 @@ __all__ = [
     "MCPOperationCatalog",
     "MCPOutputGuard",
     "ManifestModelPolicy",
-    "NoOpExtensionEvidenceBuilder",
+    "NoOpExtensionItemBuilder",
     "PassThroughInputGuard",
     "PassThroughOutputGuard",
     "PassThroughSanitizer",

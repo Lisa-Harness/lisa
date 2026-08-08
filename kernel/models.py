@@ -833,8 +833,8 @@ class AnomalyAlert(BaseModel):
     detected_at: str
 
 
-ContextEvidenceNamespace = str
-ContextEvidenceSourceType = str
+ContextItemNamespace = str
+ContextItemSourceType = str
 
 
 class ContextRoutingNamespaceConfig(BaseModel):
@@ -856,13 +856,13 @@ class ContextRoutingConfig(BaseModel):
 ContextConflictRisk = Literal["low", "medium", "high"]
 
 
-class ContextEvidence(BaseModel):
+class ContextItem(BaseModel):
     """One structured evidence item available for per-turn context selection."""
 
-    evidence_id: str
-    namespace: ContextEvidenceNamespace = "general_context"
+    item_id: str
+    namespace: ContextItemNamespace = "general_context"
     source: str = ""
-    source_type: ContextEvidenceSourceType = "general"
+    source_type: ContextItemSourceType = "general"
     collector_id: str = ""
     evidence_type: str = ""
     title: str = ""
@@ -877,12 +877,12 @@ class ContextEvidence(BaseModel):
     combined_score: float = 0.0
     conflict_risk: ContextConflictRisk = "low"
     # Normalized distribution package name that owns this evidence (e.g.
-    # ``lisa-pack-cloudflare``). Populated by the EntryPointExtensionEvidenceBuilder
+    # ``lisa-pack-cloudflare``). Populated by the EntryPointExtensionItemBuilder
     # for extension-contributed evidence; empty for kernel-core evidence
     # (alerts, self-model, domain knowledge, etc.). Used by the context broker
     # to enforce pack-scoped evidence boundaries — a mode only sees extension
     # evidence from its own pack plus any packs it explicitly allows via
-    # ``context_evidence_packs`` in its ``_mode.md`` front-matter.
+    # ``context_item_packs`` in its ``_mode.md`` front-matter.
     pack: str = ""
     tags: list[str] = Field(default_factory=list)
     match_reasons: list[str] = Field(default_factory=list)
@@ -946,7 +946,7 @@ class DomainKnowledgeArtifact(BaseModel):
 class UnifiedState(BaseModel):
     compiled_at: str
     context_routing: ContextRoutingConfig | None = None
-    context_evidence_catalog: list[ContextEvidence] = Field(default_factory=list)
+    context_items: list[ContextItem] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -988,7 +988,7 @@ class MemoryRecord(BaseModel):
         "episodic"
     )
     confidence: float = 1.0
-    evidence_ids: list[int] = Field(default_factory=list)
+    item_ids: list[int] = Field(default_factory=list)
     supersedes_id: int | None = None
     valid_until: str | None = None
     last_accessed_at: str | None = None
@@ -1015,7 +1015,7 @@ class MemoryWriteRequest(BaseModel):
         "episodic"
     )
     confidence: float = 1.0
-    evidence_ids: list[int] = Field(default_factory=list)
+    item_ids: list[int] = Field(default_factory=list)
     supersedes_id: int | None = None
     valid_until: str | None = None
 
@@ -1367,7 +1367,7 @@ class WorkflowModeConfig(BaseModel):
     # the union of the mode's own pack and these packs is admitted. Kernel-
     # core evidence (alerts, self-model, domain knowledge, intel) is never
     # gated by this field — it is always available to every mode.
-    context_evidence_packs: list[str] = Field(default_factory=list)
+    context_item_packs: list[str] = Field(default_factory=list)
     # Opaque extension front matter the kernel does not interpret. Carries
     # app/pack-owned keys (e.g. ``lenses``) from ``_mode.md`` and ``_overrides.yaml``
     # so the kernel never has to name or allowlist app-owned concepts. Hosts and
@@ -2013,7 +2013,7 @@ class ReflectiveTheme(BaseModel):
 
     label: str
     """Short human-readable theme label derived from top co-occurring content tokens."""
-    evidence_count: int = 0
+    item_count: int = 0
     """Number of distinct memory/turn records that mention this theme."""
     recency_score: float = 0.0
     """Decay-weighted recency of evidence in [0.0, 1.0]."""
@@ -2197,7 +2197,7 @@ class PassiveIntelligenceItem(BaseModel):
     label: str
     kind: PassiveIntelligenceKind = "theme"
     summary: str = ""
-    evidence_count: int = 0
+    item_count: int = 0
     recency_score: float = 0.0
     salience_score: float = 0.0
     last_seen_at: str = ""
@@ -2388,8 +2388,8 @@ class ContextUsageEvent(BusEvent):
     response_model_id: str = ""
     prompt_strategy: ContextPromptStrategy = "broker_packet"
     total_available_evidence: int = 0
-    selected_evidence_ids: list[str] = Field(default_factory=list)
-    used_evidence_ids: list[str] = Field(default_factory=list)
+    selected_item_ids: list[str] = Field(default_factory=list)
+    used_item_ids: list[str] = Field(default_factory=list)
     selected_sources: list[str] = Field(default_factory=list)
     context_char_count: int = 0
     ranking_metadata: dict[str, Any] = Field(default_factory=dict)

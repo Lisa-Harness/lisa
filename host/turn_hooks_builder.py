@@ -38,8 +38,8 @@ from host.introspect import gather_introspection
 from host.model_runtime import StubModelDefinition, load_manifest, resolve_model
 from host.state_provider import FileBackedStateProvider, build_unified_state
 from host.thread import build_recent_thread_excerpt, load_thread_digest
-from sdk.context.extension_evidence_builder import (
-    EntryPointExtensionEvidenceBuilder,
+from sdk.context.extension_item_builder import (
+    EntryPointExtensionItemBuilder,
 )
 
 if TYPE_CHECKING:
@@ -184,14 +184,14 @@ def build_turn_hooks(
     # ── Extension evidence builder ──────────────────────────────────
     # Constructed once so every ``build_unified_state`` call and the
     # ``ContextSeams`` injection share one builder instance. Discovers
-    # ``lisa.extensions.context_evidence`` entry points from installed
+    # ``lisa.extensions.context_items`` entry points from installed
     # packs and tags each contributed record with its source pack name.
     from kernel.pack_activation import (  # noqa: PLC0415
         load_disabled_pack_names,
     )
 
     _disabled_packs = load_disabled_pack_names(runtime.data_dir)
-    _evidence_builder = EntryPointExtensionEvidenceBuilder(
+    _item_builder = EntryPointExtensionItemBuilder(
         excluded_packs=_disabled_packs,
     )
     # Runtime context handed to the builder so pack entry-point functions
@@ -365,12 +365,12 @@ def build_turn_hooks(
             pre_turn_briefing = f"{progress}\n\n{pre_turn_briefing}"
 
         # Build the UnifiedState from the runtime snapshot for the broker.
-        # The evidence builder is invoked inside build_unified_state to
-        # populate ``context_evidence_catalog`` — the single feed the
+        # The item builder is invoked inside build_unified_state to
+        # populate ``context_items`` — the single feed the
         # session-owned context mapper walks.
         state = build_unified_state(
             state_snapshot=runtime.state_snapshot,
-            evidence_builder=_evidence_builder,
+            item_builder=_item_builder,
             runtime_context=_runtime_context,
         )
 
@@ -551,7 +551,7 @@ def build_turn_hooks(
     def _state_provider() -> Any:
         return build_unified_state(
             state_snapshot=runtime.state_snapshot,
-            evidence_builder=_evidence_builder,
+            item_builder=_item_builder,
             runtime_context=_runtime_context,
         )
 
@@ -608,16 +608,16 @@ def build_turn_hooks(
             return 0, "", ""
         if runtime.state_snapshot is None:
             runtime.state_snapshot = {}
-        # Emit the self-model vibe as a ContextEvidence record into the
-        # single context_evidence_catalog — no arbitrary named bucket. The
-        # mapper picks it up via context_candidates_from_evidence like every
+        # Emit the self-model vibe as a ContextItem record into the
+        # single context_items — no arbitrary named bucket. The
+        # mapper picks it up via context_candidates_from_items like every
         # other pack-contributed evidence item.
         from datetime import UTC, datetime  # noqa: PLC0415
 
-        from kernel.models import ContextEvidence  # noqa: PLC0415
+        from kernel.models import ContextItem  # noqa: PLC0415
 
-        evidence = ContextEvidence(
-            evidence_id=f"state:self_model:{runtime.config.user_slug}",
+        evidence = ContextItem(
+            item_id=f"state:self_model:{runtime.config.user_slug}",
             namespace="self_model",
             source="self_model",
             source_type="extension",
@@ -631,16 +631,16 @@ def build_turn_hooks(
             tags=["self_model", health],
             metadata={"provenance": "system_observed", "operational_health": health},
         )
-        catalog = runtime.state_snapshot.setdefault("context_evidence_catalog", [])
+        catalog = runtime.state_snapshot.setdefault("context_items", [])
         if not isinstance(catalog, list):
             catalog = []
-            runtime.state_snapshot["context_evidence_catalog"] = catalog
+            runtime.state_snapshot["context_items"] = catalog
         # Replace any prior self-model evidence so only the freshest survives.
         catalog[:] = [
             e for e in catalog
             if not (
-                isinstance(e, dict) and e.get("evidence_id") == evidence.evidence_id
-                or getattr(e, "evidence_id", None) == evidence.evidence_id
+                isinstance(e, dict) and e.get("item_id") == evidence.item_id
+                or getattr(e, "item_id", None) == evidence.item_id
             )
         ]
         catalog.append(evidence.model_dump(mode="json"))
@@ -889,7 +889,7 @@ def build_turn_hooks(
             content_registry=cast("Any", content_registry() or None),
             model_router=_discover_active_router(),
             provider_gateways=_discover_active_provider_gateways(),
-            extension_evidence_builder=_evidence_builder,
+            extension_item_builder=_item_builder,
         ),
         # Forward the kernel's fine-grained stage events to the transport so
         # the CLI/web stage line can show model_call, tool_dispatch,

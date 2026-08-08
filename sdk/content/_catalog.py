@@ -488,8 +488,8 @@ def _load_one_mode(
         "default_intent_bridges": _parse_intent_bridges(
             front_matter.get("default_intent_bridges") or []
         ),
-        "context_evidence_packs": [
-            str(p) for p in (front_matter.get("context_evidence_packs") or [])
+        "context_item_packs": [
+            str(p) for p in (front_matter.get("context_item_packs") or [])
         ],
     }
 

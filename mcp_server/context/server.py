@@ -137,7 +137,7 @@ class BrokerContextRequest(BaseModel):
     # provider pack and explicitly allowed packs so the broker can filter
     # extension evidence to only what the mode should see.
     mode_provider_id: str = ""
-    context_evidence_packs: list[str] = Field(default_factory=list)
+    context_item_packs: list[str] = Field(default_factory=list)
     # Session-owned mapper inputs. When absent, a default ``ContextPlan`` and
     # a 128k window are used so the tool works without a session plan.
     context_plan: dict[str, Any] = Field(default_factory=dict)
@@ -188,7 +188,7 @@ async def broker_context(
     context_budget: dict[str, Any] | None = None,
     state: dict[str, Any] | None = None,
     mode_provider_id: str = "",
-    context_evidence_packs: list[str] | None = None,
+    context_item_packs: list[str] | None = None,
     context_plan: dict[str, Any] | None = None,
     model_context_window_tokens: int = 131072,
     ctx: Context[ContextDeps, Any] | None = None,
@@ -200,7 +200,7 @@ async def broker_context(
     used for evidence selection. Malformed ``state`` raises a
     :class:`ToolError` instead of silently degrading to an empty state.
 
-    ``mode_provider_id`` and ``context_evidence_packs`` carry the active
+    ``mode_provider_id`` and ``context_item_packs`` carry the active
     mode's pack-scoped evidence boundary so the broker can filter extension
     evidence to only what the mode should see.
 
@@ -219,7 +219,7 @@ async def broker_context(
         context_budget=context_budget or {},
         state=state or {},
         mode_provider_id=mode_provider_id or "",
-        context_evidence_packs=context_evidence_packs or [],
+        context_item_packs=context_item_packs or [],
         context_plan=context_plan or {},
         model_context_window_tokens=model_context_window_tokens,
     )
@@ -252,9 +252,9 @@ async def broker_context(
         stage_id=request.stage_id,
         candidates=candidates,
         active_packs=frozenset(
-            {request.mode_provider_id} | set(request.context_evidence_packs)
+            {request.mode_provider_id} | set(request.context_item_packs)
         )
-        if request.mode_provider_id or request.context_evidence_packs
+        if request.mode_provider_id or request.context_item_packs
         else frozenset(),
         model_context_window_tokens=request.model_context_window_tokens,
         stable_prefix_tokens=0,

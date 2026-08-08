@@ -6,7 +6,7 @@ via ``turn_hooks.execute_operation``. This operation distills the batch
 into a single self-contained semantic fact using the same structured-output
 loop as ``synthesize_learning``, writes the semantic record via
 ``memory.add`` with ``memory_kind="semantic"``, a boosted salience, and
-``supersedes_id``/``evidence_ids`` linking it to its sources, then retires
+``supersedes_id``/``item_ids`` linking it to its sources, then retires
 each episodic source via ``memory.retire`` so the default
 ``status="active"`` recall pool stops surfacing the originals.
 
@@ -130,7 +130,7 @@ class ConsolidatedSemantic(BaseModel):
         ge=0.0,
         le=1.0,
     )
-    evidence_ids: list[int] = Field(
+    item_ids: list[int] = Field(
         ...,
         description="The input record ids the summary was derived from.",
         min_length=1,
@@ -221,7 +221,7 @@ async def _persist_semantic(
     ctx: OperationExecutionContext,
     parsed: Parameters,
     consolidated: ConsolidatedSemantic,
-    evidence_ids: list[int],
+    item_ids: list[int],
     source_count: int,
 ) -> int | str | None:
     """Write the consolidated semantic record via ``memory.add`` and return its id."""
@@ -232,7 +232,7 @@ async def _persist_semantic(
     boosted_salience = max(
         _SEMANTIC_SALIENCE_FLOOR, min(1.0, max_source_salience + _SEMANTIC_SALIENCE_BOOST)
     )
-    supersedes_id = evidence_ids[0] if evidence_ids else None
+    supersedes_id = item_ids[0] if item_ids else None
     add_result = await ctx.host.execute_tool(
         "memory.add",
         ToolExecutionContext(
@@ -254,10 +254,10 @@ async def _persist_semantic(
                 "operation_id": "consolidate_semantic",
                 "salience": boosted_salience,
                 "supersedes_id": supersedes_id,
-                "evidence_ids": evidence_ids,
+                "item_ids": item_ids,
                 "confidence": consolidated.confidence,
                 "content_json": {
-                    "consolidated_from": evidence_ids,
+                    "consolidated_from": item_ids,
                     "source_count": source_count,
                 },
             },
@@ -275,12 +275,12 @@ async def _persist_semantic(
 
 
 async def _retire_sources(
-    ctx: OperationExecutionContext, parsed: Parameters, evidence_ids: list[int]
+    ctx: OperationExecutionContext, parsed: Parameters, item_ids: list[int]
 ) -> list[int]:
     """Retire each episodic source via ``memory.retire``; return the ids retired."""
     assert ctx.host is not None
     retired_ids: list[int] = []
-    for eid in evidence_ids:
+    for eid in item_ids:
         retire_result = await ctx.host.execute_tool(
             "memory.retire",
             ToolExecutionContext(
@@ -331,18 +331,18 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     except Exception as exc:  # pylint: disable=broad-except
         raise RuntimeError(f"consolidate_semantic distillation failed: {exc}") from exc
 
-    # Validate evidence_ids are a subset of the input ids (guard against
+    # Validate item_ids are a subset of the input ids (guard against
     # the model hallucinating ids that were not in the batch).
     input_ids = {int(rec.get("id")) for rec in records if rec.get("id") is not None}
-    evidence_ids = [eid for eid in consolidated.evidence_ids if eid in input_ids]
-    if not evidence_ids:
+    item_ids = [eid for eid in consolidated.item_ids if eid in input_ids]
+    if not item_ids:
         # Fall back to the full input set if the model returned no valid ids.
-        evidence_ids = sorted(input_ids)
+        item_ids = sorted(input_ids)
 
     # Step 2: Persist the semantic record via memory.add with boosted salience.
     try:
         semantic_id = await _persist_semantic(
-            ctx, parsed, consolidated, evidence_ids, len(records)
+            ctx, parsed, consolidated, item_ids, len(records)
         )
     except RuntimeError as exc:
         return OperationResult(output_text=f"⛔ {exc}")
@@ -350,7 +350,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # Step 3: Retire the episodic sources via memory.retire so the default
     # status='active' recall pool stops surfacing them. The originals stay
     # queryable with status=None (audit trail preserved).
-    retired_ids = await _retire_sources(ctx, parsed, evidence_ids)
+    retired_ids = await _retire_sources(ctx, parsed, item_ids)
 
     preview = consolidated.summary[:_PREVIEW_CHARS]
     return OperationResult(
@@ -364,7 +364,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             "consolidated": True,
             "semantic_id": semantic_id,
             "retired_ids": retired_ids,
-            "evidence_ids": evidence_ids,
+            "item_ids": item_ids,
             "summary": consolidated.summary,
             "confidence": consolidated.confidence,
         },

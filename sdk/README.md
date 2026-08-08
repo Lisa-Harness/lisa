@@ -310,7 +310,7 @@ Packs register extensions through entry-point groups in `pyproject.toml`. The ac
 | `lisa.extensions.signal_connectors` | Register `SignalCollector` subclasses for background data collection |
 | `lisa.extensions.processing_loops` | Register `ProcessingLoop` implementations for post-collection analysis |
 | `lisa.extensions.host_commands` | Register slash-command handlers (`/checkpoint`, `/restore`, etc.) |
-| `lisa.extensions.context_evidence` | Register context-evidence builders for prompt injection |
+| `lisa.extensions.context_items` | Register context-item builders for prompt injection |
 
 Hosts decide which groups they discover and how often extension outputs are collected.
 

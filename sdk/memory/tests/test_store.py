@@ -537,7 +537,7 @@ def test_schema_has_consolidation_columns(tmp_path: Path) -> None:
         "memory_kind",
         "status",
         "supersedes_id",
-        "evidence_ids",
+        "item_ids",
         "confidence",
         "merge_count",
         "valid_until",
@@ -574,14 +574,14 @@ async def test_record_memory_persists_memory_kind_and_status(tmp_path: Path) -> 
             content="semantic fact",
             memory_kind="semantic",
             confidence=0.8,
-            evidence_ids=[1, 2, 3],
+            item_ids=[1, 2, 3],
             supersedes_id=1,
         )
     )
     assert record.memory_kind == "semantic"
     assert record.status == "active"
     assert record.confidence == 0.8
-    assert record.evidence_ids == [1, 2, 3]
+    assert record.item_ids == [1, 2, 3]
     assert record.supersedes_id == 1
 
 

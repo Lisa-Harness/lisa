@@ -38,7 +38,7 @@ from kernel.intake.contracts import (
     ProcessedState,
     ProcessingLoop,
 )
-from kernel.models import ContextEvidence, UnifiedState
+from kernel.models import ContextItem, UnifiedState
 from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
 
 from host.content_roots import seed_bundled_packs_lock
@@ -60,8 +60,8 @@ def _evidence_from_alert(
     *,
     alert: Any,
     collected_at: str,
-) -> ContextEvidence | None:
-    """Convert one :class:`AnomalyAlert` (or dict) into a :class:`ContextEvidence`."""
+) -> ContextItem | None:
+    """Convert one :class:`AnomalyAlert` (or dict) into a :class:`ContextItem`."""
     if isinstance(alert, dict):
         severity = str(alert.get("severity", "info")).strip().lower() or "info"
         source = str(alert.get("source", "")).strip() or "system"
@@ -74,8 +74,8 @@ def _evidence_from_alert(
         detected_at = str(getattr(alert, "detected_at", "")) or collected_at
     if not message:
         return None
-    return ContextEvidence(
-        evidence_id=f"state:alert:{source}:{detected_at}:{hash(message) & 0xFFFFFF:x}",
+    return ContextItem(
+        item_id=f"state:alert:{source}:{detected_at}:{hash(message) & 0xFFFFFF:x}",
         namespace="alerts",
         source=source,
         source_type="intake",
@@ -95,8 +95,8 @@ def _evidence_from_intel(
     intel_key: str,
     intel: Any,
     collected_at: str,
-) -> ContextEvidence | None:
-    """Convert one intel collection (or dict) into a :class:`ContextEvidence`."""
+) -> ContextItem | None:
+    """Convert one intel collection (or dict) into a :class:`ContextItem`."""
     if isinstance(intel, dict):
         generated_at = str(intel.get("generated_at", "")) or collected_at
         summary_bullets = list(intel.get("summary_bullets", []))
@@ -108,8 +108,8 @@ def _evidence_from_intel(
     body = "\n".join(f"- {b.strip()}" for b in summary_bullets if b.strip())
     if not body:
         return None
-    return ContextEvidence(
-        evidence_id=f"state:intel:{intel_key}",
+    return ContextItem(
+        item_id=f"state:intel:{intel_key}",
         namespace="intel",
         source=source,
         source_type="intake",
@@ -130,8 +130,8 @@ def _evidence_from_signal(
     status: str,
     snapshot: Any,
     collected_at: str,
-) -> ContextEvidence | None:
-    """Convert one signal snapshot (dict) into a :class:`ContextEvidence`."""
+) -> ContextItem | None:
+    """Convert one signal snapshot (dict) into a :class:`ContextItem`."""
     if not isinstance(snapshot, dict):
         body = str(snapshot)
     else:
@@ -147,8 +147,8 @@ def _evidence_from_signal(
         body = "\n".join(parts)
     if not body:
         return None
-    return ContextEvidence(
-        evidence_id=f"state:signal:{collector_id}",
+    return ContextItem(
+        item_id=f"state:signal:{collector_id}",
         namespace="signals",
         source=collector_id,
         source_type="intake",
@@ -289,8 +289,8 @@ def _merge_results(
     """Merge collection results and processed states into one UnifiedState.
 
     All ambient context — signals, intel, alerts, and any processed-state
-    evidence — is converted to :class:`ContextEvidence` records and merged
-    into ``context_evidence_catalog``. The kernel never sees typed
+    evidence — is converted to :class:`ContextItem` records and merged
+    into ``context_items``. The kernel never sees typed
     alert/intel models; the single catalog is the only feed the context
     mapper walks.
     """
@@ -311,22 +311,22 @@ def _merge_results(
             )
 
     # Merge processed states: convert their alerts/intel/signals to evidence,
-    # and pass through any context_evidence emitted directly by the loop.
+    # and pass through any context_items emitted directly by the loop.
     for ps in processed:
         evidence.extend(_evidence_from_processed_state(ps, compiled_at))
 
-    state.context_evidence_catalog = [e for e in evidence if e is not None]
+    state.context_items = [e for e in evidence if e is not None]
     return state
 
 
 def _evidence_from_processed_state(
     ps: ProcessedState,
     compiled_at: str,
-) -> list[ContextEvidence | None]:
-    """Convert one ProcessedState's fields into ContextEvidence records."""
-    out: list[ContextEvidence | None] = []
-    if ps.context_evidence:
-        out.extend(ps.context_evidence)
+) -> list[ContextItem | None]:
+    """Convert one ProcessedState's fields into ContextItem records."""
+    out: list[ContextItem | None] = []
+    if ps.context_items:
+        out.extend(ps.context_items)
     if ps.signal_snapshots:
         for connector_id, snapshot in ps.signal_snapshots.items():
             status = (

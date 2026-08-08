@@ -449,15 +449,15 @@ class DataSanitizer(Protocol):
 
 
 @runtime_checkable
-class ExtensionEvidenceBuilder(Protocol):
+class ExtensionItemBuilder(Protocol):
     """Build context evidence records from installed extensions.
 
-    Replaces ``app.extension_context_evidence.build_extension_context_evidence``.
+    Replaces ``app.extension_context_items.build_extension_context_items``.
     The default implementation returns an empty list; production hosts override
     with a builder that walks installed extensions.
     """
 
-    def build_extension_context_evidence(
+    def build_extension_context_items(
         self,
         runtime_context: Any,
         state: Any,

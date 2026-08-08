@@ -83,7 +83,7 @@ from kernel.seams.protocols import (
     CoordinatorRouteDecision,
     DataSanitizer,
     EventBus,
-    ExtensionEvidenceBuilder,
+    ExtensionItemBuilder,
     InputGuard,
     ModelPolicy,
     ModelRouter,
@@ -735,10 +735,10 @@ def _lazy_data_sanitizer() -> DataSanitizer:
     return PassThroughSanitizer()
 
 
-def _lazy_extension_evidence_builder() -> ExtensionEvidenceBuilder:
-    from kernel.context import NoOpExtensionEvidenceBuilder
+def _lazy_extension_item_builder() -> ExtensionItemBuilder:
+    from kernel.context import NoOpExtensionItemBuilder
 
-    return NoOpExtensionEvidenceBuilder()
+    return NoOpExtensionItemBuilder()
 
 
 def _lazy_input_guard() -> InputGuard:
@@ -779,8 +779,8 @@ class ContextSeams:
     clear error."""
     event_bus: EventBus = field(default_factory=_lazy_event_bus)
     data_sanitizer: DataSanitizer = field(default_factory=_lazy_data_sanitizer)
-    extension_evidence_builder: ExtensionEvidenceBuilder = field(
-        default_factory=_lazy_extension_evidence_builder
+    extension_item_builder: ExtensionItemBuilder = field(
+        default_factory=_lazy_extension_item_builder
     )
     input_guard: InputGuard = field(default_factory=_lazy_input_guard)
     """Validates user input before the model call (Phase 1). Default:

@@ -55,18 +55,18 @@ REGISTRY: list[Endpoint] = [
         description=(
             "Stateless external monitor (e.g. Cloudflare, GitHub, Stripe). "
             "Each collector returns a typed Pydantic snapshot that the "
-            "bottom-half tick converts to a ``ContextEvidence`` record."
+            "bottom-half tick converts to a ``ContextItem`` record."
         ),
     ),
     Endpoint(
-        group="lisa.extensions.context_evidence",
+        group="lisa.extensions.context_items",
         contract_module="kernel.extension_runtime",
-        contract_name="ExtensionContextEvidenceBuilder",
-        consumer_site="sdk.context.extension_evidence_builder.EntryPointExtensionEvidenceBuilder",
+        contract_name="ExtensionContextItemBuilder",
+        consumer_site="sdk.context.extension_item_builder.EntryPointExtensionItemBuilder",
         description=(
             "Contributes ranked context evidence from installed extensions. "
             "Each callable accepts ``(runtime_context, state)`` and returns "
-            "a ``list[ContextEvidence]``. The session-owned context mapper "
+            "a ``list[ContextItem]``. The session-owned context mapper "
             "merges these into ranked, lane-ordered context for each turn."
         ),
     ),

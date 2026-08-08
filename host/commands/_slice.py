@@ -144,7 +144,7 @@ async def handle_intake_command(
     timestamp_utc = datetime.now(UTC).isoformat()
     intake_data = {
         "elapsed_ms": round(elapsed_ms, 3),
-        "evidence_count": len(state.context_evidence_catalog),
+        "item_count": len(state.context_items),
     }
     _set_turn_context(
         runtime,
@@ -177,6 +177,6 @@ async def handle_intake_command(
     state_path = runtime.data_dir / "state.json"
     return (
         f"Intake tick complete in {elapsed_ms:.1f} ms. "
-        f"{len(state.context_evidence_catalog)} evidence item(s). "
+        f"{len(state.context_items)} context item(s). "
         f"State written to {state_path}"
     )

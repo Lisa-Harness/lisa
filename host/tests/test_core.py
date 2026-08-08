@@ -490,12 +490,12 @@ class TestHandleMessage:
         captured: dict[str, Path] = {}
 
         class _StubState:
-            context_evidence_catalog: list[object] = []
+            context_items: list[object] = []
 
         async def _fake_run_intake(*, data_dir: Path) -> _StubState:
             captured["data_dir"] = data_dir
             stub = _StubState()
-            stub.context_evidence_catalog = [{"evidence_id": "state:signal:github"}]
+            stub.context_items = [{"item_id": "state:signal:github"}]
             return stub
 
         monkeypatch.setattr(
@@ -507,7 +507,7 @@ class TestHandleMessage:
         assert isinstance(result, HostCommandResult)
         assert result.is_error is False
         assert "Intake tick complete" in result.text
-        assert "1 evidence item(s)" in result.text
+        assert "1 context item(s)" in result.text
         assert "state.json" in result.text
         assert captured["data_dir"] == tmp_path
         assert runtime.current_mode_id == "intake"

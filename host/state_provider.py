@@ -38,11 +38,11 @@ from pathlib import Path
 from typing import Any
 
 from kernel.models import (
-    ContextEvidence,
+    ContextItem,
     ContextRoutingConfig,
     UnifiedState,
 )
-from kernel.seams.protocols import ExtensionEvidenceBuilder
+from kernel.seams.protocols import ExtensionItemBuilder
 from kernel.slice import SliceOutcome
 from pydantic import ValidationError
 
@@ -56,16 +56,16 @@ def build_unified_state(
     *,
     state_snapshot: dict[str, Any] | None,
     context_routing: ContextRoutingConfig | None = None,
-    evidence_builder: ExtensionEvidenceBuilder | None = None,
+    item_builder: ExtensionItemBuilder | None = None,
     runtime_context: Any = None,
 ) -> UnifiedState:
     """Return a compiled :class:`UnifiedState` for operations and the context mapper.
 
     Builds the state from the dict-based ``state_snapshot`` (loaded via
-    ``--state-snapshot``). Intake-produced context evidence (signals, intel,
-    alerts) is merged with hook-produced extension evidence
-    (``evidence_builder.build_extension_context_evidence(runtime_context, state)``)
-    into ``context_evidence_catalog`` — the single feed the session-owned
+    ``--state-snapshot``). Intake-produced context items (signals, intel,
+    alerts) is merged with hook-produced extension items
+    (``item_builder.build_extension_context_items(runtime_context, state)``)
+    into ``context_items`` — the single feed the session-owned
     context mapper walks to produce ranked, lane-ordered context without a
     live MCP round-trip.
 
@@ -83,35 +83,35 @@ def build_unified_state(
             ),
             context_routing=context_routing,
         )
-        # Intake-produced context evidence (signals, intel, alerts,
+        # Intake-produced context items (signals, intel, alerts,
         # self_model) is the single feed. No arbitrary named buckets.
-        state.context_evidence_catalog = _coerce_evidence(
-            snapshot.get("context_evidence_catalog")
+        state.context_items = _coerce_items(
+            snapshot.get("context_items")
         )
 
-    # Invoke the extension evidence hook so installed packs contribute
-    # ContextEvidence records (self_model, Cloudflare, GitHub, Stripe, etc.).
+    # Invoke the extension context-item hook so installed packs contribute
+    # ContextItem records (self_model, Cloudflare, GitHub, Stripe, etc.).
     # The hook is the only coupling between packs and the host context path.
-    if evidence_builder is not None:
+    if item_builder is not None:
         try:
-            contributed = evidence_builder.build_extension_context_evidence(
+            contributed = item_builder.build_extension_context_items(
                 runtime_context, state
             )
         except Exception:  # pylint: disable=broad-except
             logger.warning(
-                "extension evidence builder raised; continuing with intake evidence only.",
+                "extension item builder raised; continuing with intake items only.",
                 exc_info=True,
             )
             contributed = []
         if contributed:
-            existing_ids = {e.evidence_id for e in state.context_evidence_catalog}
+            existing_ids = {e.item_id for e in state.context_items}
             for item in contributed:
-                if not isinstance(item, ContextEvidence):
+                if not isinstance(item, ContextItem):
                     continue
-                if item.evidence_id in existing_ids:
+                if item.item_id in existing_ids:
                     continue
-                state.context_evidence_catalog.append(item)
-                existing_ids.add(item.evidence_id)
+                state.context_items.append(item)
+                existing_ids.add(item.item_id)
 
     return state
 
@@ -161,14 +161,14 @@ def load_state_snapshot(
     return decoded
 
 
-def _coerce_evidence(raw_evidence: Any) -> list[ContextEvidence]:
-    """Coerce a raw list of evidence dicts into a list of :class:`ContextEvidence`."""
-    if not isinstance(raw_evidence, list):
+def _coerce_items(raw_items: Any) -> list[ContextItem]:
+    """Coerce a raw list of item dicts into a list of :class:`ContextItem`."""
+    if not isinstance(raw_items, list):
         return []
     try:
         return [
-            e if isinstance(e, ContextEvidence) else ContextEvidence.model_validate(e)
-            for e in raw_evidence
+            e if isinstance(e, ContextItem) else ContextItem.model_validate(e)
+            for e in raw_items
         ]
     except (ValidationError, TypeError):
         return []

@@ -20,12 +20,12 @@ from __future__ import annotations
 
 from kernel.context.context_broker import (
     build_ambient_facts,
-    reset_extension_evidence_builder,
-    set_extension_evidence_builder,
+    reset_extension_item_builder,
+    set_extension_item_builder,
 )
 
 __all__ = [
     "build_ambient_facts",
-    "reset_extension_evidence_builder",
-    "set_extension_evidence_builder",
+    "reset_extension_item_builder",
+    "set_extension_item_builder",
 ]

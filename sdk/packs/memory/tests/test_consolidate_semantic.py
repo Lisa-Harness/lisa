@@ -41,7 +41,7 @@ async def test_consolidate_distills_persists_and_retires() -> None:
         return json.dumps({
             "summary": "Postgres was chosen for the analytics warehouse.",
             "confidence": 0.85,
-            "evidence_ids": [1, 2, 3],
+            "item_ids": [1, 2, 3],
         })
 
     def resolve_model_fn(model_id: str | None) -> dict[str, Any]:
@@ -99,21 +99,21 @@ async def test_consolidate_distills_persists_and_retires() -> None:
     assert add_params["memory_kind"] == "semantic"
     assert add_params["operation_id"] == "consolidate_semantic"
     assert add_params["supersedes_id"] == 1
-    assert add_params["evidence_ids"] == [1, 2, 3]
+    assert add_params["item_ids"] == [1, 2, 3]
     assert add_params["confidence"] == 0.85
     # Salience boosted above the max source (0.4) and floored at 0.8.
     assert add_params["salience"] >= 0.8
 
 
 @pytest.mark.asyncio
-async def test_consolidate_filters_hallucinated_evidence_ids() -> None:
+async def test_consolidate_filters_hallucinated_item_ids() -> None:
     """Evidence ids not in the input batch are dropped; falls back to all input ids."""
 
     async def complete_fn(messages: list[dict[str, Any]], **_: Any) -> str:
         return json.dumps({
             "summary": "Consolidated fact.",
             "confidence": 0.7,
-            "evidence_ids": [1, 999],  # 999 is not in the input batch.
+            "item_ids": [1, 999],  # 999 is not in the input batch.
         })
 
     async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
@@ -142,8 +142,8 @@ async def test_consolidate_filters_hallucinated_evidence_ids() -> None:
     result = await op.execute(ctx)
 
     # Only id 1 was valid; id 999 was filtered out. With at least one valid
-    # id, the fallback does NOT trigger — evidence_ids is just [1].
-    assert result.extra.get("evidence_ids") == [1]
+    # id, the fallback does NOT trigger — item_ids is just [1].
+    assert result.extra.get("item_ids") == [1]
     assert result.extra.get("retired_ids") == [1]
 
 
@@ -155,7 +155,7 @@ async def test_consolidate_falls_back_to_all_input_ids_when_model_returns_none()
         return json.dumps({
             "summary": "Consolidated fact.",
             "confidence": 0.5,
-            "evidence_ids": [888, 999],  # none in the input batch.
+            "item_ids": [888, 999],  # none in the input batch.
         })
 
     async def execute_tool_fn(tool_id: str, ctx: Any) -> ToolResult:
@@ -183,7 +183,7 @@ async def test_consolidate_falls_back_to_all_input_ids_when_model_returns_none()
 
     result = await op.execute(ctx)
     # Fallback: sorted input ids.
-    assert result.extra.get("evidence_ids") == [5, 6]
+    assert result.extra.get("item_ids") == [5, 6]
     assert result.extra.get("retired_ids") == [5, 6]
 
 

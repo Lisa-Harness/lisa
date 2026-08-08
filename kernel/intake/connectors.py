@@ -46,7 +46,7 @@ class SignalCollector(ABC, Generic[SnapshotT]):
     display_name: str
     intel_collection_key: str | None = None
     """If set, the bottom-half tick will convert the collector's snapshot
-    into a ``ContextEvidence`` record in ``context_evidence_catalog``
+    into a ``ContextItem`` record in ``context_items``
     after each successful or error collection run. Collectors that do not
     need to contribute signal evidence leave this as ``None``."""
 

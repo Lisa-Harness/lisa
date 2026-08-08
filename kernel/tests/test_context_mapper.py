@@ -10,11 +10,11 @@ from kernel.context.context_mapper import (
     ContextBudgetError,
     ContextMapper,
     ContextMappingError,
-    context_candidates_from_evidence,
+    context_candidates_from_items,
     context_candidates_from_unified_state,
 )
 from kernel.context.models import ContextCandidate, ContextMapperRequest
-from kernel.models import ContextEvidence, UnifiedState
+from kernel.models import ContextItem, UnifiedState
 from kernel.session_plan import (
     ContextBudgetPlan,
     ContextLanePlan,
@@ -140,9 +140,9 @@ def test_mapper_gates_inactive_packs_maps_lanes_and_renders_provenance() -> None
     assert '<authoritative source="test:alert">' in result.rendered_context
 
 
-def test_raw_evidence_adapter_ignores_broker_scores_and_preserves_identity() -> None:
-    evidence = ContextEvidence(
-        evidence_id="collector:cloudflare",
+def test_raw_item_adapter_ignores_broker_scores_and_preserves_identity() -> None:
+    item = ContextItem(
+        item_id="collector:cloudflare",
         source="cloudflare",
         collector_id="cloudflare",
         source_type="extension",
@@ -162,11 +162,11 @@ def test_raw_evidence_adapter_ignores_broker_scores_and_preserves_identity() -> 
         metadata={"provenance": "system_observed"},
     )
 
-    candidate = context_candidates_from_evidence((evidence,))[0]
+    candidate = context_candidates_from_items((item,))[0]
 
     assert candidate.candidate_id == "collector:cloudflare"
-    assert candidate.source_kind == "extension_evidence"
-    assert candidate.source_ref == "context_evidence:collector:cloudflare"
+    assert candidate.source_kind == "extension_item"
+    assert candidate.source_ref == "context_item:collector:cloudflare"
     assert candidate.pack_id == "lisa-pack-cloudflare"
     assert candidate.provenance == "system_observed"
     assert candidate.salience == _EVIDENCE_SALIENCE
@@ -183,32 +183,32 @@ def test_raw_evidence_adapter_ignores_broker_scores_and_preserves_identity() -> 
     assert "### Cloudflare health" in result.rendered_context
 
 
-def test_raw_evidence_adapter_rejects_duplicate_ids_and_invalid_metadata() -> None:
-    base = ContextEvidence(
-        evidence_id="duplicate",
+def test_raw_item_adapter_rejects_duplicate_ids_and_invalid_metadata() -> None:
+    base = ContextItem(
+        item_id="duplicate",
         source="test",
         title="Test",
         body="Test body",
     )
     invalid_provenance = base.model_copy(
         update={
-            "evidence_id": "invalid",
+            "item_id": "invalid",
             "metadata": {"provenance": "not-a-provenance"},
         }
     )
 
-    with pytest.raises(ContextMappingError, match="Duplicate context evidence ID 'duplicate'"):
-        context_candidates_from_evidence((base, base))
+    with pytest.raises(ContextMappingError, match="Duplicate context item ID 'duplicate'"):
+        context_candidates_from_items((base, base))
     with pytest.raises(ContextMappingError, match=r"metadata\.provenance"):
-        context_candidates_from_evidence((invalid_provenance,))
+        context_candidates_from_items((invalid_provenance,))
 
 
-def test_unified_state_adapter_normalizes_evidence_catalog() -> None:
+def test_unified_state_adapter_normalizes_context_items() -> None:
     state = UnifiedState(
         compiled_at=_NOW.isoformat(),
-        context_evidence_catalog=[
-            ContextEvidence(
-                evidence_id="state:alert:cloudflare:critical",
+        context_items=[
+            ContextItem(
+                item_id="state:alert:cloudflare:critical",
                 namespace="alerts",
                 source="cloudflare",
                 source_type="intake",
@@ -221,8 +221,8 @@ def test_unified_state_adapter_normalizes_evidence_catalog() -> None:
                 tags=["alert", "critical", "cloudflare"],
                 metadata={"provenance": "system_observed"},
             ),
-            ContextEvidence(
-                evidence_id="state:self_model:default",
+            ContextItem(
+                item_id="state:self_model:default",
                 namespace="self_model",
                 source="self_model",
                 source_type="extension",

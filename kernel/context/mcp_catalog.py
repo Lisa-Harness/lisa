@@ -210,7 +210,7 @@ def _deserialize_mode(data: dict[str, Any]) -> WorkflowModeConfig:
         entry_failure_policy=data.get("entry_failure_policy", "abort"),
         default_intent_bridges=intent_bridges,
         mode_provider_id=str(data.get("mode_provider_id", "") or ""),
-        context_evidence_packs=[str(p) for p in (data.get("context_evidence_packs") or [])],
+        context_item_packs=[str(p) for p in (data.get("context_item_packs") or [])],
     )
 
     from kernel.ipsar_fsm import synthesize_stage_graph  # noqa: PLC0415

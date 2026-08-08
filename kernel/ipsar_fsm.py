@@ -295,7 +295,7 @@ _KERNEL_OWNED_FRONT_MATTER_KEYS: frozenset[str] = _MODE_OVERRIDES_PROTECTED_KEYS
         "description",
         "default_model",
         "mode_provider_id",
-        "context_evidence_packs",
+        "context_item_packs",
         "yield_policy",
         "fork_yield_policy",
     }
@@ -862,8 +862,8 @@ def load_catalog_from_disk(
             excluded_tool_ids=excluded_tool_ids,
             default_intent_bridges=default_intent_bridges,
             mode_provider_id=str(mode_front_matter.get("mode_provider_id", "") or ""),
-            context_evidence_packs=[
-                str(p) for p in (mode_front_matter.get("context_evidence_packs") or [])
+            context_item_packs=[
+                str(p) for p in (mode_front_matter.get("context_item_packs") or [])
             ],
             yield_policy=yield_policy,
             fork_yield_policy=fork_yield_policy,

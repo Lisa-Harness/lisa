@@ -24,14 +24,14 @@ from kernel.context.models import (
     ContextSensitivity,
 )
 from kernel.context.provenance import wrap_section
-from kernel.models import ContextEvidence, UnifiedState
+from kernel.models import ContextItem, UnifiedState
 from kernel.session_plan import ContextLanePlan, ContextSourceRule
 
 __all__ = [
     "ContextBudgetError",
     "ContextMapper",
     "ContextMappingError",
-    "context_candidates_from_evidence",
+    "context_candidates_from_items",
     "context_candidates_from_unified_state",
 ]
 
@@ -69,14 +69,14 @@ class ContextBudgetError(ContextMappingError):
     """Raised when required context cannot fit the model-aware budget."""
 
 
-def context_candidates_from_evidence(
-    evidence_items: Iterable[ContextEvidence],
+def context_candidates_from_items(
+    items: Iterable[ContextItem],
     *,
     default_collected_at: datetime | None = None,
 ) -> tuple[ContextCandidate, ...]:
-    """Normalize raw evidence into mapper candidates without broker scores.
+    """Normalize raw context items into mapper candidates without broker scores.
 
-    ``ContextEvidence`` remains a compatibility input while packs and state
+    ``ContextItem`` remains a compatibility input while packs and state
     providers migrate to direct candidates. Its legacy relevance, freshness,
     recency, and combined-score fields are intentionally ignored: all ranking
     features are calculated by :class:`ContextMapper` for the current turn.
@@ -84,62 +84,62 @@ def context_candidates_from_evidence(
 
     candidates: list[ContextCandidate] = []
     seen_candidate_ids: set[str] = set()
-    for evidence in sorted(evidence_items, key=lambda item: item.evidence_id):
-        candidate_id = evidence.evidence_id.strip()
+    for item in sorted(items, key=lambda item: item.item_id):
+        candidate_id = item.item_id.strip()
         if not candidate_id:
-            raise ContextMappingError("Context evidence requires a non-empty evidence_id.")
+            raise ContextMappingError("Context item requires a non-empty item_id.")
         if candidate_id in seen_candidate_ids:
             raise ContextMappingError(
-                f"Duplicate context evidence ID '{candidate_id}' cannot be mapped."
+                f"Duplicate context item ID '{candidate_id}' cannot be mapped."
             )
         seen_candidate_ids.add(candidate_id)
 
-        content = evidence.body.strip() or evidence.title.strip()
+        content = item.body.strip() or item.title.strip()
         if not content:
             raise ContextMappingError(
-                f"Context evidence '{candidate_id}' requires a title or body."
+                f"Context item '{candidate_id}' requires a title or body."
             )
-        metadata = evidence.metadata
+        metadata = item.metadata
         provenance = _metadata_choice(
             metadata,
             key="provenance",
             allowed_values=settings.context_mapper_provenance_authority,
-            default="system_observed" if evidence.collector_id else "authoritative",
-            evidence_id=candidate_id,
+            default="system_observed" if item.collector_id else "authoritative",
+            item_id=candidate_id,
         )
         sensitivity = _metadata_choice(
             metadata,
             key="sensitivity",
             allowed_values={"public", "private", "restricted"},
             default="private",
-            evidence_id=candidate_id,
+            item_id=candidate_id,
         )
         candidates.append(
             ContextCandidate(
                 candidate_id=candidate_id,
                 source_id=(
-                    evidence.source.strip() or evidence.collector_id.strip() or candidate_id
+                    item.source.strip() or item.collector_id.strip() or candidate_id
                 ),
-                source_ref=f"context_evidence:{candidate_id}",
+                source_ref=f"context_item:{candidate_id}",
                 source_kind=(
-                    "extension_evidence"
-                    if evidence.pack or evidence.source_type == "extension"
-                    else "state_evidence"
+                    "extension_item"
+                    if item.pack or item.source_type == "extension"
+                    else "state_item"
                 ),
-                evidence_type=evidence.evidence_type,
-                title=evidence.title,
+                evidence_type=item.evidence_type,
+                title=item.title,
                 content=content,
-                pack_id=evidence.pack,
+                pack_id=item.pack,
                 provenance=cast(ContextProvenance, provenance),
                 sensitivity=cast(ContextSensitivity, sensitivity),
                 authority=1.0,
-                confidence=_clamp_score(evidence.confidence),
-                salience=_clamp_score(evidence.salience_score),
-                collected_at=_parse_timestamp(evidence.collected_at, default_collected_at),
-                expires_at=_parse_timestamp(evidence.freshness_expires_at),
-                tags=tuple(sorted({tag for tag in evidence.tags if tag})),
+                confidence=_clamp_score(item.confidence),
+                salience=_clamp_score(item.salience_score),
+                collected_at=_parse_timestamp(item.collected_at, default_collected_at),
+                expires_at=_parse_timestamp(item.freshness_expires_at),
+                tags=tuple(sorted({tag for tag in item.tags if tag})),
                 conflict_key=_metadata_text(metadata, "conflict_key"),
-                conflict_risk=evidence.conflict_risk,
+                conflict_risk=item.conflict_risk,
                 explicitly_invoked=_metadata_bool(metadata, "explicitly_invoked"),
             )
         )
@@ -152,7 +152,7 @@ def context_candidates_from_unified_state(
     """Normalize the ``UnifiedState`` context-evidence catalog to candidates.
 
     This is intentionally a data adapter, not a ranking path. It preserves
-    raw evidence from the single ``context_evidence_catalog`` feed —
+    raw evidence from the single ``context_items`` feed —
     intake-produced (signals, intel, alerts) and hook-produced (self_model,
     pack extensions) — and hands the immutable descriptors to the
     session-owned mapper. Additional live sources (history, capabilities,
@@ -165,8 +165,8 @@ def context_candidates_from_unified_state(
         raise ContextMappingError("UnifiedState requires a compiled_at timestamp.")
 
     candidates = list(
-        context_candidates_from_evidence(
-            state.context_evidence_catalog,
+        context_candidates_from_items(
+            state.context_items,
             default_collected_at=compiled_at,
         )
     )
@@ -859,13 +859,13 @@ def _metadata_choice(
     key: str,
     allowed_values: dict[str, float] | set[str],
     default: str,
-    evidence_id: str,
+    item_id: str,
 ) -> str:
     value = metadata.get(key, default)
     if not isinstance(value, str) or value not in allowed_values:
         allowed = ", ".join(sorted(allowed_values))
         raise ContextMappingError(
-            f"Context evidence '{evidence_id}' metadata.{key} must be one of: {allowed}."
+            f"Context item '{item_id}' metadata.{key} must be one of: {allowed}."
         )
     return value
 

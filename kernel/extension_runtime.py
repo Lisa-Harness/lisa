@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from kernel.models import AnomalyAlert, ContextEvidence, UnifiedState
+from kernel.models import AnomalyAlert, ContextItem, UnifiedState
 from kernel.seams.protocols import StateProvider
 
 
@@ -22,14 +22,14 @@ class ExtensionRuntimeContext:
 
 
 ExtensionAnomalyDetector = Callable[[UnifiedState], Awaitable[list[AnomalyAlert]]]
-ExtensionContextEvidenceBuilder = Callable[
+ExtensionContextItemBuilder = Callable[
     [ExtensionRuntimeContext, UnifiedState],
-    "list[ContextEvidence]",
+    "list[ContextItem]",
 ]
 
 
 __all__ = [
     "ExtensionAnomalyDetector",
-    "ExtensionContextEvidenceBuilder",
+    "ExtensionContextItemBuilder",
     "ExtensionRuntimeContext",
 ]

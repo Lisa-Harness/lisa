@@ -156,7 +156,7 @@ async def add_memory(
     content_json: dict[str, Any] | None = None,
     salience: float = 0.0,
     supersedes_id: int | None = None,
-    evidence_ids: list[int] | None = None,
+    item_ids: list[int] | None = None,
     confidence: float = 1.0,
     valid_until: str | None = None,
     ctx: Context[MemoryDeps, Any] | None = None,
@@ -167,7 +167,7 @@ async def add_memory(
 
     Optional metadata fields (``memory_tier``, ``memory_kind``,
     ``operation_id``, ``instruction_id``, ``content_json``, ``salience``,
-    ``supersedes_id``, ``evidence_ids``, ``confidence``, ``valid_until``)
+    ``supersedes_id``, ``item_ids``, ``confidence``, ``valid_until``)
     let callers control retention, provenance, ranking, and consolidation
     supersession. When omitted, sensible defaults are applied so the tool
     remains usable as a simple "store this" call.
@@ -188,7 +188,7 @@ async def add_memory(
         content_json: Structured metadata dict stored alongside content.
         salience: Ranking weight (0.0-1.0) for recall ordering.
         supersedes_id: Id of the record this one supersedes (consolidation).
-        evidence_ids: Ids of the records this one was derived from.
+        item_ids: Ids of the records this one was derived from.
         confidence: Confidence in the memory (0.0-1.0).
         valid_until: Optional semantic-validity bound (ISO 8601); overrides
             the tier TTL when set.
@@ -208,7 +208,7 @@ async def add_memory(
             content_json=content_json or {"source": "mcp_tool"},
             salience=salience,
             supersedes_id=supersedes_id,
-            evidence_ids=evidence_ids or [],
+            item_ids=item_ids or [],
             confidence=confidence,
             valid_until=valid_until,
         )

@@ -7,8 +7,8 @@ unification:
   context injection.
 - :func:`resolve_host_name` — OS hostname resolution honoring platform env
   vars.
-- The module-level extension-evidence builder (``set_extension_evidence_builder``
-  / ``reset_extension_evidence_builder``) used by the SDK's entry-point-aware
+- The module-level extension-evidence builder (``set_extension_item_builder``
+  / ``reset_extension_item_builder``) used by the SDK's entry-point-aware
   builder.
 
 Context *selection* (ranking, gating, budgeting, rendering) is owned by the
@@ -25,8 +25,8 @@ import socket
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from kernel.context.extension_evidence import NoOpExtensionEvidenceBuilder
-from kernel.seams.protocols import ExtensionEvidenceBuilder
+from kernel.context.extension_item import NoOpExtensionItemBuilder
+from kernel.seams.protocols import ExtensionItemBuilder
 
 
 def resolve_host_name() -> str:
@@ -49,24 +49,24 @@ def resolve_host_name() -> str:
 
 
 # Module-level extension-evidence builder. Hosts override via
-# ``set_extension_evidence_builder`` when they need the production builder.
+# ``set_extension_item_builder`` when they need the production builder.
 # Callers that need explicit injection (e.g. tests, kernel seams) pass the
 # builder explicitly; when omitted, this module global is used.
-_extension_evidence_builder: ExtensionEvidenceBuilder = NoOpExtensionEvidenceBuilder()
+_extension_item_builder: ExtensionItemBuilder = NoOpExtensionItemBuilder()
 
 
-def set_extension_evidence_builder(builder: ExtensionEvidenceBuilder) -> None:
+def set_extension_item_builder(builder: ExtensionItemBuilder) -> None:
     """Override the module-level extension-evidence builder."""
 
-    global _extension_evidence_builder
-    _extension_evidence_builder = builder
+    global _extension_item_builder
+    _extension_item_builder = builder
 
 
-def reset_extension_evidence_builder() -> None:
+def reset_extension_item_builder() -> None:
     """Reset the extension-evidence builder to the NoOp default (for tests)."""
 
-    global _extension_evidence_builder
-    _extension_evidence_builder = NoOpExtensionEvidenceBuilder()
+    global _extension_item_builder
+    _extension_item_builder = NoOpExtensionItemBuilder()
 
 
 def build_ambient_facts(

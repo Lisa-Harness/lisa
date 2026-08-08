@@ -212,9 +212,9 @@ async def test_memory_lists_five_tools() -> None:
 
 @pytest.fixture
 def context_setup() -> None:
-    from sdk.context.context_broker import reset_extension_evidence_builder
+    from sdk.context.context_broker import reset_extension_item_builder
 
-    reset_extension_evidence_builder()
+    reset_extension_item_builder()
 
 
 @pytest.mark.asyncio

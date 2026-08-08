@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from kernel.models import AnomalyAlert, ContextEvidence, UnifiedState
+from kernel.models import AnomalyAlert, ContextItem, UnifiedState
 
 
 @dataclass(slots=True)
@@ -62,11 +62,11 @@ class ProcessedState:
     """Output of one ``ProcessingLoop.process()`` call.
 
     The bottom-half tick merges all ``ProcessedState`` outputs into a single
-    ``UnifiedState`` before writing to disk. ``context_evidence`` is the
-    preferred contract: processing loops emit :class:`ContextEvidence`
+    ``UnifiedState`` before writing to disk. ``context_items`` is the
+    preferred contract: processing loops emit :class:`ContextItem`
     records directly. The legacy ``active_alerts``, ``signal_snapshots``,
     and ``intel_collections`` fields are still accepted and converted to
-    ``ContextEvidence`` by the intake merge — they are a backward-compat
+    ``ContextItem`` by the intake merge — they are a backward-compat
     bridge for loops that have not yet migrated.
     """
 
@@ -74,7 +74,7 @@ class ProcessedState:
     signal_snapshots: dict[str, dict[str, Any]] | None = None
     intel_collections: dict[str, Any] | None = None
     active_alerts: list[AnomalyAlert] = field(default_factory=list)
-    context_evidence: list[ContextEvidence] = field(default_factory=list)
+    context_items: list[ContextItem] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

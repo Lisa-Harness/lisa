@@ -31,7 +31,7 @@ from kernel.context.context_mapper import (
 )
 from kernel.context.models import ContextMapperRequest
 from kernel.models import (
-    ContextEvidence,
+    ContextItem,
     ContextUsageEvent,
     UnifiedState,
 )
@@ -43,9 +43,9 @@ def _make_populated_state() -> UnifiedState:
     now = datetime.now(UTC).isoformat()
     return UnifiedState(
         compiled_at=now,
-        context_evidence_catalog=[
-            ContextEvidence(
-                evidence_id="state:alert:cloudflare:critical",
+        context_items=[
+            ContextItem(
+                item_id="state:alert:cloudflare:critical",
                 namespace="alerts",
                 source="cloudflare",
                 source_type="intake",
@@ -58,8 +58,8 @@ def _make_populated_state() -> UnifiedState:
                 tags=["alert", "critical", "cloudflare"],
                 metadata={"provenance": "system_observed"},
             ),
-            ContextEvidence(
-                evidence_id="state:intel:market",
+            ContextItem(
+                item_id="state:intel:market",
                 namespace="intel",
                 source="market",
                 source_type="intake",
@@ -72,8 +72,8 @@ def _make_populated_state() -> UnifiedState:
                 tags=["intel", "market"],
                 metadata={"provenance": "authoritative"},
             ),
-            ContextEvidence(
-                evidence_id="state:self_model:default",
+            ContextItem(
+                item_id="state:self_model:default",
                 namespace="self_model",
                 source="self_model",
                 source_type="extension",
