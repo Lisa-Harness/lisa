@@ -1,4 +1,27 @@
-"""Pack-neutral artifacts that describe an approved local code change."""
+"""Pack-neutral artifacts that describe an approved local code change.
+
+Why this lives in the kernel, not in a pack or the host:
+
+This module defines the shared execution-state contract that *two or more
+packs* must agree on without importing each other. A local-coding pack
+creates and patches a :class:`CodeChangeArtifact`; a publication pack
+reads the same artifact to commit, push, and open a PR. The packs layer
+forbids cross-pack imports (``sdk/packs/**`` architecture rule), so the
+handoff state cannot live in either pack — it must be promoted to
+neutral ground.
+
+The kernel owns only the typed models and the
+:class:`CodeChangeArtifactStore` Protocol. The host owns the concrete
+implementation (``host/code_artifacts.FileCodeChangeArtifactStore``),
+wired in ``host/runtime.py``. This is the standard dependency-inversion
+seam: packs and kernel code depend on the Protocol, never on the
+host's file format, and the kernel never imports host code
+(``kernel/**`` architecture rule).
+
+This is the same pattern as :mod:`kernel.state_providers` and the
+:class:`~kernel.seams.protocols.StateProvider` Protocol — the kernel
+declares the contract; the host injects the wiring.
+"""
 
 from __future__ import annotations
 
