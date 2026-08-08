@@ -78,6 +78,16 @@ class TestOpenAIEnrichment:
         assert model.cost_tier == "standard"
         assert model.latency_tier == "low"
 
+    def test_codex_uses_responses_api(self) -> None:
+        """Codex-family models only expose the Responses API on Azure."""
+        model = _enrich_openai_model("gpt-5.1-codex-max")
+        assert model.completion_api == "responses"
+
+    def test_non_codex_uses_chat_completions(self) -> None:
+        """Non-codex models keep the default chat-completions endpoint."""
+        model = _enrich_openai_model("gpt-5.4")
+        assert model.completion_api == "chat_completions"
+
 
 class TestAnthropicEnrichment:
     def test_opus_is_frontier_thinking(self) -> None:
@@ -118,6 +128,16 @@ class TestAzureEnrichment:
     def test_o_series_is_thinking(self) -> None:
         model = _enrich_azure_model("o3", {})
         assert model.thinking_model is True
+
+    def test_codex_uses_responses_api(self) -> None:
+        """Codex-family deployments only expose the Responses API on Azure."""
+        model = _enrich_azure_model("gpt-5.1-codex-max", {"model": "gpt-5.1-codex-max"})
+        assert model.completion_api == "responses"
+
+    def test_non_codex_uses_chat_completions(self) -> None:
+        """Non-codex deployments keep the default chat-completions endpoint."""
+        model = _enrich_azure_model("gpt-5.4", {"model": "gpt-5.4"})
+        assert model.completion_api == "chat_completions"
 
 
 class TestOllamaEnrichment:
@@ -284,6 +304,20 @@ class TestBuildManifestPayloadEnrichment:
         assert "latency_tier" not in row
         assert "capabilities" not in row
         assert "thinking_model" not in row
+        assert "completion_api" not in row
+
+    def test_responses_completion_api_written_to_yaml(self) -> None:
+        """A model flagged for the Responses API surfaces it in the manifest row."""
+        models = (
+            DiscoveredModel(
+                model_id="gpt-5.1-codex-max",
+                provider="azure_openai",
+                completion_api="responses",
+            ),
+        )
+        payload = build_manifest_payload(models)
+        row = payload["models"][0]
+        assert row["completion_api"] == "responses"
 
 
 class TestKnownModelsRegistry:

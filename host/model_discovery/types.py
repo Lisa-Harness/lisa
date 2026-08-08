@@ -61,6 +61,13 @@ class DiscoveredModel:
     context_window: int = 0
     description: str = ""
     structured_reliability: float = 0.0
+    # Which OpenAI-style completion endpoint this model requires. Codex
+    # families on Azure only expose the Responses API; the chat-completions
+    # endpoint rejects them with ``The requested operation is unsupported.``.
+    # Probes infer ``"responses"`` for codex model ids; the default keeps the
+    # chat-completions path used by every other model. Forwarded to the
+    # manifest entry so ``/models apply`` preserves it across re-discovery.
+    completion_api: str = "chat_completions"
 
 
 @dataclass(frozen=True, slots=True)

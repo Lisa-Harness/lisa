@@ -182,6 +182,12 @@ def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
         capabilities_list = ["embedding"]
         cost_tier = "budget"
 
+    # Codex-family models on Azure only expose the Responses API; the
+    # chat-completions endpoint rejects them with ``The requested
+    # operation is unsupported.`` Infer ``completion_api`` so the
+    # generated manifest routes them correctly without a hand edit.
+    completion_api = "responses" if "codex" in lowered else "chat_completions"
+
     enrichment = apply_known_override(
         "azure_openai",
         model_id,
@@ -191,6 +197,7 @@ def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
             "capabilities": tuple(capabilities_list),
             "cost_tier": cost_tier,
             "latency_tier": latency_tier,
+            "completion_api": completion_api,
         },
     )
     return _model(
@@ -202,4 +209,5 @@ def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
         cost_tier=str(enrichment.get("cost_tier", cost_tier)),
         latency_tier=str(enrichment.get("latency_tier", latency_tier)),
         structured_reliability=1.0,
+        completion_api=str(enrichment.get("completion_api", completion_api)),
     )

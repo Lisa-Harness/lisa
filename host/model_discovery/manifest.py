@@ -280,6 +280,8 @@ def _model_entry(model: DiscoveredModel) -> dict[str, Any]:
         entry["description"] = model.description
     if model.structured_reliability:
         entry["structured_reliability"] = model.structured_reliability
+    if model.completion_api and model.completion_api != "chat_completions":
+        entry["completion_api"] = model.completion_api
     return entry
 
 

@@ -101,6 +101,7 @@ def _model(
     context_window: int = 0,
     description: str = "",
     structured_reliability: float = 0.0,
+    completion_api: str = "chat_completions",
 ) -> DiscoveredModel:
     """Construct a :class:`DiscoveredModel` with the shared heuristic.
 
@@ -134,6 +135,7 @@ def _model(
         context_window=context_window,
         description=description,
         structured_reliability=structured_reliability,
+        completion_api=completion_api,
     )
 
 
