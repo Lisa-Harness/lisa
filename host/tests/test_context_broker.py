@@ -1,4 +1,4 @@
-"""Integration test for the wired context broker + budget allocator.
+"""Integration test for the wired context mapper + budget allocator.
 
 Migrated from ``hosts/little_lisa/test_context_broker_integration.py``.
 
@@ -8,13 +8,12 @@ performed via ``little_lisa.setup_framework()`` is now handled by the
 wires the catalog MCP and operation callbacks.
 
 Exercises the full chain: populated ``UnifiedState`` →
-``build_context_evidence_catalog`` → ``select_ranked_context`` →
+``context_candidates_from_unified_state`` → ``ContextMapper.map`` →
 ``ContextBudgetAllocator.allocate`` → rendered prompt markdown.
 
 Asserts:
 - Budget enforcement drops sections when the ceiling is hit.
-- Evidence selection respects ``context_broker_min_evidence_score``.
-- Namespace ordering in the rendered markdown.
+- The mapper produces lane-ordered markdown from a populated state.
 - The ``ContextUsageEvent`` is publishable from the allocator summary.
 """
 
@@ -25,17 +24,19 @@ from datetime import UTC, datetime
 import pytest
 from kernel.config import settings
 from kernel.context.context_budget import ContextBudgetAllocator
+from kernel.context.context_mapper import (
+    ContextMapper,
+    ContextMappingError,
+    context_candidates_from_unified_state,
+)
+from kernel.context.models import ContextMapperRequest
 from kernel.models import (
     AnomalyAlert,
-    ContextPacket,
     ContextUsageEvent,
     IntelCollection,
     UnifiedState,
 )
-from sdk.context.context_broker import (
-    render_context_packet_markdown,
-    select_ranked_context,
-)
+from kernel.session_plan import ContextLanePlan, ContextPlan, ContextSourceRule
 
 
 def _make_populated_state() -> UnifiedState:
@@ -67,48 +68,54 @@ def _make_populated_state() -> UnifiedState:
     )
 
 
-class TestSelectRankedContext:
-    """Tests for select_ranked_context with a populated state."""
+def _default_plan() -> ContextPlan:
+    """A minimal plan with a fallback rule so the mapper selects candidates."""
+    return ContextPlan(
+        lanes=(
+            ContextLanePlan(lane_id="operational", render_order=0),
+            ContextLanePlan(lane_id="general", render_order=10),
+        ),
+        sources=(
+            ContextSourceRule(
+                rule_id="alerts",
+                lane_id="operational",
+                evidence_types=("alert",),
+                priority=100,
+            ),
+            ContextSourceRule(rule_id="fallback", lane_id="general", fallback=True),
+        ),
+    )
 
-    def test_returns_packet_with_selected_evidence(self) -> None:
-        state = _make_populated_state()
-        packet = select_ranked_context(
-            state=state,
-            query="cloudflare error rate pricing",
-            mode_id="default",
-        )
-        assert isinstance(packet, ContextPacket)
-        pass
-        pass
 
-    def test_filters_below_min_evidence_score(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setattr(settings, "context_broker_min_evidence_score", 0.99)
-        state = _make_populated_state()
-        packet = select_ranked_context(
-            state=state,
-            query="nonexistent-query-xyz123",
-            mode_id="default",
-        )
-        assert packet.total_available_evidence == 0
-        assert len(packet.selected_evidence) == 0
+def _map_state(state: UnifiedState, query: str) -> str:
+    """Run the session-owned ContextMapper over a state and return markdown."""
+    candidates = context_candidates_from_unified_state(state)
+    request = ContextMapperRequest(
+        context_plan=_default_plan(),
+        query=query,
+        mode_id="default",
+        candidates=candidates,
+        active_packs=frozenset(),
+        model_context_window_tokens=131072,
+        stable_prefix_tokens=0,
+        conversation_tokens=0,
+        tool_schema_tokens=0,
+    )
+    return ContextMapper().map(request).rendered_context
 
-    def test_namespace_ordering_in_rendered_markdown(self) -> None:
+
+class TestContextMapper:
+    """Tests for the session-owned ContextMapper with a populated state."""
+
+    def test_returns_rendered_markdown(self) -> None:
         state = _make_populated_state()
-        packet = select_ranked_context(
-            state=state,
-            query="cloudflare error alert pricing strategy",
-            mode_id="default",
-        )
-        if not packet.selected_evidence:
-            pytest.skip("No evidence selected for namespace ordering test")
-        markdown = render_context_packet_markdown(packet)
-        # operational_state namespace should appear before
-        # long_term_strategic_memory in the rendered output
-        operational_pos = markdown.find("operational_state")
-        assert operational_pos != -1
+        markdown = _map_state(state, "cloudflare error rate pricing")
+        assert isinstance(markdown, str)
+
+    def test_uncompiled_state_raises(self) -> None:
+        state = UnifiedState(compiled_at="")
+        with pytest.raises(ContextMappingError):
+            context_candidates_from_unified_state(state)
 
 
 class TestContextBudgetAllocator:
@@ -186,16 +193,11 @@ class TestContextUsageEvent:
 
 
 class TestFullChain:
-    """End-to-end test: state → catalog → select → allocate → prompt."""
+    """End-to-end test: state → candidates → mapper → allocate → prompt."""
 
     def test_full_chain_produces_markdown_within_budget(self) -> None:
         state = _make_populated_state()
-        packet = select_ranked_context(
-            state=state,
-            query="cloudflare error rate alert",
-            mode_id="default",
-        )
-        packet_md = render_context_packet_markdown(packet)
+        packet_md = _map_state(state, "cloudflare error rate alert")
 
         allocator = ContextBudgetAllocator.for_turn(reasoning_model=False)
         elected = allocator.allocate(

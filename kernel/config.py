@@ -207,12 +207,6 @@ class Settings(BaseSettings):
     # super-brief delta. Override via ``BUDGET_BRIEFING_ENABLED``.
     budget_briefing_enabled: bool = True
 
-    # ── Context broker ──────────────────────────────────────────────────
-    context_broker_prefer_recent: bool = True
-    context_broker_min_evidence_score: float = 0.15
-    context_broker_max_selected_items: int = 8
-    context_broker_max_markdown_chars: int = 4000
-
     # ── Context budget ──────────────────────────────────────────────────
     context_budget_enabled: bool = True
     context_budget_default_total_tokens: int = 6000

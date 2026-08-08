@@ -889,56 +889,6 @@ class ContextEvidence(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class ContextPacket(BaseModel):
-    """One ranked, prompt-safe evidence packet for a single turn."""
-
-    compiled_at: str
-    query: str = ""
-    mode_id: str = "default"
-    stage_id: str = ""
-    total_available_evidence: int = 0
-    selected_evidence: list[ContextEvidence] = Field(default_factory=list)
-    dropped_evidence_count: int = 0
-    truncation_reason: str = ""
-    ranking_metadata: dict[str, Any] = Field(default_factory=dict)
-    # ── Workflow progress summary (Phase 7) ──────────────────────────
-    # A short human-readable summary of which workflow steps have
-    # completed and which remain, derived from the active
-    # ``WorkflowInstance``'s ``completed_steps`` + ``step_results``. This
-    # replaces re-reading ``CheckpointBundle.turn_history`` (which is
-    # host-owned UI/replay state the kernel never reads for routing). Empty
-    # when no multi-stage workflow is in flight. The host's context
-    # assembler populates this from ``runtime._active_workflow_instance``;
-    # the kernel leaves it empty (it does not read the instance here).
-    workflow_progress: str = ""
-
-
-class ContextBrokerRequest(BaseModel):
-    """Request payload for the MCP context broker."""
-
-    query: str
-    mode_id: str = "default"
-    stage_id: str = ""
-    surface: SurfaceContext = Field(default_factory=SurfaceContext)
-    user_slug: str = "default"
-    workspace_id: str = "default"
-    connectors: list[str] = Field(default_factory=list)
-    context_budget: dict[str, Any] = Field(default_factory=dict)
-    # Pack-scoped evidence boundary: the mode's own provider pack and any
-    # explicitly allowed packs whose extension evidence should be included.
-    mode_provider_id: str = ""
-    context_evidence_packs: list[str] = Field(default_factory=list)
-
-
-class ContextBrokerResponse(BaseModel):
-    """Response payload from the MCP context broker."""
-
-    packet: ContextPacket | None = None
-    packet_markdown: str = ""
-    context_tag: str = ""
-    warnings: list[str] = Field(default_factory=list)
-
-
 ContextPromptStrategy = Literal["broker_packet",]
 
 

@@ -28,9 +28,7 @@ from kernel.capability_manifest import render_capability_manifest_context
 from kernel.config import settings
 from kernel.context.context_broker import (
     build_ambient_facts,
-    render_context_packet_markdown,
     resolve_host_name,
-    select_ranked_context,
 )
 from kernel.context.context_budget import ContextBudgetAllocator, ContextLane
 from kernel.context.context_mapper import (
@@ -241,61 +239,28 @@ def build_brokered_context_markdown(
 ) -> str:
     """Select ranked context evidence from *state* and render it as Markdown.
 
-    When a session-owned ``context_plan`` and ``model_context_window_tokens``
-    are provided, routes through the session-owned :class:`ContextMapper`
-    (lane-aware, budget-aware, MMR-diversified). Otherwise falls back to the
-    legacy ranked-context broker.
+    Routes through the session-owned :class:`ContextMapper` (lane-aware,
+    budget-aware, MMR-diversified). When no ``context_plan`` is supplied, a
+    default :class:`ContextPlan` is used so the mapper is always the single
+    selection engine.
 
     Returns an empty string when no evidence is selected or when *state*
     is ``None`` / uncompiled.
 
-    *snapshot_sink* is forwarded to the session-owned mapper path; the
-    legacy broker path does not produce a ``ContextBudgetSnapshot`` and
-    therefore never invokes the sink.
+    *snapshot_sink* is forwarded to the mapper so a host can capture the
+    latest ``ContextBudgetSnapshot`` on each turn.
     """
     if state is None or not state.compiled_at:
         return ""
 
-    if context_plan is not None and model_context_window_tokens > 0:
-        return build_session_mapped_context_markdown(
-            mode_id=mode_id,
-            query=query,
-            state=state,
-            context_plan=context_plan,
-            model_context_window_tokens=model_context_window_tokens,
-            active_packs=active_packs,
-            snapshot_sink=snapshot_sink,
-        )
-
-    # Resolve the active mode's pack-scoped evidence boundary. The mode's
-    # own provider pack and any explicitly allowed packs form the allowed
-    # set. Extension evidence from other packs is excluded so that, e.g.,
-    # Cloudflare's bottom-half data only appears in Cloudflare-owned modes.
-    mode_config = get_workflow_catalog().get(mode_id)
-    mode_provider_id = ""
-    context_evidence_packs: list[str] = []
-    if mode_config is not None:
-        mode_provider_id = mode_config.mode_provider_id
-        context_evidence_packs = mode_config.context_evidence_packs
-
-    packet = select_ranked_context(
-        state=state,
-        query=query,
+    return build_session_mapped_context_markdown(
         mode_id=mode_id,
-        mode_provider_id=mode_provider_id,
-        context_evidence_packs=context_evidence_packs or None,
-        routing_config=state.context_routing if state else None,
-    )
-    if not packet.selected_evidence:
-        logger.debug(
-            "build_brokered_context_markdown: no evidence selected for "
-            "mode_id=%s query=%r — returning empty context",
-            mode_id,
-            query[:80],
-        )
-        return ""
-    return render_context_packet_markdown(
-        packet, routing_config=state.context_routing if state else None
+        query=query,
+        state=state,
+        context_plan=context_plan or ContextPlan(),
+        model_context_window_tokens=model_context_window_tokens or 131072,
+        active_packs=active_packs,
+        snapshot_sink=snapshot_sink,
     )
 
 

@@ -10,6 +10,10 @@ The former memory tools (``add_memory`` / ``search_memory`` /
 no longer owns a SQLite store; it operates on a :class:`~kernel.models.UnifiedState`
 payload supplied by the caller.
 
+Context selection routes through the session-owned :class:`ContextMapper`
+(lane-aware, budget-aware, MMR-diversified) — the same engine the host uses.
+The legacy namespace broker is not used here.
+
 ``--readonly`` is accepted for CLI-contract consistency but is inert: the
 broker is stateless and read-only by design. ``--data-dir`` is accepted for
 contract consistency; the broker does not persist anything today.
@@ -17,6 +21,7 @@ contract consistency; the broker does not persist anything today.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -29,15 +34,15 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, Field
 
-from kernel.models import (
-    ContextBrokerResponse,
-    UnifiedState,
+from kernel.context.context_mapper import (
+    ContextMapper,
+    ContextMappingError,
+    context_candidates_from_unified_state,
 )
-from sdk.context.context_broker import (
-    build_ambient_facts,
-    render_context_packet_markdown,
-    select_ranked_context,
-)
+from kernel.context.models import ContextMapperRequest
+from kernel.models import UnifiedState
+from kernel.session_plan import ContextPlan
+from sdk.context.context_broker import build_ambient_facts
 
 __all__ = ["BrokerContextRequest", "ContextDeps", "main", "mcp", "set_deps_for_test"]
 
@@ -113,10 +118,10 @@ mcp = MCPServer("Lisa Context Server", lifespan=_lifespan)
 class BrokerContextRequest(BaseModel):
     """Typed MCP request schema for ``broker_context``.
 
-    Mirrors the kernel-level :class:`ContextBrokerRequest` fields plus the
-    ``state`` payload needed to build a :class:`UnifiedState`. MCPServer uses
-    this model's fields as the tool's input schema — each field becomes a
-    top-level tool argument.
+    Carries the ``state`` payload needed to build a :class:`UnifiedState`,
+    plus the session-owned ``context_plan`` and model context window used by
+    the :class:`ContextMapper`. MCPServer uses this model's fields as the
+    tool's input schema — each field becomes a top-level tool argument.
     """
 
     query: str
@@ -133,6 +138,10 @@ class BrokerContextRequest(BaseModel):
     # extension evidence to only what the mode should see.
     mode_provider_id: str = ""
     context_evidence_packs: list[str] = Field(default_factory=list)
+    # Session-owned mapper inputs. When absent, a default ``ContextPlan`` and
+    # a 128k window are used so the tool works without a session plan.
+    context_plan: dict[str, Any] = Field(default_factory=dict)
+    model_context_window_tokens: int = Field(default=131072, ge=1)
 
 
 def _state_from_request(request: BrokerContextRequest) -> UnifiedState:
@@ -153,6 +162,20 @@ def _state_from_request(request: BrokerContextRequest) -> UnifiedState:
         raise ToolError(f"malformed state: {exc}") from exc
 
 
+def _context_plan_from_request(request: BrokerContextRequest) -> ContextPlan:
+    """Build the session-owned ``ContextPlan`` for the mapper.
+
+    Uses the request-supplied plan when present, otherwise a default
+    ``ContextPlan()`` (sensible lane/ranking/budget defaults).
+    """
+    if request.context_plan:
+        try:
+            return ContextPlan.model_validate(request.context_plan)
+        except Exception as exc:
+            raise ToolError(f"malformed context_plan: {exc}") from exc
+    return ContextPlan()
+
+
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
 async def broker_context(
     query: str,
@@ -166,9 +189,11 @@ async def broker_context(
     state: dict[str, Any] | None = None,
     mode_provider_id: str = "",
     context_evidence_packs: list[str] | None = None,
+    context_plan: dict[str, Any] | None = None,
+    model_context_window_tokens: int = 131072,
     ctx: Context[ContextDeps, Any] | None = None,
 ) -> str:
-    """Return a brokered context packet and markdown for the current turn.
+    """Return brokered context markdown for the current turn.
 
     Each argument maps to a field on :class:`BrokerContextRequest`. The
     ``state`` argument carries the caller-supplied ``UnifiedState`` snapshot
@@ -178,6 +203,10 @@ async def broker_context(
     ``mode_provider_id`` and ``context_evidence_packs`` carry the active
     mode's pack-scoped evidence boundary so the broker can filter extension
     evidence to only what the mode should see.
+
+    Context selection routes through the session-owned :class:`ContextMapper`
+    using ``context_plan`` and ``model_context_window_tokens`` (defaults
+    applied when absent).
     """
     request = BrokerContextRequest(
         query=query,
@@ -191,29 +220,62 @@ async def broker_context(
         state=state or {},
         mode_provider_id=mode_provider_id or "",
         context_evidence_packs=context_evidence_packs or [],
+        context_plan=context_plan or {},
+        model_context_window_tokens=model_context_window_tokens,
     )
     unified_state = _state_from_request(request)
-    packet = select_ranked_context(
-        state=unified_state,
+    context_plan_model = _context_plan_from_request(request)
+
+    deps = _resolve_deps(ctx)
+    ambient = build_ambient_facts(timezone=deps.timezone, host_name="lisa-context")
+
+    # The mapper requires a compiled_at timestamp to build candidates. Mirror
+    # the host's session-mapped path: an uncompiled/empty state yields no
+    # ranked context (just ambient facts), not an error.
+    if not unified_state.compiled_at:
+        return json.dumps(
+            {
+                "packet_markdown": f"## Ambient Facts\n\n{ambient}",
+                "context_tag": request.context_budget.get("context_tag", ""),
+            }
+        )
+
+    try:
+        candidates = context_candidates_from_unified_state(unified_state)
+    except ContextMappingError as exc:
+        raise ToolError(f"cannot build context candidates: {exc}") from exc
+
+    mapper_request = ContextMapperRequest(
+        context_plan=context_plan_model,
         query=request.query,
         mode_id=request.mode_id,
         stage_id=request.stage_id,
-        connectors=request.connectors or None,
-        mode_provider_id=request.mode_provider_id,
-        context_evidence_packs=request.context_evidence_packs or None,
+        candidates=candidates,
+        active_packs=frozenset(
+            {request.mode_provider_id} | set(request.context_evidence_packs)
+        )
+        if request.mode_provider_id or request.context_evidence_packs
+        else frozenset(),
+        model_context_window_tokens=request.model_context_window_tokens,
+        stable_prefix_tokens=0,
+        conversation_tokens=0,
+        tool_schema_tokens=0,
     )
-    deps = _resolve_deps(ctx)
-    response = ContextBrokerResponse(
-        packet=packet,
-        packet_markdown=(
-            "## Ambient Facts\n\n"
-            + build_ambient_facts(timezone=deps.timezone, host_name="lisa-context")
-            + "\n\n"
-            + render_context_packet_markdown(packet)
-        ),
-        context_tag=request.context_budget.get("context_tag", ""),
+    try:
+        result = ContextMapper().map(mapper_request)
+    except ContextMappingError as exc:
+        raise ToolError(f"context mapping failed: {exc}") from exc
+
+    if result.rendered_context:
+        markdown = f"## Ambient Facts\n\n{ambient}\n\n{result.rendered_context}"
+    else:
+        markdown = f"## Ambient Facts\n\n{ambient}"
+    return json.dumps(
+        {
+            "packet_markdown": markdown,
+            "context_tag": request.context_budget.get("context_tag", ""),
+        }
     )
-    return response.model_dump_json()
 
 
 def _add_context_args(parser: Any) -> None:

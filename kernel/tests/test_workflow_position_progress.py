@@ -1,13 +1,11 @@
-"""Phase 7 tests: workflow progress rendering and context injection.
+"""Phase 7 tests: workflow progress rendering.
 
 Covers ``render_workflow_progress`` (the "work done so far" summary that
-replaces re-reading ``CheckpointBundle.turn_history``) and the
-``ContextPacket.workflow_progress`` field default.
+replaces re-reading ``CheckpointBundle.turn_history``).
 """
 
 from __future__ import annotations
 
-from kernel.models import ContextPacket
 from kernel.workflow_position import (
     WorkflowPosition,
     WorkflowStep,
@@ -72,9 +70,3 @@ def test_render_workflow_progress_truncates_long_preview() -> None:
     # The preview line is at most 120 chars after the mode label.
     line = [ln for ln in progress.splitlines() if "search" in ln][0]
     assert len(line) < 200  # not the full 300-char preview
-
-
-def test_context_packet_has_workflow_progress_field() -> None:
-    """ContextPacket carries a workflow_progress field (Phase 7)."""
-    packet = ContextPacket(compiled_at="2026-07-29T00:00:00Z")
-    assert packet.workflow_progress == ""

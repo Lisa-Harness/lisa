@@ -66,8 +66,8 @@ REGISTRY: list[Endpoint] = [
         description=(
             "Contributes ranked context evidence from installed extensions. "
             "Each callable accepts ``(runtime_context, state)`` and returns "
-            "a ``list[ContextEvidence]``. The context broker merges these "
-            "into the ranked ``ContextPacket`` for each turn."
+            "a ``list[ContextEvidence]``. The session-owned context mapper "
+            "merges these into ranked, lane-ordered context for each turn."
         ),
     ),
     Endpoint(

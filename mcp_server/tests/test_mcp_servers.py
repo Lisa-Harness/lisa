@@ -229,7 +229,7 @@ async def test_context_lists_broker_tool(context_setup: None) -> None:
 
 @pytest.mark.asyncio
 async def test_context_broker_context_returns_packet(context_setup: None) -> None:
-    """broker_context with a valid typed payload returns a ContextBrokerResponse."""
+    """broker_context with a valid typed payload returns brokered markdown."""
     from mcp_server.context.server import mcp
 
     payload = {
@@ -239,9 +239,8 @@ async def test_context_broker_context_returns_packet(context_setup: None) -> Non
     }
     result = await mcp.call_tool("broker_context", payload)
     data = json.loads(_tool_text(result))
-    assert "packet" in data
     assert "packet_markdown" in data
-    assert data["packet"]["query"] == "what is the current status"
+    assert "## Ambient Facts" in data["packet_markdown"]
 
 
 @pytest.mark.asyncio
@@ -252,8 +251,8 @@ async def test_context_broker_context_empty_state_ok(context_setup: None) -> Non
     payload = {"query": "hello"}
     result = await mcp.call_tool("broker_context", payload)
     data = json.loads(_tool_text(result))
-    assert "packet" in data
-    assert data["packet"]["query"] == "hello"
+    assert "packet_markdown" in data
+    assert "## Ambient Facts" in data["packet_markdown"]
 
 
 @pytest.mark.asyncio

@@ -58,14 +58,14 @@ def build_unified_state(
     state_snapshot: dict[str, Any] | None,
     context_routing: ContextRoutingConfig | None = None,
 ) -> UnifiedState:
-    """Return a compiled :class:`UnifiedState` for operations and the context broker.
+    """Return a compiled :class:`UnifiedState` for operations and the context mapper.
 
     Builds the state from the dict-based ``state_snapshot`` (loaded via
     ``--state-snapshot``), populating ``signal_snapshots``,
     ``intel_collections``, ``active_alerts``, and ``domain_knowledge`` from
-    the snapshot's keys. The broker's evidence-catalog builder then walks
-    these fields plus extension-contributed evidence to produce a ranked
-    :class:`ContextPacket` without a live MCP round-trip.
+    the snapshot's keys. The session-owned context mapper then walks these
+    fields plus extension-contributed evidence to produce ranked, lane-ordered
+    context without a live MCP round-trip.
 
     Returns an empty :class:`UnifiedState` when ``state_snapshot`` is
     ``None`` or falsy.
