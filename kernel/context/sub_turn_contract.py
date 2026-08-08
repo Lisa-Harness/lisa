@@ -123,7 +123,7 @@ def read_sub_turn_budget_exhausted_tail() -> str:
 
 @lru_cache(maxsize=2)
 def read_sub_turn_midpoint_nudge() -> str:
-    """Load the authored midpoint write-nudge body (user-message prose)."""
+    """Load the authored midpoint write-nudge body (lifecycle-briefing prose)."""
 
     if _content_registry is None:
         raise RuntimeError(
@@ -166,6 +166,6 @@ def render_sub_turn_contract(
 
 
 def render_sub_turn_midpoint_nudge(*, action_list: str) -> str:
-    """Render the midpoint write-nudge user message for a sub-turn child."""
+    """Render the midpoint write-nudge briefing line for a sub-turn child."""
 
     return read_sub_turn_midpoint_nudge().format_map(_MissingKeyDict(action_list=action_list))

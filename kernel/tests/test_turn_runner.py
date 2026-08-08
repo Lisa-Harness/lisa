@@ -1614,8 +1614,9 @@ async def test_run_turn_workflow_transition_dispatches_apply_transition() -> Non
 
 @pytest.mark.asyncio
 async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
-    """After stage_nudge_threshold turns in the same stage, the loop
-    injects a nudge user-message prompting the model to transition.
+    """After stage_nudge_threshold turns in the same stage, the resolver's
+    soft nudge rides the lifecycle briefing (system prompt) — never a
+    synthesized user message (Phase 7: one control channel).
     """
     from kernel.workflow_position import WorkflowPosition
 
@@ -1642,13 +1643,19 @@ async def test_run_turn_workflow_stuck_session_nudge_injects_message() -> None:
     result = await run_turn(mode_id="ponder", query="analyze this", hooks=hooks)
 
     assert result.response_text == "Done."
-    # The nudge message should be present in the messages sent to the model.
+    # The nudge rides the system-prompt lifecycle briefing (resolver text:
+    # "You have been in <mode> for N iterations without advancing ...").
     nudge_found = any(
-        "been in this stage" in str(msg.get("content", ""))
+        "without advancing" in str(msg.get("content", ""))
         for msg in captured_messages
-        if msg.get("role") == "user"
+        if msg.get("role") == "system"
     )
     assert nudge_found
+    # Phase 7 invariant: no synthesized user messages — the only user
+    # message is the host's initial query.
+    user_messages = [m for m in captured_messages if m.get("role") == "user"]
+    assert user_messages
+    assert all("## User Query" in str(m.get("content", "")) for m in user_messages)
 
 
 @pytest.mark.asyncio
@@ -4786,21 +4793,26 @@ async def test_build_sub_turn_contract_names_action_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fork_child_midpoint_write_nudge_fires_once() -> None:
-    """A fork child past its iteration midpoint with zero action-tool
-    calls gets a one-shot midpoint write-nudge. The nudge fires exactly
-    once (``write_nudge_fired`` on ``_TurnState``).
+async def test_fork_child_turn_has_no_synthesized_user_messages() -> None:
+    """Phase 7 (one control channel): neither the parent turn nor fork
+    children ever see a synthesized ``user`` message — every user message
+    in any conversation is the host's initial query (``## User Query``).
+    The sub-turn contract and the midpoint write-nudge ride the
+    system-prompt lifecycle briefing instead.
 
-    The test runs a fork:remember child that keeps calling ``fetch_page``
-    (read-only) past the midpoint. The nudge is captured as a user
-    message appended to the conversation.
+    The stub model forks to ``remember`` only and then returns a plain
+    completion, so the Phase-5 forced-fork enforcer synthesizes the
+    fan-out to both detected intents (remember + markdown). The invariant
+    is checked across every message snapshot the model was called with
+    (parent and children share the ``complete`` stub).
     """
     call_count = 0
-    captured_messages: list[dict[str, Any]] = []
+    captured_snapshots: list[list[dict[str, Any]]] = []
 
     async def two_step(**kwargs: Any) -> _StubCompletion:
         nonlocal call_count
         call_count += 1
+        captured_snapshots.append([dict(m) for m in kwargs.get("messages", [])])
         if call_count == 1:
             return _StubCompletion(
                 content="",
@@ -4814,24 +4826,19 @@ async def test_fork_child_midpoint_write_nudge_fires_once() -> None:
                     }
                 ],
             )
-        # Capture the messages the child sees.
-        captured_messages.extend(kwargs.get("messages", []))
         return _StubCompletion(content="Done.")
 
     hooks = _build_minimal_hooks(two_step)
     result = await run_turn(mode_id="default", query="remember and write", hooks=hooks)
 
     assert result.fork_results is not None
-    assert len(result.fork_results) == 1
-    # The nudge is a user message containing the write-deadline language.
-    nudge_messages = [
-        m
-        for m in captured_messages
-        if m.get("role") == "user" and "midpoint" in str(m.get("content", ""))
-    ]
-    # The nudge may or may not fire depending on whether the stub child
-    # reaches the midpoint (it completes immediately with "Done."), so
-    # we assert the structural seam exists rather than the exact nudge
-    # text. The _build_sub_turn_contract unit test above covers the
-    # contract content; this test verifies the fork child wiring.
-    assert result.fork_results[0].target.mode_id == "remember"
+    assert {r.target.mode_id for r in result.fork_results} == {"remember", "markdown"}
+    # Phase 7 invariant: every user message in every conversation snapshot
+    # is a host query message — zero synthesized nudges/hints.
+    assert captured_snapshots
+    for snapshot in captured_snapshots:
+        for msg in snapshot:
+            if msg.get("role") == "user":
+                assert "## User Query" in str(msg.get("content", "")), (
+                    f"synthesized user message in turn loop: {msg!r}"
+                )

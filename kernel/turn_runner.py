@@ -214,6 +214,7 @@ def _build_budget_briefing(
     tool_catalog: dict[str, Any],
     execution_policy: Any,
     budget_exhausted: bool,
+    guidance: tuple[str, ...] = (),
 ) -> str:
     """Build a compact, per-iteration lifecycle status block for the system prompt.
 
@@ -249,8 +250,16 @@ def _build_budget_briefing(
     generic over ``sub_turn_kind`` so delegate (``"delegate"``) reuses the
     same seam without reworking the briefing.
 
+    **Guidance lines** (Phase 7: one control channel): soft nudges — the
+    resolver's ``ContinueAction.nudge``, the sub-turn midpoint write-nudge,
+    and the persistent post-handoff chain-advance directive — ride this
+    block as extra lines. They replace the old synthesized ``user``
+    messages; the turn loop never appends ``role: "user"`` messages
+    (user messages come only from the host's initial query).
+
     Returns an empty string when there is nothing actionable to report
-    (e.g. unlimited everything, iteration 1 with no per-target limits).
+    (e.g. unlimited everything, iteration 1 with no per-target limits, and
+    no guidance lines).
     """
     lines: list[str] = []
     # ── Iteration budget ──
@@ -320,9 +329,16 @@ def _build_budget_briefing(
         remaining_iterations=remaining_iterations,
         budget_exhausted=budget_exhausted,
     )
-    if not lines and not sub_contract:
+    if not lines and not sub_contract and not guidance:
         return ""
-    lifecycle_block = "## Turn Lifecycle\n\n" + " · ".join(lines) if lines else ""
+    sections: list[str] = []
+    if lines:
+        sections.append(" · ".join(lines))
+    # Guidance lines (Phase 7: one control channel) ride the same
+    # lifecycle block so the per-iteration marker strip removes them with
+    # the briefing — no second marker, no stale accumulation.
+    sections.extend(line for line in guidance if line)
+    lifecycle_block = "## Turn Lifecycle\n\n" + "\n\n".join(sections) if sections else ""
     if sub_contract and lifecycle_block:
         return sub_contract + "\n\n" + lifecycle_block
     if sub_contract:
@@ -2796,6 +2812,13 @@ async def _run_turn_inner(
     # (the child sees the original multi-intent query, detects intents its
     # mode doesn't satisfy, and is told to re-route — which a weak/strict
     # model turns into an invalid-content 500). See _run_fork_child_turn.
+    # Phase 7 (one control channel): the post-handoff chain-advance
+    # directive rides the per-iteration lifecycle briefing instead of a
+    # synthesized ``user`` message. Set when a handoff leaves a non-empty
+    # routing hint (the chain is in flight); cleared when the chain
+    # completes or the hint is suppressed. Persistent across iterations —
+    # the briefing rebuild re-injects it every iteration until cleared.
+    _chain_advance_guidance = ""
     routing_hint = ""
     if not suppress_routing_hint:
         routing_hint = _compute_capability_routing_hint(
@@ -3374,16 +3397,10 @@ async def _run_turn_inner(
             # below in the router terminal-actions block (they need the
             # workflow session side effect).
 
-        if isinstance(_lifecycle_action, _ContinueAction):
-            if _lifecycle_action.nudge:
-                # Append the nudge as a system-prompt section (NOT a
-                # ``user`` message — that was the old collage's mistake).
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": _lifecycle_action.nudge,
-                    }
-                )
+        # ``ContinueAction.nudge`` is NOT appended to the messages here —
+        # it rides the per-iteration lifecycle briefing below (Phase 7:
+        # one control channel). The turn loop never synthesizes ``user``
+        # messages; user messages come only from the host.
 
         # ── Fork/delegate child midpoint write-nudge ──────────────────
         # A sub-turn (fork child, or delegate child once delegate lands)
@@ -3394,7 +3411,10 @@ async def _run_turn_inner(
         # real write or an honest yield. The nudge fires exactly once per
         # child (``write_nudge_fired`` on ``_TurnState``); the sub-turn
         # contract block in the briefing carries the same signal every
-        # iteration, this is the escalated mid-run version.
+        # iteration, this is the escalated mid-run version. Transport
+        # (Phase 7: one control channel): this iteration's lifecycle
+        # briefing — never a synthesized ``user`` message.
+        _midpoint_nudge_text = ""
         if (
             _state.sub_turn_kind
             and _state.action_tool_ids
@@ -3414,17 +3434,12 @@ async def _run_turn_inner(
                 _state.iteration,
                 max_tool_iterations - _state.iteration,
             )
-            messages.append(
-                {
-                    "role": "user",
-                    # The nudge prose is authored Markdown loaded through
-                    # ``kernel.context.sub_turn_contract`` (``prompts/
-                    # sub_turn/midpoint_write_nudge.md``); only the
-                    # action-list substitution glue lives here.
-                    "content": render_sub_turn_midpoint_nudge(
-                        action_list=_action_list,
-                    ),
-                }
+            # The nudge prose is authored Markdown loaded through
+            # ``kernel.context.sub_turn_contract`` (``prompts/
+            # sub_turn/midpoint_write_nudge.md``); only the action-list
+            # substitution glue lives here.
+            _midpoint_nudge_text = render_sub_turn_midpoint_nudge(
+                action_list=_action_list,
             )
 
         # Determine effective_tools from the budget/yield state.
@@ -3449,6 +3464,21 @@ async def _run_turn_inner(
         # iteration's briefing is stripped via the marker so it does not
         # accumulate). Gated by ``budget_briefing_enabled`` (default
         # True) so hosts can opt out. See ``_build_budget_briefing``.
+        #
+        # ── Per-iteration guidance (Phase 7: one control channel) ─────
+        # Soft nudges ride the lifecycle briefing (system prompt); the
+        # turn loop never synthesizes ``user`` messages — user messages
+        # come only from the host (the initial query). Sources: the
+        # resolver's ``ContinueAction.nudge``, this iteration's sub-turn
+        # midpoint write-nudge, and the persistent post-handoff
+        # chain-advance directive (``_chain_advance_guidance``).
+        _guidance_lines: list[str] = []
+        if isinstance(_lifecycle_action, _ContinueAction) and _lifecycle_action.nudge:
+            _guidance_lines.append(_lifecycle_action.nudge)
+        if _midpoint_nudge_text:
+            _guidance_lines.append(_midpoint_nudge_text)
+        if _chain_advance_guidance:
+            _guidance_lines.append(_chain_advance_guidance)
         if _kernel_settings.budget_briefing_enabled:
             _briefing = _build_budget_briefing(
                 state=_state,
@@ -3460,6 +3490,7 @@ async def _run_turn_inner(
                 tool_catalog=tool_catalog,
                 execution_policy=execution_policy,
                 budget_exhausted=budget_exhausted,
+                guidance=tuple(_guidance_lines),
             )
             # Strip any previous briefing (by marker) and append the
             # fresh one. The base prompt is the stable contract; the
@@ -4880,6 +4911,7 @@ async def _run_turn_inner(
                                         )
                                         post_handoff_hint = ""
                                         routing_hint = ""
+                                        _chain_advance_guidance = ""
                                         # Arm a halt: the model has
                                         # demonstrated it will not follow
                                         # routing hints this turn. Yield on
@@ -4962,6 +4994,7 @@ async def _run_turn_inner(
                                         )
                                         post_handoff_hint = ""
                                         routing_hint = ""
+                                        _chain_advance_guidance = ""
                                     elif _state.duplicate_hint_count >= (
                                         _kernel_settings.duplicate_hint_limit
                                     ):
@@ -4973,6 +5006,7 @@ async def _run_turn_inner(
                                         )
                                         post_handoff_hint = ""
                                         routing_hint = ""
+                                        _chain_advance_guidance = ""
                                     else:
                                         _log.info(
                                             "post-handoff routing hint mode=%s hint_len=%d hint=%s",
@@ -5000,6 +5034,28 @@ async def _run_turn_inner(
                                             _pre_hint_sys + "\n\n" + post_handoff_hint
                                         )
                                         routing_hint = post_handoff_hint
+                                        # Phase 7 (one control channel):
+                                        # the chain-advance directive rides
+                                        # the per-iteration lifecycle
+                                        # briefing until the chain
+                                        # completes — replacing the old
+                                        # synthesized ``user``-message
+                                        # escalation. Cleared when the
+                                        # chain completes or the hint is
+                                        # suppressed.
+                                        _chain_advance_guidance = (
+                                            "WORKFLOW CHAIN IN FLIGHT: "
+                                            "You are now in the `"
+                                            + target_stage
+                                            + "` mode — one step of a "
+                                            "multi-step workflow. Complete "
+                                            "this mode's work, then you "
+                                            "MUST call `transition_stage` "
+                                            "to continue to the next step. "
+                                            "Do NOT end the turn without "
+                                            "calling `transition_stage`. "
+                                            + post_handoff_hint
+                                        )
                                         # Refresh the forced action for the
                                         # new mode so the enforcer tracks
                                         # the post-handoff routing decision
@@ -5036,6 +5092,7 @@ async def _run_turn_inner(
                                     # intents; clear the stale hint so the
                                     # guards don't fire on the old one.
                                     routing_hint = ""
+                                    _chain_advance_guidance = ""
                                     _state.duplicate_hint_count = 0
                                     _state.last_hint_text = ""
                                     # No remaining gap → no forced action.
@@ -5070,33 +5127,15 @@ async def _run_turn_inner(
                                 "content": tool_output,
                             }
                         )
-                        # When a post-handoff hint exists (the chain is not
-                        # yet complete), inject it as a user-message nudge
-                        # AFTER the tool output so the model treats it as a
-                        # direct instruction to act on now — not background
-                        # system-prompt context it can ignore in favor of the
-                        # mode's own "summarize the results" directive. A
-                        # user message is the strongest signal short of
-                        # calling the tool ourselves; without it the model
-                        # in an action mode (e.g. search) does its one tool
-                        # call, summarizes, and ends the turn — the chain
-                        # stalls even though the hint is in the system prompt.
-                        if post_handoff_hint:
-                            messages.append(
-                                {
-                                    "role": "user",
-                                    "content": (
-                                        "CRITICAL: You are in a multi-step "
-                                        "workflow. You are now in the `"
-                                        + target_stage
-                                        + "` mode. Complete this mode's work, "
-                                        "then you MUST call "
-                                        "`transition_stage` to continue to the "
-                                        "next step. Do NOT end the turn "
-                                        "without calling `transition_stage`. " + post_handoff_hint
-                                    ),
-                                }
-                            )
+                        # Phase 7 (one control channel): when a
+                        # post-handoff hint exists (the chain is not yet
+                        # complete), the chain-advance directive rides the
+                        # per-iteration lifecycle briefing
+                        # (``_chain_advance_guidance``, set above) instead
+                        # of a synthesized ``user`` message — the briefing
+                        # is rebuilt before the next model call, so the
+                        # model sees the directive at the same point it
+                        # used to see the escalation message.
                         # If the entry operation for this handoff target
                         # failed, do NOT ``continue`` into the data-less
                         # mode. The model would have nothing to work on and
@@ -5590,15 +5629,14 @@ async def _run_turn_inner(
         if terminal_position is not None and is_terminal_stage(terminal_position):
             terminal_stage_config = mode_config.stages.get(terminal_position.stage_id)
             if terminal_stage_config and terminal_stage_config.instruction_body:
-                terminal_prompt = assemble_system(
-                    mode_instruction,
-                    terminal_stage_config.instruction_body,
-                )
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "Provide a closing summary for this workflow.",
-                    }
+                # The closing directive rides the system prompt (Phase 7:
+                # one control channel) — no synthesized ``user`` message.
+                terminal_prompt = (
+                    assemble_system(
+                        mode_instruction,
+                        terminal_stage_config.instruction_body,
+                    )
+                    + "\n\nProvide a closing summary for this workflow."
                 )
                 messages[0] = {"role": "system", "content": terminal_prompt}
                 try:
