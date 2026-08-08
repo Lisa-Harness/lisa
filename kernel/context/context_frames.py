@@ -1,71 +1,26 @@
-"""Authored context-frame helpers for prompt assembly."""
+"""Module-level content-registry holder for authored context assets.
+
+The legacy context-frame system (``ContextFrameId`` / ``CONTEXT_FRAME_IDS``
+and the ``read_context_frame`` / ``render_context_frame`` helpers) was
+superseded by the session-owned :class:`~kernel.context.context_mapper.ContextMapper`
+and removed. What remains is the single module-level content registry that
+hosts inject at startup via :func:`set_content_registry` and read back to
+populate ``TurnHooks.context_seams.content_registry``. No disk-based default;
+callers that read before the registry is set raise ``RuntimeError``.
+"""
 
 from __future__ import annotations
 
-from functools import lru_cache
-from typing import Literal
-
 from kernel.seams.protocols import ContentRegistry
 
-ContextFrameId = Literal[
-    "surface_context",
-    "private_user_context",
-    "shared_surface_context",
-    "ranked_evidence",
-    "live_snapshot",
-    "passive_intelligence",
-    "memory_recall",
-    "reflection",
-    "capability_snapshot",
-    "answer_planner",
-]
-
-CONTEXT_FRAME_IDS: tuple[ContextFrameId, ...] = (
-    "surface_context",
-    "private_user_context",
-    "shared_surface_context",
-    "ranked_evidence",
-    "live_snapshot",
-    "passive_intelligence",
-    "memory_recall",
-    "reflection",
-    "capability_snapshot",
-    "answer_planner",
-)
-
-_FRAME_ASSET_PREFIX = "prompts/context_frames"
-
 # Module-level content registry. Hosts MUST inject one via
-# ``set_content_registry`` before any frame is read. No disk-based default.
+# ``set_content_registry`` before any authored asset is read. No disk-based
+# default.
 _content_registry: ContentRegistry | None = None
 
 
 def set_content_registry(registry: ContentRegistry) -> None:
-    """Override the module-level content registry and invalidate caches."""
+    """Override the module-level content registry."""
 
     global _content_registry
     _content_registry = registry
-    read_context_frame.cache_clear()
-
-
-@lru_cache(maxsize=len(CONTEXT_FRAME_IDS))
-def read_context_frame(frame_id: ContextFrameId) -> str:
-    """Load one authored context frame from the merged content registry."""
-
-    if _content_registry is None:
-        raise RuntimeError(
-            "Content registry not set. Call set_content_registry() before reading frames."
-        )
-    return _content_registry.read_authored_text(f"{_FRAME_ASSET_PREFIX}/{frame_id}.md").strip()
-
-
-def render_context_frame(frame_id: ContextFrameId, body: str) -> str:
-    """Render one framed context body, preserving empty-body no-ops."""
-
-    normalized_body = body.strip()
-    if not normalized_body:
-        return ""
-    frame = read_context_frame(frame_id)
-    if not frame:
-        return normalized_body
-    return f"{frame}\n\n{normalized_body}"
