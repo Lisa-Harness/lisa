@@ -1338,6 +1338,108 @@ async def test_plan_mid_turn_handoff_resumes_active_instance() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mid_turn_handoff_to_plan_persists_workflow_position() -> None:
+    """A mid-turn handoff to ``plan`` whose entry op returns a
+    ``target_stage_id`` AND ``steps`` persists the plan as a
+    ``WorkflowPosition`` (spawned_from=plan_workflow_op), mirroring the
+    Phase-1 plan path. Without this, a subsequent mid-turn re-entry to
+    ``plan`` finds no active position and re-runs ``plan_workflow``
+    against a status query → no routing target → plan-failure hard-stop
+    (the 2026-08-08 kimi-k2.6 stuck turn).
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+    from kernel.workflow_position import WorkflowPosition
+
+    default_cfg = _mode_config(mode_id="default")
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    search_cfg = _mode_config(mode_id="search", satisfies_intents=["research"])
+    patched_catalog = {
+        "default": default_cfg,
+        "plan": plan_cfg,
+        "search": search_cfg,
+    }
+
+    plan_entry_calls = 0
+    persisted_positions: list[Any] = []
+
+    async def fake_entry_ops(_mode_id, _ctx, **_kwargs):
+        nonlocal plan_entry_calls
+        plan_entry_calls += 1
+        return OperationResult(
+            output_text="research intent detected",
+            output_json={
+                "target_stage_id": "search",
+                "rationale": "research intent",
+                "steps": [
+                    {"mode_id": "search", "description": "search", "rationale": "r"},
+                ],
+            },
+        )
+
+    async def complete(**kwargs: Any) -> _StubCompletion:
+        sys_content = str(kwargs["messages"][0].get("content", ""))
+        is_plan_mode = "## Handoff Context" in sys_content and "`plan`" in sys_content
+        is_search_mode = ("## Handoff Context" in sys_content and "`search`" in sys_content) or (
+            "Handed off to mode: search" in str([m.get("content", "") for m in kwargs["messages"]])
+        )
+        if is_search_mode:
+            return _StubCompletion(content="Search results from web_search.")
+        if is_plan_mode:
+            return _StubCompletion(content="Planning...")
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_default_to_plan",
+                    "function": {
+                        "name": "transition_stage",
+                        "arguments": json.dumps(
+                            {"target_stage_id": "plan", "rationale": "escalate to plan"}
+                        ),
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(complete)
+
+    def capture_position(updated: Any) -> None:
+        persisted_positions.append(updated)
+
+    hooks.workflow_position_updater = capture_position
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(
+            mode_id="default", query="search for rust news then write a summary", hooks=hooks
+        )
+
+    # The chain completed (default → plan → search).
+    assert result.response_text == "Search results from web_search."
+    assert plan_entry_calls == 1
+    # A WorkflowPosition was persisted for the plan's steps.
+    plan_positions = [
+        p for p in persisted_positions
+        if isinstance(p, WorkflowPosition) and p.spawned_from == "plan_workflow_op"
+    ]
+    assert len(plan_positions) >= 1, "mid-turn plan handoff must persist a WorkflowPosition"
+    assert plan_positions[0].declared_steps[0].mode_id == "search"
+
+
+@pytest.mark.asyncio
 async def test_run_turn_missing_complete_raises_not_implemented() -> None:
     """A search (action) mode with entry ops needs complete_fn, and the
     operation fails with an OperationExecutionError wrapping the

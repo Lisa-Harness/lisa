@@ -4753,6 +4753,31 @@ async def _run_turn_inner(
                                         ).strip()
                                         if _planned_next:
                                             _state.pending_planned_handoff = _planned_next
+                                            # Persist the plan's steps as a
+                                            # ``WorkflowPosition`` (spawned_from=
+                                            # plan_workflow_op), mirroring the
+                                            # Phase-1 plan path (~L2676). Without
+                                            # this, a mid-turn re-entry to ``plan``
+                                            # (e.g. kimi-k2.6 calling
+                                            # ``transition_stage(plan)`` from
+                                            # ``search``) finds no active position
+                                            # → ``_active_position_resume_target``
+                                            # returns "" → the resume-skip branch
+                                            # does NOT fire → ``plan_workflow``
+                                            # re-runs against a status query → no
+                                            # routing target → plan-failure
+                                            # hard-stop (the 2026-08-08 stuck turn).
+                                            _mid_plan_steps_raw = (
+                                                entry_result.output_json or {}
+                                            ).get("steps") or []
+                                            if not isinstance(_mid_plan_steps_raw, list):
+                                                _mid_plan_steps_raw = []
+                                            _mid_workflow_steps = (
+                                                _plan_steps_to_workflow_steps(_mid_plan_steps_raw)
+                                            )
+                                            persist_planned_position(
+                                                hooks, _mid_workflow_steps, _log
+                                            )
                                             if hooks.route_coordinator is not None:
                                                 try:
                                                     hooks.route_coordinator.save(
