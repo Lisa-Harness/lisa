@@ -94,6 +94,7 @@ class WorkflowStep(BaseModel):
 
     step_id: str = Field(min_length=1)
     mode_id: str = Field(min_length=1)
+    step_query: str = ""
     satisfies_intents: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
     is_terminal: bool = False

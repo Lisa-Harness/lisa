@@ -1902,10 +1902,18 @@ def _plan_steps_to_workflow_steps(
             continue
         mode_cfg = catalog.get(mode_id)
         satisfies = tuple(getattr(mode_cfg, "satisfies_intents", []) or []) if mode_cfg else ()
+        
+        # Extract the step-specific query from the plan's description or rationale.
+        # This becomes the authoritative task payload when this step executes.
+        step_query = str(step.get("description", "")).strip()
+        if not step_query:
+            step_query = str(step.get("rationale", "")).strip()
+
         steps.append(
             WorkflowStep(
                 step_id=_step_id_for(mode_id, idx),
                 mode_id=mode_id,
+                step_query=step_query,
                 satisfies_intents=satisfies,
                 depends_on=tuple(s.step_id for s in steps),
                 is_terminal=(idx == len(plan_steps) - 1),
@@ -2681,6 +2689,16 @@ async def _run_turn_inner(
                 # lifecycle briefing the loop maintains.
                 workflow_steps = _plan_steps_to_workflow_steps(plan_steps_raw)
                 persist_planned_position(hooks, workflow_steps, _log)
+                
+                # When synthesizing the handoff, update the query to the
+                # first step's derived sub-query so the handoff processor
+                # at the top of the next iteration sees it.
+                if workflow_steps and workflow_steps[0].mode_id == planned_target:
+                    _first_step_query = workflow_steps[0].step_query
+                    if _first_step_query:
+                        query = _first_step_query
+                        ctx = ctx.model_copy(update={"query": query})
+
                 save_route_decision(
                     hooks,
                     _routing_ctx,
@@ -4714,7 +4732,29 @@ async def _run_turn_inner(
                                     and target_mode_config.entry_operation_ids
                                 ):
                                     try:
-                                        entry_ctx = ctx.model_copy(update={"mode_id": target_stage})
+                                        # When the handoff targets a step in
+                                        # the active plan, use its derived
+                                        # step_query instead of the original
+                                        # user query.
+                                        _step_query = ""
+                                        try:
+                                            _active_pos = hooks.workflow_position() if hooks.workflow_position else None
+                                        except Exception:
+                                            _active_pos = None
+
+                                        if _active_pos and getattr(_active_pos, "current_step_id", ""):
+                                            _next_step = _active_pos.step_by_id(
+                                                _active_pos.current_step_id
+                                            )
+                                            if _next_step and _next_step.mode_id == target_stage:
+                                                _step_query = _next_step.step_query
+
+                                        entry_ctx = ctx.model_copy(
+                                            update={
+                                                "mode_id": target_stage,
+                                                "query": _step_query or ctx.query,
+                                            }
+                                        )
                                         entry_result = await run_mode_entry_operations(
                                             target_stage,
                                             entry_ctx,
