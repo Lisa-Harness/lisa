@@ -118,8 +118,14 @@ class Parameters(BaseModel):
         description="Importance from 0.0 (trivial context) to 1.0 (critical strategic alignment).",
     )
     memory_tier: str = Field(
-        "long_term",
-        description="Memory tier: 'long_term', 'daily', or 'weekly'.",
+        "daily",
+        description=(
+            "Memory tier: 'daily', 'weekly', or 'long_term'. Defaults to "
+            "'daily' so model-called captures (which often omit the tier) "
+            "land as short-lived workflow state rather than polluting "
+            "long-term recall. The auto-capture path overrides this with "
+            "the salience-graded tier."
+        ),
     )
 
 
@@ -222,7 +228,11 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
         return OperationResult(output_text="⛔ No content provided to store.")
 
     salience = float(params.get("salience", 0.5))
-    memory_tier = params.get("memory_tier", "long_term")
+    # Default to 'daily' so model-called captures that omit the tier land as
+    # short-lived workflow state. The auto-capture path always supplies an
+    # explicit, salience-graded tier, so this default only binds the
+    # model-invoked path (see Parameters.memory_tier).
+    memory_tier = params.get("memory_tier", "daily")
     # Keep learning records under one canonical operation id so recall queries stay stable.
     memory_operation_id = "save_learning"
 

@@ -360,6 +360,30 @@ def test_compile_session_plan_preserves_default_compaction_when_omitted() -> Non
     assert plan.manifest.context.history.compaction.enabled is False
 
 
+# ── MemoryConsolidationTuning ──────────────────────────────────────────
+
+
+def test_memory_consolidation_defaults_enabled_and_post_turn() -> None:
+    """MemoryConsolidationTuning defaults to enabled, post_turn, safe thresholds.
+
+    Consolidation is on by default (per the "all work items on by default"
+    preference); the pressure/budget gates are conservative enough that it
+    only fires when episodic pressure crosses the threshold.
+    """
+    from kernel.session_plan import MemoryConsolidationTuning
+
+    tuning = MemoryConsolidationTuning()
+    assert tuning.enabled is True
+    assert tuning.trigger == "post_turn"
+    assert tuning.pressure_threshold == 0.6
+    assert tuning.hard_threshold == 0.85
+    assert tuning.min_interval_turns == 8
+    assert tuning.batch_size == 10
+    assert tuning.min_episodic_count == 5
+    assert tuning.max_records == 200
+    assert tuning.consolidate_operation == "consolidate_semantic"
+
+
 # ── PackSelection.auto_install ────────────────────────────────────────
 
 

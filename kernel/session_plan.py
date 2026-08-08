@@ -435,14 +435,14 @@ class ModelManifestRef(_StrictSessionModel):
 class MemoryConsolidationTuning(_StrictSessionModel):
     """Episodic-pressure-triggered, slice-driven memory consolidation knobs.
 
-    When ``enabled`` is ``False`` (the default), no automatic consolidation
-    fires and episodic records accumulate until TTL expiry. When ``True``,
-    a host that wires the memory-consolidation slice provider counts
-    active episodic records each turn and fires the configured
-    ``consolidate_operation`` (default: ``consolidate_semantic``) when the
-    episodic-count pressure (count / ``max_records``) crosses a threshold,
-    paid for out of the post-turn slice pressure budget rather than the
-    user's turn latency.
+    When ``enabled`` is ``True`` (the default), a host that wires the
+    memory-consolidation slice provider counts active episodic records each
+    turn and fires the configured ``consolidate_operation`` (default:
+    ``consolidate_semantic``) when the episodic-count pressure (count /
+    ``max_records``) crosses a threshold, paid for out of the post-turn
+    slice pressure budget rather than the user's turn latency. Set
+    ``enabled`` to ``False`` to disable automatic consolidation and let
+    episodic records accumulate until TTL expiry.
 
     Thresholds are fractions of ``max_records`` (``0.0``-``1.0``). The
     pressure curve (``kernel.slice``) decides whether a between-thresholds
@@ -450,7 +450,7 @@ class MemoryConsolidationTuning(_StrictSessionModel):
     the curve when episodic pressure is critical.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     trigger: Literal["post_turn", "pre_turn", "explicit", "never"] = "post_turn"
     pressure_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     hard_threshold: float = Field(default=0.85, ge=0.0, le=1.0)

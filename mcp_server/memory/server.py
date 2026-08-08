@@ -34,6 +34,8 @@ from mcp_types import ToolAnnotations
 from kernel.models import MemoryWriteRequest
 from sdk.memory.store import SqliteMemoryStore
 
+from mcp_server.memory.embeddings import HttpEmbeddingProvider, resolve_embedding_config
+
 __all__ = ["MemoryDeps", "init_store", "main", "mcp", "set_deps_for_test"]
 
 logger = logging.getLogger(__name__)
@@ -86,6 +88,8 @@ def _resolve_deps(ctx: Context[Any, Any] | None) -> MemoryDeps:
 @dataclass
 class _MemoryConfig:
     data_dir: Path = Path()
+    embedding_provider: HttpEmbeddingProvider | None = None
+    embedding_dimension: int = 1536
 
 
 _cfg = _MemoryConfig()
@@ -95,10 +99,22 @@ _cfg = _MemoryConfig()
 async def _lifespan(app: MCPServer[Any]) -> AsyncIterator[MemoryDeps]:
     """Construct the memory store from resolved CLI config and yield it.
 
+    When an embedding model is configured (``--embedding-model`` /
+    ``LISA_EMBEDDING_MODEL``), the store is constructed with an
+    :class:`HttpEmbeddingProvider` so semantic recall populates ``memory_vec``.
+    When absent, the store stays lexical-only (no vector chunks) — the
+    previous default behavior.
+
     Tears down the SQLite connection on exit so the file handle is released
     cleanly when the stdio session ends.
     """
-    deps = MemoryDeps(store=SqliteMemoryStore(db_path=_cfg.data_dir / "memory.db"))
+    deps = MemoryDeps(
+        store=SqliteMemoryStore(
+            db_path=_cfg.data_dir / "memory.db",
+            embedding_provider=_cfg.embedding_provider,
+            embedding_dimension=_cfg.embedding_dimension,
+        )
+    )
     try:
         yield deps
     finally:
@@ -115,7 +131,15 @@ def init_store(data_dir: Path) -> None:
     directly. Tests should prefer :func:`set_deps_for_test` with a
     :class:`MemoryDeps` instance.
     """
-    set_deps_for_test(MemoryDeps(store=SqliteMemoryStore(db_path=data_dir / "memory.db")))
+    set_deps_for_test(
+        MemoryDeps(
+            store=SqliteMemoryStore(
+                db_path=data_dir / "memory.db",
+                embedding_provider=_cfg.embedding_provider,
+                embedding_dimension=_cfg.embedding_dimension,
+            )
+        )
+    )
 
 
 @mcp.tool(annotations=ToolAnnotations())
@@ -359,9 +383,44 @@ async def retire_memory(
 def _init(args: Any) -> None:
     """Populate ``_cfg`` from parsed args so the lifespan can build the store."""
     _cfg.data_dir = Path(args.data_dir)
+    provider, dimension = resolve_embedding_config(args)
+    _cfg.embedding_provider = provider
+    _cfg.embedding_dimension = dimension
     # Also populate the test seam so the server is usable immediately after
     # init (the lifespan only runs during a real stdio session).
-    set_deps_for_test(MemoryDeps(store=SqliteMemoryStore(db_path=_cfg.data_dir / "memory.db")))
+    set_deps_for_test(
+        MemoryDeps(
+            store=SqliteMemoryStore(
+                db_path=_cfg.data_dir / "memory.db",
+                embedding_provider=_cfg.embedding_provider,
+                embedding_dimension=_cfg.embedding_dimension,
+            )
+        )
+    )
+
+
+def _add_memory_args(parser: Any) -> None:
+    """Add lisa-memory-specific CLI args for embedding configuration."""
+    parser.add_argument(
+        "--embedding-model",
+        type=str,
+        default=None,
+        help=(
+            "Embedding model id for semantic recall (e.g. "
+            "'nomic-embed-text'). When omitted, the store stays lexical-only. "
+            "Also settable via LISA_EMBEDDING_MODEL."
+        ),
+    )
+    parser.add_argument(
+        "--embedding-endpoint",
+        type=str,
+        default=None,
+        help=(
+            "OpenAI-compatible embeddings base URL (e.g. "
+            "'http://localhost:11434/v1'). Required when --embedding-model "
+            "is set. Also settable via LISA_EMBEDDING_ENDPOINT."
+        ),
+    )
 
 
 def main() -> None:
@@ -369,10 +428,12 @@ def main() -> None:
 
     Parses the standard CLI contract via the shared ``run()`` helper.
     ``--data-dir`` is required; the store's SQLite file is derived from it.
+    ``--embedding-model`` / ``--embedding-endpoint`` optionally wire an
+    :class:`HttpEmbeddingProvider` for semantic recall.
     """
     from mcp_server.config.cli import run
 
-    run("lisa-memory", mcp, _init, supports_readonly=True)
+    run("lisa-memory", mcp, _init, supports_readonly=True, add_args=_add_memory_args)
 
 
 if __name__ == "__main__":

@@ -88,12 +88,14 @@ class _SliceProviderHooksView:
     Exposes only the seams a utilization-aware slice needs:
     ``last_context_snapshot`` (read from the runtime; the snapshot sink
     keeps it current each turn), ``write_turn_history_fn`` (the host
-    writer closure), and ``execute_operation`` (the kernel operation
-    dispatcher). This avoids handing the factory the full ``TurnHooks``
-    before it is fully constructed.
+    writer closure), ``execute_operation`` (the kernel operation
+    dispatcher), and ``execute_tool`` (the MCP tool dispatcher). This
+    avoids handing the factory the full ``TurnHooks`` before it is fully
+    constructed. ``execute_tool`` is wired so the memory-consolidation
+    slice can call ``memory.list`` to count and load episodic records.
     """
 
-    __slots__ = ("_runtime", "_write_turn_history", "execute_operation")
+    __slots__ = ("_runtime", "_write_turn_history", "execute_operation", "execute_tool")
 
     def __init__(
         self,
@@ -396,12 +398,22 @@ def build_turn_hooks(
         return await execute_operation(operation_id, ctx)
 
     # ── Tool execution ─────────────────────────────────────────────
-    async def _execute_tool(tool_id: str, _tool_ctx: Any) -> ToolResult:
-        # Delegate to the kernel's MCP tool pool when available.
+    async def _execute_tool(tool_id: str, tool_ctx: Any) -> ToolResult:
+        # Delegate to the kernel's MCP tool pool when available. ``tool_ctx``
+        # is either a ``ToolExecutionContext`` (from operation-host calls,
+        # which carry ``.parameters``) or a plain ``dict`` of arguments
+        # (from pack slice providers like the memory-consolidation slice,
+        # which call ``execute_tool("memory.list", {…})`` directly). Resolve
+        # the argument dict from both shapes so the MCP server receives the
+        # caller's parameters instead of an empty dict.
         pool = runtime.mcp_tool_pool
         if pool is not None:
             try:
-                result = await pool.call_tool(tool_id, {})
+                if isinstance(tool_ctx, dict):
+                    arguments = tool_ctx
+                else:
+                    arguments = getattr(tool_ctx, "parameters", None) or {}
+                result = await pool.call_tool(tool_id, arguments)
                 # Adapt the MCP result to ToolResult.
                 if isinstance(result, dict):
                     return ToolResult(
@@ -631,6 +643,7 @@ def build_turn_hooks(
         runtime=runtime, write_turn_history=_write_turn_history
     )
     _slice_provider_hooks_view.execute_operation = _execute_operation  # type: ignore[attr-defined]
+    _slice_provider_hooks_view.execute_tool = _execute_tool  # type: ignore[attr-defined]
 
     pack_slice_entries = discover_slice_provider_factories()
     pack_slice_providers: list[Any] = []
