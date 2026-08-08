@@ -133,9 +133,9 @@ class BrokerContextRequest(BaseModel):
     connectors: list[str] = Field(default_factory=list)
     context_budget: dict[str, Any] = Field(default_factory=dict)
     state: dict[str, Any] = Field(default_factory=dict)
-    # Pack-scoped evidence boundary: the caller passes the active mode's
+    # Pack-scoped item boundary: the caller passes the active mode's
     # provider pack and explicitly allowed packs so the broker can filter
-    # extension evidence to only what the mode should see.
+    # extension items to only what the mode should see.
     mode_provider_id: str = ""
     context_item_packs: list[str] = Field(default_factory=list)
     # Session-owned mapper inputs. When absent, a default ``ContextPlan`` and
@@ -197,11 +197,11 @@ async def broker_context(
 
     Each argument maps to a field on :class:`BrokerContextRequest`. The
     ``state`` argument carries the caller-supplied ``UnifiedState`` snapshot
-    used for evidence selection. Malformed ``state`` raises a
+    used for item selection. Malformed ``state`` raises a
     :class:`ToolError` instead of silently degrading to an empty state.
 
     ``mode_provider_id`` and ``context_item_packs`` carry the active
-    mode's pack-scoped evidence boundary so the broker can filter extension
+    mode's pack-scoped item boundary so the broker can filter extension
     evidence to only what the mode should see.
 
     Context selection routes through the session-owned :class:`ContextMapper`

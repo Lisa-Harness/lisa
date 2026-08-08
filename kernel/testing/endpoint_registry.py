@@ -64,7 +64,7 @@ REGISTRY: list[Endpoint] = [
         contract_name="ExtensionContextItemBuilder",
         consumer_site="sdk.context.extension_item_builder.EntryPointExtensionItemBuilder",
         description=(
-            "Contributes ranked context evidence from installed extensions. "
+            "Contributes ranked context items from installed extensions. "
             "Each callable accepts ``(runtime_context, state)`` and returns "
             "a ``list[ContextItem]``. The session-owned context mapper "
             "merges these into ranked, lane-ordered context for each turn."

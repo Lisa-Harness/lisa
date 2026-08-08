@@ -450,7 +450,7 @@ class DataSanitizer(Protocol):
 
 @runtime_checkable
 class ExtensionItemBuilder(Protocol):
-    """Build context evidence records from installed extensions.
+    """Build context items from installed extensions.
 
     Replaces ``app.extension_context_items.build_extension_context_items``.
     The default implementation returns an empty list; production hosts override

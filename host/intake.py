@@ -298,7 +298,7 @@ def _merge_results(
     state = UnifiedState(compiled_at=compiled_at)
     evidence: list[Any] = []
 
-    # Convert raw signal snapshots from collectors into context evidence.
+    # Convert raw signal snapshots from collectors into context items.
     for result in collections:
         if result.snapshot is not None:
             evidence.append(

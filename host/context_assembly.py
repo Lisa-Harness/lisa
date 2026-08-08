@@ -155,7 +155,7 @@ def build_turn_context(
 
 
 # ---------------------------------------------------------------------------
-# Brokered context (ranked evidence from in-process UnifiedState)
+# Brokered context (ranked items from in-process UnifiedState)
 # ---------------------------------------------------------------------------
 
 
@@ -237,7 +237,7 @@ def build_brokered_context_markdown(
     active_packs: frozenset[str] | None = None,
     snapshot_sink: Callable[[ContextBudgetSnapshot], None] | None = None,
 ) -> str:
-    """Select ranked context evidence from *state* and render it as Markdown.
+    """Select ranked context items from *state* and render it as Markdown.
 
     Routes through the session-owned :class:`ContextMapper` (lane-aware,
     budget-aware, MMR-diversified). When no ``context_plan`` is supplied, a

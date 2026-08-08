@@ -149,10 +149,10 @@ def context_candidates_from_items(
 def context_candidates_from_unified_state(
     state: UnifiedState,
 ) -> tuple[ContextCandidate, ...]:
-    """Normalize the ``UnifiedState`` context-evidence catalog to candidates.
+    """Normalize the ``UnifiedState`` context-item catalog to candidates.
 
     This is intentionally a data adapter, not a ranking path. It preserves
-    raw evidence from the single ``context_items`` feed —
+    raw items from the single ``context_items`` feed —
     intake-produced (signals, intel, alerts) and hook-produced (self_model,
     pack extensions) — and hands the immutable descriptors to the
     session-owned mapper. Additional live sources (history, capabilities,
@@ -849,7 +849,7 @@ def _parse_timestamp(value: str, default: datetime | None = None) -> datetime | 
     try:
         parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise ContextMappingError(f"Invalid context evidence timestamp '{value}'.") from exc
+        raise ContextMappingError(f"Invalid context item timestamp '{value}'.") from exc
     return _as_utc(parsed)
 
 
@@ -875,14 +875,14 @@ def _metadata_text(metadata: dict[str, object], key: str) -> str:
     if value is None:
         return ""
     if not isinstance(value, str):
-        raise ContextMappingError(f"Context evidence metadata.{key} must be a string.")
+        raise ContextMappingError(f"Context item metadata.{key} must be a string.")
     return value.strip()
 
 
 def _metadata_bool(metadata: dict[str, object], key: str) -> bool:
     value = metadata.get(key, False)
     if not isinstance(value, bool):
-        raise ContextMappingError(f"Context evidence metadata.{key} must be a boolean.")
+        raise ContextMappingError(f"Context item metadata.{key} must be a boolean.")
     return value
 
 

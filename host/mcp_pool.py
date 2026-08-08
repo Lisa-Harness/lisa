@@ -400,8 +400,8 @@ def setup_framework(
         context="setup_framework startup validation",
     )
 
-    # Wire the production extension-evidence builder so the context broker's
-    # catalog builder picks up evidence from installed SDK extensions
+    # Wire the production extension-item builder so the context broker's
+    # catalog builder picks up items from installed SDK extensions
     # (Cloudflare, GitHub, Stripe) via entry-point discovery.
     from sdk.context.extension_item_builder import (  # noqa: PLC0415
         set_production_extension_item_builder,

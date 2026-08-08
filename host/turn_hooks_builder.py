@@ -181,7 +181,7 @@ def build_turn_hooks(
             path=runtime.models_path,
         )
 
-    # ── Extension evidence builder ──────────────────────────────────
+    # ── Extension item builder ──────────────────────────────────
     # Constructed once so every ``build_unified_state`` call and the
     # ``ContextSeams`` injection share one builder instance. Discovers
     # ``lisa.extensions.context_items`` entry points from installed
@@ -611,7 +611,7 @@ def build_turn_hooks(
         # Emit the self-model vibe as a ContextItem record into the
         # single context_items — no arbitrary named bucket. The
         # mapper picks it up via context_candidates_from_items like every
-        # other pack-contributed evidence item.
+        # other pack-contributed context item.
         from datetime import UTC, datetime  # noqa: PLC0415
 
         from kernel.models import ContextItem  # noqa: PLC0415

@@ -1,4 +1,4 @@
-"""Tests for pack-scoped evidence boundary filtering in the context mapper.
+"""Tests for pack-scoped item boundary filtering in the context mapper.
 
 These tests verify that extension-contributed evidence (tagged with a
 ``pack`` field) is only included when the mode's allowed pack set includes
@@ -42,7 +42,7 @@ def _default_plan() -> ContextPlan:
 
 
 def _make_state_with_extension_item() -> UnifiedState:
-    """Build a state with both kernel-core and extension evidence."""
+    """Build a state with both kernel-core and extension items."""
     now = datetime.now(UTC).isoformat()
     return UnifiedState(
         compiled_at=now,
@@ -56,7 +56,7 @@ def _make_state_with_extension_item() -> UnifiedState:
                 body="Runtime health=ok",
                 collected_at=now,
             ),
-            # Extension evidence from the cloudflare pack
+            # Extension items from the cloudflare pack
             ContextItem(
                 item_id="collector:cloudflare",
                 source="cloudflare",
@@ -67,7 +67,7 @@ def _make_state_with_extension_item() -> UnifiedState:
                 collected_at=now,
                 pack="lisa-pack-cloudflare",
             ),
-            # Extension evidence from the github pack
+            # Extension items from the github pack
             ContextItem(
                 item_id="collector:github",
                 source="github",
@@ -104,7 +104,7 @@ class TestPackScopedFiltering:
     """Integration tests for pack-scoped filtering in the context mapper."""
 
     def test_default_mode_excludes_all_extension_item(self) -> None:
-        """A mode with no active packs gets no extension evidence."""
+        """A mode with no active packs gets no extension items."""
         state = _make_state_with_extension_item()
         sources = _map_sources(state, "cloudflare status", frozenset())
         assert "self_model" in sources  # kernel-core evidence always included

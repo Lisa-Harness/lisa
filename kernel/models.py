@@ -857,7 +857,7 @@ ContextConflictRisk = Literal["low", "medium", "high"]
 
 
 class ContextItem(BaseModel):
-    """One structured evidence item available for per-turn context selection."""
+    """One structured context item available for per-turn context selection."""
 
     item_id: str
     namespace: ContextItemNamespace = "general_context"
@@ -876,12 +876,12 @@ class ContextItem(BaseModel):
     recency_score: float = 0.0
     combined_score: float = 0.0
     conflict_risk: ContextConflictRisk = "low"
-    # Normalized distribution package name that owns this evidence (e.g.
+    # Normalized distribution package name that owns this item (e.g.
     # ``lisa-pack-cloudflare``). Populated by the EntryPointExtensionItemBuilder
-    # for extension-contributed evidence; empty for kernel-core evidence
-    # (alerts, self-model, domain knowledge, etc.). Used by the context broker
-    # to enforce pack-scoped evidence boundaries — a mode only sees extension
-    # evidence from its own pack plus any packs it explicitly allows via
+    # for extension-contributed items; empty for kernel-core items
+    # (alerts, self-model, etc.). Used by the context broker
+    # to enforce pack-scoped item boundaries — a mode only sees extension
+    # items from its own pack plus any packs it explicitly allows via
     # ``context_item_packs`` in its ``_mode.md`` front-matter.
     pack: str = ""
     tags: list[str] = Field(default_factory=list)
@@ -1356,17 +1356,17 @@ class WorkflowModeConfig(BaseModel):
     # The distribution package name that owns this mode (e.g.
     # ``lisa-pack-cloudflare``). Inferred from the content-root path during
     # catalog build unless explicitly set via ``mode_provider_id`` in the
-    # mode's ``_mode.md`` front-matter. Used to enforce pack-scoped evidence
-    # boundaries: the context broker auto-includes extension evidence from
+    # mode's ``_mode.md`` front-matter. Used to enforce pack-scoped item
+    # boundaries: the context broker auto-includes extension items from
     # the mode's own provider.
     mode_provider_id: str = ""
-    # Extension packs whose context evidence this mode wants injected in
-    # addition to its own provider's evidence. Each entry is a normalized
+    # Extension packs whose context items this mode wants injected in
+    # addition to its own provider's items. Each entry is a normalized
     # pack name (e.g. ``lisa-pack-cloudflare``). When empty (default), only
-    # the mode's own pack contributes extension evidence. When non-empty,
+    # the mode's own pack contributes extension items. When non-empty,
     # the union of the mode's own pack and these packs is admitted. Kernel-
-    # core evidence (alerts, self-model, domain knowledge, intel) is never
-    # gated by this field — it is always available to every mode.
+    # core items (alerts, self-model, intel) are never
+    # gated by this field — they are always available to every mode.
     context_item_packs: list[str] = Field(default_factory=list)
     # Opaque extension front matter the kernel does not interpret. Carries
     # app/pack-owned keys (e.g. ``lenses``) from ``_mode.md`` and ``_overrides.yaml``

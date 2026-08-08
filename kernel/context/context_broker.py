@@ -1,4 +1,4 @@
-"""Ambient runtime facts and extension-evidence builder registration.
+"""Ambient runtime facts and extension-item builder registration.
 
 This module owns the runtime-neutral helpers that survive the context-broker
 unification:
@@ -7,7 +7,7 @@ unification:
   context injection.
 - :func:`resolve_host_name` — OS hostname resolution honoring platform env
   vars.
-- The module-level extension-evidence builder (``set_extension_item_builder``
+- The module-level extension-item builder (``set_extension_item_builder``
   / ``reset_extension_item_builder``) used by the SDK's entry-point-aware
   builder.
 
@@ -48,7 +48,7 @@ def resolve_host_name() -> str:
         return ""
 
 
-# Module-level extension-evidence builder. Hosts override via
+# Module-level extension-item builder. Hosts override via
 # ``set_extension_item_builder`` when they need the production builder.
 # Callers that need explicit injection (e.g. tests, kernel seams) pass the
 # builder explicitly; when omitted, this module global is used.
@@ -56,14 +56,14 @@ _extension_item_builder: ExtensionItemBuilder = NoOpExtensionItemBuilder()
 
 
 def set_extension_item_builder(builder: ExtensionItemBuilder) -> None:
-    """Override the module-level extension-evidence builder."""
+    """Override the module-level extension-item builder."""
 
     global _extension_item_builder
     _extension_item_builder = builder
 
 
 def reset_extension_item_builder() -> None:
-    """Reset the extension-evidence builder to the NoOp default (for tests)."""
+    """Reset the extension-item builder to the NoOp default (for tests)."""
 
     global _extension_item_builder
     _extension_item_builder = NoOpExtensionItemBuilder()

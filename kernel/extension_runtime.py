@@ -1,4 +1,4 @@
-"""Runtime-neutral extension hooks for context-evidence injection."""
+"""Runtime-neutral extension hooks for context-item injection."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from kernel.seams.protocols import StateProvider
 
 @dataclass(slots=True)
 class ExtensionRuntimeContext:
-    """Host services injected into extension-owned context-evidence builders."""
+    """Host services injected into extension-owned context-item builders."""
 
     state_provider: StateProvider | None = None
     http_client: Any = None

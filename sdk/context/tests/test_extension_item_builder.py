@@ -1,4 +1,4 @@
-"""Tests for disabled-pack exclusion in the extension evidence builder."""
+"""Tests for disabled-pack exclusion in the extension item builder."""
 
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ def test_extension_item_builder_empty_exclusion_returns_all(monkeypatch) -> None
 
 
 def test_extension_item_builder_tags_records_with_pack_name(monkeypatch) -> None:
-    """Each evidence record is tagged with its source distribution package name."""
+    """Each item is tagged with its source distribution package name."""
     from kernel.models import ContextItem
 
     # Return a ContextItem with no pack field set — the builder should
@@ -118,7 +118,7 @@ def test_extension_item_builder_tags_records_with_pack_name(monkeypatch) -> None
 
 
 def test_extension_item_builder_does_not_overwrite_explicit_pack(monkeypatch) -> None:
-    """When the evidence already has a pack, the builder does not overwrite it."""
+    """When the item already has a pack, the builder does not overwrite it."""
     from kernel.models import ContextItem
 
     def factory(_ctx, _state):

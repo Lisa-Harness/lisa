@@ -39,7 +39,7 @@ def _entry_point_pack_name(ep: EntryPoint) -> str:
 
 
 class EntryPointExtensionItemBuilder:
-    """Aggregate context evidence from all installed extensions.
+    """Aggregate context items from all installed extensions.
 
     Walks the ``lisa.extensions.context_items`` entry-point group and
     calls each loaded callable. Each callable must accept
@@ -47,16 +47,16 @@ class EntryPointExtensionItemBuilder:
     Failures in one extension are logged and swallowed so a broken
     extension does not block context assembly.
 
-    Each evidence record returned by an extension is tagged with the
+    Each item returned by an extension is tagged with the
     normalized distribution package name (``pack``) so the context broker
-    can enforce pack-scoped evidence boundaries: a mode only sees extension
-    evidence from its own provider pack plus any packs it explicitly allows
+    can enforce pack-scoped item boundaries: a mode only sees extension
+    items from its own provider pack plus any packs it explicitly allows
     via ``context_item_packs`` in its ``_mode.md`` front-matter.
 
     Args:
-        excluded_packs: Normalized pack names to exclude from evidence
+        excluded_packs: Normalized pack names to exclude from item
             collection. When ``None`` (default), all installed extensions
-            contribute evidence.
+            contribute items.
     """
 
     def __init__(self, excluded_packs: set[str] | None = None) -> None:
@@ -67,13 +67,13 @@ class EntryPointExtensionItemBuilder:
         runtime_context: Any,
         state: Any,
     ) -> list[Any]:
-        """Return the combined evidence list from all installed extensions."""
-        evidence: list[Any] = []
+        """Return the combined item list from all installed extensions."""
+        items: list[Any] = []
         try:
             eps = entry_points(group=_ENTRY_POINT_GROUP)
         except Exception:  # pylint: disable=broad-except
             logger.debug("No entry-point group %r found", _ENTRY_POINT_GROUP, exc_info=True)
-            return evidence
+            return items
 
         for ep in eps:
             if self._excluded_packs and _entry_point_pack_name(ep) in self._excluded_packs:
@@ -97,25 +97,25 @@ class EntryPointExtensionItemBuilder:
 
             if contributed:
                 for item in contributed:
-                    # Tag each evidence record with its source distribution
-                    # package name so the broker can enforce pack-scoped
-                    # evidence boundaries. Use setattr to support both
-                    # Pydantic models and plain dict contributions.
+                    # Tag each item with its source distribution package name
+                    # so the broker can enforce pack-scoped item boundaries.
+                    # Use setattr to support both Pydantic models and plain
+                    # dict contributions.
                     if hasattr(item, "pack"):
                         if not item.pack:
                             item.pack = pack_name
                     elif isinstance(item, dict):
                         if not item.get("pack"):
                             item["pack"] = pack_name
-                evidence.extend(contributed)
+                items.extend(contributed)
 
-        return evidence
+        return items
 
 
 def set_production_extension_item_builder(
     excluded_packs: set[str] | None = None,
 ) -> None:
-    """Install the entry-point-based builder as the broker's extension evidence source.
+    """Install the entry-point-based builder as the broker's extension item source.
 
     Args:
         excluded_packs: Normalized pack names to exclude from evidence

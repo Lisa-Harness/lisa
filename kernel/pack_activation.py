@@ -3,7 +3,7 @@
 The installed-packs lock (``installed-packs.json`` in the host's data directory)
 records the ``enabled`` flag for each pack. Four independent entry-point
 discovery mechanisms (content roots, signal collectors, processing loops,
-context evidence) use this module to determine which packs to exclude from
+context items) use this module to determine which packs to exclude from
 discovery.
 
 All functions fail open: a missing or corrupt lock file produces an empty

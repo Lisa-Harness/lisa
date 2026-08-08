@@ -1,12 +1,12 @@
 """Context brokerage public API — re-exported from kernel.
 
 This module re-exports the runtime-neutral context helpers from the kernel and
-manages the module-level extension evidence builder (which must be in the SDK
+manages the module-level extension item builder (which must be in the SDK
 layer since it depends on entry-point discovery).
 
 The separation of concerns:
     - kernel.context.context_broker: Runtime-neutral helpers (ambient facts,
-      hostname, extension-evidence builder registration)
+      hostname, extension-item builder registration)
     - sdk.context.context_broker: Extension builder registration (entry-point
       aware)
 
