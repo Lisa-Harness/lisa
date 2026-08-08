@@ -267,3 +267,67 @@ async def test_declarative_retry_prose_degrades_gracefully() -> None:
     )
     # No ValidationError raised; the raw prose is surfaced as output_text.
     assert "I'll research the latest frameworks." in result.output_text
+
+
+# ── max_calls_per_turn=0 means unlimited (catalog convention) ──────────
+
+
+@pytest.mark.asyncio
+async def test_declarative_zero_max_calls_per_turn_is_unlimited() -> None:
+    """``max_calls_per_turn=0`` is the catalog "unlimited" sentinel
+    (``OperationDefinition.max_calls_per_turn``), not "zero calls allowed".
+
+    Before the fix, ``remaining_tool_calls = max(0, 0) = 0`` made the very
+    first tool call return ``"Tool call budget exhausted."`` instead of
+    dispatching the tool — the 2026-08-07 incident: the ``web_search``
+    operation (no authored cap, defaulting to 0) exhausted on its first
+    invocation, surfacing "Tool call budget exhausted." as the turn's
+    response text.
+    """
+    completions = [
+        _StubCompletion(  # first attempt: dispatch the tool
+            content="",
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"query": "agent frameworks"}',
+                    },
+                }
+            ],
+        ),
+        _StubCompletion(content='{"query": "agent frameworks", "results": []}'),
+    ]
+    ctx = _build_ctx(complete_fn=_make_complete_fn(completions))
+    from kernel.seams.host_adapter import build_callable_host as _bch
+
+    dispatched: list[str] = []
+
+    async def _execute_tool(tool_name: str, _ctx: Any) -> str:
+        dispatched.append(tool_name)
+        return "no results"
+
+    _existing = ctx.host
+    ctx.host = _bch(
+        complete_fn=_existing._complete_fn,
+        resolve_model_fn=_existing._resolve_model_fn,
+        execute_tool_fn=_execute_tool,
+    )
+
+    result = await execute_declarative_operation(
+        ctx,
+        operation_id="web_search",
+        instruction_markdown_path=_INSTRUCTION_PATH,
+        instruction_body=_INSTRUCTION_BODY,
+        max_calls_per_turn=0,
+        response_format_model=_WebSearchStructuredOutput,
+        response_output_text_field="output_text",
+        response_output_json_passthrough={},
+        completion_max_tokens=1500,
+        completion_temperature=0.2,
+    )
+    # The tool was dispatched (not short-circuited as "budget exhausted").
+    assert dispatched == ["web_search"]
+    assert result.output_json.get("query") == "agent frameworks"

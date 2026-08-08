@@ -262,7 +262,13 @@ async def execute_declarative_operation(
         {"role": "user", "content": _build_user_message(ctx)},
     ]
     used_tools: list[str] = []
-    remaining_tool_calls = max(0, max_calls_per_turn)
+    # ``max_calls_per_turn`` follows the catalog convention where ``0`` means
+    # unlimited (``OperationDefinition.max_calls_per_turn``). Treating ``0`` as
+    # "zero calls allowed" makes the very first tool call return
+    # "Tool call budget exhausted." — the 2026-08-07 incident: ``web_search``
+    # (no authored cap, defaulting to 0) exhausted on its first invocation.
+    # Only a positive authored cap bounds the loop; ``0`` disables the gate.
+    remaining_tool_calls = max_calls_per_turn if max_calls_per_turn > 0 else -1
     last_tool_output_json: dict[str, Any] | None = None
 
     while True:
@@ -388,8 +394,9 @@ async def execute_declarative_operation(
             tool_arguments = _extract_tool_arguments(tool_call)
             tool_output = "Tool call budget exhausted."
 
-            if remaining_tool_calls > 0:
-                remaining_tool_calls -= 1
+            if remaining_tool_calls != 0:
+                if remaining_tool_calls > 0:
+                    remaining_tool_calls -= 1
                 try:
                     tool_result = await ctx.host.execute_tool(
                         tool_name,
