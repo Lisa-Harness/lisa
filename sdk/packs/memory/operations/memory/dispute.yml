@@ -7,3 +7,4 @@ generated: { by: human:adam, at: 2026-07-25T00:00:00Z }
 operation_id: dispute_memory
 exportable: true
 default_available: true
+effect: write

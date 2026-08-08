@@ -4,6 +4,7 @@ description: >
   detect sequential connectors, and return a transition_stage target
   (single handoff or sequential first-target). Parallel fan-out is owned
   by the ``fork`` operation.
+effect: read
 # 90, not 45: ``plan_workflow.execute`` runs TWO model calls under this
 # timeout — the structured first attempt and the JSON-only retry (see
 # ``_json_only_retry``). Reasoning models routed through Ollama

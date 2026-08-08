@@ -198,7 +198,18 @@ def classify_child_turn(
     # lazy: avoids top-level MCP import
     from kernel.tools.mcp_client import bare_tool_name  # noqa: PLC0415
 
-    receipt_ids = {bare_tool_name(r.capability_id) for r in child_result.effect_receipts}
+    # Match the receipt against the action set using BOTH the raw
+    # capability id and its bare form. ``bare_tool_name`` strips a
+    # ``server_id.`` namespace prefix (``lisa-storage.write_file`` →
+    # ``write_file``) so a namespaced MCP write matches its bare authored
+    # action id; but it ALSO strips the dot from synthetic dotted tool
+    # names (``memory.add`` → ``add``), which would wrongly fail to match
+    # the authored ``memory.add``. Including the raw id covers the
+    # synthetic case; including the bare form covers the namespaced-MCP
+    # case. Mirrors the parent-turn receipt check in ``turn_runner.py``.
+    receipt_ids = {
+        bare_tool_name(r.capability_id) for r in child_result.effect_receipts
+    } | {r.capability_id for r in child_result.effect_receipts}
     has_write_effect = bool(receipt_ids & action_tool_ids)
 
     if has_write_effect:

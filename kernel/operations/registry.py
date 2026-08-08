@@ -464,7 +464,11 @@ def build_operation_tool_schemas(
     return schemas
 
 
-def mode_completion_effects(mode_id: str) -> set[str]:
+def mode_completion_effects(
+    mode_id: str,
+    *,
+    mcp_pool: Any = None,
+) -> set[str]:
     """Return the side-effecting capability IDs a child running ``mode_id`` must invoke.
 
     The single canonical source of truth for "which tools prove this mode's
@@ -498,6 +502,18 @@ def mode_completion_effects(mode_id: str) -> set[str]:
       authored tool is ``web_search`` (read) legitimately completes without
       side effects — its output is the response text.
 
+    Unknown (unresolvable) capabilities: when ``mcp_pool`` is supplied, an
+    unresolvable authored tool is resolved against the pool's
+    ``tool_spec(tool_id).read_only_hint`` — a server-declared read-only MCP
+    tool (e.g. ``memory.search``) is NOT a completion requirement. When the
+    pool is unavailable (tests, early startup) or the spec is unknown, the
+    capability is assumed ``write`` (the conservative default; matches the
+    ``ToolDefinition.effect`` / ``OperationDefinition.effect`` default). This
+    closes the 2026-08-07 recall-block: the old "include unknown" fallback
+    added read-only MCP aliases (``memory.search``/``memory.list``) to a
+    mode's write contract, blocking legitimate recall-only turns as
+    "hallucinated success".
+
     Returns an empty set for unknown modes, chat-only modes, and modes whose
     explicit bindings are all read-effect. An empty set means "no
     side-effecting completion contract" — the child is ``complete`` on any
@@ -517,33 +533,34 @@ def mode_completion_effects(mode_id: str) -> set[str]:
     if mode is None:
         return set()
     result: set[str] = set()
-    # 1) Authored operation bindings filtered by declared effect.
+    # 1) Authored operation bindings filtered by declared effect. Operations
+    #    are in-process; an unresolvable operation id is unknown and assumed
+    #    write (the OperationDefinition default).
     op_catalog = get_operation_catalog()
     for op_id in mode.authored_allowed_operation_ids:
         op_def = op_catalog.get(op_id)
         if op_def is None:
-            # Unknown operation — include it (can't prove it's read-only).
             result.add(op_id)
             continue
-        effect = str(getattr(op_def, "effect", "read") or "read")
+        effect = str(getattr(op_def, "effect", "write") or "write")
         if effect in ("write", "external_write"):
             result.add(op_id)
-    # 2) Authored tool bindings filtered by declared effect. Unlike the
-    #    original ``_fork_mode_action_tool_ids`` (which included authored
-    #    tools wholesale because it could not resolve tool effects in
-    #    process), the in-process tool catalog is available here, so a
-    #    read-effect authored tool (e.g. ``web_search`` in a reasoning mode,
-    #    or a mode that authors an ambient ``read_file``) is not a completion
-    #    requirement. Only tools we cannot resolve are included as a
-    #    conservative fallback.
+    # 2) Authored tool bindings filtered by declared effect. An unresolvable
+    #    tool is an MCP alias (not in the in-process catalog); resolve it via
+    #    the pool's ``read_only_hint`` when available. A server-declared
+    #    read-only MCP tool is NOT a completion requirement. Without a pool
+    #    (or an unknown spec) the tool is assumed write — pack authors MUST
+    #    declare ``effect: read`` on read-only tools, or the MCP server MUST
+    #    declare ``read_only_hint`` (see docs/PACK_AUTHORING.md).
     tool_catalog = get_tool_catalog() or {}
     for tool_id in mode.authored_allowed_tool_ids:
         tool_def = tool_catalog.get(tool_id)
         if tool_def is None:
-            # Unknown tool — include it (can't prove it's read-only).
+            if _mcp_tool_is_read_only(mcp_pool, tool_id):
+                continue
             result.add(tool_id)
             continue
-        effect = str(getattr(tool_def, "effect", "read") or "read")
+        effect = str(getattr(tool_def, "effect", "write") or "write")
         if effect in ("write", "external_write"):
             result.add(tool_id)
     # 3) Operations explicitly bound via their own ``mode_allowlist``.
@@ -551,6 +568,28 @@ def mode_completion_effects(mode_id: str) -> set[str]:
     # 4) Tools explicitly bound via their own ``mode_allowlist``.
     result.update(_mode_allowlist_write_tools(tool_catalog, mode_id))
     return result
+
+
+def _mcp_tool_is_read_only(mcp_pool: Any, tool_id: str) -> bool:
+    """Return True when the pool declares ``tool_id`` read-only.
+
+    Resolves the MCP tool spec via ``pool.tool_spec(tool_id)`` and reads its
+    ``read_only_hint``. Returns False when the pool is None, the accessor is
+    absent, the spec is unknown, or the hint is not set — the caller then
+    treats the tool as a potential write (the conservative default).
+    """
+    if mcp_pool is None:
+        return False
+    spec_fn = getattr(mcp_pool, "tool_spec", None)
+    if spec_fn is None:
+        return False
+    try:
+        spec = spec_fn(tool_id)
+    except Exception:  # pylint: disable=broad-except
+        return False
+    if spec is None:
+        return False
+    return bool(getattr(spec, "read_only_hint", False))
 
 
 def _mode_allowlist_write_ops(
@@ -568,7 +607,7 @@ def _mode_allowlist_write_ops(
             continue
         if op_def.default_available:
             continue  # ambient — not a completion requirement
-        effect = str(getattr(op_def, "effect", "read") or "read")
+        effect = str(getattr(op_def, "effect", "write") or "write")
         if effect in ("write", "external_write"):
             result.add(op_id)
     return result
@@ -590,7 +629,7 @@ def _mode_allowlist_write_tools(
             continue
         if getattr(tool_def, "default_available", False):
             continue  # ambient
-        effect = str(getattr(tool_def, "effect", "read") or "read")
+        effect = str(getattr(tool_def, "effect", "write") or "write")
         if effect in ("write", "external_write"):
             result.add(tool_id)
     return result

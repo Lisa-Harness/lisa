@@ -199,12 +199,23 @@ class MCPToolSpec:
 
     The ``input_schema`` is a JSON-Schema dict in MCP's native format. The
     schema translator converts this to provider-specific shapes.
+
+    ``read_only_hint`` mirrors the MCP ``ToolAnnotations.read_only_hint``
+    (``True`` when the server declares the tool has no side effects). It is
+    the authoritative signal the turn runner uses to decide whether an
+    opaque MCP tool (one not in the in-process operation/tool catalog) may
+    emit a write ``EffectReceipt`` — a read-only MCP tool must never satisfy
+    a mode's write completion contract (the 2026-08-07 over-count fix).
+    Defaults to ``False`` (unknown ⇒ treat as potentially side-effecting)
+    so synthetic tools and servers that omit annotations are not assumed
+    read-only.
     """
 
     server_id: str
     name: str
     description: str
     input_schema: dict[str, Any]
+    read_only_hint: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -464,6 +475,20 @@ class MCPToolPool:
         """
         return {sid: list(specs.values()) for sid, specs in self._tool_index_by_server.items()}
 
+    def tool_spec(self, tool_id: str) -> MCPToolSpec | None:
+        """Return the merged-catalog spec for one namespaced tool id, or None.
+
+        Resolves against the merged ``_tool_index`` (keyed by namespaced
+        ``server_id.tool`` names). Returns ``None`` for unknown tools and
+        for bare-name fallback calls that never entered the merged index.
+        The turn runner uses this to read ``read_only_hint`` when deciding
+        whether an opaque MCP tool may emit a write ``EffectReceipt``.
+        """
+        entry = self._tool_index.get(tool_id)
+        if entry is None:
+            return None
+        return entry[1]
+
     def add_synthetic_tools(self, tools: list[SyntheticToolSpec]) -> None:
         """Register host-owned in-process tools into the merged catalog.
 
@@ -508,6 +533,7 @@ class MCPToolPool:
                 name=tool.name,
                 description=tool.description,
                 input_schema=tool.input_schema,
+                read_only_hint=False,
             )
             self._synthetic_handlers[tool.name] = tool.handler
             self._synthetic_targets[tool.name] = tool.target_server_id
@@ -737,6 +763,7 @@ class MCPToolPool:
                 name=name,
                 description=prior.description if prior else f"Synthetic tool {name}",
                 input_schema=prior.input_schema if prior else {"type": "object", "properties": {}},
+                read_only_hint=False,
             )
             self._tool_index[name] = (server_id, spec)
             self._tools.append(spec)
@@ -1074,6 +1101,9 @@ class MCPToolPool:
                     name=tool.name,
                     description=tool.description or "",
                     input_schema=tool.input_schema or {"type": "object", "properties": {}},
+                    read_only_hint=bool(
+                        getattr(getattr(tool, "annotations", None), "read_only_hint", False)
+                    ),
                 )
                 for tool in result.tools
             ]
@@ -1117,6 +1147,7 @@ class MCPToolPool:
                         input_schema=self._strip_ambient_from_schema(
                             spec.input_schema, proxy_policy
                         ),
+                        read_only_hint=spec.read_only_hint,
                     )
                     for spec in catalog_tools
                 ]
@@ -1133,6 +1164,7 @@ class MCPToolPool:
                     name=namespaced,
                     description=spec.description,
                     input_schema=spec.input_schema,
+                    read_only_hint=spec.read_only_hint,
                 )
                 if namespaced in self._tool_index:
                     # Same server listing the same tool name twice — a

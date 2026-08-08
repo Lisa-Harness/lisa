@@ -157,7 +157,16 @@ class ToolDefinition(BaseModel):
     # ``WorkflowModeConfig.mode_provider_id`` so same-pack references are not
     # misflagged as cross-pack.
     provider_id: str = ""
-    effect: EffectKind = "read"
+    # Defaults to ``write``: the completion-contract resolver treats an
+    # unresolvable tool as a potential side-effecting capability, so a
+    # read-only tool MUST declare ``effect: read`` explicitly. Pack authors
+    # who omit ``effect`` get the conservative (write) default — their tool
+    # is assumed to land work until they declare otherwise. This is the
+    # hard cutover from the old ``read`` default (2026-08-07): the old
+    # default let read-only MCP aliases (``memory.search``) pollute a mode's
+    # write contract via the unknown-tool fallback, blocking legitimate
+    # recall-only turns as "hallucinated success".
+    effect: EffectKind = "write"
     approval_required: bool = False
     approval_preview: str = ""
     parameters_schema: type[BaseModel] | None = Field(default=None, exclude=True)
@@ -272,7 +281,11 @@ class OperationDefinition(BaseModel):
     # compare against ``WorkflowModeConfig.mode_provider_id`` so same-pack
     # references are not misflagged as cross-pack.
     provider_id: str = ""
-    effect: EffectKind = "read"
+    # Defaults to ``write`` — see ``ToolDefinition.effect`` for the rationale.
+    # An operation that only produces model output (a distillation, a
+    # search, a self-model) MUST declare ``effect: read`` explicitly;
+    # otherwise the completion-contract resolver assumes it lands work.
+    effect: EffectKind = "write"
     approval_required: bool = False
     approval_preview: str = ""
     execution_kind: OperationExecutionKind = "runtime"

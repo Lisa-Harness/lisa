@@ -1035,7 +1035,11 @@ def _load_markdown_operation(md_path: Path) -> dict[str, Any] | None:
         "description": str(metadata.get("description", "") or ""),
         "pack_id": str(metadata.get("pack_id", "") or "").strip(),
         "operation_provider_id": str(metadata.get("operation_provider_id", "") or "").strip(),
-        "effect": str(metadata.get("effect", "read") or "read"),
+        # Default to ``write``: a capability without an explicit ``effect`` is
+        # assumed to land work until its author declares ``effect: read``.
+        # See ``ToolDefinition.effect`` / ``OperationDefinition.effect`` for
+        # the hard-cutover rationale (2026-08-07).
+        "effect": str(metadata.get("effect", "write") or "write"),
         "approval_required": bool(metadata.get("approval_required", False)),
         "approval_preview": str(metadata.get("approval_preview", "") or "").strip(),
         "execution_kind": "prompt",
@@ -1101,7 +1105,8 @@ def _load_runtime_operation(
         "description": str(metadata.get("description", "") or ""),
         "pack_id": str(metadata.get("pack_id", "") or "").strip(),
         "operation_provider_id": str(metadata.get("operation_provider_id", "") or "").strip(),
-        "effect": str(metadata.get("effect", "read") or "read"),
+        # Default to ``write`` — see the prompt-operation loader above.
+        "effect": str(metadata.get("effect", "write") or "write"),
         "approval_required": bool(metadata.get("approval_required", False)),
         "approval_preview": str(metadata.get("approval_preview", "") or "").strip(),
         "execution_kind": "runtime",
@@ -1313,7 +1318,9 @@ def _load_runtime_tool(
         "description": str(metadata.get("description", "") or ""),
         "pack_id": str(metadata.get("pack_id", "") or "").strip(),
         "tool_provider_id": str(metadata.get("tool_provider_id", "") or "").strip(),
-        "effect": str(metadata.get("effect", "read") or "read"),
+        # Default to ``write`` — a tool without an explicit ``effect`` is
+        # assumed to land work (see ``ToolDefinition.effect``).
+        "effect": str(metadata.get("effect", "write") or "write"),
         "approval_required": bool(metadata.get("approval_required", False)),
         "approval_preview": str(metadata.get("approval_preview", "") or "").strip(),
         "mode_allowlist": mode_allowlist,

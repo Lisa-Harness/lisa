@@ -1,4 +1,5 @@
 operation_id: self_model
 description: Build a deterministic operational self-model from the wired runtime catalogs (modes, operations, tools, models). Invoked by the slice system, not by the LLM.
+effect: read
 timeout_seconds: 30
 max_calls_per_turn: 1

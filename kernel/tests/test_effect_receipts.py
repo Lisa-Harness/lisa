@@ -123,8 +123,9 @@ def _write_contract_catalog() -> dict[str, WorkflowModeConfig]:
     """A chat mode with an authored write-effect binding.
 
     ``mode_completion_effects`` includes authored operation ids even when
-    the op is unknown to the catalog ("can't prove it's read-only"), so
-    the contract is non-empty regardless of the fixture op registry.
+    the op is unknown to the catalog (operations are in-process; an
+    unresolvable op id is assumed write under the default cutover), so the
+    contract is non-empty regardless of the fixture op registry.
     """
     return {
         "writer": WorkflowModeConfig(
@@ -250,3 +251,202 @@ async def test_parent_turn_with_receipt_is_not_blocked() -> None:
     # produced a receipt; the completion contract is satisfied.
     assert any(r.capability_id == "write_file" for r in result.effect_receipts)
     assert result.block_origin != "no_tools"
+
+
+# ── Regression: failed-dispatch hallucination (2026-08-07 review) ─────
+
+
+@pytest.mark.asyncio
+async def test_parent_turn_failed_mcp_write_still_blocked_as_no_tools() -> None:
+    """A failed MCP write must not satisfy the completion contract.
+
+    Regression for the 2026-08-07 review finding: the parent guard used
+    to key on ``total_tool_calls == 0``, but a failed MCP dispatch still
+    increments that counter (the server returns ``is_error=True`` without
+    raising). A write-contract mode whose only write attempt failed must
+    still be blocked as ``no_tools`` — the receipt ledger is empty.
+    """
+    from kernel.tools.mcp_client import MCPToolResult
+
+    class _FailingWritePool:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+            return []
+
+        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(
+                tool_id=tool_id,
+                output_text="provider unavailable",
+                is_error=True,
+            )
+
+        def tool_spec(self, tool_id: str) -> Any:
+            return None
+
+        async def __aenter__(self) -> _FailingWritePool:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    async def claims_write(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "lisa-storage.write_file",
+                        "arguments": '{"path": "a.md", "content": "x"}',
+                    },
+                }
+            ],
+        )
+
+    async def then_claims_done(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Done — I wrote the file for you.")
+
+    call_count = 0
+
+    async def model(**_kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return await claims_write()
+        return await then_claims_done()
+
+    hooks = TurnHooks(complete=model, mcp_tool_pool=_FailingWritePool())
+    with (
+        patch(
+            "kernel.turn_runner.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+        patch(
+            "kernel.operations.registry.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+            create=True,
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+    ):
+        result = await run_turn(mode_id="writer", query="write the file", hooks=hooks)
+
+    # The write was attempted (total_tool_calls == 1) but failed; the
+    # receipt ledger is empty, so the turn is blocked as no_tools.
+    assert result.tool_call_count == 1
+    assert result.blocked is True
+    assert result.block_origin == "no_tools"
+    assert "unverified" in result.response_text
+    assert "I wrote the file" not in result.response_text
+
+
+# ── Regression: read-only MCP tool must not emit a write receipt ──────
+
+
+@pytest.mark.asyncio
+async def test_read_only_mcp_tool_does_not_satisfy_write_contract() -> None:
+    """A server-declared read-only MCP tool is not a completion requirement.
+
+    Regression for the 2026-08-07 recall-block: the old ``mode_completion_effects``
+    "include unknown" fallback added every unresolvable authored tool to the
+    mode's write contract, so a read-only MCP alias (``memory.search`` /
+    ``lisa-storage.read_file``) polluted the action set and blocked legitimate
+    recall-only turns as "hallucinated success". The resolver now consults the
+    pool's ``read_only_hint``: a server-declared read-only MCP tool is excluded
+    from the contract, so a turn that only calls it has an empty write contract
+    and completes cleanly (no false ``no_tools`` block).
+    """
+    from kernel.tools.mcp_client import MCPToolResult
+
+    class _ReadOnlyPool:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+            return []
+
+        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(tool_id=tool_id, output_text="read result")
+
+        def tool_spec(self, tool_id: str) -> Any:
+            return SimpleNamespace(read_only_hint=True)
+
+        async def __aenter__(self) -> _ReadOnlyPool:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    async def reads_then_claims(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "lisa-storage.read_file",
+                        "arguments": '{"path": "a.md"}',
+                    },
+                }
+            ],
+        )
+
+    async def then_claims_done(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="Done — I read the file for you.")
+
+    call_count = 0
+
+    async def model(**_kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return await reads_then_claims()
+        return await then_claims_done()
+
+    hooks = TurnHooks(complete=model, mcp_tool_pool=_ReadOnlyPool())
+    # ``read_file`` is an unresolvable authored tool (not in the in-process
+    # catalog). With the pool declaring ``read_only_hint=True``, the resolver
+    # excludes it from the write contract — the mode has NO write-contract
+    # tools, so the turn completes cleanly instead of being blocked.
+    read_only_catalog = {
+        "writer": WorkflowModeConfig(
+            mode_id="writer",
+            start_stage_id="none",
+            mode_kind="chat",
+            routable=True,
+            authored_allowed_tool_ids=["read_file"],
+            allowed_tool_ids=["read_file"],
+        ),
+    }
+    with (
+        patch(
+            "kernel.turn_runner.get_workflow_catalog",
+            return_value=read_only_catalog,
+        ),
+        patch(
+            "kernel.operations.registry.get_workflow_catalog",
+            return_value=read_only_catalog,
+            create=True,
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_workflow_catalog",
+            return_value=read_only_catalog,
+        ),
+    ):
+        result = await run_turn(mode_id="writer", query="read the file", hooks=hooks)
+
+    # The read-only MCP tool produced no write receipt, and because it is
+    # excluded from the (now empty) write contract, the turn is NOT blocked.
+    assert result.blocked is False
+    assert result.block_origin == ""
+    assert not any(r.capability_id == "lisa-storage.read_file" for r in result.effect_receipts)

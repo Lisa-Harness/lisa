@@ -1273,7 +1273,10 @@ async def _default_delegate_fn(
         # findings (3.1: ``blocked`` is checked first; 4.1:
         # ``mode_completion_effects`` replaces ``_fork_mode_action_tool_ids``;
         # 7.1: the duplicated classifier is removed).
-        action_ids = mode_completion_effects(spec.target_mode_id)
+        action_ids = mode_completion_effects(
+            spec.target_mode_id,
+            mcp_pool=getattr(hooks, "mcp_tool_pool", None),
+        )
         outcome = classify_child_turn(
             child_result=child_result,
             mode_id=spec.target_mode_id,
@@ -2323,7 +2326,7 @@ async def _run_turn_inner(
     if sub_turn_kind:
         _state.sub_turn_kind = sub_turn_kind
     try:
-        _state.action_tool_ids = mode_completion_effects(mode_id)
+        _state.action_tool_ids = mode_completion_effects(mode_id, mcp_pool=pool)
     except Exception:  # pylint: disable=broad-except
         _state.action_tool_ids = set()
     _on_stage_hook = hooks.on_stage
@@ -4433,7 +4436,8 @@ async def _run_turn_inner(
                                 # entry mode.
                                 try:
                                     _state.action_tool_ids = mode_completion_effects(
-                                        target_stage
+                                        target_stage,
+                                        mcp_pool=pool,
                                     )
                                 except Exception:  # pylint: disable=broad-except
                                     _state.action_tool_ids = set()
@@ -5417,19 +5421,40 @@ async def _run_turn_inner(
                                 artifact_id=_dispatched_artifact_id,
                             )
                         )
-                elif _state.action_tool_ids and _dispatched_effect == "read":
+                elif _dispatched_effect == "read":
                     # Opaque MCP write tool: not in the in-process operation
                     # or tool catalog (so ``_dispatched_effect`` defaulted to
-                    # "read"), but present in the sub-turn's action-tool set.
-                    # MCP failures are returned as ``MCPToolResult(is_error=True)``
-                    # rather than raised, so check success before emitting a
-                    # receipt — a failed MCP write must not satisfy the
-                    # completion contract (the 2026-08-04 audit finding).
-                    # ``bare_tool_name`` normalizes the namespaced dispatched
-                    # name (``lisa-storage.write_file``) to match the bare
-                    # authored action id (``write_file``).
-                    _bare = bare_tool_name(tool_name)
-                    if _bare in _state.action_tool_ids:
+                    # "read"). MCP failures are returned as
+                    # ``MCPToolResult(is_error=True)`` rather than raised, so
+                    # check success before emitting a receipt — a failed MCP
+                    # write must not satisfy the completion contract (the
+                    # 2026-08-04 audit finding).
+                    #
+                    # A server-declared ``read_only_hint`` is authoritative:
+                    # a read-only MCP tool must NEVER emit a write receipt
+                    # (the 2026-08-07 over-count fix — an undeclared-effect
+                    # read tool was being counted as a verified write).
+                    #
+                    # The receipt is captured for ANY successful non-read-only
+                    # MCP write, not just those in the current mode's action
+                    # set. The completion contract is enforced later by the
+                    # intersection of the ledger with the FINAL mode's action
+                    # set (Phase 3), so a write performed in an entry mode
+                    # (e.g. ``default``) before a handoff to a write-contract
+                    # mode (e.g. ``remember``) is still counted — otherwise the
+                    # handoff target's contract would falsely block a turn that
+                    # genuinely wrote (the 2026-08-07 Bug-1 follow-on).
+                    _mcp_read_only = False
+                    # ``tool_spec`` is a pool accessor; guard with getattr so
+                    # test stub pools (and any pool without the accessor)
+                    # degrade to "unknown ⇒ potentially side-effecting" rather
+                    # than raising. The real MCPToolPool always provides it.
+                    _mcp_spec_fn = getattr(pool, "tool_spec", None)
+                    if _mcp_spec_fn is not None:
+                        _mcp_spec = _mcp_spec_fn(tool_name)
+                        if _mcp_spec is not None:
+                            _mcp_read_only = bool(getattr(_mcp_spec, "read_only_hint", False))
+                    if not _mcp_read_only:
                         _mcp_succeeded = True
                         # ``mcp_result`` is bound on both MCP dispatch branches
                         # above; the in-process branches do not set it.
@@ -5755,15 +5780,31 @@ async def _run_turn_inner(
     if (
         not _state.sub_turn_kind
         and not _yielded
-        and _state.total_tool_calls == 0
         and _state.action_tool_ids
     ):
-        # Zero successful dispatches means the receipt ledger is empty by
-        # construction; the intersection documents the ledger contract.
-        _parent_no_tools = not (
-            {bare_tool_name(r.capability_id) for r in _state.effect_receipts}
-            & _state.action_tool_ids
-        )
+        # A write-contract mode that ends with zero verified writes is
+        # hallucinated success — whether the model never invoked a tool,
+        # or invoked one and every attempt failed. Key on the receipt
+        # ledger, NOT the attempt counter: a failed MCP dispatch still
+        # increments ``total_tool_calls`` (the server returns
+        # ``is_error=True`` without raising) but produces no receipt, so
+        # ``total_tool_calls == 0`` would let a failed-write hallucination
+        # slip through unblocked (the 2026-08-07 review finding). This
+        # matches the fork-child classifier contract exactly.
+        #
+        # Match the receipt against the action set using BOTH the raw
+        # capability id and its bare form. ``bare_tool_name`` strips a
+        # ``server_id.`` namespace prefix (``lisa-storage.write_file`` →
+        # ``write_file``) so a namespaced MCP write matches its bare
+        # authored action id; but it ALSO strips the dot from synthetic
+        # dotted tool names (``memory.add`` → ``add``), which would
+        # wrongly fail to match the authored ``memory.add``. Including the
+        # raw id covers the synthetic case; including the bare form covers
+        # the namespaced-MCP case.
+        _receipt_ids = {
+            bare_tool_name(r.capability_id) for r in _state.effect_receipts
+        } | {r.capability_id for r in _state.effect_receipts}
+        _parent_no_tools = not (_receipt_ids & _state.action_tool_ids)
     # Output guard runs before on_complete/store_mem so the persisted and
     # delivered text is the sanitized/safe-fallback version. Blocked
     # outputs emit a guardrail.audit event and skip the post-turn slice.
