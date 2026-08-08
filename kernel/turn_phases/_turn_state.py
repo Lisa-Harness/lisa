@@ -299,11 +299,15 @@ class _TurnState:
     (planned), ``None`` for the parent turn. Drives the sub-turn contract
     block in the budget briefing and the midpoint write-nudge below."""
     action_tool_ids: set[str] = field(default_factory=set)
-    """The side-effecting action tools this sub-turn's mode declares
-    (from ``mode_completion_effects``). Empty for the parent turn and
-    for read-only modes. The briefing names these as the success
-    criterion; the midpoint nudge fires when the child is past its
-    iteration midpoint with zero of these called."""
+    """The side-effecting action tools the current mode declares (from
+    ``mode_completion_effects``), resolved at turn start for parent and
+    sub-turns alike and refreshed on every mid-turn mode handoff. Empty
+    for modes with no write contract. Sub-turns: the briefing names these
+    as the success criterion; the midpoint nudge fires when the child is
+    past its iteration midpoint with zero of these called. Parent turns:
+    the Phase-3 completion-contract check (Phase 8) blocks a clean exit
+    whose receipt ledger has no entry for these tools (``no_tools`` —
+    hallucinated success)."""
     write_nudge_fired: bool = False
     """One-shot guard for the midpoint write-nudge. Set True after the
     nudge is injected once so it does not repeat on every subsequent

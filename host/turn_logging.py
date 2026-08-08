@@ -21,6 +21,7 @@ Public surface (re-exported by ``main.py`` for backward test compatibility)
 - :func:`build_log_record`
 - :func:`build_turn_log_record`
 - :func:`build_turn_log_debug_payload`
+- :func:`build_turn_completed_payload`
 - :func:`emit_log_record`
 - :func:`write_log_record` (deprecated wrapper around :func:`emit_log_record`)
 """
@@ -159,6 +160,37 @@ def build_turn_log_record(
             },
         },
         "response_preview": preview_fn(response_text, limit=320),
+    }
+
+
+def build_turn_completed_payload(
+    *,
+    mode_id: str,
+    result: Any,
+    coerce_int: Any,
+) -> dict[str, Any]:
+    """Assemble the ``turn.completed`` audit payload for a kernel turn.
+
+    Includes the effect-receipt ledger (Phase 8: one verification
+    primitive) so hallucination signals — a mode with a completion
+    contract whose ledger is empty — are queryable from the JSONL stream
+    without reconstructing individual dispatch entries.
+    """
+    return {
+        "mode_id": mode_id,
+        "handoff": str(getattr(result, "handoff_to", None) or ""),
+        "tool_call_count": coerce_int(getattr(result, "tool_call_count", 0)),
+        "iteration_count": coerce_int(getattr(result, "iteration_count", 0)),
+        "blocked": bool(getattr(result, "blocked", False)),
+        "block_origin": str(getattr(result, "block_origin", "") or ""),
+        "receipts": [
+            {
+                "capability_id": str(getattr(r, "capability_id", "")),
+                "effect": str(getattr(r, "effect", "")),
+                "artifact_id": str(getattr(r, "artifact_id", "") or ""),
+            }
+            for r in (getattr(result, "effect_receipts", None) or [])
+        ],
     }
 
 

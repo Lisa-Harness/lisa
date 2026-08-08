@@ -394,6 +394,36 @@ def _build_sub_turn_contract(
     )
 
 
+def _enforce_write_receipt(
+    *,
+    tool_name: str,
+    dispatched_effect: str,
+    dispatched_succeeded: bool,
+    receipts: list[EffectReceipt],
+    receipts_before: int,
+) -> str | None:
+    """Enforce the Phase-8 receipt invariant for one dispatch.
+
+    A capability whose declared effect is ``write`` / ``external_write``
+    and whose dispatch succeeded MUST have produced an ``EffectReceipt``
+    in this dispatch (``receipts[receipts_before:]``). Returns a loud
+    kernel-error marker string when the invariant is violated, else
+    ``None``. A successful write with no receipt would let a hallucinated
+    "I wrote it" slip past the completion contract — the kernel treats
+    that as its own bug, not the model's.
+    """
+    if dispatched_effect not in ("write", "external_write") or not dispatched_succeeded:
+        return None
+    if any(r.capability_id == tool_name for r in receipts[receipts_before:]):
+        return None
+    return (
+        f"KERNEL ERROR: write capability '{tool_name}' (effect="
+        f"{dispatched_effect}) returned success without producing an "
+        "EffectReceipt. The completion contract cannot verify this write; "
+        "the kernel counts it as unverified."
+    )
+
+
 def _is_workflow_position_complete(position: Any) -> bool:
     """Return True when the workflow position has no remaining work.
 
@@ -2278,21 +2308,24 @@ async def _run_turn_inner(
     _state.max_iterations = max_tool_iterations
     _state.max_tool_calls = turn_budget.max_tool_calls if turn_budget is not None else 0
     _state.max_handoffs = _kernel_settings.max_handoffs_per_turn
-    # ── Sub-turn (fork / delegate child) contract state ─────────────
-    # When this turn is a sub-turn, resolve the mode's required
-    # side-effecting capabilities once at turn start so the budget
-    # briefing and the midpoint write-nudge can name them without
-    # re-resolving every iteration. ``mode_completion_effects`` is the
-    # canonical resolver shared with the child-turn classifier, so the
-    # briefing names the same action tools the validator checks —
-    # including ``mode_allowlist``-admitted operations the old
-    # authored-only resolver missed.
+    # ── Completion-contract state (sub-turns AND parent) ──────────
+    # Resolve the mode's required side-effecting capabilities once at
+    # turn start so the budget briefing and the midpoint write-nudge can
+    # name them without re-resolving every iteration, and so the Phase-3
+    # parent-turn receipt check (Phase 8) validates the parent against
+    # the same contract fork children are held to.
+    # ``mode_completion_effects`` is the canonical resolver shared with
+    # the child-turn classifier, so the briefing names the same action
+    # tools the validator checks — including ``mode_allowlist``-admitted
+    # operations the old authored-only resolver missed. Refreshed on
+    # every mid-turn mode handoff so the contract follows the mode the
+    # turn actually ends in.
     if sub_turn_kind:
         _state.sub_turn_kind = sub_turn_kind
-        try:
-            _state.action_tool_ids = mode_completion_effects(mode_id)
-        except Exception:  # pylint: disable=broad-except
-            _state.action_tool_ids = set()
+    try:
+        _state.action_tool_ids = mode_completion_effects(mode_id)
+    except Exception:  # pylint: disable=broad-except
+        _state.action_tool_ids = set()
     _on_stage_hook = hooks.on_stage
 
     # Turn-runner guard caps, read once from the kernel settings singleton
@@ -4392,6 +4425,18 @@ async def _run_turn_inner(
                                 capability_manifest = compile_capability_manifest(
                                     tool_schemas, mode_config=target_mode_config
                                 )
+                                # Phase 8: the completion contract follows
+                                # the mode the turn is actually in —
+                                # refresh the action-tool set so the
+                                # parent-turn receipt check (Phase 3)
+                                # evaluates the handoff target, not the
+                                # entry mode.
+                                try:
+                                    _state.action_tool_ids = mode_completion_effects(
+                                        target_stage
+                                    )
+                                except Exception:  # pylint: disable=broad-except
+                                    _state.action_tool_ids = set()
                                 # Action modes (e.g. search) run entry
                                 # operations (e.g. web_search) that produce
                                 # the mode's output. Without running them the
@@ -5329,7 +5374,9 @@ async def _run_turn_inner(
                 # (invisible to the old ``authored_allowed_*``-only detector)
                 # is correctly counted as having completed its work.
                 _dispatched_effect = "read"
+                _dispatched_succeeded = False
                 _dispatched_artifact_id = ""
+                _receipts_before = len(_state.effect_receipts)
                 if tool_name in operation_catalog:
                     _op_def = operation_catalog[tool_name]
                     _dispatched_effect = str(getattr(_op_def, "effect", "read") or "read")
@@ -5396,6 +5443,24 @@ async def _run_turn_inner(
                                     artifact_id="",
                                 )
                             )
+                # ── Receipt enforcement (Phase 8) ────────────────────
+                # A capability whose declared effect is write /
+                # external_write and whose dispatch succeeded MUST have
+                # appended an ``EffectReceipt`` in the capture block
+                # above. A successful write with no receipt would let a
+                # hallucinated "I wrote it" slip past the completion
+                # contract — surfaced loudly as a kernel error instead of
+                # silently miscounted.
+                _receipt_error = _enforce_write_receipt(
+                    tool_name=tool_name,
+                    dispatched_effect=_dispatched_effect,
+                    dispatched_succeeded=_dispatched_succeeded,
+                    receipts=_state.effect_receipts,
+                    receipts_before=_receipts_before,
+                )
+                if _receipt_error is not None:
+                    _log.error("%s", _receipt_error)
+                    tool_output = _receipt_error
                 # Sync the ledger counts to _state so the per-iteration
                 # budget briefing can report per-target remaining calls.
                 _state.call_ledger_counts = dict(ledger.counts)
@@ -5670,6 +5735,35 @@ async def _run_turn_inner(
             workflow_terminated = True
 
     # ── Phase 3: Post-turn ────────────────────────────────────────────
+    # ── Parent-turn completion contract (Phase 8) ────────────────────
+    # The receipt-ledger contract fork children are held to, applied to
+    # the parent turn's clean exit: a mode with a side-effecting
+    # completion contract (``mode_completion_effects`` non-empty —
+    # ``_state.action_tool_ids``) whose turn ends with ZERO successful
+    # dispatches (and therefore an empty receipt ledger) reported
+    # unverified success — the 2026-08-06 remember-child hallucination
+    # check generalized to the parent. Exempt by construction: yields
+    # (the turn deliberately pauses to ask the user), sub-turns
+    # (validated by ``classify_child_turn``), approval pauses
+    # (``ApprovalRequired`` returns before Phase 3), and modes with no
+    # write contract (chat / ponder — their output IS the response
+    # text). A parent that made read-only calls is deliberately NOT
+    # flagged here — read-loops escalate through the stuck-in-stage
+    # nudge/cap path; this check targets pure hallucination (zero
+    # verified work claimed as done).
+    _parent_no_tools = False
+    if (
+        not _state.sub_turn_kind
+        and not _yielded
+        and _state.total_tool_calls == 0
+        and _state.action_tool_ids
+    ):
+        # Zero successful dispatches means the receipt ledger is empty by
+        # construction; the intersection documents the ledger contract.
+        _parent_no_tools = not (
+            {bare_tool_name(r.capability_id) for r in _state.effect_receipts}
+            & _state.action_tool_ids
+        )
     # Output guard runs before on_complete/store_mem so the persisted and
     # delivered text is the sanitized/safe-fallback version. Blocked
     # outputs emit a guardrail.audit event and skip the post-turn slice.
@@ -5694,6 +5788,29 @@ async def _run_turn_inner(
         # an output guard block) and the user sees a hard failure rather
         # than a hallucinated success.
         turn_blocked = True
+    elif _parent_no_tools:
+        # The parent turn itself reported unverified success: the mode
+        # declares a side-effecting completion contract and the turn
+        # ends with zero verified writes. Replace the unverified prose
+        # with a deterministic failure (same contract as a ``no_tools``
+        # fork child). The wording covers both "never invoked" and
+        # "invoked but every attempt failed" — a failed dispatch lands
+        # neither in the counted calls nor in the receipt ledger.
+        _log.warning(
+            "parent turn mode=%s completed with no verified write for its "
+            "mode's action tools %s; blocking as no_tools (hallucinated success)",
+            mode_id,
+            sorted(_state.action_tool_ids),
+        )
+        content = (
+            f"The `{mode_id}` turn produced no verified write: none of the "
+            f"mode's action tools ({', '.join(sorted(_state.action_tool_ids))}) "
+            "completed successfully. The reported result is unverified — "
+            "nothing was written to disk or memory. Re-issue the request, "
+            "or narrow it so the mode can complete its work."
+        )
+        turn_blocked = True
+        _block_origin = "no_tools"
     elif not output_guard_result.allowed:
         original_len = len(content)
         safe_fallback = "I'm unable to provide that response. Please rephrase your request."

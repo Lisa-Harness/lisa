@@ -45,6 +45,7 @@ from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.operations.registry import OperationExecutionError
 from kernel.turn_runner import TurnResult, execute_approved_invocation, run_turn
+from sdk.logging_setup import emit_structured_event
 
 from host.commands import (
     format_operation_error,
@@ -75,6 +76,7 @@ from host.host_commands import (
 from host.thread import append_thread_entry
 from host.token_accounting import apply_turn_usage, coerce_non_negative_int
 from host.turn_hooks_builder import build_turn_hooks
+from host.turn_logging import build_turn_completed_payload
 from host.types import HostCommandResult
 
 # ── Pack-command discovery (lazy) ────────────────────────────────────
@@ -879,6 +881,25 @@ async def _execute_mode_turn(
     )
     run_context["completion"] = completion_context
     _set_turn_context(runtime, run_context)
+
+    # Audit: emit the kernel turn's completion event carrying the effect
+    # receipt ledger (Phase 8: one verification primitive) so
+    # hallucination signals are queryable from the JSONL stream without
+    # reconstructing individual dispatch entries.
+    emit_structured_event(
+        logger,
+        level=logging.INFO,
+        event="turn.completed",
+        message=(
+            f"turn.completed: mode={mode.mode_id} "
+            f"handoff={result.handoff_to or ''}"
+        ),
+        **build_turn_completed_payload(
+            mode_id=mode.mode_id,
+            result=result,
+            coerce_int=coerce_non_negative_int,
+        ),
+    )
 
     # Persist the thread entry.
     provenance: dict[str, Any] = {

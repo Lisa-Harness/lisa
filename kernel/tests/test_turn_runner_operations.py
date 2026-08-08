@@ -230,11 +230,24 @@ async def test_operation_dispatch_error_produces_tool_error_message() -> None:
 
     result = await run_turn(mode_id="remember", query="test", hooks=hooks)
 
-    # The model should have received the error as a tool result and recovered
-    assert result.response_text == "Handled error."
+    # The model received the error as a tool result and recovered: the
+    # iteration-2 call's messages carry the tool error for call_1.
+    assert len(call_log) == 2
+    tool_messages = [
+        m
+        for m in call_log[1].get("messages", [])
+        if m.get("role") == "tool" and m.get("tool_call_id") == "call_1"
+    ]
+    assert tool_messages, "the failed dispatch must surface as a tool result"
+    assert "boom" in str(tool_messages[0].get("content", ""))
     # The operation raised, so total_tool_calls stays at 0 (counted after success)
     assert result.tool_call_count == 0
     assert result.iteration_count == 2
+    # Phase 8: remember declares a write contract and the only write
+    # attempt failed — zero verified writes, so the parent-turn
+    # completion contract blocks the turn as ``no_tools``.
+    assert result.blocked is True
+    assert result.block_origin == "no_tools"
 
 
 # ── Mode-level tool filtering ────────────────────────────────────────

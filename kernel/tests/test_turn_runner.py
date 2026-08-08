@@ -235,8 +235,13 @@ async def test_plan_action_mode_propagates_handoff_to_advance_host_mode() -> Non
 
     # The planned target is propagated as handoff_to so the host advances
     # current_mode_id out of ``plan`` and does not re-run the planner.
-    assert "Drafted the document." in result.response_text
     assert result.handoff_to == "markdown"
+    # Phase 8: the markdown step's stub completed with zero dispatches,
+    # so the parent-turn completion contract blocks the unverified prose
+    # as ``no_tools`` (markdown declares a write contract via the real
+    # op catalog's mode_allowlist bindings).
+    assert result.blocked is True
+    assert result.block_origin == "no_tools"
 
 
 @pytest.mark.asyncio
@@ -826,10 +831,14 @@ async def test_plan_instance_resume_hint_fires_without_route_coordinator() -> No
 
     result = await run_turn(mode_id="default", query="proceed with P0", hooks=hooks)
 
-    assert "Done." in result.response_text
     assert any("markdown" in h for h in captured_hints), (
         "plan-instance resume hint must fire without route_coordinator wired"
     )
+    # Phase 8: the resumed markdown step's stub completed with zero
+    # dispatches — the parent-turn completion contract blocks the
+    # unverified "Done." as ``no_tools``.
+    assert result.blocked is True
+    assert result.block_origin == "no_tools"
 
 
 @pytest.mark.asyncio
@@ -1799,9 +1808,13 @@ async def test_run_turn_mode_handoff_via_transition_stage() -> None:
     hooks = _build_minimal_hooks(two_step)
     result = await run_turn(mode_id="default", query="write a markdown doc", hooks=hooks)
 
-    assert result.response_text == "Done in markdown mode."
     assert result.handoff_to == "markdown"
     assert result.transitioned_to is None  # no workflow stage transition
+    # Phase 8: the stub completed the markdown mode with zero dispatches.
+    # markdown declares a write contract (mode_allowlist-bound write ops),
+    # so the parent-turn completion contract blocks the unverified prose.
+    assert result.blocked is True
+    assert result.block_origin == "no_tools"
 
 
 @pytest.mark.asyncio
