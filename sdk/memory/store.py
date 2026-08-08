@@ -77,52 +77,45 @@ def _expires_at(ttl_days: int | None) -> str | None:
 
 
 def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
-    raw_json = row["content_json"] or "{}"
+    """Map a SQLite row to a :class:`MemoryRecord` via typed validation.
+
+    Builds a plain dict from the row, applies the four transformations Pydantic
+    cannot infer (JSON-string columns, derived ``source_user_*`` fields, the
+    ``valid_until`` → ``expires_at`` fallback), then delegates to
+    :meth:`MemoryRecord.model_validate`. A typo in a column name now surfaces as
+    a :class:`KeyError` at the ``row[…]`` access (before validation) rather than
+    silently producing ``None`` via the old ``row["…"] or "{}"`` guards, and a
+    missing required field raises :class:`pydantic.ValidationError`.
+    """
+    row_dict = dict(row)
+    # JSON-string columns → typed fields.
+    raw_json = row_dict.get("content_json") or "{}"
     try:
-        content_json = json.loads(raw_json) if isinstance(raw_json, str) else dict(raw_json or {})
+        row_dict["content_json"] = (
+            json.loads(raw_json) if isinstance(raw_json, str) else dict(raw_json or {})
+        )
     except (json.JSONDecodeError, TypeError):
-        content_json = {}
-    user_slug = row["user_slug"]
-    raw_evidence = row["item_ids"] or "[]"
+        row_dict["content_json"] = {}
+    raw_items = row_dict.get("item_ids") or "[]"
     try:
-        item_ids = [int(eid) for eid in json.loads(raw_evidence)] if isinstance(
-            raw_evidence, str
-        ) else list(raw_evidence or [])
+        row_dict["item_ids"] = (
+            [int(eid) for eid in json.loads(raw_items)]
+            if isinstance(raw_items, str)
+            else list(raw_items or [])
+        )
     except (json.JSONDecodeError, TypeError, ValueError):
-        item_ids = []
-    supersedes_id = row["supersedes_id"]
-    valid_until = row["valid_until"]
-    if valid_until is None:
-        # TTL expiry is the default validity bound. An explicit valid_until
-        # (set on write) overrides it for semantic-validity windows that
-        # differ from the tier TTL.
-        valid_until = row["expires_at"]
-    return MemoryRecord(
-        id=row["id"],
-        workspace_id=row["workspace_id"],
-        user_id=user_slug,
-        user_slug=user_slug,
-        memory_scope=row["memory_scope"],
-        surface_id=row["surface_id"],
-        source_user_id=user_slug,
-        source_user_slug=user_slug,
-        agent_id=row["agent_id"],
-        operation_id=row["operation_id"],
-        instruction_id=row["instruction_id"],
-        memory_tier=row["memory_tier"],
-        content=row["content"],
-        content_json=content_json,
-        salience=row["salience"],
-        created_at=row["created_at"],
-        access_count=row["access_count"],
-        last_accessed_at=row["last_accessed_at"],
-        valid_until=valid_until,
-        memory_kind=row["memory_kind"],
-        confidence=row["confidence"],
-        item_ids=item_ids,
-        supersedes_id=int(supersedes_id) if supersedes_id is not None else None,
-        status=row["status"],
-    )
+        row_dict["item_ids"] = []
+    # No DB column for source_user_* — derive from user_slug.
+    user_slug = row_dict["user_slug"]
+    row_dict["source_user_id"] = user_slug
+    row_dict["source_user_slug"] = user_slug
+    row_dict["user_id"] = user_slug
+    # TTL expiry is the default validity bound. An explicit valid_until
+    # (set on write) overrides it for semantic-validity windows that differ
+    # from the tier TTL.
+    if row_dict.get("valid_until") is None:
+        row_dict["valid_until"] = row_dict.get("expires_at")
+    return MemoryRecord.model_validate(row_dict)
 
 
 @dataclass

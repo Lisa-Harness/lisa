@@ -35,6 +35,7 @@ Re-exported names (wrapped in main.py for backward test compatibility)
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -48,6 +49,7 @@ from kernel.token_usage import (
 )
 
 __all__ = [
+    "TurnUsage",
     "apply_turn_usage",
     "coerce_non_negative_float",
     "coerce_non_negative_int",
@@ -57,18 +59,27 @@ __all__ = [
 ]
 
 
-# ── Usage-entry accumulator ───────────────────────────────────────────
+@dataclass(frozen=True, slots=True)
+class TurnUsage:
+    """Per-turn token/latency counters extracted from a ``TurnResult``.
 
-#: The 7 counter fields every breakdown entry tracks.
-_USAGE_FIELDS: tuple[str, ...] = (
-    "prompt_tokens",
-    "completion_tokens",
-    "total_tokens",
-    "cached_tokens",
-    "reasoning_tokens",
-    "duration_ms",
-    "latency_ms",
-)
+    Frozen-slots dataclass so the 7 counters are accessed as attributes
+    (``turn.prompt``), not string-keyed dict lookups (``turn["prompt"]``).
+    A typo in a field name is an ``AttributeError`` at the call site, not a
+    silent ``None`` or ``KeyError``. Mirrors the fields on
+    ``kernel.turn_runner.TurnResult`` with abbreviated names.
+    """
+
+    prompt: int
+    completion: int
+    total: int
+    cached: int
+    reasoning: int
+    duration_ms: float
+    latency_ms: int
+
+
+# ── Usage-entry accumulator ───────────────────────────────────────────
 
 
 def _new_usage_entry() -> dict[str, Any]:
@@ -164,9 +175,8 @@ def apply_turn_usage(
     """
     main_tokens = _extract_main_tokens(result)
 
-    turn_tokens = _combine_turn_tokens(main_tokens)
-    _set_turn_state(state, turn_tokens)
-    _accumulate_session_state(state, turn_tokens)
+    _set_turn_state(state, main_tokens)
+    _accumulate_session_state(state, main_tokens)
 
     ledger: list[dict[str, Any]] = state.setdefault("session_token_ledger", [])
     turn_index = len(ledger) + 1
@@ -245,70 +255,57 @@ def _accumulate_per_mode_breakdown(
         )
 
 
-def _extract_main_tokens(result: Any) -> dict[str, Any]:
-    """Extract token counts from a TurnResult."""
+def _extract_main_tokens(result: Any) -> TurnUsage:
+    """Extract token counts from a TurnResult into a typed ``TurnUsage``."""
     prompt = coerce_non_negative_int(result.prompt_tokens)
     completion = coerce_non_negative_int(result.completion_tokens)
     total = coerce_non_negative_int(result.total_tokens)
     if total <= 0:
         total = prompt + completion
-    return {
-        "prompt": prompt,
-        "completion": completion,
-        "total": total,
-        "cached": coerce_non_negative_int(getattr(result, "cached_tokens", 0)),
-        "reasoning": coerce_non_negative_int(getattr(result, "reasoning_tokens", 0)),
-        "duration_ms": coerce_non_negative_float(getattr(result, "duration_ms", 0.0)),
-        "latency_ms": coerce_non_negative_int(getattr(result, "latency_ms", 0)),
-    }
+    return TurnUsage(
+        prompt=prompt,
+        completion=completion,
+        total=total,
+        cached=coerce_non_negative_int(getattr(result, "cached_tokens", 0)),
+        reasoning=coerce_non_negative_int(getattr(result, "reasoning_tokens", 0)),
+        duration_ms=coerce_non_negative_float(getattr(result, "duration_ms", 0.0)),
+        latency_ms=coerce_non_negative_int(getattr(result, "latency_ms", 0)),
+    )
 
 
-def _combine_turn_tokens(main: dict[str, Any]) -> dict[str, Any]:
-    """Return the turn token totals from the main completion counters."""
-    return {
-        "prompt": main["prompt"],
-        "completion": main["completion"],
-        "total": main["total"],
-        "cached": main["cached"],
-        "reasoning": main["reasoning"],
-        "duration_ms": main["duration_ms"],
-        "latency_ms": main["latency_ms"],
-    }
-
-
-def _set_turn_state(state: dict[str, Any], turn: dict[str, Any]) -> None:
+def _set_turn_state(state: dict[str, Any], turn: TurnUsage) -> None:
     """Set the per-turn token counters in state."""
-    state["turn_prompt_tokens"] = turn["prompt"]
-    state["turn_completion_tokens"] = turn["completion"]
-    state["turn_total_tokens"] = turn["total"]
-    state["turn_cached_tokens"] = turn["cached"]
-    state["turn_reasoning_tokens"] = turn["reasoning"]
-    state["turn_duration_ms"] = turn["duration_ms"]
-    state["turn_latency_ms"] = turn["latency_ms"]
+    state["turn_prompt_tokens"] = turn.prompt
+    state["turn_completion_tokens"] = turn.completion
+    state["turn_total_tokens"] = turn.total
+    state["turn_cached_tokens"] = turn.cached
+    state["turn_reasoning_tokens"] = turn.reasoning
+    state["turn_duration_ms"] = turn.duration_ms
+    state["turn_latency_ms"] = turn.latency_ms
 
 
-def _accumulate_session_state(state: dict[str, Any], turn: dict[str, Any]) -> None:
+def _accumulate_session_state(state: dict[str, Any], turn: TurnUsage) -> None:
     """Accumulate turn tokens into session totals."""
     state["session_prompt_tokens"] = (
-        coerce_non_negative_int(state.get("session_prompt_tokens", 0)) + turn["prompt"]
+        coerce_non_negative_int(state.get("session_prompt_tokens", 0)) + turn.prompt
     )
     state["session_completion_tokens"] = (
-        coerce_non_negative_int(state.get("session_completion_tokens", 0)) + turn["completion"]
+        coerce_non_negative_int(state.get("session_completion_tokens", 0)) + turn.completion
     )
     state["session_total_tokens"] = (
-        coerce_non_negative_int(state.get("session_total_tokens", 0)) + turn["total"]
+        coerce_non_negative_int(state.get("session_total_tokens", 0)) + turn.total
     )
     state["session_cached_tokens"] = (
-        coerce_non_negative_int(state.get("session_cached_tokens", 0)) + turn["cached"]
+        coerce_non_negative_int(state.get("session_cached_tokens", 0)) + turn.cached
     )
     state["session_reasoning_tokens"] = (
-        coerce_non_negative_int(state.get("session_reasoning_tokens", 0)) + turn["reasoning"]
+        coerce_non_negative_int(state.get("session_reasoning_tokens", 0)) + turn.reasoning
     )
     state["session_duration_ms"] = (
-        coerce_non_negative_float(state.get("session_duration_ms", 0.0)) + turn["duration_ms"]
+        coerce_non_negative_float(state.get("session_duration_ms", 0.0)) + turn.duration_ms
     )
     state["session_latency_ms"] = (
-        coerce_non_negative_int(state.get("session_latency_ms", 0)) + turn["latency_ms"]
+        coerce_non_negative_int(state.get("session_latency_ms", 0)) + turn.latency_ms
     )
 
 
@@ -316,7 +313,7 @@ def _record_main_ledger(
     state: dict[str, Any],
     ledger: list[dict[str, Any]],
     turn_index: int,
-    main: dict[str, Any],
+    main: TurnUsage,
     model_id: str,
     mode_id: str,
     stage_id: str,
@@ -345,7 +342,7 @@ def _record_main_ledger(
         clean_model,
         clean_mode,
         clean_stage,
-        main["total"],
+        main.total,
     )
     ledger.append(
         {
@@ -353,13 +350,13 @@ def _record_main_ledger(
             "model_id": clean_model,
             "mode_id": clean_mode,
             "stage_id": clean_stage,
-            "prompt_tokens": main["prompt"],
-            "completion_tokens": main["completion"],
-            "total_tokens": main["total"],
-            "cached_tokens": main["cached"],
-            "reasoning_tokens": main["reasoning"],
-            "duration_ms": main["duration_ms"],
-            "latency_ms": main["latency_ms"],
+            "prompt_tokens": main.prompt,
+            "completion_tokens": main.completion,
+            "total_tokens": main.total,
+            "cached_tokens": main.cached,
+            "reasoning_tokens": main.reasoning,
+            "duration_ms": main.duration_ms,
+            "latency_ms": main.latency_ms,
         }
     )
     main_kwargs = _main_breakdown_kwargs(main)
@@ -370,16 +367,16 @@ def _record_main_ledger(
     _accumulate_breakdown(state, "stage_token_totals", clean_stage, **main_kwargs)
 
 
-def _main_breakdown_kwargs(main: dict[str, Any]) -> dict[str, Any]:
-    """Convert main token dict to _accumulate_breakdown kwargs."""
+def _main_breakdown_kwargs(main: TurnUsage) -> dict[str, Any]:
+    """Convert ``TurnUsage`` to ``_accumulate_breakdown`` kwargs."""
     return {
-        "prompt": main["prompt"],
-        "completion": main["completion"],
-        "total": main["total"],
-        "cached": main["cached"],
-        "reasoning": main["reasoning"],
-        "duration_ms": main["duration_ms"],
-        "latency_ms": main["latency_ms"],
+        "prompt": main.prompt,
+        "completion": main.completion,
+        "total": main.total,
+        "cached": main.cached,
+        "reasoning": main.reasoning,
+        "duration_ms": main.duration_ms,
+        "latency_ms": main.latency_ms,
     }
 
 

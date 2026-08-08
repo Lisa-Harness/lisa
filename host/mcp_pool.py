@@ -26,6 +26,7 @@ import dataclasses
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ from kernel.mcp_launch.compiler import compile_registry
 from kernel.mcp_launch.policy import MCPServerRegistry
 from kernel.mcp_launch.server_manifest import (
     MCPServerManifestError,
+    MemoryBackendConfig,
     load_mcp_server_manifest,
 )
 from kernel.pack_activation import load_disabled_pack_names, normalize_pack_name
@@ -571,7 +573,7 @@ def compile_mcp_configs(
     excluded_pack_servers |= session_exclude_servers
     used_pack_slugs: set[str] = set()
     memory_owner_slug: str | None = None
-    memory_candidates: list[dict[str, Any]] = []
+    memory_candidates: list[MemoryProviderCandidate] = []
     for root in roots:
         pack_manifest_path = root / "mcp_servers.yaml"
         if not pack_manifest_path.exists():
@@ -593,12 +595,12 @@ def compile_mcp_configs(
         # is selected deterministically from host policy + lock state.
         if pack_memory.default_backend or pack_memory.backends:
             memory_candidates.append(
-                {
-                    "pack_slug": pack_slug,
-                    "package_name": pack_package_name,
-                    "manifest_path": pack_manifest_path,
-                    "memory_config": pack_memory,
-                }
+                MemoryProviderCandidate(
+                    pack_slug=pack_slug,
+                    package_name=pack_package_name,
+                    manifest_path=pack_manifest_path,
+                    memory_config=pack_memory,
+                )
             )
 
         for spec in pack_specs:
@@ -624,10 +626,10 @@ def compile_mcp_configs(
     )
 
     if selected_memory_owner is not None:
-        memory_config = selected_memory_owner["memory_config"]
-        memory_owner_slug = str(selected_memory_owner.get("pack_slug") or "") or None
-        selected_manifest = str(selected_memory_owner.get("manifest_path") or "")
-        selected_package = str(selected_memory_owner.get("package_name") or "")
+        memory_config = selected_memory_owner.memory_config
+        memory_owner_slug = selected_memory_owner.pack_slug or None
+        selected_manifest = str(selected_memory_owner.manifest_path)
+        selected_package = selected_memory_owner.package_name
         logger.info(
             "Selected memory provider owner: package=%s slug=%s manifest=%s",
             selected_package,
@@ -639,9 +641,9 @@ def compile_mcp_configs(
                 continue
             logger.info(
                 "Ignoring memory manifest from package=%s slug=%s at %s; selected owner is %s.",
-                candidate.get("package_name"),
-                candidate.get("pack_slug"),
-                candidate.get("manifest_path"),
+                candidate.package_name,
+                candidate.pack_slug,
+                candidate.manifest_path,
                 selected_package,
             )
 
@@ -698,6 +700,24 @@ def load_pack_server_exclusions(host_manifest_path: Path) -> set[str]:
     return exclusions
 
 
+@dataclass(frozen=True, slots=True)
+class MemoryProviderCandidate:
+    """One pack's memory-backend contribution + ownership metadata.
+
+    Frozen-slots dataclass so the four keys (``pack_slug``, ``package_name``,
+    ``manifest_path``, ``memory_config``) are accessed as attributes, not
+    string-keyed dict lookups. A typo in a field name is an
+    ``AttributeError`` at the call site, not a silent ``None`` from
+    ``dict.get("…")``. Mirrors the ``PackProviderGatewayEntry`` /
+    ``PackSliceProviderEntry`` pattern in the kernel.
+    """
+
+    pack_slug: str
+    package_name: str
+    manifest_path: Path
+    memory_config: MemoryBackendConfig
+
+
 def provider_identifiers_for_pack(*, package_name: str, pack_slug: str) -> set[str]:
     """Return the set of normalized identifiers that refer to one pack."""
     identifiers = {
@@ -712,9 +732,9 @@ def provider_identifiers_for_pack(*, package_name: str, pack_slug: str) -> set[s
 
 def select_capability_provider_owner(
     *,
-    candidates: list[dict[str, Any]],
+    candidates: list[MemoryProviderCandidate],
     selected_provider: str,
-) -> dict[str, Any] | None:
+) -> MemoryProviderCandidate | None:
     """Select a capability owner without any host or lock preference fallback."""
     if not candidates:
         return None
@@ -726,8 +746,8 @@ def select_capability_provider_owner(
             for candidate in candidates
             if selected
             in provider_identifiers_for_pack(
-                package_name=str(candidate.get("package_name") or ""),
-                pack_slug=str(candidate.get("pack_slug") or ""),
+                package_name=candidate.package_name,
+                pack_slug=candidate.pack_slug,
             )
         ]
         if len(matching) == 1:
@@ -805,6 +825,7 @@ def register_mcp_aliases(pool: Any) -> None:
 
 
 __all__ = [
+    "MemoryProviderCandidate",
     "build_catalog_mcp_config",
     "build_content_mcp_config",
     "build_mcp_tool_servers",

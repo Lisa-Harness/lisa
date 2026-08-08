@@ -92,6 +92,30 @@ async def test_record_memory_persists_and_returns_record(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_record_memory_derives_source_user_from_user_slug(
+    tmp_path: Path,
+) -> None:
+    """source_user_id/source_user_slug are derived from user_slug (no DB column).
+
+    Regression guard: these fields are populated by ``_row_to_record`` from the
+    single ``user_slug`` column. A future schema change that drops or renames
+    ``user_slug`` would silently produce empty ``source_user_*`` without this
+    check.
+    """
+    store = _store(tmp_path)
+
+    record = await store.record_memory(_write(user_slug="adam", content="derived user"))
+    fetched = await store.get_memory(
+        memory_id=record.id,
+        user_slug="adam",
+    )
+    assert fetched is not None
+    assert fetched.source_user_id == "adam"
+    assert fetched.source_user_slug == "adam"
+    assert fetched.user_id == "adam"
+
+
+@pytest.mark.asyncio
 async def test_record_memory_accepts_raw_dict_request(tmp_path: Path) -> None:
     """The record_memory boundary accepts both MemoryWriteRequest and dicts."""
     store = _store(tmp_path)
