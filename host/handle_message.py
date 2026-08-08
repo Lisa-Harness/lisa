@@ -838,7 +838,40 @@ async def _execute_mode_turn(
             provenance={"source": "system-verified", "finish_reason": "error"},
         )
         await transport.on_error(f"Operation error: {exc}", exc)
+        runtime.operator_signal_value = ""
         return response_text
+
+    # Clear the operator signal after the turn ends so the next turn starts
+    # clean (the signal is one-shot; the transport re-sets it on the next
+    # key press).
+    runtime.operator_signal_value = ""
+
+    # ── Operator exit handling (pause/stop/terminate) ──────────────────
+    # The kernel produces ``operator_exit`` when an operator signal or a cap
+    # path produced a PauseAction / StopAction / TerminateAction.
+    # - ``paused``: the transport holds the turn open; the next input re-enters
+    #   the same turn against the preserved WorkflowPosition. The transport
+    #   decides how to surface this (e.g. a "paused" indicator).
+    # - ``stopped``: the transport returns the prompt. The next message is a
+    #   fresh turn against the preserved position.
+    # - ``terminated``: the transport returns the prompt. The workflow is
+    #   marked complete; the next message is a fresh turn with no workflow.
+    # The kernel handles checkpoint stamping and WorkflowPosition marking;
+    # the host only needs to surface the exit to the transport.
+    _operator_exit = getattr(result, "operator_exit", "")
+    if _operator_exit:
+        if _operator_exit == "paused":
+            _log.info(
+                "handle_message: turn paused by operator (mode=%s)", mode.mode_id
+            )
+        elif _operator_exit == "stopped":
+            _log.info(
+                "handle_message: turn stopped by operator (mode=%s)", mode.mode_id
+            )
+        elif _operator_exit == "terminated":
+            _log.info(
+                "handle_message: turn terminated by operator (mode=%s)", mode.mode_id
+            )
 
     # Apply token usage accounting.
     # Sync the runtime's stage from the result's terminal transition so the

@@ -828,4 +828,10 @@ def build_turn_hooks(
         workflow_position=lambda: runtime._workflow_position,
         workflow_position_updater=runtime._set_workflow_position,
         on_checkpoint=runtime._on_checkpoint,
+        # ── Operator signal (pause/stop/terminate) ──────────────────────
+        # The transport sets ``runtime.operator_signal_value`` from a key
+        # binding; the kernel polls it once per iteration. ``None`` would
+        # mean the host does not expose operator signals (zero overhead);
+        # we always wire it so every transport can participate.
+        operator_signal=lambda: runtime.operator_signal_value,
     )

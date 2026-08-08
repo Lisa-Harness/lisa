@@ -207,6 +207,13 @@ class HostRuntime:
         # below once the store is constructed.
         self._workflow_position: Any = None
 
+        # ── Operator signal (pause/stop/terminate) ──────────────────────
+        # The transport sets this to one of "", "pause", "stop", "terminate"
+        # when the operator presses the corresponding key binding. The turn
+        # loop polls it via ``TurnHooks.operator_signal`` once per iteration.
+        # The kernel clears it (via the transport) after the turn ends.
+        self.operator_signal_value: str = ""
+
         # ── State snapshot ────────────────────────────────────────────
         self._state_snapshot: dict[str, Any] | None = None
 
