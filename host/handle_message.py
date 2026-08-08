@@ -965,7 +965,10 @@ async def _execute_mode_turn(
     if runtime.config.debug:
         await transport.on_debug_context(run_context)
 
-    return result.response_text
+    return HostCommandResult(
+        text=result.response_text,
+        operator_exit=getattr(result, "operator_exit", ""),
+    )
 
 
 def _handle_unsupported_mode(

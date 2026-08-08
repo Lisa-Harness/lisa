@@ -51,8 +51,14 @@ class HostCommandResult:
     ``handle_message`` returns this for every turn. Transport hosts render
     ``text`` to the user; ``data`` is available for richer UI rendering
     (e.g. web SSE payloads).
+
+    ``operator_exit`` carries the pause/stop/terminate discriminator when the
+    turn ended via an operator signal or a cap path that degrades to one. The
+    transport reads it to decide whether to return the prompt (stop/terminate)
+    or hold the turn open (pause). Empty string for normal turns.
     """
 
     text: str
     data: dict[str, Any] | None = None
     is_error: bool = False
+    operator_exit: str = ""
