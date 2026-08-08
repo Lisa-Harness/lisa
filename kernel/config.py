@@ -240,65 +240,6 @@ class Settings(BaseSettings):
         "medium": 0.5,
         "high": 1.0,
     }
-    # Per-``UnifiedState``-field descriptors for state-summary context
-    # candidates. Keys must exactly match the vibe/compact-summary fields on
-    # ``UnifiedState`` (``thinking_vibe``, ``strategy_vibe``,
-    # ``capability_manifest_summary``, ``architecture_vibe``,
-    # ``self_model_vibe``, ``reflection_vibe``). Each value carries the
-    # source_id, evidence_type, title, provenance (a ``ContextProvenance``
-    # literal), confidence, and salience used to build a mapper candidate.
-    # Override via ``CONTEXT_MAPPER_STATE_SUMMARY_DESCRIPTORS`` as a JSON
-    # object.
-    context_mapper_state_summary_descriptors: dict[str, dict[str, object]] = {
-        "self_model_vibe": {
-            "source_id": "self_model",
-            "evidence_type": "runtime_self_model",
-            "title": "Runtime self-model",
-            "provenance": "system_observed",
-            "confidence": 1.0,
-            "salience": 0.8,
-        },
-        "capability_manifest_summary": {
-            "source_id": "capabilities",
-            "evidence_type": "live_capabilities",
-            "title": "Live capabilities",
-            "provenance": "authoritative",
-            "confidence": 1.0,
-            "salience": 0.8,
-        },
-        "architecture_vibe": {
-            "source_id": "architecture",
-            "evidence_type": "architecture_summary",
-            "title": "Architecture summary",
-            "provenance": "authoritative",
-            "confidence": 0.9,
-            "salience": 0.55,
-        },
-        "thinking_vibe": {
-            "source_id": "thinking",
-            "evidence_type": "reflection",
-            "title": "Reasoning reflection",
-            "provenance": "inferred",
-            "confidence": 0.6,
-            "salience": 0.45,
-        },
-        "strategy_vibe": {
-            "source_id": "strategy",
-            "evidence_type": "strategy_reflection",
-            "title": "Strategy reflection",
-            "provenance": "inferred",
-            "confidence": 0.6,
-            "salience": 0.45,
-        },
-        "reflection_vibe": {
-            "source_id": "reflection",
-            "evidence_type": "reflection",
-            "title": "Reflection",
-            "provenance": "inferred",
-            "confidence": 0.6,
-            "salience": 0.45,
-        },
-    }
 
     # ── Conversation digest ─────────────────────────────────────────────
     conversation_digest_enabled: bool = True
@@ -375,64 +316,7 @@ class Settings(BaseSettings):
                 "context_mapper_conflict_penalty keys must match the "
                 "ContextConflictRisk literals exactly (" + "; ".join(details) + ")"
             )
-        self._validate_state_summary_descriptors(required_provenance)
         return self
-
-    def _validate_state_summary_descriptors(
-        self,
-        required_provenance: set[str],
-    ) -> None:
-        """Validate the state-summary descriptor map's keys and provenance."""
-        required_summary_fields = {
-            "thinking_vibe",
-            "strategy_vibe",
-            "capability_manifest_summary",
-            "architecture_vibe",
-            "self_model_vibe",
-            "reflection_vibe",
-        }
-        descriptor_keys = {
-            "source_id",
-            "evidence_type",
-            "title",
-            "provenance",
-            "confidence",
-            "salience",
-        }
-        summary_keys = set(self.context_mapper_state_summary_descriptors)
-        missing_summary = required_summary_fields - summary_keys
-        extra_summary = summary_keys - required_summary_fields
-        if missing_summary or extra_summary:
-            details = []
-            if missing_summary:
-                details.append("missing: " + ", ".join(sorted(missing_summary)))
-            if extra_summary:
-                details.append("extra: " + ", ".join(sorted(extra_summary)))
-            raise ValueError(
-                "context_mapper_state_summary_descriptors keys must match the "
-                "UnifiedState summary fields exactly (" + "; ".join(details) + ")"
-            )
-        for field_name, descriptor in self.context_mapper_state_summary_descriptors.items():
-            keys = set(descriptor)
-            if keys != descriptor_keys:
-                details = []
-                missing = descriptor_keys - keys
-                if missing:
-                    details.append("missing: " + ", ".join(sorted(missing)))
-                extra = keys - descriptor_keys
-                if extra:
-                    details.append("extra: " + ", ".join(sorted(extra)))
-                raise ValueError(
-                    f"context_mapper_state_summary_descriptors[{field_name}] "
-                    "must carry exactly the source_id, evidence_type, title, "
-                    "provenance, confidence, salience keys (" + "; ".join(details) + ")"
-                )
-            if descriptor["provenance"] not in required_provenance:
-                raise ValueError(
-                    f"context_mapper_state_summary_descriptors[{field_name}].provenance "
-                    f"must be a ContextProvenance literal, got "
-                    f"{descriptor['provenance']!r}"
-                )
 
     @staticmethod
     def _strip_inline_comment(value: object) -> object:

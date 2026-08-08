@@ -45,10 +45,10 @@ class SignalCollector(ABC, Generic[SnapshotT]):
     collector_id: str
     display_name: str
     intel_collection_key: str | None = None
-    """If set, the bottom-half tick will write the collector's snapshot
-    into ``UnifiedState.intel_collections[intel_collection_key]`` after each
-    successful or error collection run. Collectors that do not need to
-    populate intel_collections leave this as ``None``."""
+    """If set, the bottom-half tick will convert the collector's snapshot
+    into a ``ContextEvidence`` record in ``context_evidence_catalog``
+    after each successful or error collection run. Collectors that do not
+    need to contribute signal evidence leave this as ``None``."""
 
     def missing_configuration(self) -> list[str]:
         """Return list of missing environment variables or settings required to run.

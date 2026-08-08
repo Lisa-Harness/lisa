@@ -38,12 +38,11 @@ from pathlib import Path
 from typing import Any
 
 from kernel.models import (
-    AnomalyAlert,
+    ContextEvidence,
     ContextRoutingConfig,
-    DomainKnowledgeArtifact,
-    IntelCollection,
     UnifiedState,
 )
+from kernel.seams.protocols import ExtensionEvidenceBuilder
 from kernel.slice import SliceOutcome
 from pydantic import ValidationError
 
@@ -57,15 +56,18 @@ def build_unified_state(
     *,
     state_snapshot: dict[str, Any] | None,
     context_routing: ContextRoutingConfig | None = None,
+    evidence_builder: ExtensionEvidenceBuilder | None = None,
+    runtime_context: Any = None,
 ) -> UnifiedState:
     """Return a compiled :class:`UnifiedState` for operations and the context mapper.
 
     Builds the state from the dict-based ``state_snapshot`` (loaded via
-    ``--state-snapshot``), populating ``signal_snapshots``,
-    ``intel_collections``, ``active_alerts``, and ``domain_knowledge`` from
-    the snapshot's keys. The session-owned context mapper then walks these
-    fields plus extension-contributed evidence to produce ranked, lane-ordered
-    context without a live MCP round-trip.
+    ``--state-snapshot``). Intake-produced context evidence (signals, intel,
+    alerts) is merged with hook-produced extension evidence
+    (``evidence_builder.build_extension_context_evidence(runtime_context, state)``)
+    into ``context_evidence_catalog`` — the single feed the session-owned
+    context mapper walks to produce ranked, lane-ordered context without a
+    live MCP round-trip.
 
     Returns an empty :class:`UnifiedState` when ``state_snapshot`` is
     ``None`` or falsy.
@@ -73,36 +75,43 @@ def build_unified_state(
     compiled_at = datetime.now(UTC).isoformat()
     snapshot = state_snapshot
     if not snapshot:
-        return UnifiedState(compiled_at=compiled_at, context_routing=context_routing)
+        state = UnifiedState(compiled_at=compiled_at, context_routing=context_routing)
+    else:
+        state = UnifiedState(
+            compiled_at=str(
+                snapshot.get("compiled_at") or snapshot.get("generated_at") or compiled_at
+            ),
+            context_routing=context_routing,
+        )
+        # Intake-produced context evidence (signals, intel, alerts,
+        # self_model) is the single feed. No arbitrary named buckets.
+        state.context_evidence_catalog = _coerce_evidence(
+            snapshot.get("context_evidence_catalog")
+        )
 
-    state = UnifiedState(
-        compiled_at=str(snapshot.get("compiled_at") or snapshot.get("generated_at") or compiled_at),
-        context_routing=context_routing,
-    )
-
-    raw_signals = snapshot.get("signal_snapshots")
-    if isinstance(raw_signals, dict):
-        state.signal_snapshots = raw_signals
-
-    state.active_alerts = _coerce_alerts(snapshot.get("active_alerts"))
-    state.intel_collections = _coerce_intel(snapshot.get("intel_collections"))
-    state.domain_knowledge = _coerce_domain(snapshot.get("domain_knowledge"))
-
-    thinking = snapshot.get("thinking_vibe")
-    if isinstance(thinking, str) and thinking.strip():
-        state.thinking_vibe = thinking.strip()
-
-    strategy = snapshot.get("strategy_vibe")
-    if isinstance(strategy, str) and strategy.strip():
-        state.strategy_vibe = strategy.strip()
-
-    self_model_vibe = snapshot.get("self_model_vibe")
-    if isinstance(self_model_vibe, str) and self_model_vibe.strip():
-        state.self_model_vibe = self_model_vibe.strip()
-
-    reflection_vibe = snapshot.get("reflection_vibe")
-    if isinstance(reflection_vibe, str) and reflection_vibe.strip():
-        state.reflection_vibe = reflection_vibe.strip()
+    # Invoke the extension evidence hook so installed packs contribute
+    # ContextEvidence records (self_model, Cloudflare, GitHub, Stripe, etc.).
+    # The hook is the only coupling between packs and the host context path.
+    if evidence_builder is not None:
+        try:
+            contributed = evidence_builder.build_extension_context_evidence(
+                runtime_context, state
+            )
+        except Exception:  # pylint: disable=broad-except
+            logger.warning(
+                "extension evidence builder raised; continuing with intake evidence only.",
+                exc_info=True,
+            )
+            contributed = []
+        if contributed:
+            existing_ids = {e.evidence_id for e in state.context_evidence_catalog}
+            for item in contributed:
+                if not isinstance(item, ContextEvidence):
+                    continue
+                if item.evidence_id in existing_ids:
+                    continue
+                state.context_evidence_catalog.append(item)
+                existing_ids.add(item.evidence_id)
 
     return state
 
@@ -152,46 +161,17 @@ def load_state_snapshot(
     return decoded
 
 
-def _coerce_alerts(raw_alerts: Any) -> list[AnomalyAlert]:
-    """Coerce a raw list of alert dicts into a list of :class:`AnomalyAlert`."""
-    if not isinstance(raw_alerts, list):
+def _coerce_evidence(raw_evidence: Any) -> list[ContextEvidence]:
+    """Coerce a raw list of evidence dicts into a list of :class:`ContextEvidence`."""
+    if not isinstance(raw_evidence, list):
         return []
     try:
         return [
-            a if isinstance(a, AnomalyAlert) else AnomalyAlert.model_validate(a) for a in raw_alerts
+            e if isinstance(e, ContextEvidence) else ContextEvidence.model_validate(e)
+            for e in raw_evidence
         ]
     except (ValidationError, TypeError):
         return []
-
-
-def _coerce_intel(raw_intel: Any) -> dict[str, IntelCollection]:
-    """Coerce a raw dict of intel entries into ``dict[str, IntelCollection]``."""
-    if not isinstance(raw_intel, dict):
-        return {}
-    try:
-        return {
-            k: v if isinstance(v, IntelCollection) else IntelCollection.model_validate(v)
-            for k, v in raw_intel.items()
-        }
-    except (ValidationError, TypeError):
-        return {}
-
-
-def _coerce_domain(raw_domain: Any) -> dict[str, DomainKnowledgeArtifact]:
-    """Coerce a raw dict of domain-knowledge entries into ``dict[str, DomainKnowledgeArtifact]``."""
-    if not isinstance(raw_domain, dict):
-        return {}
-    try:
-        return {
-            k: (
-                v
-                if isinstance(v, DomainKnowledgeArtifact)
-                else DomainKnowledgeArtifact.model_validate(v)
-            )
-            for k, v in raw_domain.items()
-        }
-    except (ValidationError, TypeError):
-        return {}
 
 
 def _slice_budget_expired(policy: Any, started: float) -> bool:

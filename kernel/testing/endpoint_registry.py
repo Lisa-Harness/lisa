@@ -55,7 +55,7 @@ REGISTRY: list[Endpoint] = [
         description=(
             "Stateless external monitor (e.g. Cloudflare, GitHub, Stripe). "
             "Each collector returns a typed Pydantic snapshot that the "
-            "bottom-half tick caches in ``UnifiedState.signal_snapshots``."
+            "bottom-half tick converts to a ``ContextEvidence`` record."
         ),
     ),
     Endpoint(

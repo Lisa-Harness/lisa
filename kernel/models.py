@@ -946,23 +946,7 @@ class DomainKnowledgeArtifact(BaseModel):
 class UnifiedState(BaseModel):
     compiled_at: str
     context_routing: ContextRoutingConfig | None = None
-    signal_snapshots: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    intel_collections: dict[str, IntelCollection] = Field(default_factory=dict)
-    intel_analysis: dict[str, IntelSynthesis] = Field(default_factory=dict)
-    intel_memory: dict[str, IntelMemoryArtifact] = Field(default_factory=dict)
-    domain_knowledge: dict[str, DomainKnowledgeArtifact] = Field(default_factory=dict)
-    dev_state: DevState | None = None
-    active_alerts: list[AnomalyAlert] = Field(default_factory=list)
-    collector_runs: dict[str, SignalCollectorRun] = Field(default_factory=dict)
     context_evidence_catalog: list[ContextEvidence] = Field(default_factory=list)
-    context_markdown: str = ""  # pre-rendered markdown context for prompt injection
-    thinking_vibe: str = ""
-    strategy_vibe: str = ""
-    # Compact runtime capability and architecture pointers for help/routing context.
-    capability_manifest_summary: str = ""
-    architecture_vibe: str = ""
-    self_model_vibe: str = ""
-    reflection_vibe: str = ""
 
 
 # ---------------------------------------------------------------------------

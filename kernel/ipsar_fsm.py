@@ -158,44 +158,6 @@ def _known_connector_ids() -> frozenset[str]:
     return frozenset(discover_installed_signal_collectors())
 
 
-def _format_connector_snapshot_value(value: Any) -> str:
-    """Render one connector snapshot scalar without domain-specific assumptions."""
-
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, float):
-        return f"{value:.2f}".rstrip("0").rstrip(".")
-    return str(value)
-
-
-def _render_connector_snapshot_summary(snapshot: Any) -> str:
-    """Render one connector snapshot generically from its serialized mapping."""
-
-    if not isinstance(snapshot, Mapping):
-        return "present"
-
-    parts: list[str] = []
-    status = snapshot.get("status")
-    if isinstance(status, str) and status:
-        parts.append(f"status={status.upper()}")
-
-    for key, value in snapshot.items():
-        if key in {"status", "collected_at", "generated_at", "updated_at"}:
-            continue
-        if value is None or value == "":
-            continue
-        if isinstance(value, (str, int, float, bool)):
-            parts.append(f"{key}={_format_connector_snapshot_value(value)}")
-        elif isinstance(value, Mapping):
-            parts.append(f"{key}={len(value)} fields")
-        elif isinstance(value, list):
-            parts.append(f"{key}={len(value)} items")
-        if len(parts) >= 5:
-            break
-
-    return " | ".join(parts) if parts else "present"
-
-
 def _get_operation_catalog() -> dict[str, Any]:
     """Return the operation catalog via the injected callback."""
     if _get_operation_catalog_fn is None:
@@ -1499,49 +1461,6 @@ def get_routing_targets(
     """
     transitions = synthesize_routing_transitions(catalog)
     return transitions.get(mode_id, [])
-
-
-
-
-
-def get_stage_config(position: WorkflowPosition) -> WorkflowStageConfig:
-    """Return stage config for an active workflow position."""
-    mode = get_workflow_catalog()[position.mode_id]
-    return mode.stages[position.stage_id]
-
-
-def get_required_connectors_for_stage(position: WorkflowPosition) -> list[str]:
-    """Return connector IDs needed for the active stage's context payload."""
-    return list(get_stage_config(position).required_connectors)
-
-
-def build_filtered_live_context(
-    state: UnifiedState,
-    connectors: list[str],
-) -> str:
-    """Render stage-scoped telemetry markdown from the full unified state payload."""
-    lines = [f"- Snapshot compiled at: {state.compiled_at}"]
-    connector_metadata = discover_installed_signal_collectors()
-
-    for connector_id in connectors:
-        display_name = connector_metadata.get(
-            connector_id,
-            connector_id.replace("_", " ").title(),
-        )
-        if not isinstance(display_name, str):
-            display_name = display_name.display_name
-        snapshot = state.signal_snapshots.get(connector_id)
-        if snapshot is None:
-            lines.append(f"- {display_name}: unavailable")
-            continue
-        lines.append(f"- {display_name}: {_render_connector_snapshot_summary(snapshot)}")
-
-    if state.active_alerts:
-        lines.append(f"- Active alerts: {len(state.active_alerts)}")
-    else:
-        lines.append("- Active alerts: none")
-
-    return "\n".join(lines)
 
 
 def get_transition_tool_schema() -> list[dict[str, object]]:

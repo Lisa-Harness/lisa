@@ -149,12 +149,15 @@ def context_candidates_from_evidence(
 def context_candidates_from_unified_state(
     state: UnifiedState,
 ) -> tuple[ContextCandidate, ...]:
-    """Normalize the currently-supported ``UnifiedState`` fields to candidates.
+    """Normalize the ``UnifiedState`` context-evidence catalog to candidates.
 
     This is intentionally a data adapter, not a ranking path. It preserves
-    raw evidence and turns host-observed state into immutable descriptors for
-    the session-owned mapper. Additional live sources (history, capabilities,
-    operations, and memory providers) can join the same candidate input later.
+    raw evidence from the single ``context_evidence_catalog`` feed —
+    intake-produced (signals, intel, alerts) and hook-produced (self_model,
+    pack extensions) — and hands the immutable descriptors to the
+    session-owned mapper. Additional live sources (history, capabilities,
+    operations, and memory providers) can join the same candidate input
+    later.
     """
 
     compiled_at = _parse_timestamp(state.compiled_at)
@@ -167,111 +170,8 @@ def context_candidates_from_unified_state(
             default_collected_at=compiled_at,
         )
     )
-    candidates.extend(_candidates_from_alerts(state, compiled_at))
-    candidates.extend(_candidates_from_domain_knowledge(state, compiled_at))
-    candidates.extend(_candidates_from_state_summaries(state, compiled_at))
     _require_unique_candidate_ids(candidates)
     return tuple(sorted(candidates, key=lambda candidate: candidate.candidate_id))
-
-
-def _candidates_from_alerts(
-    state: UnifiedState,
-    compiled_at: datetime,
-) -> list[ContextCandidate]:
-    candidates: list[ContextCandidate] = []
-    severity_salience = {"critical": 1.0, "warn": 0.85, "info": 0.65}
-    for alert in state.active_alerts:
-        source_id = alert.source.strip() or "system"
-        message = alert.message.strip()
-        if not message:
-            continue
-        observed_at = _parse_timestamp(alert.detected_at, compiled_at)
-        severity = alert.severity.strip().lower() or "info"
-        identifier = _stable_identifier(source_id, alert.detected_at, message)
-        candidates.append(
-            ContextCandidate(
-                candidate_id=f"state:alert:{identifier}",
-                source_id=source_id,
-                source_ref=f"unified_state:active_alerts:{identifier}",
-                source_kind="alert",
-                evidence_type="alert",
-                title=f"{severity.title()} alert from {source_id}",
-                content=message,
-                provenance="system_observed",
-                authority=1.0,
-                confidence=0.95,
-                salience=severity_salience.get(severity, 0.5),
-                collected_at=observed_at,
-                tags=("alert", severity, source_id),
-            )
-        )
-    return candidates
-
-
-def _candidates_from_domain_knowledge(
-    state: UnifiedState,
-    compiled_at: datetime,
-) -> list[ContextCandidate]:
-    candidates: list[ContextCandidate] = []
-    confidence_by_status = {"ok": 0.9, "warning": 0.65, "error": 0.3, "unconfigured": 0.2}
-    for domain_id, artifact in sorted(state.domain_knowledge.items()):
-        body = artifact.prompt_context_markdown.strip()
-        if not body:
-            body = "\n".join(
-                f"- {bullet.strip()}" for bullet in artifact.summary_bullets if bullet.strip()
-            )
-        if not body:
-            continue
-        artifact_id = artifact.artifact_id.strip() or domain_id
-        collected_at = _parse_timestamp(artifact.generated_at, compiled_at)
-        candidates.append(
-            ContextCandidate(
-                candidate_id=f"state:domain_knowledge:{artifact_id}",
-                source_id=domain_id,
-                source_ref=f"unified_state:domain_knowledge:{domain_id}",
-                source_kind="domain_knowledge",
-                evidence_type="domain_knowledge",
-                title=artifact.display_name.strip() or artifact_id,
-                content=body,
-                provenance="authoritative",
-                authority=1.0,
-                confidence=confidence_by_status.get(artifact.status, 0.5),
-                salience=0.65 if artifact.status == "error" else 0.45,
-                collected_at=collected_at,
-                tags=("domain_knowledge", artifact.status, domain_id),
-            )
-        )
-    return candidates
-
-
-def _candidates_from_state_summaries(
-    state: UnifiedState,
-    compiled_at: datetime,
-) -> list[ContextCandidate]:
-    descriptors = settings.context_mapper_state_summary_descriptors
-    candidates: list[ContextCandidate] = []
-    for field_name, descriptor in sorted(descriptors.items()):
-        body = getattr(state, field_name).strip()
-        if not body:
-            continue
-        candidates.append(
-            ContextCandidate(
-                candidate_id=f"state:{field_name}",
-                source_id=str(descriptor["source_id"]),
-                source_ref=f"unified_state:{field_name}",
-                source_kind="state_summary",
-                evidence_type=str(descriptor["evidence_type"]),
-                title=str(descriptor["title"]),
-                content=body,
-                provenance=cast(ContextProvenance, descriptor["provenance"]),
-                authority=1.0,
-                confidence=float(descriptor["confidence"]),
-                salience=float(descriptor["salience"]),
-                collected_at=compiled_at,
-                tags=(field_name,),
-            )
-        )
-    return candidates
 
 
 def _require_unique_candidate_ids(candidates: list[ContextCandidate]) -> None:

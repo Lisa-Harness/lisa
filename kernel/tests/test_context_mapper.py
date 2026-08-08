@@ -14,7 +14,7 @@ from kernel.context.context_mapper import (
     context_candidates_from_unified_state,
 )
 from kernel.context.models import ContextCandidate, ContextMapperRequest
-from kernel.models import AnomalyAlert, ContextEvidence, DomainKnowledgeArtifact, UnifiedState
+from kernel.models import ContextEvidence, UnifiedState
 from kernel.session_plan import (
     ContextBudgetPlan,
     ContextLanePlan,
@@ -203,46 +203,57 @@ def test_raw_evidence_adapter_rejects_duplicate_ids_and_invalid_metadata() -> No
         context_candidates_from_evidence((invalid_provenance,))
 
 
-def test_unified_state_adapter_normalizes_alerts_domain_and_runtime_summaries() -> None:
+def test_unified_state_adapter_normalizes_evidence_catalog() -> None:
     state = UnifiedState(
         compiled_at=_NOW.isoformat(),
-        active_alerts=[
-            AnomalyAlert(
-                severity="critical",
+        context_evidence_catalog=[
+            ContextEvidence(
+                evidence_id="state:alert:cloudflare:critical",
+                namespace="alerts",
                 source="cloudflare",
-                message="Worker error rate is elevated.",
-                detected_at=_NOW.isoformat(),
-            )
+                source_type="intake",
+                evidence_type="alert",
+                title="Critical alert from cloudflare",
+                body="Worker error rate is elevated.",
+                collected_at=_NOW.isoformat(),
+                salience_score=1.0,
+                confidence=0.95,
+                tags=["alert", "critical", "cloudflare"],
+                metadata={"provenance": "system_observed"},
+            ),
+            ContextEvidence(
+                evidence_id="state:self_model:default",
+                namespace="self_model",
+                source="self_model",
+                source_type="extension",
+                evidence_type="runtime_self_model",
+                title="Self-model (health=degraded)",
+                body="Runtime health is degraded.",
+                collected_at=_NOW.isoformat(),
+                salience_score=0.8,
+                confidence=0.9,
+                pack="lisa-pack-introspect",
+                tags=["self_model", "degraded"],
+                metadata={"provenance": "system_observed"},
+            ),
         ],
-        domain_knowledge={
-            "repo": DomainKnowledgeArtifact(
-                artifact_id="repo-summary",
-                display_name="Repository summary",
-                generated_at=_NOW.isoformat(),
-                summary_bullets=["The default mode owns the user conversation."],
-            )
-        },
-        self_model_vibe="Runtime health is degraded.",
-        thinking_vibe="Investigating the active deployment alert.",
     )
 
     candidates = context_candidates_from_unified_state(state)
     by_id = {candidate.candidate_id: candidate for candidate in candidates}
-    alert = next(candidate for candidate in candidates if candidate.source_kind == "alert")
+    alert = by_id["state:alert:cloudflare:critical"]
+    self_model = by_id["state:self_model:default"]
 
     assert alert.provenance == "system_observed"
     assert alert.salience == 1.0
-    assert by_id["state:domain_knowledge:repo-summary"].provenance == "authoritative"
-    assert by_id["state:self_model_vibe"].provenance == "system_observed"
-    assert by_id["state:thinking_vibe"].provenance == "inferred"
+    assert self_model.provenance == "system_observed"
 
     result = ContextMapper().map(_request(candidates, query="cloudflare deployment alert"))
 
-    selected_by_lane = {
-        selection.candidate.source_kind: selection.lane_id for selection in result.selections
+    selected_by_type = {
+        selection.candidate.evidence_type: selection.lane_id for selection in result.selections
     }
-    assert selected_by_lane["alert"] == "operational"
-    assert selected_by_lane["domain_knowledge"] == "general"
+    assert selected_by_type["alert"] == "operational"
 
 
 def test_mapper_rejects_required_candidate_that_cannot_fit_budget() -> None:

@@ -31,40 +31,67 @@ from kernel.context.context_mapper import (
 )
 from kernel.context.models import ContextMapperRequest
 from kernel.models import (
-    AnomalyAlert,
+    ContextEvidence,
     ContextUsageEvent,
-    IntelCollection,
     UnifiedState,
 )
 from kernel.session_plan import ContextLanePlan, ContextPlan, ContextSourceRule
 
 
 def _make_populated_state() -> UnifiedState:
-    """Build a UnifiedState with alerts, intel, and domain knowledge."""
+    """Build a UnifiedState with alerts, intel, and self-model evidence."""
     now = datetime.now(UTC).isoformat()
     return UnifiedState(
         compiled_at=now,
-        active_alerts=[
-            AnomalyAlert(
-                severity="critical",
+        context_evidence_catalog=[
+            ContextEvidence(
+                evidence_id="state:alert:cloudflare:critical",
+                namespace="alerts",
                 source="cloudflare",
-                message="Worker error rate exceeded 10%",
-                detected_at=now,
+                source_type="intake",
+                evidence_type="alert",
+                title="Critical alert from cloudflare",
+                body="Worker error rate exceeded 10%",
+                collected_at=now,
+                salience_score=1.0,
+                confidence=0.95,
+                tags=["alert", "critical", "cloudflare"],
+                metadata={"provenance": "system_observed"},
+            ),
+            ContextEvidence(
+                evidence_id="state:intel:market",
+                namespace="intel",
+                source="market",
+                source_type="intake",
+                evidence_type="intel_summary",
+                title="Intel: market",
+                body="- Competitor launched new pricing tier",
+                collected_at=now,
+                salience_score=0.55,
+                confidence=0.8,
+                tags=["intel", "market"],
+                metadata={"provenance": "authoritative"},
+            ),
+            ContextEvidence(
+                evidence_id="state:self_model:default",
+                namespace="self_model",
+                source="self_model",
+                source_type="extension",
+                evidence_type="runtime_self_model",
+                title="Self-model (health=degraded)",
+                body=(
+                    "## Self Model\n"
+                    "Runtime: uptime=450s, tasks=31, threads=6, rss=512MB, health=degraded\n"
+                    "Health reasons: mcp failures: 1"
+                ),
+                collected_at=now,
+                salience_score=0.8,
+                confidence=0.9,
+                pack="lisa-pack-introspect",
+                tags=["self_model", "degraded"],
+                metadata={"provenance": "system_observed"},
             ),
         ],
-        intel_collections={
-            "market": IntelCollection(
-                generated_at=now,
-                summary_bullets=["Competitor launched new pricing tier"],
-            ),
-        },
-        thinking_vibe="Considering whether to adjust our pricing strategy",
-        strategy_vibe="Focus on developer audience segment",
-        self_model_vibe=(
-            "## Self Model\n"
-            "Runtime: uptime=450s, tasks=31, threads=6, rss=512MB, health=degraded\n"
-            "Health reasons: mcp failures: 1"
-        ),
     )
 
 

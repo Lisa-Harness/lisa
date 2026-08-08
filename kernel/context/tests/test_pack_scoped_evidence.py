@@ -46,7 +46,6 @@ def _make_state_with_extension_evidence() -> UnifiedState:
     now = datetime.now(UTC).isoformat()
     return UnifiedState(
         compiled_at=now,
-        self_model_vibe="Runtime health=ok",
         context_evidence_catalog=[
             # Kernel-core evidence: no pack field → always allowed
             ContextEvidence(
