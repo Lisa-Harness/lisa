@@ -247,8 +247,13 @@ async def handle_message(
         return resume_result
 
     # ── Model turn (mode dispatch + run_turn) ────────────────────────
+    # ``_route_model_turn`` returns a ``HostCommandResult`` on the normal
+    # turn path (so ``operator_exit`` survives) but a bare ``str`` on the
+    # early-exit paths (budget gate, unsupported mode). Normalize to a
+    # ``HostCommandResult`` so the transport always receives a string for
+    # ``on_response`` and the caller preserves ``operator_exit``.
     try:
-        response_text = await _route_model_turn(runtime, message, tport)
+        model_result = await _route_model_turn(runtime, message, tport)
     except OperationExecutionError as exc:
         await tport.on_error(f"Operation error: {exc}", exc)
         response_text = format_operation_error(exc)
@@ -261,8 +266,11 @@ async def handle_message(
         await tport.on_response(response_text)
         return HostCommandResult(text=response_text, is_error=True)
 
-    await tport.on_response(response_text)
-    return HostCommandResult(text=response_text)
+    if isinstance(model_result, HostCommandResult):
+        await tport.on_response(model_result.text)
+        return model_result
+    await tport.on_response(model_result)
+    return HostCommandResult(text=model_result)
 
 
 # ── Host command dispatch ──────────────────────────────────────────────
@@ -861,15 +869,15 @@ async def _execute_mode_turn(
     _operator_exit = getattr(result, "operator_exit", "")
     if _operator_exit:
         if _operator_exit == "paused":
-            _log.info(
+            logger.info(
                 "handle_message: turn paused by operator (mode=%s)", mode.mode_id
             )
         elif _operator_exit == "stopped":
-            _log.info(
+            logger.info(
                 "handle_message: turn stopped by operator (mode=%s)", mode.mode_id
             )
         elif _operator_exit == "terminated":
-            _log.info(
+            logger.info(
                 "handle_message: turn terminated by operator (mode=%s)", mode.mode_id
             )
 
