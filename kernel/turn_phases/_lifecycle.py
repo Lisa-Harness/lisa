@@ -104,20 +104,85 @@ class FinishAction:
     reason: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class PauseAction:
+    """Operator-initiated freeze. Break the loop WITHOUT returning the prompt.
+
+    Checkpoint ``lifecycle_state="paused"``; the ``WorkflowPosition`` is
+    preserved unchanged. The transport keeps the turn open; resume re-enters
+    the same turn against the preserved position with a fresh iteration budget.
+
+    Pause and stop write the **identical** ``CheckpointBundle`` — the only
+    difference is whether the transport returns the prompt. If the terminal
+    dies mid-pause, boot loads the paused checkpoint and the user lands in
+    the stop state (prompt returned). One durable substrate, two live-session
+    presentations.
+
+    Also the terminal action the cap paths (global iteration cap, per-step
+    exhausted with no next step, resource-budget exhausted) produce instead of
+    ``YieldAction`` — the operator did not ask a question, the kernel ran out
+    of budget. Freeze instead of surfacing "How would you like me to proceed?".
+    """
+
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class StopAction:
+    """Operator-initiated stop. Same checkpoint as pause, prompt returned.
+
+    Checkpoint ``lifecycle_state="paused"`` (same as pause); the
+    ``WorkflowPosition`` is preserved. The transport returns the prompt; the
+    next message starts a fresh turn against the preserved position.
+    """
+
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TerminateAction:
+    """Operator-initiated hard terminate. Workflow is killed.
+
+    Checkpoint ``lifecycle_state="terminated"`` for audit/``/undo`` only (no
+    resume). Mark the ``WorkflowPosition`` complete (clear ``current_step_id``)
+    before building the checkpoint so the persisted snapshot reflects the
+    termination. The transport returns the prompt; the next message is a
+    fresh turn with no active workflow.
+
+    Also the terminal action the action-mode cap last resort produces instead
+    of silently finishing — pausing would hang an action mode that cannot
+    resume, so terminate is the honest answer.
+    """
+
+    reason: str = ""
+
+
 # ``YieldAction`` (from kernel.models) is the fourth variant — reused directly
 # so the durable checkpoint contract and the loop-control union share one type.
 
 
-LifecycleAction = ContinueAction | TransitionAction | YieldAction | FinishAction
-"""The four terminal/continuation actions the harness and model share.
+LifecycleAction = (
+    ContinueAction
+    | TransitionAction
+    | YieldAction
+    | FinishAction
+    | PauseAction
+    | StopAction
+    | TerminateAction
+)
+"""The terminal/continuation actions the harness, the model, and the operator share.
 
 - ``ContinueAction``: keep iterating (the model wants to call tools).
 - ``TransitionAction``: hand off to another mode (the model called
   ``transition_stage``, or the resolver forced a handoff on budget/stall).
 - ``YieldAction``: pause and ask the user a question (the model emitted
-  ``yield``, or the resolver forced a yield on cap/stall). Terminal — breaks
-  the loop like ``FinishAction``.
+  ``yield``, or the resolver forced a yield on a recovery stall). Terminal —
+  breaks the loop like ``FinishAction``.
 - ``FinishAction``: produce final output and end the turn.
+- ``PauseAction``: operator freeze — checkpoint paused, no prompt returned.
+- ``StopAction``: operator stop — same checkpoint as pause, prompt returned.
+- ``TerminateAction``: operator terminate — checkpoint terminated (audit
+  only), workflow marked complete, prompt returned.
 """
 
 
@@ -213,6 +278,11 @@ class _TurnStateView:
     forced_action_non_compliant_dispatches: int = 0
     # Handoff-loop backstop: total mid-turn mode handoffs this turn.
     handoff_count: int = 0
+    # Operator-initiated terminal signal (Phase: pause/stop/terminate).
+    # One of ``""``, ``"pause"``, ``"stop"``, ``"terminate"``. Empty means no
+    # operator signal is pending; the resolver ignores it. Polled once per
+    # iteration by the turn loop from ``TurnHooks.operator_signal``.
+    operator_signal: str = ""
 
 
 def _has_next_step(position: _WorkflowPositionLike | None) -> bool:
@@ -371,9 +441,24 @@ def resolve_lifecycle_action(
     The resolver never injects a ``user`` message (that was the old collage's
     mistake — it made "ask" indistinguishable from "done"). Nudges are advisory
     strings carried on ``ContinueAction`` for the lifecycle briefing; forces
-    are terminal ``YieldAction`` / ``TransitionAction`` / ``FinishAction``.
+    are terminal ``YieldAction`` / ``TransitionAction`` / ``FinishAction`` /
+    ``PauseAction`` / ``StopAction`` / ``TerminateAction``.
     """
-    # ── 1. Router decision (highest priority) ──────────────────────────
+    # ── 0. Operator signal (highest priority) ──────────────────────────
+    # The operator is the highest authority: pause/stop/terminate override
+    # the router decision and every cap path. Pause and stop share one
+    # checkpoint (``lifecycle_state="paused"``); the difference is whether
+    # the transport returns the prompt. Terminate marks the workflow
+    # complete and writes a ``terminated`` checkpoint for audit/``/undo``.
+    _op = state.operator_signal
+    if _op == "pause":
+        return PauseAction(reason="operator pause")
+    if _op == "stop":
+        return StopAction(reason="operator stop")
+    if _op == "terminate":
+        return TerminateAction(reason="operator terminate")
+
+    # ── 1. Router decision ──────────────────────────────────────────────
     if router_decision is not None:
         if getattr(router_decision, "finish", "").strip():
             return FinishAction(
@@ -455,46 +540,44 @@ def resolve_lifecycle_action(
             forced=True,
         )
 
-    # ── 3. Global iteration cap (the only true ceiling) ─────────────────
+    # ── 3. Global iteration cap (the only true ceiling) ────────────────
+    # Caps pause, they do not yield. The operator did not ask a question;
+    # the kernel ran out of budget. Freeze the turn in place with a paused
+    # checkpoint so the operator can resume for a fresh budget, or stop /
+    # terminate. The old "How would you like me to proceed?" question is
+    # gone — only model-emitted yields and recovery stalls surface a
+    # question.
     if state.iteration >= settings.max_tool_iterations:
         if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
-            target = _resolve_yield_target(mode_yield_policy, position=workflow_position)
-            question = (
-                mode_yield_policy.default_question
-                or "I've hit my iteration budget for this turn. How would you like me to proceed?"
+            return PauseAction(
+                reason=(
+                    f"iteration cap {settings.max_tool_iterations} reached"
+                ),
             )
-            return YieldAction(
-                question=question,
-                context=f"iteration cap {settings.max_tool_iterations} reached",
-                target_mode_id=target,
-            )
-        # Action mode with no yield escape: preserve the old truncate as the
-        # last resort (don't hang the turn).
-        return FinishAction(
-            strip_tools=True,
-            reason=f"iteration cap {settings.max_tool_iterations} (action mode, no yield)",
+        # Action mode with no yield escape: pausing would hang a mode that
+        # cannot resume. Terminate is the honest answer — mark the workflow
+        # done, checkpoint for audit, return the prompt. The old silent
+        # truncate (FinishAction) is gone; the operator gets a real terminal
+        # state they can see.
+        return TerminateAction(
+            reason=(
+                f"iteration cap {settings.max_tool_iterations} "
+                f"(action mode, no yield escape)"
+            ),
         )
 
-    # ── 3b. Resource-budget exhaustion (Phase 4) ────────────────────────
-    # The TurnBudget (tool calls / tokens / wall time) is exhausted. Forces
-    # a yield so the user can redirect, instead of a truncated response.
-    # When no TurnBudget is wired (the common case), ``budget_exhausted``
-    # is False and this is a no-op.
+    # ── 3b. Resource-budget exhaustion (Phase 4) ────────────────────
+    # The TurnBudget (tool calls / tokens / wall time) is exhausted. Pause
+    # so the operator can resume for a fresh budget, instead of surfacing a
+    # question or truncating. When no TurnBudget is wired (the common case),
+    # ``budget_exhausted`` is False and this is a no-op.
     if state.budget_exhausted:
         if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
-            target = _resolve_yield_target(mode_yield_policy, position=workflow_position)
-            question = (
-                mode_yield_policy.default_question
-                or "I've hit a resource budget for this turn. How would you like me to proceed?"
+            return PauseAction(
+                reason="turn budget exhausted (tool calls / tokens / wall time)",
             )
-            return YieldAction(
-                question=question,
-                context="turn budget exhausted (tool calls / tokens / wall time)",
-                target_mode_id=target,
-            )
-        return FinishAction(
-            strip_tools=True,
-            reason="turn budget exhausted (action mode, no yield)",
+        return TerminateAction(
+            reason="turn budget exhausted (action mode, no yield escape)",
         )
 
     # ── 4. Per-step budget exhausted ────────────────────────────────────
@@ -523,28 +606,23 @@ def resolve_lifecycle_action(
     # ``turns_in_stage`` is fed uniformly by the loop: the workflow
     # session's per-stage turn count for workflow modes, the per-step
     # iteration counter (reset on every ``transition_stage``) for
-    # chat/action modes. One counter, one cap, one yield. The cap forces a
-    # yield, not a silent final — the 2026-07-30 "loop max guard 6" fix,
-    # now covering the chat-mode case the 2026-08-05 markdown burn exposed.
+    # chat/action modes. One counter, one cap. The cap pauses the turn —
+    # the operator can resume, stop, or terminate. The old 2026-07-30
+    # "loop max guard 6" fix (yield, don't truncate) is now a pause: same
+    # state preservation, no spurious question, now covering the
+    # chat-mode case the 2026-08-05 markdown burn exposed.
     if state.turns_in_stage >= settings.stage_nudge_cap:
         if mode_yield_policy.allowed or mode_yield_policy.fallback_mode:
-            target = _resolve_yield_target(mode_yield_policy, position=workflow_position)
-            question = mode_yield_policy.default_question or (
-                f"I've been working in {mode_id} for {state.turns_in_stage} iterations "
-                f"and haven't advanced. Can you clarify what you need?"
-            )
-            return YieldAction(
-                question=question,
-                context=(
-                    f"stuck in {mode_id} for {state.turns_in_stage} iterations (cap)"
+            return PauseAction(
+                reason=(
+                    f"stuck in {mode_id} for {state.turns_in_stage} "
+                    f"iterations (cap)"
                 ),
-                target_mode_id=target,
             )
-        return FinishAction(
-            strip_tools=True,
+        return TerminateAction(
             reason=(
                 f"stuck in {mode_id} for {state.turns_in_stage} iterations "
-                f"(action mode, no yield)"
+                f"(action mode, no yield escape)"
             ),
         )
 

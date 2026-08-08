@@ -656,6 +656,22 @@ class TurnResult:
     """True when the transition moved the session to a terminal stage. The
     loop forces one final no-tools completion using the terminal stage's
     instruction as the system prompt so the model produces a closing summary."""
+    operator_exit: Literal["", "paused", "stopped", "terminated"] = ""
+    """When the turn ended via an operator signal (pause/stop/terminate) or a
+    cap path that degrades to one, the discriminator the transport reads to
+    decide whether to return the prompt.
+
+    - ``""``: not an operator exit (normal finish, model yield, or error).
+    - ``"paused"``: operator paused OR a cap path froze the turn. The
+      transport holds the turn open — no prompt returned. Resume re-enters
+      the same turn against the preserved ``WorkflowPosition`` with a fresh
+      iteration budget.
+    - ``"stopped"``: operator stopped. Same checkpoint as pause, but the
+      transport returns the prompt.
+    - ``"terminated"``: operator terminated OR an action-mode cap last
+      resort. The workflow is marked complete; the transport returns the
+      prompt.
+    """
     yielded: YieldAction | None = None
     """The unified-lifecycle ``YieldAction`` when this turn terminated by
     yielding (asking the user a question), ``None`` when it finished cleanly.
@@ -1130,6 +1146,26 @@ class TurnHooks:
     turn. Default: None (no stage telemetry; the host's own
     ``complete_live`` stage callbacks still fire separately when the
     provider streaming mode is ``stage``/``hybrid``)."""
+
+    # ── Operator signals ────────────────────────────────────────────────
+    operator_signal: Callable[[], Literal["", "pause", "stop", "terminate"]] | None = None
+    """Poll the host for an operator-initiated pause/stop/terminate signal.
+
+    Called once per iteration at the top of the turn loop, before the
+    lifecycle resolver. Returns one of ``""`` (no signal), ``"pause"``,
+    ``"stop"``, ``"terminate"``. When ``None`` (the host did not wire it),
+    the loop never polls — zero overhead for hosts that do not expose
+    operator signals.
+
+    The signal is *terminal* — the resolver produces a ``PauseAction`` /
+    ``StopAction`` / ``TerminateAction`` on the iteration it is observed,
+    the loop breaks before the model call, and the checkpoint is stamped
+    ``lifecycle_state="paused"`` (pause/stop) or ``"terminated"``
+    (terminate). The model never sees the signal; it is not a tool. In-flight
+    tool dispatches from the prior iteration complete before the loop breaks
+    at the next iteration boundary (the poll is at the top of the loop, not
+    mid-``await``).
+    """
 
 
 # ── Streaming adapter ──────────────────────────────────────────────────────
@@ -3347,6 +3383,17 @@ async def _run_turn_inner(
     # calls"). ``None`` means no forced yield is pending; the model works
     # normally.
     _pending_yield: YieldAction | None = None
+    # Operator-exit discriminator (Phase: pause/stop/terminate). Set when the
+    # resolver produced a ``PauseAction`` / ``StopAction`` / ``TerminateAction``
+    # (operator signal OR a cap path that degrades to one). The transport
+    # reads ``TurnResult.operator_exit`` to decide whether to return the
+    # prompt. ``""`` means not an operator exit.
+    _pending_operator_exit: Literal["", "paused", "stopped", "terminated"] = ""
+    # Checkpoint lifecycle_state to stamp for the operator exit. Pause and
+    # stop share ``"paused"``; terminate uses ``"terminated"``. Empty means
+    # no operator exit — the post-turn checkpoint path uses its own ternary
+    # (``yielded`` vs ``committed``).
+    _pending_checkpoint_state: Literal["", "paused", "terminated"] = ""
 
     while _state.iteration < max_tool_iterations:
         _state.iteration += 1
@@ -3412,6 +3459,15 @@ async def _run_turn_inner(
             TransitionAction as _TransitionAction,
         )
         from kernel.turn_phases._lifecycle import (
+            PauseAction as _PauseAction,
+        )
+        from kernel.turn_phases._lifecycle import (
+            StopAction as _StopAction,
+        )
+        from kernel.turn_phases._lifecycle import (
+            TerminateAction as _TerminateAction,
+        )
+        from kernel.turn_phases._lifecycle import (
             _TurnStateView as _TSV,
         )
         from kernel.turn_phases._lifecycle import (
@@ -3428,6 +3484,18 @@ async def _run_turn_inner(
             max_handoffs_per_turn=_max_handoffs_per_turn,
         )
         _forced = _state.forced_action
+        # ── Operator signal poll (Phase: pause/stop/terminate) ──────────
+        # Poll the host once per iteration at the top of the loop, before
+        # the resolver. ``None`` (host did not wire it) is zero overhead.
+        # The signal is terminal: the resolver produces the matching action
+        # this iteration, the loop breaks before the model call. In-flight
+        # tool dispatches from the prior iteration already completed.
+        _operator_signal = ""
+        if hooks.operator_signal is not None:
+            try:
+                _operator_signal = hooks.operator_signal() or ""
+            except Exception:  # pylint: disable=broad-except
+                _operator_signal = ""
         _resolver_state = _TSV(
             iteration=_state.iteration,
             step_iteration=_state.step_iteration,
@@ -3443,6 +3511,7 @@ async def _run_turn_inner(
                 _forced.non_compliant_dispatches if _forced is not None else 0
             ),
             handoff_count=_state.handoff_count,
+            operator_signal=_operator_signal,
         )
         _active_position_for_resolver: Any = None
         if hooks.workflow_position is not None:
@@ -3477,6 +3546,70 @@ async def _run_turn_inner(
                     f"mode handoffs in this turn without completing the chain. "
                     f"Forcing a final response."
                 )
+            break
+
+        # ── Operator-exit actions (Phase: pause/stop/terminate) ──────────
+        # Pause/stop/terminate are terminal: break before the model call.
+        # Pause and stop share one checkpoint (``lifecycle_state="paused"``);
+        # the difference is whether the transport returns the prompt, encoded
+        # in ``_pending_operator_exit``. Terminate marks the workflow complete
+        # via ``mark_step_complete`` + ``workflow_position_updater`` before the
+        # checkpoint is built, so the persisted snapshot reflects the kill.
+        # The MCP pool is NOT cancelled — any in-flight tool dispatch from the
+        # prior iteration already completed; the poll is at the top of the
+        # loop, not mid-``await``.
+        if isinstance(_lifecycle_action, _PauseAction):
+            _pending_operator_exit = "paused"
+            _pending_checkpoint_state = "paused"
+            _log.info(
+                "turn lifecycle: operator pause (mode=%s, iteration=%d, reason=%s)",
+                mode_id,
+                _state.iteration,
+                _lifecycle_action.reason,
+            )
+            break
+
+        if isinstance(_lifecycle_action, _StopAction):
+            _pending_operator_exit = "stopped"
+            _pending_checkpoint_state = "paused"
+            _log.info(
+                "turn lifecycle: operator stop (mode=%s, iteration=%d, reason=%s)",
+                mode_id,
+                _state.iteration,
+                _lifecycle_action.reason,
+            )
+            break
+
+        if isinstance(_lifecycle_action, _TerminateAction):
+            _pending_operator_exit = "terminated"
+            _pending_checkpoint_state = "terminated"
+            _log.info(
+                "turn lifecycle: operator terminate (mode=%s, iteration=%d, reason=%s)",
+                mode_id,
+                _state.iteration,
+                _lifecycle_action.reason,
+            )
+            # Mark the WorkflowPosition complete so the persisted snapshot and
+            # the in-memory position reflect the kill. ``mark_step_complete``
+            # clears ``current_step_id`` on the last step. Best-effort: a
+            # position-updater failure logs but does not block the terminate
+            # (the checkpoint still records ``terminated``).
+            if hooks.workflow_position is not None and hooks.workflow_position_updater is not None:
+                try:
+                    _term_position = hooks.workflow_position()
+                    if _term_position is not None and _term_position.current_step_id:
+                        from kernel.workflow_position import mark_step_complete
+
+                        _completed = mark_step_complete(
+                            _term_position, _term_position.current_step_id
+                        )
+                        hooks.workflow_position_updater(_completed)
+                except Exception as exc:  # pylint: disable=broad-except
+                    _log.warning(
+                        "terminate: mark_step_complete failed: %s (checkpoint "
+                        "still records terminated)",
+                        exc,
+                    )
             break
 
         if isinstance(_lifecycle_action, YieldAction):
@@ -5692,14 +5825,16 @@ async def _run_turn_inner(
             break
 
     if not content:
-        # ── Unified turn lifecycle: iteration-cap with no content → yield ──
-        # The loop exited due to ``max_tool_iterations`` while the model was
-        # still calling tools and produced no usable text. The unified
-        # lifecycle prefers a yield when the mode allows it (the user can
-        # redirect instead of getting a possibly-incoherent synthesis). When
-        # the mode forbids yields (action modes), fall through to the legacy
-        # forced-final (preserving the truncate as the last resort).
-        if _pending_yield is not None:
+        # ── Operator exit with no content ──────────────────────────────
+        # A PauseAction / StopAction / TerminateAction broke the loop before
+        # the model call. The transport reads ``operator_exit`` to decide
+        # prompt behavior; the checkpoint layer stamps ``paused`` /
+        # ``terminated``. Do NOT synthesize a yield question — operator
+        # exits do not surface a question (only model-emitted yields and
+        # recovery stalls do).
+        if _pending_operator_exit:
+            content = ""
+        elif _pending_yield is not None:
             content = _pending_yield.question
             _yielded = True
         elif _resolve_yield_policy(mode_config, _yield_policy_override).allowed:
@@ -5999,10 +6134,22 @@ async def _run_turn_inner(
                 # ``lifecycle_state="yielded"``, injects the user's reply,
                 # and resumes the turn against the same ``WorkflowPosition``
                 # step). Otherwise the turn committed cleanly.
-                _ckpt_state: Literal["working", "yielded", "committed", "stalled"] = (
-                    "yielded" if _yielded else "committed"
-                )
-                _ckpt_question = content if _yielded else ""
+                #
+                # Operator exits (Phase: pause/stop/terminate) override the
+                # ternary: pause/stop stamp ``paused`` (one shared substrate;
+                # the difference is the transport prompt behavior, not the
+                # checkpoint), terminate stamps ``terminated``. Neither
+                # surfaces a question (``awaiting_input_question`` empty).
+                if _pending_checkpoint_state:
+                    _ckpt_state = _pending_checkpoint_state
+                    _ckpt_question = ""
+                else:
+                    _ckpt_state: Literal[
+                        "working", "yielded", "committed", "stalled", "paused", "terminated"
+                    ] = (
+                        "yielded" if _yielded else "committed"
+                    )
+                    _ckpt_question = content if _yielded else ""
                 bundle = _build_checkpoint_bundle(
                     mode_id=mode_id,
                     transitioned_to=transitioned_to,
@@ -6074,6 +6221,7 @@ async def _run_turn_inner(
         handoff_to=handoff_to,
         fork_results=_state.fork_results if _state.fork_results else fork_results,
         workflow_terminated=workflow_terminated,
+        operator_exit=_pending_operator_exit,
         yielded=_pending_yield if _yielded else None,
         per_model_usage=list(_state.per_model_usage.values()),
         per_mode_usage=list(_state.per_mode_usage.values()),

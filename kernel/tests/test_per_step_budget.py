@@ -409,7 +409,10 @@ async def test_no_instance_per_step_cap_degrades_to_global() -> None:
             per_step_max_tool_calls=12,
         )
 
-    # No handoff synthesized (no instance). No crash. The turn produced
-    # *some* response (the final completion or the generic fallback).
+    # No handoff synthesized (no instance). No crash. Caps pause: the
+    # per-step cap with no next step (no instance wired) produces a
+    # PauseAction — the response_text is empty (operator exits do not
+    # surface a question), but the turn ended cleanly with a paused
+    # discriminator.
     assert result.handoff_to is None
-    assert result.response_text  # non-empty
+    assert result.operator_exit == "paused"

@@ -20,6 +20,9 @@ from kernel.turn_phases._lifecycle import (
     ContinueAction,
     FinishAction,
     LifecycleResolverSettings,
+    PauseAction,
+    StopAction,
+    TerminateAction,
     TransitionAction,
     resolve_lifecycle_action,
 )
@@ -40,6 +43,9 @@ class _State:
     forced_action_target: str = ""
     forced_action_non_compliant_dispatches: int = 0
     handoff_count: int = 0
+    # Operator-signal field (pause/stop/terminate). Defaults to "" so
+    # existing tests ignore it; the resolver only acts on non-empty.
+    operator_signal: str = ""
 
 
 @dataclass
@@ -158,38 +164,42 @@ def test_safe_retry_record_does_not_block() -> None:
 # ── Global iteration cap ────────────────────────────────────────────────────
 
 
-def test_iteration_cap_forces_yield_for_chat_mode() -> None:
+def test_iteration_cap_forces_pause_for_chat_mode() -> None:
+    """Caps pause, they do not yield. The operator did not ask a question; the
+    kernel ran out of budget. Freeze the turn in place."""
     action = resolve_lifecycle_action(
         state=_State(iteration=15),
         mode_id="default",
         mode_yield_policy=YieldPolicy(allowed=True),
         settings=LifecycleResolverSettings(max_tool_iterations=15),
     )
-    assert isinstance(action, YieldAction)
-    assert "iteration budget" in action.question
+    assert isinstance(action, PauseAction)
+    assert "iteration cap 15" in action.reason
 
 
-def test_iteration_cap_forces_finish_for_action_mode_without_escape() -> None:
-    """An action mode that forbids yield and names no fallback finishes."""
+def test_iteration_cap_forces_terminate_for_action_mode_without_escape() -> None:
+    """An action mode that forbids yield and names no fallback terminates —
+    pausing would hang a mode that cannot resume."""
     action = resolve_lifecycle_action(
         state=_State(iteration=15),
         mode_id="coding",
         mode_yield_policy=YieldPolicy(allowed=False, fallback_mode=""),
         settings=LifecycleResolverSettings(max_tool_iterations=15),
     )
-    assert isinstance(action, FinishAction)
-    assert action.strip_tools is True
+    assert isinstance(action, TerminateAction)
+    assert "action mode, no yield escape" in action.reason
 
 
-def test_iteration_cap_uses_policy_default_question() -> None:
+def test_iteration_cap_with_fallback_mode_pauses() -> None:
+    """A mode with a fallback_mode still pauses (not yields) at the cap — caps
+    freeze, they don't surface a question."""
     action = resolve_lifecycle_action(
         state=_State(iteration=15),
-        mode_id="default",
-        mode_yield_policy=YieldPolicy(allowed=True, default_question="What should I focus on?"),
+        mode_id="coding",
+        mode_yield_policy=YieldPolicy(allowed=False, fallback_mode="discuss"),
         settings=LifecycleResolverSettings(max_tool_iterations=15),
     )
-    assert isinstance(action, YieldAction)
-    assert action.question == "What should I focus on?"
+    assert isinstance(action, PauseAction)
 
 
 # ── Per-step budget exhausted ───────────────────────────────────────────────
@@ -231,29 +241,31 @@ def test_per_step_budget_exhausted_no_next_step_falls_through() -> None:
 # ── Stuck-in-stage cap (unified across mode kinds) ─────────────────────────
 
 
-def test_stage_cap_forces_yield_for_workflow_mode() -> None:
+def test_stage_cap_forces_pause_for_workflow_mode() -> None:
+    """Caps pause, they do not yield. The stuck-in-stage cap freezes the turn."""
     action = resolve_lifecycle_action(
         state=_State(turns_in_stage=6),
         mode_id="ponder",
         mode_yield_policy=YieldPolicy(allowed=True),
         settings=LifecycleResolverSettings(stage_nudge_cap=6),
     )
-    assert isinstance(action, YieldAction)
-    assert "6 iterations" in action.question
+    assert isinstance(action, PauseAction)
+    assert "6 iterations" in action.reason
 
 
-def test_stage_cap_forces_finish_for_action_mode_without_escape() -> None:
+def test_stage_cap_forces_terminate_for_action_mode_without_escape() -> None:
+    """An action mode that forbids yield terminates at the stuck-in-stage cap."""
     action = resolve_lifecycle_action(
         state=_State(turns_in_stage=6),
         mode_id="coding",
         mode_yield_policy=YieldPolicy(allowed=False, fallback_mode=""),
         settings=LifecycleResolverSettings(stage_nudge_cap=6),
     )
-    assert isinstance(action, FinishAction)
+    assert isinstance(action, TerminateAction)
 
 
 def test_stage_cap_fires_for_chat_mode_too() -> None:
-    """The guard is mode-kind blind: a chat mode stuck at the cap yields.
+    """The guard is mode-kind blind: a chat mode stuck at the cap pauses.
 
     The 2026-08-05 markdown burn happened because the workflow guard was
     gated on ``is_workflow`` and chat modes slipped through. The unified
@@ -266,8 +278,8 @@ def test_stage_cap_fires_for_chat_mode_too() -> None:
         mode_yield_policy=YieldPolicy(allowed=True),
         settings=LifecycleResolverSettings(stage_nudge_cap=6),
     )
-    assert isinstance(action, YieldAction)
-    assert "markdown" in action.context
+    assert isinstance(action, PauseAction)
+    assert "markdown" in action.reason
 
 
 def test_stage_cap_ignored_below_cap() -> None:
@@ -302,26 +314,28 @@ def test_stage_threshold_emits_continue_with_nudge() -> None:
 
 
 def test_yield_uses_policy_fallback_mode() -> None:
+    """A mode with a fallback_mode still pauses at the cap (caps freeze, they
+    don't yield). The fallback_mode would only matter for a model-emitted
+    YieldAction or a recovery-stall yield — not for cap paths."""
     action = resolve_lifecycle_action(
         state=_State(iteration=15),
         mode_id="coding",
         mode_yield_policy=YieldPolicy(allowed=False, fallback_mode="discuss"),
         settings=LifecycleResolverSettings(max_tool_iterations=15),
     )
-    assert isinstance(action, YieldAction)
-    assert action.target_mode_id == "discuss"
+    assert isinstance(action, PauseAction)
 
 
 def test_yield_in_place_when_policy_allows_inline() -> None:
-    """A chat mode with allowed=True yields in place (empty target)."""
+    """A chat mode with allowed=True pauses at the cap (not yields in place).
+    Caps freeze; only model-emitted yields surface a question."""
     action = resolve_lifecycle_action(
         state=_State(iteration=15),
         mode_id="default",
         mode_yield_policy=YieldPolicy(allowed=True),
         settings=LifecycleResolverSettings(max_tool_iterations=15),
     )
-    assert isinstance(action, YieldAction)
-    assert action.target_mode_id == ""
+    assert isinstance(action, PauseAction)
 
 
 # ── Phase 4: Handoff-loop backstop ───────────────────────────────────────────
@@ -459,28 +473,29 @@ def test_forced_action_enforcer_not_triggered_without_target() -> None:
 # ── Phase 4: Resource-budget exhaustion ─────────────────────────────────────
 
 
-def test_budget_exhausted_forces_yield_for_chat_mode() -> None:
-    """When budget_exhausted is True and the mode allows yields, force a yield."""
+def test_budget_exhausted_forces_pause_for_chat_mode() -> None:
+    """When budget_exhausted is True and the mode allows yields, pause.
+    Caps freeze, they don't surface a question."""
     action = resolve_lifecycle_action(
         state=_State(budget_exhausted=True),
         mode_id="default",
         mode_yield_policy=YieldPolicy(allowed=True),
         settings=LifecycleResolverSettings(),
     )
-    assert isinstance(action, YieldAction)
-    assert "budget" in action.context
+    assert isinstance(action, PauseAction)
+    assert "budget" in action.reason
 
 
-def test_budget_exhausted_forces_finish_for_action_mode() -> None:
-    """When budget_exhausted is True and the mode forbids yields, finish."""
+def test_budget_exhausted_forces_terminate_for_action_mode() -> None:
+    """When budget_exhausted is True and the mode forbids yields, terminate."""
     action = resolve_lifecycle_action(
         state=_State(budget_exhausted=True),
         mode_id="search",
         mode_yield_policy=YieldPolicy(allowed=False),
         settings=LifecycleResolverSettings(),
     )
-    assert isinstance(action, FinishAction)
-    assert action.strip_tools
+    assert isinstance(action, TerminateAction)
+    assert "action mode" in action.reason
 
 
 def test_budget_exhausted_not_triggered_when_false() -> None:
@@ -511,3 +526,98 @@ def test_budget_exhausted_not_triggered_when_false() -> None:
 #
 # Nothing here needs a chat-specific settings pair; ``chat_stuck_mode_cap`` /
 # ``chat_stuck_mode_threshold`` are deleted from ``kernel.config.Settings``.
+
+
+# ── Operator signals (pause / stop / terminate) ─────────────────────────────
+#
+# The operator is the highest authority — branch 0 fires before the router
+# decision and every cap path. Pause and stop share one checkpoint
+# (``lifecycle_state="paused"``); the difference is the transport prompt
+# behavior, not the action. Terminate marks the workflow complete.
+
+
+def test_operator_pause_overrides_router_finish() -> None:
+    """A router finish is lower priority than an operator pause."""
+    action = resolve_lifecycle_action(
+        state=_State(operator_signal="pause"),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(),
+        router_decision=_Router(finish="done"),
+    )
+    assert isinstance(action, PauseAction)
+
+
+def test_operator_stop_overrides_router_finish() -> None:
+    action = resolve_lifecycle_action(
+        state=_State(operator_signal="stop"),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(),
+        router_decision=_Router(finish="done"),
+    )
+    assert isinstance(action, StopAction)
+
+
+def test_operator_terminate_overrides_router_finish() -> None:
+    action = resolve_lifecycle_action(
+        state=_State(operator_signal="terminate"),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(),
+        router_decision=_Router(finish="done"),
+    )
+    assert isinstance(action, TerminateAction)
+
+
+def test_operator_pause_overrides_iteration_cap() -> None:
+    """At the iteration cap, an operator pause wins over the cap's pause."""
+    action = resolve_lifecycle_action(
+        state=_State(iteration=15, operator_signal="pause"),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(allowed=True),
+        settings=LifecycleResolverSettings(max_tool_iterations=15),
+    )
+    assert isinstance(action, PauseAction)
+    assert action.reason == "operator pause"
+
+
+def test_operator_stop_overrides_recovery_stall() -> None:
+    """An operator stop wins over a recovery-stall yield."""
+    action = resolve_lifecycle_action(
+        state=_State(operator_signal="stop"),
+        mode_id="search",
+        mode_yield_policy=YieldPolicy(allowed=True),
+        settings=LifecycleResolverSettings(),
+        recovery_records=[
+            _Record(
+                state="stalled",
+                blocks_workflow=True,
+                retry_policy="confirm",
+                last_error="web_search timed out",
+                step_id="s1",
+            )
+        ],
+    )
+    assert isinstance(action, StopAction)
+
+
+def test_operator_terminate_overrides_handoff_backstop() -> None:
+    action = resolve_lifecycle_action(
+        state=_State(handoff_count=6, operator_signal="terminate"),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(max_handoffs_per_turn=5),
+    )
+    assert isinstance(action, TerminateAction)
+
+
+def test_no_operator_signal_is_noop() -> None:
+    """Empty operator_signal means no operator exit — the resolver ignores it."""
+    action = resolve_lifecycle_action(
+        state=_State(operator_signal=""),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(),
+    )
+    assert isinstance(action, ContinueAction)

@@ -1414,12 +1414,13 @@ async def test_run_turn_max_tool_iterations_capped() -> None:
     )
 
     assert result.iteration_count == 3
-    assert result.tool_call_count == 3
-    # Unified turn lifecycle: the iteration cap forces a YieldAction (not a
-    # silent "did not produce a final response") for chat modes like
-    # ``default`` whose ``yield_policy.allowed`` is True. The user gets a
-    # redirect question they can answer.
-    assert "iteration budget" in result.response_text
+    assert result.tool_call_count == 2
+    # Caps pause, they do not yield. The iteration cap produces a
+    # PauseAction (operator_exit="paused"); the loop breaks before the
+    # final model call, so tool_call_count is one less than the cap (the
+    # old YieldAction went through strip-tools → model call → break, adding
+    # an extra iteration). No yield question is surfaced.
+    assert result.operator_exit == "paused"
 
 
 @pytest.mark.asyncio
@@ -1459,9 +1460,10 @@ async def test_run_turn_max_tool_iterations_defaults_from_config(
     )
 
     assert result.iteration_count == 2
-    assert result.tool_call_count == 2
-    # Unified turn lifecycle: iteration cap yields for ``default`` mode.
-    assert "iteration budget" in result.response_text
+    assert result.tool_call_count == 1
+    # Caps pause, they do not yield. The iteration cap produces a PauseAction;
+    # the loop breaks before the final model call.
+    assert result.operator_exit == "paused"
 
 
 @pytest.mark.asyncio
@@ -1496,10 +1498,11 @@ async def test_run_turn_execution_policy_tightens_model_call_iterations() -> Non
     )
 
     assert result.iteration_count == 2
-    assert result.tool_call_count == 2
-    # Unified turn lifecycle: iteration cap (tightened by execution_policy)
-    # yields for ``default`` mode.
-    assert "iteration budget" in result.response_text
+    assert result.tool_call_count == 1
+    # Caps pause, they do not yield. The iteration cap (tightened by
+    # execution_policy) produces a PauseAction; the loop breaks before the
+    # final model call.
+    assert result.operator_exit == "paused"
 
 
 @pytest.mark.asyncio
@@ -1534,11 +1537,10 @@ async def test_run_turn_execution_policy_seeds_turn_budget_without_explicit_budg
     )
 
     assert result.tool_call_count == 1
-    # Unified turn lifecycle: the turn budget exhausted by the capability
-    # cap forces a yield (not the model's forced "Final response." synthesis).
-    # The user gets a redirect question instead of a possibly-incoherent
-    # forced final.
-    assert "resource budget" in result.response_text or "iteration budget" in result.response_text
+    # Caps pause, they do not yield. The turn budget exhausted by the
+    # capability cap produces a PauseAction (operator_exit="paused"), not a
+    # yield question. The operator can resume for a fresh budget.
+    assert result.operator_exit == "paused"
 
 
 @pytest.mark.asyncio
