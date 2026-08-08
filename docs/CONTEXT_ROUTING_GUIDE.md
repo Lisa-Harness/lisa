@@ -156,7 +156,7 @@ context:
 
 ## Pack Authoring Interface (`ContextItem`)
 
-If you are authoring a Lisa Pack, your pack simply yields `ContextItem` objects. You do not define where they go; you simply label them accurately so the end-user's routing config can catch them.
+If you are authoring a Lisa Pack, your pack simply yields `ContextItem` objects. You do not define where they go; you label them accurately so the end-user's `context.sources` rules can catch them. The mapper selects on `source`, `pack`, `source_type`, `evidence_type`, and `tags` — `namespace` is an author-facing provenance label only and is **not** a selection key.
 
 ```python
 from kernel.models import ContextItem
@@ -164,9 +164,11 @@ from kernel.models import ContextItem
 def build_evidence() -> ContextItem:
     return ContextItem(
         item_id="stripe:customer_123",
-        source="stripe",           # -> Caught by match_sources
-        evidence_type="status",    # -> Caught by match_types
-        tags=["billing", "mrr"],   # -> Caught by match_tags
+        namespace="billing",       # Provenance label only — not a selector.
+        source="stripe",           # -> Matched by sources: [stripe]
+        source_type="extension",   # -> Matched by source_kinds: [extension]
+        evidence_type="status",    # -> Matched by evidence_types: [status]
+        tags=["billing", "mrr"],   # -> Matched by tags: [billing, mrr]
         title="Customer Billing Status",
         body="MRR: $450 | Status: Past Due",
         salience_score=0.85        # Ranking feature (0.0–1.0). Does NOT

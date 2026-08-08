@@ -279,7 +279,11 @@ The Markdown body is the **primary instruction body** — it is always included.
 
 ### `context`
 
-The session-owned context mapper policy. This replaces the legacy `context_routing` block.
+The session-owned context mapper policy. This is the sole control surface for how evidence from intake, packs, and history is admitted, ranked, budgeted, and rendered into the prompt each turn.
+
+**Wiring.** The `context:` block compiles to `SessionPlan.manifest.context` (a `ContextPlan` in `kernel/session_plan.py`). At turn time, `host/turn_hooks_builder.py` reads `runtime.session_plan.manifest.context` and passes it through `assemble_dynamic_user_context` → `build_brokered_context_markdown` → `build_session_mapped_context_markdown` → `ContextMapper.map(...)`. The MCP `broker_context` tool (`mcp_server/context/server.py`) accepts the same `context_plan` over the wire and routes through the same `ContextMapper`. There is no second, parallel routing system — the legacy namespace-based `context_routing` block was removed; the `ContextPlan` is the only engine.
+
+**Data flow.** `build_unified_state` (in `host/state_provider.py`) collects `ContextItem` records from intake and the extension-item hook into `UnifiedState.context_items` — a single flat feed. The mapper walks that feed against your `context.sources` rules, gates and ranks matches with your `context.ranking` weights, fits them to the model-aware window via `context.budget`, and renders the survivors into lane-ordered Markdown. The state carries no routing policy of its own; all policy lives here.
 
 #### `context.models`
 
@@ -406,6 +410,62 @@ context:
       hard_threshold: 0.85
       min_interval_turns: 3
       retention_count: 4
+```
+
+#### `context.memory`
+
+Memory-store consolidation policy. Like history compaction, this is pressure-driven and paid for out of the post-turn slice budget — not the user's turn latency.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `consolidation` | `MemoryConsolidationTuning` | (see below) | Episodic-pressure-triggered memory consolidation. |
+
+##### `context.memory.consolidation`
+
+When `enabled` is `true` (the default), a host that wires the memory-consolidation slice provider counts active episodic records each turn and fires the configured `consolidate_operation` (default: `consolidate_semantic`) when episodic pressure crosses a threshold. Set `enabled` to `false` to let episodic records accumulate until TTL expiry.
+
+Thresholds are fractions of `max_records` (`0.0`-`1.0`). The slice pressure curve decides whether a between-thresholds turn actually runs the consolidation; `hard_threshold` overrides the curve when episodic pressure is critical.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | `bool` | `true` | Master switch. Set `false` to disable automatic consolidation. |
+| `trigger` | `post_turn` \| `pre_turn` \| `explicit` \| `never` | `post_turn` | Which slice slot fires consolidation. |
+| `pressure_threshold` | `float 0.0-1.0` | `0.6` | Fire when `episodic_count / max_records` reaches this fraction. |
+| `hard_threshold` | `float 0.0-1.0` | `0.85` | Guardrail: fire regardless of pressure budget or interval. Must be `>= pressure_threshold`. |
+| `min_interval_turns` | `int >= 0` | `8` | Don't re-consolidate more often than every N turns (ignored when `hard_threshold` overrides). |
+| `batch_size` | `int >= 1` | `10` | Records consolidated per invocation. |
+| `min_episodic_count` | `int >= 1` | `5` | Don't fire below this many active episodic records. |
+| `max_records` | `int >= 1` | `200` | Denominator for the pressure fraction. |
+| `preferred_model_id` | `string` | `default` | Model ID used for the consolidate operation. |
+| `consolidate_operation` | `string` | `consolidate_semantic` | Operation ID invoked to consolidate. |
+
+Example:
+
+```yaml
+context:
+  memory:
+    consolidation:
+      enabled: true
+      pressure_threshold: 0.6
+      hard_threshold: 0.85
+      min_interval_turns: 8
+      batch_size: 10
+      max_records: 200
+```
+
+#### `context.conflict_policy`
+
+How the mapper resolves candidates that conflict on the same logical claim. The mapper computes a conflict risk for each candidate; this setting decides what happens when a high-authority and low-authority candidate disagree.
+
+| Value | Behavior |
+| --- | --- |
+| `prefer_authority` (default) | Keep the higher-authority candidate; drop the lower. |
+| `surface_conflict` | Keep both and annotate the conflict so the model can reason about it. |
+| `drop_lower_authority` | Drop the lower-authority candidate without surfacing. |
+
+```yaml
+context:
+  conflict_policy: surface_conflict
 ```
 
 ---
@@ -606,6 +666,8 @@ Host-mandatory packs (declared in `mcp_servers.yaml` `pack_policy.always_on_pack
 - **Source rule referencing undeclared lane**: every `lane_id` in `context.sources` must exist in `context.lanes`.
 - **Multiple fallback rules**: at most one `fallback: true` source rule is allowed.
 - **Source rule with no selector and no fallback**: a rule needs at least one matching selector or `fallback: true`.
+- **`context_routing` is gone**: the legacy namespace-based routing block was removed. There is no `context_routing` key and no `ContextRoutingConfig`; use the `context` block (`lanes` + `sources`) instead. A `ContextRoutingConfig` reference in old code or docs is stale.
+- **`ContextItem.namespace` is a label, not a selector**: the mapper selects on `source`, `pack`, `source_type`, `evidence_type`, and `tags` — never on `namespace`. Setting `namespace="alerts"` does not route an item to an `alerts` lane; author a `context.sources` rule matching `evidence_types: [alert]` or `sources: [...]` instead.
 - **External packs installed in the main `.venv`**: an external pack present in both the main framework `.venv` and the packs venv produces a `Duplicate operation ID`/`Duplicate tool ID` collision at boot because the catalog subprocess sees two content-root paths for one pack. Keep external packs in the packs venv only; uninstall them from the main `.venv`. (Bundled packs are fine in the main `.venv` — they are not installed into the packs venv.)
 
 ---
