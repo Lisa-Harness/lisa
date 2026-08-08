@@ -248,88 +248,25 @@ def _candidates_from_state_summaries(
     state: UnifiedState,
     compiled_at: datetime,
 ) -> list[ContextCandidate]:
-    summaries = (
-        (
-            "self_model_vibe",
-            "self_model",
-            "runtime_self_model",
-            "Runtime self-model",
-            "system_observed",
-            1.0,
-            0.8,
-        ),
-        (
-            "capability_manifest_summary",
-            "capabilities",
-            "live_capabilities",
-            "Live capabilities",
-            "authoritative",
-            1.0,
-            0.8,
-        ),
-        (
-            "architecture_vibe",
-            "architecture",
-            "architecture_summary",
-            "Architecture summary",
-            "authoritative",
-            0.9,
-            0.55,
-        ),
-        (
-            "thinking_vibe",
-            "thinking",
-            "reflection",
-            "Reasoning reflection",
-            "inferred",
-            0.6,
-            0.45,
-        ),
-        (
-            "strategy_vibe",
-            "strategy",
-            "strategy_reflection",
-            "Strategy reflection",
-            "inferred",
-            0.6,
-            0.45,
-        ),
-        (
-            "reflection_vibe",
-            "reflection",
-            "reflection",
-            "Reflection",
-            "inferred",
-            0.6,
-            0.45,
-        ),
-    )
+    descriptors = settings.context_mapper_state_summary_descriptors
     candidates: list[ContextCandidate] = []
-    for (
-        field_name,
-        source_id,
-        evidence_type,
-        title,
-        provenance,
-        confidence,
-        salience,
-    ) in summaries:
+    for field_name, descriptor in sorted(descriptors.items()):
         body = getattr(state, field_name).strip()
         if not body:
             continue
         candidates.append(
             ContextCandidate(
                 candidate_id=f"state:{field_name}",
-                source_id=source_id,
+                source_id=str(descriptor["source_id"]),
                 source_ref=f"unified_state:{field_name}",
                 source_kind="state_summary",
-                evidence_type=evidence_type,
-                title=title,
+                evidence_type=str(descriptor["evidence_type"]),
+                title=str(descriptor["title"]),
                 content=body,
-                provenance=cast(ContextProvenance, provenance),
+                provenance=cast(ContextProvenance, descriptor["provenance"]),
                 authority=1.0,
-                confidence=confidence,
-                salience=salience,
+                confidence=float(descriptor["confidence"]),
+                salience=float(descriptor["salience"]),
                 collected_at=compiled_at,
                 tags=(field_name,),
             )
