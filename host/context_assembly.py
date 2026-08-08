@@ -439,15 +439,27 @@ def assemble_dynamic_user_context(
         )
         raw_sections.append(("diagnostic_reflection", "reflection", diagnostic_reflection))
 
-    # Ranked context evidence from the broker (no MCP round-trip — the
-    # broker is a pure ranking function over the in-process UnifiedState).
+    # Ranked context evidence from the session-owned mapper (no MCP
+    # round-trip — the mapper is a pure ranking function over the
+    # in-process UnifiedState). The mapper already fits ranked context to
+    # the model-aware window, so it is NOT re-budgeted below; the snapshot
+    # it produces also drives the allocator's total ceiling so both share
+    # one window-derived budget.
+    mapper_snapshot: ContextBudgetSnapshot | None = None
+
+    def _capture_snapshot(snapshot: ContextBudgetSnapshot) -> None:
+        nonlocal mapper_snapshot
+        mapper_snapshot = snapshot
+        if snapshot_sink is not None:
+            snapshot_sink(snapshot)
+
     packet_markdown = build_brokered_context_markdown(
         mode_id=mode_id,
         query=query,
         state=state,
         context_plan=context_plan,
         model_context_window_tokens=model_context_window_tokens,
-        snapshot_sink=snapshot_sink,
+        snapshot_sink=_capture_snapshot,
     )
     if packet_markdown:
         raw_sections.append(("ranked_context", "retrieval", packet_markdown))
@@ -475,7 +487,18 @@ def assemble_dynamic_user_context(
     # Map each section key to its provenance kind. Sections not in the map
     # default to ``authoritative`` (the runtime-state default).
     section_provenance = _SECTION_PROVENANCE
-    allocator = ContextBudgetAllocator.for_turn(reasoning_model=False)
+    # The allocator's total ceiling is the mapper's model-aware available
+    # context (window minus reserves, prefix, conversation, and tool
+    # schema). When the mapper produced no snapshot (no ranked context),
+    # fall back to the sum of the lane ceilings so the lane limits remain
+    # the binding constraint.
+    allocator = ContextBudgetAllocator.for_turn(
+        total_tokens=(
+            mapper_snapshot.available_context_tokens
+            if mapper_snapshot is not None
+            else None
+        )
+    )
     # Tighten-only override: session front matter may reduce lane budgets,
     # never increase kernel defaults.
     allocator.lane_limits["history"] = min(
@@ -488,6 +511,15 @@ def assemble_dynamic_user_context(
     )
     rendered_sections: list[str] = []
     for key, lane, text in raw_sections:
+        if key == "ranked_context":
+            # The mapper already fit ranked context to the model-aware
+            # window; re-budgeting it here would double-trim with a fixed
+            # lane ceiling. Emit it as-is.
+            provenance = section_provenance.get(key, "authoritative")
+            wrapped = wrap_section(provenance, text, source=key)
+            if wrapped:
+                rendered_sections.append(wrapped)
+            continue
         elected = allocator.allocate(
             key=key,
             lane=lane,

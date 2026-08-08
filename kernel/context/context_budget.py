@@ -68,14 +68,15 @@ class ContextBudgetAllocator:
         self.records: dict[str, ContextBudgetRecord] = {}
 
     @classmethod
-    def for_turn(cls, *, reasoning_model: bool = False) -> ContextBudgetAllocator:
-        """Build one allocator instance from runtime settings."""
+    def for_turn(cls, *, total_tokens: int | None = None) -> ContextBudgetAllocator:
+        """Build one allocator instance from runtime settings.
 
-        total_tokens = (
-            settings.context_budget_deep_total_tokens
-            if reasoning_model
-            else settings.context_budget_default_total_tokens
-        )
+        *total_tokens* is the model-aware ceiling for the turn's assembled
+        context. When omitted (or non-positive), the allocator falls back to
+        the sum of the lane ceilings so the lane limits remain the binding
+        constraint — there is no fixed global default to guess at.
+        """
+
         lane_limits: dict[ContextLane, int] = {
             "core": settings.context_budget_core_max_tokens,
             "retrieval": settings.context_budget_retrieval_max_tokens,
@@ -84,6 +85,8 @@ class ContextBudgetAllocator:
             "history": settings.context_budget_history_max_tokens,
             "operational": settings.context_budget_operational_max_tokens,
         }
+        if total_tokens is None or total_tokens <= 0:
+            total_tokens = sum(lane_limits.values())
         return cls(
             enabled=settings.context_budget_enabled,
             total_tokens=total_tokens,

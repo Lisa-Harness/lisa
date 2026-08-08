@@ -855,7 +855,7 @@ def _base_score(
 def _estimate_tokens(candidate: ContextCandidate) -> int:
     if candidate.token_estimate:
         return candidate.token_estimate
-    return max(1, math.ceil(len(candidate.content) / 4))
+    return max(1, math.ceil(len(candidate.content) / settings.context_budget_token_char_ratio))
 
 
 def _build_budget_state(request: ContextMapperRequest) -> _BudgetState:

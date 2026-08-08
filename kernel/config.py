@@ -209,8 +209,6 @@ class Settings(BaseSettings):
 
     # ── Context budget ──────────────────────────────────────────────────
     context_budget_enabled: bool = True
-    context_budget_default_total_tokens: int = 6000
-    context_budget_deep_total_tokens: int = 12000
     context_budget_core_max_tokens: int = 2000
     context_budget_retrieval_max_tokens: int = 1500
     context_budget_memory_max_tokens: int = 1200
@@ -340,8 +338,6 @@ class Settings(BaseSettings):
         "hint_cycle_min_len",
         "hint_override_limit",
         "budget_briefing_enabled",
-        "context_budget_default_total_tokens",
-        "context_budget_deep_total_tokens",
         "context_budget_core_max_tokens",
         "context_budget_retrieval_max_tokens",
         "context_budget_memory_max_tokens",
