@@ -139,6 +139,20 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ### Removed
 
+#### Context: legacy `context_routing` / `ContextRoutingConfig` dead code
+
+- **`ContextRoutingConfig` and `ContextRoutingNamespaceConfig` removed**
+  from `kernel/models.py`. The legacy namespace-based context broker was
+  replaced by the session-owned `ContextMapper` (driven by the `context`
+  block → `ContextPlan`); these classes had no remaining readers. The
+  `context_routing` field on `UnifiedState` and the matching
+  `context_routing=` kwarg on `host/state_provider.build_unified_state`
+  were also removed — neither call site in `turn_hooks_builder.py` passed
+  it, so it was always `None`. Context admission and ordering policy now
+  lives exclusively on the session plan's `context` block, passed to the
+  mapper at turn time. `ContextItem.namespace` is retained as an
+  author-facing provenance label but is documented as a non-selector.
+
 #### Memory backend: redundant `get_memories` tool
 
 - **`get_memories` tool removed** from the `lisa-memory` MCP server. It was

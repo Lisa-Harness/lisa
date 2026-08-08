@@ -216,19 +216,16 @@ def _resolve_tool_catalog(ctx: OperationExecutionContext) -> dict[str, Any]:
 
 
 def _resolve_model_manifest(ctx: OperationExecutionContext) -> ModelManifest | None:
-    """Best-effort model manifest from the host's resolve_model."""
-    if ctx.host is None:
-        return None
-    try:
-        # The manifest is typically loaded by the host; we try common designations
-        for designation in ("default", "fast_chat"):
-            model = ctx.host.resolve_model(designation)
-            if model is not None:
-                # We got a model entry; the manifest itself isn't directly
-                # accessible, so we return None and let the caller handle it
-                pass
-    except Exception:
-        pass
+    """Best-effort model manifest from the host's resolve_model.
+
+    The host adapter exposes ``resolve_model`` (single-model lookup) but
+    not the manifest itself, so this helper cannot return a ``ModelManifest``
+    today. It stays as a no-op seam so the self-model summary and capability
+    entries degrade to "0 models" without raising. Do not probe role
+    designations (e.g. ``fast_chat``) here — nothing maps them and the
+    failed lookup logs an error on every slice run.
+    """
+    del ctx  # explicit: the manifest is not reachable via the host adapter
     return None
 
 

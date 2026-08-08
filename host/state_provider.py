@@ -39,7 +39,6 @@ from typing import Any
 
 from kernel.models import (
     ContextItem,
-    ContextRoutingConfig,
     UnifiedState,
 )
 from kernel.seams.protocols import ExtensionItemBuilder
@@ -55,7 +54,6 @@ logger = logging.getLogger(__name__)
 def build_unified_state(
     *,
     state_snapshot: dict[str, Any] | None,
-    context_routing: ContextRoutingConfig | None = None,
     item_builder: ExtensionItemBuilder | None = None,
     runtime_context: Any = None,
 ) -> UnifiedState:
@@ -63,11 +61,15 @@ def build_unified_state(
 
     Builds the state from the dict-based ``state_snapshot`` (loaded via
     ``--state-snapshot``). Intake-produced context items (signals, intel,
-    alerts) is merged with hook-produced extension items
+    alerts) are merged with hook-produced extension items
     (``item_builder.build_extension_context_items(runtime_context, state)``)
     into ``context_items`` — the single feed the session-owned
     context mapper walks to produce ranked, lane-ordered context without a
     live MCP round-trip.
+
+    Context admission and ordering policy is not carried on the state: it
+    lives in the session plan's ``context`` block (``ContextPlan``), which the
+    host passes to the mapper alongside this state.
 
     Returns an empty :class:`UnifiedState` when ``state_snapshot`` is
     ``None`` or falsy.
@@ -75,13 +77,12 @@ def build_unified_state(
     compiled_at = datetime.now(UTC).isoformat()
     snapshot = state_snapshot
     if not snapshot:
-        state = UnifiedState(compiled_at=compiled_at, context_routing=context_routing)
+        state = UnifiedState(compiled_at=compiled_at)
     else:
         state = UnifiedState(
             compiled_at=str(
                 snapshot.get("compiled_at") or snapshot.get("generated_at") or compiled_at
             ),
-            context_routing=context_routing,
         )
         # Intake-produced context items (signals, intel, alerts,
         # self_model) is the single feed. No arbitrary named buckets.

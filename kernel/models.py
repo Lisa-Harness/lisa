@@ -812,31 +812,25 @@ class AnomalyAlert(BaseModel):
     detected_at: str
 
 
+ContextConflictRisk = Literal["low", "medium", "high"]
+
+# Semantic aliases for ContextItem fields. Kept as plain ``str`` aliases so
+# pack authors can label items (e.g. ``namespace="alerts"``) for provenance
+# without coupling the kernel to a fixed enum. The session-owned
+# ``ContextMapper`` selects on ``source`` / ``pack`` / ``source_type`` /
+# ``evidence_type`` / ``tags`` — ``namespace`` is an author-facing label
+# only and is not a selection key.
 ContextItemNamespace = str
 ContextItemSourceType = str
 
 
-class ContextRoutingNamespaceConfig(BaseModel):
-    """Routing rules for mapping evidence to a specific namespace."""
-
-    match_sources: list[str] = Field(default_factory=list)
-    match_types: list[str] = Field(default_factory=list)
-    match_tags: list[str] = Field(default_factory=list)
-    is_fallback: bool = False
-
-
-class ContextRoutingConfig(BaseModel):
-    """User-facing configuration for how evidence is categorized and ordered."""
-
-    render_order: list[str] = Field(default_factory=list)
-    namespaces: dict[str, ContextRoutingNamespaceConfig] = Field(default_factory=dict)
-
-
-ContextConflictRisk = Literal["low", "medium", "high"]
-
-
 class ContextItem(BaseModel):
-    """One structured context item available for per-turn context selection."""
+    """One structured context item available for per-turn context selection.
+
+    Context admission and ordering are owned by the session plan's
+    ``context`` block (``ContextPlan`` → ``ContextMapper``); this model only
+    carries the per-item facts the mapper ranks against.
+    """
 
     item_id: str
     namespace: ContextItemNamespace = "general_context"
@@ -923,8 +917,16 @@ class DomainKnowledgeArtifact(BaseModel):
 
 
 class UnifiedState(BaseModel):
+    """Compiled runtime state fed to the context mapper and operations.
+
+    ``context_items`` is the single feed the session-owned
+    :class:`~kernel.context.context_mapper.ContextMapper` walks to produce
+    ranked, lane-ordered context. There is no separate routing-config field:
+    admission and ordering policy lives in the session plan's ``context``
+    block (``ContextPlan``), not on per-turn state.
+    """
+
     compiled_at: str
-    context_routing: ContextRoutingConfig | None = None
     context_items: list[ContextItem] = Field(default_factory=list)
 
 
