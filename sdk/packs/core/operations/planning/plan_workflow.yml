@@ -1,4 +1,5 @@
 operation_id: plan_workflow
+exportable: true
 description: >
   Analyze a user query against the mode catalog's routing intent keywords,
   detect sequential connectors, and return a transition_stage target
