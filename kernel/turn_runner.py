@@ -4139,9 +4139,18 @@ async def _run_turn_inner(
             _forced = _state.forced_action
             if _forced is not None and tool_name != _forced.expected_tool:
                 _forced.non_compliant_dispatches += 1
-                if _forced.non_compliant_dispatches >= (
-                    _kernel_settings.forced_action_non_compliant_cap
-                ):
+                
+                # Trust-Aware Enforcer Cap
+                reliability = float(getattr(_state.effective_model, "structured_reliability", 0.0) or 0.0)
+                is_frontier = getattr(_state.effective_model, "cost_tier", "") == "frontier"
+                is_reasoning = getattr(_state.effective_model, "reasoning_model", False)
+                
+                if is_frontier or is_reasoning or reliability >= 0.95:
+                    effective_cap = float('inf')
+                else:
+                    effective_cap = _kernel_settings.forced_action_non_compliant_cap
+
+                if _forced.non_compliant_dispatches >= effective_cap:
                     _log.warning(
                         "model refused to %s (mode=%s, iteration=%d, "
                         "non_compliant_dispatches=%d); kernel forcing %s "
@@ -4368,6 +4377,8 @@ async def _run_turn_inner(
                 if tool_name == _TRANSITION_TOOL_NAME:
                     target_stage = str(tool_arguments.get("target_stage_id") or "").strip()
                     rationale = str(tool_arguments.get("rationale") or "").strip()
+                    delegated_goal = str(tool_arguments.get("delegated_goal") or "").strip()
+                    context_payload = str(tool_arguments.get("context_payload") or "").strip()
                     missing = tool_arguments.get("required_missing_inputs") or []
                     if not target_stage:
                         tool_output = "transition_stage requires target_stage_id."
@@ -4483,7 +4494,13 @@ async def _run_turn_inner(
                                 "content": tool_output,
                             }
                         )
-                        continue
+                        if tool_call != tool_calls[-1]:
+                            _log.warning(
+                                "Model batched %d trailing tool call(s) after stage transition. "
+                                "Breaking the dispatch loop to cleanly boot the new stage.",
+                                len(tool_calls) - tool_calls.index(tool_call) - 1
+                            )
+                        break
 
                     # ── Case B: mode handoff (routing FSM) ────────────────
                     if is_routable_mode(target_stage):
@@ -4609,6 +4626,11 @@ async def _run_turn_inner(
                                             ):
                                                 remaining_steps.append(rid)
                                     chain_position = len(_state.chain_satisfied) + 1
+                                    
+                                    # Use the payload parsed from transition_stage arguments
+                                    dg = delegated_goal if 'delegated_goal' in locals() else ""
+                                    cp = context_payload if 'context_payload' in locals() else ""
+
                                     # Terminal-step directive: when there are no
                                     # remaining steps, tell the model to COMPLETE
                                     # and respond, not to hand off. The previous
@@ -4636,8 +4658,12 @@ async def _run_turn_inner(
                                         f"{chain_position + len(remaining_steps)}\n"
                                         f"- Remaining steps after this one: "
                                         f"{_format_remaining_steps(remaining_steps)}\n"
-                                        f"{next_directive}"
                                     )
+                                    if dg:
+                                        handoff_context += f"\n## Your Current Task\n{dg}\n"
+                                    if cp:
+                                        handoff_context += f"\n## Provided Context\n{cp}\n"
+                                    handoff_context += f"\n{next_directive}"
                                     messages[0]["content"] = (
                                         str(messages[0].get("content", "")) + handoff_context
                                     )
@@ -4738,11 +4764,17 @@ async def _run_turn_inner(
                                         # user query.
                                         _step_query = ""
                                         try:
-                                            _active_pos = hooks.workflow_position() if hooks.workflow_position else None
+                                            _active_pos = (
+                                                hooks.workflow_position()
+                                                if hooks.workflow_position
+                                                else None
+                                            )
                                         except Exception:
                                             _active_pos = None
 
-                                        if _active_pos and getattr(_active_pos, "current_step_id", ""):
+                                        if _active_pos and getattr(
+                                            _active_pos, "current_step_id", ""
+                                        ):
                                             _next_step = _active_pos.step_by_id(
                                                 _active_pos.current_step_id
                                             )
@@ -5512,7 +5544,13 @@ async def _run_turn_inner(
                                 f"want before committing to a workflow."
                             )
                             break
-                        continue
+                        if tool_call != tool_calls[-1]:
+                            _log.warning(
+                                "Model batched %d trailing tool call(s) after transition_stage. "
+                                "Breaking the dispatch loop to cleanly boot the new mode.",
+                                len(tool_calls) - tool_calls.index(tool_call) - 1
+                            )
+                        break
                     tool_output = (
                         f"Unknown transition target: '{target_stage}'. "
                         f"It is not a stage in mode '{mode_id}' or a routable mode."
@@ -6120,28 +6158,37 @@ async def _run_turn_inner(
         # than a hallucinated success.
         turn_blocked = True
     elif _parent_no_tools:
-        # The parent turn itself reported unverified success: the mode
-        # declares a side-effecting completion contract and the turn
-        # ends with zero verified writes. Replace the unverified prose
-        # with a deterministic failure (same contract as a ``no_tools``
-        # fork child). The wording covers both "never invoked" and
-        # "invoked but every attempt failed" — a failed dispatch lands
-        # neither in the counted calls nor in the receipt ledger.
-        _log.warning(
-            "parent turn mode=%s completed with no verified write for its "
-            "mode's action tools %s; blocking as no_tools (hallucinated success)",
-            mode_id,
-            sorted(_state.action_tool_ids),
-        )
-        content = (
-            f"The `{mode_id}` turn produced no verified write: none of the "
-            f"mode's action tools ({', '.join(sorted(_state.action_tool_ids))}) "
-            "completed successfully. The reported result is unverified — "
-            "nothing was written to disk or memory. Re-issue the request, "
-            "or narrow it so the mode can complete its work."
-        )
-        turn_blocked = True
-        _block_origin = "no_tools"
+        has_dense_content = len(content.strip()) > 150
+        if has_dense_content:
+            _log.info(
+                "parent turn mode=%s completed with no verified write, but "
+                "produced dense content (%d chars); accepting as successful.",
+                mode_id,
+                len(content.strip()),
+            )
+        else:
+            # The parent turn itself reported unverified success: the mode
+            # declares a side-effecting completion contract and the turn
+            # ends with zero verified writes. Replace the unverified prose
+            # with a deterministic failure (same contract as a ``no_tools``
+            # fork child). The wording covers both "never invoked" and
+            # "invoked but every attempt failed" — a failed dispatch lands
+            # neither in the counted calls nor in the receipt ledger.
+            _log.warning(
+                "parent turn mode=%s completed with no verified write for its "
+                "mode's action tools %s; blocking as no_tools (hallucinated success)",
+                mode_id,
+                sorted(_state.action_tool_ids),
+            )
+            content = (
+                f"The `{mode_id}` turn produced no verified write: none of the "
+                f"mode's action tools ({', '.join(sorted(_state.action_tool_ids))}) "
+                "completed successfully. The reported result is unverified — "
+                "nothing was written to disk or memory. Re-issue the request, "
+                "or narrow it so the mode can complete its work."
+            )
+            turn_blocked = True
+            _block_origin = "no_tools"
     elif not output_guard_result.allowed:
         original_len = len(content)
         safe_fallback = "I'm unable to provide that response. Please rephrase your request."

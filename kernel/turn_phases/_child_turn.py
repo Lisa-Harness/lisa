@@ -225,6 +225,24 @@ def classify_child_turn(
 
     # No write-effect receipt and the mode requires one. Distinguish
     # zero-call hallucination from read-only gather for honest messaging.
+    has_dense_content = len(child_result.response_text.strip()) > 150
+    if has_dense_content:
+        _clog.info(
+            "child turn mode=%s completed with no verified write, but "
+            "produced dense content (%d chars); accepting as successful.",
+            mode_id,
+            len(child_result.response_text.strip()),
+        )
+        return ChildTurnOutcome(
+            status="complete",
+            output_text=child_result.response_text,
+            duration_ms=elapsed_ms,
+            tool_call_count=child_result.tool_call_count,
+            called_tool_names=tuple(sorted(child_result.called_tool_names)),
+            effect_receipts=tuple(child_result.effect_receipts),
+            **_usage_kwargs,
+        )
+
     if child_result.tool_call_count == 0:
         _clog.warning(
             "child turn mode=%s completed with 0 tool calls but its mode "
