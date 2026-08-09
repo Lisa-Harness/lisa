@@ -397,3 +397,168 @@ def test_normalize_prunes_orphan_among_answered_calls() -> None:
     assert assistant["tool_calls"] == [
         {"id": "call_ok", "type": "function", "function": {"name": "a", "arguments": "{}"}}
     ]
+
+
+# ── normalize_openai_messages: Gemini thought_signature pruning ──────
+
+
+def test_normalize_strips_signature_less_tool_calls_for_gemini() -> None:
+    """Signature-less synthesized tool_calls are pruned for Gemini thinking models."""
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "Handing off.",
+            "tool_calls": [
+                {
+                    "id": "call_synth",
+                    "type": "function",
+                    "function": {"name": "transition_stage", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_synth", "content": "ok"},
+    ]
+    normalized = normalize_openai_messages(messages, require_thought_signature=True)
+    assistant = normalized[1]
+    assert "tool_calls" not in assistant
+    assert assistant["content"] == "Handing off."
+    # orphaned tool result dropped
+    assert not [m for m in normalized if m.get("role") == "tool"]
+
+
+def test_normalize_keeps_signed_calls_when_require_thought_signature_true() -> None:
+    """Tool_calls carrying a thought_signature survive the Gemini prune."""
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_signed",
+                    "type": "function",
+                    "function": {"name": "memory.search", "arguments": "{}"},
+                    "thought_signature": "sig_abc",
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_signed", "content": "results"},
+    ]
+    normalized = normalize_openai_messages(messages, require_thought_signature=True)
+    assistant = normalized[1]
+    assert "tool_calls" in assistant
+    assert assistant["tool_calls"][0]["id"] == "call_signed"
+
+
+def test_normalize_require_thought_signature_false_keeps_unsigned_calls() -> None:
+    """When require_thought_signature is False, unsigned calls are preserved."""
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_synth",
+                    "type": "function",
+                    "function": {"name": "transition_stage", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_synth", "content": "ok"},
+    ]
+    normalized = normalize_openai_messages(messages, require_thought_signature=False)
+    assistant = normalized[1]
+    assert "tool_calls" in assistant
+    assert assistant["tool_calls"][0]["id"] == "call_synth"
+
+
+# ── normalize_openai_messages: Gemini trailing-assistant nudge ──────
+
+
+def test_normalize_appends_user_nudge_when_gemini_prune_leaves_trailing_assistant() -> None:
+    """Gemini rejects requests ending with an assistant turn.
+
+    When signature-less pruning converts a trailing assistant ``tool_calls``
+    message into plain text (and drops its orphaned tool result), the
+    history now ends with an ``assistant`` message. Google returns
+    ``400 Requests ending with a model turn are not supported``. The
+    normalize chokepoint must append a synthetic ``user`` nudge so the
+    request ends with a ``user`` role.
+    """
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "do a multi-step thing"},
+        {
+            "role": "assistant",
+            "content": "Handing off.",
+            "tool_calls": [
+                {
+                    "id": "call_synth",
+                    "type": "function",
+                    "function": {"name": "transition_stage", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_synth", "content": "ok"},
+    ]
+    normalized = normalize_openai_messages(messages, require_thought_signature=True)
+    # The trailing assistant (now plain text) is no longer the last message.
+    assert normalized[-1]["role"] == "user"
+    assert normalized[-1]["content"]
+
+
+def test_normalize_no_trailing_nudge_when_history_ends_with_tool_result() -> None:
+    """No nudge is appended when the history ends with a tool result.
+
+    A signed tool call followed by its tool result leaves the last message
+    as ``role: tool``; Google accepts that. The trailing-assistant nudge
+    must only fire when the last message is actually an assistant turn.
+    """
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_signed",
+                    "type": "function",
+                    "function": {"name": "memory.search", "arguments": "{}"},
+                    "thought_signature": "sig_abc",
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_signed", "content": "results"},
+    ]
+    normalized = normalize_openai_messages(messages, require_thought_signature=True)
+    assert normalized[-1]["role"] == "tool"
+    assert normalized[-1]["tool_call_id"] == "call_signed"
+
+
+def test_normalize_no_trailing_nudge_when_require_thought_signature_false() -> None:
+    """The trailing-assistant nudge is Gemini-only.
+
+    OpenAI/Azure accept a request ending with an assistant message, so the
+    nudge must not fire when ``require_thought_signature`` is False.
+    """
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "Done.",
+            "tool_calls": [
+                {
+                    "id": "call_synth",
+                    "type": "function",
+                    "function": {"name": "transition_stage", "arguments": "{}"},
+                }
+            ],
+        },
+    ]
+    normalized = normalize_openai_messages(messages, require_thought_signature=False)
+    # Trailing assistant with its (orphaned) tool_calls pruned stays last.
+    assert normalized[-1]["role"] == "assistant"

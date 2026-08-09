@@ -171,6 +171,14 @@ def normalize_openai_messages(
     message, which Gemini accepts. The synthesized handoff's effect is
     already reflected in the system-prompt swap and tool-surface rebuild
     that happened in-loop; the message-history tool call is cosmetic.
+
+    Google/Gemini additionally rejects requests whose final message is an
+    ``assistant`` turn: ``400 Requests ending with a model turn are not
+    supported``. When the signature-less pruning leaves the history ending
+    with an assistant message, a synthetic ``user`` nudge is appended so
+    the request ends with a ``user``/``tool`` role as Google requires.
+    This nudge is scoped to the Gemini path only; OpenAI/Azure accept a
+    trailing assistant message.
     """
 
     # Collect every tool_call_id that has a matching tool-result message.
@@ -274,6 +282,23 @@ def normalize_openai_messages(
             if str(message.get("role", "") or "") != "tool"
             or str(message.get("tool_call_id", "") or "") in retained_assistant_ids
         ]
+        # Google/Gemini rejects a request whose last message is an
+        # ``assistant`` turn: ``400 Requests ending with a model turn are
+        # not supported``. The signature-less synthesized
+        # ``transition_stage`` pruning above can convert a trailing
+        # assistant ``tool_calls`` message into plain text (dropping its
+        # orphaned tool result), leaving the history ending with that
+        # assistant message. When that happens, append a synthetic
+        # ``user`` nudge so the request ends with a ``user``/``tool`` role
+        # as Google requires. This is scoped to the Gemini
+        # (``require_thought_signature``) path; OpenAI/Azure accept a
+        # trailing assistant message.
+        if normalized_messages and str(
+            normalized_messages[-1].get("role", "") or ""
+        ) == "assistant":
+            normalized_messages.append(
+                {"role": "user", "content": "Continue."}
+            )
     return normalized_messages
 
 
