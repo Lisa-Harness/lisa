@@ -6306,6 +6306,9 @@ from kernel.turn_phases._tool_schemas import (  # noqa: F401
 # Unified routing applier (Phase 3 of the uniformity refactor)
 from kernel.turn_phases._routing import (
     RoutingContext,
+    TurnDecision,
+    TurnDecisionResult,
     apply_routing,
+    evaluate_turn_decision,
     save_route_decision,
 )

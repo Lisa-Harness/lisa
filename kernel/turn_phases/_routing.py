@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Literal
 
 from kernel.models import WorkflowTransitionRequest
@@ -38,11 +39,26 @@ from kernel.seams.protocols import CoordinatorRouteDecision
 
 __all__ = [
     "RoutingSource",
+    "TurnDecision",
+    "TurnDecisionResult",
     "apply_routing",
     "save_route_decision",
 ]
 
 logger = logging.getLogger(__name__)
+
+class TurnDecision(Enum):
+    """The three possible outcomes of an execution loop evaluation."""
+    CONTINUE = "continue"
+    HANDOFF = "handoff"
+    FINISH = "finish"
+
+@dataclass(frozen=True, slots=True)
+class TurnDecisionResult:
+    """The result of the centralized loop decision."""
+    decision: TurnDecision
+    target: str | None = None
+    reason: str = ""
 
 RoutingSource = Literal["model_tool_call", "entry_op_contract", "forced_enforcer"]
 """Who decided the routing. Diagnostics only — behavior is identical."""
@@ -162,4 +178,103 @@ def build_transition_request(
         target_stage_id=target,
         rationale=rationale,
         required_missing_inputs=required_missing_inputs or [],
+    )
+
+
+# ── Centralized loop decision ────────────────────────────────────────
+
+
+def evaluate_turn_decision(
+    *,
+    has_tool_calls: bool,
+    has_transition_request: bool,
+    transition_target: str | None,
+    is_terminal: bool,
+    budget_exhausted: bool,
+    has_content: bool,
+) -> TurnDecisionResult:
+    """Classify one iteration's outcome into the three-outcome loop contract.
+
+    This is the single decision point that reduces every model iteration
+    to one of:
+
+    - ``CONTINUE`` — the model called tools (but no transition) and the
+      budget is not exhausted. The loop should iterate again.
+    - ``HANDOFF`` — the model (or the enforcer) produced a
+      ``transition_stage`` call. The loop should advance the mode/stage
+      via ``apply_routing`` and then iterate again with the new target's
+      tool surface.
+    - ``FINISH`` — the model produced a final answer (content with no
+      tool calls), the position is terminal, or the budget is exhausted
+      with no pending transition. The loop should break and emit the
+      response.
+
+    The function is intentionally pure — it reads only the booleans the
+    turn loop already computes and returns a ``TurnDecisionResult``. The
+    caller (``run_turn``) performs the side effects. This keeps the
+    decision testable in isolation and prevents policy from scattering
+    across the loop body.
+
+    Args:
+        has_tool_calls: True when the model completion included at least
+            one tool call that is not a ``transition_stage`` call.
+        has_transition_request: True when the model (or the forced-action
+            enforcer) produced a ``transition_stage`` tool call.
+        transition_target: The target stage/mode id from the transition
+            request, or ``None`` when there is no transition.
+        is_terminal: True when the current workflow position is complete
+            (all declared steps satisfied and the intra-mode pointer is
+            on a terminal stage).
+        budget_exhausted: True when the iteration or tool-call budget has
+            been consumed.
+        has_content: True when the model produced a non-empty content
+            string (a visible answer for the user).
+
+    Returns:
+        A ``TurnDecisionResult`` whose ``decision`` is one of
+        ``CONTINUE``, ``HANDOFF``, or ``FINISH``.
+    """
+    # 1. A transition request always wins — the model (or enforcer) is
+    #    explicitly handing off to another mode/stage.
+    if has_transition_request and transition_target:
+        return TurnDecisionResult(
+            decision=TurnDecision.HANDOFF,
+            target=transition_target,
+            reason="model requested transition_stage",
+        )
+
+    # 2. A terminal position means the workflow is done — finish
+    #    regardless of remaining budget. This is the receipt-backed
+    #    completion path: ``is_terminal`` is only True when the workflow
+    #    view says all steps are satisfied.
+    if is_terminal:
+        return TurnDecisionResult(
+            decision=TurnDecision.FINISH,
+            reason="workflow position is terminal (all steps satisfied)",
+        )
+
+    # 3. Tool calls without a transition mean the model is still working
+    #    — continue the loop unless the budget is gone.
+    if has_tool_calls and not budget_exhausted:
+        return TurnDecisionResult(
+            decision=TurnDecision.CONTINUE,
+            reason="model dispatched tools; iterating",
+        )
+
+    # 4. Budget exhausted with no transition and no terminal position:
+    #    the harness must yield. This is the stall / cap path.
+    if budget_exhausted:
+        return TurnDecisionResult(
+            decision=TurnDecision.FINISH,
+            reason="budget exhausted with no pending transition",
+        )
+
+    # 5. No tool calls, no transition, budget remaining, and not
+    #    terminal: the model produced a final answer (or an empty
+    #    response). Either way, the turn is done.
+    return TurnDecisionResult(
+        decision=TurnDecision.FINISH,
+        reason="model produced final answer"
+        if has_content
+        else "model produced no tool calls and no content",
     )
