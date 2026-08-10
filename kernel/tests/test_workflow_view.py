@@ -343,3 +343,103 @@ class TestRenderWorkflowProgress:
         )
         progress = render_workflow_progress(view)
         assert "[x] search: Found 3 results" in progress
+
+
+class TestWriteReceiptContract:
+    """Lock in the terminal-write-mode receipt contract from the execution plan.
+
+    A write-oriented step is terminal only when the runtime observes a
+    matching ``effect_receipt``. Model assertions ("I am done writing")
+    are never sufficient — the receipt is the honest signal.
+    """
+
+    def test_model_assertion_without_receipt_does_not_complete(self):
+        """A write step whose mode produced content but no receipt stays incomplete."""
+        entries = [
+            _entry(mode_id="planner", response_text=_PLAN_3_STEP),
+            _entry(mode_id="search", response_text="Searched.", handoff_to="coding"),
+            _entry(
+                mode_id="coding",
+                response_text="I have finished implementing the client.",
+                # No effect_receipts — the model claims completion but
+                # produced no durable proof.
+            ),
+        ]
+        view = derive_workflow_view(entries)
+        assert view is not None
+        assert "search_0" in view.completed_steps
+        assert "coding_1" not in view.completed_steps
+        assert view.current_step_id == "coding_1"
+
+    def test_bare_form_capability_match_completes(self):
+        """A receipt with a namespaced capability id matches the bare form."""
+        entries = [
+            _entry(mode_id="planner", response_text=_PLAN_3_STEP),
+            _entry(mode_id="search", response_text="Searched.", handoff_to="coding"),
+            _entry(
+                mode_id="coding",
+                response_text="Implemented.",
+                # The plan says _writes: coding_apply_patch_ but the
+                # receipt carries the namespaced form. The bare-form
+                # match should still complete the step.
+                effect_receipts=[
+                    _receipt("lisa-storage.coding_apply_patch", "write"),
+                ],
+            ),
+        ]
+        view = derive_workflow_view(entries)
+        assert view is not None
+        assert "coding_1" in view.completed_steps
+
+    def test_external_write_receipt_completes_write_step(self):
+        """An ``external_write`` effect satisfies the write contract."""
+        entries = [
+            _entry(mode_id="planner", response_text=_PLAN_3_STEP),
+            _entry(mode_id="search", response_text="Searched.", handoff_to="coding"),
+            _entry(
+                mode_id="coding",
+                response_text="Implemented via external tool.",
+                effect_receipts=[
+                    _receipt("coding_apply_patch", "external_write"),
+                ],
+            ),
+        ]
+        view = derive_workflow_view(entries)
+        assert view is not None
+        assert "coding_1" in view.completed_steps
+
+    def test_write_step_in_wrong_mode_does_not_complete(self):
+        """A receipt for the right capability but in the wrong mode does not complete."""
+        entries = [
+            _entry(mode_id="planner", response_text=_PLAN_3_STEP),
+            _entry(mode_id="search", response_text="Searched.", handoff_to="coding"),
+            # The receipt is in 'markdown' mode, not 'coding' mode.
+            _entry(
+                mode_id="markdown",
+                response_text="Oops, wrong mode.",
+                effect_receipts=[_receipt("coding_apply_patch", "write")],
+            ),
+        ]
+        view = derive_workflow_view(entries)
+        assert view is not None
+        assert "coding_1" not in view.completed_steps
+
+    def test_all_write_steps_complete_workflow_returns_none(self):
+        """When every step (including terminal write steps) is satisfied,
+        the workflow is done and ``derive_workflow_view`` returns ``None``."""
+        entries = [
+            _entry(mode_id="planner", response_text=_PLAN_3_STEP),
+            _entry(mode_id="search", response_text="Searched.", handoff_to="coding"),
+            _entry(
+                mode_id="coding",
+                response_text="Implemented.",
+                effect_receipts=[_receipt("coding_apply_patch", "write")],
+            ),
+            _entry(
+                mode_id="markdown",
+                response_text="Documented.",
+                effect_receipts=[_receipt("markdown_generate", "external_write")],
+            ),
+        ]
+        view = derive_workflow_view(entries)
+        assert view is None
