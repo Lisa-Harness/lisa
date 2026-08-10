@@ -192,18 +192,19 @@ def _restore_position(runtime: Any, bundle_data: dict[str, Any]) -> None:
     workflow was parked in, not whatever mode was active before the
     restore.
     """
+    # Workflow position restore is now thread-derived: the next turn's
+    # ``derive_workflow_view`` will reconstruct the workflow from the
+    # thread log, including any checkpoint-serialized position. The old
+    # mutable ``_set_workflow_position`` runtime method has been removed;
+    # we only restore ``current_mode_id`` so the next turn resumes in the
+    # mode the workflow was parked in.
     position_dict = bundle_data.get("workflow_position") or {}
     if not isinstance(position_dict, dict) or not position_dict:
-        return
-    updater = getattr(runtime, "_set_workflow_position", None)
-    if updater is None:
-        logger.debug("restore: workflow position present but no updater wired on runtime")
         return
     try:
         from kernel.workflow_position import WorkflowPosition  # noqa: PLC0415
 
         position = WorkflowPosition.model_validate(position_dict)
-        updater(position)
         if position.mode_id:
             runtime.current_mode_id = position.mode_id
     except Exception as exc:  # pylint: disable=broad-except

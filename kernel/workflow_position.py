@@ -20,9 +20,10 @@ resolver's stall counter was fed from two different units depending on mode
 kind; checkpoints serialized both and restores could rehydrate one without
 the other. One position object makes those splits unrepresentable.
 
-The durable store contract lives in ``kernel/workflow_position_store.py``
-(Protocol only); the file-backed implementation lives in
-``host/workflow_position_store.py``. The model and pure helpers are here.
+The thread-derived ``WorkflowView`` (``kernel/workflow_view.py``) is the
+host-facing projection: it derives the active workflow from the append-only
+thread log at turn start, with no separate mutable position store. The
+model and pure helpers are here.
 
 Design constraints (mirroring the codebase conventions):
 
