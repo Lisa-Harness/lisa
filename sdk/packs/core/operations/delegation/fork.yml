@@ -13,4 +13,3 @@ timeout_seconds: 120
 max_calls_per_turn: 5
 preferred_model_id: default
 exportable: true
-default_available: true

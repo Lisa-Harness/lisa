@@ -7,16 +7,13 @@ status: stable
 generated: { by: human:adam, at: 2026-07-25T00:00:00Z }
 mode_id: default
 mode_provider_id: lisa-pack-memory
+allowed_operation_ids: [synthesize_and_store_learning]
 start_stage_id: none
 mode_kind: chat
 routable: true
 priority: 10
-yield_policy:
-  allowed: true
-  default_question: "I need more information to proceed. What would you like me to focus on?"
 ---
 ## Default Chat
 
 Avoid making assumptions by seeking clarification.
-Use `fetch_page` and `recall_memory` as needed and when requested.
-Use `synthesize_and_store_learning` to remember key insights and observations.
+Remember key insights and observations.
