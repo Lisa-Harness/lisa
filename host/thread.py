@@ -500,6 +500,9 @@ def append_thread_entry(
     query: str,
     response_text: str,
     provenance: dict[str, Any] | None = None,
+    effect_receipts: list[dict[str, Any]] | None = None,
+    handoff_to: str = "",
+    transitioned_to: str = "",
     segment_turns: int = _DEFAULT_SEGMENT_TURNS,
 ) -> None:
     """Append a new thread entry to the active segment.
@@ -507,6 +510,11 @@ def append_thread_entry(
     Seals the active segment first when it has reached ``segment_turns``
     entries (pressure-driven, synchronous, sub-10ms for 256 lines). No-ops
     when ``thread_path`` is ``None`` or ``user_slug`` is empty.
+
+    ``effect_receipts``, ``handoff_to``, and ``transitioned_to`` are the
+    workflow-tracking fields that enable a ``WorkflowView`` to be derived
+    from the thread tail alone — completion is inferred from matching
+    receipts in later entries, not from a mutable position store.
     """
     if thread_path is None or not user_slug:
         return
@@ -526,6 +534,12 @@ def append_thread_entry(
     }
     if provenance:
         entry["provenance"] = provenance
+    if effect_receipts:
+        entry["effect_receipts"] = effect_receipts
+    if handoff_to:
+        entry["handoff_to"] = handoff_to
+    if transitioned_to:
+        entry["transitioned_to"] = transitioned_to
 
     paths.current.parent.mkdir(parents=True, exist_ok=True)
     with paths.current.open("a", encoding="utf-8") as handle:

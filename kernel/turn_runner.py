@@ -30,9 +30,6 @@ from kernel.context.sub_turn_contract import (
 )
 from kernel.execution_policy import ExecutionPolicy, resolve_capability_invocation_limit
 from kernel.ipsar_fsm import (
-    apply_stage_transition,
-    create_position,
-    enter_mode,
     get_mode_system_intro,
     get_routing_targets,
     get_workflow_catalog,
@@ -61,7 +58,6 @@ from kernel.models import (
     ToolExecutionContext,
     ToolResult,
     TurnBudget,
-    WorkflowTransitionRequest,
     YieldAction,
     YieldPolicy,
 )
@@ -103,12 +99,7 @@ from kernel.tools.registry import execute_tool, get_tool_catalog
 from kernel.tools.schema_translator import (
     openai_tool_call_to_mcp,
 )
-from kernel.workflow_position import (
-    WorkflowStep,
-    _step_id_for,
-    advance_step,
-    note_turn,
-)
+from kernel.workflow_position import WorkflowStep, _step_id_for
 
 logger = logging.getLogger(__name__)
 
@@ -2501,42 +2492,6 @@ async def _run_turn_inner(
     async def _mcp_tool_executor(tool_id: str, _ctx: Any) -> ToolResult:
         return await _mcp_tool_executor_fn(tool_id, _ctx, pool)
 
-    # ── Turn-start position (Phase 6c: one mode model) ───────────────
-    # Every turn in a catalog mode has a ``WorkflowPosition``: the single
-    # durable object carrying the inter-mode plan (declared/completed
-    # steps) and the intra-mode stage pointer (``stage_id`` /
-    # ``turn_count``). Created fresh when absent or parked on a terminal
-    # stage (resume-after-exit starts fresh); re-parked with steps
-    # preserved when the turn's mode differs from the position's mode (a
-    # manual mode switch mid-chain must not strand the chain, and the
-    # stage pointer must follow the mode the turn actually runs in);
-    # otherwise the per-stage turn counter increments. Fork/delegate
-    # children skip this — they run inside the parent's position and must
-    # not persist their own. Position handling is best-effort: a mode
-    # outside the catalog (or a broken hook) must not break the turn.
-    if hooks.workflow_position is not None and not sub_turn_kind:
-        try:
-            _start_position = hooks.workflow_position()
-        except Exception:  # pylint: disable=broad-except
-            _start_position = None
-        try:
-            if _start_position is None or getattr(
-                _start_position, "terminal_reached", False
-            ):
-                _next_position = create_position(mode_id)
-            elif getattr(_start_position, "mode_id", "") != mode_id:
-                _next_position = note_turn(enter_mode(_start_position, mode_id))
-            else:
-                _next_position = note_turn(_start_position)
-            if hooks.workflow_position_updater is not None:
-                hooks.workflow_position_updater(_next_position)
-        except Exception as position_exc:  # pylint: disable=broad-except
-            _log.debug(
-                "turn-start position handling skipped for mode=%s: %s",
-                mode_id,
-                position_exc,
-            )
-
     # ── Phase 1: Pre-turn ─────────────────────────────────────────────
     # Assemble the user context early so the planner entry op
     # (``plan_workflow``) can see the recent thread excerpt — without
@@ -2710,23 +2665,16 @@ async def _run_turn_inner(
                 plan_steps_raw = []
             if planned_target:
                 # ── Kernel-driven handoff (in-loop, no recursion) ────────────
-                # The kernel drives the handoff itself: persist the plan as a
-                # WorkflowInstance (so it survives across turns and is resumable
-                # with /proceed), save the coordinator decision, and set
-                # ``pending_planned_handoff`` so the loop's synthesis block at
-                # the top of the next iteration funnels the handoff through the
-                # same transition_stage interception the model-driven path uses
-                # (Phase 3: one transition). The old recursive
-                # ``run_turn(mode_id=planned_target)`` is deleted — it re-entered
-                # Phase 1 in the child mode and treated a non-routing action
-                # mode's entry-op result as a planner failure (the 2026-08-06
-                # plan → search stall), and it bypassed the per-iteration
-                # lifecycle briefing the loop maintains.
+                # The kernel drives the handoff itself: save the coordinator
+                # decision and set ``pending_planned_handoff`` so the loop's
+                # synthesis block at the top of the next iteration funnels the
+                # handoff through the same transition_stage interception the
+                # model-driven path uses (Phase 3: one transition). The plan
+                # prose lives in the thread's ``response_text``; the
+                # WorkflowView derives declared/completed steps from it on the
+                # next turn. No mutable position is persisted.
                 workflow_steps = _plan_steps_to_workflow_steps(plan_steps_raw)
-                persist_planned_position(
-                    hooks, workflow_steps, _log, plan_text=plan_block
-                )
-                
+
                 # When synthesizing the handoff, update the query to the
                 # first step's derived sub-query so the handoff processor
                 # at the top of the next iteration sees it.
@@ -3105,91 +3053,6 @@ async def _run_turn_inner(
             routing_hint[:200],
         )
         system_prompt = system_prompt + "\n\n" + routing_hint
-        # ── Ad-hoc chain → durable instance (the 2026-08-01 skip-on-resume fix) ──
-        # When the routing hint detected a multi-step chain at turn 1 (no
-        # active ``WorkflowPosition`` yet), compile the chain into an ad-hoc
-        # position and persist it via ``workflow_position_updater``. The
-        # ephemeral ``chain_satisfied`` set resets to ``set()`` every turn
-        # (line ~L2398), so without a durable position a yield → "continue"
-        # resume loses the chain memory and the routing hint recomputes
-        # from scratch — skipping the middle step (the 2026-08-01 incident:
-        # search → [code review skipped] → GAP/SWOT). The position is the
-        # durable form of ``chain_satisfied``; it is hydrated at turn start
-        # by the block above. Gated on:
-        #   - no active position (turn 1, not a resume),
-        #   - a routing hint was produced (the gap is non-empty),
-        #   - the compiled chain has 2+ steps (a real multi-step request),
-        #   - the updater is wired (the host owns the lifecycle).
-        # Suppressed for fork children (``suppress_routing_hint``) — a fork
-        # child already runs in its target mode and never starts a chain.
-        # Suppressed for plan-escalation hints: when the routing hint is a
-        # plan-escalation ("hand off to `plan`"), the ``plan`` mode's
-        # ``plan_workflow`` entry op owns position creation
-        # (``spawned_from="plan_workflow_op"``). Creating an ad-hoc position
-        # here would be orphaned — the plan position overwrites it via the
-        # updater moments later (the 2026-08-01 overlap bug).
-        if (
-            not suppress_routing_hint
-            and hooks.workflow_position_updater is not None
-            and hooks.workflow_position is not None
-        ):
-            try:
-                from kernel.turn_phases._routing_hint import (
-                    is_plan_escalation_hint,
-                )
-            except Exception:  # pylint: disable=broad-except
-                is_plan_escalation_hint = lambda _h: False
-            if not is_plan_escalation_hint(routing_hint):
-                try:
-                    _existing_position = hooks.workflow_position()
-                except Exception:  # pylint: disable=broad-except
-                    _existing_position = None
-                # Phase 6c: turn-1 creation means a bare position always
-                # exists when the hooks are wired. The compile gate is "no
-                # chain in flight" — the position carries no declared steps
-                # — not "no position". A mid-chain position (declared steps
-                # present) owns the routing; a bare position takes the
-                # compiled chain.
-                if _existing_position is None or not getattr(
-                    _existing_position, "declared_steps", ()
-                ):
-                    try:
-                        from kernel.workflow_position import (
-                            compile_steps_from_routing_targets,
-                        )
-
-                        _adhoc_steps = compile_steps_from_routing_targets(
-                            query=query,
-                            routing_targets=get_routing_targets(mode_id) if mode_config else [],
-                            catalog=get_workflow_catalog(),
-                            spawned_from="adhoc",
-                        )
-                    except Exception as adhoc_exc:  # pylint: disable=broad-except
-                        _adhoc_steps = ()
-                        _log.debug("ad-hoc chain compile failed: %s", adhoc_exc)
-                    if len(_adhoc_steps) >= 2:
-                        # ── Deferred persist (the 2026-08-06 zombie fix) ──
-                        # Stash the compiled steps on ``_state`` instead of
-                        # persisting immediately. The position is persisted
-                        # only after the first successful ``transition_stage``
-                        # handoff (see the durable-advancement block below).
-                        # This makes ad-hoc position creation transactional
-                        # with the first real handoff: if the turn fails
-                        # before any handoff succeeds (router TypeError,
-                        # fork NameError, entry-op failure, user Ctrl+C),
-                        # the steps die with ``_state`` and no zombie
-                        # ``WorkflowPosition`` is left in the durable store
-                        # to hijack the next turn. The 2026-08-01
-                        # yield→resume fix is preserved because a yield
-                        # happens mid-turn, after at least one handoff has
-                        # already persisted the position.
-                        _state.pending_adhoc_steps = tuple(_adhoc_steps)
-                        _log.debug(
-                            "deferred ad-hoc WorkflowPosition steps=%d "
-                            "first=%s (persist on first handoff)",
-                            len(_adhoc_steps),
-                            _adhoc_steps[0].mode_id,
-                        )
         # ── Forced-action enforcer: precompute the deterministic routing
         # decision (Phase 5: one enforcer). When the routing hint encodes
         # the routing — a ``fork:<csv>`` fan-out or any single-handoff
@@ -3704,27 +3567,6 @@ async def _run_turn_inner(
                 _state.iteration,
                 _lifecycle_action.reason,
             )
-            # Mark the WorkflowPosition complete so the persisted snapshot and
-            # the in-memory position reflect the kill. ``mark_step_complete``
-            # clears ``current_step_id`` on the last step. Best-effort: a
-            # position-updater failure logs but does not block the terminate
-            # (the checkpoint still records ``terminated``).
-            if hooks.workflow_position is not None and hooks.workflow_position_updater is not None:
-                try:
-                    _term_position = hooks.workflow_position()
-                    if _term_position is not None and _term_position.current_step_id:
-                        from kernel.workflow_position import mark_step_complete
-
-                        _completed = mark_step_complete(
-                            _term_position, _term_position.current_step_id
-                        )
-                        hooks.workflow_position_updater(_completed)
-                except Exception as exc:  # pylint: disable=broad-except
-                    _log.warning(
-                        "terminate: mark_step_complete failed: %s (checkpoint "
-                        "still records terminated)",
-                        exc,
-                    )
             break
 
         if isinstance(_lifecycle_action, YieldAction):
@@ -3908,39 +3750,17 @@ async def _run_turn_inner(
                 effective_tools = None
             elif _router_decision.transition_to.strip():
                 _target_stage = _router_decision.transition_to.strip()
-                if hooks.workflow_position is not None:
-                    _wf_position = hooks.workflow_position()
-                    if _wf_position is not None:
-                        try:
-                            _transition_req = WorkflowTransitionRequest(
-                                target_stage_id=_target_stage,
-                                rationale=f"router transition_to: {_router_decision.reason}",
-                            )
-                            _updated_position = apply_stage_transition(_wf_position, _transition_req)
-                            if hooks.workflow_position_updater is not None:
-                                hooks.workflow_position_updater(_updated_position)
-                            transitioned_to = _updated_position.stage_id
-                            _log.debug(
-                                "router transition_to action (iteration=%d, "
-                                "stage=%s); forcing final summary",
-                                _state.iteration,
-                                _target_stage,
-                            )
-                        except Exception as trans_exc:  # pylint: disable=broad-except
-                            _log.warning(
-                                "router transition_to to stage %r failed: %s; "
-                                "falling back to normal completion",
-                                _target_stage,
-                                trans_exc,
-                            )
-                    else:
-                        _log.warning(
-                            "router transition_to action but no active workflow position; ignoring"
-                        )
-                else:
-                    _log.warning(
-                        "router transition_to action but no workflow position hook wired; ignoring"
-                    )
+                # The transition target is recorded on the TurnResult
+                # (``transitioned_to``) and written to the thread; the
+                # WorkflowView derives the stage from it on the next turn.
+                # No mutable position is updated here.
+                transitioned_to = _target_stage
+                _log.debug(
+                    "router transition_to action (iteration=%d, "
+                    "stage=%s); forcing final summary",
+                    _state.iteration,
+                    _target_stage,
+                )
                 effective_tools = None
 
         # ── Kernel-driven planned handoff synthesis ───────────────────
@@ -4573,33 +4393,16 @@ async def _run_turn_inner(
                     # within their own mode (ponder's ``exit`` wins over a
                     # hypothetical ``exit`` mode).
                     if mode_config is not None and target_stage in mode_config.stages:
-                        position_fn = hooks.workflow_position
-                        current_position = position_fn() if position_fn is not None else None
-                        if current_position is None:
-                            tool_output = "No active workflow position; cannot transition."
-                        else:
-                            try:
-                                transition_req = WorkflowTransitionRequest(
-                                    target_stage_id=target_stage,
-                                    rationale=rationale,
-                                    required_missing_inputs=(
-                                        list(missing) if isinstance(missing, list) else []
-                                    ),
-                                )
-                                updated_position = apply_stage_transition(
-                                    current_position, transition_req
-                                )
-                                if hooks.workflow_position_updater is not None:
-                                    hooks.workflow_position_updater(updated_position)
-                                transitioned_to = updated_position.stage_id
-                                tool_output = (
-                                    f"Transitioned to stage: {updated_position.stage_id}."
-                                    + (f" Rationale: {rationale}" if rationale else "")
-                                )
-                            except Exception as trans_exc:  # pylint: disable=broad-except
-                                tool_output = (
-                                    f"Transition failed: {type(trans_exc).__name__}: {trans_exc}"
-                                )
+                        # Intra-mode stage transition. The transition target
+                        # is recorded on the TurnResult (``transitioned_to``)
+                        # and written to the thread; the WorkflowView derives
+                        # the stage from it on the next turn. No mutable
+                        # position is updated here.
+                        transitioned_to = target_stage
+                        tool_output = (
+                            f"Transitioned to stage: {target_stage}."
+                            + (f" Rationale: {rationale}" if rationale else "")
+                        )
                         await _emit_stage(
                             "tool_dispatch_complete",
                             {
@@ -4986,42 +4789,12 @@ async def _run_turn_inner(
                                         ).strip()
                                         if _planned_next:
                                             _state.pending_planned_handoff = _planned_next
-                                            # Persist the plan's steps as a
-                                            # ``WorkflowPosition`` (spawned_from=
-                                            # plan_workflow_op), mirroring the
-                                            # Phase-1 plan path (~L2676). Without
-                                            # this, a mid-turn re-entry to ``plan``
-                                            # (e.g. kimi-k2.6 calling
-                                            # ``transition_stage(plan)`` from
-                                            # ``search``) finds no active position
-                                            # → ``_active_position_resume_target``
-                                            # returns "" → the resume-skip branch
-                                            # does NOT fire → ``plan_workflow``
-                                            # re-runs against a status query → no
-                                            # routing target → plan-failure
-                                            # hard-stop (the 2026-08-08 stuck turn).
-                                            _mid_plan_steps_raw = (
-                                                entry_result.output_json or {}
-                                            ).get("steps") or []
-                                            if not isinstance(_mid_plan_steps_raw, list):
-                                                _mid_plan_steps_raw = []
-                                            _mid_workflow_steps = (
-                                                _plan_steps_to_workflow_steps(_mid_plan_steps_raw)
-                                            )
-                                            # Carry the rendered plan block onto
-                                            # the position so the handoff context
-                                            # builder can inject it into the
-                                            # target mode's system prompt
-                                            # (mirrors the Phase-1 plan path).
-                                            _mid_plan_block = (
-                                                entry_result.output_text or ""
-                                            ).strip()
-                                            persist_planned_position(
-                                                hooks,
-                                                _mid_workflow_steps,
-                                                _log,
-                                                plan_text=_mid_plan_block,
-                                            )
+                                            # The plan prose lives in the
+                                            # thread's ``response_text``; the
+                                            # WorkflowView derives declared/
+                                            # completed steps from it on the
+                                            # next turn. No mutable position
+                                            # is persisted.
                                             if hooks.route_coordinator is not None:
                                                 try:
                                                     hooks.route_coordinator.save(
@@ -5259,159 +5032,44 @@ async def _run_turn_inner(
                                         extra_satisfied=_state.chain_satisfied,
                                         planner_model_id=str(preferred_model_id or ""),
                                     )
-                                    # ── Durable instance advancement ──
-                                    # Persist the handoff on the active
-                                    # ``WorkflowPosition`` so the next turn's
-                                    # ``chain_satisfied`` hydration rehydrates
-                                    # the completed step. The step that just
-                                    # finished is the position's
-                                    # ``current_step_id`` (the mode we handed
-                                    # *from*); advancing it moves the pointer
-                                    # to the new target. ``enter_mode`` then
-                                    # parks the stage pointer on the target
-                                    # mode's start stage — the step pointer
-                                    # and the stage pointer move together
-                                    # (the pre-merge session/instance drift
-                                    # is unrepresentable). Idempotent: a
-                                    # repeated handoff to the same target is
-                                    # a no-op. Runs after the hint recomputation
-                                    # so a failure here never suppresses it.
-                                    if (
-                                        hooks.workflow_position is not None
-                                        and hooks.workflow_position_updater is not None
-                                    ):
+                                    # ── Declared next-step hint (from derived view) ──
+                                    # The handoff is recorded on the TurnResult
+                                    # (``handoff_to``) and written to the thread;
+                                    # the WorkflowView derives progress from
+                                    # receipts in later thread entries. Here we
+                                    # read the turn-start view snapshot to emit a
+                                    # directive hint naming the next step's mode
+                                    # from the declared sequence, so the model
+                                    # knows where to go next. No mutable
+                                    # position is advanced — the view is
+                                    # read-only and re-derived next turn.
+                                    if hooks.workflow_position is not None:
                                         try:
                                             _position = hooks.workflow_position()
                                         except Exception:  # pylint: disable=broad-except
                                             _position = None
-                                        # ── Deferred ad-hoc attach ──
-                                        # First successful handoff with
-                                        # pending ad-hoc steps: commit the
-                                        # steps compiled at turn start onto
-                                        # the live position (turn-1
-                                        # creation means a bare position
-                                        # already exists; the steps attach
-                                        # to it). This is the transactional
-                                        # commit point for the steps — if
-                                        # the turn had failed before this
-                                        # handoff, the steps would have died
-                                        # with ``_state`` (the 2026-08-06
-                                        # zombie fix). The first step (the
-                                        # handoff target) is marked visited
-                                        # and the pointer advances to the
-                                        # step after.
-                                        _attached_adhoc = False
-                                        if _state.pending_adhoc_steps:
-                                            try:
-                                                _first_step = _state.pending_adhoc_steps[0]
-                                                if _position is None:
-                                                    _position = create_position(
-                                                        _first_step.mode_id,
-                                                        steps=_state.pending_adhoc_steps,
-                                                        spawned_from="adhoc",
-                                                    )
-                                                else:
-                                                    _position = _position.model_copy(
-                                                        update={
-                                                            "declared_steps": (
-                                                                _state.pending_adhoc_steps
-                                                            ),
-                                                            "current_step_id": (
-                                                                _first_step.step_id
-                                                            ),
-                                                            "spawned_from": "adhoc",
-                                                        }
-                                                    )
-                                                _position = advance_step(
-                                                    _position,
-                                                    _first_step.step_id,
+                                        if _position is not None and getattr(
+                                            _position, "current_step_id", ""
+                                        ):
+                                            _next_step = _position.step_by_id(
+                                                _position.current_step_id
+                                            )
+                                            if _next_step is not None:
+                                                post_handoff_hint = (
+                                                    "## Routing Hint\n\n"
+                                                    f"This is the next step in the "
+                                                    f"planned workflow. Call "
+                                                    f"`transition_stage` with "
+                                                    f"target_stage_id "
+                                                    f"`{_next_step.mode_id}`."
                                                 )
-                                                _state.pending_adhoc_steps = ()
-                                                _attached_adhoc = True
-                                                _log.debug(
-                                                    "committed ad-hoc steps onto "
-                                                    "WorkflowPosition position_id=%s "
-                                                    "steps=%d (deferred, on first "
-                                                    "handoff to %s)",
+                                                _log.info(
+                                                    "plan-driven next step: "
+                                                    "position=%s step=%s "
+                                                    "target=%s",
                                                     _position.position_id,
-                                                    len(_position.declared_steps),
-                                                    target_stage,
-                                                )
-                                            except Exception as adhoc_exc:  # pylint: disable=broad-except
-                                                _log.warning(
-                                                    "deferred ad-hoc WorkflowPosition "
-                                                    "attach failed: %s",
-                                                    adhoc_exc,
-                                                )
-                                                _state.pending_adhoc_steps = ()
-                                        if _position is not None:
-                                            try:
-                                                # When the ad-hoc attach just
-                                                # fired, ``_position`` already
-                                                # reflects the handoff (first
-                                                # step visited, pointer at the
-                                                # step after). Skip the
-                                                # redundant ``advance_step``;
-                                                # the hint below reads
-                                                # ``_position.current_step_id``
-                                                # directly.
-                                                if not _attached_adhoc and getattr(
-                                                    _position, "current_step_id", ""
-                                                ):
-                                                    _position = advance_step(
-                                                        _position, _position.current_step_id
-                                                    )
-                                                _position = enter_mode(
-                                                    _position,
-                                                    target_stage,
-                                                    rationale=rationale,
-                                                )
-                                                hooks.workflow_position_updater(_position)
-                                                # ── Declared next-step hint ──
-                                                # When a position is active
-                                                # and has a remaining step
-                                                # after advancement, override
-                                                # the emergent routing hint
-                                                # with a directive hint naming
-                                                # the next step's mode from
-                                                # the declared sequence. This
-                                                # replaces the one-step-at-a-
-                                                # time emergent hint chain
-                                                # with the position's declared
-                                                # order. The position is the
-                                                # source of truth, not the
-                                                # gap-intent recompute.
-                                                # Origin-blind: applies to
-                                                # ad-hoc, session_plan, and
-                                                # plan_workflow_op positions
-                                                # alike.
-                                                if _position.current_step_id:
-                                                    _next_step = _position.step_by_id(
-                                                        _position.current_step_id
-                                                    )
-                                                    if _next_step is not None:
-                                                        post_handoff_hint = (
-                                                            "## Routing Hint\n\n"
-                                                            f"This is the next step in the "
-                                                            f"planned workflow. Call "
-                                                            f"`transition_stage` with "
-                                                            f"target_stage_id "
-                                                            f"`{_next_step.mode_id}`."
-                                                        )
-                                                        _log.info(
-                                                            "plan-driven next step: "
-                                                            "position=%s step=%s "
-                                                            "target=%s",
-                                                            _position.position_id,
-                                                            _next_step.step_id,
-                                                            _next_step.mode_id,
-                                                        )
-                                            except Exception as wi_exc:  # pylint: disable=broad-except
-                                                _log.warning(
-                                                    "workflow_position_updater failed after "
-                                                    "handoff to '%s': %s",
-                                                    target_stage,
-                                                    wi_exc,
+                                                    _next_step.step_id,
+                                                    _next_step.mode_id,
                                                 )
                                 if post_handoff_hint:
                                     # ── Hint-override suppression ──────
@@ -6639,6 +6297,5 @@ from kernel.turn_phases._tool_schemas import (  # noqa: F401
 from kernel.turn_phases._routing import (
     RoutingContext,
     apply_routing,
-    persist_planned_position,
     save_route_decision,
 )

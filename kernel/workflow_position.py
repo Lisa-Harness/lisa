@@ -65,7 +65,7 @@ __all__ = [
 ]
 
 
-WorkflowPositionOrigin = Literal["adhoc", "session_plan", "plan_workflow_op"]
+WorkflowPositionOrigin = Literal["adhoc", "session_plan", "plan_workflow_op", "thread_derived"]
 """How a position was spawned.
 
 ``adhoc``: the kernel built the position at turn 1 from the routing hint
@@ -76,6 +76,10 @@ multi-step requests).
 
 ``plan_workflow_op``: the ``plan_workflow`` operation returned a step list
 (the model-supplied plan path).
+
+``thread_derived``: the ``WorkflowView`` was derived from the thread tail
+by ``kernel.workflow_view.derive_workflow_view`` — the thread-as-store
+architecture where no separate mutable position exists.
 """
 
 

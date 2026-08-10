@@ -127,6 +127,21 @@ class _SliceProviderHooksView:
         raise AttributeError(f"_SliceProviderHooksView has no attribute {name!r}")
 
 
+def _derive_view(runtime: HostRuntime) -> Any:
+    """Derive the workflow view from the thread tail.
+
+    A pure read from the lossless thread log — no mutable position store.
+    Returns a ``WorkflowView`` or ``None`` when no active workflow exists.
+    """
+    from host.thread import load_recent_thread_entries  # noqa: PLC0415
+    from kernel.workflow_view import derive_workflow_view  # noqa: PLC0415
+
+    entries = load_recent_thread_entries(
+        thread_path=runtime.thread_path, limit=30
+    )
+    return derive_workflow_view(entries)
+
+
 def build_turn_hooks(
     runtime: HostRuntime,
     context: dict[str, Any] | None = None,
@@ -350,17 +365,22 @@ def build_turn_hooks(
         capability_manifest: Any = None,
     ) -> str:
         # ── Workflow progress summary ────────────────────────────────
-        # When a multi-stage workflow is in flight, prepend a "work done
-        # so far" summary derived from the active position's
-        # ``completed_steps`` + ``step_results``. This replaces re-reading
-        # ``CheckpointBundle.turn_history`` (host-owned UI/replay state the
-        # kernel never reads for routing) and gives the model awareness of
-        # which chain steps have already completed so it does not redo them.
-        from kernel.workflow_position import render_workflow_progress  # noqa: PLC0415
+        # Derive the workflow view from the thread tail — the thread is
+        # the single source of truth. The view is rebuilt every turn from
+        # the append-only log; no mutable position store.
+        from kernel.workflow_view import (  # noqa: PLC0415
+            derive_workflow_view,
+            render_workflow_progress,
+        )
+        from host.thread import load_recent_thread_entries  # noqa: PLC0415
 
         progress = ""
-        if runtime._workflow_position is not None:
-            progress = render_workflow_progress(runtime._workflow_position)
+        thread_entries = load_recent_thread_entries(
+            thread_path=runtime.thread_path, limit=30
+        )
+        view = derive_workflow_view(thread_entries)
+        if view is not None:
+            progress = render_workflow_progress(view)
         if progress:
             pre_turn_briefing = f"{progress}\n\n{pre_turn_briefing}"
 
@@ -905,17 +925,13 @@ def build_turn_hooks(
         # helper swallows hook failures, so a transport error never breaks
         # the turn.
         on_stage=_on_stage_event,
-        # ── Durable workflow-position seams ────────────────────────────
-        # Wire the position hooks the kernel reads/writes during the turn.
-        # With these wired, the kernel's turn-start ``chain_satisfied``
-        # hydration (from the position's ``completed_steps``), in-turn
-        # position advancement on handoff, and checkpoint-bundle
-        # build+persist all fire automatically — no further host-side code
-        # is needed for those paths. ``on_checkpoint`` persists the bundle
-        # via the storage MCP pool; the two position hooks are in-memory
-        # refs the kernel reads/writes during the turn.
-        workflow_position=lambda: runtime._workflow_position,
-        workflow_position_updater=runtime._set_workflow_position,
+        # ── Workflow view seam ───────────────────────────────────────
+        # The kernel reads the workflow view (derived from the thread) via
+        # this hook. The view is rebuilt on each call — a pure read from
+        # the thread tail. No updater is needed: the thread is append-only
+        # and the view is derived, never mutated.
+        workflow_position=lambda: _derive_view(runtime),
+        workflow_position_updater=None,
         on_checkpoint=runtime._on_checkpoint,
         # ── Operator signal (pause/stop/terminate) ──────────────────────
         # The transport sets ``runtime.operator_signal_value`` from a key

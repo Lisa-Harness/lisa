@@ -967,6 +967,19 @@ async def _execute_mode_turn(
         "model_id": resolved_model.model_id,
     }
 
+    # Serialize the effect-receipt ledger and mode/stage transitions into
+    # the thread entry so the workflow view can be derived losslessly
+    # from the thread alone — no separate mutable position store needed.
+    # The receipts shape mirrors build_turn_completed_payload's receipts.
+    receipts = [
+        {
+            "capability_id": str(getattr(r, "capability_id", "")),
+            "effect": str(getattr(r, "effect", "")),
+            "artifact_id": str(getattr(r, "artifact_id", "") or ""),
+        }
+        for r in (result.effect_receipts or [])
+    ]
+
     append_thread_entry(
         thread_path=runtime.thread_path,
         user_slug=runtime.config.user_slug,
@@ -974,6 +987,9 @@ async def _execute_mode_turn(
         query=query or message,
         response_text=result.response_text,
         provenance=provenance,
+        effect_receipts=receipts,
+        handoff_to=result.handoff_to or "",
+        transitioned_to=result.transitioned_to or "",
     )
 
     # Unified FSM routing: persist mid-turn mode handoff. When the model

@@ -199,15 +199,6 @@ class HostRuntime:
         self.next_model_id: str = "-"
         self.next_model_provider: str = "-"
 
-        # ── Durable workflow-position state ────────────────────────────
-        # The active ``WorkflowPosition`` for the current user/surface, or
-        # ``None`` when no workflow is in flight. The position is the single
-        # durable workflow object — inter-mode plan (declared/completed
-        # steps) plus intra-mode stage pointer (mode_id/stage_id/turn_count)
-        # — surviving across modes, turns, and host restarts. Boot-loaded
-        # below once the store is constructed.
-        self._workflow_position: Any = None
-
         # ── Operator signal (pause/stop/terminate) ──────────────────────
         # The transport sets this to one of "", "pause", "stop", "terminate"
         # when the operator presses the corresponding key binding. The turn
@@ -255,17 +246,6 @@ class HostRuntime:
             self.data_dir / "code-change-artifacts.json"
         )
 
-        # ── Durable workflow-position store ───────────────────────────
-        # Mirrors ``recovery_service``: same JSON-file-with-identity-scope
-        # pattern, same data_dir. The store keys active positions by
-        # ``RecoveryIdentity`` (the same scope recovery records use); one
-        # user has at most one active (non-complete) position per surface.
-        from host.workflow_position_store import FileWorkflowPositionStore  # noqa: PLC0415
-
-        self.workflow_position_store = FileWorkflowPositionStore(
-            self.data_dir / "workflow-positions.json"
-        )
-
         # ── Token usage handler ───────────────────────────────────────
         # The durable JSONL appender for ``TokenUsageEvent`` payloads. The
         # host's completion dispatch (``publish_completion_usage``) publishes
@@ -281,92 +261,6 @@ class HostRuntime:
     def token_usage_handler(self) -> Any:
         """Return the durable ``TokenUsageTelemetryHandler`` for this runtime."""
         return self._token_usage_handler
-
-    # ── Durable workflow-position lifecycle ─────────────────────────
-    # The kernel calls these via the TurnHooks wiring:
-    # ``workflow_position`` (lambda) returns ``self._workflow_position``;
-    # ``workflow_position_updater`` calls ``self._set_workflow_position``;
-    # ``on_checkpoint`` calls ``self._on_checkpoint`` to persist a snapshot
-    # through the storage MCP tool pool.
-
-    def _workflow_identity(self) -> Any:
-        """Build the ``RecoveryIdentity`` scoping the active instance.
-
-        Mirrors the kernel's ``_build_recovery_identity`` using the same
-        config fields. The instance store keys active instances by this
-        identity so one user has at most one active workflow per surface.
-        """
-        from kernel.recovery import RecoveryIdentity  # noqa: PLC0415
-
-        return RecoveryIdentity(
-            workspace_id=self.session_plan.manifest.name,
-            user_id=self.config.user_slug,
-            user_slug=self.config.user_slug,
-            surface_type=self.config.surface_type,
-            surface_id=self.config.surface_id,
-            memory_scope=self.config.memory_scope,
-            session_plan_digest=self.session_plan.plan_digest,
-        )
-
-    def _boot_load_active_workflow_position(self) -> None:
-        """Resume a mid-flight workflow position from the durable store.
-
-        Called once at ``__init__`` after the store is constructed. When a
-        non-complete position for this identity exists, restore it into
-        ``_workflow_position`` and override ``current_mode_id`` from the
-        position's ``mode_id`` — so the first post-restart turn starts in
-        the right mode instead of the static ``start_mode``. Safe to call
-        on a fresh data_dir (the store returns ``None``).
-        """
-        identity = self._workflow_identity()
-        try:
-            position = self.workflow_position_store.load_active_sync(identity)
-        except Exception:  # pylint: disable=broad-except
-            return
-        if position is None:
-            return
-        self._workflow_position = position
-        # Override the static start_mode init: a resuming position starts
-        # in its parked mode, not the plan's default entry mode.
-        current_mode = getattr(position, "mode_id", "") or ""
-        if current_mode:
-            self.current_mode_id = current_mode
-
-    def _set_workflow_position(self, updated: Any) -> None:
-        """Persist an advanced ``WorkflowPosition`` and update the active ref.
-
-        Called by the kernel's ``workflow_position_updater`` hook after a
-        successful ``transition_stage`` or stage advance. Persists to the
-        durable store (scoped by identity) and swaps the in-memory active
-        ref in place so ``workflow_position()`` returns the advanced state.
-        When the position is complete (all steps done and parked on a
-        terminal stage, or no stage pointer), clears the active ref so the
-        next turn starts fresh. The checkpoint pack's ``handle_restore``
-        also calls this when restoring a bundle's ``workflow_position``.
-
-        Uses the store's sync save/clear paths because the kernel calls this
-        from within the running event loop (the async store methods'
-        ``asyncio.Lock`` would deadlock against the running loop).
-        """
-        self._workflow_position = updated
-        from kernel.workflow_position import is_complete  # noqa: PLC0415
-
-        identity = self._workflow_identity()
-        try:
-            self.workflow_position_store.save_sync(updated, identity)
-        except Exception:  # pylint: disable=broad-except
-            pass
-        if is_complete(updated):
-            # Workflow done: clear the active ref so the next turn starts
-            # fresh (no position to hydrate from).
-            self._workflow_position = None
-            try:
-                self.workflow_position_store.clear_sync(
-                    getattr(updated, "position_id", ""),
-                    identity,
-                )
-            except Exception:  # pylint: disable=broad-except
-                pass
 
     async def _on_checkpoint(self, bundle: Any) -> None:
         """Persist a ``CheckpointBundle`` via the storage MCP tool pool.
