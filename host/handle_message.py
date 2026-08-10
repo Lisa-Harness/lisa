@@ -44,7 +44,13 @@ from kernel.approval import (
 from kernel.ipsar import parse_route
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.operations.registry import OperationExecutionError
-from kernel.turn_runner import TurnResult, execute_approved_invocation, run_turn
+from kernel.turn_runner import (
+    TurnDecision,
+    TurnResult,
+    evaluate_turn_decision,
+    execute_approved_invocation,
+    run_turn,
+)
 from sdk.logging_setup import emit_structured_event
 
 from host.commands import (
@@ -758,7 +764,7 @@ async def _execute_mode_turn(
     mode_id: str,
     query: str,
     transport: TransportCallbacks,
-) -> str:
+) -> HostCommandResult | str:
     """Resolve mode, build context, and run the turn through the kernel.
 
     This is the main turn-execution path: it resolves the mode config from
@@ -997,15 +1003,37 @@ async def _execute_mode_turn(
         transitioned_to=result.transitioned_to or "",
     )
 
+    # ── Centralized loop decision classification ────────────────────
+    # Classify the turn's outcome using the uniform three-outcome contract
+    # (CONTINUE / HANDOFF / FINISH). The host does not iterate the loop
+    # itself — ``run_turn`` does that internally — but this classification
+    # ensures the host's post-turn handoff and persistence logic is
+    # consistent with the same contract the kernel uses. It also gives
+    # the transport a structured outcome for rendering.
+    _decision = evaluate_turn_decision(
+        has_tool_calls=bool(result.tool_call_count),
+        has_transition_request=bool(result.handoff_to),
+        transition_target=result.handoff_to or None,
+        is_terminal=not bool(result.handoff_to),
+        budget_exhausted=False,
+        has_content=bool(result.response_text),
+    )
+    logger.debug(
+        "turn decision: %s (target=%s reason=%s)",
+        _decision.decision.value,
+        _decision.target,
+        _decision.reason,
+    )
+
     # Unified FSM routing: persist mid-turn mode handoff. When the model
     # called transition_stage with a mode_id target, update current_mode_id
     # so the next turn starts in the new mode. See docs/ROUTING_RFC_HANDOFF.md.
-    if result.handoff_to and result.handoff_to != mode.mode_id:
-        runtime.current_mode_id = result.handoff_to
+    if _decision.decision is TurnDecision.HANDOFF and _decision.target:
+        runtime.current_mode_id = _decision.target
         logger.debug(
             "mode handoff: %s -> %s",
             mode.mode_id,
-            result.handoff_to,
+            _decision.target,
         )
 
     # Emit debug context if debug mode is on.
