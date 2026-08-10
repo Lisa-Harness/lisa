@@ -260,7 +260,12 @@ async def handle_message(
         await tport.on_response(response_text)
         return HostCommandResult(text=response_text, is_error=True)
     except Exception as exc:  # pylint: disable=broad-except
-        logger.error("handle_message: turn failed: %s: %s", type(exc).__name__, exc)
+        logger.error(
+            "handle_message: turn failed: %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
         await tport.on_error(f"Turn failed: {type(exc).__name__}: {exc}", exc)
         response_text = f"Turn failed: {type(exc).__name__}: {exc}"
         await tport.on_response(response_text)

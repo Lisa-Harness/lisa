@@ -400,3 +400,128 @@ def test_plan_steps_to_workflow_steps_shape_matches_ad_hoc_compiler() -> None:
     # The only legitimate difference is spawned_from.
     assert all(s.spawned_from == "plan_workflow_op" for s in planned)
     assert all(s.spawned_from == "adhoc" for s in adhoc)
+
+
+def test_is_terminal_stage_returns_false_for_empty_stage_id() -> None:
+    """``is_terminal_stage`` returns False (not raises ``KeyError: ''``)
+    when the position has an empty ``stage_id``.
+
+    Regression for the 2026-08-10 ``KeyError: ''`` crash: an action/chat
+    mode (e.g. ``researcher``) synthesized from a thread-derived view
+    with no ``transitioned_to`` carries ``stage_id=""``. The old
+    implementation did ``mode.stages[position.stage_id].terminal`` and
+    raised ``KeyError: ''`` because ``""`` is not a key in
+    ``mode.stages``. The guard returns False — an absent intra-mode
+    pointer is not a terminal stage.
+    """
+    from unittest.mock import patch
+
+    from kernel.ipsar_fsm import is_terminal_stage
+    from kernel.models import WorkflowStageConfig
+
+    # A synthesized action mode: one stage keyed by the mode_id, NOT "".
+    mode_cfg = WorkflowModeConfig(
+        mode_id="researcher",
+        start_stage_id="researcher",
+        mode_kind="action",
+        routable=True,
+        satisfies_intents=["research"],
+        routing_intent_tags=["research"],
+        stages={"researcher": WorkflowStageConfig(stage_id="researcher", terminal=False)},
+    )
+    catalog = {"researcher": mode_cfg}
+
+    # Position parked in researcher with no intra-mode stage pointer.
+    position = WorkflowPosition(
+        declared_steps=(
+            WorkflowStep(step_id="researcher_1", mode_id="researcher", is_terminal=True),
+        ),
+        current_step_id="researcher_1",
+        mode_id="researcher",
+        stage_id="",
+        spawned_from="thread_derived",
+    )
+
+    with patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog):
+        result = is_terminal_stage(position)
+
+    assert result is False
+
+
+def test_is_terminal_stage_returns_false_for_unknown_stage_id() -> None:
+    """``is_terminal_stage`` returns False when ``stage_id`` names a stage
+    not present in the mode's stage graph (a stale/derived pointer),
+    instead of raising ``KeyError``.
+    """
+    from unittest.mock import patch
+
+    from kernel.ipsar_fsm import is_terminal_stage
+    from kernel.models import WorkflowStageConfig
+
+    mode_cfg = WorkflowModeConfig(
+        mode_id="ponder",
+        start_stage_id="ponder",
+        mode_kind="workflow",
+        routable=True,
+        satisfies_intents=["reasoning"],
+        routing_intent_tags=["reasoning"],
+        stages={
+            "ponder": WorkflowStageConfig(stage_id="ponder", terminal=False),
+            "exit": WorkflowStageConfig(stage_id="exit", terminal=True),
+        },
+    )
+    catalog = {"ponder": mode_cfg}
+
+    position = WorkflowPosition(
+        declared_steps=(
+            WorkflowStep(step_id="ponder_1", mode_id="ponder", is_terminal=True),
+        ),
+        current_step_id="ponder_1",
+        mode_id="ponder",
+        stage_id="stale_stage_not_in_graph",
+        spawned_from="thread_derived",
+    )
+
+    with patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog):
+        result = is_terminal_stage(position)
+
+    assert result is False
+
+
+def test_is_terminal_stage_returns_true_for_terminal_stage() -> None:
+    """``is_terminal_stage`` returns True when the position points at a
+    real terminal stage (the happy path preserved by the guard fix).
+    """
+    from unittest.mock import patch
+
+    from kernel.ipsar_fsm import is_terminal_stage
+    from kernel.models import WorkflowStageConfig
+
+    mode_cfg = WorkflowModeConfig(
+        mode_id="ponder",
+        start_stage_id="ponder",
+        mode_kind="workflow",
+        routable=True,
+        satisfies_intents=["reasoning"],
+        routing_intent_tags=["reasoning"],
+        stages={
+            "ponder": WorkflowStageConfig(stage_id="ponder", terminal=False),
+            "exit": WorkflowStageConfig(stage_id="exit", terminal=True),
+        },
+    )
+    catalog = {"ponder": mode_cfg}
+
+    position = WorkflowPosition(
+        declared_steps=(
+            WorkflowStep(step_id="ponder_1", mode_id="ponder", is_terminal=True),
+        ),
+        current_step_id="ponder_1",
+        mode_id="ponder",
+        stage_id="exit",
+        spawned_from="thread_derived",
+    )
+
+    with patch("kernel.ipsar_fsm.get_workflow_catalog", return_value=catalog):
+        result = is_terminal_stage(position)
+
+    assert result is True

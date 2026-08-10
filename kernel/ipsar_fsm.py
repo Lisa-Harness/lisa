@@ -1312,9 +1312,22 @@ def load_stage_instruction_markdown(stage: WorkflowStageConfig) -> str:
 
 
 def is_terminal_stage(position: WorkflowPosition) -> bool:
-    """Return True when the position currently points at a terminal stage."""
+    """Return True when the position currently points at a terminal stage.
+
+    An empty ``stage_id`` (no intra-mode stage pointer active — e.g. an
+    action/chat mode derived from a thread entry with no
+    ``transitioned_to``) is not a terminal stage; returning ``False``
+    avoids a ``KeyError`` on ``mode.stages[""]`` (the 2026-08-10
+    ``KeyError: ''`` crash after a forced self-handoff left the derived
+    view with ``stage_id=""``).
+    """
+    if not position.stage_id:
+        return False
     mode = get_workflow_catalog()[position.mode_id]
-    return mode.stages[position.stage_id].terminal
+    stage = mode.stages.get(position.stage_id)
+    if stage is None:
+        return False
+    return stage.terminal
 
 
 # ---------------------------------------------------------------------------
