@@ -179,14 +179,20 @@ tags and keyword patterns that signal when it should be used.
 ## Instructions
 
 1. Read the user's query carefully.
-2. Identify which intents the query expresses by matching against each
+2. **If a ``## Recent Conversation`` block is present**, read it first.
+   It contains the recent thread excerpt. When the prior turn already
+   presented a plan or diagnosis, carry it forward — do not re-synthesize
+   a generic plan that loses the detail already presented to the user.
+   The step descriptions should reflect the specific work discussed, not
+   a generic "execute the previously presented plan" placeholder.
+3. Identify which intents the query expresses by matching against each
    mode's routing_intent_keywords.
-3. Check for sequential connectors. A query containing any of these
+4. Check for sequential connectors. A query containing any of these
    tokens (matched case-insensitively as whole phrases) is a sequential
    chain:
 {connectors_block}
    If present, the query is a sequential chain.
-4. Build the `steps` array — one entry per detected step, in execution
+5. Build the `steps` array — one entry per detected step, in execution
    order. Each step names a `mode_id` from the Available Modes list, a
    short human-readable `description` of what the step does, and a
    `rationale` for why that mode handles it.
@@ -201,7 +207,7 @@ tags and keyword patterns that signal when it should be used.
      intents AND the query is NOT sequential, return one step per mode.
      The framework will fan them out in parallel.
 
-5. Set `target_stage_id` to the first step's `mode_id` (the framework
+6. Set `target_stage_id` to the first step's `mode_id` (the framework
    reads this for the initial handoff). Set `rationale` to a one-line
    summary of the plan. When `steps` is non-empty, `target_stage_id` and
    `rationale` are derived from `steps[0]` — set them consistently.
@@ -355,9 +361,21 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             output_json={"target_stage_id": "", "rationale": "model unresolved"},
         )
 
+    # Build the user message. When the host wired a conversation excerpt
+    # (the recent thread from ``assemble_user_context``), include it so
+    # the planner can carry forward a plan already presented in the prior
+    # turn instead of re-synthesizing a generic one from the raw query
+    # alone (the 2026-08-09 plan-amnesia incident: the planner received
+    # only ``ctx.query`` and produced a 1-step "execute the previously
+    # presented plan" with no visibility into what that plan was).
+    _excerpt = (ctx.conversation_excerpt_markdown or "").strip()
+    user_content = f"## User Query\n\n{query}"
+    if _excerpt:
+        user_content = f"## Recent Conversation\n\n{_excerpt}\n\n{user_content}"
+
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"## User Query\n\n{query}"},
+        {"role": "user", "content": user_content},
     ]
 
     # 8192, not 4096: reasoning models routed through Ollama (kimi-k2.6,

@@ -99,6 +99,14 @@ class WorkflowStep(BaseModel):
     depends_on: tuple[str, ...] = ()
     is_terminal: bool = False
     spawned_from: WorkflowPositionOrigin = "adhoc"
+    # The full rendered ``## Plan`` block from ``plan_workflow``'s
+    # ``output_text``. Carried on the position (not just the turn's
+    # ephemeral ``_state.plan_prefix``) so the handoff context builder
+    # can inject it into each step's target-mode system prompt. Without
+    # this, the plan content dies with the planner turn and the executor
+    # sees only a short ``step_query`` (the 2026-08-09 "admitted to not
+    # knowing the plan" incident).
+    plan_text: str = ""
 
 
 class WorkflowPosition(BaseModel):
@@ -138,6 +146,11 @@ class WorkflowPosition(BaseModel):
     declared_steps: tuple[WorkflowStep, ...] = ()
     completed_steps: tuple[str, ...] = ()
     current_step_id: str = ""
+    # The full rendered ``## Plan`` block from ``plan_workflow``'s
+    # ``output_text``. Stored on the position so the handoff context
+    # builder can inject it into each step's target-mode system prompt
+    # — the executor needs the plan it is executing, not just a mode id.
+    plan_text: str = ""
     # Per-step result previews (step_id -> short text). Populated from
     # ``RecoveryRecord.result_preview`` as steps complete; used by the
     # compaction/context layer as the "what we've done so far" summary

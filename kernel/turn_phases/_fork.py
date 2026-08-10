@@ -410,6 +410,8 @@ def _build_minimal_context(
     data_dir: str = "",
     delegate_fn: Any = None,
     fork_fn: Any = None,
+    conversation_excerpt_markdown: str = "",
+    response: str = "",
 ) -> OperationExecutionContext:
     """Build a minimal OperationExecutionContext for the turn runner."""
     host = build_callable_host(
@@ -434,6 +436,8 @@ def _build_minimal_context(
         mode_id=mode_id,
         query=query,
         model_id="default",
+        conversation_excerpt_markdown=conversation_excerpt_markdown,
+        response=response,
         state_provider=state_provider,
         pack_configuration_resolver=pack_configuration_resolver,
         approval_service=approval_service,

@@ -1317,6 +1317,7 @@ def create_position(
     steps: tuple[WorkflowStep, ...] = (),
     spawned_from: WorkflowPositionOrigin = "adhoc",
     plan_digest: str = "",
+    plan_text: str = "",
 ) -> WorkflowPosition:
     """Create a fresh workflow position parked on the mode's start stage.
 
@@ -1326,6 +1327,11 @@ def create_position(
     the position is in. When the mode has no stage graph (chat/action
     before graph synthesis), ``stage_id`` is empty and the position is a
     pure step container.
+
+    ``plan_text`` is the full rendered ``## Plan`` block from
+    ``plan_workflow``. Stored on the position so the handoff context
+    builder can inject it into each step's target-mode system prompt —
+    the executor needs the plan it is executing, not just a mode id.
     """
     catalog = get_workflow_catalog()
     mode = catalog[mode_id]
@@ -1336,6 +1342,7 @@ def create_position(
         spawned_from=spawned_from,
         declared_steps=steps,
         current_step_id=steps[0].step_id if steps else "",
+        plan_text=plan_text,
         mode_id=mode.mode_id,
         stage_id=stage_id,
         entered_at=now.isoformat(),

@@ -1909,6 +1909,13 @@ def _plan_steps_to_workflow_steps(
         if not step_query:
             step_query = str(step.get("rationale", "")).strip()
 
+        # Carry the step's rationale onto the WorkflowStep so the handoff
+        # context builder can surface why this step exists, not just the
+        # short description. The rationale was previously dropped here
+        # (the 2026-08-09 plan-amnesia incident: the executor saw a bare
+        # mode id + generic description with no plan context).
+        step_rationale = str(step.get("rationale", "")).strip()
+
         steps.append(
             WorkflowStep(
                 step_id=_step_id_for(mode_id, idx),
@@ -1918,6 +1925,7 @@ def _plan_steps_to_workflow_steps(
                 depends_on=tuple(s.step_id for s in steps),
                 is_terminal=(idx == len(plan_steps) - 1),
                 spawned_from="plan_workflow_op",
+                plan_text=step_rationale,
             )
         )
     return tuple(steps)
@@ -2530,7 +2538,22 @@ async def _run_turn_inner(
             )
 
     # ── Phase 1: Pre-turn ─────────────────────────────────────────────
+    # Assemble the user context early so the planner entry op
+    # (``plan_workflow``) can see the recent thread excerpt — without
+    # it, the planner re-synthesizes a generic plan from the raw query
+    # alone and loses the rich plan already presented in the prior turn
+    # (the 2026-08-09 plan-amnesia incident). The capability manifest is
+    # not yet built (tool surface assembly happens later), so it is
+    # passed as ``None`` — the excerpt does not need it. A second pass
+    # with the full manifest reassembles the user message later in Phase 2.
+    # Only build the early excerpt when the mode has entry operations;
+    # otherwise the single late pass (with the manifest) suffices, and
+    # tests that count ``assemble_user_context`` calls see exactly one.
     pre_briefing = ""
+    _has_entry_ops = mode_config is not None and bool(mode_config.entry_operation_ids)
+    _early_user_context = (
+        assemble_user(mode_id, query, pre_briefing, None) if _has_entry_ops else ""
+    )
     if mode_config is not None and mode_config.entry_operation_ids:
         # ── Resume-in-flight gate (work entry ops) ────────────────────
         # When the user resumes an in-flight plan with a bare imperative
@@ -2609,6 +2632,7 @@ async def _run_turn_inner(
                 data_dir=hooks.data_dir,
                 delegate_fn=_delegate_fn,
                 fork_fn=_fork_fn,
+                conversation_excerpt_markdown=_early_user_context,
             )
             result = await run_mode_entry_operations(
                 mode_id,
@@ -2687,7 +2711,9 @@ async def _run_turn_inner(
                 # plan → search stall), and it bypassed the per-iteration
                 # lifecycle briefing the loop maintains.
                 workflow_steps = _plan_steps_to_workflow_steps(plan_steps_raw)
-                persist_planned_position(hooks, workflow_steps, _log)
+                persist_planned_position(
+                    hooks, workflow_steps, _log, plan_text=plan_block
+                )
                 
                 # When synthesizing the handoff, update the query to the
                 # first step's derived sub-query so the handoff processor
@@ -2828,6 +2854,7 @@ async def _run_turn_inner(
         data_dir=hooks.data_dir,
         delegate_fn=_delegate_fn,
         fork_fn=_fork_fn,
+        conversation_excerpt_markdown=_early_user_context,
     )
     pre_result = await run_mode_pre_turn_operations(
         mode_id,
@@ -3188,6 +3215,10 @@ async def _run_turn_inner(
             get_routing_targets(mode_id) if mode_config else [],
         )
 
+    # Reassemble user context with the full capability manifest (built
+    # after tool surface assembly). The early pass used ``None`` so the
+    # planner entry op could see the thread excerpt; this pass adds the
+    # capability block for the model's self-knowledge context.
     user_context = assemble_user(mode_id, query, pre_briefing, capability_manifest)
 
     # ── Pre-turn memory recall ────────────────────────────────────────
@@ -3906,21 +3937,41 @@ async def _run_turn_inner(
                 mode_id,
                 _state.iteration,
             )
+            # Carry the active plan's first-step query as the
+            # ``delegated_goal`` so the handoff context builder injects
+            # it as ``## Your Current Task`` — the executor needs the
+            # specific step it is running, not just the mode id. The
+            # plan block itself is injected from the position's
+            # ``plan_text`` in the handoff context builder.
+            _synth_delegated_goal = ""
+            try:
+                _synth_pos = (
+                    hooks.workflow_position()
+                    if hooks.workflow_position
+                    else None
+                )
+            except Exception:
+                _synth_pos = None
+            if _synth_pos is not None and getattr(_synth_pos, "current_step_id", ""):
+                _synth_step = _synth_pos.step_by_id(_synth_pos.current_step_id)
+                if _synth_step and _synth_step.step_query:
+                    _synth_delegated_goal = _synth_step.step_query
+            _synth_args: dict[str, Any] = {
+                "target_stage_id": _planned_handoff_target,
+                "rationale": (
+                    "Kernel-driven handoff from the plan "
+                    "result; the model is not asked to call "
+                    "transition_stage."
+                ),
+            }
+            if _synth_delegated_goal:
+                _synth_args["delegated_goal"] = _synth_delegated_goal
             _synth_planned_call = {
                 "id": f"planned_handoff_{_state.iteration}",
                 "type": "function",
                 "function": {
                     "name": _TRANSITION_TOOL_NAME,
-                    "arguments": json.dumps(
-                        {
-                            "target_stage_id": _planned_handoff_target,
-                            "rationale": (
-                                "Kernel-driven handoff from the plan "
-                                "result; the model is not asked to call "
-                                "transition_stage."
-                            ),
-                        }
-                    ),
+                    "arguments": json.dumps(_synth_args),
                 },
             }
             completion = SimpleNamespace(
@@ -4668,6 +4719,28 @@ async def _run_turn_inner(
                                     dg = delegated_goal if 'delegated_goal' in locals() else ""
                                     cp = context_payload if 'context_payload' in locals() else ""
 
+                                    # Inject the active plan's rendered block
+                                    # so the receiving mode knows the plan it
+                                    # is executing — not just its mode id and
+                                    # chain position. Without this the executor
+                                    # sees a bare ``step_query`` and has no
+                                    # visibility into the plan that was
+                                    # presented (the 2026-08-09 plan-amnesia
+                                    # incident).
+                                    _handoff_plan_text = ""
+                                    try:
+                                        _handoff_pos = (
+                                            hooks.workflow_position()
+                                            if hooks.workflow_position
+                                            else None
+                                        )
+                                    except Exception:
+                                        _handoff_pos = None
+                                    if _handoff_pos is not None:
+                                        _handoff_plan_text = (
+                                            getattr(_handoff_pos, "plan_text", "") or ""
+                                        ).strip()
+
                                     # Terminal-step directive: when there are no
                                     # remaining steps, tell the model to COMPLETE
                                     # and respond, not to hand off. The previous
@@ -4696,6 +4769,11 @@ async def _run_turn_inner(
                                         f"- Remaining steps after this one: "
                                         f"{_format_remaining_steps(remaining_steps)}\n"
                                     )
+                                    if _handoff_plan_text:
+                                        handoff_context += (
+                                            f"\n## Plan You Are Executing\n"
+                                            f"{_handoff_plan_text}\n"
+                                        )
                                     if dg:
                                         handoff_context += f"\n## Your Current Task\n{dg}\n"
                                     if cp:
@@ -4891,8 +4969,19 @@ async def _run_turn_inner(
                                             _mid_workflow_steps = (
                                                 _plan_steps_to_workflow_steps(_mid_plan_steps_raw)
                                             )
+                                            # Carry the rendered plan block onto
+                                            # the position so the handoff context
+                                            # builder can inject it into the
+                                            # target mode's system prompt
+                                            # (mirrors the Phase-1 plan path).
+                                            _mid_plan_block = (
+                                                entry_result.output_text or ""
+                                            ).strip()
                                             persist_planned_position(
-                                                hooks, _mid_workflow_steps, _log
+                                                hooks,
+                                                _mid_workflow_steps,
+                                                _log,
+                                                plan_text=_mid_plan_block,
                                             )
                                             if hooks.route_coordinator is not None:
                                                 try:
