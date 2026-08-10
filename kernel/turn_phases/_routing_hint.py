@@ -520,6 +520,12 @@ def _build_fork_target(
         t_cfg = catalog.get(target_id)
         if t_cfg is None:
             continue
+        # Fork consent gate: a mode may only appear in a fork target list
+        # if it declares ``fork_allowed: true`` — it commits to completing
+        # or failing without asking the user. A mode that lacks this is
+        # reachable only via delegate or single-handoff, never via fork.
+        if not getattr(t_cfg, "fork_allowed", False):
+            continue
         overlap = set(t_cfg.routing_intent_tags) & gap_intents
         if overlap:
             partial_targets.append(target_id)
@@ -825,16 +831,25 @@ def _compute_capability_routing_hint(
         )
         return hint
 
-    # ── 6. Fallback: no clean cover → silence ──────────────────────────
+    # ── 6. Ambiguity yield: no clean cover → ask the user ──────────
     # When no single target cleanly covers the gap (the disjoint-coverage
-    # and producer-first branches above did not fire), the hint layer does
-    # NOT know the right answer. Previously it dumped the whole target
-    # list and let the model guess — that guess is the hallucination-as-
-    # progress pattern (the 2026-07-30 bounce: the fallback listed
-    # ``discuss`` alongside others and the model picked one at random).
-    # Return empty so the model stays in the current mode and either
-    # asks the user for direction or proceeds with what it has. The hint
-    # is a signal, not a default.
+    # and producer-first branches above did not fire), the hint layer
+    # cannot confidently resolve a target. Previously this returned ``""``
+    # (silence) and the model guessed — the hallucination-as-progress
+    # pattern (the 2026-07-30 bounce). Instead, return a structured
+    # sentinel so the turn runner can yield to the user for clarification
+    # before routing. The sentinel encodes the available routing targets
+    # as a CSV so the turn runner can name them in the question. This is
+    # the last resort — all common paths (single handoff, sequential
+    # chain, fork, plan escalation) return concrete hints above and never
+    # reach this branch.
     if not has_gap:
         return ""
+    _ambiguous_targets = [
+        tid
+        for tid in routing_targets
+        if catalog.get(tid) is not None
+    ]
+    if _ambiguous_targets:
+        return f"AMBIGUOUS_INTENT:{','.join(_ambiguous_targets)}"
     return ""

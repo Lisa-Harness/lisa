@@ -297,7 +297,7 @@ _KERNEL_OWNED_FRONT_MATTER_KEYS: frozenset[str] = _MODE_OVERRIDES_PROTECTED_KEYS
         "mode_provider_id",
         "context_item_packs",
         "yield_policy",
-        "fork_yield_policy",
+        "fork_allowed",
     }
 )
 
@@ -794,29 +794,17 @@ def load_catalog_from_disk(
             is_default_yield_target=bool(yield_policy_raw.get("is_default_yield_target", False)),
             default_question=str(yield_policy_raw.get("default_question", "") or ""),
         )
-        # Parse fork_yield_policy: an optional *second* ``YieldPolicy`` applied
-        # when this mode is invoked as a fork child (parallel fan-out). Fork
-        # children run with no interactive channel, so a mode that allows
-        # inline asks in the foreground may forbid them in the background by
-        # setting ``fork_yield_policy: { allowed: false }``. When the key is
-        # absent, ``None`` signals "use the foreground ``yield_policy``" so
-        # fork children inherit the prior behavior (backward compatible).
-        fork_yield_policy_raw = mode_front_matter.get("fork_yield_policy")
-        if fork_yield_policy_raw is None:
-            fork_yield_policy: YieldPolicy | None = None
-        elif not isinstance(fork_yield_policy_raw, dict):
+        # Parse fork_allowed: a boolean consent flag. When True, this mode
+        # agrees to be a fork target — it commits to completing or failing
+        # without asking the user. When absent (default False), the routing
+        # fork decision and the fork enforcer refuse to fork to this mode;
+        # it is reachable only via delegate or single-handoff.
+        fork_allowed_raw = mode_front_matter.get("fork_allowed", False)
+        if not isinstance(fork_allowed_raw, bool):
             raise WorkflowValidationError(
-                f"fork_yield_policy must be a mapping in {mode_config_path}"
+                f"fork_allowed must be a boolean in {mode_config_path}"
             )
-        else:
-            fork_yield_policy = YieldPolicy(
-                allowed=bool(fork_yield_policy_raw.get("allowed", True)),
-                fallback_mode=str(fork_yield_policy_raw.get("fallback_mode", "") or ""),
-                is_default_yield_target=bool(
-                    fork_yield_policy_raw.get("is_default_yield_target", False)
-                ),
-                default_question=str(fork_yield_policy_raw.get("default_question", "") or ""),
-            )
+        fork_allowed = fork_allowed_raw
 
         # Collect app/pack-owned extension keys the kernel does not interpret.
         # Everything in the (possibly overridden) front matter that is not a
@@ -866,7 +854,7 @@ def load_catalog_from_disk(
                 str(p) for p in (mode_front_matter.get("context_item_packs") or [])
             ],
             yield_policy=yield_policy,
-            fork_yield_policy=fork_yield_policy,
+            fork_allowed=fork_allowed,
             extra_front_matter=extra_front_matter,
         )
         # Synthesize a one-stage graph for stageless (chat/action) modes so
@@ -1048,6 +1036,7 @@ def validate_workflow_mode(mode: WorkflowModeConfig) -> None:
         )
 
     _validate_mode_operation_bindings(mode)
+    _validate_fork_allowed(mode)
 
     if mode.mode_kind in {"chat", "action"}:
         # Chat/action modes carry a synthesized one-stage graph (see
@@ -1124,6 +1113,52 @@ def validate_workflow_mode(mode: WorkflowModeConfig) -> None:
                 )
 
     _assert_all_paths_reach_terminal(mode)
+
+
+def _validate_fork_allowed(mode: WorkflowModeConfig) -> None:
+    """Validate ``fork_allowed`` consistency for one mode.
+
+    A mode that declares ``fork_allowed: true`` commits to completing or
+    failing without asking the user. Three self-contradictions are rejected
+    at load time so the FSM never starts with an unsound fork target:
+
+    (a) No side-effecting capability — the completion contract needs at
+        least one action tool to verify. A fork-allowed mode with zero
+        authored operation/tool ids has nothing to verify.
+    (b) Empty ``satisfies_intents`` — a fork target that satisfies nothing
+        is routing-dead; the routing hint would never select it.
+    (c) ``yield_policy.allowed: true`` — the mode claims it can complete
+        without asking, but its foreground policy allows asking. This is
+        a direct contradiction.
+
+    Args:
+        mode: The WorkflowModeConfig to validate.
+
+    Raises:
+        WorkflowValidationError: On any ``fork_allowed`` invariant violation.
+    """
+    if not mode.fork_allowed:
+        return
+
+    if not mode.authored_allowed_operation_ids and not mode.authored_allowed_tool_ids:
+        raise WorkflowValidationError(
+            f"Mode '{mode.mode_id}' declares fork_allowed: true but has no "
+            "authored action tools — the completion contract needs at least "
+            "one side-effecting capability to verify."
+        )
+    if not mode.satisfies_intents:
+        raise WorkflowValidationError(
+            f"Mode '{mode.mode_id}' declares fork_allowed: true but has "
+            "empty satisfies_intents — a fork target must declare what it "
+            "satisfies so the routing hint can select it."
+        )
+    if mode.yield_policy.allowed:
+        raise WorkflowValidationError(
+            f"Mode '{mode.mode_id}' declares fork_allowed: true but its "
+            "yield_policy allows inline asks — a fork target must commit to "
+            "completing without asking. Set yield_policy.allowed: false or "
+            "remove fork_allowed."
+        )
 
 
 def _validate_mode_operation_bindings(mode: WorkflowModeConfig) -> None:

@@ -1362,19 +1362,19 @@ class WorkflowModeConfig(BaseModel):
     # rerouted to ``fallback_mode`` (typically ``discuss``). See
     # :class:`kernel.models.YieldPolicy` and :class:`kernel.models.YieldAction`.
     yield_policy: YieldPolicy = Field(default_factory=YieldPolicy)
-    # Per-mode policy applied when this mode is invoked as a **fork child**
-    # (parallel fan-out). Fork children run with no interactive channel — the
-    # user cannot answer a mid-turn question — so a mode that allows inline
-    # asks in the foreground may forbid them in the background. Authored in
-    # ``_mode.md`` front matter under ``fork_yield_policy``. When ``None`` (the
-    # default), fork children fall back to ``yield_policy`` (the foreground
-    # policy), preserving backward compatibility. When set, the fork child's
-    # ``run_turn`` call receives it as ``yield_policy_override`` and the
-    # ``yield`` tool is advertised (or not) per this policy. Action modes that
-    # are unsafe to fork with an unsatisfied question set
-    # ``fork_yield_policy: { allowed: false }`` so the model cannot punt to a
-    # user that is not there.
-    fork_yield_policy: YieldPolicy | None = None
+    # When True, this mode consents to being a **fork target** (parallel
+    # fan-out). A fork child runs with no interactive channel — the user
+    # cannot answer a mid-turn question — so a mode that opts in commits to
+    # completing or failing without asking. The routing fork decision
+    # (``_build_fork_target``) and the fork enforcer refuse a fork when any
+    # candidate target lacks this. The fork child's ``run_turn`` call receives
+    # ``yield_policy_override=YieldPolicy(allowed=False)`` unconditionally, so
+    # the ``yield`` tool is never advertised to a fork child. A mode that may
+    # need to ask the user must NOT set this; it is reachable only via
+    # delegate (sequential, parent-mediated) where a child ``model_yield``
+    # propagates to the user through the parent. Authored in ``_mode.md``
+    # front matter under ``fork_allowed``.
+    fork_allowed: bool = False
 
 
 # The durable workflow object is ``WorkflowPosition`` (kernel/workflow_position.py):
@@ -1613,10 +1613,10 @@ class ForkSpec(BaseModel):
     :mod:`kernel.turn_runner``) fans the targets out in parallel via
     ``_execute_fork_fanout``, reusing the shared child-turn
     infrastructure (budget division, ``classify_child_turn``,
-    ``fork_yield_policy_override``) that the legacy ``fork:`` routing
-    syntax used inline. Unlike :class:`DelegationSpec`, fork carries a
-    ``list`` of targets and does not bound recursion depth — fork
-    children do not themselves fork.
+    ``YieldPolicy(allowed=False)`` override) that the legacy ``fork:``
+    routing syntax used inline. Unlike :class:`DelegationSpec`, fork
+    carries a ``list`` of targets and does not bound recursion depth —
+    fork children do not themselves fork.
     """
 
     targets: list[ForkTarget] = Field(

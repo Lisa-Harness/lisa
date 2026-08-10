@@ -409,66 +409,102 @@ def test_load_catalog_from_disk_rejects_non_mapping_yield_policy(
 
 
 # ---------------------------------------------------------------------------
-# load_catalog_from_disk: fork_yield_policy
+# load_catalog_from_disk: fork_allowed
 # ---------------------------------------------------------------------------
 
 
-def test_load_catalog_from_disk_reads_fork_yield_policy(tmp_path: Path) -> None:
-    """``fork_yield_policy`` flows from front matter into the typed field.
+def test_load_catalog_from_disk_reads_fork_allowed_true(tmp_path: Path) -> None:
+    """``fork_allowed: true`` flows from front matter into the typed field.
 
-    A mode may author a *second* ``YieldPolicy`` governing how it behaves
-    when invoked as a fork child (parallel fan-out). Fork children run with
-    no interactive channel, so a mode that allows inline asks in the
-    foreground may forbid them in the background.
+    A mode that opts into being a fork target commits to completing or
+    failing without asking the user. The routing fork decision and the fork
+    enforcer refuse a fork when any candidate target lacks this.
     """
-    from kernel.models import YieldPolicy
-
     _write_mode(
         tmp_path,
         extra_front_matter={
-            "fork_yield_policy": {
-                "allowed": False,
-                "fallback_mode": "",
-                "is_default_yield_target": False,
-                "default_question": "",
-            }
+            "fork_allowed": True,
+            "satisfies_intents": ["write"],
+            "allowed_tool_ids": ["write_file"],
+            "yield_policy": {"allowed": False},
         },
     )
     catalog = _load(tmp_path)
 
-    policy = catalog["demo"].fork_yield_policy
-    assert isinstance(policy, YieldPolicy)
-    assert policy.allowed is False
-    assert policy.fallback_mode == ""
-    assert policy.is_default_yield_target is False
-    assert policy.default_question == ""
-    # fork_yield_policy is kernel-owned — it must NOT leak into extra_front_matter.
-    assert "fork_yield_policy" not in catalog["demo"].extra_front_matter
+    assert catalog["demo"].fork_allowed is True
+    # fork_allowed is kernel-owned — it must NOT leak into extra_front_matter.
+    assert "fork_allowed" not in catalog["demo"].extra_front_matter
 
 
-def test_load_catalog_from_disk_fork_yield_policy_defaults_none_when_absent(
+def test_load_catalog_from_disk_fork_allowed_defaults_false_when_absent(
     tmp_path: Path,
 ) -> None:
-    """A mode with no ``fork_yield_policy`` front matter gets ``None``.
+    """A mode with no ``fork_allowed`` front matter gets ``False``.
 
-    ``None`` is the sentinel meaning "no fork override — use the foreground
-    ``yield_policy``", so fork children inherit the prior behavior (backward
-    compatible). A typed ``YieldPolicy()`` default would *force* the
-    foreground policy to "allow" for fork children, breaking modes that
-    forbid inline asks, so ``None`` is required rather than a default instance.
+    ``False`` means the routing fork decision and the fork enforcer refuse
+    to fork to this mode; it is reachable only via delegate or single-handoff.
     """
     _write_mode(tmp_path)
     catalog = _load(tmp_path)
 
-    assert catalog["demo"].fork_yield_policy is None
+    assert catalog["demo"].fork_allowed is False
 
 
-def test_load_catalog_from_disk_rejects_non_mapping_fork_yield_policy(
+def test_load_catalog_from_disk_rejects_non_bool_fork_allowed(
     tmp_path: Path,
 ) -> None:
-    """A non-dict ``fork_yield_policy`` is a catalog validation error."""
-    _write_mode(tmp_path, extra_front_matter={"fork_yield_policy": "not-a-mapping"})
-    with pytest.raises(WorkflowValidationError, match="fork_yield_policy"):
+    """A non-bool ``fork_allowed`` is a catalog validation error."""
+    _write_mode(tmp_path, extra_front_matter={"fork_allowed": "not-a-bool"})
+    with pytest.raises(WorkflowValidationError, match="fork_allowed"):
+        _load(tmp_path)
+
+
+def test_load_catalog_from_disk_rejects_fork_allowed_no_action_tools(
+    tmp_path: Path,
+) -> None:
+    """``fork_allowed: true`` with no authored action tools is rejected."""
+    _write_mode(
+        tmp_path,
+        extra_front_matter={
+            "fork_allowed": True,
+            "satisfies_intents": ["write"],
+            "yield_policy": {"allowed": False},
+        },
+    )
+    with pytest.raises(WorkflowValidationError, match="no authored action tools"):
+        _load(tmp_path)
+
+
+def test_load_catalog_from_disk_rejects_fork_allowed_empty_satisfies_intents(
+    tmp_path: Path,
+) -> None:
+    """``fork_allowed: true`` with empty ``satisfies_intents`` is rejected."""
+    _write_mode(
+        tmp_path,
+        extra_front_matter={
+            "fork_allowed": True,
+            "allowed_tool_ids": ["write_file"],
+            "yield_policy": {"allowed": False},
+        },
+    )
+    with pytest.raises(WorkflowValidationError, match="empty satisfies_intents"):
+        _load(tmp_path)
+
+
+def test_load_catalog_from_disk_rejects_fork_allowed_yield_policy_contradiction(
+    tmp_path: Path,
+) -> None:
+    """``fork_allowed: true`` with ``yield_policy.allowed: true`` is rejected."""
+    _write_mode(
+        tmp_path,
+        extra_front_matter={
+            "fork_allowed": True,
+            "satisfies_intents": ["write"],
+            "allowed_tool_ids": ["write_file"],
+            "yield_policy": {"allowed": True},
+        },
+    )
+    with pytest.raises(WorkflowValidationError, match="yield_policy allows inline asks"):
         _load(tmp_path)
 
 

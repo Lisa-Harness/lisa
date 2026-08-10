@@ -255,8 +255,8 @@ async def build_tool_surface(
         mode_config: The target mode's ``WorkflowModeConfig`` (or None).
         pool: The turn's MCP tool pool (for cold-server selection + listing).
         yield_policy: The yield policy resolved for this turn (the fork
-            fan-out passes the mode's ``fork_yield_policy`` so children follow
-            the background policy).
+            fan-out passes ``YieldPolicy(allowed=False)`` so children follow
+            the no-ask invariant).
 
     Returns:
         ``(schemas, prune_stats)`` — the pruned OpenAI tool schemas and the

@@ -477,11 +477,11 @@ def _resolve_yield_policy(mode_config: Any, override: YieldPolicy | None = None)
     degrades to the legacy "ask in place" behavior rather than crashing.
 
     ``override`` is an optional ``YieldPolicy`` supplied by the caller (the
-    fork fan-out passes the mode's ``fork_yield_policy`` here so a fork child's
-    ``yield`` tool surface and lifecycle resolution follow the background
-    policy rather than the foreground one). When non-None, it takes precedence
-    over the mode's authored policy — this is the single seam by which a fork
-    child suppresses ``yield`` even when the foreground mode allows it.
+    fork fan-out passes ``YieldPolicy(allowed=False)`` unconditionally so a
+    fork child's ``yield`` tool surface and lifecycle resolution follow the
+    no-ask invariant). When non-None, it takes precedence over the mode's
+    authored policy — this is the single seam by which a fork child suppresses
+    ``yield`` even when the foreground mode allows it.
     """
     if override is not None:
         return override
@@ -1954,14 +1954,13 @@ async def run_turn(
     weak/strict model turns into an invalid-content 500). Fork children
     must run their mode to completion without re-routing.
 
-    ``yield_policy_override`` is set by the fork fan-out so a fork child's
-    ``yield`` tool surface and lifecycle resolution follow the mode's
-    ``fork_yield_policy`` rather than its foreground ``yield_policy``. A fork
-    child runs with no interactive channel — the user cannot answer a
-    mid-turn question — so a mode that allows inline asks in the foreground
-    may forbid them in the background (``fork_yield_policy: { allowed: false }``)
-    and the ``yield`` tool is not advertised to the child at all. ``None`` means
-    use the mode's authored ``yield_policy`` (the foreground policy).
+    ``yield_policy_override`` is set by the fork fan-out to
+    ``YieldPolicy(allowed=False)`` so a fork child's ``yield`` tool surface
+    and lifecycle resolution enforce the no-ask invariant. A fork child runs
+    with no interactive channel — the user cannot answer a mid-turn question
+    — so the ``yield`` tool is never advertised to the child. A mode that
+    declares ``fork_allowed: true`` commits to completing or failing without
+    asking.
 
     ``sub_turn_kind`` is set by the fork fan-out (``"fork"``) and, once the
     delegate operation lands, by ``_default_delegate_fn`` (``"delegate"``).
@@ -2430,9 +2429,9 @@ async def _run_turn_inner(
     # overrides and the incidents each cap guards against.
     _max_handoffs_per_turn = _kernel_settings.max_handoffs_per_turn
     _hint_override_limit = _kernel_settings.hint_override_limit
-    # The fork fan-out passes the mode's ``fork_yield_policy`` here so a fork
-    # child's ``yield`` tool surface and lifecycle resolution follow the
-    # background policy. ``None`` (foreground / non-fork path) means
+    # The fork fan-out passes ``YieldPolicy(allowed=False)`` here so a fork
+    # child's ``yield`` tool surface and lifecycle resolution enforce the
+    # no-ask invariant. ``None`` (foreground / non-fork path) means
     # ``_resolve_yield_policy`` reads the mode's authored ``yield_policy``.
     _yield_policy_override = yield_policy_override
 
@@ -3021,7 +3020,45 @@ async def _run_turn_inner(
     )
     if coordinator_hint:
         routing_hint = coordinator_hint
-    if routing_hint:
+    # ── Ambiguity yield: ask the user before routing ──────────────────
+    # When the routing hint returns the ``AMBIGUOUS_INTENT:<csv>`` sentinel,
+    # the hint layer detected a gap but could not confidently resolve a
+    # target (no single covering target, no fork, no producer-first, no
+    # sequential chain). Instead of proceeding silently and letting the
+    # model guess, yield to the user with a clarification question naming
+    # the available routing targets. The checkpoint layer stamps
+    # ``lifecycle_state="yielded"`` and the turn is resumable by
+    # ``/proceed`` (the user's reply re-enters the routing hint with the
+    # clarified intent).
+    if routing_hint.startswith("AMBIGUOUS_INTENT:"):
+        _ambiguous_targets_csv = routing_hint[len("AMBIGUOUS_INTENT:") :]
+        _ambiguous_targets_list = [
+            t for t in _ambiguous_targets_csv.split(",") if t.strip()
+        ]
+        _ambiguous_targets_display = ", ".join(
+            f"`{t}`" for t in _ambiguous_targets_list
+        )
+        _pending_yield = YieldAction(
+            question=(
+                f"I detected multiple possible intents but couldn't determine "
+                f"the right mode to handle your request. Available: {_ambiguous_targets_display}. "
+                f"Which did you mean?"
+            ),
+            context=(
+                f"ambiguous routing intent (mode={mode_id}, "
+                f"targets={_ambiguous_targets_csv})"
+            ),
+        )
+        content = _pending_yield.question
+        _yielded = True
+        _log.info(
+            "ambiguous intent yield (mode=%s, targets=%s)",
+            mode_id,
+            _ambiguous_targets_csv,
+        )
+        # Skip the forced-action enforcer and system-prompt injection —
+        # the turn yields before any tool dispatch.
+    elif routing_hint:
         _log.info(
             "routing hint injected mode=%s hint_len=%d hint=%s",
             mode_id,
@@ -5624,6 +5661,50 @@ async def _run_turn_inner(
                             for child in op_json["children"]
                             if isinstance(child, dict)
                         ]
+                    # ── Delegate model_yield propagation ──────────────────
+                    # When a delegate child returns ``status="model_yield"``
+                    # with a ``yield_action``, the parent turn intercepts it
+                    # and surfaces the child's question to the user — the
+                    # parent is the interactive proxy. The ``YieldAction``
+                    # context is enriched with the original delegated query
+                    # so the user has the surrounding input to answer
+                    # ("the delegate was asked 'X'; it asks 'Y'"). Set
+                    # ``_pending_yield`` and ``break`` the ``for`` loop; the
+                    # ``while`` loop's forced-yield path (L4091) then breaks
+                    # with the question as the turn content, and the
+                    # checkpoint layer stamps ``lifecycle_state="yielded"``.
+                    if (
+                        isinstance(op_json, dict)
+                        and tool_name == "delegate"
+                        and op_json.get("status") == "model_yield"
+                        and isinstance(op_json.get("yield_action"), dict)
+                    ):
+                        _ya_dict = op_json["yield_action"]
+                        _child_question = str(_ya_dict.get("question") or "")
+                        _delegated_query = str(tool_arguments.get("query") or "")
+                        _ya_dict["context"] = (
+                            f"The delegate was asked: '{_delegated_query}'. "
+                            f"It asks: '{_child_question}'"
+                        )
+                        _pending_yield = YieldAction.model_validate(_ya_dict)
+                        content = _pending_yield.question
+                        _yielded = True
+                        _log.info(
+                            "delegate child model_yield propagated to user "
+                            "(mode=%s, delegate_target=%s, iteration=%d)",
+                            mode_id,
+                            str(op_json.get("target_mode_id") or ""),
+                            _state.iteration,
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "name": tool_name,
+                                "content": f"Yielded to user: {_pending_yield.question}",
+                            }
+                        )
+                        break
                 elif tool_name in tool_catalog:
                     # In-process tool (pack-contributed): dispatch via the
                     # tool registry, which imports the implementation module
@@ -5922,7 +6003,7 @@ async def _run_turn_inner(
             or _state.handoff_count > _max_handoffs_per_turn
             or (
                 _state.fork_results is not None
-                and any(r.status in ("no_tools", "yielded") for r in _state.fork_results)
+                and any(r.status != "ok" for r in _state.fork_results)
             )
         ):
             break
@@ -6145,7 +6226,7 @@ async def _run_turn_inner(
         or (
             _state.fork_results
             and any(
-                r.status in ("no_tools", "yielded", "interrupted", "blocked")
+                r.status != "ok"
                 for r in (_state.fork_results or [])
             )
         )
@@ -6386,7 +6467,6 @@ from kernel.turn_phases._fork import (  # noqa: F401
     _execute_fork_fanout,
     _fork_child_budget,
     _fork_mode_requires_tools,
-    _fork_yield_policy_override,
     _run_fork_child,
     _run_fork_child_turn,
 )

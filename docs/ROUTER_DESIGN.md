@@ -756,7 +756,8 @@ Fork and delegate share the same child-turn infrastructure —
 `classify_child_turn`, the `sub_turn_kind` contract seam, the
 `mode_completion_effects` action-tool resolver, and the
 `ForkChildResult` / `DelegationResult` status union. The differences are
-narrow and mostly flow from one irreducible axis: **cardinality**.
+narrow and mostly flow from one irreducible axis: **does the target mode
+need a path to ask the user?**
 
 | Axis | fork | delegate |
 | --- | --- | --- |
@@ -767,23 +768,29 @@ narrow and mostly flow from one irreducible axis: **cardinality**.
 | Result shape | `list[ForkChildResult]` | one `DelegationResult` |
 | Sub-turn contract | `prompts/sub_turn/fork_contract.md` — "your output is discarded as unverified" | `prompts/sub_turn/delegate_contract.md` — "return `status=no_tools` so your parent can decide" |
 | Recursion | not bounded (fork children suppress routing hints; no re-fork) | bounded by `delegate_max_depth`; children may themselves delegate |
-| Yield policy | dedicated `fork_yield_policy` (background) — the user cannot answer a mid-turn question while N children run | foreground `yield_policy` (no override) |
+| Consent | `fork_allowed: true` in `_mode.md` — the mode commits to completing or failing without asking | no consent needed; any routable mode may be a delegate target |
+| Yield | `YieldPolicy(allowed=False)` unconditionally — the `yield` tool is never advertised to a fork child | foreground `yield_policy` — the child may emit `model_yield`, which propagates to the user through the parent |
 | Trigger | routing syntax — `fork:mode,mode,...` via `transition_stage` | pack operation — LLM tool call with structured `Parameters` |
 
-**Why the parent-lives distinction exists.** Fork is routed via
-`transition_stage("fork:...")` — a *terminal* routing decision. The parent
-hands off and ends; the fan-out results replace what the parent would have
-produced. Delegate is a pack operation (`sdk/packs/core/operations/delegation/`)
-the model calls mid-turn: the parent stays in the tool loop, awaits the
-child's `DelegationResult`, and can make further decisions from the child's
-output (e.g. delegate to `search` for evidence, then synthesize).
+**Why fork needs `fork_allowed`.** Fork children run concurrently with no
+interactive channel — the user cannot answer one child's question without
+blocking the others. A mode that declares `fork_allowed: true` commits to
+completing or failing without asking; the routing fork decision
+(`_build_fork_target`) and the fork enforcer refuse a fork when any
+candidate target lacks this. The fork child's `run_turn` call receives
+`yield_policy_override=YieldPolicy(allowed=False)` unconditionally, so the
+`yield` tool is never advertised. A mode that may need to ask the user
+must NOT set `fork_allowed`; it is reachable only via delegate or
+single-handoff.
 
-**Why fork needs its own yield policy.** Fork children run concurrently
-with no interactive channel — the user cannot answer one child's question
-without blocking the others. A mode that allows inline asks in the
-foreground may forbid them when forked via `fork_yield_policy:
-{ allowed: false }` in `_mode.md`. Delegate children run sequentially while
-the parent waits, so they inherit the mode's foreground `yield_policy`.
+**Why delegate is the interactive path.** Delegate children run
+sequentially while the parent waits, so they inherit the mode's foreground
+`yield_policy`. When a delegate child emits `model_yield`, the parent turn
+intercepts it and surfaces the child's question to the user — the parent
+is the interactive proxy. The `YieldAction.context` is enriched with the
+original delegated query ("the delegate was asked 'X'; it asks 'Y'") so
+the user has the surrounding input to answer. The checkpoint layer stamps
+`lifecycle_state="yielded"` and the turn is resumable by `/proceed`.
 
 **Why delegate needs recursion bounding.** A delegate child can itself
 call `delegate`, forming an agent tree of arbitrary depth.
@@ -791,6 +798,13 @@ call `delegate`, forming an agent tree of arbitrary depth.
 `delegate_max_depth` (`kernel/config.py`), returning `status="max_depth"`
 at the cap. Fork children suppress routing hints and do not re-fork, so
 no depth bound is needed today.
+
+**Ambiguity yield.** When the routing hint detects a gap but cannot
+confidently resolve a target (no single covering target, no fork, no
+producer-first, no sequential chain), the turn yields to the user with a
+clarification question naming the available routing targets — instead of
+proceeding silently and letting the model guess. This is the last resort;
+all common routing paths return concrete hints and never reach it.
 
 ---
 
@@ -824,7 +838,7 @@ Hosts manage manifests through commands:
 | --- | --- |
 | `kernel/turn_runner.py` | Turn execution loop. Intercepts `transition_stage` for mode handoff, fork fan-out, and workflow stage transitions. Compiles capability manifest and injects routing hints. Captures `EffectReceipt`s at dispatch time. |
 | `kernel/turn_phases/_child_turn.py` | Shared child-turn classifier (`classify_child_turn`). Called by both fork and delegate paths. Fixed order: blocked → model_yield → interrupted → timeout/error → completion-contract → complete. |
-| `kernel/turn_phases/_fork.py` | Fork fan-out orchestration. Budget division, child turn execution, `fork_yield_policy` resolution. Delegates classification to `classify_child_turn`. |
+| `kernel/turn_phases/_fork.py` | Fork fan-out orchestration. Budget division, child turn execution, unconditional `YieldPolicy(allowed=False)` override. Delegates classification to `classify_child_turn`. |
 | `kernel/operations/registry.py` | Operation catalog, admission gates, `mode_completion_effects` (the canonical action-tool resolver shared with `classify_child_turn`). |
 | `kernel/ipsar_fsm.py` | FSM loader and runtime. Synthesizes routing transitions (`synthesize_routing_transitions`, `get_routing_targets`, `is_routable_mode`). Parses fork targets (`parse_fork_target_string`, `is_fork_target`). Validates workflow stage transitions (`apply_transition`). |
 | `kernel/models.py` | `ForkTarget`, `ForkChildResult`, `ChildTurnOutcome`, `EffectReceipt`, `BlockDiagnostic`, `WorkflowModeConfig`, `WorkflowStageConfig`, `WorkflowTransitionRequest`, `TurnBudget`, `CallLedger`. |

@@ -45,7 +45,6 @@ __all__ = [
     "_execute_fork_fanout",
     "_fork_child_budget",
     "_fork_mode_requires_tools",
-    "_fork_yield_policy_override",
     "_run_fork_child",
     "_run_fork_child_turn",
 ]
@@ -68,32 +67,6 @@ def _fork_mode_requires_tools(mode_id: str) -> bool:
         return bool(mode_completion_effects(mode_id))
     except Exception:  # pylint: disable=broad-except
         return False
-
-
-def _fork_yield_policy_override(mode_id: str) -> YieldPolicy | None:
-    """Return the mode's ``fork_yield_policy`` to apply when forked, or ``None``.
-
-    A mode may author a *second* ``YieldPolicy`` in ``_mode.md`` front matter
-    under ``fork_yield_policy`` to govern how it behaves when invoked as a
-    fork child (parallel fan-out). Fork children run with no interactive
-    channel — the user cannot answer a mid-turn question — so a mode that
-    allows inline asks in the foreground may forbid them in the background
-    (``fork_yield_policy: { allowed: false }``) and the ``yield`` tool is not
-    advertised to the child at all.
-
-    Returns ``None`` when the key is absent OR the mode is unknown to the
-    catalog. ``None`` is the sentinel ``run_turn``'s ``yield_policy_override``
-    param interprets as "use the mode's foreground ``yield_policy``" — so
-    fork children inherit the prior behavior (backward compatible).
-    """
-    mode_config = get_workflow_catalog().get(mode_id)
-    if mode_config is None:
-        return None
-    policy = getattr(mode_config, "fork_yield_policy", None)
-    # ``fork_yield_policy`` is ``YieldPolicy | None``; ``None`` means
-    # "no fork override". A ``YieldPolicy()`` default (empty) is a real
-    # override — it means "allow yield in the background" — so we return it.
-    return policy
 
 
 async def _run_fork_child_turn(
@@ -145,15 +118,12 @@ async def _run_fork_child_turn(
             # run to completion without re-injecting the original query's
             # multi-intent routing signal.
             suppress_routing_hint=True,
-            # Apply the mode's ``fork_yield_policy`` (authored in
-            # ``_mode.md`` front matter) so a fork child's ``yield`` tool
-            # surface follows the background policy. A mode that allows
-            # inline asks in the foreground may forbid them in the
-            # background (``fork_yield_policy: { allowed: false }``) and
-            # the ``yield`` tool is not advertised to the child at all.
-            # ``None`` (no ``fork_yield_policy`` authored) falls back to the
-            # mode's foreground ``yield_policy`` — backward compatible.
-            yield_policy_override=_fork_yield_policy_override(target.mode_id),
+            # Fork children never get the ``yield`` tool. A fork target
+            # declares ``fork_allowed: true`` — it commits to completing or
+            # failing without asking the user. The unconditional
+            # ``YieldPolicy(allowed=False)`` ensures the ``yield`` tool is
+            # not advertised and the lifecycle fallback cannot fire.
+            yield_policy_override=YieldPolicy(allowed=False),
             # Mark this turn as a fork child so the budget briefing emits
             # a ``## Sub-Turn Contract`` block (framing the iteration
             # budget as a write-deadline and naming the action tools the
