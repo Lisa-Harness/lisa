@@ -45,14 +45,19 @@ _PLAN_STEP_RE = re.compile(
 )
 # Optional rationale line:  _Provides web_search_
 _RATIONALE_RE = re.compile(r"^\s*_\s*(.+?)\s*_\s*$")
+# Optional deliverable line:  _writes: markdown_forge_document_  or  _reads_
+_WRITES_RE = re.compile(r"^\s*_\s*writes:\s*([a-zA-Z0-9_.-]+)\s*_\s*$")
+_READS_RE = re.compile(r"^\s*_\s*reads_\s*$")
 
 
-def _parse_plan_block(text: str) -> tuple[str, list[tuple[str, str, str]]] | None:
+def _parse_plan_block(text: str) -> tuple[str, list[tuple[str, str, str, str | None]]] | None:
     """Extract the ``## Plan`` block from ``text``.
 
     Returns ``(plan_text, steps)`` where ``steps`` is a list of
-    ``(mode_id, description, rationale)`` tuples, or ``None`` when no
-    ``## Plan`` header is found.
+    ``(mode_id, description, rationale, write_capability)`` tuples.
+    ``write_capability`` is the capability id parsed from a ``_writes: <id>_``
+    line, ``None`` for read steps (``_reads_`` or no deliverable line), or
+    ``None`` when no ``## Plan`` header is found.
 
     The parser is best-effort: it handles the standard format produced by
     ``_render_plan_markdown`` and common prose variants. Steps with
@@ -73,7 +78,7 @@ def _parse_plan_block(text: str) -> tuple[str, list[tuple[str, str, str]]] | Non
         block_text = text[block_start:]
 
     lines = block_text.splitlines()
-    steps: list[tuple[str, str, str]] = []
+    steps: list[tuple[str, str, str, str | None]] = []
     i = 1  # skip the header line
     while i < len(lines):
         line = lines[i]
@@ -82,15 +87,37 @@ def _parse_plan_block(text: str) -> tuple[str, list[tuple[str, str, str]]] | Non
             mode_id = step_match.group(1).strip()
             description = step_match.group(2).strip()
             rationale = ""
-            # Check next line for rationale
+            write_capability: str | None = None
+            # Check next lines for rationale and/or deliverable line.
+            # Both the rationale and the _writes_/_reads_ line use the
+            # ``_..._`` wrapper; distinguish by content. The deliverable
+            # line takes precedence for capability extraction.
             if i + 1 < len(lines):
-                rat_match = _RATIONALE_RE.match(lines[i + 1])
-                if rat_match:
-                    rationale = rat_match.group(1).strip()
+                writes_match = _WRITES_RE.match(lines[i + 1])
+                reads_match = _READS_RE.match(lines[i + 1])
+                if writes_match:
+                    write_capability = writes_match.group(1).strip()
                     i += 1
+                    if i + 1 < len(lines):
+                        rat_match = _RATIONALE_RE.match(lines[i + 1])
+                        if rat_match:
+                            rationale = rat_match.group(1).strip()
+                            i += 1
+                elif reads_match:
+                    i += 1
+                    if i + 1 < len(lines):
+                        rat_match = _RATIONALE_RE.match(lines[i + 1])
+                        if rat_match:
+                            rationale = rat_match.group(1).strip()
+                            i += 1
+                else:
+                    rat_match = _RATIONALE_RE.match(lines[i + 1])
+                    if rat_match:
+                        rationale = rat_match.group(1).strip()
+                        i += 1
             # Skip steps with empty mode_id or description (hollow steps)
             if mode_id and description:
-                steps.append((mode_id, description, rationale))
+                steps.append((mode_id, description, rationale, write_capability))
         i += 1
 
     if not steps:
@@ -162,6 +189,60 @@ def _has_write_receipt(entry: dict[str, Any]) -> bool:
     )
 
 
+def _receipt_capability_ids(entry: dict[str, Any]) -> set[str]:
+    """Return the set of capability ids (raw + bare form) from write receipts."""
+    receipts = entry.get("effect_receipts")
+    if not receipts or not isinstance(receipts, list):
+        return set()
+    ids: set[str] = set()
+    for r in receipts:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("effect", "")) not in ("write", "external_write"):
+            continue
+        cap = str(r.get("capability_id") or "")
+        if not cap:
+            continue
+        ids.add(cap)
+        # Bare form: strip a ``provider.`` namespace prefix (e.g.
+        # ``lisa-storage.read_file`` -> ``read_file``).
+        if "." in cap:
+            ids.add(cap.rsplit(".", 1)[-1])
+    return ids
+
+
+def _step_satisfied(
+    entries: list[dict[str, Any]],
+    step: WorkflowStep,
+    after_index: int,
+) -> dict[str, Any] | None:
+    """Return the thread entry that satisfies ``step``, or ``None``.
+
+    - **Write step** (``step.write_capability`` set): the first later
+      entry with ``mode_id == step.mode_id`` whose write receipts include
+      ``step.write_capability`` (raw or bare form). No dense-content
+      fallback — the receipt is the honest signal.
+    - **Read step** (``step.write_capability`` is None): the first later
+      entry with ``mode_id == step.mode_id`` and a non-empty
+      ``handoff_to`` or ``transitioned_to``. The reads and prose are
+      already in the lossless thread; the handoff is the completion
+      signal.
+    """
+    target = step.write_capability
+    for entry in entries[after_index + 1 :]:
+        if entry.get("mode_id") != step.mode_id:
+            continue
+        if target is not None:
+            if target in _receipt_capability_ids(entry):
+                return entry
+        else:
+            handoff = str(entry.get("handoff_to") or "")
+            transitioned = str(entry.get("transitioned_to") or "")
+            if handoff or transitioned:
+                return entry
+    return None
+
+
 def _receipts_for_mode(
     entries: list[dict[str, Any]], mode_id: str, after_index: int
 ) -> bool:
@@ -200,7 +281,7 @@ def derive_workflow_view(
     # Scan from most recent backwards for the latest ## Plan block.
     plan_entry_index = -1
     plan_text = ""
-    parsed_steps: list[tuple[str, str, str]] = []
+    parsed_steps: list[tuple[str, str, str, str | None]] = []
 
     for i in range(len(thread_entries) - 1, -1, -1):
         entry = thread_entries[i]
@@ -217,7 +298,7 @@ def derive_workflow_view(
 
     # Build WorkflowStep objects from the parsed plan.
     steps: list[WorkflowStep] = []
-    for idx, (mode_id, description, rationale) in enumerate(parsed_steps):
+    for idx, (mode_id, description, rationale, write_capability) in enumerate(parsed_steps):
         step_id = _step_id_for(mode_id, idx)
         steps.append(
             WorkflowStep(
@@ -227,24 +308,31 @@ def derive_workflow_view(
                 plan_text=rationale,
                 is_terminal=(idx == len(parsed_steps) - 1),
                 spawned_from="thread_derived",
+                write_capability=write_capability,
             )
         )
 
-    # Determine completion: a step is complete when a later thread entry
-    # has the same mode_id AND at least one write effect receipt.
+    # Determine completion via the deliverable contract:
+    # - Write step (write_capability set): complete iff a later thread
+    #   entry has a receipt whose capability_id matches write_capability
+    #   (raw or bare form). No dense-content fallback — the receipt is the
+    #   honest signal.
+    # - Read step (write_capability None): complete on the first
+    #   handoff_to or transitioned_to in a later entry with matching
+    #   mode_id. The reads and prose are already in the lossless thread;
+    #   the handoff is the completion signal.
     completed: list[str] = []
     step_results: dict[str, str] = {}
 
     for idx, step in enumerate(steps):
-        if _receipts_for_mode(thread_entries, step.mode_id, plan_entry_index + idx):
+        completing_entry = _step_satisfied(
+            thread_entries, step, plan_entry_index + idx
+        )
+        if completing_entry is not None:
             completed.append(step.step_id)
-            # Use the response_text preview from the completing entry.
-            for entry in thread_entries[plan_entry_index + idx + 1 :]:
-                if entry.get("mode_id") == step.mode_id and _has_write_receipt(entry):
-                    preview = str(entry.get("response_text") or "").strip()[:240]
-                    if preview:
-                        step_results[step.step_id] = preview
-                    break
+            preview = str(completing_entry.get("response_text") or "").strip()[:240]
+            if preview:
+                step_results[step.step_id] = preview
 
     # Derive mode/stage pointer from the most recent entry.
     last_entry = thread_entries[-1]

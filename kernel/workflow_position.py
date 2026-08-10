@@ -103,6 +103,15 @@ class WorkflowStep(BaseModel):
     depends_on: tuple[str, ...] = ()
     is_terminal: bool = False
     spawned_from: WorkflowPositionOrigin = "adhoc"
+    # The capability id whose write/external_write effect_receipt completes
+    # this step (e.g. "markdown_forge_document"). None for read/gather
+    # steps, which complete on the next handoff (``handoff_to`` /
+    # ``transitioned_to``) rather than a write receipt. Bound by the
+    # planner from the mode's write contract (``mode_completion_effects``)
+    # so the view's step-completion check matches the kernel's turn-level
+    # write-receipt contract — no false completes from stray receipts, no
+    # incomplete-forever read steps.
+    write_capability: str | None = None
     # The full rendered ``## Plan`` block from ``plan_workflow``'s
     # ``output_text``. Carried on the position (not just the turn's
     # ephemeral ``_state.plan_prefix``) so the handoff context builder

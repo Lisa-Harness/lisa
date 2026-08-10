@@ -55,10 +55,13 @@ _PLAN_3_STEP = """\
 ## Plan
 
 1. **search** — Search for the latest rust async runtime news
+   _reads_
    _Provides web_search_
 2. **coding** — Implement the client
+   _writes: coding_apply_patch_
    _Provides code generation_
 3. **markdown** — Document usage
+   _writes: markdown_generate_
    _Provides document drafting_
 """
 
@@ -91,12 +94,13 @@ class TestDeriveWorkflowView:
         assert len(remaining_steps(view)) == 3
 
     def test_plan_with_one_receipt_first_step_complete(self):
+        # search is a read step (_reads_); it completes on handoff_to.
         entries = [
             _entry(mode_id="planner", response_text=_PLAN_3_STEP),
             _entry(
                 mode_id="search",
                 response_text="Found 3 results.",
-                effect_receipts=[_receipt("web_search", "write")],
+                handoff_to="coding",
             ),
         ]
         view = derive_workflow_view(entries)
@@ -107,15 +111,47 @@ class TestDeriveWorkflowView:
         assert len(remaining_steps(view)) == 2
         assert not is_complete(view)
 
+    def test_write_step_completes_on_matching_receipt(self):
+        # coding is a write step (_writes: coding_apply_patch_);
+        # it completes on a matching write receipt, not on handoff.
+        entries = [
+            _entry(mode_id="planner", response_text=_PLAN_3_STEP),
+            _entry(mode_id="search", response_text="Searched.", handoff_to="coding"),
+            _entry(
+                mode_id="coding",
+                response_text="Implemented.",
+                effect_receipts=[_receipt("coding_apply_patch", "write")],
+            ),
+        ]
+        view = derive_workflow_view(entries)
+        assert view is not None
+        assert "search_0" in view.completed_steps
+        assert "coding_1" in view.completed_steps
+        assert view.current_step_id == "markdown_2"
+
+    def test_write_step_not_completed_by_non_matching_receipt(self):
+        # A write step must match its specific write_capability — a stray
+        # receipt for a different capability does not complete it.
+        entries = [
+            _entry(mode_id="planner", response_text=_PLAN_3_STEP),
+            _entry(mode_id="search", response_text="Searched.", handoff_to="coding"),
+            _entry(
+                mode_id="coding",
+                response_text="Read-only work.",
+                effect_receipts=[_receipt("coding_read_file", "write")],
+            ),
+        ]
+        view = derive_workflow_view(entries)
+        assert view is not None
+        assert "search_0" in view.completed_steps
+        assert "coding_1" not in view.completed_steps
+        assert view.current_step_id == "coding_1"
+
     def test_plan_with_all_receipts_returns_none(self):
         """When all steps are complete, the workflow is done — return None."""
         entries = [
             _entry(mode_id="planner", response_text=_PLAN_3_STEP),
-            _entry(
-                mode_id="search",
-                response_text="Found results.",
-                effect_receipts=[_receipt("web_search", "write")],
-            ),
+            _entry(mode_id="search", response_text="Searched.", handoff_to="coding"),
             _entry(
                 mode_id="coding",
                 response_text="Implemented.",
@@ -131,15 +167,11 @@ class TestDeriveWorkflowView:
         assert view is None
 
     def test_resume_across_entries(self):
-        """Plan in an older entry, receipts in newer entries — correctly derived."""
+        """Plan in an older entry, completion in newer entries — correctly derived."""
         entries = [
             _entry(mode_id="planner", response_text=_PLAN_3_STEP),
             _entry(mode_id="search", response_text="Searching..."),
-            _entry(
-                mode_id="search",
-                response_text="Found results.",
-                effect_receipts=[_receipt("web_search", "write")],
-            ),
+            _entry(mode_id="search", response_text="Done.", handoff_to="coding"),
             _entry(mode_id="default", response_text="Continue."),
         ]
         view = derive_workflow_view(entries)
@@ -184,19 +216,23 @@ class TestDeriveWorkflowView:
         assert view.turn_count == 1
 
     def test_read_receipts_do_not_complete_steps(self):
-        """Read-effect receipts (effect=read) should not mark a step complete."""
+        """Read-effect receipts (effect=read) should not complete a write step."""
         entries = [
             _entry(mode_id="planner", response_text=_PLAN_3_STEP),
+            _entry(mode_id="search", response_text="Read-only results.", handoff_to="coding"),
             _entry(
-                mode_id="search",
-                response_text="Read-only results.",
-                effect_receipts=[_receipt("web_search", "read")],
+                mode_id="coding",
+                response_text="Read-only work.",
+                effect_receipts=[_receipt("coding_apply_patch", "read")],
             ),
         ]
         view = derive_workflow_view(entries)
         assert view is not None
-        assert len(view.completed_steps) == 0
-        assert view.current_step_id == "search_0"
+        # search (read step) completed on handoff; coding (write step) did
+        # not — a read-effect receipt does not satisfy the write contract.
+        assert "search_0" in view.completed_steps
+        assert "coding_1" not in view.completed_steps
+        assert view.current_step_id == "coding_1"
 
     def test_prose_plan_without_mode_tags_returns_none(self):
         """A prose plan without **mode_id** tags is not parseable — return None."""
@@ -216,7 +252,7 @@ and finally write the documentation.
             _entry(
                 mode_id="search",
                 response_text="Found 3 results about rust async runtimes.",
-                effect_receipts=[_receipt("web_search", "write")],
+                handoff_to="coding",
             ),
         ]
         view = derive_workflow_view(entries)
@@ -236,20 +272,20 @@ and finally write the documentation.
         assert view1.position_id == view2.position_id
 
     def test_handoff_to_tracked_in_entries(self):
-        """handoff_to field in thread entries is available for future use."""
+        """handoff_to field in thread entries completes a read step."""
         entries = [
             _entry(mode_id="planner", response_text=_PLAN_3_STEP),
             _entry(
                 mode_id="search",
                 response_text="Done.",
-                effect_receipts=[_receipt("web_search", "write")],
                 handoff_to="coding",
             ),
         ]
         view = derive_workflow_view(entries)
         assert view is not None
-        # The handoff_to is stored in the entry; the view derives mode
-        # from the last entry's mode_id, not handoff_to.
+        # search (read step) completed via handoff_to; mode derived from
+        # the last entry's mode_id.
+        assert "search_0" in view.completed_steps
         assert view.mode_id == "search"
 
 

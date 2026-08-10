@@ -66,10 +66,19 @@ class PlanStep(BaseModel):
     """One step in a multi-step workflow plan.
 
     A step names a target mode, a human-readable description of what the
-    step does, and a rationale for why that mode handles it. The turn
-    runner maps each step to a ``WorkflowStep`` (via ``_step_id_for``) and
-    persists the sequence as a ``WorkflowInstance`` so the plan survives
-    across turns and is resumable with ``/proceed``.
+    step does, a rationale for why that mode handles it, and an optional
+    ``write_capability`` — the capability id whose write/external_write
+    receipt completes the step. The turn runner maps each step to a
+    ``WorkflowStep`` (via ``_step_id_for``); the WorkflowView matches the
+    step's completion against ``write_capability`` receipts in later
+    thread entries, closing the asymmetry with the kernel's turn-level
+    write-receipt contract.
+
+    ``write_capability`` is None for read/gather steps (search, review
+    prep) — they complete on the next handoff, not a write receipt. For
+    write steps (draft, execute, commit), it MUST be a capability in the
+    mode's write contract (``mode_completion_effects``); the planner is
+    given each mode's write capabilities in the catalog summary.
     """
 
     model_config = ConfigDict(json_schema_extra=_compact_json_schema)
@@ -93,6 +102,18 @@ class PlanStep(BaseModel):
             "provides web_search for current information'). Shown to the "
             "user in the visible plan block."
         )
+    )
+    write_capability: str | None = Field(
+        default=None,
+        description=(
+            "The capability id whose write receipt completes this step "
+            "(e.g. 'markdown_forge_document'). MUST be one of the mode's "
+            "listed write_capabilities. Set to null for read/gather steps "
+            "(search, review prep) that complete on handoff rather than "
+            "a write receipt. Binding a deliverable here ensures the "
+            "plan cannot self-declare done with prose — the receipt is "
+            "required."
+        ),
     )
 
 
@@ -207,7 +228,25 @@ tags and keyword patterns that signal when it should be used.
      intents AND the query is NOT sequential, return one step per mode.
      The framework will fan them out in parallel.
 
-6. Set `target_stage_id` to the first step's `mode_id` (the framework
+6. For each step, decide whether it is a **write step** or a **read step**:
+   - A **write step** produces a tangible deliverable (a document, a
+     commit, a learned concept). Set `write_capability` to the capability
+     id from the mode's `write_capabilities` list that this step must
+     invoke to produce its deliverable. The framework tracks the step as
+     incomplete until a write receipt for that capability appears in the
+     thread — no dense-content escape, no false complete. This is how the
+     plan guarantees reads-then-writes: a write step without its receipt
+     stays incomplete and the workflow cannot finish.
+   - A **read step** gathers information (search, review prep) and
+     produces no deliverable. Set `write_capability` to null. The step
+     completes when the mode hands off to the next step; the reads and
+     prose are already in the thread.
+   As a rule of thumb: a plan should be **reads then writes** — gather
+   first (read steps), then produce (write steps). A plan with a write
+   step that produces no receipt stays incomplete; the kernel will route
+   back or surface the stall rather than silently accept prose.
+
+7. Set `target_stage_id` to the first step's `mode_id` (the framework
    reads this for the initial handoff). Set `rationale` to a one-line
    summary of the plan. When `steps` is non-empty, `target_stage_id` and
    `rationale` are derived from `steps[0]` — set them consistently.
@@ -237,12 +276,16 @@ the request. Do not include any other text outside the JSON object.
 def _build_mode_catalog_summary() -> str:
     """Render the live routable mode catalog as a compact text block.
 
-    Each routable mode is listed with its mode_id, intent tags, and the
-    keyword substrings that signal it. Non-routable modes are omitted —
-    the planner only routes to routable targets. The ``default`` mode is
-    included so the planner can fall back to it for conversational
-    requests that need no specialized mode.
+    Each routable mode is listed with its mode_id, intent tags, the
+    keyword substrings that signal it, and its write-effect capabilities
+    (from ``mode_completion_effects``). The write capabilities tell the
+    planner which capability id to bind as a step's ``write_capability`` —
+    the deliverable whose receipt completes the step. Non-routable modes
+    are omitted; the ``default`` mode is included for conversational
+    fallback.
     """
+
+    from kernel.operations.registry import mode_completion_effects
 
     catalog = get_workflow_catalog()
     lines: list[str] = []
@@ -258,8 +301,18 @@ def _build_mode_catalog_summary() -> str:
         keywords_text = "\n".join(keywords_block) if keywords_block else "  (no keywords)"
         description = (mode_config.description or "").strip().splitlines()[0:1]
         desc_line = description[0] if description else ""
+        # Write-effect capabilities: the deliverables the mode can produce.
+        # The planner binds one as a write step's ``write_capability``.
+        try:
+            write_caps = sorted(mode_completion_effects(mode_id))
+        except Exception:  # pylint: disable=broad-except
+            write_caps = []
+        write_caps_line = (
+            f"\n  write_capabilities: {', '.join(write_caps)}" if write_caps else ""
+        )
         lines.append(
             f"- **{mode_id}** (intents: {tags})\n{keywords_text}"
+            + write_caps_line
             + (f"\n  {desc_line}" if desc_line else "")
         )
     return "\n".join(lines) if lines else "(no routable modes available)"
@@ -296,6 +349,13 @@ def _render_plan_markdown(parsed: PlanWorkflowOutput) -> str:
     user sees the plan at the top of the response, followed by the first
     step's output.
 
+    Each step emits a deliverable line after the description:
+      - ``_writes: {capability_id}_`` for write steps (the receipt that
+        completes the step)
+      - ``_reads_`` for read/gather steps (complete on handoff)
+    The WorkflowView parses these to bind step completion to the
+    deliverable contract.
+
     Returns an empty string when ``parsed.steps`` is empty (the no-match
     case or the weak-model single-target fallback) so the caller can skip
     prepending a plan block that has no content.
@@ -305,6 +365,12 @@ def _render_plan_markdown(parsed: PlanWorkflowOutput) -> str:
     lines: list[str] = ["## Plan", ""]
     for idx, step in enumerate(parsed.steps, start=1):
         lines.append(f"{idx}. **{step.mode_id}** — {step.description}")
+        deliverable_line = (
+            f"   _writes: {step.write_capability}_"
+            if step.write_capability
+            else "   _reads_"
+        )
+        lines.append(deliverable_line)
         if step.rationale:
             lines.append(f"   _{step.rationale}_")
     lines.append("")
@@ -454,6 +520,30 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
     # shape), target_stage_id carries the single target as-is. This keeps
     # existing consumers that read only target_stage_id working while the
     # turn runner reads steps for the visible plan + WorkflowInstance.
+    # Validate write_capability assignments: a write step's capability
+    # must be in its mode's write contract (``mode_completion_effects``).
+    # An invalid assignment is downgraded to None (read step) rather than
+    # failing the plan — the kernel will block at runtime if the model
+    # then fails to produce any receipt, which is the honest signal.
+    from kernel.operations.registry import mode_completion_effects
+
+    for step in parsed.steps:
+        if not step.write_capability:
+            continue
+        try:
+            allowed = mode_completion_effects(step.mode_id)
+        except Exception:  # pylint: disable=broad-except
+            allowed = set()
+        if step.write_capability not in allowed:
+            logger.warning(
+                "plan_workflow: step mode=%s write_capability=%s not in "
+                "mode's write contract %r; downgrading to read step",
+                step.mode_id,
+                step.write_capability,
+                sorted(allowed),
+            )
+            step = step.model_copy(update={"write_capability": None})
+
     if parsed.steps:
         normalized_target = parsed.steps[0].mode_id
     else:
@@ -476,6 +566,7 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                     "mode_id": s.mode_id,
                     "description": s.description,
                     "rationale": s.rationale,
+                    "write_capability": s.write_capability,
                 }
                 for s in parsed.steps
             ],

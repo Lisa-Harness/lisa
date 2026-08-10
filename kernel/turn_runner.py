@@ -1907,6 +1907,15 @@ def _plan_steps_to_workflow_steps(
         # mode id + generic description with no plan context).
         step_rationale = str(step.get("rationale", "")).strip()
 
+        # Carry the step's deliverable capability so the WorkflowView's
+        # completion check matches the kernel's write-receipt contract.
+        # None for read/gather steps (complete on handoff).
+        write_capability = step.get("write_capability")
+        if not isinstance(write_capability, str) or not write_capability.strip():
+            write_capability = None
+        else:
+            write_capability = write_capability.strip()
+
         steps.append(
             WorkflowStep(
                 step_id=_step_id_for(mode_id, idx),
@@ -1917,6 +1926,7 @@ def _plan_steps_to_workflow_steps(
                 is_terminal=(idx == len(plan_steps) - 1),
                 spawned_from="plan_workflow_op",
                 plan_text=step_rationale,
+                write_capability=write_capability,
             )
         )
     return tuple(steps)
