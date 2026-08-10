@@ -2509,6 +2509,65 @@ def test_build_responses_payload_includes_temperature_for_non_thinking_model() -
     assert payload["temperature"] == 0.4
 
 
+def test_build_responses_payload_sanitizes_dotted_tool_names() -> None:
+    """The Responses API rejects names with dots; the payload must sanitize them."""
+    from sdk.providers.openai_gateway import _sanitize_responses_tool_name
+
+    model_def = StubModelDefinition(
+        model_id="gpt-5.1-codex-max",
+        provider="azure_openai",
+        completion_api="responses",
+        thinking_model=True,
+    )
+    tools = [
+        {"type": "function", "function": {"name": "lisa-storage.read_file"}},
+        {"type": "function", "function": {"name": "coding_read_file"}},
+    ]
+    payload = providers._build_responses_payload(
+        model_def=model_def,
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=200,
+        temperature=0.0,
+        tools=tools,
+        response_format=None,
+    )
+    tool_names = [t["name"] for t in payload["tools"]]
+    # Dots replaced with underscores; already-valid names unchanged.
+    assert tool_names == ["lisa-storage_read_file", "coding_read_file"]
+    # No sanitized name contains a dot.
+    assert all("." not in n for n in tool_names)
+    # The sanitizer is idempotent on already-valid names.
+    assert _sanitize_responses_tool_name("coding_read_file") == "coding_read_file"
+
+
+def test_build_responses_tool_name_map_round_trips() -> None:
+    """The reverse map restores original names from sanitized ones."""
+    from sdk.providers.openai_gateway import (
+        build_responses_tool_name_map,
+        restore_responses_tool_names,
+    )
+
+    tools = [
+        {"type": "function", "function": {"name": "lisa-storage.read_file"}},
+        {"type": "function", "function": {"name": "lisa-storage.list_files"}},
+        {"type": "function", "function": {"name": "markdown_forge_document"}},
+    ]
+    name_map = build_responses_tool_name_map(tools)
+    # Only dotted names appear in the map.
+    assert name_map == {
+        "lisa-storage_read_file": "lisa-storage.read_file",
+        "lisa-storage_list_files": "lisa-storage.list_files",
+    }
+    # The model returns sanitized names; restore them to originals.
+    tool_calls = [
+        {"id": "call_1", "type": "function", "name": "lisa-storage_read_file", "arguments": "{}"},
+        {"id": "call_2", "type": "function", "name": "markdown_forge_document", "arguments": "{}"},
+    ]
+    restored = restore_responses_tool_names(tool_calls, name_map)
+    assert restored[0]["name"] == "lisa-storage.read_file"
+    assert restored[1]["name"] == "markdown_forge_document"
+
+
 @pytest.mark.asyncio
 async def test_complete_live_responses_builds_and_parses_payload(
     tmp_path: Path,

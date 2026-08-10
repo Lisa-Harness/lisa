@@ -911,9 +911,11 @@ async def complete_live_responses(
 ) -> StubCompletion:
     """Execute a Responses-API provider completion (e.g. Codex on Azure)."""
     from sdk.providers.openai_gateway import (
+        build_responses_tool_name_map,
         extract_responses_content,
         extract_responses_tool_calls,
         extract_responses_usage,
+        restore_responses_tool_names,
     )
 
     tport = transport or NullTransport()
@@ -925,6 +927,7 @@ async def complete_live_responses(
         tools=tools,
         response_format=response_format,
     )
+    name_map = build_responses_tool_name_map(tools)
     try:
         if stream_stage:
             await tport.on_stage("model_call", {"label": stage_label})
@@ -947,7 +950,9 @@ async def complete_live_responses(
         raise
 
     content = extract_responses_content(response)
-    tool_calls = extract_responses_tool_calls(response)
+    tool_calls = restore_responses_tool_names(
+        extract_responses_tool_calls(response), name_map
+    )
     usage = extract_responses_usage(response)
     finish_reason = getattr(response, "status", None)
     truncated = derive_responses_api_truncated(status=finish_reason)
@@ -1288,9 +1293,11 @@ async def _stream_responses_chunks(
     """
     from kernel.provider_contracts import StreamedChunk
     from sdk.providers.openai_gateway import (
+        build_responses_tool_name_map,
         extract_responses_content,
         extract_responses_tool_calls,
         extract_responses_usage,
+        restore_responses_tool_names,
     )
 
     payload = _build_responses_payload(
@@ -1301,11 +1308,14 @@ async def _stream_responses_chunks(
         tools=tools,
         response_format=response_format,
     )
+    name_map = build_responses_tool_name_map(tools)
     client = azure_responses_client_instance(runtime)
     response = await client.responses.create(**payload)
 
     content = extract_responses_content(response)
-    tool_calls = extract_responses_tool_calls(response)
+    tool_calls = restore_responses_tool_names(
+        extract_responses_tool_calls(response), name_map
+    )
     usage = extract_responses_usage(response)
     finish_reason = getattr(response, "status", None)
     # When the Responses API returns structured tool calls, signal the

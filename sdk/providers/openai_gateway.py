@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
@@ -343,6 +344,69 @@ def build_openai_responses_kwargs(request: CompletionRequest) -> dict[str, Any]:
     return kwargs
 
 
+# The Responses API rejects tool/function names that don't match
+# ``^[a-zA-Z0-9_-]+$``. Lisa's tool names use dots as namespace separators
+# (e.g. ``lisa-storage.read_file``, ``coding.read_file``); the chat-completions
+# endpoint accepts them, but the Responses endpoint returns 400
+# ``Invalid 'input[N].name': string does not match pattern``. Sanitize by
+# replacing every disallowed character with ``_`` so the name is always valid
+# while staying deterministic and reversible for the tool dispatcher (which
+# matches on the sanitized name the model emits).
+_RESPONSES_NAME_INVALID = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _sanitize_responses_tool_name(name: str) -> str:
+    """Replace characters the Responses API rejects in function names."""
+
+    return _RESPONSES_NAME_INVALID.sub("_", name)
+
+
+def build_responses_tool_name_map(
+    tools: list[dict[str, Any]] | None,
+) -> dict[str, str]:
+    """Build a ``sanitized_name -> original_name`` reverse map.
+
+    The Responses API requires function names matching ``^[a-zA-Z0-9_-]+$``;
+    Lisa's dotted names (e.g. ``lisa-storage.read_file``) are sanitized to
+    ``lisa-storage_read_file`` before being sent. The model returns the
+    sanitized form; callers use this map to restore the original name so
+    the kernel's tool dispatcher can match it against its dotted-name
+    catalogs.
+    """
+
+    name_map: dict[str, str] = {}
+    if not tools:
+        return name_map
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            continue
+        function_payload = tool.get("function")
+        if not isinstance(function_payload, dict):
+            continue
+        original = str(function_payload.get("name", "") or "")
+        if not original:
+            continue
+        sanitized = _sanitize_responses_tool_name(original)
+        if sanitized != original:
+            name_map[sanitized] = original
+    return name_map
+
+
+def restore_responses_tool_names(
+    tool_calls: list[dict[str, Any]],
+    name_map: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Restore original tool names in extracted Responses API tool calls."""
+
+    if not name_map:
+        return tool_calls
+    for call in tool_calls:
+        sanitized = str(call.get("name", "") or "")
+        if sanitized in name_map:
+            call["name"] = name_map[sanitized]
+    return tool_calls
+
+
 def build_openai_responses_input(messages: ChatMessages) -> list[dict[str, Any]]:
     """Translate chat-completions history into Responses API input items."""
 
@@ -381,7 +445,9 @@ def build_openai_responses_input(messages: ChatMessages) -> list[dict[str, Any]]
                         {
                             "type": "function_call",
                             "call_id": str(raw_tool_call.get("id", "") or ""),
-                            "name": str(function_payload.get("name", "") or ""),
+                            "name": _sanitize_responses_tool_name(
+                                str(function_payload.get("name", "") or "")
+                            ),
                             "arguments": _normalize_openai_tool_arguments(
                                 function_payload.get("arguments", "")
                             ),
@@ -736,7 +802,9 @@ def _normalize_openai_response_tool(tool: dict[str, Any]) -> dict[str, Any]:
 
     normalized: dict[str, Any] = {
         "type": "function",
-        "name": str(function_payload.get("name", "") or ""),
+        "name": _sanitize_responses_tool_name(
+            str(function_payload.get("name", "") or "")
+        ),
         "parameters": function_payload.get("parameters", {}),
     }
     description = function_payload.get("description")
