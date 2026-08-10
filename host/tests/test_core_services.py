@@ -2471,6 +2471,44 @@ def test_uses_openai_responses_api_honors_completion_api_field() -> None:
     assert providers._uses_openai_responses_api(model_def) is True
 
 
+def test_build_responses_payload_omits_temperature_for_thinking_model() -> None:
+    """Codex/reasoning models reject ``temperature``; the payload must omit it."""
+    model_def = StubModelDefinition(
+        model_id="gpt-5.1-codex-max",
+        provider="azure_openai",
+        completion_api="responses",
+        thinking_model=True,
+    )
+    payload = providers._build_responses_payload(
+        model_def=model_def,
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=200,
+        temperature=0.4,
+        tools=None,
+        response_format=None,
+    )
+    assert "temperature" not in payload
+
+
+def test_build_responses_payload_includes_temperature_for_non_thinking_model() -> None:
+    """Non-thinking Responses-API models keep ``temperature``."""
+    model_def = StubModelDefinition(
+        model_id="gpt-5.4",
+        provider="azure_openai",
+        completion_api="responses",
+        thinking_model=False,
+    )
+    payload = providers._build_responses_payload(
+        model_def=model_def,
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=200,
+        temperature=0.4,
+        tools=None,
+        response_format=None,
+    )
+    assert payload["temperature"] == 0.4
+
+
 @pytest.mark.asyncio
 async def test_complete_live_responses_builds_and_parses_payload(
     tmp_path: Path,

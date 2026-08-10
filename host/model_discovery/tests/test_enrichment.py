@@ -133,6 +133,10 @@ class TestAzureEnrichment:
         """Codex-family deployments only expose the Responses API on Azure."""
         model = _enrich_azure_model("gpt-5.1-codex-max", {"model": "gpt-5.1-codex-max"})
         assert model.completion_api == "responses"
+        # Codex models reject ``temperature``; the probe must mark them
+        # thinking so the Responses/chat-completions payload builders
+        # omit it.
+        assert model.thinking_model is True
 
     def test_non_codex_uses_chat_completions(self) -> None:
         """Non-codex deployments keep the default chat-completions endpoint."""

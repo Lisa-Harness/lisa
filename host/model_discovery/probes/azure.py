@@ -141,6 +141,13 @@ def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
     cost_tier = ""
     latency_tier = ""
     display_name = str(row.get("model") or "").strip() or model_id
+    # Codex-family models are reasoning/thinking models — they reject
+    # ``temperature`` on both the Responses and chat-completions APIs.
+    # Detected here (before the if/elif model-family chain) so it does
+    # not add a branch to that chain; the o-series also sets
+    # ``thinking_model`` in its own branch below.
+    is_codex = "codex" in lowered
+    thinking_model = is_codex
 
     # Parse the Azure catalog capabilities dict if present.
     raw_capabilities = row.get("capabilities")
@@ -186,7 +193,8 @@ def _enrich_azure_model(model_id: str, row: dict) -> DiscoveredModel:
     # chat-completions endpoint rejects them with ``The requested
     # operation is unsupported.`` Infer ``completion_api`` so the
     # generated manifest routes them correctly without a hand edit.
-    completion_api = "responses" if "codex" in lowered else "chat_completions"
+    # ``thinking_model`` for codex is set above (near the init).
+    completion_api = "responses" if is_codex else "chat_completions"
 
     enrichment = apply_known_override(
         "azure_openai",
