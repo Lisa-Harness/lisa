@@ -93,6 +93,22 @@ class _FakeHooks:
         )()
 
 
+class _ErrorHooks(_FakeHooks):
+    """Hooks view whose memory.list returns a ToolResult-shaped error.
+
+    Mirrors what ``host.turn_hooks_builder._execute_tool`` now produces when
+    the MCP pool returns an error: an object with a non-empty ``error`` and an
+    empty ``output_text``. The slice must treat this as "no count" rather
+    than attempting to parse an error string as JSON.
+    """
+
+    async def execute_tool(self, tool_id: str, params: dict[str, Any]) -> Any:
+        self.tool_calls.append((tool_id, dict(params)))
+        if tool_id == "memory.list":
+            return type("_R", (), {"output_text": "", "error": "server down"})()
+        return await super().execute_tool(tool_id, params)
+
+
 @pytest.mark.asyncio
 async def test_below_pressure_threshold_no_ops(tmp_path: Path) -> None:
     hooks = _FakeHooks(episodic_records=[{"id": 1, "content": "a"}])  # 1/200 = 0.005
@@ -209,6 +225,28 @@ async def test_no_execute_tool_seam_no_ops(tmp_path: Path) -> None:
     )
     outcome = await slc.slice(None, _policy())
     assert outcome.work_items_completed == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_error_result_is_no_count(tmp_path: Path) -> None:
+    """A ToolResult-shaped error (empty output_text, non-empty error) is
+    treated as "no episodic count" instead of crashing json.loads.
+
+    Regression for the host-adapter bug where ``str(MCPToolResult(...))``
+    (the dataclass repr starting with "M") was stored as ``output_text``,
+    causing ``json.loads`` to raise "Expecting value: line 1 column 1
+    (char 0)" on every slice.
+    """
+    hooks = _ErrorHooks()
+    slc = MemoryConsolidationSlice(
+        config=_config(memory_data_dir=tmp_path),
+        turn_hooks=hooks,
+    )
+    outcome = await slc.slice(None, _policy())
+    assert outcome.work_items_completed == 0
+    assert outcome.notes[0] == "no_episodic_count_seam"
+    # The list call was attempted; the error short-circuited before firing.
+    assert hooks.op_calls == []
     assert outcome.notes[0] == "no_episodic_count_seam"
 
 

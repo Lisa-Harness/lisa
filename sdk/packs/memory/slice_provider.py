@@ -178,6 +178,12 @@ class MemoryConsolidationSlice:
                     "limit": self._config.batch_size,
                 },
             )
+            if getattr(result, "error", None):
+                logger.warning(
+                    "memory_consolidation: episodic count tool error: %s",
+                    result.error,
+                )
+                return None
             text = getattr(result, "output_text", "") or "[]"
             records = json.loads(text) if text else []
             return len(records) if isinstance(records, list) else None
@@ -203,6 +209,12 @@ class MemoryConsolidationSlice:
                     "limit": self._config.batch_size,
                 },
             )
+            if getattr(result, "error", None):
+                logger.warning(
+                    "memory_consolidation: episodic batch load tool error: %s",
+                    result.error,
+                )
+                return []
             text = getattr(result, "output_text", "") or "[]"
             records = json.loads(text) if text else []
             return records if isinstance(records, list) else []

@@ -444,14 +444,24 @@ def build_turn_hooks(
                 else:
                     arguments = getattr(tool_ctx, "parameters", None) or {}
                 result = await pool.call_tool(tool_id, arguments)
-                # Adapt the MCP result to ToolResult.
+                # Adapt the MCP result to ToolResult. ``call_tool`` returns
+                # an ``MCPToolResult`` with a string ``output_text`` (the
+                # joined text content blocks); a defensive dict branch
+                # covers any alternative seam. Do NOT stringify the whole
+                # result object — that yields a non-JSON repr that breaks
+                # callers (e.g. the memory-consolidation slice) which parse
+                # ``output_text`` as JSON.
                 if isinstance(result, dict):
                     return ToolResult(
                         tool_id=tool_id,
                         output_text=str(result.get("content", "")),
-                        output_json=result if isinstance(result, dict) else {},
+                        output_json=result,
                     )
-                return ToolResult(tool_id=tool_id, output_text=str(result))
+                output_text = getattr(result, "output_text", "")
+                is_error = bool(getattr(result, "is_error", False))
+                if is_error:
+                    return ToolResult(tool_id=tool_id, error=output_text or "tool error")
+                return ToolResult(tool_id=tool_id, output_text=output_text or "")
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning("tool dispatch %s failed: %s", tool_id, exc)
                 return ToolResult(tool_id=tool_id, error=str(exc))
