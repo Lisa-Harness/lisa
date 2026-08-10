@@ -55,7 +55,7 @@ from kernel.models import (
 )
 from kernel.function_tools import build_strict_openai_function_tool
 from kernel.tools.mcp_client import MCPClientConfig
-from kernel.workflow_position import WorkflowPosition, WorkflowPositionOrigin, WorkflowStep
+from kernel.workflow_position import WorkflowPosition, WorkflowStep
 
 logger = logging.getLogger(__name__)
 
@@ -1309,115 +1309,6 @@ def load_stage_instruction_markdown(stage: WorkflowStageConfig) -> str:
         Instruction markdown string to inject into the AI prompt.
     """
     return stage.instruction_body
-
-
-def create_position(
-    mode_id: str,
-    *,
-    steps: tuple[WorkflowStep, ...] = (),
-    spawned_from: WorkflowPositionOrigin = "adhoc",
-    plan_digest: str = "",
-    plan_text: str = "",
-) -> WorkflowPosition:
-    """Create a fresh workflow position parked on the mode's start stage.
-
-    This is the single position-creation site: every mode entry (turn-1
-    creation, planner handoff, ad-hoc chain persist) goes through here so
-    the stage pointer and step pointer can never disagree about which mode
-    the position is in. When the mode has no stage graph (chat/action
-    before graph synthesis), ``stage_id`` is empty and the position is a
-    pure step container.
-
-    ``plan_text`` is the full rendered ``## Plan`` block from
-    ``plan_workflow``. Stored on the position so the handoff context
-    builder can inject it into each step's target-mode system prompt —
-    the executor needs the plan it is executing, not just a mode id.
-    """
-    catalog = get_workflow_catalog()
-    mode = catalog[mode_id]
-    now = datetime.now(UTC)
-    stage_id = mode.start_stage_id if mode.stages else ""
-    return WorkflowPosition(
-        plan_digest=plan_digest,
-        spawned_from=spawned_from,
-        declared_steps=steps,
-        current_step_id=steps[0].step_id if steps else "",
-        plan_text=plan_text,
-        mode_id=mode.mode_id,
-        stage_id=stage_id,
-        entered_at=now.isoformat(),
-        turn_count=1,
-        terminal_reached=bool(stage_id and mode.stages[stage_id].terminal),
-    )
-
-
-def apply_stage_transition(
-    position: WorkflowPosition,
-    transition: WorkflowTransitionRequest,
-) -> WorkflowPosition:
-    """Validate and apply an intra-mode stage transition; return a new position.
-
-    The target must be in the current stage's ``allowed_next_stages``.
-    ``turn_count`` resets to 0 on stage entry (it counts turns spent in the
-    current stage — the resolver's unified stall counter); the caller's
-    next turn-start increment brings it to 1. ``terminal_reached`` records
-    whether the target stage is terminal so resume-after-exit starts a
-    fresh position.
-    """
-    mode = get_workflow_catalog()[position.mode_id]
-    current_stage = mode.stages[position.stage_id]
-
-    if transition.target_stage_id not in current_stage.allowed_next_stages:
-        raise WorkflowValidationError(
-            f"Illegal transition in mode '{position.mode_id}': '{position.stage_id}' -> "
-            f"'{transition.target_stage_id}'."
-        )
-
-    stage_data = dict(position.stage_data)
-    if transition.required_missing_inputs:
-        stage_data["required_missing_inputs"] = transition.required_missing_inputs
-    if transition.rationale:
-        stage_data["last_transition_rationale"] = transition.rationale
-    return position.model_copy(
-        update={
-            "stage_id": transition.target_stage_id,
-            "turn_count": 0,
-            "entered_at": datetime.now(UTC).isoformat(),
-            "stage_data": stage_data,
-            "terminal_reached": mode.stages[transition.target_stage_id].terminal,
-        }
-    )
-
-
-def enter_mode(
-    position: WorkflowPosition,
-    target_mode_id: str,
-    *,
-    rationale: str = "",
-) -> WorkflowPosition:
-    """Park the position on the target mode's start stage (a mode handoff).
-
-    One helper owns the mode move so a handoff can never advance the step
-    pointer while leaving the stage pointer in the old mode (the pre-merge
-    session/instance drift). ``turn_count`` resets on entry.
-    """
-    mode = get_workflow_catalog()[target_mode_id]
-    stage_id = mode.start_stage_id if mode.stages else ""
-    stage_data = dict(position.stage_data)
-    if rationale:
-        stage_data["last_transition_rationale"] = rationale
-    now = datetime.now(UTC)
-    return position.model_copy(
-        update={
-            "mode_id": target_mode_id,
-            "stage_id": stage_id,
-            "turn_count": 0,
-            "entered_at": now.isoformat(),
-            "stage_data": stage_data,
-            "terminal_reached": bool(stage_id and mode.stages[stage_id].terminal),
-            "last_progressed_at": now,
-        }
-    )
 
 
 def is_terminal_stage(position: WorkflowPosition) -> bool:

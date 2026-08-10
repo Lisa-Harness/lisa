@@ -425,7 +425,7 @@ def _is_workflow_position_complete(position: Any) -> bool:
     exist.
     """
     try:
-        from kernel.workflow_position import is_complete
+        from kernel.workflow_view import is_complete
 
         return bool(is_complete(position))
     except Exception:  # pylint: disable=broad-except
@@ -442,7 +442,7 @@ def _next_remaining_step(position: Any) -> Any:
     remaining steps or on any exception.
     """
     try:
-        from kernel.workflow_position import remaining_steps
+        from kernel.workflow_view import remaining_steps
 
         remaining = remaining_steps(position)
         if not remaining:
@@ -6180,10 +6180,10 @@ async def _run_turn_inner(
             _progress_position = None
         if _progress_position is not None and getattr(_progress_position, "declared_steps", ()):
             try:
-                from kernel.workflow_position import (
+                from kernel.workflow_view import (
                     is_complete as _position_is_complete,
                 )
-                from kernel.workflow_position import (
+                from kernel.workflow_view import (
                     render_workflow_progress,
                 )
 

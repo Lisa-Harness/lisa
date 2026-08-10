@@ -35,12 +35,10 @@ from typing import Any, Literal
 
 from kernel.models import WorkflowTransitionRequest
 from kernel.seams.protocols import CoordinatorRouteDecision
-from kernel.workflow_position import WorkflowStep
 
 __all__ = [
     "RoutingSource",
     "apply_routing",
-    "persist_planned_position",
     "save_route_decision",
 ]
 
@@ -98,55 +96,6 @@ def save_route_decision(
             target_mode_id,
             exc,
         )
-
-
-def persist_planned_position(
-    hooks: Any,
-    workflow_steps: tuple[WorkflowStep, ...],
-    log: logging.Logger,
-    *,
-    plan_text: str = "",
-) -> None:
-    """Persist a plan's steps as a ``WorkflowPosition`` (spawned_from=plan).
-
-    No-op when there are no steps (weak-model fallback produced a bare
-    target) or no updater is wired. Failure-tolerant: position persistence
-    failure must not abort the handoff — the turn continues and the ad-hoc
-    chain path covers the gap.
-
-    ``plan_text`` is the full rendered ``## Plan`` block from
-    ``plan_workflow``'s ``output_text``. Stored on the position so the
-    handoff context builder can inject it into each step's target-mode
-    system prompt. Without this, the plan content dies with the planner
-    turn's ephemeral ``_state.plan_prefix`` and the executor sees only a
-    short ``step_query`` (the 2026-08-09 "admitted to not knowing the
-    plan" incident).
-    """
-    if not workflow_steps or hooks.workflow_position_updater is None:
-        log.debug(
-            "persist_planned_position: skipped (steps=%d updater=%s)",
-            len(workflow_steps),
-            hooks.workflow_position_updater is not None,
-        )
-        return
-    try:
-        from kernel.ipsar_fsm import create_position  # noqa: PLC0415
-
-        position = create_position(
-            workflow_steps[0].mode_id,
-            steps=workflow_steps,
-            spawned_from="plan_workflow_op",
-            plan_text=plan_text,
-        )
-        hooks.workflow_position_updater(position)
-        log.debug(
-            "persisted plan_workflow_op WorkflowPosition position_id=%s steps=%d first=%s",
-            position.position_id,
-            len(workflow_steps),
-            workflow_steps[0].mode_id,
-        )
-    except Exception as exc:  # pylint: disable=broad-except
-        log.warning("WorkflowPosition creation/persist failed for plan: %s", exc)
 
 
 def apply_routing(
