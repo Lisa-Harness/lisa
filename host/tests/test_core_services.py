@@ -1651,6 +1651,79 @@ async def test_complete_live_preserves_non_json_structured_output_for_fallback(
     pass
 
 
+# ── Azure Responses-API client (api-version) ─────────────────────────
+
+
+def test_azure_responses_client_uses_configured_api_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Responses-API client uses the configured preview api-version.
+
+    The GA ``2024-10-21`` only covers ``/chat/completions``; the Responses
+    endpoint (``/openai/responses``) returns 404 at that version. Codex
+    models need a Responses-capable client. ``LISA_AZURE_OPENAI_RESPONSES_API_VERSION``
+    is required (no code default).
+    """
+    runtime = _make_runtime(tmp_path)
+    monkeypatch.setenv("LISA_AZURE_OPENAI_ENDPOINT", "https://example.azure.com")
+    monkeypatch.setenv("LISA_AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("LISA_AZURE_OPENAI_API_VERSION", raising=False)
+    monkeypatch.setenv("LISA_AZURE_OPENAI_RESPONSES_API_VERSION", "2025-03-01-preview")
+
+    client = providers.azure_responses_client_instance(runtime)
+    assert client._api_version == "2025-03-01-preview"
+    # Cached on the runtime.
+    assert runtime.azure_responses_client is client
+
+
+def test_azure_responses_client_raises_without_api_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing LISA_AZURE_OPENAI_RESPONSES_API_VERSION raises, not defaults."""
+    runtime = _make_runtime(tmp_path)
+    monkeypatch.setenv("LISA_AZURE_OPENAI_ENDPOINT", "https://example.azure.com")
+    monkeypatch.setenv("LISA_AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("LISA_AZURE_OPENAI_RESPONSES_API_VERSION", raising=False)
+
+    with pytest.raises(ValueError, match="LISA_AZURE_OPENAI_RESPONSES_API_VERSION"):
+        providers.azure_responses_client_instance(runtime)
+
+
+def test_azure_responses_client_honors_override_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LISA_AZURE_OPENAI_RESPONSES_API_VERSION overrides the default."""
+    runtime = _make_runtime(tmp_path)
+    monkeypatch.setenv("LISA_AZURE_OPENAI_ENDPOINT", "https://example.azure.com")
+    monkeypatch.setenv("LISA_AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("LISA_AZURE_OPENAI_RESPONSES_API_VERSION", "2025-04-01-preview")
+
+    client = providers.azure_responses_client_instance(runtime)
+    assert client._api_version == "2025-04-01-preview"
+
+
+def test_azure_chat_client_keeps_ga_api_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The chat-completions client keeps the GA api-version independently."""
+    runtime = _make_runtime(tmp_path)
+    monkeypatch.setenv("LISA_AZURE_OPENAI_ENDPOINT", "https://example.azure.com")
+    monkeypatch.setenv("LISA_AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("LISA_AZURE_OPENAI_API_VERSION", raising=False)
+    monkeypatch.setenv("LISA_AZURE_OPENAI_RESPONSES_API_VERSION", "2025-03-01-preview")
+
+    chat_client = providers.azure_client_instance(runtime)
+    responses_client = providers.azure_responses_client_instance(runtime)
+    # The two clients are distinct and use different api-versions.
+    assert chat_client is not responses_client
+    assert chat_client._api_version == "2024-10-21"
+    assert responses_client._api_version == "2025-03-01-preview"
+
+
 # ── complete_live_stream (streaming dispatch) ────────────────────────
 
 
@@ -1842,6 +1915,129 @@ async def test_complete_live_stream_no_stage_callbacks_for_text_mode(
     ):
         pass
     assert transport.stages == []
+
+
+@pytest.mark.asyncio
+async def test_complete_live_stream_routes_codex_to_responses_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """complete_live_stream routes completion_api='responses' models to responses.create.
+
+    Regression guard: Codex on Azure only exposes the Responses API; sending
+    it to chat/completions returns ``400 The requested operation is unsupported.``.
+    The streaming path must honor ``_uses_openai_responses_api`` just like the
+    non-streaming ``complete_live`` does.
+    """
+    runtime = _make_runtime(tmp_path, streaming="text")
+    created = False
+
+    class _StubResponsesClient:
+        async def create(self, **kwargs: object) -> object:
+            nonlocal created
+            created = True
+            return SimpleNamespace(
+                status="completed",
+                output_text="Codex streamed answer",
+                output=[],
+                usage=SimpleNamespace(
+                    input_tokens=2,
+                    output_tokens=3,
+                    total_tokens=5,
+                ),
+            )
+
+    class _StubAzureClient:
+        responses = _StubResponsesClient()
+
+    monkeypatch.setattr(
+        providers, "azure_responses_client_instance", lambda runtime: _StubAzureClient()
+    )
+
+    transport = _CapturingTransport()
+    model_def = StubModelDefinition(
+        model_id="gpt-5.1-codex-max", provider="azure_openai", completion_api="responses"
+    )
+    chunks = []
+    async for chunk in providers.complete_live_stream(
+        runtime=runtime,
+        transport=transport,
+        messages=[{"role": "user", "content": "hi"}],
+        model_def=model_def,
+        max_tokens=100,
+        temperature=0.0,
+    ):
+        chunks.append(chunk)
+    # The Responses API was called (NOT chat.completions.create).
+    assert created is True
+    # The full answer was emitted as one chunk with the correct finish_reason.
+    assert len(chunks) == 1
+    assert chunks[0].content == "Codex streamed answer"
+    assert chunks[0].finish_reason == "completed"
+    # The transport received the text via on_text_chunk.
+    assert transport.chunks == ["Codex streamed answer"]
+
+
+@pytest.mark.asyncio
+async def test_complete_live_stream_codex_tool_calls_signals_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the Responses stream returns tool calls, finish_reason='tool_calls'.
+
+    The turn runner's streaming branch checks ``finish_reason`` and falls back
+    to the non-streaming ``complete()`` path to recover the structured
+    tool-call payload. ``_stream_responses_chunks`` must signal
+    ``finish_reason='tool_calls'`` so that fallback fires instead of
+    treating the turn as a finished text response.
+    """
+    runtime = _make_runtime(tmp_path, streaming="text")
+
+    class _StubResponsesClient:
+        async def create(self, **kwargs: object) -> object:
+            return SimpleNamespace(
+                status="completed",
+                output_text="",
+                output=[
+                    SimpleNamespace(
+                        type="function_call",
+                        name="fetch_page",
+                        arguments='{"url": "https://example.com"}',
+                        call_id="call_1",
+                    )
+                ],
+                usage=SimpleNamespace(
+                    input_tokens=2,
+                    output_tokens=0,
+                    total_tokens=2,
+                ),
+            )
+
+    class _StubAzureClient:
+        responses = _StubResponsesClient()
+
+    monkeypatch.setattr(
+        providers, "azure_responses_client_instance", lambda runtime: _StubAzureClient()
+    )
+
+    transport = _CapturingTransport()
+    model_def = StubModelDefinition(
+        model_id="gpt-5.1-codex-max", provider="azure_openai", completion_api="responses"
+    )
+    chunks = []
+    async for chunk in providers.complete_live_stream(
+        runtime=runtime,
+        transport=transport,
+        messages=[{"role": "user", "content": "fetch example.com"}],
+        model_def=model_def,
+        max_tokens=100,
+        temperature=0.0,
+        tools=[{"type": "function", "function": {"name": "fetch_page"}}],
+    ):
+        chunks.append(chunk)
+    assert len(chunks) == 1
+    # Tool-call presence flips finish_reason so the turn runner falls back.
+    assert chunks[0].finish_reason == "tool_calls"
 
 
 # ── handle_message model turns ───────────────────────────────────────
@@ -2308,7 +2504,9 @@ async def test_complete_live_responses_builds_and_parses_payload(
     class _StubAzureClient:
         responses = _StubResponsesClient()
 
-    monkeypatch.setattr(providers, "azure_client_instance", lambda runtime: _StubAzureClient())
+    monkeypatch.setattr(
+        providers, "azure_responses_client_instance", lambda runtime: _StubAzureClient()
+    )
 
     model_def = StubModelDefinition(
         model_id="gpt-5.2-codex", provider="azure_openai", completion_api="responses"
@@ -2369,7 +2567,9 @@ async def test_complete_live_responses_emits_stage_callbacks_for_hybrid(
     class _StubAzureClient:
         responses = _StubResponsesClient()
 
-    monkeypatch.setattr(providers, "azure_client_instance", lambda runtime: _StubAzureClient())
+    monkeypatch.setattr(
+        providers, "azure_responses_client_instance", lambda runtime: _StubAzureClient()
+    )
 
     model_def = StubModelDefinition(
         model_id="gpt-5.2-codex", provider="azure_openai", completion_api="responses"
@@ -2415,7 +2615,9 @@ async def test_complete_live_dispatches_codex_to_responses_api(
     class _StubAzureClient:
         responses = _StubResponsesClient()
 
-    monkeypatch.setattr(providers, "azure_client_instance", lambda runtime: _StubAzureClient())
+    monkeypatch.setattr(
+        providers, "azure_responses_client_instance", lambda runtime: _StubAzureClient()
+    )
 
     model_def = StubModelDefinition(
         model_id="gpt-5.2-codex", provider="azure_openai", completion_api="responses"

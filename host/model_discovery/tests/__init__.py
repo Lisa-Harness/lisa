@@ -47,6 +47,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "LISA_AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_API_KEY",
         "LISA_AZURE_OPENAI_API_VERSION",
+        "LISA_AZURE_OPENAI_RESPONSES_API_VERSION",
         "LISA_GOOGLE_API_KEY",
         "GOOGLE_API_KEY",
         "LISA_GOOGLE_API_BASE_URL",

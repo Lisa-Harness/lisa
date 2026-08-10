@@ -146,6 +146,7 @@ class HostRuntime:
 
         # ── Cached provider clients ───────────────────────────────────
         self._azure_client: Any = None
+        self._azure_responses_client: Any = None
         self._openai_client: Any = None
         self._anthropic_http_client: Any = None
         self._ollama_client: Any = None
@@ -541,6 +542,14 @@ class HostRuntime:
     @azure_client.setter
     def azure_client(self, value: Any) -> None:
         self._azure_client = value
+
+    @property
+    def azure_responses_client(self) -> Any:
+        return self._azure_responses_client
+
+    @azure_responses_client.setter
+    def azure_responses_client(self, value: Any) -> None:
+        self._azure_responses_client = value
 
     @property
     def openai_client(self) -> Any:

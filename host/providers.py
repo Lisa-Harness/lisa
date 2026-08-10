@@ -66,6 +66,14 @@ logger = logging.getLogger(__name__)
 LISA_AZURE_ENDPOINT_ENV = "LISA_AZURE_OPENAI_ENDPOINT"
 LISA_AZURE_API_KEY_ENV = "LISA_AZURE_OPENAI_API_KEY"
 LISA_AZURE_API_VERSION_ENV = "LISA_AZURE_OPENAI_API_VERSION"
+# The Responses API (``/openai/responses``) is only available at preview
+# api-versions; the GA ``2024-10-21`` only covers ``/chat/completions``
+# and returns 404 for the Responses endpoint. Codex-family models on
+# Azure require the Responses API, so they need a client built with a
+# Responses-capable api-version. No code default — set
+# ``LISA_AZURE_OPENAI_RESPONSES_API_VERSION`` in the environment (e.g.
+# ``.env``); the factory raises when it is missing.
+LISA_AZURE_RESPONSES_API_VERSION_ENV = "LISA_AZURE_OPENAI_RESPONSES_API_VERSION"
 LISA_OPENAI_API_KEY_ENV = "LISA_OPENAI_API_KEY"
 LISA_GOOGLE_API_KEY_ENV = "LISA_GOOGLE_API_KEY"
 LISA_GOOGLE_API_BASE_URL_ENV = "LISA_GOOGLE_API_BASE_URL"
@@ -443,6 +451,52 @@ def azure_client_instance(runtime: HostRuntime) -> AsyncAzureOpenAI:
         api_key=api_key,
     )
     runtime.azure_client = client
+    return client
+
+
+def azure_responses_client_instance(runtime: HostRuntime) -> AsyncAzureOpenAI:
+    """Return the cached Azure OpenAI client for the Responses API.
+
+    The Responses endpoint (``/openai/responses``) requires a preview
+    api-version; the GA ``2024-10-21`` returns 404 for it. This factory
+    builds a separate client cached on ``runtime.azure_responses_client``
+    so the chat-completions client keeps its own api-version.
+    ``LISA_AZURE_OPENAI_RESPONSES_API_VERSION`` is required (no code
+    default); set it in the environment (e.g. ``.env``) to the preview
+    version the Azure deployment exposes.
+    """
+    existing_client = runtime.azure_responses_client
+    if isinstance(existing_client, AsyncAzureOpenAI):
+        return existing_client
+
+    endpoint = (
+        os.getenv(LISA_AZURE_ENDPOINT_ENV, "").strip()
+        or os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
+    )
+    api_key = (
+        os.getenv(LISA_AZURE_API_KEY_ENV, "").strip()
+        or os.getenv("AZURE_OPENAI_API_KEY", "").strip()
+    )
+    if not endpoint or not api_key:
+        raise ValueError(
+            "Azure OpenAI is not configured. Set "
+            f"{LISA_AZURE_ENDPOINT_ENV} and {LISA_AZURE_API_KEY_ENV} "
+            "(or AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY)."
+        )
+    api_version = os.getenv(LISA_AZURE_RESPONSES_API_VERSION_ENV, "").strip()
+    if not api_version:
+        raise ValueError(
+            "The Azure Responses API requires a preview api-version that "
+            "supports ``/openai/responses``. Set "
+            f"{LISA_AZURE_RESPONSES_API_VERSION_ENV} in the environment "
+            "(e.g. .env) to the preview version the deployment exposes."
+        )
+    client = AsyncAzureOpenAI(
+        api_version=api_version,
+        azure_endpoint=endpoint,
+        api_key=api_key,
+    )
+    runtime.azure_responses_client = client
     return client
 
 
@@ -874,7 +928,7 @@ async def complete_live_responses(
     try:
         if stream_stage:
             await tport.on_stage("model_call", {"label": stage_label})
-        client = azure_client_instance(runtime)
+        client = azure_responses_client_instance(runtime)
         response = await client.responses.create(**payload)
         if stream_stage:
             await tport.on_stage("model_call_complete", {"label": stage_label})
@@ -1046,6 +1100,54 @@ async def complete_live_openai_compatible(
 # ── Streaming completion dispatch ────────────────────────────────────
 
 
+def _select_stream_source(
+    *,
+    runtime: HostRuntime,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None,
+    response_format: type[Any] | None,
+) -> Any:
+    """Pick the async chunk generator for this model's streaming path.
+
+    Mirrors :func:`complete_live`'s non-streaming dispatch: Anthropic has its
+    own SSE shape, Responses-API-only models (Codex on Azure) reject
+    ``chat/completions`` with ``400 The requested operation is unsupported.``
+    so they go through :func:`_stream_responses_chunks`, and everything else
+    uses the OpenAI-compatible streaming endpoint.
+    """
+    if model_def.provider == "anthropic":
+        return _stream_anthropic_chunks(
+            runtime=runtime,
+            messages=messages,
+            model_def=model_def,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+        )
+    if _uses_openai_responses_api(model_def):
+        return _stream_responses_chunks(
+            runtime=runtime,
+            messages=messages,
+            model_def=model_def,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+            response_format=response_format,
+        )
+    return _stream_openai_compatible_chunks(
+        runtime=runtime,
+        messages=messages,
+        model_def=model_def,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        tools=tools,
+        response_format=response_format,
+    )
+
+
 async def complete_live_stream(
     *,
     runtime: HostRuntime,
@@ -1097,41 +1199,26 @@ async def complete_live_stream(
     if stream_stage:
         await tport.on_stage("model_call", {"label": stage_label})
 
+    chunk_source = _select_stream_source(
+        runtime=runtime,
+        messages=messages,
+        model_def=model_def,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        tools=tools,
+        response_format=response_format,
+    )
+
     final_usage: Any = None
     try:
-        if model_def.provider == "anthropic":
-            async for chunk in _stream_anthropic_chunks(
-                runtime=runtime,
-                messages=messages,
-                model_def=model_def,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                tools=tools,
-            ):
-                if chunk.usage is not None:
-                    final_usage = chunk.usage
-                if chunk.content or chunk.reasoning_content:
-                    await tport.on_text_chunk(chunk.content, reasoning=chunk.reasoning_content)
-                    if char_delay_ms > 0:
-                        await asyncio.sleep(char_delay_ms / 1000.0)
-                yield chunk
-        else:
-            async for chunk in _stream_openai_compatible_chunks(
-                runtime=runtime,
-                messages=messages,
-                model_def=model_def,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                tools=tools,
-                response_format=response_format,
-            ):
-                if chunk.usage is not None:
-                    final_usage = chunk.usage
-                if chunk.content or chunk.reasoning_content:
-                    await tport.on_text_chunk(chunk.content, reasoning=chunk.reasoning_content)
-                    if char_delay_ms > 0:
-                        await asyncio.sleep(char_delay_ms / 1000.0)
-                yield chunk
+        async for chunk in chunk_source:
+            if chunk.usage is not None:
+                final_usage = chunk.usage
+            if chunk.content or chunk.reasoning_content:
+                await tport.on_text_chunk(chunk.content, reasoning=chunk.reasoning_content)
+                if char_delay_ms > 0:
+                    await asyncio.sleep(char_delay_ms / 1000.0)
+            yield chunk
     except Exception as exc:  # pylint: disable=broad-except
         if stream_stage:
             await tport.on_stage("model_call_failed", {"label": stage_label})
@@ -1173,6 +1260,65 @@ async def complete_live_stream(
             elapsed_ms=elapsed_ms,
             call_site="complete_live.stream",
         )
+
+
+async def _stream_responses_chunks(
+    *,
+    runtime: HostRuntime,
+    messages: list[dict[str, Any]],
+    model_def: StubModelDefinition,
+    max_tokens: int,
+    temperature: float,
+    tools: list[dict[str, Any]] | None,
+    response_format: type[Any] | None,
+) -> Any:
+    """Yield one ``StreamedChunk`` from a Responses-API call (Codex on Azure).
+
+    The Responses API does not expose a streamed-token surface that maps
+    cleanly onto :class:`StreamedChunk` deltas (``stream=True`` on
+    ``responses.create`` yields SSE events of different shapes —
+    ``response.output_text.delta``, ``response.completed``, etc.). v1
+    makes a single non-streaming ``responses.create`` call and emits the
+    full answer as one chunk, which the turn runner's streaming consumer
+    accepts without change (it only needs ``content`` + ``finish_reason``
+    + optional ``usage``). When the model returns tool calls, the turn
+    runner's ``finish_reason`` check falls back to the non-streaming
+    ``complete()`` path, which also routes through the Responses API —
+    so tool-call fidelity is preserved.
+    """
+    from kernel.provider_contracts import StreamedChunk
+    from sdk.providers.openai_gateway import (
+        extract_responses_content,
+        extract_responses_tool_calls,
+        extract_responses_usage,
+    )
+
+    payload = _build_responses_payload(
+        model_def=model_def,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        tools=tools,
+        response_format=response_format,
+    )
+    client = azure_responses_client_instance(runtime)
+    response = await client.responses.create(**payload)
+
+    content = extract_responses_content(response)
+    tool_calls = extract_responses_tool_calls(response)
+    usage = extract_responses_usage(response)
+    finish_reason = getattr(response, "status", None)
+    # When the Responses API returns structured tool calls, signal the
+    # turn runner so it falls back to the non-streaming complete() path
+    # to recover the structured tool-call payload.
+    if tool_calls:
+        finish_reason = "tool_calls"
+    yield StreamedChunk(
+        content=content,
+        reasoning_content="",
+        finish_reason=finish_reason,
+        usage=usage,
+    )
 
 
 async def _stream_openai_compatible_chunks(

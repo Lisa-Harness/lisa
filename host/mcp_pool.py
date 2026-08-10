@@ -451,6 +451,7 @@ def setup_framework(
 def configure_runtime(runtime: HostRuntime) -> None:
     """Reset cached provider clients on the runtime."""
     runtime.azure_client = None
+    runtime.azure_responses_client = None
     runtime.openai_client = None
     runtime.anthropic_http_client = None
     runtime.ollama_client = None
