@@ -819,14 +819,42 @@ def _normalize_openai_response_tool(tool: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _enforce_strict_json_schema(schema: Any) -> Any:
+    """Recursively add ``additionalProperties: false`` to every object schema.
+
+    The Responses API requires ``additionalProperties: false`` on every object
+    when ``strict: true``. Pydantic's ``model_json_schema()`` does not emit it
+    by default, so the API rejects the schema with
+    ``Invalid schema for response_format: 'additionalProperties' is required
+    to be supplied and to be false``. Walk the schema and patch every object
+    node (``type: object`` or ``$defs`` entries) so it satisfies the strict
+    constraint.
+    """
+
+    if isinstance(schema, dict):
+        if schema.get("type") == "object" and "additionalProperties" not in schema:
+            schema["additionalProperties"] = False
+        for key, value in schema.items():
+            if key == "$defs" and isinstance(value, dict):
+                for def_name, def_schema in value.items():
+                    value[def_name] = _enforce_strict_json_schema(def_schema)
+            elif isinstance(value, (dict, list)):
+                schema[key] = _enforce_strict_json_schema(value)
+    elif isinstance(schema, list):
+        return [_enforce_strict_json_schema(item) for item in schema]
+    return schema
+
+
 def _normalize_openai_response_format(response_format: Any) -> Any:
     """Translate one structured-output hint into Responses API text.format."""
 
     if is_pydantic_model_class(response_format):
+        schema = response_format.model_json_schema()
+        _enforce_strict_json_schema(schema)
         return {
             "type": "json_schema",
             "name": response_format.__name__,
-            "schema": response_format.model_json_schema(),
+            "schema": schema,
             "strict": True,
         }
     if isinstance(response_format, dict):

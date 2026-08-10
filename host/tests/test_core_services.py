@@ -2568,6 +2568,44 @@ def test_build_responses_tool_name_map_round_trips() -> None:
     assert restored[1]["name"] == "markdown_forge_document"
 
 
+def test_build_responses_payload_enforces_additional_properties_false() -> None:
+    """The Responses API requires additionalProperties:false when strict=True."""
+    from pydantic import BaseModel
+
+    from sdk.providers.openai_gateway import _enforce_strict_json_schema
+
+    class _TestOutput(BaseModel):
+        name: str
+        value: int
+
+    model_def = StubModelDefinition(
+        model_id="gpt-5.1-codex-max",
+        provider="azure_openai",
+        completion_api="responses",
+        thinking_model=True,
+    )
+    payload = providers._build_responses_payload(
+        model_def=model_def,
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=200,
+        temperature=0.0,
+        tools=None,
+        response_format=_TestOutput,
+    )
+    text_format = payload["text"]["format"]
+    assert text_format["strict"] is True
+    schema = text_format["schema"]
+    # The top-level object must have additionalProperties: false.
+    assert schema.get("additionalProperties") is False
+    # Any nested $defs entries must also have it.
+    for def_schema in schema.get("$defs", {}).values():
+        if def_schema.get("type") == "object":
+            assert def_schema.get("additionalProperties") is False
+    # The recursive helper is idempotent on already-patched schemas.
+    patched = _enforce_strict_json_schema({"type": "object", "additionalProperties": False})
+    assert patched["additionalProperties"] is False
+
+
 @pytest.mark.asyncio
 async def test_complete_live_responses_builds_and_parses_payload(
     tmp_path: Path,
