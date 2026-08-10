@@ -499,12 +499,18 @@ class HostRuntime:
 
     @property
     def thread_path(self) -> Path | None:
+        """Base path for the per-user thread store (no file extension).
+
+        Derived paths (active segment, sealed segments, index, digest) are
+        computed by ``host.thread`` from this base. See
+        ``docs/SPEC/THREAD_STORE.md``.
+        """
         if self.config.no_thread:
             return None
         user = self.config.user_slug
         if not user:
             return None
-        return self.thread_dir / f"{user}.jsonl"
+        return self.thread_dir / user
 
     @property
     def log_path(self) -> Path | None:

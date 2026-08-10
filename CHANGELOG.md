@@ -4,6 +4,31 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+#### Thread storage: segmented JSONL + zstd-sealed segments
+
+- **What:** The per-user thread store is now a three-tier lossless layout:
+  an append-only active segment (`<base>.current.jsonl`), zstd-compressed
+  sealed segments (`<base>.<seg_id>.jsonl.zst`), and a sparse segment
+  index (`<base>.index.jsonl`). See `docs/SPEC/THREAD_STORE.md` for the
+  full format spec.
+- **Why:** The legacy flat `thread.jsonl` had an O(file-size) tail read
+  (`read_text().splitlines()[-limit:]`) that loaded the entire history
+  into memory on every turn. The segmented store bounds the active
+  segment to `segment_turns` (default 256), so recent-N reads are
+  O(limit) in practice. Old turns are preserved losslessly in compressed
+  sealed segments and retrievable by range via `load_thread_range`.
+- **Migration:** A one-time rename guard in `append_thread_entry` moves
+  a legacy `<base>.jsonl` to `<base>.current.jsonl` on first write. The
+  old path is never read again (hard cutover, no compat shims). The old
+  shared `thread_digest.md` sidecar is orphaned (not migrated); the new
+  digest is per-user at `<base>.digest.md`.
+- **Config:** New env `LISA_THREAD_SEGMENT_TURNS` (default 256) controls
+  the seal threshold. `LISA_THREAD_MAX_ENTRIES` (default 50) remains the
+  recent-N context window and now also bounds digest segments per slice.
+- **Dependency:** Added `zstandard>=0.23.0` to `lisa-host-runtime`.
+
 ### Fixed
 
 #### `memory.*` aliases no longer surface `user_slug` to the model

@@ -135,7 +135,7 @@ Every decision is recorded in the slice outcome's `notes` field so you can see *
 
 ## What happens when compaction fires
 
-1. The slice loads the live turn history (the thread JSONL).
+1. The slice loads the live turn history from the segmented thread store (active segment + sealed segments — see `docs/SPEC/THREAD_STORE.md`).
 2. It splits the history into:
    - **old turns** — everything except the most-recent `retention_count`
    - **recent turns** — the most-recent `retention_count`, kept verbatim
@@ -149,14 +149,14 @@ The write-back uses the host's `write_turn_history_fn` seam. Failures in any ste
 
 ## Relationship to the existing deterministic compaction
 
-Lisa's `FileBackedStateProvider` already runs a **deterministic, line-based** thread compaction on every post-turn slice: when the thread exceeds `max_thread_entries` lines, it moves the overflow into a `thread_digest.md` sidecar and truncates the JSONL. This is the **floor** — it never goes away.
+Lisa's `FileBackedStateProvider` already runs a **deterministic** thread digest on every post-turn slice: it summarizes sealed (compressed) thread segments into a per-user `<base>.digest.md` sidecar. The active segment is never truncated — sealing (in `host.thread`) already moves old turns out of it at append time. This is the **floor** — it never goes away.
 
 The compaction pack **augments** this, it does not replace it:
 
 | | Deterministic (`FileBackedStateProvider`) | Utilization-triggered (`lisa-pack-compaction`) |
 | --- | --- | --- |
-| Trigger | Line count exceeds `max_thread_entries` | Context-window utilization crosses threshold |
-| Method | Truncate overflow into a digest sidecar | LLM-summarize old turns into one structured record |
+| Trigger | Sealed segment exists undigested | Context-window utilization crosses threshold |
+| Method | Summarize sealed segments into a digest sidecar | LLM-summarize old turns into one structured record |
 | Runs | Every post-turn slice | Only when utilization warrants |
 | Latency cost | ~0 (no LLM call) | One LLM call, paid out of the slice pressure budget |
 
@@ -201,7 +201,7 @@ Every compaction decision is visible in three places:
 
 1. **Slice outcome notes.** The `SliceOutcome.notes` tuple carries the reason: `below_pressure_threshold(utilization=0.42)`, `deferred_low_slice_budget(budget_ms=120,utilization=0.78)`, `deferred_min_interval(turns_since_last=2,min_interval=4)`, `hard_threshold_override(utilization=0.92)`, `pressure_threshold(utilization=0.80)`, or `compacted:18->7` on a successful fire. These flow into the turn telemetry.
 2. **The `last_compaction.json` sidecar.** Beside the thread JSONL. Holds `turn_count`, `last_fired_turn`, `last_fired_at`. Read it directly or via `/compaction-status`.
-3. **The thread JSONL itself.** After a fire, the first record is a `source: "checkpoint_history_summarize"` (or `"context_compact"`) summary record with the `summarized_turn_count`, `summary`, and `summary_bullets`. The recent turns follow verbatim.
+3. **The thread store itself.** After a fire, the first record in the new active segment is a `source: "checkpoint_history_summarize"` (or `"context_compact"`) summary record with the `summarized_turn_count`, `summary`, and `summary_bullets`. The recent turns follow verbatim. Sealed segments preserve the pre-compaction history losslessly (see `docs/SPEC/THREAD_STORE.md`).
 
 When compaction does not fire, the slice returns a no-work outcome with a note explaining why — you will never see a silent no-op.
 

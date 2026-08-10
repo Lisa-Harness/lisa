@@ -643,22 +643,36 @@ async def test_start_mode_non_default_still_bypasses_to_pinned_mode(
 
 
 def test_file_backed_state_provider_caps_digest_with_lossy_summary(tmp_path: Path) -> None:
-    """Thread compaction bounds digest growth and prepends a lossy summary."""
+    """Thread compaction bounds digest growth and prepends a lossy summary.
 
-    thread_path = tmp_path / "session.jsonl"
-    digest_path = tmp_path / "thread_digest.md"
+    The new segmented store digests sealed segments (not a flat file).
+    Pre-seal a segment by appending entries with a small segment_turns,
+    then run the slice and verify the digest is generated from the sealed
+    segment.
+    """
 
-    entries = [
-        {
-            "query": f"q{i}",
-            "response_text": f"response {i}",
-        }
-        for i in range(8)
-    ]
-    thread_path.write_text(
-        "\n".join(json.dumps(item) for item in entries) + "\n",
-        encoding="utf-8",
-    )
+    from host.thread import _sealed_segment_path, _segment_paths
+
+    thread_path = tmp_path / "session"
+    paths = _segment_paths(thread_path)
+    digest_path = paths.digest
+
+    # Append 4 entries with segment_turns=3 to force one seal (3 entries)
+    # and leave 1 in the active segment.
+    from host.thread import append_thread_entry
+
+    for i in range(4):
+        append_thread_entry(
+            thread_path=thread_path,
+            user_slug="session",
+            mode_id="default",
+            query=f"q{i}",
+            response_text=f"response {i}",
+            segment_turns=3,
+        )
+
+    # Seed the digest with 6 lines.
+    digest_path.parent.mkdir(parents=True, exist_ok=True)
     digest_path.write_text(
         "\n".join(f"- seed {i}" for i in range(6)),
         encoding="utf-8",
@@ -675,9 +689,9 @@ def test_file_backed_state_provider_caps_digest_with_lossy_summary(tmp_path: Pat
         budget_ms = 1000
 
     compacted, last_item, note = provider._compact_thread(_Policy(), time.monotonic())
-    assert compacted == 5
+    assert compacted > 0
     assert last_item.startswith("thread:")
-    assert "compacted" in note
+    assert "digested" in note
 
     digest_lines = digest_path.read_text(encoding="utf-8").splitlines()
     assert len([line for line in digest_lines if line.strip()]) <= 5
@@ -1872,13 +1886,11 @@ def test_initialize_runtime_applies_user_timeout_and_state_snapshot(tmp_path: Pa
     assert config.timezone_source == "cli"
     assert config.effective_log_level == "debug"
     assert isinstance(runtime.state_snapshot, dict)
-    # The new HostConfig stores user_slug as-is (the full path). When the
-    # user_slug is an absolute path, thread_path = thread_dir / f"{user}.jsonl"
-    # resolves to the absolute path of the context file with .jsonl appended
-    # (Path joining with an absolute string replaces the base). This is the
-    # new behavior — slug normalization to a thread name now happens in
-    # session_context resolution, not HostConfig construction.
-    assert runtime.thread_path == Path(str(context_path) + ".jsonl")
+    # The new segmented store uses a base path (no .jsonl extension).
+    # thread_path = thread_dir / user_slug. When user_slug is an absolute
+    # path, Path joining replaces the base, so thread_path resolves to the
+    # absolute path of the context file (no extension).
+    assert runtime.thread_path == Path(str(context_path))
 
 
 def test_resolve_stream_enabled_prefers_explicit_flags() -> None:

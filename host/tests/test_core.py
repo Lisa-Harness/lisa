@@ -136,7 +136,7 @@ class TestHostRuntime:
         runtime = HostRuntime(config)
         assert runtime.data_dir == tmp_path
         assert runtime.thread_dir == tmp_path / "threads"
-        assert runtime.thread_path == tmp_path / "threads" / "test-user.jsonl"
+        assert runtime.thread_path == tmp_path / "threads" / "test-user"
         assert runtime.token_usage_path == tmp_path / "token-usage.jsonl"
 
     def test_thread_path_none_when_no_user(

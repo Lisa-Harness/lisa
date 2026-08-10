@@ -46,7 +46,7 @@ from kernel.slice import SliceOutcome
 from pydantic import ValidationError
 
 from host.host_commands import is_host_command_query as _is_host_command_query
-from host.lisa_config import _DEFAULT_THREAD_MAX_ENTRIES, _THREAD_DIGEST_FILE_NAME
+from host.lisa_config import _DEFAULT_THREAD_MAX_ENTRIES
 
 logger = logging.getLogger(__name__)
 
@@ -187,14 +187,16 @@ def _slice_budget_expired(policy: Any, started: float) -> bool:
 
 
 class FileBackedStateProvider:
-    """File-only digest provider for hosts with a thread JSONL.
+    """File-only digest provider for hosts with a segmented thread store.
 
     Runs one deterministic, no-LLM operation inside the existing slice
     budget:
 
-    1. Thread digest: when the thread JSONL exceeds ``max_thread_entries``,
-       compact the oldest overflow entries into a ``thread_digest.md``
-       sidecar and truncate the JSONL to the most recent entries.
+    1. Thread digest: summarize sealed (compressed) thread segments into
+       the per-user ``<base>.digest.md`` sidecar. The active segment is
+       never truncated — sealing (in ``host.thread``) already moves old
+       turns out of it. This slice digests sealed segments that haven't
+       been digested yet (tracked by ``<base>.digest.marker``).
 
     Memory eviction is not host-side: ``lisa-memory``'s SQLite store
     enforces TTL via its ``expires_at`` column, so there is nothing for
@@ -210,6 +212,8 @@ class FileBackedStateProvider:
         digest_summary_max_chars: int | None = None,
     ) -> None:
         self._thread_path = thread_path
+        # ``max_thread_entries`` bounds how many sealed segments to digest
+        # per slice (budget-bounded), not a truncation threshold.
         self._max_thread_entries = max(1, max_thread_entries)
         self._digest_max_lines = max(1, digest_max_lines or 200)
         self._digest_summary_max_chars = max(60, digest_summary_max_chars or 240)
@@ -239,65 +243,118 @@ class FileBackedStateProvider:
             notes=tuple(notes),
         )
 
+    def _build_digest_from_entry(self, entry: dict[str, Any]) -> str | None:
+        """Build one digest line from a thread entry, or ``None`` to skip."""
+        query = str(entry.get("query") or "").strip()
+        response = str(entry.get("response_text") or "").strip()
+        if not query and not response:
+            return None
+        # Strip host-only commands from the digest sidecar too.
+        if _is_host_command_query(query):
+            return None
+        preview = response[:200] if response else query[:200]
+        return f"- {query or 'unknown'}: {preview}"
+
+    def _digest_segment(
+        self,
+        record: Any,
+        paths_base: Path,
+        policy: Any,
+        started: float,
+    ) -> tuple[list[str], int] | None:
+        """Decompress and digest one sealed segment. Returns (lines, count) or None."""
+        from host.thread import (  # noqa: PLC0415  # lazy: breaks cycle
+            _decompress_bytes,
+            _parse_entries,
+            _sealed_segment_path,
+        )
+
+        if _slice_budget_expired(policy, started):
+            return None
+        sealed_path = _sealed_segment_path(paths_base, record.seg_id)
+        if not sealed_path.exists():
+            return [], 0
+        try:
+            decompressed = _decompress_bytes(
+                sealed_path.read_bytes(), Path(f"{paths_base}.dict.zstd")
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("digest: failed to decompress %s: %s", record.seg_id, exc)
+            return [], 0
+        entries = _parse_entries(decompressed.decode("utf-8").splitlines())
+        lines: list[str] = []
+        for entry in entries:
+            digest_line = self._build_digest_from_entry(entry)
+            if digest_line is not None:
+                lines.append(digest_line)
+        return lines, len(entries)
+
     def _compact_thread(
         self,
         policy: Any,
         started: float,
     ) -> tuple[int, str, str]:
-        """Compact overflowed thread entries into a digest sidecar.
+        """Digest sealed thread segments into the per-user digest sidecar.
 
-        Returns ``(entries_compacted, last_item, note)``.
+        Returns ``(entries_digested, last_item, note)``.
         """
-        if self._thread_path is None or not self._thread_path.exists():
-            return 0, "", ""
-        if _slice_budget_expired(policy, started):
+        if self._thread_path is None or _slice_budget_expired(policy, started):
             return 0, "", ""
 
-        lines = self._thread_path.read_text(encoding="utf-8").splitlines()
-        if len(lines) <= self._max_thread_entries:
+        from host.thread import _read_index  # noqa: PLC0415  # lazy: breaks cycle
+
+        paths_base = self._thread_path
+        index_path = Path(f"{paths_base}.index.jsonl")
+        digest_path = Path(f"{paths_base}.digest.md")
+        marker_path = Path(f"{paths_base}.digest.marker")
+
+        records = _read_index(index_path)
+        if not records:
             return 0, "", ""
 
-        overflow_count = len(lines) - self._max_thread_entries
-        overflow_lines = lines[:overflow_count]
+        # Read the last-digested segment id.
+        last_digested = ""
+        if marker_path.exists():
+            last_digested = marker_path.read_text(encoding="utf-8").strip()
+
+        # Find undigested sealed segments, budget-bounded.
+        digested_ids = {last_digested} if last_digested else set()
+        to_digest = [r for r in records if r.seg_id not in digested_ids]
+        if not to_digest:
+            return 0, "", ""
+        to_digest = to_digest[: self._max_thread_entries]
+
         digest_parts: list[str] = []
-        for raw_line in overflow_lines:
-            try:
-                entry = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(entry, dict):
-                continue
-            query = str(entry.get("query") or "").strip()
-            response = str(entry.get("response_text") or "").strip()
-            if not query and not response:
-                continue
-            # Strip host-only commands (``/pack``, ``/help``, ``/tokens`` ...)
-            # from the digest sidecar too: they are operator UI gestures,
-            # not dialogue, and would otherwise accumulate in the digest
-            # forever (every ``/pack disable`` you ever ran would live on
-            # in the model's "prior conversation digest" lane).
-            if _is_host_command_query(query):
-                continue
-            preview = response[:200] if response else query[:200]
-            digest_parts.append(f"- {query or 'unknown'}: {preview}")
+        entries_digested = 0
+        last_seg_id = last_digested
+        for record in to_digest:
+            result = self._digest_segment(record, paths_base, policy, started)
+            if result is None:
+                break  # budget expired
+            lines, count = result
+            digest_parts.extend(lines)
+            entries_digested += count
+            last_seg_id = record.seg_id
 
-        digest_path = self._thread_path.parent / _THREAD_DIGEST_FILE_NAME
+        if not digest_parts:
+            return 0, "", ""
+
         existing = ""
         if digest_path.is_file():
             existing = digest_path.read_text(encoding="utf-8").strip()
         new_block = "\n".join(digest_parts)
         digest_text = f"{existing}\n\n{new_block}" if existing else new_block
         digest_text = self._apply_digest_cap(digest_text)
+        digest_path.parent.mkdir(parents=True, exist_ok=True)
         digest_path.write_text(digest_text, encoding="utf-8")
 
-        remaining_lines = lines[overflow_count:]
-        self._thread_path.write_text(
-            "\n".join(remaining_lines) + "\n" if remaining_lines else "",
-            encoding="utf-8",
-        )
+        # Update the marker.
+        if last_seg_id:
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            marker_path.write_text(last_seg_id, encoding="utf-8")
 
-        note = f"compacted {overflow_count} thread entries into digest"
-        return overflow_count, f"thread:{overflow_count} entries", note
+        note = f"digested {entries_digested} thread entries from {len(to_digest)} segment(s)"
+        return entries_digested, f"thread:{entries_digested} entries", note
 
     def _apply_digest_cap(self, digest_text: str) -> str:
         """Bound digest growth and prepend one lossy summary when capped."""

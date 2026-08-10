@@ -33,11 +33,13 @@ LISA_SLICE_POST_TURN_ENV = "LISA_SLICE_POST_TURN"
 LISA_SLICE_EXPLICIT_ENV = "LISA_SLICE_EXPLICIT"
 LISA_SLICE_BUDGET_MS_ENV = "LISA_SLICE_BUDGET_MS"
 LISA_THREAD_MAX_ENTRIES_ENV = "LISA_THREAD_MAX_ENTRIES"
+LISA_THREAD_SEGMENT_TURNS_ENV = "LISA_THREAD_SEGMENT_TURNS"
 LISA_MEMORY_MAX_RECORDS_ENV = "LISA_MEMORY_MAX_RECORDS"
 
 # ── Default values ────────────────────────────────────────────────────
 
 _DEFAULT_THREAD_MAX_ENTRIES = 50
+_DEFAULT_THREAD_SEGMENT_TURNS = 256
 _DEFAULT_MEMORY_MAX_RECORDS = 200
 _DEFAULT_SLICE_EXPLICIT_BUDGET_MS = 2000
 _DEFAULT_DATA_DIR_NAME = ".lisa"
@@ -158,6 +160,11 @@ class HostConfig:
 
     # ── Limits ─────────────────────────────────────────────────────────
     thread_max_entries: int = _DEFAULT_THREAD_MAX_ENTRIES
+    # Turn threshold at which the active thread segment is sealed to a
+    # compressed sidecar. Independent of ``thread_max_entries`` (the
+    # recent-N window injected into context). See ``host/thread.py`` and
+    # ``docs/SPEC/THREAD_STORE.md``.
+    thread_segment_turns: int = _DEFAULT_THREAD_SEGMENT_TURNS
     memory_max_records: int = _DEFAULT_MEMORY_MAX_RECORDS
 
     # ── Memory recall (pre-turn injection) ─────────────────────────────
@@ -349,6 +356,9 @@ class HostConfig:
 
         # ── Limits ─────────────────────────────────────────────────────
         thread_max = _resolve_env_int(LISA_THREAD_MAX_ENTRIES_ENV, _DEFAULT_THREAD_MAX_ENTRIES)
+        thread_segment_turns = _resolve_env_int(
+            LISA_THREAD_SEGMENT_TURNS_ENV, _DEFAULT_THREAD_SEGMENT_TURNS
+        )
         memory_max = _resolve_env_int(LISA_MEMORY_MAX_RECORDS_ENV, _DEFAULT_MEMORY_MAX_RECORDS)
 
         # ── User / session ─────────────────────────────────────────────
@@ -390,6 +400,7 @@ class HostConfig:
                 explicit_budget_ms=explicit_budget,
             ),
             thread_max_entries=thread_max,
+            thread_segment_turns=thread_segment_turns,
             memory_max_records=memory_max,
             execution_policy=execution_policy or default_interactive_execution_policy(),
             surface_type=resolved_surface_type,

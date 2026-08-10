@@ -61,24 +61,24 @@ def test_persist_compacted_history_uses_writer_seam_when_wired(tmp_path: Path) -
         captured.append(new_history)
 
     runtime = _runtime_stub(
-        thread_path=tmp_path / "thread.jsonl",
+        thread_path=tmp_path / "thread",
         write_turn_history_fn=_writer,
     )
     new_history = [{"summary": "x"}]
     ok = _persist_compacted_history(runtime, new_history)
     assert ok is True
     assert captured == [new_history]
-    # The writer was used; the thread file was NOT written directly.
-    assert not (tmp_path / "thread.jsonl").exists()
+    # The writer was used; no direct file write happened.
+    assert not (tmp_path / "thread.current.jsonl").exists()
 
 
 def test_persist_compacted_history_without_writer_returns_false(tmp_path: Path) -> None:
     """When write_turn_history_fn is not wired, direct file fallback is disallowed."""
-    runtime = _runtime_stub(thread_path=tmp_path / "thread.jsonl", write_turn_history_fn=None)
+    runtime = _runtime_stub(thread_path=tmp_path / "thread", write_turn_history_fn=None)
     new_history = [{"summary": "x"}, {"q": "a"}]
     ok = _persist_compacted_history(runtime, new_history)
     assert ok is False
-    assert not (tmp_path / "thread.jsonl").exists()
+    assert not (tmp_path / "thread.current.jsonl").exists()
 
 
 def test_persist_compacted_history_no_thread_returns_false() -> None:
@@ -92,8 +92,12 @@ async def test_handle_summarize_history_writes_back_compacted_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """End-to-end: /summarize-history persists the compacted history via the writer seam."""
-    thread_path = tmp_path / "thread.jsonl"
-    thread_path.write_text(
+    # The new segmented store uses a base path (no .jsonl extension).
+    # The active segment lives at <base>.current.jsonl.
+    thread_path = tmp_path / "thread"
+    current_path = Path(f"{thread_path}.current.jsonl")
+    current_path.parent.mkdir(parents=True, exist_ok=True)
+    current_path.write_text(
         "\n".join(json.dumps({"query": f"q{i}", "response_text": f"r{i}"}) for i in range(8))
         + "\n",
         encoding="utf-8",

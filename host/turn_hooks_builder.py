@@ -681,19 +681,14 @@ def build_turn_hooks(
     # ── Turn-history write-back seam ─────────────────────────────────
     # Used by utilization-aware compaction (lisa-pack-compaction) and the
     # /summarize-history command to persist a compacted turn-history list
-    # back to the live thread JSONL. When the host has no thread (e.g.
-    # ``--no-thread``), this is None and callers no-op with a warning.
+    # back to the live thread store. When the host has no thread (e.g.
+    # ``--no-thread``), this raises and callers no-op with a warning.
     def _write_turn_history(new_history: list[dict[str, Any]]) -> None:
-        thread_path = runtime.thread_path
-        if thread_path is None:
-            raise RuntimeError("write_turn_history: no thread path configured")
-        import json as _json
+        from host.thread import write_turn_history  # noqa: PLC0415  # lazy: breaks cycle
 
-        thread_path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [_json.dumps(entry, ensure_ascii=False) for entry in new_history]
-        thread_path.write_text(
-            ("\n".join(lines) + "\n") if lines else "",
-            encoding="utf-8",
+        write_turn_history(
+            thread_path=runtime.thread_path,
+            new_history=new_history,
         )
 
     # ── Live stage telemetry ─────────────────────────────────────────

@@ -1,13 +1,18 @@
-"""Tests for ``host.thread`` transcript excerpt + digest filtering.
+"""Tests for ``host.thread`` segmented store + excerpt filtering.
 
-Covers the host-command stripping behaviour introduced so that operator
-UI gestures (``/pack disable github``, ``/help``, ``/tokens``, ...) are
-not replayed to the model as "recent conversation" or accumulated in the
-``thread_digest.md`` sidecar.
+Covers:
+
+- The host-command stripping behaviour so that operator UI gestures
+  (``/pack disable github``, ``/help``, ``/tokens``, ...) are not replayed
+  to the model as "recent conversation" or accumulated in the digest.
+- The segmented + zstd-sealed store: sealing at the segment threshold,
+  lossless round-trip, recent-N spanning sealed + active segments, range
+  queries, destructive write-back, and the one-time legacy rename.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 # Importing handle_message triggers the registration of host-command
@@ -22,9 +27,15 @@ from host.host_commands import (
     register_host_command_prefix,
 )
 from host.thread import (
+    SegmentRecord,
+    _read_index,
+    _segment_paths,
     append_thread_entry,
     build_recent_thread_excerpt,
     load_recent_thread_entries,
+    load_thread_range,
+    load_thread_digest,
+    write_turn_history,
 )
 
 # ── is_host_command_query ────────────────────────────────────────────
@@ -115,6 +126,7 @@ def _write_entry(
     mode_id: str = "default",
     query: str,
     response_text: str = "",
+    segment_turns: int = 256,
 ) -> None:
     append_thread_entry(
         thread_path=thread_path,
@@ -122,23 +134,26 @@ def _write_entry(
         mode_id=mode_id,
         query=query,
         response_text=response_text,
+        segment_turns=segment_turns,
     )
 
 
 class TestBuildRecentThreadExcerpt:
     def test_returns_empty_when_no_thread(self, tmp_path: Path) -> None:
         assert build_recent_thread_excerpt(thread_path=None, limit=3) == ""
-        assert build_recent_thread_excerpt(thread_path=tmp_path / "missing.jsonl", limit=3) == ""
+        assert (
+            build_recent_thread_excerpt(thread_path=tmp_path / "missing", limit=3) == ""
+        )
 
     def test_returns_empty_when_all_entries_are_host_commands(self, tmp_path: Path) -> None:
-        thread_path = tmp_path / "thread.jsonl"
+        thread_path = tmp_path / "thread"
         _write_entry(thread_path, query="/pack list", response_text="packs: ...")
         _write_entry(thread_path, query="/help", response_text="help text")
         _write_entry(thread_path, query="/tokens", response_text="tokens: ...")
         assert build_recent_thread_excerpt(thread_path=thread_path, limit=3) == ""
 
     def test_strips_host_commands_keeps_dialogue(self, tmp_path: Path) -> None:
-        thread_path = tmp_path / "thread.jsonl"
+        thread_path = tmp_path / "thread"
         # Sequence mirroring the bug report: a /pack command followed by
         # a real question.
         _write_entry(thread_path, query="/pack disable github", response_text="ok")
@@ -157,7 +172,7 @@ class TestBuildRecentThreadExcerpt:
         assert "here is my reflection" in excerpt
 
     def test_respects_limit_among_dialogue_only(self, tmp_path: Path) -> None:
-        thread_path = tmp_path / "thread.jsonl"
+        thread_path = tmp_path / "thread"
         for i in range(5):
             _write_entry(
                 thread_path,
@@ -177,7 +192,7 @@ class TestBuildRecentThreadExcerpt:
 
     def test_overread_fills_limit_after_host_command_run(self, tmp_path: Path) -> None:
         """A run of host commands should not starve the excerpt of dialogue."""
-        thread_path = tmp_path / "thread.jsonl"
+        thread_path = tmp_path / "thread"
         # Four host commands, then two real questions.
         _write_entry(thread_path, query="/pack list", response_text="...")
         _write_entry(thread_path, query="/pack disable github", response_text="ok")
@@ -195,7 +210,7 @@ class TestBuildRecentThreadExcerpt:
         assert "/tokens" not in excerpt
 
     def test_chronological_order_oldest_first(self, tmp_path: Path) -> None:
-        thread_path = tmp_path / "thread.jsonl"
+        thread_path = tmp_path / "thread"
         _write_entry(thread_path, query="older", response_text="older answer")
         _write_entry(thread_path, query="newer", response_text="newer answer")
         excerpt = build_recent_thread_excerpt(thread_path=thread_path, limit=5)
@@ -207,7 +222,7 @@ class TestBuildRecentThreadExcerpt:
 
 class TestLoadRecentThreadEntries:
     def test_returns_last_n_entries(self, tmp_path: Path) -> None:
-        thread_path = tmp_path / "thread.jsonl"
+        thread_path = tmp_path / "thread"
         for i in range(5):
             _write_entry(thread_path, query=f"q{i}", response_text=f"a{i}")
         entries = load_recent_thread_entries(thread_path=thread_path, limit=3)
@@ -216,8 +231,11 @@ class TestLoadRecentThreadEntries:
         assert entries[-1]["query"] == "q4"
 
     def test_skips_malformed_lines(self, tmp_path: Path) -> None:
-        thread_path = tmp_path / "thread.jsonl"
-        thread_path.write_text(
+        # Write directly to the active segment to test malformed-line skip.
+        thread_path = tmp_path / "thread"
+        paths = _segment_paths(thread_path)
+        paths.current.parent.mkdir(parents=True, exist_ok=True)
+        paths.current.write_text(
             '{"query": "good", "response_text": "ok"}\n'
             "not json\n"
             '{"query": "also good", "response_text": "ok2"}\n',
@@ -227,3 +245,114 @@ class TestLoadRecentThreadEntries:
         assert len(entries) == 2
         assert entries[0]["query"] == "good"
         assert entries[1]["query"] == "also good"
+
+
+# ── Segmented store: seal, range, write-back, legacy rename ──────────
+
+
+class TestSegmentedStore:
+    def test_seal_triggers_at_segment_threshold(self, tmp_path: Path) -> None:
+        """Appending past the threshold creates a sealed segment + fresh active."""
+        thread_path = tmp_path / "thread"
+        for i in range(4):
+            _write_entry(thread_path, query=f"q{i}", response_text=f"a{i}", segment_turns=3)
+        paths = _segment_paths(thread_path)
+        # One sealed segment should exist.
+        sealed = list(thread_path.parent.glob("thread.*.jsonl.zst"))
+        assert len(sealed) == 1
+        # Index should have one record.
+        records = _read_index(paths.index_path)
+        assert len(records) == 1
+        assert records[0].turn_lo == 0
+        assert records[0].turn_hi == 2
+        # Active segment should have the 1 entry written after the seal.
+        active = load_recent_thread_entries(thread_path=thread_path, limit=10)
+        assert len(active) == 4  # 3 sealed + 1 active
+
+    def test_sealed_segment_decompresses_losslessly(self, tmp_path: Path) -> None:
+        """A sealed segment round-trips losslessly through zstd."""
+        thread_path = tmp_path / "thread"
+        for i in range(3):
+            _write_entry(
+                thread_path,
+                query=f"query-{i}",
+                response_text=f"response-{i}",
+                segment_turns=3,
+            )
+        # The seal happens on the 4th append (at 3 == threshold), so append one more.
+        _write_entry(thread_path, query="q3", response_text="r3", segment_turns=3)
+        entries = load_recent_thread_entries(thread_path=thread_path, limit=10)
+        assert len(entries) == 4
+        queries = [e["query"] for e in entries]
+        assert queries == ["query-0", "query-1", "query-2", "q3"]
+
+    def test_load_recent_spans_sealed_and_active(self, tmp_path: Path) -> None:
+        """load_recent returns entries from both sealed and active segments."""
+        thread_path = tmp_path / "thread"
+        # Seal a segment at 3, then add 2 more to active.
+        for i in range(5):
+            _write_entry(thread_path, query=f"q{i}", response_text=f"a{i}", segment_turns=3)
+        entries = load_recent_thread_entries(thread_path=thread_path, limit=10)
+        assert len(entries) == 5
+        assert [e["query"] for e in entries] == ["q0", "q1", "q2", "q3", "q4"]
+
+    def test_load_thread_range(self, tmp_path: Path) -> None:
+        """Range query returns the correct slice across sealed + active."""
+        thread_path = tmp_path / "thread"
+        for i in range(7):
+            _write_entry(thread_path, query=f"q{i}", response_text=f"a{i}", segment_turns=3)
+        # Turns 0-2 in seg 1, 3-5 in seg 2, 6 in active.
+        # Range [1, 4] should return q1, q2, q3, q4.
+        entries = load_thread_range(thread_path=thread_path, start_turn=1, end_turn=4)
+        assert [e["query"] for e in entries] == ["q1", "q2", "q3", "q4"]
+        # Range [0, 6] returns everything.
+        all_entries = load_thread_range(thread_path=thread_path, start_turn=0, end_turn=6)
+        assert len(all_entries) == 7
+
+    def test_write_turn_history_clears_sealed_segments(self, tmp_path: Path) -> None:
+        """Destructive write-back removes sealed segments + index, replaces active."""
+        thread_path = tmp_path / "thread"
+        for i in range(5):
+            _write_entry(thread_path, query=f"q{i}", response_text=f"a{i}", segment_turns=3)
+        # Verify we have sealed segments.
+        sealed = list(thread_path.parent.glob("thread.*.jsonl.zst"))
+        assert len(sealed) >= 1
+        # Destructive write-back.
+        write_turn_history(
+            thread_path=thread_path,
+            new_history=[{"query": "new", "response_text": "new response"}],
+        )
+        # Sealed segments + index should be gone.
+        sealed_after = list(thread_path.parent.glob("thread.*.jsonl.zst"))
+        assert len(sealed_after) == 0
+        paths = _segment_paths(thread_path)
+        assert not paths.index_path.exists()
+        # Active segment should have the new history.
+        entries = load_recent_thread_entries(thread_path=thread_path, limit=10)
+        assert len(entries) == 1
+        assert entries[0]["query"] == "new"
+
+    def test_one_time_rename_of_old_jsonl(self, tmp_path: Path) -> None:
+        """A legacy ``<base>.jsonl`` is renamed to the active segment on first append."""
+        thread_path = tmp_path / "thread"
+        thread_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_path = Path(f"{thread_path}.jsonl")
+        legacy_path.write_text(
+            json.dumps({"query": "old", "response_text": "old resp"}, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        # Append a new entry — the rename guard should move the legacy file.
+        _write_entry(thread_path, query="new", response_text="new resp")
+        # Legacy path should be gone.
+        assert not legacy_path.exists()
+        # Active segment should have both entries.
+        entries = load_recent_thread_entries(thread_path=thread_path, limit=10)
+        queries = [e["query"] for e in entries]
+        assert "old" in queries
+        assert "new" in queries
+
+    def test_load_thread_digest_returns_empty_when_absent(self, tmp_path: Path) -> None:
+        """Digest sidecar returns empty when absent."""
+        thread_path = tmp_path / "thread"
+        assert load_thread_digest(thread_path=thread_path) == ""
+        assert load_thread_digest(thread_path=None) == ""
