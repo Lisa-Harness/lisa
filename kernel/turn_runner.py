@@ -2554,6 +2554,12 @@ async def _run_turn_inner(
     _early_user_context = (
         assemble_user(mode_id, query, pre_briefing, None) if _has_entry_ops else ""
     )
+    _log.debug(
+        "early user context: built=%s has_entry_ops=%s mode=%s",
+        bool(_early_user_context),
+        _has_entry_ops,
+        mode_id,
+    )
     if mode_config is not None and mode_config.entry_operation_ids:
         # ── Resume-in-flight gate (work entry ops) ────────────────────
         # When the user resumes an in-flight plan with a bare imperative
@@ -2574,6 +2580,12 @@ async def _run_turn_inner(
         )
         _skip_work_entry_op = (
             not _promises_routing_contract(mode_config) and bool(_resume_target)
+        )
+        _log.debug(
+            "resume-in-flight check: mode=%s target=%s skip=%s",
+            mode_id,
+            _resume_target or "(none)",
+            _skip_work_entry_op,
         )
         if _skip_work_entry_op:
             _log.info(
@@ -2733,7 +2745,7 @@ async def _run_turn_inner(
                         or f"planned handoff from {mode_id}"
                     ),
                 )
-                _log.info(
+                _log.debug(
                     "kernel-driven handoff from planner mode=%s target=%s "
                     "(planned by entry op, not model transition_stage)",
                     mode_id,
@@ -3086,7 +3098,7 @@ async def _run_turn_inner(
         # Skip the forced-action enforcer and system-prompt injection —
         # the turn yields before any tool dispatch.
     elif routing_hint:
-        _log.info(
+        _log.debug(
             "routing hint injected mode=%s hint_len=%d hint=%s",
             mode_id,
             len(routing_hint),
@@ -3172,7 +3184,7 @@ async def _run_turn_inner(
                         # happens mid-turn, after at least one handoff has
                         # already persisted the position.
                         _state.pending_adhoc_steps = tuple(_adhoc_steps)
-                        _log.info(
+                        _log.debug(
                             "deferred ad-hoc WorkflowPosition steps=%d "
                             "first=%s (persist on first handoff)",
                             len(_adhoc_steps),
@@ -3207,8 +3219,13 @@ async def _run_turn_inner(
         _state.forced_action = (
             ForcedAction(targets=list(_forced_targets)) if _forced_targets else None
         )
+        _log.debug(
+            "forced action computed: kind=%s targets=%s",
+            _state.forced_action.kind if _state.forced_action else None,
+            _state.forced_action.targets if _state.forced_action else [],
+        )
     else:
-        _log.info(
+        _log.debug(
             "no routing hint mode=%s (satisfies_intents=%s routing_targets=%s)",
             mode_id,
             getattr(mode_config, "satisfies_intents", None),
@@ -3382,6 +3399,11 @@ async def _run_turn_inner(
             _cap_block.missing,
         )
         return _cap_block.result
+    _log.debug(
+        "capability gate passed: mode=%s model=%s",
+        mode_id,
+        getattr(model_def, "model_id", preferred_model_id),
+    )
 
     content = ""
     transitioned_to: str | None = None
@@ -3707,7 +3729,7 @@ async def _run_turn_inner(
 
         if isinstance(_lifecycle_action, YieldAction):
             _pending_yield = _lifecycle_action
-            _log.info(
+            _log.debug(
                 "turn lifecycle: resolver forced yield (mode=%s, iteration=%d, target=%s)",
                 mode_id,
                 _state.iteration,
@@ -3869,10 +3891,16 @@ async def _run_turn_inner(
         # transitions), then strips tools so the model produces the stage's
         # closing summary. Both reuse the existing budget-finalization path
         # (tools=None → model must respond with text).
+        _log.debug(
+            "resolver action: type=%s mode=%s iteration=%d",
+            type(_lifecycle_action).__name__,
+            mode_id,
+            _state.iteration,
+        )
         _router_decision = _state.pending_router_decision
         if _router_decision is not None:
             if _router_decision.finish.strip():
-                _log.info(
+                _log.debug(
                     "router finish action (iteration=%d, reason=%s); forcing final",
                     _state.iteration,
                     _router_decision.finish,
@@ -3892,7 +3920,7 @@ async def _run_turn_inner(
                             if hooks.workflow_position_updater is not None:
                                 hooks.workflow_position_updater(_updated_position)
                             transitioned_to = _updated_position.stage_id
-                            _log.info(
+                            _log.debug(
                                 "router transition_to action (iteration=%d, "
                                 "stage=%s); forcing final summary",
                                 _state.iteration,
@@ -3931,7 +3959,7 @@ async def _run_turn_inner(
         _planned_handoff_target = _state.pending_planned_handoff
         _state.pending_planned_handoff = ""
         if _planned_handoff_target:
-            _log.info(
+            _log.debug(
                 "kernel synthesizing planned transition_stage target=%s (mode=%s, iteration=%d)",
                 _planned_handoff_target,
                 mode_id,
@@ -4180,7 +4208,7 @@ async def _run_turn_inner(
                 if _pending_yield is not None:
                     content = _pending_yield.question
                     _yielded = True
-                    _log.info(
+                    _log.debug(
                         "turn lifecycle: applying forced yield (mode=%s, iteration=%d, target=%s)",
                         mode_id,
                         _state.iteration,
@@ -4188,10 +4216,21 @@ async def _run_turn_inner(
                     )
                     break
 
+                _log.debug(
+                    "turn loop: natural completion (mode=%s, iteration=%d, no tool calls, no pending yield)",
+                    mode_id,
+                    _state.iteration,
+                )
                 break
 
         # Dispatch tool calls — MCP tools via pool, operations in-process.
         tools_dispatched = False
+        _log.debug(
+            "tool dispatch: iteration=%d tool_count=%d names=%s",
+            _state.iteration,
+            len(tool_calls),
+            [tc.get("function", {}).get("name", "?") for tc in tool_calls],
+        )
         for tool_call in tool_calls:
             tool_name, tool_arguments = openai_tool_call_to_mcp(tool_call)
             tool_call_id = str(tool_call.get("id") or "")
@@ -4424,7 +4463,7 @@ async def _run_turn_inner(
                     )
                     content = _yield_question
                     _yielded = True
-                    _log.info(
+                    _log.debug(
                         "turn lifecycle: model emitted yield (mode=%s, iteration=%d, target=%s)",
                         mode_id,
                         _state.iteration,
@@ -4610,7 +4649,7 @@ async def _run_turn_inner(
                         _hint_suggested = _extract_hint_target(routing_hint)
                         if _hint_suggested and target_stage and target_stage != _hint_suggested:
                             _state.hint_override_count += 1
-                            _log.info(
+                            _log.debug(
                                 "routing hint override: hint suggested %s, "
                                 "model chose %s (override_count=%d, cap=%d)",
                                 _hint_suggested,
@@ -5012,7 +5051,7 @@ async def _run_turn_inner(
                                                         _planned_next,
                                                         coord_exc,
                                                     )
-                                            _log.info(
+                                            _log.debug(
                                                 "kernel-driven next handoff "
                                                 "from planner mode=%s target=%s "
                                                 "(planned by entry op)",
@@ -5289,7 +5328,7 @@ async def _run_turn_inner(
                                                 )
                                                 _state.pending_adhoc_steps = ()
                                                 _attached_adhoc = True
-                                                _log.info(
+                                                _log.debug(
                                                     "committed ad-hoc steps onto "
                                                     "WorkflowPosition position_id=%s "
                                                     "steps=%d (deferred, on first "
@@ -5503,7 +5542,7 @@ async def _run_turn_inner(
                                         routing_hint = ""
                                         _chain_advance_guidance = ""
                                     else:
-                                        _log.info(
+                                        _log.debug(
                                             "post-handoff routing hint mode=%s hint_len=%d hint=%s",
                                             target_stage,
                                             len(post_handoff_hint),

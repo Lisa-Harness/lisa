@@ -713,6 +713,11 @@ async def execute_operation(
                 result = await asyncio.wait_for(execute_fn(ctx), timeout=definition.timeout_seconds)
             else:
                 result = await execute_fn(ctx)
+            logger.debug(
+                "operation '%s' succeeded in %dms",
+                operation_id,
+                int((time.perf_counter() - t0) * 1000),
+            )
         except TimeoutError as exc:
             logger.error(
                 "operation '%s' timed out after %ss",

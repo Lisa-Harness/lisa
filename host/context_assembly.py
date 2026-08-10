@@ -134,6 +134,12 @@ def build_turn_context(
     mode: WorkflowModeConfig,
 ) -> dict[str, Any]:
     """Build the serializable turn-context dict stored alongside the turn."""
+    logger.debug(
+        "turn context built: mode=%s model=%s provider=%s",
+        mode_id,
+        resolved_model.model_id,
+        resolved_model.provider,
+    )
     return {
         "timestamp_utc": datetime.now(UTC).isoformat(),
         "raw_message": raw_message,
@@ -224,6 +230,12 @@ def build_session_mapped_context_markdown(
             # The snapshot sink is observational only; its failure must
             # never change the rendered context the model receives.
             pass
+    logger.debug(
+        "context map: candidates=%d window=%d rendered=%d chars",
+        len(candidates),
+        model_context_window_tokens,
+        len(result.rendered_context),
+    )
     return result.rendered_context
 
 

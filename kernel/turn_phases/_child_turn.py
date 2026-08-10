@@ -130,7 +130,7 @@ def classify_child_turn(
     if child_result.yielded is not None:
         _ya = child_result.yielded
         if _ya.context == "model-emitted yield":
-            _clog.info(
+            _clog.debug(
                 "child turn mode=%s model-emitted yield; propagating question "
                 "to parent (not logged to avoid echoing user content)",
                 mode_id,
@@ -173,6 +173,10 @@ def classify_child_turn(
     # ``action_tool_ids``) is ``complete`` on any clean exit — its output is
     # the response text (the reasoning / opinion), not a side effect.
     if not action_tool_ids:
+        _clog.debug(
+            "child turn mode=%s complete (no action tools declared)",
+            mode_id,
+        )
         return ChildTurnOutcome(
             status="complete",
             output_text=child_result.response_text,
@@ -213,6 +217,10 @@ def classify_child_turn(
     has_write_effect = bool(receipt_ids & action_tool_ids)
 
     if has_write_effect:
+        _clog.debug(
+            "child turn mode=%s complete (write-effect receipt verified)",
+            mode_id,
+        )
         return ChildTurnOutcome(
             status="complete",
             output_text=child_result.response_text,

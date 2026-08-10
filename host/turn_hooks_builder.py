@@ -255,7 +255,7 @@ def build_turn_hooks(
                 )
                 continue
             if router is not None:
-                logger.info("active model router: %s", entry.pack_name)
+                logger.debug("active model router: %s", entry.pack_name)
                 return router
         return None
 
@@ -290,7 +290,7 @@ def build_turn_hooks(
                     if min_params == 0:
                         loaded = loaded()
                 if loaded is not None:
-                    logger.info("active provider gateway provider: %s", entry.pack_name)
+                    logger.debug("active provider gateway provider: %s", entry.pack_name)
                     return loaded
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning(

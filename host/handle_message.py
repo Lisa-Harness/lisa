@@ -510,7 +510,7 @@ async def _try_affirmative_approval_resume(
     if len(pending) != 1:
         return None
     request_id = pending[0].invocation.request_id
-    logger.info(
+    logger.debug(
         "affirmative-resume: treating %r as /approve %s",
         stripped,
         request_id,
@@ -735,6 +735,11 @@ async def _route_model_turn(
             # transition_stage. No separate planner call needed.
             mode_id = runtime.current_mode_id or "default"
             query = message
+            logger.debug(
+                "route_model_turn: natural language -> mode=%s (start_mode=%s)",
+                mode_id,
+                runtime.start_mode_id,
+            )
 
     return await _execute_mode_turn(runtime, message, mode_id, query, transport)
 
@@ -823,6 +828,18 @@ async def _execute_mode_turn(
 
     # Build turn hooks and execute.
     hooks = build_turn_hooks(runtime, context=run_context, transport=transport)
+    logger.info(
+        "turn started: mode=%s model=%s query=%s",
+        mode.mode_id,
+        resolved_model.model_id,
+        (query or message)[:80],
+    )
+    logger.debug(
+        "turn execution starting: mode=%s model=%s provider=%s",
+        mode.mode_id,
+        resolved_model.model_id,
+        resolved_model.provider,
+    )
     try:
         result: TurnResult = await run_turn(
             mode_id=mode.mode_id,
@@ -890,6 +907,7 @@ async def _execute_mode_turn(
     # stages the model advanced through.
     if result.transitioned_to:
         runtime.current_stage_id = result.transitioned_to
+        logger.debug("stage synced: %s", result.transitioned_to)
     _apply_turn_usage(
         runtime,
         result,

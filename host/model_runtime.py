@@ -251,6 +251,8 @@ def load_manifest(
         manifest = load_model_manifest(resolved)
 
         runtime_state[_MANIFEST_CACHE_KEY] = manifest
+    else:
+        logger.debug("manifest cache hit")
     return manifest
 
 

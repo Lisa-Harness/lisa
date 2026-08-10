@@ -94,6 +94,11 @@ async def _run_fork_child_turn(
     in the memory store. The parent must not report these as succeeded.
     """
     _flog = logger_override or logging.getLogger(__name__)
+    _flog.debug(
+        "fork child starting: mode=%s stage=%s",
+        target.mode_id,
+        target.stage_id,
+    )
     try:
         # Lazy import to avoid a circular dependency: ``kernel.turn_runner``
         # re-exports this module, so importing it at module top would create
@@ -176,6 +181,13 @@ async def _run_fork_child_turn(
         # ``complete`` → ``ok`` (the legacy fork status) so existing
         # callers and tests that inspect ``r.status == "ok"`` are preserved.
         _fork_status = "ok" if outcome.status == "complete" else outcome.status
+        _flog.debug(
+            "fork child classified: mode=%s status=%s tool_calls=%d duration_ms=%d",
+            target.mode_id,
+            _fork_status,
+            child_result.tool_call_count,
+            elapsed_ms,
+        )
         return (
             ForkChildResult(
                 target=target,
@@ -193,6 +205,7 @@ async def _run_fork_child_turn(
         )
     except TimeoutError:
         elapsed_ms = int((time.monotonic() - started) * 1000)
+        _flog.debug("fork child timed out: mode=%s", target.mode_id)
         return (
             ForkChildResult(
                 target=target,
@@ -327,6 +340,12 @@ async def _execute_fork_fanout(
     if n == 0:
         return []
 
+    _flog.debug(
+        "fork fan-out starting: children=%d targets=%s",
+        n,
+        [t.mode_id for t in fork_targets],
+    )
+
     if emit_stage is not None:
         await emit_stage(
             "fork_start",
@@ -358,6 +377,11 @@ async def _execute_fork_fanout(
                 tg.create_task(_run_child(idx, target))
     except ExceptionGroup as eg:  # pylint: disable=broad-except
         _flog.warning("fork fan-out TaskGroup had errors: %s", eg.exceptions)
+
+    _flog.debug(
+        "fork fan-out complete: statuses=%s",
+        [r.status if r else "cancelled" for r in results],
+    )
 
     # Fill in any None slots as cancelled
     final_results: list[ForkChildResult] = []

@@ -123,6 +123,11 @@ def persist_planned_position(
     plan" incident).
     """
     if not workflow_steps or hooks.workflow_position_updater is None:
+        log.debug(
+            "persist_planned_position: skipped (steps=%d updater=%s)",
+            len(workflow_steps),
+            hooks.workflow_position_updater is not None,
+        )
         return
     try:
         from kernel.ipsar_fsm import create_position  # noqa: PLC0415
@@ -134,7 +139,7 @@ def persist_planned_position(
             plan_text=plan_text,
         )
         hooks.workflow_position_updater(position)
-        log.info(
+        log.debug(
             "persisted plan_workflow_op WorkflowPosition position_id=%s steps=%d first=%s",
             position.position_id,
             len(workflow_steps),
@@ -188,7 +193,7 @@ def apply_routing(
         target_mode_id=target,
         reason=rationale or f"{source} handoff from {mode_id}",
     )
-    _log.info(
+    _log.debug(
         "routing applied: %s -> %s (source=%s)",
         mode_id,
         target,
