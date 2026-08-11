@@ -2032,6 +2032,32 @@ async def run_turn(
     if per_step_max_tool_calls is None:
         per_step_max_tool_calls = _kernel_settings.per_step_max_tool_calls
 
+    # ── Ratio-based iteration cap scaling ────────────────────────────
+    # When a workflow position with N declared steps is active, scale the
+    # global iteration ceiling to N × per_step_max_iterations so each step
+    # gets its full sub-budget without starving later steps. Only scales
+    # *up* — the base default covers ad-hoc single turns that may burn
+    # iterations on read-only exploration. A 5-step plan with per_step=75
+    # gets 375 total iterations instead of the flat 300 ceiling.
+    if hooks.workflow_position is not None:
+        try:
+            _ratio_pos = hooks.workflow_position()
+        except Exception:  # pylint: disable=broad-except
+            _ratio_pos = None
+        if _ratio_pos is not None:
+            _declared = getattr(_ratio_pos, "declared_steps", ())
+            if _declared:
+                _step_count = max(1, len(_declared))
+                _scaled = _step_count * per_step_max_iterations
+                max_tool_iterations = max(max_tool_iterations, _scaled)
+                _log.debug(
+                    "ratio cap: %d steps × %d per_step = %d global (base=%d)",
+                    _step_count,
+                    per_step_max_iterations,
+                    max_tool_iterations,
+                    _kernel_settings.max_tool_iterations,
+                )
+
     if execution_policy is not None:
         if execution_policy.max_model_calls is not None:
             max_tool_iterations = min(max_tool_iterations, execution_policy.max_model_calls)
