@@ -209,6 +209,12 @@ class LifecycleResolverSettings:
     # call itself.
     forced_action_non_compliant_cap: int = 3
     max_handoffs_per_turn: int = 5
+    # Write-rescue last-resort mode: when a write-contract mode is one
+    # iteration away from the stuck-in-stage cap with no verified write,
+    # force a transition to this mode so the turn ends productively.
+    # Defaults to ``expounder`` (a terminal capture persona whose only
+    # write is ``markdown_forge_document``). Set to "" to disable.
+    write_rescue_mode: str = "expounder"
 
 
 @runtime_checkable
@@ -283,6 +289,18 @@ class _TurnStateView:
     # operator signal is pending; the resolver ignores it. Polled once per
     # iteration by the turn loop from ``TurnHooks.operator_signal``.
     operator_signal: str = ""
+    # ── Write-rescue inputs (forced-transition-before-cap) ──────────
+    # The set of action-tool ids the current mode declared (non-empty
+    # means the mode has a write contract). When the turn is about to hit
+    # the stuck-in-stage cap with no receipt for any of these, the
+    # resolver forces a transition to a rescue mode (planned writer or
+    # ``write_rescue_mode``) so the turn ends productively instead of
+    # pausing on a hallucinated-success block.
+    action_tool_ids: frozenset[str] = frozenset()
+    # True when at least one ``EffectReceipt`` for ``action_tool_ids`` has
+    # been recorded this turn. The resolver uses this to decide whether
+    # the write-rescue transition is needed.
+    has_write_receipt: bool = False
 
 
 def _has_next_step(position: _WorkflowPositionLike | None) -> bool:
@@ -382,6 +400,34 @@ def _resolve_yield_target(
     # Chat mode with inline asks allowed: yield in place (empty target means
     # the harness surfaces the question in the current mode).
     return ""
+
+
+def _planned_writer_mode_id(position: _WorkflowPositionLike | None) -> str:
+    """Return the mode id of the first remaining write step, or "".
+
+    Scans ``declared_steps`` for the first step after the current one whose
+    ``write_capability`` is set. This is the "planned writer" — the mode the
+    plan expects to produce the durable artifact. The write-rescue
+    transition targets this mode before falling back to
+    ``settings.write_rescue_mode``.
+    """
+    if position is None:
+        return ""
+    try:
+        from kernel.workflow_position import remaining_steps  # noqa: PLC0415
+
+        remaining = remaining_steps(position)
+        if not remaining:
+            return ""
+        current = getattr(position, "current_step_id", "") or ""
+        for step in remaining:
+            if step.step_id == current:
+                continue
+            if getattr(step, "write_capability", None):
+                return step.mode_id
+        return ""
+    except Exception:  # pylint: disable=broad-except
+        return ""
 
 
 def resolve_lifecycle_action(
@@ -536,6 +582,38 @@ def resolve_lifecycle_action(
             rationale=(
                 "kernel-forced transition handoff: the model did not call "
                 "transition_stage after the routing hint named a target."
+            ),
+            forced=True,
+        )
+
+    # ── 2e. Write-rescue forced transition (at the cap, before pause) ──
+    # When a write-contract mode hits the stuck-in-stage cap AND has
+    # produced no write receipt for its action tools, force a transition
+    # to the planned writer (the next remaining write step) or the
+    # configured rescue mode (``expounder``). This guarantees every turn
+    # ends productively: instead of pausing on a hallucinated-success
+    # block at the cap, the turn hands off to a mode whose only job is to
+    # expound the analysis so far into a durable artifact. Fires at
+    # ``stage_nudge_cap`` (the same point the cap would pause) so the
+    # pre-cap write-nudge (``write_deadline_margin``) gets its chance
+    # first — if the nudge fails to produce a write, the rescue takes
+    # over.
+    if (
+        settings.write_rescue_mode
+        and state.action_tool_ids
+        and not state.has_write_receipt
+        and state.turns_in_stage >= settings.stage_nudge_cap
+    ):
+        _rescue_target = _planned_writer_mode_id(workflow_position)
+        if not _rescue_target:
+            _rescue_target = settings.write_rescue_mode
+        return TransitionAction(
+            target_mode_id=_rescue_target,
+            rationale=(
+                f"write-rescue: mode '{mode_id}' hit the stuck-in-stage cap "
+                f"with no verified write for action tools "
+                f"{sorted(state.action_tool_ids)}; forcing transition to "
+                f"'{_rescue_target}' so the turn ends productively."
             ),
             forced=True,
         )

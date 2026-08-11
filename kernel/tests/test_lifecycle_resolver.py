@@ -46,12 +46,16 @@ class _State:
     # Operator-signal field (pause/stop/terminate). Defaults to "" so
     # existing tests ignore it; the resolver only acts on non-empty.
     operator_signal: str = ""
+    # Write-rescue inputs (forced-transition-before-cap).
+    action_tool_ids: frozenset[str] = frozenset()
+    has_write_receipt: bool = False
 
 
 @dataclass
 class _Step:
     step_id: str
     mode_id: str
+    write_capability: str | None = None
 
 
 @dataclass
@@ -621,3 +625,116 @@ def test_no_operator_signal_is_noop() -> None:
         settings=LifecycleResolverSettings(),
     )
     assert isinstance(action, ContinueAction)
+
+
+# ── Write-rescue forced transition (before the cap) ────────────────────────
+
+
+def test_write_rescue_fires_at_cap() -> None:
+    """A write-contract mode hitting the stuck-in-stage cap with no receipt
+    forces a transition to the configured rescue mode."""
+    action = resolve_lifecycle_action(
+        state=_State(
+            turns_in_stage=6,  # stage_nudge_cap=6
+            action_tool_ids=frozenset({"markdown_forge_document"}),
+            has_write_receipt=False,
+        ),
+        mode_id="researcher",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+    )
+    assert isinstance(action, TransitionAction)
+    assert action.target_mode_id == "expounder"
+    assert action.forced is True
+
+
+def test_write_rescue_targets_planned_writer_when_available() -> None:
+    """When the workflow position has a remaining write step, the
+    rescue targets that step's mode instead of the fallback."""
+    action = resolve_lifecycle_action(
+        state=_State(
+            turns_in_stage=6,
+            action_tool_ids=frozenset({"coding_apply_patch"}),
+            has_write_receipt=False,
+        ),
+        mode_id="researcher",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+        workflow_position=_Instance(
+            current_step_id="s1",
+            current_mode_id="researcher",
+            declared_steps=(
+                _Step("s1", "researcher"),
+                _Step("s2", "executor", write_capability="coding_apply_patch"),
+            ),
+        ),
+    )
+    assert isinstance(action, TransitionAction)
+    assert action.target_mode_id == "executor"
+    assert action.forced is True
+
+
+def test_write_rescue_skipped_when_receipt_present() -> None:
+    """A mode that has already produced a write receipt does not trigger
+    the rescue — the turn can complete normally."""
+    action = resolve_lifecycle_action(
+        state=_State(
+            turns_in_stage=6,
+            action_tool_ids=frozenset({"markdown_forge_document"}),
+            has_write_receipt=True,
+        ),
+        mode_id="researcher",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+    )
+    # Should NOT be a forced transition — falls through to the cap path.
+    assert not isinstance(action, TransitionAction)
+
+
+def test_write_rescue_skipped_when_no_action_tools() -> None:
+    """A mode with no declared action tools (read-only) does not trigger
+    the rescue."""
+    action = resolve_lifecycle_action(
+        state=_State(
+            turns_in_stage=6,
+            action_tool_ids=frozenset(),
+            has_write_receipt=False,
+        ),
+        mode_id="default",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+    )
+    # Should NOT be a forced transition — falls through to the cap path.
+    assert not isinstance(action, TransitionAction)
+
+
+def test_write_rescue_disabled_when_rescue_mode_empty() -> None:
+    """Setting ``write_rescue_mode=""`` disables the forced transition."""
+    action = resolve_lifecycle_action(
+        state=_State(
+            turns_in_stage=6,
+            action_tool_ids=frozenset({"markdown_forge_document"}),
+            has_write_receipt=False,
+        ),
+        mode_id="researcher",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(stage_nudge_cap=6, write_rescue_mode=""),
+    )
+    # Should NOT be a forced transition — falls through to the cap path.
+    assert not isinstance(action, TransitionAction)
+
+
+def test_write_rescue_skipped_before_cap() -> None:
+    """The rescue only fires at ``stage_nudge_cap``, not earlier."""
+    action = resolve_lifecycle_action(
+        state=_State(
+            turns_in_stage=5,  # cap=6, so 5 is before the cap
+            action_tool_ids=frozenset({"markdown_forge_document"}),
+            has_write_receipt=False,
+        ),
+        mode_id="researcher",
+        mode_yield_policy=YieldPolicy(),
+        settings=LifecycleResolverSettings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+    )
+    # Should NOT be a forced transition — the pre-cap nudge gets its chance.
+    assert not isinstance(action, TransitionAction)

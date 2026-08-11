@@ -3091,8 +3091,26 @@ async def _run_turn_inner(
             mode_id,
             _ambiguous_targets_csv,
         )
-        # Skip the forced-action enforcer and system-prompt injection —
-        # the turn yields before any tool dispatch.
+        # The turn yields before any tool dispatch. Return immediately so
+        # the model loop cannot overwrite ``content`` with empty completions
+        # (the 2026-08-11 deepseek-v4-flash no-response turn: the yield
+        # question was set here, then the loop ran 6 empty-content
+        # iterations, ``completion_content(completion).strip()`` clobbered
+        # ``content`` to ``""`` each time, and the stuck-in-stage cap
+        # paused the turn — the user saw nothing).
+        return TurnResult(
+            response_text=content,
+            tool_call_count=0,
+            called_tool_names=set(),
+            effect_receipts=[],
+            iteration_count=0,
+            operator_exit="",
+            yielded=_pending_yield,
+            handoff_to=None,
+            transitioned_to=None,
+            fork_results=None,
+            workflow_terminated=False,
+        )
     elif routing_hint:
         _log.debug(
             "routing hint injected mode=%s hint_len=%d hint=%s",
@@ -3508,6 +3526,7 @@ async def _run_turn_inner(
             stage_nudge_cap=_kernel_settings.stage_nudge_cap,
             forced_action_non_compliant_cap=_kernel_settings.forced_action_non_compliant_cap,
             max_handoffs_per_turn=_max_handoffs_per_turn,
+            write_rescue_mode=_kernel_settings.write_rescue_mode,
         )
         _forced = _state.forced_action
         # ── Operator signal poll (Phase: pause/stop/terminate) ──────────
@@ -3538,6 +3557,12 @@ async def _run_turn_inner(
             ),
             handoff_count=_state.handoff_count,
             operator_signal=_operator_signal,
+            action_tool_ids=frozenset(_state.action_tool_ids),
+            has_write_receipt=any(
+                r.capability_id in _state.action_tool_ids
+                or bare_tool_name(r.capability_id) in _state.action_tool_ids
+                for r in _state.effect_receipts
+            ),
         )
         _active_position_for_resolver: Any = None
         if hooks.workflow_position is not None:
@@ -6100,8 +6125,35 @@ async def _run_turn_inner(
         # than a hallucinated success.
         turn_blocked = True
     elif _parent_no_tools:
+        # ── Capture-mode softening ──────────────────────────────────────
+        # Capture modes (those whose action tools are all markdown_* /
+        # okf_* / synthesize_and_store_learning) produce artifacts that
+        # live in the lossless thread. The thread is the artifact, so
+        # dense content IS the completion signal — the write receipt is
+        # not the only honest signal. Accept any non-empty content for
+        # these modes without blocking as ``no_tools``.
+        #
+        # State-mutating modes (coding_*, github_*) have real side effects
+        # outside the thread; keep the strict block for those. The receipt
+        # is the only honest signal that the write actually landed.
+        _CAPTURE_TOOL_PREFIXES = ("markdown_", "okf_")
+        _CAPTURE_TOOL_EXACT = {"synthesize_and_store_learning"}
+        _is_capture_mode = all(
+            tool.startswith(_CAPTURE_TOOL_PREFIXES) or tool in _CAPTURE_TOOL_EXACT
+            for tool in _state.action_tool_ids
+        )
         has_dense_content = len(content.strip()) > 150
-        if has_dense_content:
+        if _is_capture_mode and content.strip():
+            # Capture mode: any non-empty content is accepted as
+            # successful — the thread is the artifact.
+            _log.info(
+                "parent turn mode=%s completed with no verified write, but "
+                "is a capture mode and produced content (%d chars); "
+                "accepting as successful.",
+                mode_id,
+                len(content.strip()),
+            )
+        elif has_dense_content:
             _log.info(
                 "parent turn mode=%s completed with no verified write, but "
                 "produced dense content (%d chars); accepting as successful.",

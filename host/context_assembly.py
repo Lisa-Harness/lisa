@@ -315,6 +315,7 @@ def assemble_dynamic_user_context(
     thread_digest_loader: Callable[[], str],
     recent_thread_excerpt_builder: Callable[[int], str],
     replay_controls_loader: Callable[[], ReplayControls] | None = None,
+    thread_manifest_builder: Callable[[], str] | None = None,
     host_name: str | None = None,
     host_os: str | None = None,
     capability_manifest: CapabilityManifest | None = None,
@@ -420,23 +421,34 @@ def assemble_dynamic_user_context(
             )
         )
 
-    # Allocate the recent-conversation excerpt BEFORE the digest so the
+    # Allocate the recent-conversation excerpt BEFORE the manifest so the
     # most recent dialogue wins the history-lane budget. Both share the
     # ``history`` lane; whichever is appended first consumes the lane and
     # the other is dropped (``budget_exhausted``) or truncated. The recent
     # excerpt is ``authoritative`` and time-sensitive — it carries the
     # assistant's last answer (e.g. an Option A/B offer the user just saw
-    # and is replying to). The digest is ``inferred``/lossy and covers older
-    # turns already summarized. Dropping the recent excerpt while keeping
-    # the digest amputates the turn the user is responding to, so recent
-    # conversation must be allocated first; the digest takes the remainder.
-    conversation_excerpt = recent_thread_excerpt_builder(6)
+    # and is replying to). The manifest is ``inferred``/structured and
+    # covers older turns the model can pull on demand via
+    # ``thread_read_range``. Dropping the recent excerpt while keeping
+    # the manifest amputates the turn the user is responding to, so recent
+    # conversation must be allocated first; the manifest takes the
+    # remainder.
+    conversation_excerpt = recent_thread_excerpt_builder(3)
     if replay_policy.include_recent_conversation and conversation_excerpt:
         raw_sections.append(("recent_conversation", "history", conversation_excerpt))
 
-    thread_digest = replay_policy.thread_digest_text
-    if replay_policy.include_prior_conversation_digest and thread_digest:
-        raw_sections.append(("prior_conversation_digest", "history", thread_digest))
+    # Thread manifest: a structured "table of contents" of the recent
+    # thread entries, replacing the lossy prose digest. The manifest gives
+    # the model addressable entries it can pull on demand via
+    # ``thread_read_range`` instead of a summarized narrative.
+    thread_manifest = ""
+    if thread_manifest_builder is not None:
+        try:
+            thread_manifest = thread_manifest_builder().strip()
+        except Exception:  # pylint: disable=broad-except
+            thread_manifest = ""
+    if replay_policy.include_prior_conversation_digest and thread_manifest:
+        raw_sections.append(("thread_manifest", "history", thread_manifest))
 
     if replay_policy.include_diagnostic_reflection:
         diagnostic_reflection = _build_diagnostic_reflection_block(
@@ -446,7 +458,7 @@ def assemble_dynamic_user_context(
             effective_reflection_max_tokens=replay_policy.effective_reflection_max_tokens,
             digest_max_lines=replay_policy.digest_max_lines,
             query=query,
-            thread_digest_present=bool(thread_digest),
+            thread_digest_present=bool(thread_manifest),
             recent_conversation_present=bool(conversation_excerpt),
         )
         raw_sections.append(("diagnostic_reflection", "reflection", diagnostic_reflection))

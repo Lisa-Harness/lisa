@@ -74,6 +74,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "append_thread_entry",
     "build_recent_thread_excerpt",
+    "build_thread_manifest",
     "load_recent_thread_entries",
     "load_thread_digest",
     "load_thread_range",
@@ -648,3 +649,48 @@ def build_recent_thread_excerpt(
         return ""
     # Restore chronological order (oldest first) for readability.
     return "\n".join([lines[0], *reversed(lines[1:])])
+
+
+def build_thread_manifest(
+    *,
+    thread_path: Path | None,
+    limit: int = 30,
+) -> str:
+    """Build a compact structured manifest of recent thread entries.
+
+    This is the lossless replacement for the lossy prose digest. Instead of
+    a summarized narrative, the model gets a "table of contents" — a
+    structured index of what's in the thread — and can pull individual
+    entries on demand via ``thread_read_range``.
+
+    Each manifest line shows: turn index, mode_id, query preview (truncated),
+    write-receipt capability ids, and handoff target. This gives the model
+    *addressable* entries without the token cost of full response text.
+
+    Returns an empty string when there are no entries.
+    """
+    entries = load_recent_thread_entries(thread_path=thread_path, limit=limit)
+    if not entries:
+        return ""
+    lines = ["## Thread Manifest", ""]
+    lines.append("| Turn | Mode | Query | Writes | Handoff |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for entry in entries:
+        turn = entry.get("turn", "?")
+        mode_id = str(entry.get("mode_id") or "-")
+        query = str(entry.get("query") or "").strip()
+        if len(query) > 80:
+            query = query[:77] + "…"
+        # Escape pipes in query for markdown table safety.
+        query = query.replace("|", "\\|")
+        receipts = entry.get("effect_receipts") or []
+        write_caps = [
+            str(r.get("capability_id") or "")
+            for r in receipts
+            if isinstance(r, dict)
+            and str(r.get("effect", "")) in ("write", "external_write")
+        ]
+        writes = ", ".join(sorted(set(write_caps))) or "-"
+        handoff = str(entry.get("handoff_to") or entry.get("transitioned_to") or "-")
+        lines.append(f"| {turn} | {mode_id} | {query} | {writes} | {handoff} |")
+    return "\n".join(lines)

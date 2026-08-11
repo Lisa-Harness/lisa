@@ -408,6 +408,14 @@ def build_turn_hooks(
                 limit=limit,
             )
 
+        def _thread_manifest_builder() -> str:
+            from host.thread import build_thread_manifest  # noqa: PLC0415
+
+            return build_thread_manifest(
+                thread_path=runtime.thread_path,
+                limit=30,
+            )
+
         # Resolve the model context window for the session-owned context
         # mapper. The mapper needs the model's context window to compute
         # model-aware context budgets.
@@ -433,6 +441,7 @@ def build_turn_hooks(
             session_context_loader=_session_context_loader,
             thread_digest_loader=_thread_digest_loader,
             recent_thread_excerpt_builder=_recent_thread_excerpt_builder,
+            thread_manifest_builder=_thread_manifest_builder,
             capability_manifest=capability_manifest,
             context_plan=context_plan,
             model_context_window_tokens=model_context_window,
