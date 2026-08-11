@@ -84,11 +84,11 @@ class TestAssembleSystemPromptWithCopilotCustomizations:
 
 
 class TestHostRuntimeCopilotCache:
-    def test_copilot_customizations_text_defaults_to_none(self) -> None:
+    def test_copilot_customizations_text_defaults_to_none(self, tmp_path: Path) -> None:
         from host.config import HostConfig
         from host.runtime import HostRuntime
 
-        config = HostConfig(data_dir=Path("."))
+        config = HostConfig(data_dir=tmp_path)
         runtime = HostRuntime(config)
         assert runtime._copilot_customizations_text is None
 
