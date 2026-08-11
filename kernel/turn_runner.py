@@ -3659,42 +3659,69 @@ async def _run_turn_inner(
         # one control channel). The turn loop never synthesizes ``user``
         # messages; user messages come only from the host.
 
-        # ── Fork/delegate child midpoint write-nudge ──────────────────
-        # A sub-turn (fork child, or delegate child once delegate lands)
-        # whose mode declares action tools gets a ONE-SHOT nudge at the
-        # iteration midpoint: if it has done only read-only calls so far,
-        # tell it to commit to a write or yield. This converts the silent
-        # read-loop → no_tools abort (2026-08-03 incident) into either a
-        # real write or an honest yield. The nudge fires exactly once per
-        # child (``write_nudge_fired`` on ``_TurnState``); the sub-turn
-        # contract block in the briefing carries the same signal every
-        # iteration, this is the escalated mid-run version. Transport
-        # (Phase 7: one control channel): this iteration's lifecycle
-        # briefing — never a synthesized ``user`` message.
+        # ── Midpoint write-nudge (sub-turn child OR parent turn) ───────
+        # A turn whose mode declares action tools gets a ONE-SHOT nudge
+        # when it has done only read-only calls so far, telling it to
+        # commit to a write or yield. Two trigger shapes share one latch
+        # (``write_nudge_fired`` on ``_TurnState``):
+        #
+        # - **Sub-turn child** (fork/delegate): fires at the iteration
+        #   midpoint (``iteration > max_tool_iterations // 2``). Converts
+        #   the silent read-loop → no_tools abort (2026-08-03 incident)
+        #   into either a real write or an honest yield.
+        # - **Parent turn**: fires ``write_deadline_margin`` iterations
+        #   *before* the stuck-in-stage cap would pause the turn, using
+        #   the unified ``turns_in_stage`` counter. This gives a
+        #   capture mode (``researcher``/``reviewer``/``executor``) a
+        #   final chance to call ``markdown_forge_document`` /
+        #   ``okf_emit_concept`` rather than ending blocked as
+        #   ``no_tools`` (hallucinated success) when the cap fires. The
+        #   pre-cap margin is the dial — ``0`` disables the parent
+        #   nudge; ``1`` fires one iteration before the cap.
+        #
+        # The nudge fires exactly once per turn (``write_nudge_fired``);
+        # the sub-turn contract block in the briefing carries the same
+        # signal every iteration, this is the escalated mid-run version.
+        # Transport (Phase 7: one control channel): this iteration's
+        # lifecycle briefing — never a synthesized ``user`` message.
         _midpoint_nudge_text = ""
+        _parent_write_deadline = (
+            not _state.sub_turn_kind
+            and _kernel_settings.write_deadline_margin > 0
+            and _turns_in_stage
+            >= _kernel_settings.stage_nudge_cap - _kernel_settings.write_deadline_margin
+        )
         if (
-            _state.sub_turn_kind
-            and _state.action_tool_ids
+            _state.action_tool_ids
             and not _state.write_nudge_fired
             and not (_state.called_tool_names & _state.action_tool_ids)
             and not any(r.capability_id in _state.action_tool_ids for r in _state.effect_receipts)
-            and _state.iteration > max_tool_iterations // 2
+            and (
+                _parent_write_deadline
+                or (
+                    _state.sub_turn_kind
+                    and _state.iteration > max_tool_iterations // 2
+                )
+            )
             and _pending_yield is None
         ):
             _state.write_nudge_fired = True
             _action_list = ", ".join(sorted(_state.action_tool_ids))
             _log.info(
-                "sub-turn midpoint write-nudge (kind=%s mode=%s iteration=%d "
+                "write-nudge (kind=%s mode=%s iteration=%d turns_in_stage=%d "
                 "remaining=%d zero_writes); nudging to commit or yield",
-                _state.sub_turn_kind,
+                _state.sub_turn_kind or "parent",
                 mode_id,
                 _state.iteration,
+                _turns_in_stage,
                 max_tool_iterations - _state.iteration,
             )
             # The nudge prose is authored Markdown loaded through
             # ``kernel.context.sub_turn_contract`` (``prompts/
             # sub_turn/midpoint_write_nudge.md``); only the action-list
-            # substitution glue lives here.
+            # substitution glue lives here. The same prose applies to
+            # parent turns and sub-turn children — both are "past the
+            # deadline with zero writes."
             _midpoint_nudge_text = render_sub_turn_midpoint_nudge(
                 action_list=_action_list,
             )

@@ -172,6 +172,14 @@ class Settings(BaseSettings):
     # no-tools completion to stop burning tokens. Override via
     # ``STAGE_NUDGE_CAP``.
     stage_nudge_cap: int = 6
+    # Iterations *before* the stuck-in-stage cap at which the parent-turn
+    # write-nudge fires for a mode with unmet ``action_tool_ids``. ``1``
+    # means the nudge fires one iteration before the cap would pause the
+    # turn, giving the model a final chance to call a write tool (e.g.
+    # ``markdown_forge_document``) rather than ending blocked as
+    # ``no_tools``. ``0`` disables the pre-cap nudge. Override via
+    # ``WRITE_DEADLINE_MARGIN``.
+    write_deadline_margin: int = 1
     # Hard backstop against routing-hint loops: caps the total mode
     # handoffs per turn and forces a final completion. Loosened from the
     # historical 6 to accommodate deep producer→consumer pipelines (the
@@ -333,6 +341,7 @@ class Settings(BaseSettings):
         "forced_action_non_compliant_cap",
         "stage_nudge_threshold",
         "stage_nudge_cap",
+        "write_deadline_margin",
         "max_handoffs_per_turn",
         "duplicate_hint_limit",
         "hint_cycle_min_len",

@@ -450,3 +450,154 @@ async def test_read_only_mcp_tool_does_not_satisfy_write_contract() -> None:
     assert result.blocked is False
     assert result.block_origin == ""
     assert not any(r.capability_id == "lisa-storage.read_file" for r in result.effect_receipts)
+
+
+# ── Parent-turn pre-cap write-nudge (2026-08-11) ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_parent_turn_pre_cap_write_nudge_fires_before_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parent turn with unmet action tools gets a write-nudge one
+    iteration before the stuck-in-stage cap would pause it.
+
+    Regression for the 2026-08-10/11 ``no_tools`` blocks: capture modes
+    (``researcher``/``reviewer``/``executor``) read-looped to the
+    stuck-in-stage cap without ever calling their write tools, then ended
+    blocked as ``no_tools`` (hallucinated success). The pre-cap nudge
+    fires at ``stage_nudge_cap - write_deadline_margin`` to give the
+    model a final chance to call a write tool before the cap freezes the
+    turn.
+
+    The stub model always calls a read-only tool (``fetch_page``) and
+    never the write tool, so ``turns_in_stage`` climbs to the cap. The
+    nudge prose ("zero writes") must appear in the system prompt at the
+    pre-cap iteration.
+    """
+    from kernel import config
+
+    # Tighten the caps so the test runs in a few iterations, not 300.
+    # ``stage_nudge_cap=4`` + ``write_deadline_margin=1`` → nudge fires
+    # at ``turns_in_stage == 3`` (the 4th iteration). The global
+    # iteration cap stays well above the stage cap so the stage cap is
+    # what binds.
+    monkeypatch.setattr(config.settings, "stage_nudge_cap", 4)
+    monkeypatch.setattr(config.settings, "write_deadline_margin", 1)
+    monkeypatch.setattr(config.settings, "max_tool_iterations", 50)
+
+    captured_prompts: list[str] = []
+
+    async def stub_execute_operation(
+        operation_id: str, _ctx: OperationExecutionContext
+    ) -> OperationResult:
+        return OperationResult(output_text=f"Executed {operation_id}")
+
+    async def read_loop(**kwargs: Any) -> _StubCompletion:
+        # Capture the system prompt each iteration to inspect the nudge.
+        messages = kwargs.get("messages", [])
+        if messages and isinstance(messages, list):
+            sys_msg = str(messages[0].get("content", "")) if messages[0] else ""
+            captured_prompts.append(sys_msg)
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "fetch_page",
+                        "arguments": '{"url": "https://example.com"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = TurnHooks(complete=read_loop, execute_operation=stub_execute_operation)
+    with (
+        patch(
+            "kernel.turn_runner.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+        patch(
+            "kernel.operations.registry.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+            create=True,
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+    ):
+        await run_turn(mode_id="writer", query="write the file", hooks=hooks)
+
+    # The nudge fires exactly once at the pre-cap iteration. Assert the
+    # nudge prose ("zero writes") appears in at least one captured
+    # system prompt, and that it fired before the cap paused the turn.
+    nudge_iterations = [
+        i for i, p in enumerate(captured_prompts) if "zero writes" in p
+    ]
+    assert nudge_iterations, (
+        "parent-turn pre-cap write-nudge did not fire; captured prompts "
+        f"did not contain 'zero writes'. prompts={captured_prompts!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_parent_turn_write_nudge_disabled_when_margin_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``write_deadline_margin=0`` disables the parent-turn pre-cap
+    nudge — the turn ends at the stuck-in-stage cap with no nudge
+    prose in the system prompt."""
+    from kernel import config
+
+    monkeypatch.setattr(config.settings, "stage_nudge_cap", 3)
+    monkeypatch.setattr(config.settings, "write_deadline_margin", 0)
+    monkeypatch.setattr(config.settings, "max_tool_iterations", 50)
+
+    captured_prompts: list[str] = []
+
+    async def stub_execute_operation(
+        operation_id: str, _ctx: OperationExecutionContext
+    ) -> OperationResult:
+        return OperationResult(output_text=f"Executed {operation_id}")
+
+    async def read_loop(**kwargs: Any) -> _StubCompletion:
+        messages = kwargs.get("messages", [])
+        if messages and isinstance(messages, list):
+            sys_msg = str(messages[0].get("content", "")) if messages[0] else ""
+            captured_prompts.append(sys_msg)
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "fetch_page",
+                        "arguments": '{"url": "https://example.com"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = TurnHooks(complete=read_loop, execute_operation=stub_execute_operation)
+    with (
+        patch(
+            "kernel.turn_runner.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+        patch(
+            "kernel.operations.registry.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+            create=True,
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+    ):
+        await run_turn(mode_id="writer", query="write the file", hooks=hooks)
+
+    assert not any("zero writes" in p for p in captured_prompts), (
+        "parent-turn write-nudge fired despite write_deadline_margin=0"
+    )
