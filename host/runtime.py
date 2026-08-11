@@ -729,16 +729,6 @@ class HostRuntime:
         from host.mcp_pool import register_mcp_aliases  # noqa: PLC0415
 
         register_mcp_aliases(self._mcp_tool_pool)
-        # Register host-owned thread-access synthetic tools so the model
-        # can read older thread entries on demand (the on-demand depth
-        # layer of the floor + tool design). Host-owned because the thread
-        # store is host-owned; MCP servers may not import hosts.
-        from host.thread_tools import register_thread_tools  # noqa: PLC0415
-
-        register_thread_tools(
-            self._mcp_tool_pool,
-            thread_path_resolver=lambda: self.thread_path,
-        )
         self._mcp_started = True
         logger.info(
             "HostRuntime: MCP pool started with %d warm server(s)",

@@ -549,6 +549,15 @@ def compile_mcp_configs(
     # CLI flags or the system-local tzinfo.
     os.environ.setdefault("LISA_TIMEZONE", config.timezone)
 
+    # Propagate the thread-dir and user-slug so the lisa-thread MCP
+    # server can expand ${LISA_THREAD_DIR} / ${LISA_USER_SLUG} in its
+    # cli_args. The thread server reads the per-user thread store at
+    # <thread-dir>/<user-slug> (mirrors runtime.thread_path).
+    if not config.no_thread:
+        os.environ.setdefault("LISA_THREAD_DIR", str(config.resolved_thread_dir))
+    if config.user_slug:
+        os.environ.setdefault("LISA_USER_SLUG", config.user_slug)
+
     registry = MCPServerRegistry()
 
     # All host-owned servers (first-party) from mcp_servers.yaml. The

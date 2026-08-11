@@ -13,7 +13,7 @@ lisa-sdk = { workspace = true }
 [project]
 name = "lisa-mcp-servers"
 version = "0.1.0"
-description = "Lisa first-party MCP servers — context, memory, guard, content, catalog, storage, and shared CLI config"
+description = "Lisa first-party MCP servers — context, memory, guard, content, catalog, storage, thread, and shared CLI config"
 requires-python = ">=3.11"
 
 dependencies = [
@@ -30,6 +30,7 @@ lisa-guard = "mcp_server.guard.server:main"
 lisa-content = "mcp_server.content.server:main"
 lisa-catalog = "mcp_server.catalog.server:main"
 lisa-storage = "mcp_server.storage.server:main"
+lisa-thread = "mcp_server.thread.server:main"
 
 [project.optional-dependencies]
 dev = [

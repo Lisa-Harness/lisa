@@ -121,3 +121,29 @@ servers:
     default_available_tools:
       - read_file
       - list_files
+
+  # ── Thread-access server (cold — lazily connected on first use) ──
+  # The thread server exposes ``thread_read_range`` and
+  # ``thread_read_recent`` so the model can pull older conversation
+  # entries on demand (the on-demand depth layer of the floor + tool
+  # design). The eager floor (recent excerpt + thread manifest) is
+  # injected by context_assembly; this server lets the model read
+  # deeper when the manifest shows entries it needs.
+  #
+  # ``thread_read_range`` is an ambient MCP-native tool: it is merged
+  # into every mode's allowed_tool_ids by the SDK catalog loader, so
+  # modes can read prior thread entries without re-listing the tool.
+  - server_id: lisa-thread
+    runtime_kind: venv_bin
+    venv_dir: "${FRAMEWORK_ROOT}"
+    warm: false
+    # The thread store base path is <thread-dir>/<user-slug>. The host
+    # sets LISA_THREAD_DIR and LISA_USER_SLUG env vars from the runtime
+    # config; the compiler expands them into cli_args at launch time.
+    cli_args:
+      - "--thread-dir"
+      - "${LISA_THREAD_DIR}"
+      - "--user-slug"
+      - "${LISA_USER_SLUG}"
+    default_available_tools:
+      - thread_read_range

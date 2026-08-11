@@ -448,7 +448,16 @@ def assemble_dynamic_user_context(
         except Exception:  # pylint: disable=broad-except
             thread_manifest = ""
     if replay_policy.include_prior_conversation_digest and thread_manifest:
-        raw_sections.append(("thread_manifest", "history", thread_manifest))
+        raw_sections.append(
+            (
+                "thread_manifest",
+                "history",
+                thread_manifest
+                + "\n\nUse the `thread_read_range` tool with the turn numbers above"
+                " to read full entries when you need prior context beyond the"
+                " recent excerpt.",
+            )
+        )
 
     if replay_policy.include_diagnostic_reflection:
         diagnostic_reflection = _build_diagnostic_reflection_block(

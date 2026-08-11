@@ -58,6 +58,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from host.host_commands import is_host_command_query as _is_host_command_query
+from sdk.thread import ThreadStore
 
 if TYPE_CHECKING:
     import zstandard  # type-check-only; imported lazily at runtime
@@ -377,7 +378,20 @@ def _maybe_rename_legacy(paths: _SegmentPaths) -> None:
         paths.legacy.rename(paths.current)
 
 
-# ── Public read API ────────────────────────────────────────────────────
+# ── Public read API (delegates to sdk.thread.ThreadStore) ─────────────
+#
+# The read path lives in ``sdk.thread.ThreadStore`` so the MCP server
+# (``mcp_server.thread``) and the host share one contract without the
+# server importing the host. These thin wrappers preserve the existing
+# ``host.thread`` public surface for callers that already import it
+# (context_assembly, turn_hooks_builder, checkpoint/compaction commands).
+
+
+def _thread_store(thread_path: Path | None) -> ThreadStore | None:
+    """Return a ``ThreadStore`` for ``thread_path``, or ``None``."""
+    if thread_path is None:
+        return None
+    return ThreadStore(thread_path)
 
 
 def load_recent_thread_entries(
@@ -387,47 +401,13 @@ def load_recent_thread_entries(
 ) -> list[dict[str, Any]]:
     """Load up to ``limit`` recent thread entries (oldest-first in the tail).
 
-    Reads only the active segment. If it has fewer than ``limit`` entries,
-    falls back to the most recent sealed segment for the remaining tail.
-    Two file touches max. Returns ``[]`` when ``thread_path`` is ``None``
-    or no store exists.
+    Delegates to :meth:`sdk.thread.ThreadStore.load_recent`.
+    Returns ``[]`` when ``thread_path`` is ``None`` or no store exists.
     """
-    if thread_path is None:
+    store = _thread_store(thread_path)
+    if store is None:
         return []
-    paths = _segment_paths(thread_path)
-    active = _read_active_entries(paths.current)
-    if len(active) >= limit > 0:
-        return active[-limit:]
-    # Spill into the most recent sealed segment when active is short.
-    if limit <= 0 or len(active) >= limit:
-        return active
-    records = _read_index(paths.index_path)
-    if not records:
-        return active
-    last = records[-1]
-    sealed_path = _sealed_segment_path(paths.base, last.seg_id)
-    sealed_entries = _load_sealed_entries(sealed_path, paths.dictionary, last.seg_id)
-    if not sealed_entries:
-        return active
-    needed = limit - len(active)
-    tail = sealed_entries[-needed:] if needed < len(sealed_entries) else sealed_entries
-    return tail + active
-
-
-def _load_sealed_entries(
-    sealed_path: Path,
-    dict_path: Path,
-    seg_id: str,
-) -> list[dict[str, Any]]:
-    """Decompress and parse a sealed segment. Returns [] on any failure."""
-    if not sealed_path.exists():
-        return []
-    try:
-        decompressed = _decompress_bytes(sealed_path.read_bytes(), dict_path)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("thread: failed to decompress sealed segment %s: %s", seg_id, exc)
-        return []
-    return _parse_entries(decompressed.decode("utf-8").splitlines())
+    return store.load_recent(limit=limit)
 
 
 def load_thread_range(
@@ -438,39 +418,12 @@ def load_thread_range(
 ) -> list[dict[str, Any]]:
     """Load entries whose global turn index falls in ``[start_turn, end_turn]``.
 
-    Global turn index is the 0-based ordinal of a turn across the whole
-    store (sealed segments + active). The index is consulted to find
-    overlapping segments; only those are decompressed. The active segment
-    is read directly for its in-range tail.
+    Delegates to :meth:`sdk.thread.ThreadStore.load_range`.
     """
-    if thread_path is None or start_turn > end_turn:
+    store = _thread_store(thread_path)
+    if store is None:
         return []
-    paths = _segment_paths(thread_path)
-    records = _read_index(paths.index_path)
-    results: list[dict[str, Any]] = []
-    for record in records:
-        if record.turn_hi < start_turn or record.turn_lo > end_turn:
-            continue
-        sealed_path = _sealed_segment_path(paths.base, record.seg_id)
-        if not sealed_path.exists():
-            continue
-        try:
-            decompressed = _decompress_bytes(sealed_path.read_bytes(), paths.dictionary)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("thread: range decompress failed for %s: %s", record.seg_id, exc)
-            continue
-        entries = _parse_entries(decompressed.decode("utf-8").splitlines())
-        for offset, entry in enumerate(entries):
-            global_turn = record.turn_lo + offset
-            if start_turn <= global_turn <= end_turn:
-                results.append(entry)
-    # Active (unsealed) tail: its turn range starts after the last sealed.
-    active_turn_lo = sum(r.turn_hi - r.turn_lo + 1 for r in records)
-    for offset, entry in enumerate(_read_active_entries(paths.current)):
-        global_turn = active_turn_lo + offset
-        if start_turn <= global_turn <= end_turn:
-            results.append(entry)
-    return results
+    return store.load_range(start_turn=start_turn, end_turn=end_turn)
 
 
 def load_thread_digest(*, thread_path: Path | None) -> str:
@@ -599,56 +552,17 @@ def build_recent_thread_excerpt(
 ) -> str:
     """Build a short human-readable excerpt of recent thread entries.
 
-    Returns an empty string when there are no entries. Each line shows the
-    query and a preview of the response (or the query itself if the
-    response is empty).
-
-    Host-only command entries (``/pack disable github``, ``/help``,
-    ``/tokens``, ...) are stripped: they are operator UI gestures, not
-    dialogue, and replaying them as "recent conversation" makes the model
-    treat a UI gesture as something the user said. The model already
-    observes their effect via the live capability manifest / pack lock.
-
-    The loader reads up to ``limit * 4`` raw entries (a bounded over-read)
-    so that after stripping host commands the excerpt can still yield up
-    to ``limit`` genuine dialogue turns in normal sessions.
+    Delegates to :meth:`sdk.thread.ThreadStore.build_recent_excerpt`,
+    passing the host's ``is_host_command_query`` filter so host-only
+    commands are stripped from the transcript.
     """
-    # Bounded over-read so we can filter host commands and still fill the
-    # excerpt with real dialogue. ``* 4`` is a heuristic: most sessions are
-    # dominated by dialogue, with occasional ``/pack`` or ``/help`` runs.
-    # If a user fires many host commands in a row the excerpt may run
-    # short, which is the correct outcome (there is no fresh dialogue to
-    # surface). Capped to avoid loading a pathological thread in full.
-    raw_limit = max(limit, min(limit * 4, 200))
-    entries = load_recent_thread_entries(thread_path=thread_path, limit=raw_limit)
-    if not entries:
+    store = _thread_store(thread_path)
+    if store is None:
         return ""
-    lines = ["Recent thread context:"]
-    emitted = 0
-    for entry in reversed(entries):
-        if emitted >= limit:
-            break
-        query = str(entry.get("query") or "").strip()
-        response = str(entry.get("response_text") or "").strip()
-        if not query and not response:
-            continue
-        # Strip host-only commands (``/pack``, ``/help``, ``/tokens`` ...)
-        # from the conversation transcript fed back to the model.
-        if _is_host_command_query(query):
-            continue
-        body = response or query
-        prov = entry.get("provenance")
-        if prov:
-            body = (
-                f"{body} [system_provenance: {prov.get('source', 'observed')}, "
-                f"model_id: {prov.get('model_id', 'unknown')}]"
-            )
-        lines.append(f"- {query or 'unknown'}: {body}")
-        emitted += 1
-    if emitted == 0:
-        return ""
-    # Restore chronological order (oldest first) for readability.
-    return "\n".join([lines[0], *reversed(lines[1:])])
+    return store.build_recent_excerpt(
+        limit=limit,
+        is_host_command=_is_host_command_query,
+    )
 
 
 def build_thread_manifest(
@@ -658,39 +572,9 @@ def build_thread_manifest(
 ) -> str:
     """Build a compact structured manifest of recent thread entries.
 
-    This is the lossless replacement for the lossy prose digest. Instead of
-    a summarized narrative, the model gets a "table of contents" — a
-    structured index of what's in the thread — and can pull individual
-    entries on demand via ``thread_read_range``.
-
-    Each manifest line shows: turn index, mode_id, query preview (truncated),
-    write-receipt capability ids, and handoff target. This gives the model
-    *addressable* entries without the token cost of full response text.
-
-    Returns an empty string when there are no entries.
+    Delegates to :meth:`sdk.thread.ThreadStore.build_manifest`.
     """
-    entries = load_recent_thread_entries(thread_path=thread_path, limit=limit)
-    if not entries:
+    store = _thread_store(thread_path)
+    if store is None:
         return ""
-    lines = ["## Thread Manifest", ""]
-    lines.append("| Turn | Mode | Query | Writes | Handoff |")
-    lines.append("| --- | --- | --- | --- | --- |")
-    for entry in entries:
-        turn = entry.get("turn", "?")
-        mode_id = str(entry.get("mode_id") or "-")
-        query = str(entry.get("query") or "").strip()
-        if len(query) > 80:
-            query = query[:77] + "…"
-        # Escape pipes in query for markdown table safety.
-        query = query.replace("|", "\\|")
-        receipts = entry.get("effect_receipts") or []
-        write_caps = [
-            str(r.get("capability_id") or "")
-            for r in receipts
-            if isinstance(r, dict)
-            and str(r.get("effect", "")) in ("write", "external_write")
-        ]
-        writes = ", ".join(sorted(set(write_caps))) or "-"
-        handoff = str(entry.get("handoff_to") or entry.get("transitioned_to") or "-")
-        lines.append(f"| {turn} | {mode_id} | {query} | {writes} | {handoff} |")
-    return "\n".join(lines)
+    return store.build_manifest(limit=limit)
