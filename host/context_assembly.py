@@ -63,6 +63,11 @@ logger = logging.getLogger(__name__)
 #: turn. Missing it is a hard failure — partial installs are not supported.
 _SYSTEM_PROMPT_PATH = "prompts/system-prompt.md"
 
+#: Prose hint appended to the thread manifest section, telling the model
+#: how to pull prior turns on demand. Authored Markdown — not inline — so a
+#: missing or empty asset fails loudly instead of silently degrading.
+_THREAD_MANIFEST_HINT_PATH = "prompts/thread_manifest_hint.md"
+
 
 def load_system_prompt(content_loader: Callable[[str], str]) -> str:
     """Load the base system prompt from the authored system prompt asset.
@@ -76,6 +81,22 @@ def load_system_prompt(content_loader: Callable[[str], str]) -> str:
         content_loader,
         _SYSTEM_PROMPT_PATH,
         context="load_system_prompt",
+    )
+
+
+def load_thread_manifest_hint(content_loader: Callable[[str], str]) -> str:
+    """Load the prose hint appended to the thread manifest section.
+
+    The hint tells the model how to pull prior turns on demand via
+    ``thread_read_range``. It is authored Markdown shipped as package data;
+    a missing, empty, or unloadable asset raises
+    :class:`MissingAuthoredContentError` so a broken content install fails
+    loudly instead of silently stripping the addressing instruction.
+    """
+    return require_authored_text(
+        content_loader,
+        _THREAD_MANIFEST_HINT_PATH,
+        context="load_thread_manifest_hint",
     )
 
 
@@ -448,14 +469,16 @@ def assemble_dynamic_user_context(
         except Exception:  # pylint: disable=broad-except
             thread_manifest = ""
     if replay_policy.include_prior_conversation_digest and thread_manifest:
+        # The hint prose ("Use the `thread_read_range` tool...") is authored
+        # Markdown shipped as package data. Load it through the strict loader
+        # so a missing/empty asset fails loudly instead of silently degrading
+        # the model's ability to address prior turns.
+        hint = load_thread_manifest_hint(content_loader)
         raw_sections.append(
             (
                 "thread_manifest",
                 "history",
-                thread_manifest
-                + "\n\nUse the `thread_read_range` tool with the turn numbers above"
-                " to read full entries when you need prior context beyond the"
-                " recent excerpt.",
+                thread_manifest + "\n\n" + hint,
             )
         )
 
