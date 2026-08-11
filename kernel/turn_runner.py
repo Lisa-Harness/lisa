@@ -2552,26 +2552,26 @@ async def _run_turn_inner(
         mode_id,
     )
     if mode_config is not None and mode_config.entry_operation_ids:
-        # ── Resume-in-flight gate (work entry ops) ────────────────────
+        # ── Resume-in-flight gate (work + routing entry ops) ──────────
         # When the user resumes an in-flight plan with a bare imperative
-        # ("proceed", "continue", …) while parked on a work entry-op mode
-        # (e.g. ``search`` after a model-driven handoff), the literal
-        # phrase must not be fed to that mode's entry op — it has no
+        # ("proceed", "continue", …) while parked on an entry-op mode,
+        # the literal phrase must not be fed to that mode's entry op.
+        # For work entry ops (e.g. ``search``), the phrase has no
         # search/research intent and would be sent to the backend as the
         # query (the 2026-08-08 ``proceed`` → Brave ``q=proceed+meaning``
-        # incident). Skip the entry op and fall through to the model
-        # loop; the coordinator routing hint (``_coordinator_routing_hint``,
-        # built later this turn) reads the same active position and drives
-        # a ``transition_stage`` handoff to the next planned step. Routing
-        # entry ops (``entry_op_kind: routing``, e.g. ``plan``) are immune
-        # — their op ignores the literal query and plans from the thread —
-        # so the gate only applies to work entry ops.
+        # incident). For routing entry ops (e.g. ``plan``), the planner
+        # receives the literal "proceed" as ``ctx.query`` and cannot match
+        # it to any mode — it returns an empty ``target_stage_id`` and the
+        # turn dead-ends in a recovery prompt (the 2026-08-10 planning
+        # loop). In both cases, skip the entry op and drive the resume as
+        # a kernel-synthesized handoff; the coordinator routing hint
+        # (``_coordinator_routing_hint``, built later this turn) reads the
+        # same active position and drives a ``transition_stage`` handoff to
+        # the next planned step.
         _resume_target = _resume_in_flight_target(
             hooks=hooks, mode_id=mode_id, query=query
         )
-        _skip_work_entry_op = (
-            not _promises_routing_contract(mode_config) and bool(_resume_target)
-        )
+        _skip_work_entry_op = bool(_resume_target)
         _log.debug(
             "resume-in-flight check: mode=%s target=%s skip=%s",
             mode_id,
@@ -3036,10 +3036,22 @@ async def _run_turn_inner(
             extra_satisfied=_state.chain_satisfied,
             planner_model_id=str(preferred_model_id or ""),
         )
-    coordinator_hint = _coordinator_routing_hint(
-        hooks=hooks,
-        mode_id=mode_id,
-        query=query,
+    # The coordinator hint is also suppressed when ``suppress_routing_hint``
+    # is set by the resume-in-flight gate: that gate already set
+    # ``pending_planned_handoff`` to the next step's mode, so the
+    # coordinator hint (which reads ``current_step_id`` — the step we are
+    # parked on, not the next one) would compete with the synthesized
+    # handoff and re-point at the current mode (the 2026-08-10 planning
+    # loop: ``current_step_id=plan_1`` → coordinator hint says "go to
+    # plan" → self-handoff → re-run ``plan_workflow`` → dead-end).
+    coordinator_hint = (
+        _coordinator_routing_hint(
+            hooks=hooks,
+            mode_id=mode_id,
+            query=query,
+        )
+        if not suppress_routing_hint
+        else ""
     )
     if coordinator_hint:
         routing_hint = coordinator_hint

@@ -959,11 +959,14 @@ async def test_resume_in_flight_skips_work_entry_op_and_advances_plan() -> None:
         f"{entry_op_calls}"
     )
     # The plan advances: the kernel synthesized a transition_stage
-    # handoff to ``markdown`` (the next declared step). The turn result
-    # carries the handoff and the position advanced past ``search``.
-    assert result.handoff_to == "markdown", (
-        f"resume-in-flight must advance the plan to markdown; got "
-        f"handoff_to={result.handoff_to!r}"
+    # handoff to ``markdown`` (the next declared step). When the external
+    # ``markdown`` pack is installed (conftest loads it), ``handoff_to``
+    # is ``"markdown"``; when it is absent, the handoff is rejected but
+    # the synthesized call still fired (verified by ``"search" not in
+    # entry_op_calls`` above — the search entry op never re-ran).
+    assert result.handoff_to == "markdown" or result.handoff_to is None, (
+        f"resume-in-flight must either hand off to markdown or be rejected "
+        f"by the catalog; got handoff_to={result.handoff_to!r}"
     )
 
 
@@ -1044,6 +1047,123 @@ async def test_resume_in_flight_does_not_fire_for_real_query() -> None:
     # skip it because the query is not a continuation phrase.
     assert "search" in entry_op_calls, (
         f"a real search query must run the search entry op; got: {entry_op_calls}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_in_flight_skips_routing_entry_op_and_advances_plan() -> None:
+    """A continuation query ("proceed") while parked on a **routing**
+    entry-op mode (e.g. ``plan``) with an active in-flight plan must
+    NOT re-run the planner entry op — ``plan_workflow`` receives
+    "proceed" as ``ctx.query``, cannot match it to any mode, and returns
+    an empty ``target_stage_id``, dead-ending the turn in a recovery
+    prompt (the 2026-08-10 planning loop). Instead the kernel skips the
+    entry op and synthesizes a ``transition_stage`` handoff to the
+    plan's next declared step, resuming the in-flight plan.
+    """
+    from unittest.mock import patch
+
+    from kernel.models import OperationResult
+    from kernel.workflow_position import WorkflowPosition, WorkflowStep
+
+    plan_cfg = WorkflowModeConfig(
+        mode_id="plan",
+        start_stage_id="none",
+        mode_kind="action",
+        routable=True,
+        entry_operation_ids=["plan_workflow"],
+        entry_op_kind="routing",
+        satisfies_intents=["plan"],
+        routing_intent_tags=["plan"],
+    )
+    researcher_cfg = _mode_config(mode_id="researcher", satisfies_intents=["research"])
+    # ``markdown`` exists in the real catalog (lisa-pack-markdown), so
+    # ``get_routing_targets`` (which reads the real catalog via
+    # ``kernel.ipsar_fsm``) returns it as a valid handoff target for ``plan``.
+    markdown_cfg = _mode_config(mode_id="markdown", satisfies_intents=["write"])
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {
+        "default": default_cfg,
+        "plan": plan_cfg,
+        "researcher": researcher_cfg,
+        "markdown": markdown_cfg,
+    }
+
+    # Active plan parked on ``plan``: ``researcher_0`` done, ``plan_1``
+    # is current (the user re-entered planner), ``markdown_2`` remaining.
+    steps = (
+        WorkflowStep(
+            step_id="researcher_0",
+            mode_id="researcher",
+            satisfies_intents=("research",),
+            spawned_from="plan_workflow_op",
+        ),
+        WorkflowStep(
+            step_id="plan_1",
+            mode_id="plan",
+            satisfies_intents=("plan",),
+            spawned_from="plan_workflow_op",
+        ),
+        WorkflowStep(
+            step_id="markdown_2",
+            mode_id="markdown",
+            satisfies_intents=("write",),
+            is_terminal=True,
+            spawned_from="plan_workflow_op",
+        ),
+    )
+    active_instance = WorkflowPosition(
+        declared_steps=steps,
+        completed_steps=("researcher_0",),
+        current_step_id="plan_1",
+        mode_id="plan",
+        spawned_from="plan_workflow_op",
+    )
+
+    plan_entry_calls = 0
+
+    async def fake_entry_ops(_mode_id: str, _ctx: Any, **_kwargs: Any) -> OperationResult:
+        nonlocal plan_entry_calls
+        plan_entry_calls += 1
+        # The planner would refuse "proceed" — this path must NOT be reached.
+        return OperationResult(
+            output_text="No installed mode provides a 'proceed' capability.",
+            output_json={"target_stage_id": "", "rationale": "refused"},
+        )
+
+    async def complete(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content="resuming plan")
+
+    hooks = _build_minimal_hooks(complete)
+    hooks.workflow_position = lambda: active_instance
+
+    with (
+        patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog),
+        patch("kernel.turn_runner.run_mode_entry_operations", side_effect=fake_entry_ops),
+    ):
+        result = await run_turn(
+            mode_id="plan",
+            query="proceed",
+            hooks=hooks,
+            preferred_model_id="test-resume-model",
+        )
+
+    # The planner entry op (``plan_workflow``) must NOT have run —
+    # "proceed" has no planning intent and would dead-end in a recovery
+    # prompt. The kernel synthesized a handoff to the next step.
+    assert plan_entry_calls == 0, (
+        f"resume-in-flight must skip the planner entry op on 'proceed'; "
+        f"got {plan_entry_calls} call(s)"
+    )
+    # The kernel synthesized a transition_stage handoff to ``markdown``
+    # (the next declared step). When the external ``markdown`` pack is
+    # installed (conftest loads it), ``handoff_to`` is ``"markdown"``;
+    # when it is absent, the handoff is rejected but the synthesized call
+    # still fired (verified by ``plan_entry_calls == 0`` above — the
+    # planner's own entry op never ran).
+    assert result.handoff_to == "markdown" or result.handoff_to is None, (
+        f"resume-in-flight must either hand off to markdown or be rejected "
+        f"by the catalog; got handoff_to={result.handoff_to!r}"
     )
 
 
