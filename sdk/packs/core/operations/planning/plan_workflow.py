@@ -273,7 +273,7 @@ the request. Do not include any other text outside the JSON object.
 """
 
 
-def _build_mode_catalog_summary() -> str:
+def _build_mode_catalog_summary(*, include_tools: bool = False) -> str:
     """Render the live routable mode catalog as a compact text block.
 
     Each routable mode is listed with its mode_id, intent tags, the
@@ -283,6 +283,17 @@ def _build_mode_catalog_summary() -> str:
     the deliverable whose receipt completes the step. Non-routable modes
     are omitted; the ``default`` mode is included for conversational
     fallback.
+
+    When ``include_tools`` is True, each mode also lists its full
+    ``available_tools`` (the union of ``allowed_tool_ids`` and
+    ``allowed_operation_ids``). This is off by default to avoid context
+    bloat: most modes only need to know intent coverage + write
+    capabilities for planning. A mode that orchestrates routing without
+    seeing the workspace (e.g. ``planner``) opts in via the
+    ``needs_full_mode_catalog`` front-matter flag so it can see that
+    ``reviewer`` has ``coding_find_files`` / ``coding_read_file`` and
+    route a "read the codebase" step correctly instead of hallucinating
+    that no mode has filesystem tools.
     """
 
     from kernel.operations.registry import mode_completion_effects
@@ -301,6 +312,21 @@ def _build_mode_catalog_summary() -> str:
         keywords_text = "\n".join(keywords_block) if keywords_block else "  (no keywords)"
         description = (mode_config.description or "").strip().splitlines()[0:1]
         desc_line = description[0] if description else ""
+        # Available tools: the full allowed_tool_ids + allowed_operation_ids
+        # union. Only emitted when the calling mode opts in via
+        # ``needs_full_mode_catalog`` — context-bloat guard for the
+        # common case where the planner only needs intent coverage + write
+        # capabilities.
+        tools_line = ""
+        if include_tools:
+            available_tools = sorted(
+                set(
+                    list(getattr(mode_config, "allowed_tool_ids", []) or [])
+                    + list(getattr(mode_config, "allowed_operation_ids", []) or [])
+                )
+            )
+            if available_tools:
+                tools_line = f"\n  available_tools: {', '.join(available_tools)}"
         # Write-effect capabilities: the deliverables the mode can produce.
         # The planner binds one as a write step's ``write_capability``.
         try:
@@ -312,6 +338,7 @@ def _build_mode_catalog_summary() -> str:
         )
         lines.append(
             f"- **{mode_id}** (intents: {tags})\n{keywords_text}"
+            + tools_line
             + write_caps_line
             + (f"\n  {desc_line}" if desc_line else "")
         )
@@ -377,6 +404,27 @@ def _render_plan_markdown(parsed: PlanWorkflowOutput) -> str:
     return "\n".join(lines)
 
 
+def _calling_mode_needs_full_catalog(mode_id: str) -> bool:
+    """Return True when the calling mode opts in to the full tool catalog.
+
+    Reads the ``needs_full_mode_catalog`` front-matter flag from the
+    calling mode's ``WorkflowModeConfig``. Default False: most modes that
+    run ``plan_workflow`` only need intent coverage + write capabilities
+    (the common case). A mode that orchestrates routing without its own
+    workspace tools sets the flag to True so the catalog summary includes
+    each target mode's ``available_tools`` — letting it see that
+    ``reviewer`` has ``coding_find_files`` and route a "read the codebase"
+    step correctly instead of hallucinating that no mode can.
+    """
+
+    if not mode_id:
+        return False
+    mode = get_workflow_catalog().get(mode_id)
+    if mode is None:
+        return False
+    return bool(mode.extra_front_matter.get("needs_full_mode_catalog", False))
+
+
 async def execute(ctx: OperationExecutionContext) -> OperationResult:
     """Run the workflow planner and return the visible plan.
 
@@ -410,7 +458,14 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
             output_json={"target_stage_id": "", "rationale": "no model wiring"},
         )
 
-    catalog_summary = _build_mode_catalog_summary()
+    catalog_summary = _build_mode_catalog_summary(
+        # The calling mode opts in to the full catalog (with per-mode
+        # ``available_tools``) via the ``needs_full_mode_catalog``
+        # front-matter flag. Default off to avoid context bloat; ``planner``
+        # enables it so it can see that ``reviewer`` has ``coding_find_files``
+        # and route a "read the codebase" step correctly.
+        include_tools=_calling_mode_needs_full_catalog(ctx.mode_id)
+    )
     connectors_block = _build_sequential_connectors_block()
     system_prompt = _PLANNING_INSTRUCTION.format(
         catalog_summary=catalog_summary,
