@@ -595,7 +595,7 @@ def resolve_lifecycle_action(
     # When a write-contract mode hits the stuck-in-stage cap AND has
     # produced no write receipt for its action tools, force a transition
     # to the planned writer (the next remaining write step) or the
-    # configured rescue mode (``expounder``). This guarantees every turn
+    # configured rescue mode (``explainer``). This guarantees every turn
     # ends productively: instead of pausing on a hallucinated-success
     # block at the cap, the turn hands off to a mode whose only job is to
     # expound the analysis so far into a durable artifact. Fires at

@@ -85,7 +85,7 @@ def _settings(**overrides: object) -> LifecycleResolverSettings:
         "stage_nudge_cap": 6,
         "forced_action_non_compliant_cap": 3,
         "max_handoffs_per_turn": 5,
-        "write_rescue_mode": "expounder",
+        "write_rescue_mode": "explainer",
     }
     base.update(overrides)
     return LifecycleResolverSettings(**base)  # type: ignore[arg-type]
@@ -653,10 +653,10 @@ def test_write_rescue_fires_at_cap() -> None:
         ),
         mode_id="researcher",
         mode_yield_policy=YieldPolicy(),
-        settings=_settings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+        settings=_settings(stage_nudge_cap=6, write_rescue_mode="explainer"),
     )
     assert isinstance(action, TransitionAction)
-    assert action.target_mode_id == "expounder"
+    assert action.target_mode_id == "explainer"
     assert action.forced is True
 
 
@@ -671,7 +671,7 @@ def test_write_rescue_targets_planned_writer_when_available() -> None:
         ),
         mode_id="researcher",
         mode_yield_policy=YieldPolicy(),
-        settings=_settings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+        settings=_settings(stage_nudge_cap=6, write_rescue_mode="explainer"),
         workflow_position=_Instance(
             current_step_id="s1",
             current_mode_id="researcher",
@@ -697,7 +697,7 @@ def test_write_rescue_skipped_when_receipt_present() -> None:
         ),
         mode_id="researcher",
         mode_yield_policy=YieldPolicy(),
-        settings=_settings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+        settings=_settings(stage_nudge_cap=6, write_rescue_mode="explainer"),
     )
     # Should NOT be a forced transition — falls through to the cap path.
     assert not isinstance(action, TransitionAction)
@@ -714,7 +714,7 @@ def test_write_rescue_skipped_when_no_action_tools() -> None:
         ),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=_settings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+        settings=_settings(stage_nudge_cap=6, write_rescue_mode="explainer"),
     )
     # Should NOT be a forced transition — falls through to the cap path.
     assert not isinstance(action, TransitionAction)
@@ -746,7 +746,7 @@ def test_write_rescue_skipped_before_cap() -> None:
         ),
         mode_id="researcher",
         mode_yield_policy=YieldPolicy(),
-        settings=_settings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+        settings=_settings(stage_nudge_cap=6, write_rescue_mode="explainer"),
     )
     # Should NOT be a forced transition — the pre-cap nudge gets its chance.
     assert not isinstance(action, TransitionAction)

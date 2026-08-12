@@ -195,11 +195,11 @@ class Settings(BaseSettings):
     # iteration away from the stuck-in-stage cap with no verified write,
     # the lifecycle resolver forces a transition to this mode so the
     # turn ends productively instead of pausing on a hallucinated-success
-    # block. Defaults to ``expounder`` (a terminal capture persona whose
+    # block. Defaults to ``explainer`` (a terminal capture persona whose
     # only write is ``markdown_forge_document``). Set to ``""`` to disable
     # the write-rescue forced transition. Override via
     # ``WRITE_RESCUE_MODE``.
-    write_rescue_mode: str = "expounder"
+    write_rescue_mode: str = "explainer"
     # Hard backstop against routing-hint loops: caps the total mode
     # handoffs per turn and forces a final completion. Loosened from the
     # historical 6 to accommodate deep producer→consumer pipelines (the
