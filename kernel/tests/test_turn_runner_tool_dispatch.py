@@ -356,13 +356,13 @@ def test_build_minimal_context_uses_defaults() -> None:
         execute_tool_fn=None,
         execute_operation_fn=None,
     )
-    assert ctx.workspace_id == "lite-host"
-    assert ctx.user_id == "lite-user"
-    assert ctx.user_slug == "lite-user"
-    assert ctx.user_name == "Lite User"
-    assert ctx.conversation_id == "lite-host-console"
+    assert ctx.workspace_id == "lisa-host"
+    assert ctx.user_id == "lisa-user"
+    assert ctx.user_slug == "lisa-user"
+    assert ctx.user_name == "Lisa User"
+    assert ctx.conversation_id == "lisa-host-console"
     assert ctx.surface_type == "personal_dm"
-    assert ctx.surface_id == "lite-host-console"
+    assert ctx.surface_id == "lisa-host-console"
     assert ctx.memory_scope == "personal"
 
 

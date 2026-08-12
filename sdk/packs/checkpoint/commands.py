@@ -18,6 +18,7 @@ from kernel.host_commands import HostCommandSpec
 from kernel.models import (
     CHECKPOINT_SCHEMA_VERSION,
     ConversationSurface,
+    MemoryScope,
     OperationExecutionContext,
     ToolResult,
 )
@@ -92,12 +93,12 @@ def _build_context(
     from kernel.seams.host_adapter import build_callable_host
 
     return OperationExecutionContext(
-        workspace_id="lite-host",
-        user_id=str(runtime.config.user_slug or "lite-user"),
-        user_slug=str(runtime.config.user_slug or "default"),
+        workspace_id=runtime.session_plan.manifest.name,
+        user_id=runtime.config.user_slug,
+        user_slug=runtime.config.user_slug,
         surface_type=cast(ConversationSurface, runtime.config.surface_type),
         surface_id=runtime.config.surface_id,
-        memory_scope="personal",
+        memory_scope=cast(MemoryScope, runtime.config.memory_scope),
         mode_id=str(runtime.current_mode_id or "default"),
         query=message,
         host=build_callable_host(
@@ -336,12 +337,12 @@ async def handle_proceed(
             from kernel.recovery import RecoveryIdentity
 
             identity = RecoveryIdentity(
-                workspace_id="lite-host",
-                user_id=str(runtime.config.user_slug or "lite-user"),
-                user_slug=str(runtime.config.user_slug or "default"),
+                workspace_id=runtime.session_plan.manifest.name,
+                user_id=runtime.config.user_slug,
+                user_slug=runtime.config.user_slug,
                 surface_type=cast(ConversationSurface, runtime.config.surface_type),
                 surface_id=runtime.config.surface_id,
-                memory_scope="personal",
+                memory_scope=cast(MemoryScope, runtime.config.memory_scope),
             )
             open_records = await recovery_service.list_open(identity)
             stalled = [

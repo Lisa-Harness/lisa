@@ -1068,15 +1068,21 @@ class TurnHooks:
     compaction slices and the ``/summarize-history`` command detect this
     and no-op with a warning instead of silently dropping the result."""
 
-    workspace_id: str = "lite-host"
-    user_id: str = "lite-user"
-    user_slug: str = "lite-user"
-    user_name: str = "Lite User"
-    principal_key: str = "lite-user"
-    conversation_id: str = "lite-host-console"
-    surface_type: str = "personal_dm"
-    surface_id: str = "lite-host-console"
-    memory_scope: str = "personal"
+    # Identity defaults are read from ``kernel.config.Settings.identity_*``
+    # so the historical ``"lite-host"`` / ``"lite-user"`` literals live in
+    # one place. Production hosts override these by wiring the real
+    # ``runtime.config`` / ``session_plan`` identity (see
+    # ``host.turn_hooks_builder``); the defaults here are only fallbacks
+    # for tests and lightweight hosts without a wired identity.
+    workspace_id: str = field(default_factory=lambda: _kernel_settings.identity_workspace_id)
+    user_id: str = field(default_factory=lambda: _kernel_settings.identity_user_id)
+    user_slug: str = field(default_factory=lambda: _kernel_settings.identity_user_slug)
+    user_name: str = field(default_factory=lambda: _kernel_settings.identity_user_name)
+    principal_key: str = field(default_factory=lambda: _kernel_settings.identity_principal_key)
+    conversation_id: str = field(default_factory=lambda: _kernel_settings.identity_conversation_id)
+    surface_type: str = field(default_factory=lambda: _kernel_settings.identity_surface_type)
+    surface_id: str = field(default_factory=lambda: _kernel_settings.identity_surface_id)
+    memory_scope: str = field(default_factory=lambda: _kernel_settings.identity_memory_scope)
     session_plan_digest: str = ""
 
     # ── Memory recall (pre-turn injection) ────────────────────────────────
@@ -2871,10 +2877,10 @@ async def _run_turn_inner(
     # house-keeping budget. A sanitizing guard rewrites the query for the
     # remainder of the turn.
     guard_surface = SurfaceContext(
-        surface_type="personal_dm",
-        surface_id="lite-host-console",
-        memory_scope="personal",
-        thread_owner_id="lite-user",
+        surface_type=cast(ConversationSurface, hooks.surface_type),
+        surface_id=str(hooks.surface_id or ""),
+        memory_scope=cast(MemoryScope, hooks.memory_scope),
+        thread_owner_id=str(hooks.user_id or ""),
     )
     input_guard_result = await hooks.context_seams.input_guard.validate(query, guard_surface)
     if not input_guard_result.allowed:
@@ -3062,63 +3068,7 @@ async def _run_turn_inner(
     )
     if coordinator_hint:
         routing_hint = coordinator_hint
-    # ── Ambiguity yield: ask the user before routing ──────────────────
-    # When the routing hint returns the ``AMBIGUOUS_INTENT:<csv>`` sentinel,
-    # the hint layer detected a gap but could not confidently resolve a
-    # target (no single covering target, no fork, no producer-first, no
-    # sequential chain). Instead of proceeding silently and letting the
-    # model guess, yield to the user with a clarification question naming
-    # the available routing targets. The checkpoint layer stamps
-    # ``lifecycle_state="yielded"`` and the turn is resumable by
-    # ``/proceed`` (the user's reply re-enters the routing hint with the
-    # clarified intent).
-    if routing_hint.startswith("AMBIGUOUS_INTENT:"):
-        _ambiguous_targets_csv = routing_hint[len("AMBIGUOUS_INTENT:") :]
-        _ambiguous_targets_list = [
-            t for t in _ambiguous_targets_csv.split(",") if t.strip()
-        ]
-        _ambiguous_targets_display = ", ".join(
-            f"`{t}`" for t in _ambiguous_targets_list
-        )
-        _pending_yield = YieldAction(
-            question=(
-                f"I detected multiple possible intents but couldn't determine "
-                f"the right mode to handle your request. Available: {_ambiguous_targets_display}. "
-                f"Which did you mean?"
-            ),
-            context=(
-                f"ambiguous routing intent (mode={mode_id}, "
-                f"targets={_ambiguous_targets_csv})"
-            ),
-        )
-        content = _pending_yield.question
-        _yielded = True
-        _log.info(
-            "ambiguous intent yield (mode=%s, targets=%s)",
-            mode_id,
-            _ambiguous_targets_csv,
-        )
-        # The turn yields before any tool dispatch. Return immediately so
-        # the model loop cannot overwrite ``content`` with empty completions
-        # (the 2026-08-11 deepseek-v4-flash no-response turn: the yield
-        # question was set here, then the loop ran 6 empty-content
-        # iterations, ``completion_content(completion).strip()`` clobbered
-        # ``content`` to ``""`` each time, and the stuck-in-stage cap
-        # paused the turn — the user saw nothing).
-        return TurnResult(
-            response_text=content,
-            tool_call_count=0,
-            called_tool_names=set(),
-            effect_receipts=[],
-            iteration_count=0,
-            operator_exit="",
-            yielded=_pending_yield,
-            handoff_to=None,
-            transitioned_to=None,
-            fork_results=None,
-            workflow_terminated=False,
-        )
-    elif routing_hint:
+    if routing_hint:
         _log.debug(
             "routing hint injected mode=%s hint_len=%d hint=%s",
             mode_id,

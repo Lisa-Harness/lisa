@@ -421,15 +421,15 @@ def _build_minimal_context(
     pack_configuration_resolver: Any = None,
     approval_service: Any = None,
     code_change_artifact_store: Any = None,
-    workspace_id: str = "lite-host",
-    user_id: str = "lite-user",
-    user_slug: str = "lite-user",
-    user_name: str = "Lite User",
-    principal_key: str = "lite-user",
-    conversation_id: str = "lite-host-console",
-    surface_type: str = "personal_dm",
-    surface_id: str = "lite-host-console",
-    memory_scope: str = "personal",
+    workspace_id: str | None = None,
+    user_id: str | None = None,
+    user_slug: str | None = None,
+    user_name: str | None = None,
+    principal_key: str | None = None,
+    conversation_id: str | None = None,
+    surface_type: str | None = None,
+    surface_id: str | None = None,
+    memory_scope: str | None = None,
     session_plan_digest: str = "",
     data_dir: str = "",
     delegate_fn: Any = None,
@@ -447,16 +447,33 @@ def _build_minimal_context(
         delegate_fn=delegate_fn,
         fork_fn=fork_fn,
     )
+    _ws_id = workspace_id if workspace_id is not None else _kernel_settings.identity_workspace_id
+    _u_id = user_id if user_id is not None else _kernel_settings.identity_user_id
+    _u_slug = user_slug if user_slug is not None else _kernel_settings.identity_user_slug
+    _u_name = user_name if user_name is not None else _kernel_settings.identity_user_name
+    _pk = principal_key if principal_key is not None else _kernel_settings.identity_principal_key
+    _conv_id = (
+        conversation_id
+        if conversation_id is not None
+        else _kernel_settings.identity_conversation_id
+    )
+    _surf_type = (
+        surface_type if surface_type is not None else _kernel_settings.identity_surface_type
+    )
+    _surf_id = surface_id if surface_id is not None else _kernel_settings.identity_surface_id
+    _mem_scope = (
+        memory_scope if memory_scope is not None else _kernel_settings.identity_memory_scope
+    )
     return OperationExecutionContext(
-        workspace_id=workspace_id,
-        user_id=user_id,
-        user_slug=user_slug,
-        user_name=user_name,
-        principal_key=principal_key,
-        conversation_id=conversation_id,
-        surface_type=cast(ConversationSurface, surface_type),
-        surface_id=surface_id,
-        memory_scope=cast(MemoryScope, memory_scope),
+        workspace_id=_ws_id,
+        user_id=_u_id,
+        user_slug=_u_slug,
+        user_name=_u_name,
+        principal_key=_pk,
+        conversation_id=_conv_id,
+        surface_type=cast(ConversationSurface, _surf_type),
+        surface_id=_surf_id,
+        memory_scope=cast(MemoryScope, _mem_scope),
         mode_id=mode_id,
         query=query,
         model_id="default",

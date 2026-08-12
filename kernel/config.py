@@ -92,6 +92,17 @@ class Settings(BaseSettings):
     sdk_content_roots: str = ""
     workspace_id_fallback: str = "default"
 
+    # ── Identity defaults ───────────────────────────────────────────────
+    identity_workspace_id: str = "lisa-host"
+    identity_user_id: str = "lisa-user"
+    identity_user_slug: str = "lisa-user"
+    identity_user_name: str = "Lisa User"
+    identity_principal_key: str = "lisa-user"
+    identity_conversation_id: str = "lisa-host-console"
+    identity_surface_type: str = "personal_dm"
+    identity_surface_id: str = "lisa-host-console"
+    identity_memory_scope: str = "personal"
+
     # ── Declarative operations ──────────────────────────────────────────
     declarative_completion_max_tokens: int = 1500
     declarative_completion_temperature: float = 0.2
