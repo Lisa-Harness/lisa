@@ -69,6 +69,28 @@ class _Instance:
     completed_steps: tuple[str, ...] = ()
 
 
+def _settings(**overrides: object) -> LifecycleResolverSettings:
+    """Build a fully-populated ``LifecycleResolverSettings`` for tests.
+
+    The resolver dataclass has no defaults (every field mirrors a
+    ``kernel.config.Settings`` field); tests supply explicit values via
+    this helper so the resolver never second-guesses the configured
+    settings. Override only the field the branch under test exercises.
+    """
+    base = {
+        "max_tool_iterations": 15,
+        "per_step_max_iterations": 8,
+        "per_step_max_tool_calls": 12,
+        "stage_nudge_threshold": 4,
+        "stage_nudge_cap": 6,
+        "forced_action_non_compliant_cap": 3,
+        "max_handoffs_per_turn": 5,
+        "write_rescue_mode": "expounder",
+    }
+    base.update(overrides)
+    return LifecycleResolverSettings(**base)  # type: ignore[arg-type]
+
+
 @dataclass
 class _Router:
     finish: str = ""
@@ -94,7 +116,7 @@ def test_default_is_continue_with_no_nudge() -> None:
         state=_State(),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
     )
     assert isinstance(action, ContinueAction)
     assert action.nudge == ""
@@ -109,7 +131,7 @@ def test_router_finish_takes_precedence_over_cap() -> None:
         state=_State(iteration=15),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
         router_decision=_Router(finish="done"),
     )
     assert isinstance(action, FinishAction)
@@ -121,7 +143,7 @@ def test_router_transition_to_returns_transition() -> None:
         state=_State(),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
         router_decision=_Router(transition_to="coding"),
     )
     assert isinstance(action, TransitionAction)
@@ -137,7 +159,7 @@ def test_stalled_blocking_record_forces_yield() -> None:
         state=_State(),
         mode_id="search",
         mode_yield_policy=YieldPolicy(allowed=True),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
         recovery_records=[
             _Record(
                 state="stalled",
@@ -159,7 +181,7 @@ def test_safe_retry_record_does_not_block() -> None:
         state=_State(),
         mode_id="search",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
         recovery_records=[_Record(state="stalled", blocks_workflow=True, retry_policy="safe")],
     )
     assert isinstance(action, ContinueAction)
@@ -175,7 +197,7 @@ def test_iteration_cap_forces_pause_for_chat_mode() -> None:
         state=_State(iteration=15),
         mode_id="default",
         mode_yield_policy=YieldPolicy(allowed=True),
-        settings=LifecycleResolverSettings(max_tool_iterations=15),
+        settings=_settings(max_tool_iterations=15),
     )
     assert isinstance(action, PauseAction)
     assert "iteration cap 15" in action.reason
@@ -188,7 +210,7 @@ def test_iteration_cap_forces_terminate_for_action_mode_without_escape() -> None
         state=_State(iteration=15),
         mode_id="coding",
         mode_yield_policy=YieldPolicy(allowed=False, fallback_mode=""),
-        settings=LifecycleResolverSettings(max_tool_iterations=15),
+        settings=_settings(max_tool_iterations=15),
     )
     assert isinstance(action, TerminateAction)
     assert "action mode, no yield escape" in action.reason
@@ -201,7 +223,7 @@ def test_iteration_cap_with_fallback_mode_pauses() -> None:
         state=_State(iteration=15),
         mode_id="coding",
         mode_yield_policy=YieldPolicy(allowed=False, fallback_mode="discuss"),
-        settings=LifecycleResolverSettings(max_tool_iterations=15),
+        settings=_settings(max_tool_iterations=15),
     )
     assert isinstance(action, PauseAction)
 
@@ -214,7 +236,7 @@ def test_per_step_budget_exhausted_forces_transition_to_next_step() -> None:
         state=_State(step_iteration=9, step_tool_calls=0),
         mode_id="search",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(per_step_max_iterations=8),
+        settings=_settings(per_step_max_iterations=8),
         workflow_position=_Instance(),
     )
     assert isinstance(action, TransitionAction)
@@ -229,7 +251,7 @@ def test_per_step_budget_exhausted_no_next_step_falls_through() -> None:
         state=_State(step_iteration=9, step_tool_calls=0),
         mode_id="coding",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(per_step_max_iterations=8),
+        settings=_settings(per_step_max_iterations=8),
         workflow_position=_Instance(
             current_step_id="s2",
             current_mode_id="coding",
@@ -251,7 +273,7 @@ def test_stage_cap_forces_pause_for_workflow_mode() -> None:
         state=_State(turns_in_stage=6),
         mode_id="ponder",
         mode_yield_policy=YieldPolicy(allowed=True),
-        settings=LifecycleResolverSettings(stage_nudge_cap=6),
+        settings=_settings(stage_nudge_cap=6),
     )
     assert isinstance(action, PauseAction)
     assert "6 iterations" in action.reason
@@ -263,7 +285,7 @@ def test_stage_cap_forces_terminate_for_action_mode_without_escape() -> None:
         state=_State(turns_in_stage=6),
         mode_id="coding",
         mode_yield_policy=YieldPolicy(allowed=False, fallback_mode=""),
-        settings=LifecycleResolverSettings(stage_nudge_cap=6),
+        settings=_settings(stage_nudge_cap=6),
     )
     assert isinstance(action, TerminateAction)
 
@@ -280,7 +302,7 @@ def test_stage_cap_fires_for_chat_mode_too() -> None:
         state=_State(turns_in_stage=10),
         mode_id="markdown",
         mode_yield_policy=YieldPolicy(allowed=True),
-        settings=LifecycleResolverSettings(stage_nudge_cap=6),
+        settings=_settings(stage_nudge_cap=6),
     )
     assert isinstance(action, PauseAction)
     assert "markdown" in action.reason
@@ -291,7 +313,7 @@ def test_stage_cap_ignored_below_cap() -> None:
         state=_State(turns_in_stage=5),
         mode_id="ponder",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(stage_nudge_threshold=4, stage_nudge_cap=6),
+        settings=_settings(stage_nudge_threshold=4, stage_nudge_cap=6),
     )
     # At 5 with threshold 4: the soft nudge fires, not the cap.
     assert isinstance(action, ContinueAction)
@@ -306,7 +328,7 @@ def test_stage_threshold_emits_continue_with_nudge() -> None:
         state=_State(turns_in_stage=4),
         mode_id="ponder",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(stage_nudge_threshold=4, stage_nudge_cap=6),
+        settings=_settings(stage_nudge_threshold=4, stage_nudge_cap=6),
     )
     assert isinstance(action, ContinueAction)
     assert action.nudge != ""
@@ -325,7 +347,7 @@ def test_yield_uses_policy_fallback_mode() -> None:
         state=_State(iteration=15),
         mode_id="coding",
         mode_yield_policy=YieldPolicy(allowed=False, fallback_mode="discuss"),
-        settings=LifecycleResolverSettings(max_tool_iterations=15),
+        settings=_settings(max_tool_iterations=15),
     )
     assert isinstance(action, PauseAction)
 
@@ -337,7 +359,7 @@ def test_yield_in_place_when_policy_allows_inline() -> None:
         state=_State(iteration=15),
         mode_id="default",
         mode_yield_policy=YieldPolicy(allowed=True),
-        settings=LifecycleResolverSettings(max_tool_iterations=15),
+        settings=_settings(max_tool_iterations=15),
     )
     assert isinstance(action, PauseAction)
 
@@ -351,7 +373,7 @@ def test_handoff_loop_backstop_forces_finish() -> None:
         state=_State(handoff_count=6),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(max_handoffs_per_turn=5),
+        settings=_settings(max_handoffs_per_turn=5),
     )
     assert isinstance(action, FinishAction)
     assert action.strip_tools
@@ -364,7 +386,7 @@ def test_handoff_loop_backstop_not_triggered_within_cap() -> None:
         state=_State(handoff_count=5),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(max_handoffs_per_turn=5),
+        settings=_settings(max_handoffs_per_turn=5),
     )
     assert isinstance(action, ContinueAction)
 
@@ -388,9 +410,7 @@ def test_forced_transition_enforcer_fires_at_cap() -> None:
         ),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(
-            forced_action_non_compliant_cap=3,
-        ),
+        settings=_settings(forced_action_non_compliant_cap=3),
     )
     assert isinstance(action, TransitionAction)
     assert action.forced
@@ -411,9 +431,7 @@ def test_forced_transition_enforcer_fires_for_non_plan_target() -> None:
         ),
         mode_id="remember",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(
-            forced_action_non_compliant_cap=3,
-        ),
+        settings=_settings(forced_action_non_compliant_cap=3),
     )
     assert isinstance(action, TransitionAction)
     assert action.forced
@@ -429,9 +447,7 @@ def test_forced_transition_enforcer_not_triggered_below_cap() -> None:
         ),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(
-            forced_action_non_compliant_cap=3,
-        ),
+        settings=_settings(forced_action_non_compliant_cap=3),
     )
     assert isinstance(action, ContinueAction)
 
@@ -454,9 +470,7 @@ def test_forced_action_fork_shape_not_resolver_enforced() -> None:
         ),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(
-            forced_action_non_compliant_cap=3,
-        ),
+        settings=_settings(forced_action_non_compliant_cap=3),
     )
     assert isinstance(action, ContinueAction)
 
@@ -467,9 +481,7 @@ def test_forced_action_enforcer_not_triggered_without_target() -> None:
         state=_State(forced_action_target="", forced_action_non_compliant_dispatches=10),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(
-            forced_action_non_compliant_cap=3,
-        ),
+        settings=_settings(forced_action_non_compliant_cap=3),
     )
     assert isinstance(action, ContinueAction)
 
@@ -484,7 +496,7 @@ def test_budget_exhausted_forces_pause_for_chat_mode() -> None:
         state=_State(budget_exhausted=True),
         mode_id="default",
         mode_yield_policy=YieldPolicy(allowed=True),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
     )
     assert isinstance(action, PauseAction)
     assert "budget" in action.reason
@@ -496,7 +508,7 @@ def test_budget_exhausted_forces_terminate_for_action_mode() -> None:
         state=_State(budget_exhausted=True),
         mode_id="search",
         mode_yield_policy=YieldPolicy(allowed=False),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
     )
     assert isinstance(action, TerminateAction)
     assert "action mode" in action.reason
@@ -508,7 +520,7 @@ def test_budget_exhausted_not_triggered_when_false() -> None:
         state=_State(budget_exhausted=False),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
     )
     assert isinstance(action, ContinueAction)
 
@@ -546,7 +558,7 @@ def test_operator_pause_overrides_router_finish() -> None:
         state=_State(operator_signal="pause"),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
         router_decision=_Router(finish="done"),
     )
     assert isinstance(action, PauseAction)
@@ -557,7 +569,7 @@ def test_operator_stop_overrides_router_finish() -> None:
         state=_State(operator_signal="stop"),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
         router_decision=_Router(finish="done"),
     )
     assert isinstance(action, StopAction)
@@ -568,7 +580,7 @@ def test_operator_terminate_overrides_router_finish() -> None:
         state=_State(operator_signal="terminate"),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
         router_decision=_Router(finish="done"),
     )
     assert isinstance(action, TerminateAction)
@@ -580,7 +592,7 @@ def test_operator_pause_overrides_iteration_cap() -> None:
         state=_State(iteration=15, operator_signal="pause"),
         mode_id="default",
         mode_yield_policy=YieldPolicy(allowed=True),
-        settings=LifecycleResolverSettings(max_tool_iterations=15),
+        settings=_settings(max_tool_iterations=15),
     )
     assert isinstance(action, PauseAction)
     assert action.reason == "operator pause"
@@ -592,7 +604,7 @@ def test_operator_stop_overrides_recovery_stall() -> None:
         state=_State(operator_signal="stop"),
         mode_id="search",
         mode_yield_policy=YieldPolicy(allowed=True),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
         recovery_records=[
             _Record(
                 state="stalled",
@@ -611,7 +623,7 @@ def test_operator_terminate_overrides_handoff_backstop() -> None:
         state=_State(handoff_count=6, operator_signal="terminate"),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(max_handoffs_per_turn=5),
+        settings=_settings(max_handoffs_per_turn=5),
     )
     assert isinstance(action, TerminateAction)
 
@@ -622,7 +634,7 @@ def test_no_operator_signal_is_noop() -> None:
         state=_State(operator_signal=""),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(),
+        settings=_settings(),
     )
     assert isinstance(action, ContinueAction)
 
@@ -641,7 +653,7 @@ def test_write_rescue_fires_at_cap() -> None:
         ),
         mode_id="researcher",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+        settings=_settings(stage_nudge_cap=6, write_rescue_mode="expounder"),
     )
     assert isinstance(action, TransitionAction)
     assert action.target_mode_id == "expounder"
@@ -659,7 +671,7 @@ def test_write_rescue_targets_planned_writer_when_available() -> None:
         ),
         mode_id="researcher",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+        settings=_settings(stage_nudge_cap=6, write_rescue_mode="expounder"),
         workflow_position=_Instance(
             current_step_id="s1",
             current_mode_id="researcher",
@@ -685,7 +697,7 @@ def test_write_rescue_skipped_when_receipt_present() -> None:
         ),
         mode_id="researcher",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+        settings=_settings(stage_nudge_cap=6, write_rescue_mode="expounder"),
     )
     # Should NOT be a forced transition — falls through to the cap path.
     assert not isinstance(action, TransitionAction)
@@ -702,7 +714,7 @@ def test_write_rescue_skipped_when_no_action_tools() -> None:
         ),
         mode_id="default",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+        settings=_settings(stage_nudge_cap=6, write_rescue_mode="expounder"),
     )
     # Should NOT be a forced transition — falls through to the cap path.
     assert not isinstance(action, TransitionAction)
@@ -718,7 +730,7 @@ def test_write_rescue_disabled_when_rescue_mode_empty() -> None:
         ),
         mode_id="researcher",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(stage_nudge_cap=6, write_rescue_mode=""),
+        settings=_settings(stage_nudge_cap=6, write_rescue_mode=""),
     )
     # Should NOT be a forced transition — falls through to the cap path.
     assert not isinstance(action, TransitionAction)
@@ -734,7 +746,7 @@ def test_write_rescue_skipped_before_cap() -> None:
         ),
         mode_id="researcher",
         mode_yield_policy=YieldPolicy(),
-        settings=LifecycleResolverSettings(stage_nudge_cap=6, write_rescue_mode="expounder"),
+        settings=_settings(stage_nudge_cap=6, write_rescue_mode="expounder"),
     )
     # Should NOT be a forced transition — the pre-cap nudge gets its chance.
     assert not isinstance(action, TransitionAction)

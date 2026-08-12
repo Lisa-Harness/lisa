@@ -194,27 +194,32 @@ class LifecycleResolverSettings:
     """The settings thresholds the resolver consults, pre-extracted from
     ``kernel.config.Settings`` so the resolver stays pure and testable.
 
-    Each field mirrors a ``kernel.config.Settings`` field; the turn loop
-    reads them once at turn start (or per-iteration for the hot few) and
-    passes them in. Defaults match the historical settings values.
+    Every field mirrors a ``kernel.config.Settings`` field and has no
+    default here: the turn loop reads them once at turn start (or
+    per-iteration for the hot few) and passes them in. The
+    ``kernel.config.Settings`` defaults are the single source of truth;
+    this dataclass holds no hardcoded values (no pack names, no numeric
+    thresholds) so the resolver never second-guesses the configured
+    settings. Tests construct it with explicit values for the branch
+    under test.
     """
 
-    max_tool_iterations: int = 15
-    per_step_max_iterations: int = 8
-    per_step_max_tool_calls: int = 12
-    stage_nudge_threshold: int = 4
-    stage_nudge_cap: int = 6
+    max_tool_iterations: int
+    per_step_max_iterations: int
+    per_step_max_tool_calls: int
+    stage_nudge_threshold: int
+    stage_nudge_cap: int
     # Unified forced-action enforcer cap (Phase 5): non-compliant tool
     # dispatches before the kernel synthesizes the expected fork/transition
     # call itself.
-    forced_action_non_compliant_cap: int = 3
-    max_handoffs_per_turn: int = 5
+    forced_action_non_compliant_cap: int
+    max_handoffs_per_turn: int
     # Write-rescue last-resort mode: when a write-contract mode is one
     # iteration away from the stuck-in-stage cap with no verified write,
     # force a transition to this mode so the turn ends productively.
-    # Defaults to ``expounder`` (a terminal capture persona whose only
-    # write is ``markdown_forge_document``). Set to "" to disable.
-    write_rescue_mode: str = "expounder"
+    # The default lives on ``kernel.config.Settings.write_rescue_mode``
+    # (defaulting to ``expounder``); set to ``""`` to disable.
+    write_rescue_mode: str
 
 
 @runtime_checkable
