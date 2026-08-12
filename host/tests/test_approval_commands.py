@@ -419,7 +419,10 @@ async def test_affirmative_resume_prefix_matches_proceed_with_suffix(
     prefix-match detector treats it as an affirmative resume when an
     approval is pending.
     """
-    from kernel.routing_vocabulary import reset_routing_vocabulary
+    from kernel.routing_vocabulary import (
+        register_routing_vocabulary,
+        reset_routing_vocabulary,
+    )
 
     runtime = _make_runtime(tmp_path)
     identity = _identity(runtime)
@@ -438,6 +441,9 @@ async def test_affirmative_resume_prefix_matches_proceed_with_suffix(
     from host.handle_message import _is_affirmative_resume
 
     try:
+        register_routing_vocabulary(
+            resume_phrases=["proceed", "continue", "go ahead", "go for it", "do it", "carry on", "pick up", "resume", "next step", "keep going"],
+        )
         assert _is_affirmative_resume("proceed with the current step in the plan")
         assert _is_affirmative_resume("continue with the current step in the current plan")
         assert _is_affirmative_resume("go ahead and run it")
@@ -447,11 +453,15 @@ async def test_affirmative_resume_prefix_matches_proceed_with_suffix(
 
 def test_affirmative_resume_exact_match_still_works() -> None:
     """Conversational affirmatives (``"ok"``, ``"yes"``) still match exactly."""
-    from kernel.routing_vocabulary import reset_routing_vocabulary
+    from kernel.routing_vocabulary import (
+        register_routing_vocabulary,
+        reset_routing_vocabulary,
+    )
 
     from host.handle_message import _is_affirmative_resume
 
     try:
+        register_routing_vocabulary(resume_phrases=["proceed"])
         assert _is_affirmative_resume("ok")
         assert _is_affirmative_resume("yes")
         assert _is_affirmative_resume("approved")
@@ -462,11 +472,15 @@ def test_affirmative_resume_exact_match_still_works() -> None:
 
 def test_affirmative_resume_rejects_non_prefix_non_exact() -> None:
     """A message that does not start with a resume phrase and isn't exact is rejected."""
-    from kernel.routing_vocabulary import reset_routing_vocabulary
+    from kernel.routing_vocabulary import (
+        register_routing_vocabulary,
+        reset_routing_vocabulary,
+    )
 
     from host.handle_message import _is_affirmative_resume
 
     try:
+        register_routing_vocabulary(resume_phrases=["proceed", "continue", "go ahead"])
         assert not _is_affirmative_resume("can you explain what this will do?")
         assert not _is_affirmative_resume("ok but let me think")
         assert not _is_affirmative_resume("yes that sounds risky")

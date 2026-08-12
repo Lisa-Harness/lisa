@@ -669,6 +669,29 @@ def load_catalog_from_disk(
                 kw_list.append(kw)
             routing_intent_keywords[tag_str] = kw_list
 
+        # Validate that every routing_intent_keywords key is declared in
+        # routing_intent_tags. A keyword bucket keyed by a tag the mode does
+        # not cover produces an uncoverable intent from any query that hits
+        # the bucket: the detector attributes the tag, but no routing target
+        # claims it in routing_intent_tags, so the gap can never be covered
+        # and the hint layer falls through to ambiguity (the 2026-08-11
+        # executor incident: bucket keyed ``execute:`` while
+        # routing_intent_tags were ``[code, write, implement]``). Fail fast
+        # at catalog load so a broken pack install cannot reach the router.
+        routing_intent_tags_set = set(routing_intent_tags)
+        if routing_intent_keywords and not routing_intent_tags_set:
+            raise WorkflowValidationError(
+                f"routing_intent_keywords cannot be set without routing_intent_tags "
+                f"in {mode_config_path}"
+            )
+        _orphan_keyword_tags = set(routing_intent_keywords) - routing_intent_tags_set
+        if _orphan_keyword_tags:
+            raise WorkflowValidationError(
+                f"routing_intent_keywords keys must be a subset of "
+                f"routing_intent_tags in {mode_config_path}: "
+                f"unknown tags {sorted(_orphan_keyword_tags)}"
+            )
+
         # Parse satisfies_intents: intents this mode handles in-place as the
         # *current* mode, so the proactive routing hint generator knows not
         # to suggest a handoff for them. Symmetric counterpart to

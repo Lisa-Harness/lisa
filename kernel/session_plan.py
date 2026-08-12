@@ -182,19 +182,19 @@ class SessionRouting(_StrictSessionModel):
     sequential_connectors: tuple[str, ...] = ()
     """Whitespace-padded substrings that mark a query as a sequential chain
     of dependent steps (e.g. ``"then"``, ``"based on"``, ``"once"``). The
-    kernel's proactive routing-hint generator and the ``plan`` action
+    kernel's proactive routing-hint generator and the ``planner`` action
     mode's planner consult this list to choose a single-step handoff over
     a parallel ``fork:`` fan-out: a fork runs children concurrently with
     the whole query, so no child can consume another's output. When a
     connector matches, the chain runs step by step instead.
 
     The list is **session-authored vocabulary** — opaque to the kernel,
-    which only does case-insensitive substring matching. Empty (the
-    default) preserves the historical built-in connector set so existing
-    sessions behave unchanged. Add conservative entries here (e.g.
-    ``"based on"``, ``"once"``) for surfaces that need richer sequential
-    detection; avoid common words like ``"after"`` or ``"from"`` which
-    produce false positives on concurrent requests."""
+    which only does case-insensitive substring matching. The session
+    defines the list; the kernel has no hardcoded fallback. Add
+    conservative entries here (e.g. ``"based on"``, ``"once"``) for
+    surfaces that need richer sequential detection; avoid common words
+    like ``"after"`` or ``"from"`` which produce false positives on
+    concurrent requests."""
 
     resume_phrases: tuple[str, ...] = ()
     """Lowercased imperatives that mark a short user message as a
@@ -207,11 +207,34 @@ class SessionRouting(_StrictSessionModel):
     on the lowered message, so ``"proceed with the current step in the
     plan"`` matches ``"proceed"``.
 
-    The list is **session-authored vocabulary**. Empty (the default)
-    preserves the historical built-in phrase set so existing sessions
-    behave unchanged. Keep entries to unambiguous imperatives; avoid
-    common words like ``"ok"`` or ``"yes"`` that would false-positive on
-    normal conversation."""
+    The list is **session-authored vocabulary**. The session defines the
+    list; the kernel has no hardcoded fallback. Keep entries to
+    unambiguous imperatives; avoid common words like ``"ok"`` or
+    ``"yes"`` that would false-positive on normal conversation."""
+
+    producer_intents: tuple[str, ...] = ()
+    """Intent tags whose satisfaction produces evidence a downstream
+    consumer intent needs as input (e.g. ``"research"``, ``"review"``,
+    ``"analyze"``). The kernel's fork guard
+    (:func:`kernel.routing_vocabulary.get_producer_intents`) refuses a
+    parallel fork when the gap mixes a producer intent with a consumer
+    intent — the consumer can't see the producer's output — and routes
+    sequential instead (single handoff to the first producer, then chain
+    the consumer via post-handoff hints). A tag may appear in both
+    ``producer_intents`` and ``consumer_intents`` (``review`` is
+    dual-role: self-sufficient alone, but a producer when paired with
+    ``code``).
+
+    The set is **session-authored vocabulary** — opaque to the kernel.
+    The session defines the set; the kernel has no hardcoded fallback.
+    Override when a session adds modes with new producer-role intent
+    tags."""
+
+    consumer_intents: tuple[str, ...] = ()
+    """Intent tags whose satisfaction consumes a producer's output to
+    create an artifact (e.g. ``"code"``, ``"write"``, ``"implement"``).
+    The counterpart to ``producer_intents``; see that field's docstring.
+    The session defines the set; the kernel has no hardcoded fallback."""
 
 
 class InstructionFragment(_StrictSessionModel):

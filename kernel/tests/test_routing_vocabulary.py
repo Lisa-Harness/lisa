@@ -1,12 +1,17 @@
-"""Tests for the session-injected routing-vocabulary registry."""
+"""Tests for the session-injected routing-vocabulary registry.
+
+Hard cutover (2026-08-11): the kernel has no hardcoded fallbacks. A
+reader raises ``RuntimeError`` when no session vocabulary has been
+wired. The session defines the vocabulary or boot fails.
+"""
 
 from __future__ import annotations
 
 import pytest
 
 from kernel.routing_vocabulary import (
-    DEFAULT_RESUME_PHRASES,
-    DEFAULT_SEQUENTIAL_CONNECTORS,
+    get_consumer_intents,
+    get_producer_intents,
     get_resume_phrases,
     get_sequential_connectors,
     register_routing_vocabulary,
@@ -22,63 +27,82 @@ def _clean_registry() -> None:
     reset_routing_vocabulary()
 
 
-def test_get_sequential_connectors_returns_default_when_unwired() -> None:
-    """With no session vocabulary registered, the historical default is used."""
-    assert get_sequential_connectors() == DEFAULT_SEQUENTIAL_CONNECTORS
+# ── No fallback: unwired readers raise ──────────────────────────────────
 
 
-def test_register_routing_vocabulary_replaces_default() -> None:
-    """A registered session vocabulary replaces the default list."""
+def test_get_sequential_connectors_raises_when_unwired() -> None:
+    """With no session vocabulary registered, the reader raises."""
+    with pytest.raises(RuntimeError, match="sequential connectors not wired"):
+        get_sequential_connectors()
+
+
+def test_get_producer_intents_raises_when_unwired() -> None:
+    """With no session vocabulary registered, the reader raises."""
+    with pytest.raises(RuntimeError, match="producer intents not wired"):
+        get_producer_intents()
+
+
+def test_get_consumer_intents_raises_when_unwired() -> None:
+    """With no session vocabulary registered, the reader raises."""
+    with pytest.raises(RuntimeError, match="consumer intents not wired"):
+        get_consumer_intents()
+
+
+def test_get_resume_phrases_raises_when_unwired() -> None:
+    """With no session vocabulary registered, the reader raises."""
+    with pytest.raises(RuntimeError, match="resume phrases not wired"):
+        get_resume_phrases()
+
+
+# ── Session registration is authoritative ────────────────────────────────
+
+
+def test_register_sequential_connectors_replaces_registry() -> None:
+    """A registered session vocabulary is the sole source — no fallback mix-in."""
     register_routing_vocabulary(sequential_connectors=["then", "based on"])
     connectors = get_sequential_connectors()
     assert " then " in connectors
     assert " based on " in connectors
-    # The historical default is NOT mixed in — the session list is authoritative.
-    assert " followed by " not in connectors
 
 
-def test_register_routing_vocabulary_normalizes_entries() -> None:
+def test_register_sequential_connectors_normalizes_entries() -> None:
     """Entries are stripped, lowercased, padded, de-duplicated."""
     register_routing_vocabulary(sequential_connectors=["  Then  ", "BASED ON", "then", "", "  "])
     assert get_sequential_connectors() == (" then ", " based on ")
 
 
-def test_register_routing_vocabulary_none_resets_to_default() -> None:
-    """Passing ``None`` (or empty) resets to the historical default."""
+def test_register_sequential_connectors_none_leaves_unwired() -> None:
+    """Passing ``None`` leaves the vocabulary unset — the reader raises."""
     register_routing_vocabulary(sequential_connectors=["based on"])
     assert " based on " in get_sequential_connectors()
 
     register_routing_vocabulary(sequential_connectors=None)
-    assert get_sequential_connectors() == DEFAULT_SEQUENTIAL_CONNECTORS
+    with pytest.raises(RuntimeError):
+        get_sequential_connectors()
 
     register_routing_vocabulary(sequential_connectors=["based on"])
     register_routing_vocabulary(sequential_connectors=[])
-    assert get_sequential_connectors() == DEFAULT_SEQUENTIAL_CONNECTORS
+    with pytest.raises(RuntimeError):
+        get_sequential_connectors()
 
 
 def test_reset_routing_vocabulary_clears_session_list() -> None:
-    """``reset_routing_vocabulary`` returns to the default list."""
+    """``reset_routing_vocabulary`` returns to the unwired state (raises)."""
     register_routing_vocabulary(sequential_connectors=["based on"])
     reset_routing_vocabulary()
-    assert get_sequential_connectors() == DEFAULT_SEQUENTIAL_CONNECTORS
+    with pytest.raises(RuntimeError):
+        get_sequential_connectors()
 
 
 # ── Resume-phrase vocabulary ───────────────────────────────────────────
 
 
-def test_get_resume_phrases_returns_default_when_unwired() -> None:
-    """With no session vocabulary registered, the historical default is used."""
-    assert get_resume_phrases() == DEFAULT_RESUME_PHRASES
-
-
-def test_register_resume_phrases_replaces_default() -> None:
-    """A registered resume-phrase list replaces the default list."""
+def test_register_resume_phrases_replaces_registry() -> None:
+    """A registered resume-phrase list is the sole source."""
     register_routing_vocabulary(resume_phrases=["proceed", "keep going"])
     phrases = get_resume_phrases()
     assert "proceed" in phrases
     assert "keep going" in phrases
-    # The historical default is NOT mixed in — the session list is authoritative.
-    assert "continue" not in phrases
 
 
 def test_register_resume_phrases_normalizes_entries() -> None:
@@ -87,21 +111,56 @@ def test_register_resume_phrases_normalizes_entries() -> None:
     assert get_resume_phrases() == ("proceed", "keep going")
 
 
-def test_register_resume_phrases_none_resets_to_default() -> None:
-    """Passing ``None`` (or empty) resets to the historical default."""
+def test_register_resume_phrases_none_leaves_unwired() -> None:
+    """Passing ``None`` leaves the vocabulary unset — the reader raises."""
     register_routing_vocabulary(resume_phrases=["keep going"])
     assert "keep going" in get_resume_phrases()
 
     register_routing_vocabulary(resume_phrases=None)
-    assert get_resume_phrases() == DEFAULT_RESUME_PHRASES
+    with pytest.raises(RuntimeError):
+        get_resume_phrases()
 
     register_routing_vocabulary(resume_phrases=["keep going"])
     register_routing_vocabulary(resume_phrases=[])
-    assert get_resume_phrases() == DEFAULT_RESUME_PHRASES
+    with pytest.raises(RuntimeError):
+        get_resume_phrases()
 
 
 def test_reset_routing_vocabulary_clears_resume_phrases() -> None:
-    """``reset_routing_vocabulary`` returns resume phrases to the default list."""
+    """``reset_routing_vocabulary`` returns resume phrases to unwired (raises)."""
     register_routing_vocabulary(resume_phrases=["keep going"])
     reset_routing_vocabulary()
-    assert get_resume_phrases() == DEFAULT_RESUME_PHRASES
+    with pytest.raises(RuntimeError):
+        get_resume_phrases()
+
+
+# ── Producer/consumer intent roles ──────────────────────────────────────
+
+
+def test_register_producer_intents_replaces_registry() -> None:
+    """A registered producer-intent set is the sole source."""
+    register_routing_vocabulary(producer_intents=["research", "review"])
+    assert get_producer_intents() == frozenset({"research", "review"})
+
+
+def test_register_consumer_intents_replaces_registry() -> None:
+    """A registered consumer-intent set is the sole source."""
+    register_routing_vocabulary(consumer_intents=["code", "write", "review"])
+    assert get_consumer_intents() == frozenset({"code", "write", "review"})
+
+
+def test_register_intent_roles_none_leaves_unwired() -> None:
+    """Passing ``None`` leaves the vocabulary unset — the reader raises."""
+    register_routing_vocabulary(producer_intents=["research"])
+    assert get_producer_intents() == frozenset({"research"})
+
+    register_routing_vocabulary(producer_intents=None)
+    with pytest.raises(RuntimeError):
+        get_producer_intents()
+
+    register_routing_vocabulary(consumer_intents=["code"])
+    assert get_consumer_intents() == frozenset({"code"})
+
+    register_routing_vocabulary(consumer_intents=[])
+    with pytest.raises(RuntimeError):
+        get_consumer_intents()

@@ -433,6 +433,47 @@ def _load_one_mode(
     for tag, keywords in routing_intent_keywords_raw.items():
         routing_intent_keywords[str(tag)] = [str(k) for k in keywords]
 
+    # Validate that every routing_intent_keywords key is declared in
+    # routing_intent_tags. A keyword bucket keyed by a tag the mode does
+    # not cover produces an uncoverable intent: the detector attributes
+    # the tag, but no routing target claims it, so the gap can never be
+    # covered and the hint layer falls through to ambiguity (the
+    # 2026-08-11 executor incident: bucket keyed ``execute:`` while
+    # routing_intent_tags were ``[code, write, implement]``). Mirror the
+    # kernel guard (``kernel/ipsar_fsm.py``): raise in strict mode, skip
+    # the mode with a warning otherwise.
+    if routing_intent_keywords:
+        _tags_set = {str(t) for t in (front_matter.get("routing_intent_tags") or [])}
+        if not _tags_set:
+            if strict:
+                raise CatalogCollisionError(
+                    f"Mode '{mode_id}' has routing_intent_keywords but no "
+                    f"routing_intent_tags in {mode_config_path}"
+                )
+            logger.warning(
+                "Skipping mode '%s': routing_intent_keywords set without "
+                "routing_intent_tags in %s",
+                mode_id,
+                mode_config_path,
+            )
+            return None
+        _orphan = set(routing_intent_keywords) - _tags_set
+        if _orphan:
+            if strict:
+                raise CatalogCollisionError(
+                    f"Mode '{mode_id}' has routing_intent_keywords keys not in "
+                    f"routing_intent_tags in {mode_config_path}: "
+                    f"{sorted(_orphan)}"
+                )
+            logger.warning(
+                "Skipping mode '%s': routing_intent_keywords keys not in "
+                "routing_intent_tags in %s: %s",
+                mode_id,
+                mode_config_path,
+                sorted(_orphan),
+            )
+            return None
+
     return {
         "mode_id": mode_id,
         "mode_provider_id": mode_provider_id,

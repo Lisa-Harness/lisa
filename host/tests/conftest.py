@@ -105,3 +105,29 @@ def _mcp_catalog_setup(tmp_path_factory: pytest.TempPathFactory) -> None:
 
     # Eagerly load the workflow catalog now (sync context, before any async test runs).
     get_workflow_catalog()
+
+
+@pytest.fixture(autouse=True)
+def _routing_vocabulary() -> None:
+    """Register a representative routing vocabulary for each test.
+
+    The kernel has no hardcoded fallbacks (2026-08-11 cutover): a reader
+    raises ``RuntimeError`` when no session vocabulary is wired. Host tests
+    that call ``handle_message`` read resume phrases via
+    ``get_resume_phrases()``; register a representative set so the common
+    case works without each test opting in.
+    """
+    from kernel.routing_vocabulary import (
+        register_routing_vocabulary,
+        reset_routing_vocabulary,
+    )
+
+    reset_routing_vocabulary()
+    register_routing_vocabulary(
+        sequential_connectors=["then", "and then", "after that", "next", "followed by"],
+        producer_intents=["research", "gather", "learn", "read", "analyze", "review", "architect"],
+        consumer_intents=["code", "write", "implement", "review"],
+        resume_phrases=["proceed", "continue", "go ahead", "go for it", "do it", "carry on", "pick up", "resume", "next step", "keep going"],
+    )
+    yield
+    reset_routing_vocabulary()

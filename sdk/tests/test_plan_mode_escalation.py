@@ -20,11 +20,38 @@ import json
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from kernel.models import (
     CapabilityManifest,
     OperationExecutionContext,
     WorkflowModeConfig,
 )
+
+
+@pytest.fixture(autouse=True)
+def _routing_vocab() -> None:
+    """Register a representative routing vocabulary for each test.
+
+    Hard cutover (2026-08-11): the kernel has no hardcoded fallbacks.
+    A reader raises ``RuntimeError`` when no session vocabulary is wired.
+    These tests exercise ``_compute_capability_routing_hint`` which reads
+    sequential connectors, producer intents, and consumer intents — all
+    must be wired or the test fails on the raise, not on the assertion.
+    """
+    from kernel.routing_vocabulary import (
+        register_routing_vocabulary,
+        reset_routing_vocabulary,
+    )
+
+    register_routing_vocabulary(
+        sequential_connectors=["then", "and then", "after that", "next", "followed by"],
+        producer_intents=["research", "gather", "learn", "read", "analyze", "review", "architect"],
+        consumer_intents=["code", "write", "implement", "review"],
+        resume_phrases=["proceed", "continue", "go ahead"],
+    )
+    yield
+    reset_routing_vocabulary()
 
 
 def _mode_config(
@@ -34,14 +61,20 @@ def _mode_config(
     routing_intent_tags: list[str] | None = None,
     routing_intent_keywords: dict[str, list[str]] | None = None,
     routable: bool = True,
+    fork_allowed: bool = True,
     description: str = "",
 ) -> WorkflowModeConfig:
-    """A minimal ``WorkflowModeConfig`` for routing-hint tests."""
+    """A minimal ``WorkflowModeConfig`` for routing-hint tests.
+
+    ``fork_allowed`` defaults to True so the fork branch is exercisable
+    without every test opting in; production modes declare it explicitly.
+    """
     return WorkflowModeConfig(
         mode_id=mode_id,
         start_stage_id="none",
         mode_kind="chat",
         routable=routable,
+        fork_allowed=fork_allowed,
         description=description,
         satisfies_intents=list(satisfies_intents) if satisfies_intents else [],
         routing_intent_tags=list(routing_intent_tags) if routing_intent_tags else [],
@@ -54,7 +87,7 @@ def _empty_manifest() -> CapabilityManifest:
 
 
 def _full_catalog() -> dict[str, WorkflowModeConfig]:
-    """A representative catalog with search, coding, markdown, learn, plan."""
+    """A representative catalog with search, coding, markdown, learn, planner."""
     return {
         "default": _mode_config(mode_id="default"),
         "search": _mode_config(
@@ -88,8 +121,8 @@ def _full_catalog() -> dict[str, WorkflowModeConfig]:
             routing_intent_keywords={"remember": ["remember", "note", "capture"]},
             description="Memory capture mode.",
         ),
-        "plan": _mode_config(
-            mode_id="plan",
+        "planner": _mode_config(
+            mode_id="planner",
             satisfies_intents=["plan"],
             routing_intent_tags=["plan"],
             routing_intent_keywords={"plan": ["plan", "workflow", "multi-step", "chain"]},
@@ -102,7 +135,7 @@ def _full_catalog() -> dict[str, WorkflowModeConfig]:
 
 
 def test_routing_hint_escalates_to_plan_for_sequential_multi_intent() -> None:
-    """A sequential query with 2+ gap intents escalates to ``plan``."""
+    """A sequential query with 2+ gap intents escalates to ``planner``."""
     from kernel.routing_vocabulary import reset_plan_reliability
     from kernel.turn_runner import _compute_capability_routing_hint
 
@@ -117,22 +150,22 @@ def test_routing_hint_escalates_to_plan_for_sequential_multi_intent() -> None:
             mode_id="default",
             query=q,
             capability_manifest=_empty_manifest(),
-            routing_targets=["search", "coding", "markdown", "plan"],
+            routing_targets=["search", "coding", "markdown", "planner"],
             mode_config=catalog["default"],
         )
 
     assert hint != ""
     assert "Routing Hint" in hint
     assert "transition_stage" in hint
-    assert "plan" in hint
+    assert "planner" in hint
     # Escalation path, not a direct first-step handoff or fork.
     assert "fork:" not in hint
-    # Must route to plan, not directly to the first step (search).
+    # Must route to planner, not directly to the first step (search).
     assert "search" not in hint
 
 
 def test_routing_hint_escalates_to_plan_for_three_plus_intents_non_sequential() -> None:
-    """A non-sequential query with 3+ gap intents also escalates to ``plan``."""
+    """A non-sequential query with 3+ gap intents also escalates to ``planner``."""
     from kernel.routing_vocabulary import reset_plan_reliability
     from kernel.turn_runner import _compute_capability_routing_hint
 
@@ -144,17 +177,17 @@ def test_routing_hint_escalates_to_plan_for_three_plus_intents_non_sequential() 
             mode_id="default",
             query=q,
             capability_manifest=_empty_manifest(),
-            routing_targets=["search", "remember", "markdown", "plan"],
+            routing_targets=["search", "remember", "markdown", "planner"],
             mode_config=catalog["default"],
         )
 
     assert hint != ""
-    assert "plan" in hint
+    assert "planner" in hint
     assert "fork:" not in hint
 
 
 def test_routing_hint_escalates_to_plan_for_two_intents_sequential() -> None:
-    """A 2-intent sequential query escalates to ``plan`` (2 + sequential)."""
+    """A 2-intent sequential query escalates to ``planner`` (2 + sequential)."""
     from kernel.routing_vocabulary import reset_plan_reliability
     from kernel.turn_runner import _compute_capability_routing_hint
 
@@ -166,17 +199,17 @@ def test_routing_hint_escalates_to_plan_for_two_intents_sequential() -> None:
             mode_id="default",
             query=q,
             capability_manifest=_empty_manifest(),
-            routing_targets=["search", "markdown", "plan"],
+            routing_targets=["search", "markdown", "planner"],
             mode_config=catalog["default"],
         )
 
     assert hint != ""
-    assert "plan" in hint
+    assert "planner" in hint
     assert "fork:" not in hint
 
 
 def test_routing_hint_does_not_escalate_to_plan_when_plan_not_routable() -> None:
-    """When ``plan`` is not among routing targets, the existing fork logic runs."""
+    """When ``planner`` is not among routing targets, the existing fork logic runs."""
     from kernel.routing_vocabulary import reset_plan_reliability
     from kernel.turn_runner import _compute_capability_routing_hint
 
@@ -197,19 +230,19 @@ def test_routing_hint_does_not_escalate_to_plan_when_plan_not_routable() -> None
         )
 
     assert hint != ""
-    assert "fork:" in hint
-    assert "plan" not in hint
+    assert "fork" in hint
+    assert "planner" not in hint
 
 
 def test_routing_hint_does_not_escalate_to_plan_for_simple_query() -> None:
-    """A simple single-intent query routes directly, no plan escalation."""
+    """A simple single-intent query routes directly, no planner escalation."""
     from kernel.routing_vocabulary import reset_plan_reliability
     from kernel.turn_runner import _compute_capability_routing_hint
 
     reset_plan_reliability()
     catalog = {
         "search": _full_catalog()["search"],
-        "plan": _full_catalog()["plan"],
+        "planner": _full_catalog()["planner"],
         "default": _full_catalog()["default"],
     }
     q = "search for the latest rust news"
@@ -218,13 +251,13 @@ def test_routing_hint_does_not_escalate_to_plan_for_simple_query() -> None:
             mode_id="default",
             query=q,
             capability_manifest=_empty_manifest(),
-            routing_targets=["search", "plan"],
+            routing_targets=["search", "planner"],
             mode_config=catalog["default"],
         )
 
     assert hint != ""
     assert "search" in hint
-    assert "plan" not in hint
+    assert "planner" not in hint
 
 
 # ── discuss mode intent detection (Phase 1 metadata) ───────────────────────
@@ -289,7 +322,7 @@ def test_discuss_mode_detects_clarify_intent_from_new_keywords() -> None:
 
 def test_routing_hint_skips_plan_when_model_marked_unreliable() -> None:
     """When the active model has been marked unreliable for planning
-    (``plan_workflow`` previously failed for it), the plan-escalation
+    (``plan_workflow`` previously failed for it), the planner-escalation
     branch is skipped so a known-bad path is not re-attempted (the
     2026-07-30 StubCompletion incident)."""
     from kernel.routing_vocabulary import (
@@ -310,16 +343,16 @@ def test_routing_hint_skips_plan_when_model_marked_unreliable() -> None:
             mode_id="default",
             query=q,
             capability_manifest=_empty_manifest(),
-            routing_targets=["search", "coding", "markdown", "plan"],
+            routing_targets=["search", "coding", "markdown", "planner"],
             mode_config=catalog["default"],
             planner_model_id="glm-5.2:cloud",
         )
     reset_plan_reliability()
 
-    # Plan escalation must be skipped for the unreliable model.
-    assert "plan" not in hint or "Routing Hint" not in hint or hint == ""
-    # It should NOT hand off to plan.
-    assert "target_stage_id `plan`" not in hint
+    # Planner escalation must be skipped for the unreliable model.
+    assert "planner" not in hint or "Routing Hint" not in hint or hint == ""
+    # It should NOT hand off to planner.
+    assert "target_stage_id `planner`" not in hint
 
 
 def test_routing_hint_fallback_silences_when_no_clean_cover() -> None:
@@ -850,3 +883,109 @@ def test_plan_workflow_empty_steps_and_empty_target_is_no_match() -> None:
     assert result.output_json["steps"] == []
     assert "write/markdown" in result.output_text
     assert "## Plan" not in result.output_text
+
+
+# ── Regression: 2026-08-11 ambiguous-intent yield on "review the code" ────
+
+
+def _persona_catalog() -> dict[str, WorkflowModeConfig]:
+    """A persona-shaped catalog mirroring the lisa-pack-personas front
+    matter after the 2026-08-11 fix.
+
+    Before the fix, executor's keyword bucket was keyed ``execute:`` while
+    its ``routing_intent_tags`` were ``[code, write, implement]``, and
+    reviewer's ``review:`` bucket included the bare keyword ``read``. Both
+    produced false intents from the query "review the code for
+    understanding. The /docs folder and the README.md…":
+    ``execute`` (uncoverable — no mode declares it) and ``review`` (also
+    matched "README.md" via the bare ``read`` keyword). The gap
+    {review, execute} had no single covering target, no fork, no
+    producer-first → the ``AMBIGUOUS_INTENT`` sentinel yielded to the user
+    at iteration 0. The turn ran zero model calls.
+
+    After the fix: executor's keyword keys are ⊆ its tags, reviewer's
+    ``review:`` bucket dropped the bare ``read`` keyword, the ambiguity
+    sentinel is gone, and the query detects only ``{review}`` → single
+    handoff to ``reviewer``.
+    """
+    return {
+        "default": _mode_config(mode_id="default"),
+        "reviewer": _mode_config(
+            mode_id="reviewer",
+            satisfies_intents=["read", "review", "architect", "analyze"],
+            routing_intent_tags=["read", "review", "architect", "analyze"],
+            routing_intent_keywords={
+                "review": ["review", "analyze", "critique"],
+                "architect": ["design", "architect", "structure"],
+            },
+            description="Analyzes code/architecture and produces design documents.",
+        ),
+        "executor": _mode_config(
+            mode_id="executor",
+            satisfies_intents=["code", "write", "implement"],
+            routing_intent_tags=["code", "write", "implement"],
+            routing_intent_keywords={
+                "implement": ["implement", "build", "create", "fix", "refactor", "patch"],
+                "code": ["write code", "write the code", "refactor", "patch"],
+                "write": ["write code", "write the code"],
+            },
+            description="Mutates the workspace, writes code.",
+        ),
+        "researcher": _mode_config(
+            mode_id="researcher",
+            satisfies_intents=["research", "gather", "learn"],
+            routing_intent_tags=["research", "gather", "learn"],
+            routing_intent_keywords={"research": ["research", "gather", "learn", "investigate"]},
+            description="Gathers context and synthesizes findings.",
+        ),
+        "planner": _mode_config(
+            mode_id="planner",
+            satisfies_intents=["plan"],
+            routing_intent_tags=["plan"],
+            routing_intent_keywords={"plan": ["plan", "workflow", "multi-step", "chain"]},
+            description="Orchestrates multi-step tasks.",
+        ),
+    }
+
+
+def test_review_code_query_routes_to_reviewer_not_ambiguity() -> None:
+    """Regression for the 2026-08-11 turn that yielded ``AMBIGUOUS_INTENT``
+    on a simple code-review request and ran zero model calls.
+
+    The query "start by reviewing the code for understanding. The /docs
+    folder and the README.md…" must detect only ``{review}`` (not the
+    phantom ``execute`` or a false ``read`` from "README.md"), route to
+    ``reviewer`` as a single handoff, and produce no ambiguity sentinel
+    (the sentinel was removed; the hint returns ``""`` on genuine
+    ambiguity so the model self-routes via ``transition_stage``).
+    """
+    from kernel.routing_vocabulary import reset_plan_reliability
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    reset_plan_reliability()
+    catalog = _persona_catalog()
+    q = (
+        "start by reviewing the code for understanding. The /docs folder "
+        "and the README.md are a good entry point"
+    )
+    with patch("kernel.turn_phases._routing_hint.get_workflow_catalog", return_value=catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query=q,
+            capability_manifest=_empty_manifest(),
+            routing_targets=["reviewer", "executor", "researcher", "planner"],
+            mode_config=catalog["default"],
+        )
+
+    # No ambiguity sentinel — that branch is gone.
+    assert not hint.startswith("AMBIGUOUS_INTENT:")
+    # Single handoff to reviewer (the only target covering the review intent).
+    assert hint != ""
+    assert "Routing Hint" in hint
+    assert "reviewer" in hint
+    assert "transition_stage" in hint
+    # The phantom execute intent must not appear — executor's keyword
+    # keys are now ⊆ its tags, so "code" maps to the ``code`` tag, which
+    # executor covers. But the query says "reviewing the code", not
+    # "write code" — so no ``code`` intent fires. Only ``review``.
+    assert "executor" not in hint

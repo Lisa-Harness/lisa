@@ -653,6 +653,76 @@ def test_load_catalog_from_disk_required_capabilities_rejects_non_string_element
         _load(tmp_path)
 
 
+def test_load_catalog_from_disk_rejects_routing_intent_keywords_key_not_in_tags(
+    tmp_path: Path,
+) -> None:
+    """A ``routing_intent_keywords`` key not declared in
+    ``routing_intent_tags`` is a catalog validation error.
+
+    Regression for the 2026-08-11 executor incident: the executor mode's
+    keyword bucket was keyed ``execute:`` while its ``routing_intent_tags``
+    were ``[code, write, implement]``. The detector attributed an
+    ``execute`` intent from any query containing the bucket's keywords, but
+    no routing target declared ``execute`` in its tags, so the gap was
+    uncoverable and the hint layer fell through to ambiguity on every
+    code-related query. Fail fast at catalog load so a broken pack install
+    cannot reach the router.
+    """
+    _write_mode(
+        tmp_path,
+        extra_front_matter={
+            "routing_intent_tags": ["code", "write", "implement"],
+            "routing_intent_keywords": {
+                "execute": ["implement", "code", "write code"],
+            },
+            "satisfies_intents": ["code", "write", "implement"],
+        },
+    )
+    with pytest.raises(
+        WorkflowValidationError,
+        match="routing_intent_keywords keys must be a subset of routing_intent_tags",
+    ):
+        _load(tmp_path)
+
+
+def test_load_catalog_from_disk_accepts_routing_intent_keywords_key_in_tags(
+    tmp_path: Path,
+) -> None:
+    """A ``routing_intent_keywords`` key that IS in ``routing_intent_tags``
+    loads cleanly — the guard rejects only orphan keys, not valid ones."""
+    _write_mode(
+        tmp_path,
+        extra_front_matter={
+            "routing_intent_tags": ["code", "write", "implement"],
+            "routing_intent_keywords": {
+                "implement": ["implement", "build"],
+                "code": ["write code", "refactor"],
+            },
+            "satisfies_intents": ["code", "write", "implement"],
+        },
+    )
+    catalog = _load(tmp_path)
+    assert set(catalog["demo"].routing_intent_keywords) == {"implement", "code"}
+
+
+def test_load_catalog_from_disk_rejects_routing_intent_keywords_without_tags(
+    tmp_path: Path,
+) -> None:
+    """``routing_intent_keywords`` without any ``routing_intent_tags`` is
+    rejected — every keyword bucket key must have a declared covering tag."""
+    _write_mode(
+        tmp_path,
+        extra_front_matter={
+            "routing_intent_keywords": {"research": ["search", "investigate"]},
+        },
+    )
+    with pytest.raises(
+        WorkflowValidationError,
+        match="routing_intent_keywords cannot be set without routing_intent_tags",
+    ):
+        _load(tmp_path)
+
+
 def test_load_catalog_from_disk_required_capabilities_rejects_empty_element(
     tmp_path: Path,
 ) -> None:

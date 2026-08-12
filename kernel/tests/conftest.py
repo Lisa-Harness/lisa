@@ -45,17 +45,29 @@ def _wire_sub_turn_content_registry() -> None:
 
 @pytest.fixture(autouse=True)
 def _reset_routing_vocabulary() -> None:
-    """Reset the session routing vocabulary between tests.
+    """Reset and re-register the session routing vocabulary between tests.
 
     The routing-vocabulary registry is a process global injected by the
-    host boot path from the session plan. Tests that construct a
-    ``HostRuntime`` register their own session's connectors; tests that
-    exercise the kernel directly (without a host) expect the historical
-    fallback. Resetting between tests keeps the two groups from leaking
-    state into each other.
+    host boot path from the session plan. The kernel has no hardcoded
+    fallbacks (the 2026-08-11 hard cutover): a reader raises
+    ``RuntimeError`` when no session vocabulary is wired. Kernel-direct
+    tests that exercise ``_compute_capability_routing_hint`` or
+    ``_query_is_sequential`` need a wired registry. Reset between tests
+    to clear state, then register a representative vocabulary so the
+    common case works without each test opting in.
     """
-    from kernel.routing_vocabulary import reset_routing_vocabulary
+    from kernel.routing_vocabulary import (
+        register_routing_vocabulary,
+        reset_routing_vocabulary,
+    )
 
     reset_routing_vocabulary()
+    register_routing_vocabulary(
+        sequential_connectors=["then", "and then", "after that", "next", "followed by"],
+        producer_intents=["research", "gather", "learn", "read", "analyze", "review", "architect"],
+        consumer_intents=["code", "write", "implement", "review"],
+        resume_phrases=["proceed", "continue", "go ahead", "go for it", "do it", "carry on", "pick up", "resume", "next step", "keep going"],
+    )
     yield
+    reset_routing_vocabulary()
     reset_routing_vocabulary()

@@ -90,8 +90,21 @@ def _catalog() -> dict[str, WorkflowModeConfig]:
 
 @pytest.fixture(autouse=True)
 def _reset_vocabulary() -> Any:
-    """Reset routing vocabulary to defaults around each test."""
+    """Reset and re-register routing vocabulary around each test.
+
+    The kernel has no hardcoded fallbacks (2026-08-11 cutover); the
+    workflow-position helpers read producer/consumer intents, so a
+    representative vocabulary must be wired or the reader raises.
+    """
+    from kernel.routing_vocabulary import register_routing_vocabulary
+
     reset_routing_vocabulary()
+    register_routing_vocabulary(
+        sequential_connectors=["then", "and then", "after that", "next", "followed by"],
+        producer_intents=["research", "gather", "learn", "read", "analyze", "review", "architect"],
+        consumer_intents=["code", "write", "implement", "review"],
+        resume_phrases=["proceed", "continue", "go ahead"],
+    )
     yield
     reset_routing_vocabulary()
 

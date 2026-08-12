@@ -350,10 +350,11 @@ def _build_sequential_connectors_block() -> str:
 
     The list comes from :func:`kernel.routing_vocabulary.get_sequential_connectors`,
     which the host boot path populates from the session plan's
-    ``routing.sequential_connectors`` (falling back to the historical
-    built-in set when no session vocabulary is wired). Rendering the live
-    list here keeps the planner's instruction in sync with the kernel's
-    routing-hint generator — the two sites share one vocabulary source.
+    ``routing.sequential_connectors``. The kernel has no hardcoded
+    fallback (the 2026-08-11 cutover): the session defines the list or
+    boot fails. Rendering the live list here keeps the planner's
+    instruction in sync with the kernel's routing-hint generator — the
+    two sites share one vocabulary source.
     """
     from kernel.routing_vocabulary import get_sequential_connectors
 

@@ -99,10 +99,10 @@ a tool from the authored allowlist?"
 
 ## Invariant 4 — Producer/consumer sequential guard
 
-**Code:** `kernel/routing_vocabulary.py` (`DEFAULT_PRODUCER_INTENTS` =
-`research`, `reasoning`; `DEFAULT_CONSUMER_INTENTS` = `write`, `coding`;
-session-overridable via `routing.producer_intents` /
-`routing.consumer_intents` in `session_context.md`);
+**Code:** `kernel/routing_vocabulary.py` (session-injected via
+`register_routing_vocabulary`; no hardcoded fallback — the session
+defines `routing.producer_intents` / `routing.consumer_intents` in
+`session_context.md` or boot fails);
 `kernel/turn_phases/_routing_hint.py :: _fork_has_producer_consumer_mix`,
 `_producer_first_hint`;
 `kernel/workflow_instance.py` (intent-group ordering).

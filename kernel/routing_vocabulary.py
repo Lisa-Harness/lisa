@@ -13,18 +13,19 @@ This module exposes a small process-global registry, mirroring the
 contract in ``kernel.ipsar_fsm``: the host calls
 ``register_routing_vocabulary(...)`` once at boot with the connectors
 compiled from the session plan's ``routing.sequential_connectors`` list,
-and the kernel reads them via ``get_sequential_connectors()``. When no
-session plan has been wired (tests, standalone use), the historical
-default list is returned so existing behavior is preserved without any
-caller change.
+and the kernel reads them via ``get_sequential_connectors()``.
 
 Design constraints:
 
 - The kernel stays tag-blind and prose-blind: it only matches opaque
   connector substrings; the vocabulary is session-authored.
-- The default list is the *historical* five tokens, not a new curated
-  set. Sessions opt into richer coverage by listing more connectors in
-  ``session_context.md`` front matter.
+- **No hardcoded fallbacks.** The session defines the vocabulary or boot
+  fails. There are no ``DEFAULT_*`` constants — the kernel does not
+  second-guess the session. A reader (``get_*``) raises ``RuntimeError``
+  when no session vocabulary has been wired for that field. This is the
+  2026-08-11 hard cutover: the prior ``DEFAULT_*`` constants coupled the
+  kernel to pack data and let a broken session plan silently fall back
+  to stale hardcoded vocabulary.
 - Connectors are matched case-insensitively as substrings surrounded by
   whitespace. The registry normalizes entries (strips, lowercases, pads
   with single spaces) so session authors can write ``then`` or ``then ``
@@ -36,10 +37,6 @@ from __future__ import annotations
 from typing import Final
 
 __all__ = [
-    "DEFAULT_CONSUMER_INTENTS",
-    "DEFAULT_PRODUCER_INTENTS",
-    "DEFAULT_RESUME_PHRASES",
-    "DEFAULT_SEQUENTIAL_CONNECTORS",
     "get_consumer_intents",
     "get_producer_intents",
     "get_resume_phrases",
@@ -52,77 +49,8 @@ __all__ = [
 ]
 
 
-# Historical default. Sessions override via
-# ``routing.sequential_connectors`` in ``session_context.md``. Keep this
-# conservative: common words like "after" or "from" are deliberately
-# omitted to avoid false positives in sessions that have not opted in.
-DEFAULT_SEQUENTIAL_CONNECTORS: Final[tuple[str, ...]] = (
-    " then ",
-    " and then ",
-    " after that ",
-    " next ",
-    " followed by ",
-)
-
-
-# Producer/consumer intent roles for the fork-sequential guard.
-#
-# A fork runs children in parallel with the whole query; none can see
-# another's output. That is correct when every child is *independent*
-# (e.g. ``remember`` writes memory + ``markdown`` writes a doc from the same
-# query text). It is wrong when one child *consumes* another's output —
-# e.g. ``markdown`` writing a doc from research that ``ponder``/``search``
-# gather in parallel. The consumer has no evidence to work from, so it
-# re-does the research and runs out of iterations before reaching its
-# action tool (the 2026-07-27 incident).
-#
-# Sessions override these via ``routing.producer_intents`` /
-# ``routing.consumer_intents`` in ``session_context.md``. The kernel reads
-# them as opaque intent-tag sets (it never names the intents itself in
-# code — these defaults are the historical vocabulary, mirroring the
-# sequential-connector pattern). A fork is refused when the gap intents
-# include both a producer intent and a consumer intent; the hint then
-# falls back to a single handoff to the first producer, and the
-# post-handoff hint chains the consumer after it.
-DEFAULT_PRODUCER_INTENTS: Final[tuple[str, ...]] = (
-    "research",
-    "reasoning",
-)
-DEFAULT_CONSUMER_INTENTS: Final[tuple[str, ...]] = (
-    "write",
-    "coding",
-)
-
-
-# Resume-phrase vocabulary for the affirmative-resume and continuation-query
-# detectors. The host's ``handle_message`` treats a short message that
-# starts with one of these phrases as an implicit workflow/approval resume
-# rather than a fresh model turn; the kernel's ``_looks_like_continuation_query``
-# treats a message containing one as a continuation prompt. Both sites read
-# this registry so the vocabulary stays in one place.
-#
-# Sessions override via ``routing.resume_phrases`` in
-# ``session_context.md``. Keep the list to unambiguous imperatives —
-# ``"proceed"``, ``"continue"``, ``"go ahead"`` — and avoid common words
-# that would false-positive on normal conversation (``"ok"``, ``"yes"``).
-# The detectors apply these as **prefix** matches on the lowered message,
-# so ``"proceed with the current step in the plan"`` matches ``"proceed"``.
-DEFAULT_RESUME_PHRASES: Final[tuple[str, ...]] = (
-    "proceed",
-    "continue",
-    "go ahead",
-    "go for it",
-    "do it",
-    "carry on",
-    "pick up",
-    "resume",
-    "next step",
-    "keep going",
-)
-
-
 # Process-global registry, injected by the host at boot. ``None`` means
-# "no session plan wired — use the historical default".
+# "no session plan wired — reading raises". There are no fallbacks.
 _sequential_connectors: tuple[str, ...] | None = None
 _producer_intents: frozenset[str] | None = None
 _consumer_intents: frozenset[str] | None = None
@@ -250,28 +178,27 @@ def register_routing_vocabulary(
 ) -> None:
     """Inject routing vocabulary compiled from the session plan.
 
-    Called once at host boot after the session plan is compiled. Passing
-    ``None`` (or an empty list) for a field resets that field to the
-    historical default, matching pre-vocabulary behavior. The host is
-    responsible for compiling the session plan's
-    ``routing.sequential_connectors`` / ``routing.producer_intents`` /
-    ``routing.consumer_intents`` / ``routing.resume_phrases`` lists and
-    passing them here; the kernel never reads the session plan directly.
+    Called once at host boot after the session plan is compiled. Each
+    field is set directly from the session plan's ``routing.*`` lists —
+    there are no hardcoded fallbacks. Passing ``None`` (or an empty list)
+    for a field leaves that vocabulary unset; a later reader raises
+    ``RuntimeError``. The host is responsible for compiling the session
+    plan's ``routing.sequential_connectors`` /
+    ``routing.producer_intents`` / ``routing.consumer_intents`` /
+    ``routing.resume_phrases`` lists and passing them here; the kernel
+    never reads the session plan directly.
     """
     global _sequential_connectors, _producer_intents, _consumer_intents, _resume_phrases  # noqa: PLW0603
-    normalized = _normalize_connectors(sequential_connectors)
-    _sequential_connectors = normalized if normalized else None
-    _producer_intents = _normalize_intent_roles(producer_intents, DEFAULT_PRODUCER_INTENTS)
-    _consumer_intents = _normalize_intent_roles(consumer_intents, DEFAULT_CONSUMER_INTENTS)
-    normalized_resume = _normalize_resume_phrases(resume_phrases)
-    _resume_phrases = normalized_resume if normalized_resume else None
+    _sequential_connectors = _normalize_connectors(sequential_connectors) or None
+    _producer_intents = _normalize_intent_roles(producer_intents)
+    _consumer_intents = _normalize_intent_roles(consumer_intents)
+    _resume_phrases = _normalize_resume_phrases(resume_phrases) or None
 
 
 def _normalize_intent_roles(
     raw: list[str] | tuple[str, ...] | None,
-    default: tuple[str, ...],
 ) -> frozenset[str] | None:
-    """Normalize an intent-role list to a frozenset, or ``None`` for default."""
+    """Normalize an intent-role list to a frozenset, or ``None`` when unset."""
     if not raw:
         return None
     roles = {(entry or "").strip().lower() for entry in raw if (entry or "").strip()}
@@ -319,13 +246,16 @@ def reset_routing_vocabulary() -> None:
 def get_sequential_connectors() -> tuple[str, ...]:
     """Return the active sequential-connector vocabulary.
 
-    Returns the session-injected list when one has been registered, else
-    the historical default. The returned tuple is immutable and safe to
-    iterate without copying.
+    Raises ``RuntimeError`` when no session vocabulary has been wired —
+    the kernel does not fall back to hardcoded defaults. Call
+    :func:`register_routing_vocabulary` at boot.
     """
     if _sequential_connectors is not None:
         return _sequential_connectors
-    return DEFAULT_SEQUENTIAL_CONNECTORS
+    raise RuntimeError(
+        "sequential connectors not wired — register_routing_vocabulary must "
+        "be called at boot with routing.sequential_connectors from the session plan"
+    )
 
 
 def get_producer_intents() -> frozenset[str]:
@@ -334,34 +264,45 @@ def get_producer_intents() -> frozenset[str]:
     Intents whose satisfaction produces text/output that a downstream
     consumer intent (write/coding) needs as input. A fork mixing a
     producer-satisfying mode with a consumer-satisfying mode is sequential,
-    not parallel. Returns the session-injected set or the historical
-    default.
+    not parallel. Raises ``RuntimeError`` when no session vocabulary has
+    been wired.
     """
     if _producer_intents is not None:
         return _producer_intents
-    return frozenset(DEFAULT_PRODUCER_INTENTS)
+    raise RuntimeError(
+        "producer intents not wired — register_routing_vocabulary must be "
+        "called at boot with routing.producer_intents from the session plan"
+    )
 
 
 def get_consumer_intents() -> frozenset[str]:
     """Return the active consumer-intent set (artifact-creating intents).
 
     Intents whose satisfaction consumes a producer's output to create an
-    artifact (a doc, a code patch). See ``get_producer_intents``.
+    artifact (a doc, a code patch). See ``get_producer_intents``. Raises
+    ``RuntimeError`` when no session vocabulary has been wired.
     """
     if _consumer_intents is not None:
         return _consumer_intents
-    return frozenset(DEFAULT_CONSUMER_INTENTS)
+    raise RuntimeError(
+        "consumer intents not wired — register_routing_vocabulary must be "
+        "called at boot with routing.consumer_intents from the session plan"
+    )
 
 
 def get_resume_phrases() -> tuple[str, ...]:
     """Return the active resume-phrase vocabulary.
 
-    Returns the session-injected list when one has been registered, else
-    the historical default. The detectors in ``host.handle_message``
-    (affirmative resume) and ``kernel.turn_runner`` (continuation query)
-    read this so the vocabulary stays in one place. Entries are lowercased,
-    stripped, and applied as prefix matches on the lowered message.
+    Returns the session-injected list. The detectors in
+    ``host.handle_message`` (affirmative resume) and ``kernel.turn_runner``
+    (continuation query) read this so the vocabulary stays in one place.
+    Entries are lowercased, stripped, and applied as prefix matches on the
+    lowered message. Raises ``RuntimeError`` when no session vocabulary
+    has been wired.
     """
     if _resume_phrases is not None:
         return _resume_phrases
-    return DEFAULT_RESUME_PHRASES
+    raise RuntimeError(
+        "resume phrases not wired — register_routing_vocabulary must be "
+        "called at boot with routing.resume_phrases from the session plan"
+    )

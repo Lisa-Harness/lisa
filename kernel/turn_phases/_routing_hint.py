@@ -24,14 +24,17 @@ from kernel.models import CapabilityManifest, WorkflowModeConfig
 # ad-hoc instance guard (``is_plan_escalation_hint``) can detect it
 # without coupling to prose that lives in a branch deep in
 # ``_compute_capability_routing_hint``. When the hint is a plan-escalation,
-# the ``plan`` mode owns instance creation (``spawned_from="plan_workflow_op"``);
-# the ad-hoc block must skip to avoid creating an orphaned instance that
-# the plan instance overwrites moments later (the 2026-08-01 overlap bug).
+# the ``planner`` mode owns instance creation
+# (``spawned_from="plan_workflow_op"``); the ad-hoc block must skip to
+# avoid creating an orphaned instance that the plan instance overwrites
+# moments later (the 2026-08-01 overlap bug). The mode id is ``planner``;
+# the prior ``plan`` mode was renamed in the 2026-08-09 phase-partitioning
+# cutover (no compat alias).
 _PLAN_ESCALATION_HINT = (
     "## Routing Hint\n\n"
-    "This is a complex multi-step request. Hand off to `plan` by "
-    "calling `transition_stage` with target_stage_id `plan`. "
-    "The plan mode will analyze the query and determine the best "
+    "This is a complex multi-step request. Hand off to `planner` by "
+    "calling `transition_stage` with target_stage_id `planner`. "
+    "The planner mode will analyze the query and determine the best "
     "routing target."
 )
 
@@ -40,7 +43,7 @@ def is_plan_escalation_hint(hint: str) -> bool:
     """Return True when ``hint`` is a plan-escalation routing hint.
 
     The ad-hoc instance creation block in ``turn_runner.py`` calls this to
-    skip when ``plan`` mode is about to own the instance. Without this guard
+    skip when ``planner`` mode is about to own the instance. Without this guard
     the ad-hoc block creates an instance that the plan instance overwrites
     via the updater — a wasted compile and a silent ordering dependency.
     """
@@ -143,19 +146,12 @@ def _tool_effect(
 # ("search ... then code ... then write") rather than a set of concurrent
 # goals. A language pattern, not an intent tag, so this stays tag-blind.
 #
-# This is the **fallback** list. The active list is supplied per-session
-# via ``routing.sequential_connectors`` in ``session_context.md`` and
-# injected at boot through ``kernel.routing_vocabulary``; when no session
-# vocabulary is wired (tests, standalone use), this historical set keeps
-# behavior unchanged. Sessions add entries like "based on" or "once" to
-# catch dependency phrasings the fallback deliberately omits.
-_FALLBACK_SEQUENTIAL_CONNECTORS: tuple[str, ...] = (
-    " then ",
-    " and then ",
-    " after that ",
-    " next ",
-    " followed by ",
-)
+# The active list is supplied per-session via
+# ``routing.sequential_connectors`` in ``session_context.md`` and injected
+# at boot through ``kernel.routing_vocabulary``. The kernel has no
+# hardcoded fallback (the 2026-08-11 cutover): a reader raises when no
+# session vocabulary is wired. Sessions add entries like "based on" or
+# "once" to catch dependency phrasings.
 
 
 def _query_is_sequential(query: str) -> bool:
@@ -171,9 +167,8 @@ def _query_is_sequential(query: str) -> bool:
     The connector vocabulary is read from
     :func:`kernel.routing_vocabulary.get_sequential_connectors`, which the
     host boot path populates from the session plan's
-    ``routing.sequential_connectors`` list. When no session vocabulary is
-    registered, the historical fallback list above is used so existing
-    behavior is preserved.
+    ``routing.sequential_connectors`` list. Raises ``RuntimeError`` when
+    no session vocabulary has been wired.
     """
     from kernel.routing_vocabulary import get_sequential_connectors
 
@@ -408,7 +403,7 @@ def _compute_fork_targets(
         return None
     # Plan-mode escalation owns the 3+ intent / sequential-2-intent case.
     # A fork is only suggested for a non-sequential 2+ gap intent query.
-    if "plan" in routing_targets and (
+    if "planner" in routing_targets and (
         len(gap_intents) >= 3 or (len(gap_intents) >= 2 and _query_is_sequential(query))
     ):
         return None
@@ -670,47 +665,50 @@ def _compute_capability_routing_hint(
         if gap_intents and gap_intents.issubset(target_tags):
             covering_targets.append(target_id)
 
-    # ── 3b. Plan-mode escalation for complex multi-step queries ───────
+    # ── 3b. Planner-mode escalation for complex multi-step queries ─────
     # When the request is complex (3+ remaining gap intents, or 2+ gap
-    # intents in a sequential chain), hand off to the ``plan`` action mode
-    # first instead of routing directly to the first target or forking.
-    # ``plan`` runs ``plan_workflow`` (one cheap model call) to
+    # intents in a sequential chain), hand off to the ``planner`` action
+    # mode first instead of routing directly to the first target or forking.
+    # ``planner`` runs ``plan_workflow`` (one cheap model call) to
     # disambiguate the routing target, then the model calls
     # ``transition_stage`` with the returned target. Simple queries (1-2
     # intents, non-sequential) still get direct hints below — zero extra
     # model calls for the common case. This separates planning from
     # execution without a separate mechanism.
-    # Tag-blind: the kernel only checks whether ``plan`` is among the
+    # Tag-blind: the kernel only checks whether ``planner`` is among the
     # routable targets and whether the gap is large/sequential; it does not
     # name any intent vocabulary. This runs BEFORE the sequential/fork
     # branches so a complex sequential chain escalates to the planner
     # rather than hand-rolling the first step.
     #
-    # Re-escalation guard: ``plan`` is itself a routable target that
+    # Re-escalation guard: ``planner`` is itself a routable target that
     # declares ``satisfies_intents: [plan]``. Once the turn has run
-    # ``plan``, the host's chained-hint recomputation unions ``plan`` into
-    # ``chain_satisfied`` and passes it back here as ``extra_satisfied``;
-    # ``current_satisfied`` therefore contains ``plan``. Without this guard
-    # the branch re-fires on every post-handoff recompute (the 2026-07-27
-    # incident: after ``plan → coding`` the hint said "hand off to `plan`
-    # again" instead of naming ``markdown`` for the residual ``write`` gap,
-    # looping until the duplicate-hint dedup suppressed it and leaving the
-    # model in ``coding`` with no path to ``markdown``). Gating on
-    # ``"plan" not in current_satisfied`` trips exactly once per turn.
+    # ``planner``, the host's chained-hint recomputation unions ``plan``
+    # into ``chain_satisfied`` and passes it back here as ``extra_satisfied``;
+    # ``current_satisfied`` therefore contains ``plan``. Without this
+    # guard the branch re-fires on every post-handoff recompute (the
+    # 2026-07-27 incident: after ``planner → coding`` the hint said "hand
+    # off to `planner` again" instead of naming ``markdown`` for the
+    # residual ``write`` gap, looping until the duplicate-hint dedup
+    # suppressed it and leaving the model in ``coding`` with no path to
+    # ``markdown``). Gating on ``"plan" not in current_satisfied`` trips
+    # exactly once per turn (the ``planner`` mode's satisfies_intents tag
+    # is still ``plan``, so the check is on the intent tag, not the mode
+    # id).
     #
     # Model-reliability guard: when the active model has been marked
     # unreliable for planning (``plan_workflow`` previously failed to
     # produce a parseable ``target_stage_id`` for it — e.g. a local
     # backend returning ``StubCompletion`` instead of JSON), escalating
-    # to ``plan`` would waste a model round-trip on a known-bad path and
-    # then hard-fail the turn (the 2026-07-30 incident). Skip plan
+    # to ``planner`` would waste a model round-trip on a known-bad path
+    # and then hard-fail the turn (the 2026-07-30 incident). Skip planner
     # escalation for unreliable models and fall through to the
     # single-handoff / fork branches instead. See
     # ``kernel.routing_vocabulary.is_plan_reliable_for_model``.
     from kernel.routing_vocabulary import is_plan_reliable_for_model  # noqa: PLC0415
 
     if (
-        "plan" in routing_targets
+        "planner" in routing_targets
         and "plan" not in current_satisfied
         and is_plan_reliable_for_model(planner_model_id)
         and (len(gap_intents) >= 3 or (len(gap_intents) >= 2 and _query_is_sequential(query)))
@@ -831,25 +829,18 @@ def _compute_capability_routing_hint(
         )
         return hint
 
-    # ── 6. Ambiguity yield: no clean cover → ask the user ──────────
+    # ── 6. No clean cover → silence (let the model self-route) ─────
     # When no single target cleanly covers the gap (the disjoint-coverage
     # and producer-first branches above did not fire), the hint layer
-    # cannot confidently resolve a target. Previously this returned ``""``
-    # (silence) and the model guessed — the hallucination-as-progress
-    # pattern (the 2026-07-30 bounce). Instead, return a structured
-    # sentinel so the turn runner can yield to the user for clarification
-    # before routing. The sentinel encodes the available routing targets
-    # as a CSV so the turn runner can name them in the question. This is
-    # the last resort — all common paths (single handoff, sequential
-    # chain, fork, plan escalation) return concrete hints above and never
-    # reach this branch.
-    if not has_gap:
-        return ""
-    _ambiguous_targets = [
-        tid
-        for tid in routing_targets
-        if catalog.get(tid) is not None
-    ]
-    if _ambiguous_targets:
-        return f"AMBIGUOUS_INTENT:{','.join(_ambiguous_targets)}"
+    # cannot confidently resolve a target. Return ``""`` so the turn runs
+    # in the current mode and the model self-routes via ``transition_stage``
+    # (the 2026-08-11 decision: the prior ``AMBIGUOUS_INTENT:<csv>``
+    # sentinel yielded to the user at iteration 0, which turned keyword
+    # noise into a blocking clarification. The current mode already carries
+    # the tools to self-handoff; silence lets it do so. The 2026-08-11
+    # root cause — keyword buckets keyed by tags not in
+    # routing_intent_tags producing uncoverable intents — is now caught
+    # at catalog load, so genuine ambiguity reaching this branch is rare.
+    # The producer/consumer and fork branches above still handle the
+    # common multi-intent shapes before this falls through.)
     return ""

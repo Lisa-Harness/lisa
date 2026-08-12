@@ -14,9 +14,9 @@ providers:
 routing:
   start_mode: default
   # Sequential-connector vocabulary shared by the routing-hint generator
-  # and the plan-mode planner. A query containing any of these phrases is
-  # treated as a sequential chain (single handoff, step-by-step) instead of
-  # a parallel fork fan-out.
+  # and the planner-mode planner. A query containing any of these phrases
+  # is treated as a sequential chain (single handoff, step-by-step) instead
+  # of a parallel fork fan-out.
   sequential_connectors:
     - then
     - and then
@@ -25,6 +25,48 @@ routing:
     - followed by
     - based on
     - once
+  # Producer/consumer intent roles for the fork-sequential guard. A fork
+  # runs children in parallel; none can see another's output. When the gap
+  # mixes a producer intent (evidence-gathering) with a consumer intent
+  # (artifact-creating), the fork is refused and the hint routes sequential
+  # instead (single handoff to the first producer, then chain the consumer).
+  # `review` is dual-role: self-sufficient alone, but a producer when paired
+  # with `code`.
+  producer_intents:
+    - research
+    - gather
+    - learn
+    - read
+    - analyze
+    - review
+    - architect
+    - ponder
+    - question
+    - clarify
+    - okf
+    - plan
+  consumer_intents:
+    - code
+    - write
+    - implement
+    - review
+  # Resume-phrase vocabulary for the affirmative-resume and continuation-
+  # query detectors. Applied as prefix matches on the lowered message, so
+  # "proceed with the current step" matches "proceed". Keep entries to
+  # unambiguous imperatives; avoid common words like "ok" or "yes" that
+  # false-positive on normal conversation (those are handled by the exact-
+  # match set in host.handle_message).
+  resume_phrases:
+    - proceed
+    - continue
+    - go ahead
+    - go for it
+    - do it
+    - carry on
+    - pick up
+    - resume
+    - next step
+    - keep going
 execution:
   # Working session token budget (cumulative across the session's turns).
   # 15M is sized from docs/TOKEN_BUDGET.md: a ~3M max-intensity turn × 5,

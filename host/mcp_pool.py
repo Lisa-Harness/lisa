@@ -338,6 +338,8 @@ def setup_framework(
     register_routing_vocabulary(
         sequential_connectors=runtime.session_plan.manifest.routing.sequential_connectors,
         resume_phrases=runtime.session_plan.manifest.routing.resume_phrases,
+        producer_intents=runtime.session_plan.manifest.routing.producer_intents,
+        consumer_intents=runtime.session_plan.manifest.routing.consumer_intents,
     )
 
     if discovery is None:
