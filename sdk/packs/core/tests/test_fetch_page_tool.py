@@ -13,7 +13,7 @@ import httpx
 import pytest
 
 from kernel.models import ToolExecutionContext
-from sdk.packs.core.tools.fetch_page.models import FetchedPage
+from sdk.packs.core.tools.fetch_page._models import FetchedPage
 
 
 @pytest.mark.asyncio

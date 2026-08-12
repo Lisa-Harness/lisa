@@ -146,6 +146,8 @@ def _collect_operation_diagnostics(op_roots: list[Path]) -> list[dict[str, Any]]
         for py_path in sorted(root.rglob("*.py")):
             if py_path.name == "__init__.py" or "__pycache__" in py_path.parts:
                 continue
+            if py_path.stem.startswith("_"):
+                continue
             declarative_sibling = py_path.with_suffix(_DECLARATIVE_OPERATION_SUFFIX)
             if declarative_sibling.exists():
                 continue
@@ -169,6 +171,8 @@ def _collect_tool_diagnostics(tool_roots: list[Path]) -> list[dict[str, Any]]:
             continue
         for py_path in sorted(root.rglob("*.py")):
             if py_path.name == "__init__.py" or "__pycache__" in py_path.parts:
+                continue
+            if py_path.stem.startswith("_"):
                 continue
             explicit = py_path.with_suffix(f".{_TOOL_METADATA_SUFFIX}")
             legacy = py_path.with_suffix(_OPERATION_METADATA_SUFFIX)

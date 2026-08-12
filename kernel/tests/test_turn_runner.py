@@ -1766,6 +1766,57 @@ async def test_run_turn_execution_policy_seeds_turn_budget_without_explicit_budg
 
 
 @pytest.mark.asyncio
+async def test_stuck_in_stage_cap_surfaces_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stuck-in-stage cap surfaces a diagnostic message, not silence.
+
+    When the model loops on a failing tool call and the stuck-in-stage cap
+    fires, the post-loop code must surface a diagnostic explaining why the
+    turn paused — not an empty response_text. The user can then redirect.
+    """
+    from kernel import config
+
+    # Set a low stage cap so the stuck-in-stage cap fires quickly.
+    monkeypatch.setattr(config.settings, "stage_nudge_cap", 3)
+    monkeypatch.setattr(config.settings, "stage_nudge_threshold", 2)
+
+    async def loop_on_tool(**kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"q": "test"}',
+                    },
+                }
+            ],
+        )
+
+    hooks = _build_minimal_hooks(loop_on_tool)
+    hooks.execute_operation = _stub_execute_operation
+
+    result = await run_turn(
+        mode_id="default",
+        query="test",
+        hooks=hooks,
+        max_tool_iterations=10,
+    )
+
+    assert result.operator_exit == "paused"
+    # The diagnostic must be non-empty and mention the mode + iteration budget.
+    assert result.response_text
+    assert "default" in result.response_text
+    assert "iteration budget" in result.response_text.lower()
+    assert "paused" in result.response_text.lower() or "redirect" in result.response_text.lower()
+    # The enriched diagnostic includes the last tool name so the user
+    # knows *why* the turn was stuck, not just that the cap fired.
+    assert "web_search" in result.response_text
+
+
+@pytest.mark.asyncio
 async def test_run_turn_execution_policy_caps_specific_capability_calls() -> None:
     """Capability policy limits apply even when catalog limits are looser."""
     completion_count = 0

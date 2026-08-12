@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from kernel.models import ToolExecutionContext, ToolResult
 from sdk.content import ContentFetcher, FetchPolicy, validate_url
-from sdk.packs.core.tools.fetch_page.models import FetchedPage
+from sdk.packs.core.tools.fetch_page._models import FetchedPage
 
 __all__ = ["Parameters", "execute", "fetch", "get_fetcher", "is_configured"]
 

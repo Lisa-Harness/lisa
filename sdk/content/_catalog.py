@@ -1032,11 +1032,19 @@ def _load_operations_from_root(
 
 
 def _iter_operation_module_files(operations_dir: Path) -> list[Path]:
-    """Return sorted Python operation modules, skipping declarative siblings."""
+    """Return sorted Python operation modules, skipping declarative siblings.
+
+    Modules whose stem starts with ``_`` are internal helpers (e.g.
+    ``_budget.py``, ``_continuation.py``) that support an operation but are
+    not operations themselves — they have no ``.yml`` metadata sibling and
+    must not produce a spurious "missing metadata" warning.
+    """
 
     runtime_modules: list[Path] = []
     for module_path in operations_dir.rglob("*.py"):
         if module_path.name == "__init__.py" or "__pycache__" in module_path.parts:
+            continue
+        if module_path.stem.startswith("_"):
             continue
         declarative_sibling = module_path.with_suffix(_DECLARATIVE_OPERATION_SUFFIX)
         if declarative_sibling.exists():
@@ -1299,11 +1307,18 @@ def _load_tools_from_root(
 
 
 def _iter_tool_module_files(tools_dir: Path) -> list[Path]:
-    """Return sorted Python tool modules (``.py`` files with a ``.tool.yml`` sibling)."""
+    """Return sorted Python tool modules (``.py`` files with a ``.tool.yml`` sibling).
+
+    Modules whose stem starts with ``_`` are internal helpers (e.g.
+    ``models.py`` inside a tool directory) and are not tools themselves —
+    skip them so they don't produce spurious "missing .tool.yml" warnings.
+    """
 
     runtime_modules: list[Path] = []
     for module_path in tools_dir.rglob("*.py"):
         if module_path.name == "__init__.py" or "__pycache__" in module_path.parts:
+            continue
+        if module_path.stem.startswith("_"):
             continue
         runtime_modules.append(module_path)
     return sorted(runtime_modules)

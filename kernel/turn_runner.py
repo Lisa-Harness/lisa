@@ -3395,6 +3395,11 @@ async def _run_turn_inner(
     # no operator exit — the post-turn checkpoint path uses its own ternary
     # (``yielded`` vs ``committed``).
     _pending_checkpoint_state: Literal["", "paused", "terminated"] = ""
+    # Cap-pause reason: when the stuck-in-stage cap (NOT an operator signal)
+    # produces a ``PauseAction``, its reason is saved here so the post-loop
+    # code can surface a diagnostic instead of a silent empty response. An
+    # operator-initiated pause leaves this empty — only the cap path sets it.
+    _cap_pause_reason: str = ""
 
     while _state.iteration < max_tool_iterations:
         _state.iteration += 1
@@ -3569,11 +3574,20 @@ async def _run_turn_inner(
         if isinstance(_lifecycle_action, _PauseAction):
             _pending_operator_exit = "paused"
             _pending_checkpoint_state = "paused"
+            # Distinguish cap-pause from operator-signal pause: the cap's
+            # reason starts with "stuck in" (set by the stuck-in-stage cap
+            # in section 5 of the resolver), while an operator signal's
+            # reason is "operator pause" (section 0). Save the cap reason
+            # so the post-loop code can surface a diagnostic instead of a
+            # silent empty response.
+            if _lifecycle_action.reason != "operator pause":
+                _cap_pause_reason = _lifecycle_action.reason
             _log.info(
-                "turn lifecycle: operator pause (mode=%s, iteration=%d, reason=%s)",
+                "turn lifecycle: pause (mode=%s, iteration=%d, reason=%s, cap=%s)",
                 mode_id,
                 _state.iteration,
                 _lifecycle_action.reason,
+                bool(_cap_pause_reason),
             )
             break
 
@@ -5886,14 +5900,60 @@ async def _run_turn_inner(
             break
 
     if not content:
+        # ── Cap-pause diagnostic ────────────────────────────────────────
+        # The stuck-in-stage cap (NOT an operator signal) broke the loop
+        # before the model call. Surface a diagnostic so the user knows why
+        # the turn paused and can redirect. This is NOT an operator-initiated
+        # pause — the cap fired because the model was stuck in a loop (often
+        # retrying a failing tool call). The diagnostic lets the user
+        # intervene with the right path or instruction.
+        if _cap_pause_reason:
+            # Build a richer diagnostic: include the last tool call and a
+            # snippet of its result so the user can see *why* the model was
+            # stuck (e.g. "markdown_forge_document kept returning truncated
+            # documents" or "read_file failed: file not found"). The last
+            # receipt's capability_id names the tool; ``last_tool_result_text``
+            # carries its output (truncated for the diagnostic).
+            _last_tool_name = ""
+            if _state.effect_receipts:
+                _last_tool_name = (
+                    _state.effect_receipts[-1].capability_id
+                    if hasattr(_state.effect_receipts[-1], "capability_id")
+                    else ""
+                )
+            _last_tool_snippet = ""
+            if _state.last_tool_result_text:
+                _last_tool_snippet = _state.last_tool_result_text[:300]
+                if len(_state.last_tool_result_text) > 300:
+                    _last_tool_snippet += "…"
+            _why_clause = ""
+            if _last_tool_name:
+                _why_clause = f" The last tool I called was `{_last_tool_name}`"
+                if _last_tool_snippet:
+                    _why_clause += f" which returned: {_last_tool_snippet}"
+                _why_clause += "."
+            content = (
+                f"I've hit my iteration budget in {mode_id} "
+                f"({_cap_pause_reason}).{_why_clause} "
+                f"I've paused so you can redirect me — reply with instructions "
+                f"or a correction and I'll resume from here."
+            )
+            _log.info(
+                "turn loop: surfacing cap-pause diagnostic (mode=%s, reason=%s, last_tool=%s)",
+                mode_id,
+                _cap_pause_reason,
+                _last_tool_name,
+            )
         # ── Operator exit with no content ──────────────────────────────
         # A PauseAction / StopAction / TerminateAction broke the loop before
         # the model call. The transport reads ``operator_exit`` to decide
         # prompt behavior; the checkpoint layer stamps ``paused`` /
         # ``terminated``. Do NOT synthesize a yield question — operator
         # exits do not surface a question (only model-emitted yields and
-        # recovery stalls do).
-        if _pending_operator_exit:
+        # recovery stalls do). The cap-pause diagnostic above already set
+        # ``content`` for the stuck-in-stage cap case, so skip the fallback
+        # yield paths entirely when the cap diagnostic has already surfaced.
+        elif _pending_operator_exit:
             content = ""
         elif _pending_yield is not None:
             content = _pending_yield.question
