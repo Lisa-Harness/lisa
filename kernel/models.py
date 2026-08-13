@@ -240,11 +240,32 @@ class OperationExecutionContext(BaseModel):
 
 
 class OperationResult(BaseModel):
-    """Structured result returned by one internal operation."""
+    """Structured result returned by one internal operation.
+
+    The ``status`` field is the typed success/degradation contract:
+    - ``"success"``  — clean result; the write-contract resolver counts it.
+    - ``"degraded"`` — completed with warnings (partial / truncated /
+      persisted-but-incomplete). The turn runner does NOT record an
+      ``EffectReceipt`` for a degraded write, so the completion contract
+      treats it as an unverified write.
+    - ``"error"``    — the operation chose not to raise but failed; the
+      ``output_text`` carries a diagnostic message. Treated like
+      ``"degraded"`` for receipt purposes.
+
+    Operations that raise bypass these fields entirely; the registry
+    wraps the exception in an ``OperationExecutionError`` subclass.
+    """
 
     output_text: str = ""
     output_json: dict[str, Any] = Field(default_factory=dict)
     extra: dict[str, Any] = Field(default_factory=dict)
+    status: Literal["success", "degraded", "error"] = "success"
+    error_detail: str | None = None
+
+    @property
+    def is_success(self) -> bool:
+        """Return True when the operation completed cleanly (``status == "success"``)."""
+        return self.status == "success"
 
 
 class OperationDefinition(BaseModel):

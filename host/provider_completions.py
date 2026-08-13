@@ -46,6 +46,52 @@ def _extract_anthropic_error_detail(response: httpx.Response) -> str:
     return top_level_message or "no error payload provided by Anthropic"
 
 
+def _extract_openai_error_detail(exc: Exception) -> str:
+    """Extract a concise detail string from an OpenAI SDK exception.
+
+    The OpenAI Python SDK raises ``APIStatusError`` subclasses
+    (``BadRequestError``, ``RateLimitError``, etc.) whose ``.response``
+    attribute carries the raw ``httpx.Response``. The JSON body follows
+    the OpenAI error schema: ``{"error": {"message": "...", "type": "...",
+    "param": "...", "code": "..."}}``. Returns a compact ``"type: message
+    (param=...)"`` string so a 400 (e.g. the ``gpt-5.2-codex`` temperature
+    rejection) surfaces as one readable line instead of a 2 KB traceback.
+    Falls back to ``str(exc)`` when no structured body is available.
+    """
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    try:
+        payload = response.json()
+    except (ValueError, AttributeError):
+        text = getattr(response, "text", "").strip()
+        return text or str(exc)
+    if not isinstance(payload, dict):
+        return str(exc)
+    error_payload = payload.get("error")
+    if not isinstance(error_payload, dict):
+        top_msg = str(payload.get("message") or "").strip()
+        return top_msg or str(exc)
+    parts: list[str] = []
+    error_type = str(error_payload.get("type") or "").strip()
+    error_message = str(error_payload.get("message") or "").strip()
+    error_param = str(error_payload.get("param") or "").strip()
+    error_code = str(error_payload.get("code") or "").strip()
+    if error_type:
+        parts.append(error_type)
+    if error_message:
+        parts.append(error_message)
+    suffix_parts: list[str] = []
+    if error_param:
+        suffix_parts.append(f"param={error_param}")
+    if error_code:
+        suffix_parts.append(f"code={error_code}")
+    detail = ": ".join(parts)
+    if suffix_parts:
+        detail += f" ({', '.join(suffix_parts)})"
+    return detail or str(exc)
+
+
 def _normalize_response_format(response_format: type[Any] | None) -> dict[str, str] | None:
     """Return the OpenAI-compatible response_format dict, or None."""
     if response_format is None:

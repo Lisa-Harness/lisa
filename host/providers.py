@@ -42,6 +42,7 @@ from host.provider_completions import (
     _extract_anthropic_text,
     _extract_anthropic_tool_calls,
     _extract_completion_tool_calls,
+    _extract_openai_error_detail,
     _first_message_content,
     _normalize_ollama_host_to_base_url,
     _normalize_structured_content,
@@ -361,9 +362,46 @@ def log_completion_error(
 ) -> None:
     """Log the completion.error event for a failed provider call.
 
-    Currently a no-op — logging will be wired through the runtime in a later step.
+    Emits a structured ``logger.error`` record so provider failures
+    (400s, timeouts, auth errors) are visible in the JSONL turn log with
+    enough context to diagnose — ``exc_type``, a concise detail string,
+    provider/model, API version, finish_reason, and a token/prompt-size
+    estimate. Never raises: a logging failure must not break the re-raise
+    that the caller performs after this call.
     """
-    _ = (exc, model_def, response_format_name, elapsed_ms, messages, tools)
+    try:
+        detail = _extract_openai_error_detail(exc)
+        # Extract finish_reason from the HTTP response when available
+        # (some providers include it in the error body for length/timeout
+        # truncations surfaced as errors).
+        finish_reason = ""
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                body = response.json()
+                if isinstance(body, dict):
+                    finish_reason = str(body.get("finish_reason") or body.get("error", {}).get("code") or "")
+            except (ValueError, AttributeError):
+                pass
+        prompt_token_estimate = sum(len(m.get("content", "")) for m in messages) // 4
+        logger.error(
+            "completion.error: exc_type=%s detail=%s provider=%s model_id=%s "
+            "api_version=%s response_format=%s elapsed_ms=%.1f finish_reason=%s "
+            "message_count=%d tool_count=%d prompt_token_estimate=%d",
+            type(exc).__name__,
+            detail[:500],
+            model_def.provider,
+            model_def.model_id,
+            getattr(model_def, "api_version", ""),
+            response_format_name,
+            elapsed_ms,
+            finish_reason,
+            len(messages),
+            len(tools) if tools else 0,
+            prompt_token_estimate,
+        )
+    except Exception:  # pylint: disable=broad-except
+        logger.debug("log_completion_error failed", exc_info=True)
 
 
 def log_completion_response(
@@ -375,9 +413,29 @@ def log_completion_response(
 ) -> None:
     """Log the completion.response debug event for a successful provider call.
 
-    Currently a no-op — logging will be wired through the runtime in a later step.
+    Emits a structured ``logger.debug`` record so successful completions
+    are visible in the JSONL turn log under debug-level logging: provider,
+    model, elapsed time, finish_reason, and the token counters from the
+    provider's usage object. Kept at debug level so the default log stays
+    lean; gated implicitly by the logger's effective level.
     """
-    _ = (model_def, response_format_name, elapsed_ms, result)
+    try:
+        logger.debug(
+            "completion.response: provider=%s model_id=%s response_format=%s "
+            "elapsed_ms=%.1f finish_reason=%s prompt_tokens=%d completion_tokens=%d "
+            "cached_tokens=%d reasoning_tokens=%d",
+            model_def.provider,
+            model_def.model_id,
+            response_format_name,
+            elapsed_ms,
+            getattr(result, "finish_reason", ""),
+            getattr(result, "prompt_tokens", 0),
+            getattr(result, "completion_tokens", 0),
+            getattr(result, "cached_tokens", 0),
+            getattr(result, "reasoning_tokens", 0),
+        )
+    except Exception:  # pylint: disable=broad-except
+        logger.debug("log_completion_response failed", exc_info=True)
 
 
 async def publish_completion_usage(

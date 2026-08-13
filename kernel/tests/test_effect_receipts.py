@@ -253,7 +253,76 @@ async def test_parent_turn_with_receipt_is_not_blocked() -> None:
     assert result.block_origin != "no_tools"
 
 
-# ── Regression: failed-dispatch hallucination (2026-08-07 review) ─────
+@pytest.mark.asyncio
+async def test_degraded_write_operation_produces_no_receipt() -> None:
+    """A write op returning ``status="degraded"`` does NOT produce a receipt.
+
+    The ``OperationResult.status`` contract lets an operation signal a soft
+    failure (truncated, empty, persisted-with-warning) without raising. The
+    turn runner must not record an ``EffectReceipt`` for a degraded write,
+    so the completion contract treats it as an unverified write — a
+    hallucinated "I wrote it" cannot slip through as success.
+    """
+
+    async def stub_execute_operation(
+        operation_id: str, _ctx: OperationExecutionContext
+    ) -> OperationResult:
+        return OperationResult(
+            output_text=f"Executed {operation_id} (truncated).",
+            output_json={"artifact_id": "doc-1"},
+            status="degraded",
+            error_detail="continuation exhausted: 3 empty passes",
+        )
+
+    fake_write_op = SimpleNamespace(
+        effect="write",
+        mode_allowlist=(),
+        description="write a file",
+        parameters_schema={"type": "object", "properties": {}},
+        max_calls_per_turn=0,
+        effective_provider_id=lambda: "test",
+    )
+
+    call_count = 0
+
+    async def writing(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path": "a.md", "content": "x"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(content="Wrote it.")
+
+    hooks = TurnHooks(complete=writing, execute_operation=stub_execute_operation)
+    with (
+        patch(
+            "kernel.turn_runner.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+        patch(
+            "kernel.turn_runner.get_operation_catalog",
+            return_value={"write_file": fake_write_op},
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+    ):
+        result = await run_turn(mode_id="writer", query="write the file", hooks=hooks)
+
+    # A degraded write must NOT produce a receipt — the completion contract
+    # is not satisfied by a truncated/partial result.
+    assert not any(r.capability_id == "write_file" for r in result.effect_receipts)
 
 
 @pytest.mark.asyncio

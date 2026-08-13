@@ -584,7 +584,34 @@ def build_turn_hooks(
                         mode_id,
                     )
                 except Exception as exc:  # pylint: disable=broad-except
-                    logger.warning("auto-capture failed: %s", exc)
+                    # Surface structured context for operation-level failures
+                    # so the "empty distillation output" class of silent
+                    # auto-capture failures is diagnosable. The
+                    # ``OperationExecutionError`` hierarchy carries the
+                    # operation id and a typed error detail; the generic
+                    # ``Exception`` fallback keeps the legacy message shape.
+                    exc_type = type(exc).__name__
+                    detail = str(exc)
+                    op_id = getattr(exc, "operation_id", "") or ""
+                    if not op_id:
+                        # ``OperationExecutionError`` messages embed the
+                        # operation id as ``"Operation '<id>' failed: ..."``;
+                        # extract it for the structured log.
+                        import re  # noqa: PLC0415  # lazy: stdlib import avoids top-level re cost on the success path
+
+                        m = re.search(r"Operation '([^']+)'", detail)
+                        if m:
+                            op_id = m.group(1)
+                    logger.warning(
+                        "auto-capture failed: operation=%s exc_type=%s detail=%s "
+                        "mode=%s salience=%.2f memory_tier=%s",
+                        op_id or "synthesize_and_store_learning",
+                        exc_type,
+                        detail[:300],
+                        mode_id,
+                        trigger_salience,
+                        memory_tier,
+                    )
 
     # ── UnifiedState provider callable ─────────────────────────────
     def _state_provider() -> Any:

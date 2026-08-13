@@ -16,7 +16,12 @@ import logging
 from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.model_manifest import ModelManifest
 from kernel.models import WorkflowModeConfig
-from kernel.operations.registry import OperationExecutionError
+from kernel.operations.registry import (
+    OperationContentError,
+    OperationDegradedError,
+    OperationExecutionError,
+    OperationTimeoutError,
+)
 
 from host.commands._log import _resolve_model
 from host.runtime import HostRuntime
@@ -127,6 +132,24 @@ def format_unsupported_mode(mode: WorkflowModeConfig) -> str:
 def format_operation_error(exc: OperationExecutionError) -> str:
     """Format an operation execution error for user-facing display."""
     message = str(exc).strip()
+    if isinstance(exc, OperationTimeoutError):
+        return (
+            f"{message}\n\n"
+            "The host kept running, but this operation exceeded its local time budget. "
+            "Try a narrower query, a faster model, or a larger operation timeout."
+        )
+    if isinstance(exc, OperationContentError):
+        return (
+            f"{message}\n\n"
+            "The model produced empty or structurally invalid output for this operation. "
+            "Try a more specific prompt, a different model, or a smaller target length."
+        )
+    if isinstance(exc, OperationDegradedError):
+        return (
+            f"{message}\n\n"
+            "The operation completed with warnings — the artifact may be partial. "
+            "Review it before relying on it, or retry with a narrower prompt."
+        )
     lowered = message.lower()
     if "timed out" in lowered:
         return (

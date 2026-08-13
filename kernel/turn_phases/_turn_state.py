@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from kernel.models import ToolResult
+from kernel.models import OperationResult, ToolResult
 from kernel.seams.protocols import RouterModelRef
 from kernel.tools.registry import execute_tool
 
@@ -104,6 +104,13 @@ class _TurnState:
 
     # ── Router-relevant state ────────────────────────────────────────
     last_tool_result_text: str | None = None
+    # The last in-process ``OperationResult`` dispatched this turn, or
+    # ``None`` when the last dispatch was an MCP tool or a low-level
+    # pack tool. The cap-pause diagnostic reads ``extra`` for structured
+    # context (e.g. continuation attempt counts, truncation reason) so
+    # the user sees *why* an operation kept failing, not just *that* the
+    # turn paused. Only set for the in-process operation dispatch branch.
+    last_operation_result: OperationResult | None = None
     # Count of tools that have returned a result this turn. Drives
     # ``RouterRequest.has_tool_result`` so router rules see turn-level
     # "any tool returned" state rather than just the last result text

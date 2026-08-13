@@ -5696,12 +5696,37 @@ async def _run_turn_inner(
                     # landed its work. A pack tool that reports an error
                     # (``ToolResult.error`` non-empty) did NOT write — no
                     # receipt, so the child-turn completion contract does
-                    # not count a failed write as success. Operation
-                    # failures raise before this point, so ``op_result`` is
-                    # always a successful result here.
+                    # not count a failed write as success. An operation
+                    # that returns ``OperationResult(status in
+                    # {"degraded","error"})`` likewise did NOT write — the
+                    # ``status`` contract (kernel.models.OperationResult)
+                    # lets an operation signal a soft failure (truncated,
+                    # empty, persisted-with-warning) without raising. A
+                    # degraded/error write is logged so the degradation is
+                    # visible in the turn log, not silently absorbed.
                     _dispatched_succeeded = True
                     if tool_name in tool_catalog and isinstance(tool_result, ToolResult):
                         _dispatched_succeeded = not tool_result.error.strip()
+                    # ``op_result`` is only bound on the operation dispatch
+                    # branch (line ~5510); when the operation raised, the
+                    # ``except Exception`` block above set ``tool_output``
+                    # and ``op_result`` is unbound. Guard with ``in locals()``
+                    # so the receipt block never touches an unbound name.
+                    if (
+                        tool_name in operation_catalog
+                        and "op_result" in locals()
+                        and isinstance(op_result, OperationResult)
+                    ):
+                        if not op_result.is_success:
+                            _dispatched_succeeded = False
+                            _log.warning(
+                                "operation '%s' returned status=%s (effect=%s); "
+                                "not recording a write receipt. detail=%s",
+                                tool_name,
+                                op_result.status,
+                                _dispatched_effect,
+                                op_result.error_detail or op_result.output_text[:200],
+                            )
                     if _dispatched_succeeded:
                         _state.effect_receipts.append(
                             EffectReceipt(
@@ -5852,6 +5877,22 @@ async def _run_turn_inner(
 
             # Track the latest tool result for the model router.
             _state.last_tool_result_text = str(tool_output)
+            # Track the latest in-process operation result for the
+            # cap-pause diagnostic so it can surface structured context
+            # (continuation attempts, truncation reason) from ``extra``.
+            # Only set on the operation dispatch branch; cleared on every
+            # other branch so a stale value never leaks into the next
+            # iteration's diagnostic. Guard with ``in locals()`` because
+            # ``op_result`` is unbound when the operation raised (the
+            # ``except`` block set ``tool_output`` instead).
+            if (
+                tool_name in operation_catalog
+                and "op_result" in locals()
+                and isinstance(op_result, OperationResult)
+            ):
+                _state.last_operation_result = op_result
+            else:
+                _state.last_operation_result = None
             _state.tool_results_received += 1
 
             tool_result_msg: dict[str, Any] = {
@@ -5929,7 +5970,32 @@ async def _run_turn_inner(
             _why_clause = ""
             if _last_tool_name:
                 _why_clause = f" The last tool I called was `{_last_tool_name}`"
-                if _last_tool_snippet:
+                # When the last dispatch was an in-process operation,
+                # surface structured context from ``OperationResult.extra``
+                # so the user sees *why* it kept failing (e.g. "truncated
+                # after 3 continuation attempts, finish_reason=length")
+                # rather than just the model-facing summary string.
+                _op_ctx_parts: list[str] = []
+                if _state.last_operation_result is not None:
+                    _op_extra = getattr(_state.last_operation_result, "extra", {}) or {}
+                    _cont = _op_extra.get("continuation") if isinstance(_op_extra, dict) else None
+                    if isinstance(_cont, dict):
+                        if _cont.get("was_truncated"):
+                            _attempts = _cont.get("attempts", 0)
+                            _finish = _cont.get("final_finish_reason", "unknown")
+                            _op_ctx_parts.append(
+                                f"truncated after {_attempts} continuation "
+                                f"attempt(s) (finish_reason={_finish})"
+                            )
+                    _trunc = _op_extra.get("truncated") if isinstance(_op_extra, dict) else None
+                    if _trunc and not _op_ctx_parts:
+                        _op_ctx_parts.append("persisted truncated")
+                    _lint = _op_extra.get("lint_warnings") if isinstance(_op_extra, dict) else None
+                    if _lint:
+                        _op_ctx_parts.append(f"{_lint} lint warning(s)")
+                if _op_ctx_parts:
+                    _why_clause += f" which returned: {'; '.join(_op_ctx_parts)}"
+                elif _last_tool_snippet:
                     _why_clause += f" which returned: {_last_tool_snippet}"
                 _why_clause += "."
             content = (

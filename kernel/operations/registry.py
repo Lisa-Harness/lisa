@@ -64,6 +64,18 @@ class OperationExecutionError(RuntimeError):
     """Raised when an operation cannot be resolved or executed."""
 
 
+class OperationTimeoutError(OperationExecutionError):
+    """Raised when an operation exceeds its configured ``timeout_seconds``."""
+
+
+class OperationContentError(OperationExecutionError):
+    """Raised when an operation's LLM output is empty, unparseable, or structurally invalid."""
+
+
+class OperationDegradedError(OperationExecutionError):
+    """Raised when an operation completed with warnings (partial / truncated result)."""
+
+
 def is_known_tool(tool_id: str) -> bool:
     """Return True if the given ID corresponds to a registered internal tool."""
     from kernel.tools.registry import get_tool_catalog
@@ -727,7 +739,7 @@ async def execute_operation(
             status = "timeout"
             err_msg = f"Timed out after {definition.timeout_seconds}s"
             mark_span_failed(span, exc)
-            raise OperationExecutionError(f"Operation '{operation_id}' timed out") from exc
+            raise OperationTimeoutError(f"Operation '{operation_id}' timed out") from exc
         except ApprovalRequired:
             raise
         except Exception as exc:  # pylint: disable=broad-except
@@ -757,6 +769,18 @@ async def execute_operation(
                 asyncio.create_task(ctx.event_bus.publish(event))
 
     if isinstance(result, OperationResult):
+        if result.status == "error":
+            logger.warning(
+                "operation '%s' returned status=error: %s",
+                operation_id,
+                result.error_detail or result.output_text[:200],
+            )
+        elif result.status == "degraded":
+            logger.warning(
+                "operation '%s' returned status=degraded: %s",
+                operation_id,
+                result.error_detail or result.output_text[:200],
+            )
         return result
     if isinstance(result, str):
         return OperationResult(output_text=result)
