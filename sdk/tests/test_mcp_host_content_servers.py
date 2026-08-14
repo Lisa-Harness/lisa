@@ -77,7 +77,7 @@ def test_build_content_mcp_config_serializes_session_provider_selections(
         provider_selections=ProviderSelections(
             modes={"default": "lisa-pack-core"},
             operations={"web_search": "lisa-pack-search"},
-            tools={"web_search": "lisa-pack-brave-search"},
+            tools={"web_search": "lisa-pack-brave"},
         ),
     )
 
@@ -86,7 +86,7 @@ def test_build_content_mcp_config_serializes_session_provider_selections(
     assert payload == {
         "modes": {"default": "lisa-pack-core"},
         "operations": {"web_search": "lisa-pack-search"},
-        "tools": {"web_search": "lisa-pack-brave-search"},
+        "tools": {"web_search": "lisa-pack-brave"},
     }
 
 
@@ -219,7 +219,7 @@ def test_session_provider_selection_payload_round_trips() -> None:
     selections = ProviderSelections(
         modes={"default": "lisa-pack-core"},
         operations={"web_search": "lisa-pack-search"},
-        tools={"web_search": "lisa-pack-brave-search"},
+        tools={"web_search": "lisa-pack-brave"},
     )
 
     payload = session_provider_selection_payload(selections)
@@ -227,7 +227,7 @@ def test_session_provider_selection_payload_round_trips() -> None:
     assert payload == {
         "modes": {"default": "lisa-pack-core"},
         "operations": {"web_search": "lisa-pack-search"},
-        "tools": {"web_search": "lisa-pack-brave-search"},
+        "tools": {"web_search": "lisa-pack-brave"},
     }
     # Empty selections yield empty payload values (no env var set downstream).
     empty = ProviderSelections()

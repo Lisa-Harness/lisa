@@ -67,7 +67,7 @@ def _make_catalog_mcp_config(*, log_path: Path) -> MCPClientConfig:
             "LISA_SESSION_PROVIDER_SELECTIONS": json.dumps(
                 {
                     "modes": {"default": "lisa-pack-core"},
-                    "tools": {"web_search": "lisa-pack-brave-search"},
+                    "tools": {"web_search": "lisa-pack-brave"},
                 }
             ),
             "LISA_MCP_LOG_PATH": str(log_path),

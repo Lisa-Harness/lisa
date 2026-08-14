@@ -330,8 +330,8 @@ def test_normalize_pack_install_spec_expands_bare_pack_name(
     """Bare ``lisa-pack-*`` names expand to the framework git root template."""
     monkeypatch.delenv("LISA_PACK_GIT_ROOT", raising=False)
 
-    result = commands._normalize_pack_install_spec("lisa-pack-brave-search")
-    assert result == "git+https://github.com/Lisa-framework/lisa-pack-brave-search@main"
+    result = commands._normalize_pack_install_spec("lisa-pack-brave")
+    assert result == "git+https://github.com/Lisa-framework/lisa-pack-brave@main"
 
 
 def test_normalize_pack_install_spec_bare_name_respects_custom_root(
@@ -343,8 +343,8 @@ def test_normalize_pack_install_spec_bare_name_respects_custom_root(
         "git+https://gitlab.example.com/lisa-mirror/{pack}@main",
     )
 
-    result = commands._normalize_pack_install_spec("lisa-pack-brave-search")
-    assert result == "git+https://gitlab.example.com/lisa-mirror/lisa-pack-brave-search@main"
+    result = commands._normalize_pack_install_spec("lisa-pack-brave")
+    assert result == "git+https://gitlab.example.com/lisa-mirror/lisa-pack-brave@main"
 
 
 def test_normalize_pack_install_spec_bare_name_disabled_when_root_empty(
@@ -353,8 +353,8 @@ def test_normalize_pack_install_spec_bare_name_disabled_when_root_empty(
     """Setting ``LISA_PACK_GIT_ROOT`` to empty disables bare-name expansion."""
     monkeypatch.setenv("LISA_PACK_GIT_ROOT", "")
 
-    result = commands._normalize_pack_install_spec("lisa-pack-brave-search")
-    assert result == "lisa-pack-brave-search"
+    result = commands._normalize_pack_install_spec("lisa-pack-brave")
+    assert result == "lisa-pack-brave"
 
 
 def test_normalize_pack_install_spec_bare_name_preserves_version_pin(
@@ -393,7 +393,7 @@ def test_validate_pack_spec_for_install_expanded_bare_name_passes(
     monkeypatch.setenv("LISA_PACK_GIT_ALLOW_HOSTS", "github.com")
     monkeypatch.setenv("LISA_PACK_REQUIRE_GIT_REF", "true")
 
-    expanded = commands._normalize_pack_install_spec("lisa-pack-brave-search")
+    expanded = commands._normalize_pack_install_spec("lisa-pack-brave")
     ok, reason = commands._validate_pack_spec_for_install(expanded)
     assert ok is True
     assert reason == ""

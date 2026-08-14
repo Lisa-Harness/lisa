@@ -34,7 +34,7 @@ providers:
   modes:
     default: lisa-pack-core
   tools:
-    web_search: lisa-pack-brave-search
+    web_search: lisa-pack-brave
 routing:
   start_mode: default
 context:
@@ -79,7 +79,7 @@ providers:
   operations:
     web_search: lisa-pack-search
   tools:
-    web_search: lisa-pack-brave-search
+    web_search: lisa-pack-brave
   capabilities:
     memory: lisa-pack-memory
 
@@ -187,20 +187,20 @@ Customizes the install source/method for packs listed in `required`. The host au
 
 Git refs **must** pin `@tag/@branch/@sha`. The host treats pinning as mandatory for auto-install regardless of `LISA_PACK_REQUIRE_GIT_REF`; an unpinned `git+` source raises a startup error. Trust policy env vars (`LISA_PACK_ALLOWED_PREFIXES`, `LISA_PACK_GIT_ALLOW_HOSTS`, `LISA_PACK_GIT_ROOT`) are honored — a session context cannot override them.
 
-Local paths are resolved relative to the session-context file's directory, so a session can reference packs checked out alongside it (e.g. `source: ../lisa-packs/brave_search`). Absolute paths are passed through unchanged.
+Local paths are resolved relative to the session-context file's directory, so a session can reference packs checked out alongside it (e.g. `source: ../lisa-packs/brave`). Absolute paths are passed through unchanged.
 
 Auto-install applies **only** to `required` packs. Failure of any required pack is a hard startup error; the runtime does not start in a degraded state. When at least one pack is installed, the host requests a restart so `importlib.metadata` entry-point discovery sees the new packs on the next boot pass.
 
 ```yaml
 resources:
   packs:
-    required: [lisa-pack-core, lisa-pack-cloudflare, lisa-pack-brave-search]
+    required: [lisa-pack-core, lisa-pack-cloudflare, lisa-pack-brave]
     auto_install:
       lisa-pack-cloudflare:
         source: git+https://github.com/lisa-framework/lisa-pack-cloudflare.git@v0.2.0
         pin: v0.2.0
-      lisa-pack-brave-search:
-        source: ../lisa-packs/brave_search
+      lisa-pack-brave:
+        source: ../lisa-packs/brave
         editable: true
 ```
 
@@ -227,7 +227,7 @@ Use `include` (not `required`) when you manage the packs-venv yourself (`uv pip 
 resources:
   packs:
     required: [lisa-pack-core]           # only the always-needed bundled pack
-    include: [lisa-pack-cloudflare, lisa-pack-brave-search]  # operator-installed
+    include: [lisa-pack-cloudflare, lisa-pack-brave]  # operator-installed
 ```
 
 If a pack is in `include` but not installed, it is silently absent from the catalog — the host does not raise a startup error. This is the intended behavior: `include` is a *catalog filter*, not an *install trigger*.
@@ -479,12 +479,12 @@ providers:
   modes:
     default: lisa-pack-core          # core owns the "default" mode
   tools:
-    web_search: lisa-pack-brave-search  # Brave owns the web_search tool
+    web_search: lisa-pack-brave  # Brave owns the web_search tool
   capabilities:
     memory: lisa-pack-mem0            # mem0 owns the memory capability
 ```
 
-Provider IDs are normalized: `lisa-pack-brave-search`, `brave-search`, and `brave_pack` all match the same pack. Selection is exact — there is no ordered preference list. If the selected pack is not active, the catalog entry is absent (no fallback).
+Provider IDs are normalized: `lisa-pack-brave`, `brave`, and `brave_pack` all match the same pack. Selection is exact — there is no ordered preference list. If the selected pack is not active, the catalog entry is absent (no fallback).
 
 ---
 
@@ -608,7 +608,7 @@ providers:
   operations:
     web_search: lisa-pack-search
   tools:
-    web_search: lisa-pack-brave-search
+    web_search: lisa-pack-brave
   capabilities:
     memory: lisa-pack-mem0
 ```

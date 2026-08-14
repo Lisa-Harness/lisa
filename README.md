@@ -82,7 +82,7 @@ The root `pyproject.toml` defines a public-only `uv` workspace. The workspace me
 - `lisa-host-cli` (`../lisa-hosts/cli/hosts/cli/`) — entry point `lisa` (submodule of the `lisa-hosts` umbrella repo)
 - `lisa-host` (`../lisa-hosts/packaging/lisa-host/`) — meta-package (`uv tool install lisa-host`)
 
-External public packs resolve from the sibling `../lisa-packs/` checkout and are pulled in with `uv sync --extra ext`: `lisa-pack-brave-search`, `lisa-pack-letta`, `lisa-pack-markdown`, `lisa-pack-mem0`, `lisa-pack-okf`, `lisa-pack-search`.
+External public packs resolve from the sibling `../lisa-packs/` checkout and are pulled in with `uv sync --extra ext`: `lisa-pack-brave`, `lisa-pack-letta`, `lisa-pack-markdown`, `lisa-pack-mem0`, `lisa-pack-okf`, `lisa-pack-search`.
 
 WIP packs resolve from `../lisa-packs-wip/` and are pulled in with `uv sync --extra wip`: `lisa-pack-cloudflare`, `lisa-pack-coding`, `lisa-pack-github`, `lisa-pack-gmail`, `lisa-pack-stripe`.
 

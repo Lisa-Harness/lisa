@@ -103,11 +103,11 @@ def test_infer_pack_package_name_maps_lisa_packs_site_packages_to_canonical_name
     site_packages = tmp_path / "site-packages" / "lisa_packs"
     mem0_root = site_packages / "mem0"
     mem0_root.mkdir(parents=True)
-    brave_root = site_packages / "brave_search"
+    brave_root = site_packages / "brave"
     brave_root.mkdir()
 
     assert content_roots.infer_pack_package_name(mem0_root) == "lisa-pack-mem0"
-    assert content_roots.infer_pack_package_name(brave_root) == "lisa-pack-brave-search"
+    assert content_roots.infer_pack_package_name(brave_root) == "lisa-pack-brave"
 
 
 def test_infer_pack_package_name_sdk_packs_keep_canonical_name(tmp_path: Path) -> None:

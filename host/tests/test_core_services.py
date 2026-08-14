@@ -162,7 +162,7 @@ def test_build_content_mcp_config_serializes_session_provider_selections(
         provider_selections=ProviderSelections(
             modes={"default": "lisa-pack-core"},
             operations={"web_search": "lisa-pack-search"},
-            tools={"web_search": "lisa-pack-brave-search"},
+            tools={"web_search": "lisa-pack-brave"},
         ),
     )
 
@@ -171,7 +171,7 @@ def test_build_content_mcp_config_serializes_session_provider_selections(
     assert payload == {
         "modes": {"default": "lisa-pack-core"},
         "operations": {"web_search": "lisa-pack-search"},
-        "tools": {"web_search": "lisa-pack-brave-search"},
+        "tools": {"web_search": "lisa-pack-brave"},
     }
 
 

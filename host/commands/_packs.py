@@ -77,7 +77,7 @@ _FRAMEWORK_ROOT = _framework_root()
 _FRAMEWORK_SEED_PACKAGES: tuple[str, ...] = ("kernel", "sdk", "mcp_server")
 
 # Default git root template for expanding bare pack names (e.g.
-# ``lisa-pack-brave-search`` → ``git+https://github.com/Lisa-framework/lisa-pack-brave-search@main``).
+# ``lisa-pack-brave`` → ``git+https://github.com/Lisa-framework/lisa-pack-brave@main``).
 # The ``{pack}`` placeholder is replaced with the bare package name. Set
 # ``LISA_PACK_GIT_ROOT`` to override with a custom template or to empty ("")
 # to disable expansion and fall back to PyPI resolution for bare names.
@@ -643,10 +643,10 @@ def _normalize_pack_install_spec(spec: str) -> str:
     1. Bare ``https://``/``http://`` GitHub-style URLs are rewritten to the
        ``git+https://`` form that :func:`_is_git_pack_spec` and uv both
        expect. This lets users paste a plain repo URL (e.g.
-       ``https://github.com/Lisa-Framework/lisa-pack-brave-search``) instead
+       ``https://github.com/Lisa-Framework/lisa-pack-brave``) instead
        of having to remember the ``git+`` prefix.
     2. Bare pack names matching the allowed prefix (e.g.
-       ``lisa-pack-brave-search``) are expanded to a ``git+`` URL using
+       ``lisa-pack-brave``) are expanded to a ``git+`` URL using
        :func:`pack_git_root_template` (default:
        ``git+https://github.com/Lisa-framework/{pack}@main``). This is a
        shorthand so users can type just the pack name for framework packs

@@ -127,7 +127,7 @@ def _resolve_auto_install_spec(
     When the source is a relative local path, it is resolved against
     ``session_source_dir`` (the session-context file's directory) so a
     session can reference packs checked out alongside it
-    (e.g. ``source: ../lisa-packs/brave_search``). Absolute paths and
+    (e.g. ``source: ../lisa-packs/brave``). Absolute paths and
     non-local sources (git+, bare names) are passed through unchanged.
     """
     entry = auto_install.get(pack_name)
