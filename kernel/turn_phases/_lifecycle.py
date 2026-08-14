@@ -612,16 +612,26 @@ def resolve_lifecycle_action(
         _rescue_target = _planned_writer_mode_id(workflow_position)
         if not _rescue_target:
             _rescue_target = settings.write_rescue_mode
-        return TransitionAction(
-            target_mode_id=_rescue_target,
-            rationale=(
-                f"write-rescue: mode '{mode_id}' hit the stuck-in-stage cap "
-                f"with no verified write for action tools "
-                f"{sorted(state.action_tool_ids)}; forcing transition to "
-                f"'{_rescue_target}' so the turn ends productively."
-            ),
-            forced=True,
-        )
+        # Guard against a self-handoff: if the rescue target equals the
+        # current mode (the planned writer IS this mode, or the fallback
+        # rescue mode is the mode already running), synthesizing the
+        # transition would reset ``turns_in_stage`` and re-fire this block
+        # every iteration — a zero-token but unbounded self-handoff loop.
+        # Fall through to the normal stuck-in-stage cap path (pause or
+        # terminate) instead. See ``self-handoff-hint-loop-2026-08-11.md``:
+        # the forced-transition enforcer will synthesize whatever the
+        # resolver returns, so the resolver must refuse the no-op case.
+        if _rescue_target and _rescue_target != mode_id:
+            return TransitionAction(
+                target_mode_id=_rescue_target,
+                rationale=(
+                    f"write-rescue: mode '{mode_id}' hit the stuck-in-stage "
+                    f"cap with no verified write for action tools "
+                    f"{sorted(state.action_tool_ids)}; forcing transition to "
+                    f"'{_rescue_target}' so the turn ends productively."
+                ),
+                forced=True,
+            )
 
     # ── 3. Global iteration cap (the only true ceiling) ────────────────
     # Caps pause, they do not yield. The operator did not ask a question;

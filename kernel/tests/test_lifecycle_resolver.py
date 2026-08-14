@@ -750,3 +750,25 @@ def test_write_rescue_skipped_before_cap() -> None:
     )
     # Should NOT be a forced transition — the pre-cap nudge gets its chance.
     assert not isinstance(action, TransitionAction)
+
+
+def test_write_rescue_no_self_handoff_when_rescue_equals_current_mode() -> None:
+    """When the configured rescue mode equals the mode already running,
+    the resolver must NOT synthesize a self-handoff — that would reset
+    ``turns_in_stage`` and re-fire this block every iteration, producing
+    an unbounded zero-token self-handoff loop. Fall through to the normal
+    stuck-in-stage cap path instead. Regression for the 2026-08-14
+    ``explainer → explainer`` hyperloop."""
+    action = resolve_lifecycle_action(
+        state=_State(
+            turns_in_stage=6,
+            action_tool_ids=frozenset({"markdown_forge_document"}),
+            has_write_receipt=False,
+        ),
+        mode_id="explainer",
+        mode_yield_policy=YieldPolicy(),
+        settings=_settings(stage_nudge_cap=6, write_rescue_mode="explainer"),
+    )
+    # Must NOT be a forced self-transition. Falls through to the cap path
+    # (pause or terminate depending on yield policy).
+    assert not isinstance(action, TransitionAction)
