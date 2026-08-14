@@ -5684,7 +5684,18 @@ async def _run_turn_inner(
                 elif tool_name in tool_catalog:
                     _tool_def = tool_catalog[tool_name]
                     _dispatched_effect = str(getattr(_tool_def, "effect", "read") or "read")
-                    if isinstance(tool_result, ToolResult):
+                    # ``tool_result`` is only bound on the in-process tool
+                    # dispatch sub-branch (``tool_def.implementation_module
+                    # is not None``). When the tool dispatches via MCP (the
+                    # ``else`` sub-branch) ``tool_result`` is unbound and
+                    # ``isinstance(tool_result, ToolResult)`` raises
+                    # ``UnboundLocalError`` — the 2026-08-14 ``web_search``
+                    # incident: serper/tavily register ``web_search`` as a
+                    # tool, but when it falls through to MCP dispatch the
+                    # artifact-id extraction crashed the turn. Guard with
+                    # ``in locals()`` (same pattern as the ``_dispatched_succeeded``
+                    # block below) so the receipt never touches an unbound name.
+                    if "tool_result" in locals() and isinstance(tool_result, ToolResult):
                         _dispatched_artifact_id = str(
                             (tool_result.output_json or {}).get("artifact_id", "")
                             or (tool_result.output_json or {}).get("document_id", "")
@@ -5705,7 +5716,19 @@ async def _run_turn_inner(
                     # degraded/error write is logged so the degradation is
                     # visible in the turn log, not silently absorbed.
                     _dispatched_succeeded = True
-                    if tool_name in tool_catalog and isinstance(tool_result, ToolResult):
+                    # ``tool_result`` is only bound on the in-process tool
+                    # dispatch branch (the ``elif tool_name in tool_catalog``
+                    # block above). When a capability is registered as BOTH
+                    # an operation and a tool (e.g. ``web_search``), the
+                    # operation branch runs first and ``tool_result`` is
+                    # unbound — guard with ``in locals()`` so the receipt
+                    # block never touches an unbound name (same pattern as
+                    # the ``op_result`` guard below).
+                    if (
+                        tool_name in tool_catalog
+                        and "tool_result" in locals()
+                        and isinstance(tool_result, ToolResult)
+                    ):
                         _dispatched_succeeded = not tool_result.error.strip()
                     # ``op_result`` is only bound on the operation dispatch
                     # branch (line ~5510); when the operation raised, the
