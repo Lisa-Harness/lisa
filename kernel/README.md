@@ -514,7 +514,7 @@ only "logic" is "call these tools, then produce structured output following thes
 
 ```plaintext
 operations/research/
-└── web_search.operation.md   ← YAML front matter + Markdown body
+└── web_research.operation.md   ← YAML front matter + Markdown body
 ```
 
 A sibling `.py` file may optionally supply a Pydantic `response_format_model` class
@@ -522,7 +522,7 @@ without exposing an `execute` function. The catalog loader recognises that shape
 skips it as a runtime entry point, using it only as the response contract for the
 declarative runtime.
 
-Real examples: `lisa_packs/search/operations/research/web_search.operation.md`,
+Real examples: `lisa_packs/search/operations/research/web_research.operation.md`,
 `sdk/packs/introspect/operations/self_model/reflect_self.operation.md`.
 
 **Precedence rule:** if a directory contains both `<stem>.operation.md` and

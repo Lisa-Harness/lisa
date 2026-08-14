@@ -576,7 +576,7 @@ Affected: `hosts/cli/transport.py` (`start_thinking`, `on_stage`, `_render_statu
 #### Packs (`lisa-pack-*`)
 
 - `lisa-pack-core`: baseline public modes (default, workshop), authored routing prompts, user context templates, and research workshop operation with planner+synthesis pipeline.
-- `lisa-pack-search`: research & reasoning pack owning discuss, search, and ponder modes plus the web_search tool, the web_search research-loop operation, and the discussion_briefing pre-turn operation. Discuss was absorbed from core so each mode is co-located with its enrichment operations.
+- `lisa-pack-search`: research & reasoning pack owning discuss, search, and ponder modes plus the web_search tool, the web_research research-loop operation, and the discussion_briefing pre-turn operation. Discuss was absorbed from core so each mode is co-located with its enrichment operations.
 
 #### Little Lisa (`little-lisa`)
 
