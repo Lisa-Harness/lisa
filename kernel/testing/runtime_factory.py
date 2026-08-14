@@ -78,6 +78,32 @@ def build_test_runtime(
 
     if manifest is not None:
         runtime.manifest = manifest
+    else:
+        # Seed a default provider selection for ``web_search`` so the
+        # catalog subprocess can resolve the collision when multiple
+        # search provider packs (brave, serper, tavily) are installed
+        # alongside the search contract pack. Production sessions provide
+        # this via the session-context ``providers.tools`` block. Done
+        # unconditionally (not just for ``setup_framework=True``) because
+        # many tests call ``mcp_pool.setup_framework(runtime)`` directly
+        # after construction.
+        from kernel.session_plan import (  # noqa: PLC0415
+            ProviderSelections,
+        )
+
+        existing = runtime.session_plan.manifest.providers
+        if not existing.tools.get("web_search"):
+            new_providers = ProviderSelections(
+                modes=existing.modes,
+                operations=existing.operations,
+                tools={**existing.tools, "web_search": "lisa-pack-brave"},
+                capabilities=existing.capabilities,
+            )
+            runtime.session_plan = runtime.session_plan.model_copy(
+                update={"manifest": runtime.session_plan.manifest.model_copy(
+                    update={"providers": new_providers}
+                )}
+            )
 
     if setup_framework:
         from host.mcp_pool import setup_framework as _setup_framework  # noqa: PLC0415
