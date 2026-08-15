@@ -16,6 +16,7 @@ DESIGN — Re-exported by ``kernel.turn_runner``:
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from kernel.function_tools import build_strict_openai_function_tool
@@ -25,6 +26,8 @@ from kernel.operations.registry import build_operation_tool_schemas, get_operati
 from kernel.tools.mcp_client import MCPToolPool
 from kernel.tools.registry import get_tool_catalog
 from kernel.tools.schema_translator import mcp_tool_to_openai_function
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
     "_TRANSITION_TOOL_NAME",
@@ -59,6 +62,7 @@ def _build_in_process_tool_schemas(
     """
     catalog = get_tool_catalog()
     if not catalog:
+        _log.info("tool schema: empty in-process catalog for mode=%s", getattr(mode_config, 'mode_id', 'unknown'))
         return []
 
     allowed_tool_ids: set[str] | None = None
@@ -79,6 +83,7 @@ def _build_in_process_tool_schemas(
                 parameters_schema=definition.parameters_schema,
             )
         )
+    _log.info("tool schema: built %d in-process schemas for mode=%s", len(schemas), getattr(mode_config, 'mode_id', 'unknown'))
     return schemas
 
 
@@ -86,6 +91,7 @@ def _tool_schema_name(schema: dict[str, Any]) -> str:
     """Return the function name from an OpenAI tool schema."""
     function = schema.get("function")
     if not isinstance(function, dict):
+        _log.debug("tool schema: schema missing function block: %s", schema)
         return ""
     name = function.get("name")
     return str(name).strip() if isinstance(name, str) else ""
@@ -221,6 +227,15 @@ def _prune_model_tool_schemas(
         "dropped_disallowed": dropped_disallowed,
         "dropped_invalid": dropped_invalid,
     }
+    _log.info(
+        "tool schema: pruned for mode=%s input=%d output=%d invalid=%d disallowed=%d duplicates=%d",
+        getattr(mode_config, 'mode_id', 'unknown'),
+        len(tool_schemas),
+        len(pruned),
+        dropped_invalid,
+        dropped_disallowed,
+        dropped_duplicate,
+    )
     return pruned, stats
 
 

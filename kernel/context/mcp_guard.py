@@ -34,13 +34,21 @@ def _extract_text(result: Any) -> str:
 def _parse_guard_response(text: str) -> GuardResult:
     """Parse the JSON response from validate_input/validate_output."""
     if not text:
-        return GuardResult(allowed=True)
+        return GuardResult(
+            allowed=False,
+            blocked_reason="guard_response_empty",
+            annotations={"error": "empty guard response"},
+        )
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, TypeError):
-        return GuardResult(allowed=True)
+        return GuardResult(
+            allowed=False,
+            blocked_reason="guard_response_invalid_json",
+            annotations={"error": "invalid guard response JSON"},
+        )
     return GuardResult(
-        allowed=bool(data.get("allowed", True)),
+        allowed=bool(data.get("allowed", False)),
         blocked_reason=data.get("blocked_reason"),
         sanitized_text=data.get("sanitized_text"),
         annotations=data.get("annotations", {}),

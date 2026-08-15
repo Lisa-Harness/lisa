@@ -3069,7 +3069,7 @@ async def _run_turn_inner(
     if coordinator_hint:
         routing_hint = coordinator_hint
     if routing_hint:
-        _log.debug(
+        _log.info(
             "routing hint injected mode=%s hint_len=%d hint=%s",
             mode_id,
             len(routing_hint),
@@ -3105,13 +3105,13 @@ async def _run_turn_inner(
         _state.forced_action = (
             ForcedAction(targets=list(_forced_targets)) if _forced_targets else None
         )
-        _log.debug(
+        _log.info(
             "forced action computed: kind=%s targets=%s",
             _state.forced_action.kind if _state.forced_action else None,
             _state.forced_action.targets if _state.forced_action else [],
         )
     else:
-        _log.debug(
+        _log.info(
             "no routing hint mode=%s (satisfies_intents=%s routing_targets=%s)",
             mode_id,
             getattr(mode_config, "satisfies_intents", None),

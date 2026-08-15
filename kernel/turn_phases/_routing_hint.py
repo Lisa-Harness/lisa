@@ -14,11 +14,25 @@ DESIGN — Re-exported by ``kernel.turn_runner``:
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
-from kernel.ipsar_fsm import get_workflow_catalog
+from kernel import turn_runner
 from kernel.models import CapabilityManifest, WorkflowModeConfig
+
+_log = logging.getLogger(__name__)
+
+
+def get_workflow_catalog() -> dict[str, Any]:
+    """Return the workflow catalog via the turn runner for patchability.
+
+    Exposed at module scope (no leading underscore) so tests can patch
+    ``kernel.turn_phases._routing_hint.get_workflow_catalog`` and both
+    ``_detect_query_intents`` and ``_compute_fork_targets`` resolve through
+    the same indirection.
+    """
+    return turn_runner.get_workflow_catalog()
 
 # The stable plan-escalation hint text. Authored once here so the
 # ad-hoc instance guard (``is_plan_escalation_hint``) can detect it
@@ -77,6 +91,7 @@ def _detect_query_intents(
     the patterns and the tags.
     """
     if not routing_targets:
+        _log.debug("query intent detection: no routing targets to match")
         return set()
     catalog = get_workflow_catalog()
     query_lower = query.lower()
@@ -84,6 +99,7 @@ def _detect_query_intents(
     for target_id in routing_targets:
         mode_config = catalog.get(target_id)
         if mode_config is None:
+            _log.debug("query intent detection: target=%s not in catalog", target_id)
             continue
         # Check fast_path_patterns (anchored regex) first.
         matched = False
@@ -91,10 +107,11 @@ def _detect_query_intents(
             try:
                 if re.search(pattern, query_lower, re.IGNORECASE):
                     detected.update(mode_config.routing_intent_tags)
+                    _log.debug("query intent detection: target=%s matched via pattern=%r (tags=%s)", target_id, pattern, mode_config.routing_intent_tags)
                     matched = True
                     break
             except re.error:
-                pass
+                _log.debug("query intent detection: target=%s invalid pattern=%r", target_id, pattern)
         if matched:
             continue
         # Check routing_intent_keywords (per-tag substring match). Each
@@ -106,6 +123,7 @@ def _detect_query_intents(
             for keyword in keywords:
                 if keyword in query_lower:
                     detected.add(tag)
+                    _log.debug("query intent detection: target=%s matched via keyword=%r for tag=%s", target_id, keyword, tag)
                     break
         # Also check the command_pattern — a query that explicitly names the
         # mode (e.g. "remember that...") is a strong signal.
@@ -113,8 +131,10 @@ def _detect_query_intents(
             try:
                 if re.search(mode_config.command_pattern, query, re.IGNORECASE):
                     detected.update(mode_config.routing_intent_tags)
+                    _log.debug("query intent detection: target=%s matched via command_pattern=%r", target_id, mode_config.command_pattern)
             except re.error:
-                pass
+                _log.debug("query intent detection: target=%s invalid command_pattern=%r", target_id, mode_config.command_pattern)
+    _log.info("query intents detected: intents=%s (from %d routing targets)", sorted(detected), len(routing_targets))
     return detected
 
 
@@ -568,9 +588,9 @@ def _producer_first_hint(
 
 def _compute_capability_routing_hint(
     *,
-    mode_id: str,
+    mode_id: str,  # noqa: ARG001
     query: str,
-    capability_manifest: CapabilityManifest,  # retained for API stability
+    capability_manifest: CapabilityManifest,  # noqa: ARG001
     routing_targets: list[str],
     mode_config: WorkflowModeConfig | None = None,
     extra_satisfied: set[str] | None = None,
@@ -607,8 +627,13 @@ def _compute_capability_routing_hint(
        fall back to listing all routing targets.
 
     Returns an empty string when no hint is needed (zero tokens).
+    
+    Note: The capability_manifest parameter is retained for API stability;
+    intent-gap detection now relies on the declarative ``satisfies_intents``
+    declared by each mode's front-matter, not the live manifest.
     """
     if not routing_targets:
+        _log.info("routing hint: no routing targets available (mode=%s)", mode_id)
         return ""
     catalog = get_workflow_catalog()
 
@@ -642,10 +667,15 @@ def _compute_capability_routing_hint(
         current_satisfied |= extra_satisfied
     gap_intents = detected_intents - current_satisfied
     has_gap = bool(gap_intents)
+    
+    _log.info("routing hint: detected_intents=%s satisfied=%s gap=%s (mode=%s)", sorted(detected_intents), sorted(current_satisfied), sorted(gap_intents), mode_id)
+    
     if not detected_intents and not has_gap:
+        _log.info("routing hint: no intents detected and no gap; skipping hint (mode=%s)", mode_id)
         return ""
     if detected_intents and not has_gap:
         # The current mode already satisfies all detected intents.
+        _log.info("routing hint: all detected intents already satisfied by current mode (detected=%s)", sorted(detected_intents))
         return ""
 
     # ── 3. Find targets that cover all remaining gap intents (single handoff) ──
@@ -664,6 +694,9 @@ def _compute_capability_routing_hint(
         target_tags = set(target_cfg.routing_intent_tags)
         if gap_intents and gap_intents.issubset(target_tags):
             covering_targets.append(target_id)
+    
+    if covering_targets:
+        _log.debug("routing hint: found %d covering target(s) for gap=%s: %s", len(covering_targets), sorted(gap_intents), covering_targets)
 
     # ── 3b. Planner-mode escalation for complex multi-step queries ─────
     # When the request is complex (3+ remaining gap intents, or 2+ gap
@@ -713,9 +746,8 @@ def _compute_capability_routing_hint(
         and is_plan_reliable_for_model(planner_model_id)
         and (len(gap_intents) >= 3 or (len(gap_intents) >= 2 and _query_is_sequential(query)))
     ):
+        _log.info("routing hint: escalating to planner (gap_size=%d sequential=%s model=%s)", len(gap_intents), _query_is_sequential(query), planner_model_id)
         return _PLAN_ESCALATION_HINT
-
-    # ── 4. Multi-intent fork detection
 
     # ── 4. Multi-intent fork detection ─────────────────────────────────
     # When no single target covers all remaining gap intents but multiple
@@ -745,6 +777,7 @@ def _compute_capability_routing_hint(
                 gap_intents=gap_intents,
             )
             if first_target:
+                _log.info("routing hint: sequential multi-intent chain; routing to first target=%s (gap=%s)", first_target, sorted(gap_intents))
                 hint = (
                     "## Routing Hint\n\n"
                     f"This request requires `{first_target}`'s tools as the "
@@ -754,6 +787,7 @@ def _compute_capability_routing_hint(
                 )
                 return hint
             # No partial target found — fall through (silence).
+            _log.info("routing hint: sequential multi-intent chain but no target found for gap=%s", sorted(gap_intents))
         else:
             # Delegate the disjoint-coverage decision to the pure helper so
             # the fork enforcer and the hint emitter share one truth. Pass
@@ -775,6 +809,7 @@ def _compute_capability_routing_hint(
                 # fork's internal mechanics — the model reads each child
                 # mode's own _mode.md body after the fork. Same
                 # prose-blind contract as the single-handoff branch.
+                _log.info("routing hint: fork suggested (targets=%s gap=%s)", fork_modes, sorted(gap_intents))
                 target_list = ", ".join(fork_modes)
                 hint = (
                     "## Routing Hint\n\n"
@@ -786,6 +821,7 @@ def _compute_capability_routing_hint(
             # consumer intent, the fork was sequential-wrong. Suggest a
             # single handoff to the first producer target so the
             # post-handoff hint can chain the consumer after it.
+            _log.debug("routing hint: fork refused (likely producer/consumer mix)")
             _producer_hint = _producer_first_hint(
                 query=query,
                 routing_targets=routing_targets,
@@ -793,6 +829,7 @@ def _compute_capability_routing_hint(
                 gap_intents=gap_intents,
             )
             if _producer_hint is not None:
+                _log.info("routing hint: producer/consumer mix detected; routing to producer first")
                 return _producer_hint
 
     # ── 4b. Producer-first guard for producer/consumer mixes ──────────
@@ -810,6 +847,7 @@ def _compute_capability_routing_hint(
         gap_intents=gap_intents,
     )
     if _producer_hint is not None:
+        _log.info("routing hint: producer/consumer mix detected; routing to producer first (gap=%s)", sorted(gap_intents))
         return _producer_hint
 
     # ── 5. Single handoff to the covering target ──────────────────────
@@ -822,6 +860,7 @@ def _compute_capability_routing_hint(
         # different target (the 2026-07-30 bounce: hint said ``discuss``,
         # model went to ``ponder``). When the kernel knows the single
         # covering target, it says so directly.
+        _log.info("routing hint: single target covers all gap intents (target=%s gap=%s)", preferred, sorted(gap_intents))
         hint = (
             "## Routing Hint\n\n"
             f"This request requires `{preferred}`'s tools. Call "
@@ -843,4 +882,5 @@ def _compute_capability_routing_hint(
     # at catalog load, so genuine ambiguity reaching this branch is rare.
     # The producer/consumer and fork branches above still handle the
     # common multi-intent shapes before this falls through.)
+    _log.info("routing hint: no clean cover found; silence (let model self-route) (gap=%s routing_targets=%d)", sorted(gap_intents), len(routing_targets))
     return ""

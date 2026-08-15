@@ -133,18 +133,20 @@ def test_parse_guard_response_blocked() -> None:
     assert result.annotations == {"score": 0.9}
 
 
-def test_parse_guard_response_empty_defaults_to_allowed() -> None:
+def test_parse_guard_response_empty_defaults_to_blocked() -> None:
     from kernel.context.mcp_guard import _parse_guard_response
 
     result = _parse_guard_response("")
-    assert result.allowed is True
+    assert result.allowed is False
+    assert result.blocked_reason == "guard_response_empty"
 
 
-def test_parse_guard_response_invalid_json_defaults_to_allowed() -> None:
+def test_parse_guard_response_invalid_json_defaults_to_blocked() -> None:
     from kernel.context.mcp_guard import _parse_guard_response
 
     result = _parse_guard_response("not json")
-    assert result.allowed is True
+    assert result.allowed is False
+    assert result.blocked_reason == "guard_response_invalid_json"
 
 
 # ── Integration: MCPInputGuard via spawned lisa-guard ───────────────────────

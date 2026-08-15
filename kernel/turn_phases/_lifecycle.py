@@ -38,10 +38,13 @@ cutover.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from kernel.models import YieldAction, YieldPolicy
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
     "ContinueAction",
@@ -503,21 +506,26 @@ def resolve_lifecycle_action(
     # complete and writes a ``terminated`` checkpoint for audit/``/undo``.
     _op = state.operator_signal
     if _op == "pause":
+        _log.info("lifecycle: operator pause request (mode=%s)", mode_id)
         return PauseAction(reason="operator pause")
     if _op == "stop":
+        _log.info("lifecycle: operator stop request (mode=%s)", mode_id)
         return StopAction(reason="operator stop")
     if _op == "terminate":
+        _log.info("lifecycle: operator terminate request (mode=%s)", mode_id)
         return TerminateAction(reason="operator terminate")
 
     # ── 1. Router decision ──────────────────────────────────────────────
     if router_decision is not None:
         if getattr(router_decision, "finish", "").strip():
+            _log.info("lifecycle: router finish (mode=%s reason=%s)", mode_id, router_decision.finish.strip())
             return FinishAction(
                 strip_tools=True,
                 reason=f"router finish: {router_decision.finish.strip()}",
             )
         target = getattr(router_decision, "transition_to", "").strip()
         if target:
+            _log.info("lifecycle: router transition (mode=%s target=%s)", mode_id, target)
             return TransitionAction(
                 target_mode_id=target,
                 rationale="router transition_to",
@@ -527,6 +535,7 @@ def resolve_lifecycle_action(
     # ── 2. Recovery stall blocks the workflow ───────────────────────────
     blocking = _stalled_blocking_record(recovery_records)
     if blocking is not None:
+        _log.info("lifecycle: recovery stall blocks workflow (mode=%s step=%s target=%s)", mode_id, blocking.step_id, blocking.target_id)
         target = _resolve_yield_target(mode_yield_policy, position=workflow_position)
         detail = blocking.last_error or f"{blocking.target_kind} {blocking.target_id} stalled"
         work_item_id = str(getattr(blocking, "work_item_id", "") or "")
@@ -557,6 +566,7 @@ def resolve_lifecycle_action(
     # iteration cap so a tight handoff loop (A→B→A→B...) is caught early
     # rather than burning the full iteration budget.
     if state.handoff_count > settings.max_handoffs_per_turn:
+        _log.warning("lifecycle: handoff loop guard exceeded (mode=%s handoffs=%d cap=%d)", mode_id, state.handoff_count, settings.max_handoffs_per_turn)
         return FinishAction(
             strip_tools=True,
             reason=(

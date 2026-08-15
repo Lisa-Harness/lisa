@@ -19,10 +19,13 @@ DESIGN — Re-exported by ``kernel.turn_runner``:
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from kernel.models import BlockDiagnostic, OperationResult, ToolExecutionContext, ToolResult
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from kernel.turn_runner import TurnResult
@@ -76,6 +79,7 @@ def _validate_model_capabilities(
         return None
     # The gate only hard-blocks when a router is wired (escalation path exists).
     if not router_wired:
+        _log.info("capability gate: advisory only for mode=%s model=%s required=%s (router not wired)", getattr(mode_config, 'mode_id', '(unknown)'), preferred_model_id, tuple(required))
         return None
     model_caps = set(getattr(model_def, "capabilities", ()) or ())
     missing = tuple(cap for cap in required if cap not in model_caps)
@@ -94,6 +98,7 @@ def _validate_model_capabilities(
     # re-exports this module and defines ``TurnResult``.
     from kernel.turn_runner import TurnResult as _TurnResult  # noqa: PLC0415
 
+    _log.warning("capability gate: model=%s missing required capabilities for mode=%s missing=%s", model_id, mode_id, missing)
     return _CapabilityGateBlock(
         result=_TurnResult(
             response_text=message,
