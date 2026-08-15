@@ -6258,38 +6258,42 @@ async def _run_turn_inner(
         # than a hallucinated success.
         turn_blocked = True
     elif _parent_no_tools:
-        # ── Capture-mode softening ──────────────────────────────────────
-        # Capture modes (those whose action tools are all markdown_* /
-        # okf_* / synthesize_and_store_learning) produce artifacts that
-        # live in the lossless thread. The thread is the artifact, so
-        # dense content IS the completion signal — the write receipt is
-        # not the only honest signal. Accept any non-empty content for
-        # these modes without blocking as ``no_tools``.
+        # ── Chat-mode content softening (work-gated) ────────────────────
+        # A mode with a side-effecting completion contract (``action_tool_ids``
+        # non-empty) that ends the turn with no write receipt is normally
+        # blocked as ``no_tools`` (hallucinated success). One honest case
+        # exists: the model did real read-only work (search, read, fetch)
+        # and produced a substantive answer in the response text, but never
+        # landed the write. For ``chat``-kind modes the response IS a
+        # legitimate artifact; the write receipt is not the only completion
+        # signal.
         #
-        # State-mutating modes (coding_*, github_*) have real side effects
-        # outside the thread; keep the strict block for those. The receipt
-        # is the only honest signal that the write actually landed.
-        _CAPTURE_TOOL_PREFIXES = ("markdown_", "okf_")
-        _CAPTURE_TOOL_EXACT = {"synthesize_and_store_learning"}
-        _is_capture_mode = all(
-            tool.startswith(_CAPTURE_TOOL_PREFIXES) or tool in _CAPTURE_TOOL_EXACT
-            for tool in _state.action_tool_ids
+        # The softening is gated on TWO conditions so it cannot mask a
+        # hallucination:
+        #   1. ``mode_kind == "chat"`` — the mode's output is conversational
+        #      content, not a durable side effect on external state. Action
+        #      and workflow modes keep the strict block: their writes land
+        #      outside the thread and the receipt is the only honest signal.
+        #   2. ``_state.total_tool_calls > 0`` — the model actually
+        #      dispatched at least one tool this turn. A turn that made ZERO
+        #      tool calls and only emitted "I'll start once you confirm…"
+        #      prose is a hallucinated success regardless of mode kind or
+        #      content length (the 2026-08-14 proceed-loop).
+        #
+        # The kernel never names pack-supplied tools or infers pack
+        # semantics from tool-name prefixes. ``mode_kind`` and the receipt
+        # ledger are the only signals used; which packs supplied the action
+        # tools is irrelevant.
+        _is_chat_mode = mode_config.mode_kind == "chat" if mode_config else False
+        _did_work = _state.total_tool_calls > 0
+        has_dense_content = (
+            len(content.strip()) >= _kernel_settings.chat_mode_dense_content_min_chars
         )
-        has_dense_content = len(content.strip()) > 150
-        if _is_capture_mode and content.strip():
-            # Capture mode: any non-empty content is accepted as
-            # successful — the thread is the artifact.
+        if _is_chat_mode and has_dense_content and _did_work:
             _log.info(
                 "parent turn mode=%s completed with no verified write, but "
-                "is a capture mode and produced content (%d chars); "
-                "accepting as successful.",
-                mode_id,
-                len(content.strip()),
-            )
-        elif has_dense_content:
-            _log.info(
-                "parent turn mode=%s completed with no verified write, but "
-                "produced dense content (%d chars); accepting as successful.",
+                "is a chat mode that did read-only work and produced dense "
+                "content (%d chars); accepting as successful.",
                 mode_id,
                 len(content.strip()),
             )

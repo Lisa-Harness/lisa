@@ -416,6 +416,274 @@ async def test_parent_turn_failed_mcp_write_still_blocked_as_no_tools() -> None:
     assert "I wrote the file" not in result.response_text
 
 
+@pytest.mark.asyncio
+async def test_parent_turn_dense_content_with_readonly_work_accepted() -> None:
+    """Dense content after read-only work is accepted for chat modes.
+
+    Regression for the 2026-08-14 work-gate: a ``chat``-kind mode with a
+    write contract whose model dispatched a read-only tool (so
+    ``total_tool_calls > 0``) and then produced dense content without a
+    write receipt is the honest case the softening exists to accept —
+    the model did real investigation but failed to land the write. The
+    turn must NOT be blocked as ``no_tools``.
+    """
+    from kernel.tools.mcp_client import MCPToolResult
+
+    class _ReadOnlyPool:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+            return []
+
+        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(tool_id=tool_id, output_text="read result")
+
+        def tool_spec(self, tool_id: str) -> Any:
+            return SimpleNamespace(read_only_hint=True)
+
+        async def __aenter__(self) -> _ReadOnlyPool:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    call_count = 0
+
+    async def model(**_kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "lisa-storage.read_file",
+                            "arguments": '{"path": "a.md"}',
+                        },
+                    }
+                ],
+            )
+        # Second completion: dense prose but no write tool call.
+        return _StubCompletion(
+            content=(
+                "I investigated the file and gathered the context. The module "
+                "exposes three entry points and the call graph confirms the "
+                "boundary holds. Here is the synthesis of what I found across "
+                "the codebase and the web — the analysis is complete."
+            )
+        )
+
+    hooks = TurnHooks(complete=model, mcp_tool_pool=_ReadOnlyPool())
+    # The mode has a real write contract (``write_file``) AND a read-only
+    # tool. The model did read-only work but no write; a ``chat``-kind mode
+    # that did real work and produced dense content is accepted, not blocked.
+    catalog = {
+        "writer": WorkflowModeConfig(
+            mode_id="writer",
+            start_stage_id="none",
+            mode_kind="chat",
+            routable=True,
+            authored_allowed_operation_ids=["write_file"],
+            allowed_operation_ids=["write_file"],
+            authored_allowed_tool_ids=["lisa-storage.read_file"],
+            allowed_tool_ids=["lisa-storage.read_file"],
+        ),
+    }
+    # Lower the dense-content threshold for this test so the short prose
+    # fixture qualifies as dense; the production default (1000) is
+    # exercised by the zero-tool-calls test below.
+    from kernel import config
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(config.settings, "chat_mode_dense_content_min_chars", 100)
+    try:
+        with (
+            patch(
+                "kernel.turn_runner.get_workflow_catalog",
+                return_value=catalog,
+            ),
+            patch(
+                "kernel.operations.registry.get_workflow_catalog",
+                return_value=catalog,
+                create=True,
+            ),
+            patch(
+                "kernel.ipsar_fsm.get_workflow_catalog",
+                return_value=catalog,
+            ),
+        ):
+            result = await run_turn(mode_id="writer", query="investigate", hooks=hooks)
+    finally:
+        mp.undo()
+
+    assert result.blocked is False
+    assert result.block_origin == ""
+    # The dense prose survived (not replaced by the no_tools failure text).
+    assert "investigated the file" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_parent_turn_dense_content_action_mode_still_blocked() -> None:
+    """An ``action``-kind mode keeps the strict block (no pack-specific softening).
+
+    Regression for the 2026-08-14 pack-leak removal: the kernel must not
+    infer "this mode's writes land in the thread" from tool-name prefixes.
+    Only ``mode_kind`` is consulted. An ``action``-kind mode whose model
+    did read-only work and produced dense content without a write receipt
+    is still blocked as ``no_tools`` — action modes' writes land outside
+    the thread and the receipt is the only honest signal.
+    """
+    from kernel.tools.mcp_client import MCPToolResult
+
+    class _ReadOnlyPool:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+            return []
+
+        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(tool_id=tool_id, output_text="read result")
+
+        def tool_spec(self, tool_id: str) -> Any:
+            return SimpleNamespace(read_only_hint=True)
+
+        async def __aenter__(self) -> _ReadOnlyPool:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    call_count = 0
+
+    async def model(**_kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _StubCompletion(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "lisa-storage.read_file",
+                            "arguments": '{"path": "a.md"}',
+                        },
+                    }
+                ],
+            )
+        return _StubCompletion(
+            content=(
+                "I investigated the file and gathered the context. The module "
+                "exposes three entry points and the call graph confirms the "
+                "boundary holds. Here is the synthesis of what I found."
+            )
+        )
+
+    hooks = TurnHooks(complete=model, mcp_tool_pool=_ReadOnlyPool())
+    # Same shape as the accepted case, but ``mode_kind="action"``: the
+    # strict block applies regardless of content density or read-only work.
+    catalog = {
+        "runner": WorkflowModeConfig(
+            mode_id="runner",
+            start_stage_id="none",
+            mode_kind="action",
+            routable=True,
+            authored_allowed_operation_ids=["write_file"],
+            allowed_operation_ids=["write_file"],
+            authored_allowed_tool_ids=["lisa-storage.read_file"],
+            allowed_tool_ids=["lisa-storage.read_file"],
+        ),
+    }
+    # Lower the threshold here too so the test proves the block is driven
+    # by ``mode_kind == "action"``, not by the content being too short.
+    from kernel import config
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(config.settings, "chat_mode_dense_content_min_chars", 100)
+    try:
+        with (
+            patch(
+                "kernel.turn_runner.get_workflow_catalog",
+                return_value=catalog,
+            ),
+            patch(
+                "kernel.operations.registry.get_workflow_catalog",
+                return_value=catalog,
+                create=True,
+            ),
+            patch(
+                "kernel.ipsar_fsm.get_workflow_catalog",
+                return_value=catalog,
+            ),
+        ):
+            result = await run_turn(mode_id="runner", query="investigate", hooks=hooks)
+    finally:
+        mp.undo()
+
+    assert result.blocked is True
+    assert result.block_origin == "no_tools"
+    assert "unverified" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_parent_turn_dense_content_zero_tool_calls_blocked() -> None:
+    """Zero-tool dense content is blocked (the 2026-08-14 proceed-loop).
+
+    A write-contract mode whose model made ZERO tool calls and only
+    emitted "I'll start the research once you confirm" prose is a
+    hallucinated success — the model announced work it never started.
+    Dense content must NOT soften the block when no tool was dispatched.
+    This is the proceed-loop regression: the researcher repeatedly said
+    it would begin, the dense-content acceptance treated that as
+    success, and the turn ended with zero work done.
+    """
+    # Announcement prose well under the 1000-char dense threshold,
+    # matching the "I'll start once you say ok" pattern from the
+    # incident logs. It must be blocked by the work-gate (zero tool
+    # dispatches), not accepted as dense content.
+    announcement = (
+        "I'll start the research now. Once you confirm I'll gather the "
+        "context across the web and codebase, synthesize the findings, "
+        "and write them to a markdown document for you to review."
+    )
+
+    async def announcing(**_kwargs: Any) -> _StubCompletion:
+        return _StubCompletion(content=announcement)
+
+    hooks = TurnHooks(complete=announcing)
+    with (
+        patch(
+            "kernel.turn_runner.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+        patch(
+            "kernel.operations.registry.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+            create=True,
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+    ):
+        result = await run_turn(mode_id="writer", query="do the work", hooks=hooks)
+
+    assert result.blocked is True
+    assert result.block_origin == "no_tools"
+    assert "unverified" in result.response_text
+    assert "I'll start the research" not in result.response_text
+
+
 # ── Regression: read-only MCP tool must not emit a write receipt ──────
 
 

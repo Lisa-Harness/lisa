@@ -233,8 +233,18 @@ class Settings(BaseSettings):
     # to "use" the budget it sees. The full contract is injected at
     # turn start; each subsequent iteration replaces it with a
     # super-brief delta. Override via ``BUDGET_BRIEFING_ENABLED``.
-    budget_briefing_enabled: bool = True
-
+    budget_briefing_enabled: bool = True    # Minimum response length (characters) before a chat-kind mode's
+    # unverified prose is accepted as a successful completion. When a
+    # write-contract mode ends with no write receipt, the kernel blocks
+    # as ``no_tools`` — UNLESS the mode is ``chat``-kind, the model
+    # dispatched at least one tool, and the response text meets this
+    # threshold (the softening for "did real read-only work and
+    # synthesized an answer but never landed the write"). The old
+    # hard-coded 150 let "I'll start the research once you confirm"
+    # announcement prose mask a hallucinated success (the 2026-08-14
+    # proceed-loop); 1000 requires a real synthesized answer. Override
+    # via ``CHAT_MODE_DENSE_CONTENT_MIN_CHARS``.
+    chat_mode_dense_content_min_chars: int = 1000
     # ── Context budget ──────────────────────────────────────────────────
     context_budget_enabled: bool = True
     context_budget_core_max_tokens: int = 2000
@@ -367,6 +377,7 @@ class Settings(BaseSettings):
         "hint_cycle_min_len",
         "hint_override_limit",
         "budget_briefing_enabled",
+        "chat_mode_dense_content_min_chars",
         "context_budget_core_max_tokens",
         "context_budget_retrieval_max_tokens",
         "context_budget_memory_max_tokens",

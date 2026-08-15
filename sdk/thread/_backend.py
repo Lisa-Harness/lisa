@@ -357,6 +357,12 @@ class ThreadStore:
         Each manifest line shows: turn index, mode_id, query preview
         (truncated), write-receipt capability ids, and handoff target.
 
+        The final (most recent) row is annotated ``← current`` so the model
+        can anchor on the latest exchange instead of treating the flat
+        table as equal-weight history (the 2026-08-14 "bringing back old
+        ideas" symptom: every row looked identical, so the model re-raised
+        stale queries).
+
         Returns an empty string when there are no entries.
         """
         entries = self.load_recent(limit=limit)
@@ -365,8 +371,21 @@ class ThreadStore:
         lines = ["## Thread Manifest", ""]
         lines.append("| Turn | Mode | Query | Writes | Handoff |")
         lines.append("| --- | --- | --- | --- | --- |")
-        for entry in entries:
-            turn = entry.get("turn", "?")
+        # ``load_recent`` returns oldest-first; the last entry is the most
+        # recent turn. Derive a stable 1-based turn index from position so
+        # the column is meaningful even when the stored entry lacks a
+        # ``turn`` field (host-side ``append_thread_entry`` does not set
+        # one). The total count anchors the index so the model sees
+        # "turn 47 of 47" rather than a reset per-manifest counter.
+        total = len(entries)
+        for offset, entry in enumerate(entries):
+            stored_turn = entry.get("turn")
+            if isinstance(stored_turn, int):
+                turn = str(stored_turn)
+            else:
+                # 1-based ordinal within the manifest window; the total
+                # suffix disambiguates the window from the global sequence.
+                turn = f"{offset + 1}/{total}"
             mode_id = str(entry.get("mode_id") or "-")
             query = str(entry.get("query") or "").strip()
             if len(query) > 80:
@@ -382,5 +401,9 @@ class ThreadStore:
             ]
             writes = ", ".join(sorted(set(write_caps))) or "-"
             handoff = str(entry.get("handoff_to") or entry.get("transitioned_to") or "-")
-            lines.append(f"| {turn} | {mode_id} | {query} | {writes} | {handoff} |")
+            is_current = offset == total - 1
+            row_marker = " ← current" if is_current else ""
+            lines.append(
+                f"| {turn} | {mode_id} | {query} | {writes} | {handoff}{row_marker} |"
+            )
         return "\n".join(lines)

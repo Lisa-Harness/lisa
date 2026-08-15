@@ -32,6 +32,7 @@ from host.thread import (
     _segment_paths,
     append_thread_entry,
     build_recent_thread_excerpt,
+    build_thread_manifest,
     load_recent_thread_entries,
     load_thread_range,
     load_thread_digest,
@@ -215,6 +216,45 @@ class TestBuildRecentThreadExcerpt:
         _write_entry(thread_path, query="newer", response_text="newer answer")
         excerpt = build_recent_thread_excerpt(thread_path=thread_path, limit=5)
         assert excerpt.index("older") < excerpt.index("newer")
+
+
+# ── build_thread_manifest ───────────────────────────────────────────
+
+
+class TestBuildThreadManifest:
+    def test_marks_most_recent_row_as_current(self, tmp_path: Path) -> None:
+        """The final (most recent) row is annotated ``← current``.
+
+        Regression for the 2026-08-14 "bringing back old ideas" symptom:
+        the manifest was a flat table of identical-looking rows, so the
+        model re-raised stale queries. The current marker anchors the
+        model on the latest exchange.
+        """
+        thread_path = tmp_path / "thread"
+        _write_entry(thread_path, query="older question", response_text="older answer")
+        _write_entry(thread_path, query="newer question", response_text="newer answer")
+        manifest = build_thread_manifest(thread_path=thread_path, limit=30)
+        assert "## Thread Manifest" in manifest
+        rows = [line for line in manifest.splitlines() if line.startswith("| ")]
+        # Header + separator + 2 data rows.
+        assert len(rows) == 4
+        # The most recent (last) data row carries the current marker; the
+        # older row does not.
+        assert "← current" not in rows[2]
+        assert "← current" in rows[3]
+        assert "newer question" in rows[3]
+
+    def test_single_entry_is_current(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        _write_entry(thread_path, query="only question", response_text="only answer")
+        manifest = build_thread_manifest(thread_path=thread_path, limit=30)
+        rows = [line for line in manifest.splitlines() if line.startswith("| ")]
+        # Header + separator + 1 data row.
+        assert len(rows) == 3
+        assert "← current" in rows[2]
+
+    def test_empty_thread_returns_empty_string(self, tmp_path: Path) -> None:
+        assert build_thread_manifest(thread_path=tmp_path / "missing", limit=30) == ""
 
 
 # ── load_recent_thread_entries (smoke) ───────────────────────────────
