@@ -39,6 +39,12 @@ class RouterModelRef:
     #: output. Routers can gate JSON-bound work on this, e.g. via
     #: ``model.structured_reliability`` in a ``when`` rule.
     structured_reliability: float = 0.0
+    #: User-declared flag: this model needs stronger kernel guidance
+    #: backstops (do-the-work self-handoff synth, full enforcer cap).
+    #: The turn loop reads this to gate the backstops that strong models
+    #: do not need. See ``sdk/router/README.md`` § Model attributes and
+    #: ``ManifestModelEntry.needs_guidance``.
+    needs_guidance: bool = False
 
 
 @dataclass(frozen=True, slots=True)

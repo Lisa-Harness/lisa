@@ -40,6 +40,28 @@ class ManifestModelEntry:
     #: Routers may read this (via ``model.structured_reliability``) to route
     #: JSON-bound work to a model that returns the declared schema.
     structured_reliability: float = 0.0
+    #: User-declared flag that this model needs stronger kernel guidance
+    #: backstops. Off by default so strong models stay unhinted; set
+    #: ``needs_guidance: true`` per model in the manifest to opt a weak or
+    #: finicky model into the backstops:
+    #:
+    #: - **Do-the-work backstop (self-handoff)**: when the routing hint
+    #:   and the plan-driven hint both correctly go silent (the plan's
+    #:   next step is the current mode), the kernel arms a mode action
+    #:   tool and the empty-completion enforcer synthesizes a call to it
+    #:   so the turn does real work instead of ending blocked as
+    #:   ``no_tools`` (hallucinated success). One-shot: cleared as soon
+    #:   as any tool dispatches.
+    #: - **Trust-aware enforcer cap**: the forced-action enforcer's
+    #:   ``non_compliant_cap`` is bypassed for frontier, reasoning, or
+    #:   high-reliability models. A ``needs_guidance`` model is NOT
+    #:   bypassed — it receives the full cap treatment so the kernel
+    #:   takes over when it refuses to call the expected tool.
+    #:
+    #: Exposed to router rules via ``model.needs_guidance``. See
+    #: ``sdk/router/README.md`` § Model attributes for the full attribute
+    #: reference.
+    needs_guidance: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,6 +425,7 @@ def _parse_model_entry(
             field_name="structured_reliability",
             model_id=key,
         ),
+        needs_guidance=bool(raw_model.get("needs_guidance", False)),
     )
 
 

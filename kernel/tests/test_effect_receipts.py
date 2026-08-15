@@ -938,3 +938,134 @@ async def test_parent_turn_write_nudge_disabled_when_margin_zero(
     assert not any("zero writes" in p for p in captured_prompts), (
         "parent-turn write-nudge fired despite write_deadline_margin=0"
     )
+
+
+# ── needs_guidance backstops (2026-08-15) ─────────────────────────────
+
+
+def _needs_guidance_model() -> Any:
+    """A stub model entry with ``needs_guidance=True``."""
+
+    @dataclass(frozen=True, slots=True)
+    class _GuidanceModel:
+        model_id: str = "weak-model"
+        reasoning_model: bool = False
+        thinking_model: bool = False
+        cost_tier: str = "standard"
+        structured_reliability: float = 0.0
+        needs_guidance: bool = True
+        capabilities: tuple = ()
+        provider: str = "test"
+
+    return _GuidanceModel()
+
+
+def _strong_model() -> Any:
+    """A stub model entry with ``needs_guidance=False`` (default)."""
+
+    @dataclass(frozen=True, slots=True)
+    class _StrongModel:
+        model_id: str = "strong-model"
+        reasoning_model: bool = True
+        thinking_model: bool = False
+        cost_tier: str = "frontier"
+        structured_reliability: float = 1.0
+        needs_guidance: bool = False
+        capabilities: tuple = ()
+        provider: str = "test"
+
+    return _StrongModel()
+
+
+@pytest.mark.asyncio
+async def test_midpoint_nudge_fires_for_guidance_model_gather_without_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The midpoint write-nudge fires for a guidance-needing model that
+    gathered inputs (read-effect tools) but never called its write-effect
+    output tool.
+
+    Regression for the 2026-08-15 deepseek cap-pause: the model called
+    ``web_search`` / ``fetch_page`` (read-effect) repeatedly but never
+    ``markdown_forge_document`` (write-effect). The midpoint nudge (gated
+    on zero write-action receipts) fires at the write-deadline margin —
+    the model has read receipts, not write receipts, so the gate passes.
+    The ``needs_guidance`` flag does not gate the midpoint nudge (it
+    fires for all models), but it arms the forced-work backstop that
+    synthesizes the write call if the model ignores the nudge.
+    """
+    from kernel import config
+
+    monkeypatch.setattr(config.settings, "stage_nudge_cap", 4)
+    monkeypatch.setattr(config.settings, "write_deadline_margin", 1)
+    monkeypatch.setattr(config.settings, "max_tool_iterations", 50)
+
+    captured_prompts: list[str] = []
+
+    async def stub_execute_operation(
+        operation_id: str, _ctx: OperationExecutionContext
+    ) -> OperationResult:
+        return OperationResult(output_text=f"Executed {operation_id}")
+
+    call_count = 0
+
+    async def gather_loop(**kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        messages = kwargs.get("messages", [])
+        if messages and isinstance(messages, list):
+            sys_msg = str(messages[0].get("content", "")) if messages[0] else ""
+            captured_prompts.append(sys_msg)
+        return _StubCompletion(
+            content="",
+            tool_calls=[
+                {
+                    "id": f"call_{call_count}",
+                    "function": {
+                        "name": "fetch_page",
+                        "arguments": '{"url": "https://example.com"}',
+                    },
+                }
+            ],
+        )
+
+    def resolve_model(_model_id: str) -> Any:
+        return _needs_guidance_model()
+
+    hooks = TurnHooks(
+        complete=gather_loop,
+        execute_operation=stub_execute_operation,
+    )
+    with (
+        patch(
+            "kernel.turn_runner.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+        patch(
+            "kernel.operations.registry.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+            create=True,
+        ),
+        patch(
+            "kernel.ipsar_fsm.get_workflow_catalog",
+            return_value=_write_contract_catalog(),
+        ),
+        patch(
+            "kernel.turn_runner._default_resolve_model",
+            side_effect=resolve_model,
+        ),
+    ):
+        await run_turn(
+            mode_id="writer",
+            query="write the file",
+            hooks=hooks,
+            preferred_model_id="weak-model",
+        )
+
+    # The midpoint nudge ("zero writes") fires — the model did read work
+    # but has zero write receipts. This is the existing nudge; the
+    # ``needs_guidance`` flag does not change it.
+    assert any("zero writes" in p for p in captured_prompts), (
+        "midpoint write-nudge did not fire for a gather-without-output turn. "
+        f"prompts={captured_prompts!r}"
+    )

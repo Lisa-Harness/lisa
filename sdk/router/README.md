@@ -272,11 +272,67 @@ This lets rules inspect what ran last without coupling to the manifest:
 | `model.reasoning_model` | bool | `true` if the model is a reasoning model |
 | `model.thinking_model` | bool | `true` if the model is a thinking model |
 | `model.structured_reliability` | double | confidence (0.0–1.0) the effective model reliably honors structured output; 0.0 = untrusted (e.g. small local Ollama models), 1.0 = provider-enforced (API models) |
+| `model.needs_guidance` | bool | `true` when the user declared this model needs stronger kernel guidance (forced-action backstops, see [Model attributes](#model-attributes)) |
 
 When no effective model is available (e.g. iteration 1 with no static
 preferred model), `model.*` is populated with empty defaults
 (`model_id = default_model_id`, empty strings, empty lists, false bools)
 so rules never crash on missing fields.
+
+### Model attributes
+
+Per-model metadata lives under the `models:` list in `models.yaml`. Each
+entry is a `ManifestModelEntry` (`kernel/model_manifest.py`). The
+attributes the router and turn loop read:
+
+| Attribute | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `model_id` | string | required | unique model identifier (e.g. `gpt-5.4`) |
+| `provider` | string | required | provider slug (e.g. `azure_openai`, `ollama`) |
+| `capabilities` | list of string | `[]` | capability names advertised by the model (e.g. `[reasoning, tools, text]`) |
+| `cost_tier` | string | `standard` | cost band: `standard` / `premium` / `frontier` |
+| `latency_tier` | string | `medium` | latency band: `low` / `medium` / `high` |
+| `context_window` | int | `0` | max context tokens; `0` = unknown/unlimited |
+| `reasoning_model` | bool | `false` | the model is a reasoning model (affects trust-aware enforcer cap) |
+| `thinking_model` | bool | `false` | the model is a thinking model |
+| `structured_reliability` | float | `0.0` | confidence (0.0–1.0) the model honors `response_format` structured output; 0.0 = untrusted, 1.0 = provider-enforced |
+| `needs_guidance` | bool | `false` | the model needs stronger kernel guidance backstops. **Off by default** so strong models stay unhinted; set `needs_guidance: true` per model to opt a weak or finicky model into the forced-action backstops (see below). |
+
+#### `needs_guidance` — forced-action backstops
+
+A model with `needs_guidance: true` receives two kernel-side backstops that
+strong models do not:
+
+1. **Do-the-work backstop (self-handoff)** — when the routing hint and the
+   plan-driven hint both correctly go silent (the plan's next step is the
+   current mode), a guidance-needing model is left with no directive and
+   may return an empty completion, ending the turn blocked as `no_tools`
+   (hallucinated success). The backstop arms a mode action tool and the
+   empty-completion enforcer synthesizes a call to it so the turn does real
+   work instead of claiming it. One-shot: cleared as soon as any tool
+   dispatches, so it cannot loop.
+
+2. **Trust-aware enforcer cap** — the forced-action enforcer's
+   `non_compliant_cap` is bypassed for frontier, reasoning, or
+   high-reliability models. A `needs_guidance` model is *not* bypassed —
+   it receives the full cap treatment so the kernel takes over when it
+   refuses to call the expected tool.
+
+These backstops do not change routing, model selection, or the tool
+surface — they only change when the kernel synthesizes a tool call itself
+vs. accepting the model's empty prose. The `needs_guidance` flag is also
+exposed to router rules via `model.needs_guidance` so a custom backend can
+factor it into routing decisions.
+
+Example `models.yaml` entry:
+
+```yaml
+- model_id: deepseek-v4-flash:preview-cloud
+  provider: ollama
+  needs_guidance: true
+  capabilities: [reasoning, structured_output, tools, text]
+  structured_reliability: 0.85
+```
 
 ### Operator reference
 
@@ -398,7 +454,7 @@ backend (e.g. `lisa-pack-aoi-router`).
 - **Zero model calls**: the engine evaluates CEL rules locally against
   `RouterRequest` fields and the effective model's `ManifestModelEntry`
   metadata (`cost_tier`, `latency_tier`, `capabilities`, `reasoning_model`,
-  `thinking_model`). No completion call is made.
+  `thinking_model`, `needs_guidance`). No completion call is made.
 - **Active when**: `router.backend == "lisa-router"` in the manifest.
 - **Default config**: the backend declares a **minimal** default `router:`
   block (one capability-escalation rule + fallback) with symbolic refs

@@ -4062,6 +4062,38 @@ async def _run_turn_inner(
                 tool_calls = [synth_call]
                 _state.forced_action = None
                 _synthesized_forced = True
+            elif _state.forced_work_tool:
+                # ── Do-the-work backstop (empty-completion path) ──────
+                # A guidance-needing model returned no tool calls on a
+                # plan-self-handoff iteration where the routing hint and
+                # the plan-driven hint both correctly went silent. Without
+                # this backstop the turn ends with the model's prose and
+                # blocks as ``no_tools`` (hallucinated success). Synthesize
+                # a call to the mode's action tool so the turn does real
+                # work instead of claiming it. Clear immediately so a
+                # subsequent empty completion is not re-synthesized into a
+                # loop (the 2026-08-15 researcher no-verified-write block).
+                _work_tool = _state.forced_work_tool
+                _log.warning(
+                    "model returned no tool calls with a do-the-work "
+                    "backstop pending (mode=%s, iteration=%d); kernel "
+                    "synthesizing tool=%s",
+                    mode_id,
+                    _state.iteration,
+                    _work_tool,
+                )
+                _work_call = {
+                    "id": f"forced_work_empty_{_state.iteration}",
+                    "type": "function",
+                    "function": {
+                        "name": _work_tool,
+                        "arguments": json.dumps({}),
+                    },
+                }
+                assistant_msg["tool_calls"] = [_work_call]
+                tool_calls = [_work_call]
+                _state.forced_work_tool = ""
+                _synthesized_forced = True
 
             # Use the canonical extractor so reasoning models (gpt-5.x,
             # glm-5.2, kimi-k2.6) that put the answer in ``reasoning_content``
@@ -4122,6 +4154,13 @@ async def _run_turn_inner(
             len(tool_calls),
             [tc.get("function", {}).get("name", "?") for tc in tool_calls],
         )
+        # The do-the-work backstop is a one-shot: if the model dispatched
+        # any tool this iteration, it does not need the kernel to
+        # synthesize one. Clear before the per-call loop so a real
+        # dispatch never coexists with a pending synth (the 2026-08-15
+        # self-handoff no-verified-write fix).
+        if tool_calls:
+            _state.forced_work_tool = ""
         for tool_call in tool_calls:
             tool_name, tool_arguments = openai_tool_call_to_mcp(tool_call)
             tool_call_id = str(tool_call.get("id") or "")
@@ -5151,6 +5190,54 @@ async def _run_turn_inner(
                                                         _next_step.step_id,
                                                         _next_step.mode_id,
                                                     )
+                                                    # ── Do-the-work backstop ──
+                                                    # The routing hint and the
+                                                    # plan-driven hint both
+                                                    # correctly go silent here,
+                                                    # leaving a guidance-needing
+                                                    # model with no directive.
+                                                    # When the effective model
+                                                    # declared ``needs_guidance``
+                                                    # and this mode has action
+                                                    # tools, arm a do-the-work
+                                                    # backstop: the empty-
+                                                    # completion enforcer will
+                                                    # synthesize a call to one
+                                                    # of the mode's action tools
+                                                    # instead of accepting prose
+                                                    # and ending blocked as
+                                                    # ``no_tools`` (the
+                                                    # 2026-08-15 researcher
+                                                    # no-verified-write block).
+                                                    # Cleared as soon as any
+                                                    # tool dispatches, so it
+                                                    # cannot loop.
+                                                    if getattr(
+                                                        _state.effective_model,
+                                                        "needs_guidance",
+                                                        False,
+                                                    ):
+                                                        _work_tools = (
+                                                            mode_completion_effects(
+                                                                target_stage,
+                                                                mcp_pool=pool,
+                                                            )
+                                                            if pool is not None
+                                                            else _state.action_tool_ids
+                                                        )
+                                                        if _work_tools:
+                                                            _state.forced_work_tool = next(
+                                                                iter(sorted(_work_tools))
+                                                            )
+                                                            _log.info(
+                                                                "self-handoff "
+                                                                "do-the-work "
+                                                                "backstop armed "
+                                                                "(mode=%s "
+                                                                "tool=%s)",
+                                                                target_stage,
+                                                                _state.forced_work_tool,
+                                                            )
                                                 else:
                                                     post_handoff_hint = (
                                                         "## Routing Hint\n\n"

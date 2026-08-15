@@ -290,6 +290,18 @@ class _TurnState:
     invisible to the old ``authored_allowed_*``-only detector is correctly
     counted as having completed. Empty for read-only turns. See
     ``kernel.models.EffectReceipt``."""
+    forced_work_tool: str = ""
+    """A single action-tool id the kernel will synthesize when the model
+    returns an empty completion on a plan-self-handoff iteration (the
+    2026-08-15 ``no_tools`` block: the routing hint and the plan-driven
+    hint both correctly go silent when the next step is the current mode,
+    leaving a guidance-needing model with no directive and zero tool
+    calls). Set only when the effective model declared ``needs_guidance``
+    and the plan's next step mode equals the current mode. Distinct from
+    ``forced_action`` (a *routing* decision with ``fork`` /
+    ``transition_stage`` as the expected tool); this is a *do-the-work*
+    backstop whose expected tool is a mode action tool. Cleared as soon as
+    any tool is dispatched this iteration so it cannot loop."""
 
     # ── Sub-turn (fork / delegate child) contract state ─────────────
     # Set by the caller when this turn is a sub-turn (a fork child, or a
@@ -668,6 +680,7 @@ def _effective_model_ref(
         reasoning_model=bool(getattr(source, "reasoning_model", False)),
         thinking_model=bool(getattr(source, "thinking_model", False)),
         structured_reliability=_coerce_float(getattr(source, "structured_reliability", 0.0)),
+        needs_guidance=bool(getattr(source, "needs_guidance", False)),
     )
 
 
