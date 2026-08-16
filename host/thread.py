@@ -313,6 +313,15 @@ def _read_active_entries(current_path: Path) -> list[dict[str, Any]]:
     return _parse_entries(current_path.read_text(encoding="utf-8").splitlines())
 
 
+def _read_active_entries_count(current_path: Path) -> int:
+    """Count entries in the active segment without materializing them.
+
+    Used at append time to derive the next global turn index cheaply —
+    line count is the entry count because each entry is one JSONL line.
+    """
+    return _count_lines(current_path)
+
+
 def _seal_segment(paths: _SegmentPaths, seg_id: str | None = None) -> SegmentRecord | None:
     """Seal the active segment to a compressed sidecar.
 
@@ -479,12 +488,22 @@ def append_thread_entry(
     if paths.current.exists() and _count_lines(paths.current) >= segment_turns:
         _seal_segment(paths)
 
+    # Stamp the 0-based global turn index so the thread manifest can show
+    # real addresses for ``thread_read_range`` instead of window-local
+    # ordinals. The index is the sum of all sealed-segment turn spans
+    # plus the current active-segment entry count — the same derivation
+    # ``load_range`` uses for the active tail's ``active_turn_lo``.
+    sealed_records = _read_index(paths.index_path)
+    active_count = _read_active_entries_count(paths.current)
+    global_turn = sum(r.turn_hi - r.turn_lo + 1 for r in sealed_records) + active_count
+
     entry: dict[str, Any] = {
         "timestamp_utc": datetime.now(UTC).isoformat(),
         "user_slug": user_slug,
         "mode_id": mode_id,
         "query": query,
         "response_text": response_text,
+        "turn": global_turn,
     }
     if provenance:
         entry["provenance"] = provenance
