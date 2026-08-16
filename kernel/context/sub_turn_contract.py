@@ -25,6 +25,7 @@ _FORK_CONTRACT_PATH = f"{_SUB_TURN_ASSET_PREFIX}/fork_contract.md"
 _DELEGATE_CONTRACT_PATH = f"{_SUB_TURN_ASSET_PREFIX}/delegate_contract.md"
 _BUDGET_EXHAUSTED_PATH = f"{_SUB_TURN_ASSET_PREFIX}/budget_exhausted.md"
 _MIDPOINT_NUDGE_PATH = f"{_SUB_TURN_ASSET_PREFIX}/midpoint_write_nudge.md"
+_NO_WRITE_WARNING_PATH = f"{_SUB_TURN_ASSET_PREFIX}/no_write_warning.md"
 
 _CONTRACT_PATHS: dict[str, str] = {
     "fork": _FORK_CONTRACT_PATH,
@@ -45,6 +46,7 @@ def set_content_registry(registry: ContentRegistry) -> None:
     read_sub_turn_contract.cache_clear()
     read_sub_turn_budget_exhausted_tail.cache_clear()
     read_sub_turn_midpoint_nudge.cache_clear()
+    read_no_write_warning.cache_clear()
 
 
 class _MissingKeyDict(dict):
@@ -137,6 +139,44 @@ def read_sub_turn_midpoint_nudge() -> str:
             f"Authored sub-turn midpoint-nudge asset is empty: {_MIDPOINT_NUDGE_PATH}."
         )
     return body
+
+
+@lru_cache(maxsize=2)
+def read_no_write_warning() -> str:
+    """Load the authored no-verified-write warning footnote.
+
+    Absence is omission: when the authored asset is not available (the content
+    registry is not set, or reading raises any exception), returns the empty
+    string — the warning footnote is omitted entirely rather than falling back
+    to inlined Python prose. This matches the pack-content rule: all
+    model-facing prose lives in versioned Markdown; no default fallback text
+    in Python.
+    """
+
+    if _content_registry is None:
+        return ""
+    try:
+        raw = _content_registry.read_authored_text(_NO_WRITE_WARNING_PATH)
+    except Exception:
+        return ""
+    body = _strip_authored_heading(raw)
+    if not body:
+        return ""
+    return body
+
+
+def render_no_write_warning(*, action_names: str) -> str:
+    """Render the no-verified-write warning footnote for chat-mode softening.
+
+    The caller supplies ``action_names`` (a comma-separated list of backtick-
+    wrapped action tool names). When the authored asset is absent the function
+    returns the empty string — the warning is omitted.
+    """
+
+    body = read_no_write_warning()
+    if not body:
+        return ""
+    return body.format_map(_MissingKeyDict(action_names=action_names))
 
 
 def render_sub_turn_contract(

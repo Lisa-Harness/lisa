@@ -25,6 +25,7 @@ from kernel.capability_manifest import compile_capability_manifest
 from kernel.config import settings as _kernel_settings
 from kernel.context.models import ContextBudgetSnapshot
 from kernel.context.sub_turn_contract import (
+    render_no_write_warning,
     render_sub_turn_contract,
     render_sub_turn_midpoint_nudge,
 )
@@ -3462,9 +3463,6 @@ async def _run_turn_inner(
             LifecycleResolverSettings as _LRS,
         )
         from kernel.turn_phases._lifecycle import (
-            TransitionAction as _TransitionAction,
-        )
-        from kernel.turn_phases._lifecycle import (
             PauseAction as _PauseAction,
         )
         from kernel.turn_phases._lifecycle import (
@@ -3472,6 +3470,9 @@ async def _run_turn_inner(
         )
         from kernel.turn_phases._lifecycle import (
             TerminateAction as _TerminateAction,
+        )
+        from kernel.turn_phases._lifecycle import (
+            TransitionAction as _TransitionAction,
         )
         from kernel.turn_phases._lifecycle import (
             _TurnStateView as _TSV,
@@ -6376,6 +6377,8 @@ async def _run_turn_inner(
         has_dense_content = (
             len(content.strip()) >= _kernel_settings.chat_mode_dense_content_min_chars
         )
+        _called_bare = {bare_tool_name(n) for n in _state.called_tool_names}
+        _write_attempted = bool(_called_bare & _state.action_tool_ids)
         if _is_chat_mode and has_dense_content and _did_work:
             _log.info(
                 "parent turn mode=%s completed with no verified write, but "
@@ -6384,14 +6387,37 @@ async def _run_turn_inner(
                 mode_id,
                 len(content.strip()),
             )
+        elif _is_chat_mode and _did_work and not _write_attempted:
+            # ── Warning footnote for chat-mode read-only work ───────
+            # A chat mode did real work (read-only tool calls) and
+            # produced content below the "dense" threshold but still
+            # substantive. Its answer is legitimate — for chat modes
+            # the conversational response IS the artifact. Append a
+            # warning footnote instead of throwing away the answer.
+            # Non-chat modes (action/workflow) keep the strict block:
+            # their writes land outside the thread.
+            # The warning prose is authored Markdown loaded via
+            # ``render_no_write_warning`` (same pattern as the midpoint
+            # write-nudge). Absence of the authored asset means the
+            # warning is omitted entirely.
+            _log.warning(
+                "parent turn mode=%s completed with no verified write for its "
+                "mode's action tools %s; appending warning footnote",
+                mode_id,
+                sorted(_state.action_tool_ids),
+            )
+            _action_names = ", ".join(
+                f"`{t}`" for t in sorted(_state.action_tool_ids)
+            )
+            _warning = render_no_write_warning(action_names=_action_names)
+            if _warning:
+                content = content.rstrip() + "\n\n" + _warning
         else:
-            # The parent turn itself reported unverified success: the mode
-            # declares a side-effecting completion contract and the turn
-            # ends with zero verified writes. Replace the unverified prose
-            # with a deterministic failure (same contract as a ``no_tools``
-            # fork child). The wording covers both "never invoked" and
-            # "invoked but every attempt failed" — a failed dispatch lands
-            # neither in the counted calls nor in the receipt ledger.
+            # A turn that made ZERO tool calls and only emitted prose is
+            # a hallucinated success regardless of mode kind or content
+            # length. A non-chat mode that did read-only work is blocked
+            # (its writes land outside the thread). A turn that attempted
+            # an action tool and it failed is likewise hallucinated.
             _log.warning(
                 "parent turn mode=%s completed with no verified write for its "
                 "mode's action tools %s; blocking as no_tools (hallucinated success)",
@@ -6620,6 +6646,13 @@ from kernel.turn_phases._post_turn import (  # noqa: F401
     _to_tool_context,
     _validate_model_capabilities,
 )
+
+# Unified routing applier (Phase 3 of the uniformity refactor)
+from kernel.turn_phases._routing import (
+    RoutingContext,
+    apply_routing,
+    save_route_decision,
+)
 from kernel.turn_phases._routing_hint import (  # noqa: F401
     _compute_capability_routing_hint,
     _compute_fork_targets,
@@ -6642,14 +6675,4 @@ from kernel.turn_phases._tool_schemas import (  # noqa: F401
     _rebuild_tool_schemas_for_mode,
     _tool_schema_name,
     build_tool_surface,
-)
-
-# Unified routing applier (Phase 3 of the uniformity refactor)
-from kernel.turn_phases._routing import (
-    RoutingContext,
-    TurnDecision,
-    TurnDecisionResult,
-    apply_routing,
-    evaluate_turn_decision,
-    save_route_decision,
 )
