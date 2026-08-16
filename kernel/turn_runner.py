@@ -255,9 +255,14 @@ def _build_budget_briefing(
     """
     lines: list[str] = []
     # ── Iteration budget ──
+    # Uses the 1-indexed iteration counter so the model never guesses
+    # whether "47/50" means "47 remaining" or "47 used": ``iter 3/50``
+    # is unambiguously "I am on iteration 3 of a 50-iteration budget."
+    # The previous ``remaining/total`` format (``iters: 47/50``) was
+    # consistently misread as a progress bar during metaanalysis.
     remaining_iterations = max_tool_iterations - state.iteration
-    if remaining_iterations > 0:
-        lines.append(f"iters: {remaining_iterations}/{max_tool_iterations}")
+    if max_tool_iterations > 0 and state.iteration > 0:
+        lines.append(f"iter {state.iteration}/{max_tool_iterations}")
     # ── Per-step sub-budget (only when a WorkflowPosition is wired) ──
     if per_step_max_iterations > 0 and state.step_iteration > 0:
         step_remaining = per_step_max_iterations - state.step_iteration
