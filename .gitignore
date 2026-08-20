@@ -1,38 +1,28 @@
-# Environment
-.env
-!.env.example
-
 # Python
 __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
 dist/
-build/
-*.egg
+
 
 # Virtual environments
 .venv/
-venv/
 
 # IDE
 .vscode/
-.idea/
 
 # OS
 .DS_Store
 Thumbs.db
 
 # Testing
+.import_linter_cache/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 coverage/
 htmlcov/
 
+# Outputs
 artifacts/
-
-lisa-catalog.jsonl
-lisa-memory.jsonl
-lisa-content.jsonl
-lisa-guard.jsonl
