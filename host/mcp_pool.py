@@ -100,12 +100,20 @@ class _FrameworkDiscovery:
     set, and installed-packs lock. Computing it once in
     :func:`discover_framework` and passing it to both avoids a redundant
     filesystem walk + lock read on every startup.
+
+    ``framework_manifest_path`` is always the in-repo ``host/
+    mcp_servers.yaml`` — the fixed base layer of first-party servers.
+    ``user_manifest_path`` is the optional user-editable manifest at
+    ``<data_dir>/mcp_servers.yaml`` (or an explicit override). It may be
+    ``None`` when the file does not exist; callers treat absence as "no
+    user servers" (same graceful first-run convention as ``models.yaml``).
     """
 
     roots: list[Path]
     disabled_packs: set[str]
     lock: dict[str, Any]
     host_manifest_path: Path
+    user_manifest_path: Path | None = None
 
 
 def discover_framework(
@@ -128,7 +136,8 @@ def discover_framework(
     pass ``seed_lock=False``.
     """
     config = runtime.config
-    manifest_path = _resolve_host_manifest_path(config)
+    manifest_path = _resolve_framework_manifest_path(config)
+    user_manifest_path = _resolve_user_manifest_path(config)
     # Seed before reading the lock so discovery sees a consistent state.
     # This closes the lifecycle hole where an unlisted bundled pack was
     # treated as enabled by intake/evidence (fail-open) but disabled by
@@ -176,6 +185,7 @@ def discover_framework(
         disabled_packs=disabled_packs,
         lock=lock,
         host_manifest_path=manifest_path,
+        user_manifest_path=user_manifest_path,
     )
 
 
@@ -246,6 +256,7 @@ def resolve_default_mcp_tool_ids(
     *,
     host_manifest_path: Path,
     pack_roots: list[Path],
+    user_manifest_path: Path | None = None,
 ) -> set[str]:
     """Resolve the namespaced ambient MCP-native tool id set.
 
@@ -258,6 +269,11 @@ def resolve_default_mcp_tool_ids(
     namespacing here too (using the pack slug derived the same way as
     :func:`compile_mcp_configs`). Malformed pack manifests are skipped
     defensively, mirroring :func:`compile_mcp_configs`.
+
+    When ``user_manifest_path`` is supplied and exists, its
+    ``default_available_tools`` entries are collected with the same bare-id
+    namespacing as the framework manifest — user-added servers are not
+    pack-prefixed. Malformed user manifests are skipped defensively.
     """
     from kernel.tools.mcp_client import namespaced_tool_name  # noqa: PLC0415
 
@@ -273,6 +289,19 @@ def resolve_default_mcp_tool_ids(
             continue
         for tool_name in spec.default_available_tools:
             ids.add(namespaced_tool_name(spec.server_id, tool_name))
+    # User manifest (bare server_id, same as first-party). User-added
+    # servers are not pack-prefixed; their default_available_tools become
+    # ambient ids the same way lisa-storage.read_file does.
+    if user_manifest_path is not None and user_manifest_path.exists():
+        try:
+            user_specs, _ = load_mcp_server_manifest(user_manifest_path)
+        except MCPServerManifestError:
+            user_specs = []
+        for spec in user_specs:
+            if spec.disabled or not spec.default_available_tools:
+                continue
+            for tool_name in spec.default_available_tools:
+                ids.add(namespaced_tool_name(spec.server_id, tool_name))
     # Pack manifests (namespaced as <pack_slug>.<server_id> at compile time).
     for root in pack_roots:
         pack_manifest_path = root / "mcp_servers.yaml"
@@ -357,6 +386,7 @@ def setup_framework(
     default_mcp_tool_ids = resolve_default_mcp_tool_ids(
         host_manifest_path=discovery.host_manifest_path,
         pack_roots=roots,
+        user_manifest_path=discovery.user_manifest_path,
     )
     catalog_config = build_catalog_mcp_config(content_config=content_config, data_dir=data_dir)
     if default_mcp_tool_ids:
@@ -562,10 +592,11 @@ def compile_mcp_configs(
 
     registry = MCPServerRegistry()
 
-    # All host-owned servers (first-party) from mcp_servers.yaml. The
-    # manifest loader honors ``disabled: true`` by skipping entries, and
+    # Framework-owned (first-party) servers from the in-repo mcp_servers.yaml.
+    # These keep bare server_ids and cannot be redefined by the user manifest.
+    # The manifest loader honors ``disabled: true`` by skipping entries, and
     # parses ``warm`` / ``required`` onto the spec. The compiler passes
-    # them through to MCPClientConfig. The host manifest no longer carries
+    # them through to MCPClientConfig. The framework manifest no longer carries
     # a ``memory:`` section or memory server entries; memory backends +
     # memory tool servers are contributed by the memory pack (see
     # sdk/packs/memory/mcp_servers.yaml) and merged below.
@@ -573,7 +604,41 @@ def compile_mcp_configs(
     for spec in specs:
         registry.register(spec)
 
+    # User-owned servers from \u003cdata_dir\u003e/mcp_servers.yaml (optional).
+    # These are user-added MCP servers that don't require a pack. They keep
+    # bare server_ids (same as first-party), but collide loudly with any
+    # framework server_id — a user cannot override lisa-storage, only add
+    # new servers. Malformed user manifests are logged and skipped (fail
+    # soft on user config, same as pack manifests).
+    user_manifest_path = discovery.user_manifest_path
+    if user_manifest_path is not None and user_manifest_path.exists():
+        try:
+            user_specs, user_memory = load_mcp_server_manifest(user_manifest_path)
+        except MCPServerManifestError:
+            logger.warning(
+                "Skipping invalid user MCP manifest at %s",
+                user_manifest_path,
+                exc_info=True,
+            )
+            user_specs = []
+            user_memory = None
+        for spec in user_specs:
+            registry.register(spec)
+        if user_memory is not None and (user_memory.default_backend or user_memory.backends):
+            logger.warning(
+                "User MCP manifest at %s declares a memory section; "
+                "memory backends are pack-owned and ignored from the user manifest.",
+                user_manifest_path,
+            )
+    elif user_manifest_path is not None and not user_manifest_path.exists():
+        logger.debug(
+            "User MCP manifest path %s does not exist; skipping user servers.",
+            user_manifest_path,
+        )
+
     excluded_pack_servers = load_pack_server_exclusions(host_manifest_path)
+    if user_manifest_path is not None and user_manifest_path.exists():
+        excluded_pack_servers |= load_pack_server_exclusions(user_manifest_path)
     excluded_pack_servers |= session_exclude_servers
     used_pack_slugs: set[str] = set()
     memory_owner_slug: str | None = None
@@ -788,11 +853,39 @@ def pack_server_excluded(pack_slug: str, declared_server_id: str, exclusions: se
 # ── Internal helpers ─────────────────────────────────────────────────
 
 
-def _resolve_host_manifest_path(config: HostConfig) -> Path:
-    """Return the host MCP manifest path from config or the core default."""
+def _resolve_framework_manifest_path(config: HostConfig) -> Path:  # noqa: ARG001
+    """Return the framework (in-repo) MCP manifest path.
+
+    This is always ``host/mcp_servers.yaml`` — the fixed base layer of
+    first-party servers (lisa-catalog, lisa-storage, etc.) that users
+    cannot redefine. The ``config.mcp_manifest_path`` override does **not**
+    apply here; it controls the user manifest (see
+    :func:`_resolve_user_manifest_path`).
+    """
+    return host_mcp_manifest_path()
+
+
+def _resolve_user_manifest_path(config: HostConfig) -> Path | None:
+    """Return the user-editable MCP manifest path, or ``None`` if absent.
+
+    Resolution order:
+
+    1. ``config.mcp_manifest_path`` — explicit CLI/env override. When set,
+       that path is used even if it does not exist (the user asked for it).
+    2. ``\u003cdata_dir\u003e/mcp_servers.yaml`` — the default user manifest
+       location. Returns ``None`` when the file does not exist (graceful
+       first-run, same convention as ``models.yaml``).
+
+    The framework manifest is always loaded separately by
+    :func:`_resolve_framework_manifest_path`; this function only resolves
+    the user layer.
+    """
     if config.mcp_manifest_path is not None:
         return config.mcp_manifest_path
-    return host_mcp_manifest_path()
+    default_user_path = config.data_dir / "mcp_servers.yaml"
+    if default_user_path.exists():
+        return default_user_path
+    return None
 
 
 def register_mcp_aliases(pool: Any) -> None:

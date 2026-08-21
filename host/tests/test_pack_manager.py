@@ -718,6 +718,67 @@ def test_compile_mcp_configs_namespaces_pack_memory_servers(
     assert runtime.memory_config_pack_slug == "memory"
 
 
+def test_compile_mcp_configs_merges_user_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """User manifest servers are compiled alongside framework servers."""
+    runtime = _make_runtime(tmp_path)
+    user_manifest = tmp_path / "mcp_servers.yaml"
+    user_manifest.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "servers:",
+                "  - server_id: my-search",
+                "    runtime_kind: http",
+                "    url: https://example.com/mcp",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [])
+    monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
+
+    warm, cold = mcp_pool.compile_mcp_configs(runtime)
+    server_ids = {config.server_id for config in [*warm, *cold]}
+
+    # User server appears with its bare id.
+    assert "my-search" in server_ids
+
+
+def test_compile_mcp_configs_user_manifest_collision_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A user manifest server_id colliding with a framework server raises."""
+    runtime = _make_runtime(tmp_path)
+    user_manifest = tmp_path / "mcp_servers.yaml"
+    user_manifest.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "servers:",
+                "  - server_id: lisa-storage",
+                "    runtime_kind: http",
+                "    url: https://example.com/mcp",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(mcp_pool, "sdk_content_roots", lambda *a, **kw: [])
+    monkeypatch.setattr(mcp_pool, "load_pack_server_exclusions", lambda _path: set())
+
+    # The framework manifest declares lisa-storage; the user manifest
+    # redeclares it → MCPServerRegistry.register raises ValueError.
+    with pytest.raises(ValueError, match="already registered"):
+        mcp_pool.compile_mcp_configs(runtime)
+
+
 def test_set_pack_enabled_rejects_disabling_always_on_pack(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1475,3 +1536,82 @@ def test_resolve_default_mcp_tool_ids_missing_manifest(tmp_path: Path) -> None:
         pack_roots=[],
     )
     assert ids == set()
+
+
+def test_resolve_default_mcp_tool_ids_user_manifest(tmp_path: Path) -> None:
+    """User manifest default_available_tools are collected with bare server_id."""
+    host_manifest = tmp_path / "mcp_servers.yaml"
+    host_manifest.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "servers:",
+                "  - server_id: lisa-storage",
+                "    runtime_kind: venv_bin",
+                '    venv_dir: "${FRAMEWORK_ROOT}"',
+                "    default_available_tools:",
+                "      - read_file",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    user_manifest = tmp_path / "user_mcp_servers.yaml"
+    user_manifest.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "servers:",
+                "  - server_id: my-search",
+                "    runtime_kind: npx",
+                '    command: ["-y", "@some/mcp-server"]',
+                "    default_available_tools:",
+                "      - web_search",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    ids = mcp_pool.resolve_default_mcp_tool_ids(
+        host_manifest_path=host_manifest,
+        pack_roots=[],
+        user_manifest_path=user_manifest,
+    )
+    assert ids == {"lisa-storage.read_file", "my-search.web_search"}
+
+
+def test_resolve_default_mcp_tool_ids_user_manifest_absent(tmp_path: Path) -> None:
+    """A None or missing user manifest produces no user ambient ids."""
+    host_manifest = tmp_path / "mcp_servers.yaml"
+    host_manifest.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "servers:",
+                "  - server_id: lisa-storage",
+                "    runtime_kind: venv_bin",
+                '    venv_dir: "${FRAMEWORK_ROOT}"',
+                "    default_available_tools:",
+                "      - read_file",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    # None user_manifest_path — same as not passing it.
+    ids_none = mcp_pool.resolve_default_mcp_tool_ids(
+        host_manifest_path=host_manifest,
+        pack_roots=[],
+        user_manifest_path=None,
+    )
+    assert ids_none == {"lisa-storage.read_file"}
+
+    # Non-existent path — defensive, same result.
+    ids_missing = mcp_pool.resolve_default_mcp_tool_ids(
+        host_manifest_path=host_manifest,
+        pack_roots=[],
+        user_manifest_path=tmp_path / "nope.yaml",
+    )
+    assert ids_missing == {"lisa-storage.read_file"}

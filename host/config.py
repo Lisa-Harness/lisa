@@ -132,6 +132,10 @@ class HostConfig:
     data_dir: Path = field(default_factory=default_data_dir)
     overlays_dir: Path | None = None
     thread_dir: Path | None = None
+    # User-editable MCP server manifest path. When ``None``, defaults to
+    # ``\u003cdata_dir\u003e/mcp_servers.yaml`` (absent = no user servers).
+    # The framework-owned manifest (``host/mcp_servers.yaml`` in-repo) is
+    # always loaded as a fixed base layer and cannot be redirected here.
     mcp_manifest_path: Path | None = None
     state_snapshot_path: Path | None = None
 
