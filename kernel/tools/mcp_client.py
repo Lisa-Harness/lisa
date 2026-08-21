@@ -1111,58 +1111,126 @@ class MCPToolPool:
                     exc_info=True,
                 )
 
-    async def _list_tools_lenient(self, session: Any, server_id: str) -> Any:
-        """Retry ``list_tools`` with a lenient model that tolerates missing cache-control fields.
+    def _resolved_http_headers(self, config: MCPClientConfig) -> dict[str, str]:
+        """Resolve the static + auth headers for a config without building a full httpx client.
+
+        Factored out of :meth:`_build_http_client` so the lenient raw-POST
+        path can reuse the same auth/header resolution without depending on
+        the SDK's httpx factory. Returns a plain ``dict[str, str]``.
+        """
+        headers = dict(config.headers)
+        auth = getattr(config, "auth", None)
+        kind = getattr(auth, "kind", None)
+        if kind is not None and kind.value == "bearer":
+            token = getattr(auth, "token", None)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+        if kind is not None and kind.value == "header":
+            header_name = getattr(auth, "header_name", None)
+            token = getattr(auth, "token", None)
+            if header_name and token:
+                headers[header_name] = token
+        return headers
+
+    async def _list_tools_lenient(self, config: MCPClientConfig, *, server_id: str) -> Any:
+        """Retry ``list_tools`` via a raw HTTP POST that bypasses the SDK response pipeline.
 
         Modern-protocol servers (2026-07-28) are supposed to send
         ``cacheScope``, ``resultType``, and ``ttlMs`` in their
         ``ListToolsResult``, but some servers omit them. The SDK's strict
-        pydantic model rejects the response. This method builds a lenient
-        model with those fields optional and retries via ``send_request``
-        directly, then synthesizes a ``ListToolsResult`` with defaults so
-        the rest of the catalog merge works unchanged.
+        pydantic model rejects the response, and the rejection happens inside
+        ``session.send_request`` before a lenient model can see the raw dict.
+        Rather than fight the SDK's response pipeline, this method issues a
+        raw JSON-RPC ``tools/list`` POST to the server URL with the same auth
+        headers the pool already resolved, parses the JSON manually, and
+        synthesizes a ``ListToolsResult`` with default cache fields so the
+        rest of the catalog merge works unchanged.
+
+        Only HTTP servers are supported (``config.url`` required); stdio
+        servers do not hit this path because they speak the legacy protocol
+        version that the SDK accepts without the cache fields.
         """
         import mcp_types as _types  # noqa: PLC0415
-        from pydantic import BaseModel, ConfigDict, Field  # noqa: PLC0415
-        from typing_extensions import Literal  # noqa: PLC0415
+        import httpx  # noqa: PLC0415
 
-        class _LenientTool(BaseModel):
-            model_config = ConfigDict(extra="allow")
-            name: str
-            description: str | None = None
-            input_schema: dict[str, Any] | None = Field(default=None, alias="inputSchema")
-            annotations: dict[str, Any] | None = None
+        if not config.url:
+            raise RuntimeError(f"lenient list_tools requires an HTTP url for {server_id!r}")
 
-        class _LenientListToolsResult(BaseModel):
-            model_config = ConfigDict(extra="allow")
-            tools: list[_LenientTool] = []
-            next_cursor: str | None = Field(default=None, alias="nextCursor")
-            cache_scope: Literal["private", "public"] = "public"
-            result_type: str = "complete"
-            ttl_ms: int = 0
+        # Reuse the same auth/header resolution as _connect_http so the raw
+        # POST carries the same credentials as the SDK-managed session.
+        headers = self._resolved_http_headers(config)
+        headers["Content-Type"] = "application/json"
+        headers["Accept"] = "application/json, text/event-stream"
 
-        raw = await session.send_request(
-            _types.ListToolsRequest(),
-            _LenientListToolsResult,
+        # Initialize first (raw) so the server has a session for tools/list.
+        # Some servers require an initialize handshake before accepting
+        # tools/list; we do a minimal one and tolerate whatever version the
+        # server picks.
+        request_id = 0
+
+        async def _post(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            nonlocal request_id
+            request_id += 1
+            payload = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            }
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(config.url, json=payload, headers=headers)
+                resp.raise_for_status()
+                body = resp.json()
+                if isinstance(body, list):
+                    # SSE-style batch: take the first object with a result/error.
+                    body = next((b for b in body if isinstance(b, dict)), {})
+                if not isinstance(body, dict):
+                    raise RuntimeError(f"lenient list_tools: unexpected response type {type(body)!r}")
+                if "error" in body:
+                    err = body["error"]
+                    raise RuntimeError(f"lenient list_tools server error: {err}")
+                return body.get("result") or {}
+
+        # Minimal initialize handshake (tolerate any protocol version).
+        await _post(
+            "initialize",
+            {
+                "protocolVersion": "2026-07-28",
+                "capabilities": {},
+                "clientInfo": {"name": "lisa-lenient", "version": "1.0"},
+            },
         )
-        # Reconstruct a proper ListToolsResult so the caller's tool-extraction
-        # code works unchanged.
-        tools = [
-            _types.Tool(
-                name=t.name,
-                description=t.description,
-                input_schema=t.input_schema or {"type": "object", "properties": {}},
+        # Notify initialized (fire-and-forget; best-effort).
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(
+                    config.url,
+                    json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    headers=headers,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Now list tools.
+        list_result = await _post("tools/list", {})
+
+        tools = []
+        for t in list_result.get("tools", []):
+            tools.append(
+                _types.Tool(
+                    name=t.get("name", ""),
+                    description=t.get("description"),
+                    input_schema=t.get("inputSchema") or {"type": "object", "properties": {}},
+                )
             )
-            for t in raw.tools
-        ]
         result = _types.ListToolsResult(
             tools=tools,
-            cache_scope=raw.cache_scope,
-            result_type=raw.result_type,  # type: ignore[arg-type]
-            ttl_ms=raw.ttl_ms,
+            cache_scope=list_result.get("cacheScope", "public"),
+            result_type=list_result.get("resultType", "complete"),
+            ttl_ms=list_result.get("ttlMs", 0),
         )
         logger.info(
-            "MCP server %r list_tools succeeded via lenient retry (%d tools)",
+            "MCP server %r list_tools succeeded via lenient raw POST (%d tools)",
             server_id,
             len(tools),
         )
@@ -1197,11 +1265,11 @@ class MCPToolPool:
                 # Modern-protocol servers (2026-07-28) may omit required
                 # cache-control fields (cacheScope, resultType, ttlMs) from
                 # their ListToolsResult. The SDK's strict model rejects these.
-                # Retry with a raw send_request and a lenient model that
-                # treats the cache fields as optional.
+                # Retry with a raw HTTP POST that bypasses the SDK's response
+                # pipeline (and its ListToolsResult validation) entirely.
                 if "ListToolsResult" in str(exc) and "Field required" in str(exc):
                     try:
-                        result = await self._list_tools_lenient(session, config.server_id)
+                        result = await self._list_tools_lenient(config, server_id=config.server_id)
                     except Exception as exc2:  # pylint: disable=broad-except
                         logger.warning(
                             "MCP server %r list_tools failed (lenient retry also "
