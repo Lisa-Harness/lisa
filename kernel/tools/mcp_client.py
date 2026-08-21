@@ -943,6 +943,13 @@ class MCPToolPool:
         so that servers advertising modern protocol versions (e.g.
         ``2026-07-28``) are probed via ``server/discover`` first, with a
         fallback to the initialize handshake for legacy servers.
+
+        When ``negotiate_auto`` fails because the server responds to the
+        initialize handshake with a modern version (which ``initialize()``
+        rejects), the modern version is adopted directly via
+        ``session.adopt()`` with a synthesized ``DiscoverResult``. This
+        handles servers that don't support ``server/discover`` but only
+        speak the modern protocol version.
         """
         from mcp.client._probe import negotiate_auto  # noqa: PLC0415
         from mcp.client.session import ClientSession  # noqa: PLC0415
@@ -957,7 +964,37 @@ class MCPToolPool:
                 streamable_http_client(config.url, http_client=http_client)
             )
             session = await stack.enter_async_context(ClientSession(read, write))
-            await negotiate_auto(session)
+            try:
+                await negotiate_auto(session)
+            except RuntimeError as exc:
+                # negotiate_auto fell back to initialize(), which raised
+                # because the server responded with a modern protocol
+                # version (e.g. "2026-07-28") that the handshake path
+                # rejects. Extract the version and adopt it directly.
+                msg = str(exc)
+                if "Unsupported protocol version from the server:" not in msg:
+                    raise
+                # Parse the version from the error message.
+                version = msg.rsplit(":", 1)[-1].strip()
+                if not version:
+                    raise
+                logger.info(
+                    "MCP server %s: negotiate_auto fell back to initialize "
+                    "which rejected modern version %s; adopting directly.",
+                    config.server_id,
+                    version,
+                )
+                # Import here to avoid pulling mcp_types at module load.
+                import mcp_types as _mcp_types  # noqa: PLC0415
+
+                discover_result = _mcp_types.DiscoverResult(
+                    supported_versions=[version],
+                    capabilities=_mcp_types.ServerCapabilities(),
+                    result_type="complete",
+                    ttl_ms=0,
+                    cache_scope="public",
+                )
+                session.adopt(discover_result)
         except BaseException as exc:
             await stack.aclose()
             self._last_errors[config.server_id] = _safe_exc_desc(exc)
