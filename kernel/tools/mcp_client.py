@@ -1111,6 +1111,63 @@ class MCPToolPool:
                     exc_info=True,
                 )
 
+    async def _list_tools_lenient(self, session: Any, server_id: str) -> Any:
+        """Retry ``list_tools`` with a lenient model that tolerates missing cache-control fields.
+
+        Modern-protocol servers (2026-07-28) are supposed to send
+        ``cacheScope``, ``resultType``, and ``ttlMs`` in their
+        ``ListToolsResult``, but some servers omit them. The SDK's strict
+        pydantic model rejects the response. This method builds a lenient
+        model with those fields optional and retries via ``send_request``
+        directly, then synthesizes a ``ListToolsResult`` with defaults so
+        the rest of the catalog merge works unchanged.
+        """
+        import mcp_types as _types  # noqa: PLC0415
+        from pydantic import BaseModel, ConfigDict, Field  # noqa: PLC0415
+        from typing_extensions import Literal  # noqa: PLC0415
+
+        class _LenientTool(BaseModel):
+            model_config = ConfigDict(extra="allow")
+            name: str
+            description: str | None = None
+            input_schema: dict[str, Any] | None = Field(default=None, alias="inputSchema")
+            annotations: dict[str, Any] | None = None
+
+        class _LenientListToolsResult(BaseModel):
+            model_config = ConfigDict(extra="allow")
+            tools: list[_LenientTool] = []
+            next_cursor: str | None = Field(default=None, alias="nextCursor")
+            cache_scope: Literal["private", "public"] = "public"
+            result_type: str = "complete"
+            ttl_ms: int = 0
+
+        raw = await session.send_request(
+            _types.ListToolsRequest(),
+            _LenientListToolsResult,
+        )
+        # Reconstruct a proper ListToolsResult so the caller's tool-extraction
+        # code works unchanged.
+        tools = [
+            _types.Tool(
+                name=t.name,
+                description=t.description,
+                input_schema=t.input_schema or {"type": "object", "properties": {}},
+            )
+            for t in raw.tools
+        ]
+        result = _types.ListToolsResult(
+            tools=tools,
+            cache_scope=raw.cache_scope,
+            result_type=raw.result_type,  # type: ignore[arg-type]
+            ttl_ms=raw.ttl_ms,
+        )
+        logger.info(
+            "MCP server %r list_tools succeeded via lenient retry (%d tools)",
+            server_id,
+            len(tools),
+        )
+        return result
+
     async def _refresh_tool_index(self) -> None:
         """Merge tool lists from all connected servers into one index.
 
@@ -1137,14 +1194,32 @@ class MCPToolPool:
             try:
                 result = await session.list_tools()
             except Exception as exc:  # pylint: disable=broad-except
-                logger.warning(
-                    "MCP server %r list_tools failed: %s: %s; "
-                    "tools absent from catalog (no restart from data path)",
-                    config.server_id,
-                    type(exc).__name__,
-                    exc,
-                )
-                continue
+                # Modern-protocol servers (2026-07-28) may omit required
+                # cache-control fields (cacheScope, resultType, ttlMs) from
+                # their ListToolsResult. The SDK's strict model rejects these.
+                # Retry with a raw send_request and a lenient model that
+                # treats the cache fields as optional.
+                if "ListToolsResult" in str(exc) and "Field required" in str(exc):
+                    try:
+                        result = await self._list_tools_lenient(session, config.server_id)
+                    except Exception as exc2:  # pylint: disable=broad-except
+                        logger.warning(
+                            "MCP server %r list_tools failed (lenient retry also "
+                            "failed): %s: %s; tools absent from catalog",
+                            config.server_id,
+                            type(exc2).__name__,
+                            exc2,
+                        )
+                        continue
+                else:
+                    logger.warning(
+                        "MCP server %r list_tools failed: %s: %s; "
+                        "tools absent from catalog (no restart from data path)",
+                        config.server_id,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    continue
             server_tools = [
                 MCPToolSpec(
                     server_id=config.server_id,
