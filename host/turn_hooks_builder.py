@@ -535,7 +535,12 @@ def build_turn_hooks(
         # to memory. A down memory backend or failed distillation is logged
         # and swallowed — it never blocks turn completion.
         if runtime.config.memory_auto_capture_enabled:
-            should_capture, trigger_salience = _should_auto_capture(query, response_text, messages)
+            should_capture, trigger_salience = _should_auto_capture(
+                query=query, 
+                response_text=response_text, 
+                messages=messages, 
+                effect_receipts=result.effect_receipts
+            )
             if (
                 should_capture
                 and trigger_salience >= runtime.config.memory_auto_capture_min_salience

@@ -1158,7 +1158,7 @@ class TurnHooks:
     provider streaming mode is ``stage``/``hybrid``)."""
 
     # ── Operator signals ────────────────────────────────────────────────
-    operator_signal: Callable[[], Literal["", "pause", "stop", "terminate"]] | None = None
+    operator_signal: Callable[[], str] | None = None
     """Poll the host for an operator-initiated pause/stop/terminate signal.
 
     Called once per iteration at the top of the turn loop, before the
@@ -1175,6 +1175,11 @@ class TurnHooks:
     tool dispatches from the prior iteration complete before the loop breaks
     at the next iteration boundary (the poll is at the top of the loop, not
     mid-``await``).
+
+    .. versionchanged:: next
+        The return type widened from ``Literal["", "pause", "stop", "terminate"]``
+        to ``str`` to accept :class:`host.operator_signal.OperatorSignal`
+        enum values without requiring the kernel to import the host package.
     """
 
 

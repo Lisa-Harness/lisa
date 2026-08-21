@@ -28,6 +28,7 @@ from kernel.session_plan import SessionPlan
 
 from host.config import HostConfig
 from host.execution_policy import resolve_execution_policy
+from host.operator_signal import OperatorSignal
 from host.session_context import compile_selected_session_plan
 
 logger = logging.getLogger(__name__)
@@ -199,12 +200,11 @@ class HostRuntime:
         self.next_model_id: str = "-"
         self.next_model_provider: str = "-"
 
-        # ── Operator signal (pause/stop/terminate) ──────────────────────
-        # The transport sets this to one of "", "pause", "stop", "terminate"
-        # when the operator presses the corresponding key binding. The turn
-        # loop polls it via ``TurnHooks.operator_signal`` once per iteration.
-        # The kernel clears it (via the transport) after the turn ends.
-        self.operator_signal_value: str = ""
+        # ── Operator signal (pause/stop/terminate/interrupt/eof/suspend) ──
+        # The transport sets this when the operator presses the corresponding
+        # key binding. The turn loop polls it via ``TurnHooks.operator_signal``
+        # once per iteration. The host clears it at the start of each turn.
+        self.operator_signal_value: OperatorSignal = OperatorSignal.NONE
 
         # ── State snapshot ────────────────────────────────────────────
         self._state_snapshot: dict[str, Any] | None = None
