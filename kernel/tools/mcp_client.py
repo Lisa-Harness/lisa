@@ -938,9 +938,15 @@ class MCPToolPool:
         per connect; oauth2-pkce via the SDK's httpx auth provider), and the
         resulting ``httpx`` client is passed through the ``http_client=``
         seam — the only auth/header injection point the MCP SDK exposes.
+
+        Uses ``negotiate_auto`` instead of the legacy ``session.initialize()``
+        so that servers advertising modern protocol versions (e.g.
+        ``2026-07-28``) are probed via ``server/discover`` first, with a
+        fallback to the initialize handshake for legacy servers.
         """
-        from mcp.client.session import ClientSession
-        from mcp.client.streamable_http import streamable_http_client
+        from mcp.client._probe import negotiate_auto  # noqa: PLC0415
+        from mcp.client.session import ClientSession  # noqa: PLC0415
+        from mcp.client.streamable_http import streamable_http_client  # noqa: PLC0415
 
         assert config.url is not None
         http_client = self._build_http_client(config)
@@ -951,7 +957,7 @@ class MCPToolPool:
                 streamable_http_client(config.url, http_client=http_client)
             )
             session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
+            await negotiate_auto(session)
         except BaseException as exc:
             await stack.aclose()
             self._last_errors[config.server_id] = _safe_exc_desc(exc)
