@@ -87,6 +87,7 @@ class AuthKind(str, Enum):
     NONE = "none"  # no auth — only allowed for loopback/allowlisted hosts
     BEARER = "bearer"  # static bearer token, resolved at connect time
     OAUTH2_PKCE = "oauth2-pkce"  # RFC 9728 OAuth 2.1 authorization-code + PKCE
+    HEADER = "header"  # custom header name + token (e.g. X-Scoped-Budget-Token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +108,10 @@ class AuthSpec:
       SDK's auth provider. **Warm-only** — the loopback redirect doesn't fit
       per-turn cold spawns. ``auth_server`` may be omitted and is discovered
       from the server URL's ``/.well-known/oauth-protection-metadata``.
+    - ``header``: a custom header name + token value (e.g.
+      ``X-Scoped-Budget-Token: <token>``). Used by API-gateway-scoped tokens
+      that don't follow the ``Authorization: Bearer`` convention. The header
+      name and token are ``${VAR}``-expanded at load time.
     """
 
     kind: AuthKind = AuthKind.NONE
@@ -114,6 +119,9 @@ class AuthSpec:
 
     token: str | None = None
     """Bearer token (kind=BEARER only). ``${VAR}``-expanded at load time."""
+
+    header_name: str | None = None
+    """Custom header name (kind=HEADER only, e.g. ``X-Scoped-Budget-Token``)."""
 
     client_id: str | None = None
     """OAuth client id (kind=OAUTH2_PKCE only)."""
@@ -131,6 +139,8 @@ class AuthSpec:
             return bool(self.token)
         if self.kind is AuthKind.OAUTH2_PKCE:
             return bool(self.client_id)
+        if self.kind is AuthKind.HEADER:
+            return bool(self.header_name) and bool(self.token)
         return False
 
 

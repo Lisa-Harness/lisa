@@ -457,6 +457,19 @@ def _parse_auth(raw: Any, server_id: str, index: int, path: Path) -> AuthSpec:
             )
         return AuthSpec(kind=kind, token=token)
 
+    if kind is AuthKind.HEADER:
+        header_name = str(raw.get("header_name") or "").strip()
+        if not header_name:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': auth type 'header' requires 'header_name'"
+            )
+        token = _expand_env_value(raw.get("token") or "")
+        if not token:
+            raise MCPServerManifestError(
+                f"servers[{index}] '{server_id}': auth type 'header' requires 'token'"
+            )
+        return AuthSpec(kind=kind, header_name=header_name, token=token)
+
     if kind is AuthKind.OAUTH2_PKCE:
         client_id = _expand_env_value(raw.get("client_id") or "")
         if not client_id:

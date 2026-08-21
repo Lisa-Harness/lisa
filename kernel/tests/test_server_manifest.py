@@ -250,6 +250,70 @@ servers:
     assert auth.is_authenticated() is True
 
 
+def test_load_manifest_parses_header_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """auth: {type: header, header_name, token} parses with ${VAR} expansion."""
+    monkeypatch.setenv("CLOUDSERVERS_TOKEN", "tok_abc123")
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: CloudServers
+    runtime_kind: http
+    url: https://api.cloudservers.app/mcp
+    auth:
+      type: header
+      header_name: X-Scoped-Budget-Token
+      token: "${CLOUDSERVERS_TOKEN}"
+""",
+        encoding="utf-8",
+    )
+    specs, _ = load_mcp_server_manifest(manifest)
+    assert len(specs) == 1
+    auth = specs[0].auth
+    assert auth.kind is AuthKind.HEADER
+    assert auth.header_name == "X-Scoped-Budget-Token"
+    assert auth.token == "tok_abc123"
+    assert auth.is_authenticated() is True
+
+
+def test_load_manifest_header_auth_requires_header_name(tmp_path: Path) -> None:
+    """auth: {type: header} without header_name raises."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: cs
+    runtime_kind: http
+    url: https://api.example.com/mcp
+    auth:
+      type: header
+      token: "tok"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(Exception, match="requires 'header_name'"):
+        load_mcp_server_manifest(manifest)
+
+
+def test_load_manifest_header_auth_requires_token(tmp_path: Path) -> None:
+    """auth: {type: header} without token raises."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: cs
+    runtime_kind: http
+    url: https://api.example.com/mcp
+    auth:
+      type: header
+      header_name: X-Custom-Token
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(Exception, match="requires 'token'"):
+        load_mcp_server_manifest(manifest)
+
+
 def test_load_manifest_bearer_auth_requires_token(tmp_path: Path) -> None:
     """auth: {type: bearer} without token raises."""
     manifest = tmp_path / "mcp_servers.yaml"

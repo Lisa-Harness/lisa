@@ -968,6 +968,8 @@ class MCPToolPool:
         connect-time auth resolved from ``config.auth``. For ``oauth2-pkce``
         the SDK's :class:`OAuthClientProvider` is attached as the client's
         ``auth`` so token acquisition/refresh ride the httpx auth lifecycle.
+        For ``bearer`` and ``header`` kinds, the token is re-read from the
+        spec at connect time so cold servers pick up refreshed env values.
         """
         from mcp.shared._httpx_utils import create_mcp_http_client
 
@@ -983,6 +985,11 @@ class MCPToolPool:
             token = getattr(auth, "token", None)
             if token:
                 headers["Authorization"] = f"Bearer {token}"
+        if kind is not None and kind.value == "header":
+            header_name = getattr(auth, "header_name", None)
+            token = getattr(auth, "token", None)
+            if header_name and token:
+                headers[header_name] = token
         return create_mcp_http_client(headers=headers)
 
     def _build_oauth_provider(self, config: MCPClientConfig) -> Any:

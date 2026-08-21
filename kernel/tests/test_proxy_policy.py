@@ -527,3 +527,20 @@ def test_compiler_allows_loopback_http_without_auth() -> None:
     )
     config = compile_mcp_config(spec)
     assert config.url == "http://127.0.0.1:8765/mcp"
+
+
+def test_compiler_accepts_non_loopback_http_with_header_auth() -> None:
+    """A non-loopback HTTP server with header auth passes the network-auth gate."""
+    spec = MCPServerSpec(
+        server_id="CloudServers",
+        runtime_kind=RuntimeKind.HTTP,
+        url="https://api.cloudservers.app/mcp",
+        auth=AuthSpec(
+            kind=AuthKind.HEADER,
+            header_name="X-Scoped-Budget-Token",
+            token="tok_abc123",
+        ),
+    )
+    config = compile_mcp_config(spec)
+    assert config.auth.kind is AuthKind.HEADER
+    assert config.auth.header_name == "X-Scoped-Budget-Token"
