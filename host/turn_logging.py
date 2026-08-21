@@ -171,10 +171,14 @@ def build_turn_completed_payload(
 ) -> dict[str, Any]:
     """Assemble the ``turn.completed`` audit payload for a kernel turn.
 
-    Includes the effect-receipt ledger (Phase 8: one verification
-    primitive) so hallucination signals — a mode with a completion
-    contract whose ledger is empty — are queryable from the JSONL stream
-    without reconstructing individual dispatch entries.
+    The effect-receipt ledger is **not** duplicated here — the thread entry
+    (written by ``handle_message._execute_mode_turn``) is the canonical
+    source of receipts and is addressable by turn number via
+    ``thread_read_range`` / the markdown render operation. The event links
+    to the entry by turn number, not by a second receipt copy.
+    Hallucination signals (a mode with a completion contract whose ledger
+    is empty) are queryable from the thread entry's ``effect_receipts``
+    field without reconstructing individual dispatch entries.
     """
     return {
         "mode_id": mode_id,
@@ -183,14 +187,6 @@ def build_turn_completed_payload(
         "iteration_count": coerce_int(getattr(result, "iteration_count", 0)),
         "blocked": bool(getattr(result, "blocked", False)),
         "block_origin": str(getattr(result, "block_origin", "") or ""),
-        "receipts": [
-            {
-                "capability_id": str(getattr(r, "capability_id", "")),
-                "effect": str(getattr(r, "effect", "")),
-                "artifact_id": str(getattr(r, "artifact_id", "") or ""),
-            }
-            for r in (getattr(result, "effect_receipts", None) or [])
-        ],
     }
 
 

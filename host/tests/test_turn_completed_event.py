@@ -1,9 +1,9 @@
 """Tests for the ``turn.completed`` audit payload (Phase 8).
 
-``build_turn_completed_payload`` carries the effect-receipt ledger so
-hallucination signals — a mode with a completion contract whose ledger
-is empty — are queryable from the JSONL stream without reconstructing
-individual dispatch entries.
+``build_turn_completed_payload`` carries mode/handoff/blocked metadata.
+The effect-receipt ledger is **not** duplicated in the event payload — the
+thread entry is the canonical, turn-addressable source of receipts. The
+event links to the entry by turn number.
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ def _result(**overrides: object) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-def test_turn_completed_payload_carries_receipt_ledger() -> None:
-    """The receipts field lists every write receipt with its artifact id."""
+def test_turn_completed_payload_omits_receipt_ledger() -> None:
+    """The receipts field is not in the event payload — the thread entry owns it."""
     result = _result(
         effect_receipts=[
             EffectReceipt(
@@ -51,23 +51,18 @@ def test_turn_completed_payload_carries_receipt_ledger() -> None:
         mode_id="markdown", result=result, coerce_int=_coerce
     )
     assert payload["mode_id"] == "markdown"
-    assert payload["receipts"] == [
-        {
-            "capability_id": "markdown_forge_document",
-            "effect": "write",
-            "artifact_id": "doc-1",
-        },
-        {"capability_id": "memory.add", "effect": "external_write", "artifact_id": ""},
-    ]
+    assert "receipts" not in payload
+    assert payload["tool_call_count"] == 3
+    assert payload["handoff"] == ""
 
 
-def test_turn_completed_payload_empty_ledger_is_explicit() -> None:
-    """An empty ledger is the hallucination signal — it must be present."""
+def test_turn_completed_payload_blocked_turn_metadata() -> None:
+    """A blocked turn carries blocked/block_origin — receipts are in the entry."""
     result = _result(blocked=True, block_origin="no_tools")
     payload = build_turn_completed_payload(
         mode_id="remember", result=result, coerce_int=_coerce
     )
-    assert payload["receipts"] == []
+    assert "receipts" not in payload
     assert payload["blocked"] is True
     assert payload["block_origin"] == "no_tools"
     assert payload["tool_call_count"] == result.tool_call_count
@@ -79,6 +74,6 @@ def test_turn_completed_payload_tolerates_sparse_results() -> None:
     payload = build_turn_completed_payload(
         mode_id="default", result=SimpleNamespace(), coerce_int=_coerce
     )
-    assert payload["receipts"] == []
+    assert "receipts" not in payload
     assert payload["blocked"] is False
     assert payload["tool_call_count"] == 0

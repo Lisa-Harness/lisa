@@ -1867,7 +1867,11 @@ async def test_run_turn_calls_on_turn_complete() -> None:
     side_effects: list[dict[str, Any]] = []
 
     async def on_complete(
-        mode_id: str, query: str, response_text: str, messages: list[dict[str, Any]]
+        mode_id: str,
+        query: str,
+        response_text: str,
+        messages: list[dict[str, Any]],
+        effect_receipts: list[Any],
     ) -> None:
         side_effects.append(
             {
@@ -1875,6 +1879,7 @@ async def test_run_turn_calls_on_turn_complete() -> None:
                 "query": query,
                 "response_text": response_text,
                 "message_count": len(messages),
+                "receipt_count": len(effect_receipts),
             }
         )
 
@@ -1889,6 +1894,7 @@ async def test_run_turn_calls_on_turn_complete() -> None:
     assert side_effects[0]["query"] == "hello"
     assert side_effects[0]["response_text"] == "Done."
     assert side_effects[0]["message_count"] >= 2  # system + user + assistant
+    assert side_effects[0]["receipt_count"] == 0  # default mode, no writes
 
 
 @pytest.mark.asyncio

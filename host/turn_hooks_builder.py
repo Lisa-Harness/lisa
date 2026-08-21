@@ -364,6 +364,17 @@ def build_turn_hooks(
         pre_turn_briefing: str,
         capability_manifest: Any = None,
     ) -> str:
+        # ── Turn number annotation ──────────────────────────────────
+        # Prepend the global turn index to the briefing so the model sees
+        # its own turn number ("Turn 42") and can use it to address prior
+        # turns via ``thread_read_range`` / the markdown render operation.
+        # The number is computed at turn start in ``_execute_mode_turn``
+        # and threaded through ``run_context`` — the same value stamped on
+        # the thread entry, so the model's self-address matches the log.
+        turn_index = ctx_dict.get("turn_index")
+        if isinstance(turn_index, int):
+            pre_turn_briefing = f"Turn {turn_index}\n\n{pre_turn_briefing}"
+
         # ── Workflow progress summary ────────────────────────────────
         # Derive the workflow view from the thread tail — the thread is
         # the single source of truth. The view is rebuilt every turn from
@@ -515,6 +526,7 @@ def build_turn_hooks(
         query: str,
         response_text: str,
         messages: list[dict[str, Any]],
+        effect_receipts: list[Any],
     ) -> None:
         # Update the mutable turn context dict.
         assistant_message_count = sum(
@@ -536,10 +548,7 @@ def build_turn_hooks(
         # and swallowed — it never blocks turn completion.
         if runtime.config.memory_auto_capture_enabled:
             should_capture, trigger_salience = _should_auto_capture(
-                query=query, 
-                response_text=response_text, 
-                messages=messages, 
-                effect_receipts=result.effect_receipts
+                query, response_text, messages, effect_receipts=effect_receipts
             )
             if (
                 should_capture

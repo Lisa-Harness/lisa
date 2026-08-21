@@ -36,6 +36,7 @@ from host.thread import (
     load_recent_thread_entries,
     load_thread_range,
     load_thread_digest,
+    next_turn_index,
     write_turn_history,
 )
 
@@ -285,6 +286,46 @@ class TestLoadRecentThreadEntries:
         assert len(entries) == 2
         assert entries[0]["query"] == "good"
         assert entries[1]["query"] == "also good"
+
+
+# ── next_turn_index ──────────────────────────────────────────────────
+
+
+class TestNextTurnIndex:
+    def test_empty_store_returns_zero(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        assert next_turn_index(thread_path=thread_path) == 0
+
+    def test_none_path_returns_zero(self) -> None:
+        assert next_turn_index(thread_path=None) == 0
+
+    def test_active_only_matches_next_appended_turn(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        for _ in range(5):
+            _write_entry(thread_path, query="q", response_text="a")
+        # The next entry should be turn 5 (0-based, 5 entries already in).
+        assert next_turn_index(thread_path=thread_path) == 5
+        _write_entry(thread_path, query="q5", response_text="a5")
+        entries = load_thread_range(
+            thread_path=thread_path, start_turn=5, end_turn=5
+        )
+        assert len(entries) == 1
+        assert entries[0]["turn"] == 5
+
+    def test_sealed_plus_active_matches(self, tmp_path: Path) -> None:
+        thread_path = tmp_path / "thread"
+        # Seal at 3 entries per segment so we get sealed + active.
+        for _ in range(3):
+            _write_entry(thread_path, query="q", response_text="a", segment_turns=3)
+        # After 3 entries the segment sealed; active is now empty.
+        # Next turn should be 3.
+        assert next_turn_index(thread_path=thread_path) == 3
+        _write_entry(thread_path, query="q3", response_text="a3", segment_turns=3)
+        entries = load_thread_range(
+            thread_path=thread_path, start_turn=3, end_turn=3
+        )
+        assert len(entries) == 1
+        assert entries[0]["turn"] == 3
 
 
 # ── Segmented store: seal, range, write-back, legacy rename ──────────

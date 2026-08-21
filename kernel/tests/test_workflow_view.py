@@ -29,6 +29,7 @@ def _entry(
     effect_receipts: list[dict] | None = None,
     handoff_to: str = "",
     transitioned_to: str = "",
+    turn: int | None = None,
 ) -> dict:
     """Build a synthetic thread entry."""
     entry: dict = {
@@ -44,6 +45,8 @@ def _entry(
         entry["handoff_to"] = handoff_to
     if transitioned_to:
         entry["transitioned_to"] = transitioned_to
+    if turn is not None:
+        entry["turn"] = turn
     return entry
 
 
@@ -178,6 +181,40 @@ class TestDeriveWorkflowView:
         assert view is not None
         assert len(view.completed_steps) == 1
         assert view.current_step_id == "coding_1"
+
+    def test_completing_turn_recorded_on_write_step(self):
+        # When a write step's receipt match is found, the completing entry's
+        # global turn index is recorded on the step as ``completing_turn``.
+        entries = [
+            _entry(mode_id="planner", response_text=_PLAN_3_STEP, turn=0),
+            _entry(mode_id="search", response_text="Searched.", handoff_to="coding", turn=1),
+            _entry(
+                mode_id="coding",
+                response_text="Implemented.",
+                effect_receipts=[_receipt("coding_apply_patch", "write")],
+                turn=2,
+            ),
+        ]
+        view = derive_workflow_view(entries)
+        assert view is not None
+        coding_step = view.step_by_id("coding_1")
+        assert coding_step is not None
+        assert coding_step.completing_turn == 2
+        search_step = view.step_by_id("search_0")
+        assert search_step is not None
+        assert search_step.completing_turn == 1
+
+    def test_completing_turn_none_when_step_not_complete(self):
+        # An incomplete step has completing_turn = None.
+        entries = [
+            _entry(mode_id="planner", response_text=_PLAN_3_STEP, turn=0),
+            _entry(mode_id="search", response_text="Searched.", handoff_to="coding", turn=1),
+        ]
+        view = derive_workflow_view(entries)
+        assert view is not None
+        coding_step = view.step_by_id("coding_1")
+        assert coding_step is not None
+        assert coding_step.completing_turn is None
 
     def test_mode_stage_derived_from_last_entry(self):
         entries = [

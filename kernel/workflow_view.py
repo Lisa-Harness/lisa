@@ -7,7 +7,12 @@ rebuilt every turn from the append-only thread log.
 
 The plan lives as a ``## Plan`` block in a turn's ``response_text``.
 Completion is inferred from ``effect_receipts`` in later thread entries
-matching each step's ``mode_id``. Mode/stage pointers are derived from
+matching each step's ``write_capability`` (for write steps) or the first
+handoff (for read steps). When a match is found, the completing entry's
+global turn index is recorded on the step as ``completing_turn`` — the
+completion is turn-addressed and verifiable via ``thread_read_range`` or
+the markdown render operation. The string match is the *discovery*; the
+addressed turn is the *conclusion*. Mode/stage pointers are derived from
 the most recent thread entry's ``mode_id`` and ``transitioned_to``.
 
 This replaces the mutable ``WorkflowPosition`` + ``FileWorkflowPositionStore``
@@ -316,7 +321,9 @@ def derive_workflow_view(
     # - Write step (write_capability set): complete iff a later thread
     #   entry has a receipt whose capability_id matches write_capability
     #   (raw or bare form). No dense-content fallback — the receipt is the
-    #   honest signal.
+    #   honest signal. The matching entry's global turn index is recorded
+    #   on the step as ``completing_turn`` so the completion is
+    #   turn-addressed and verifiable via ``thread_read_range``.
     # - Read step (write_capability None): complete on the first
     #   handoff_to or transitioned_to in a later entry with matching
     #   mode_id. The reads and prose are already in the lossless thread;
@@ -333,6 +340,12 @@ def derive_workflow_view(
             preview = str(completing_entry.get("response_text") or "").strip()[:240]
             if preview:
                 step_results[step.step_id] = preview
+            # Record the completing turn index on the step so the
+            # completion is turn-addressed. The entry's ``turn`` field is
+            # the global 0-based turn index stamped at append time.
+            completing_turn = completing_entry.get("turn")
+            if isinstance(completing_turn, int):
+                steps[idx] = step.model_copy(update={"completing_turn": completing_turn})
 
     # Derive mode/stage pointer from the most recent entry.
     last_entry = thread_entries[-1]

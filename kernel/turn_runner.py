@@ -956,9 +956,9 @@ class TurnHooks:
     """
 
     # ── Post-turn side effects ───────────────────────────────────────────
-    on_turn_complete: Callable[[str, str, str, list[dict[str, Any]]], Awaitable[None]] | None = None
+    on_turn_complete: Callable[[str, str, str, list[dict[str, Any]], list[Any]], Awaitable[None]] | None = None
     """Called after every successful turn with mode_id, query, response_text,
-    and the full message list. Default: no-op.
+    the full message list, and the turn's ``EffectReceipt`` ledger. Default: no-op.
 
     The app hooks thread persistence, conversation digest refresh, provenance,
     and context-usage events here.
@@ -1547,6 +1547,7 @@ async def _default_on_turn_complete(
     _query: str,
     _response_text: str,
     _messages: list[dict[str, Any]],
+    _effect_receipts: list[Any],
 ) -> None:
     return
 
@@ -6469,7 +6470,7 @@ async def _run_turn_inner(
     elif output_guard_result.sanitized_text is not None:
         content = output_guard_result.sanitized_text
 
-    await on_complete(mode_id, query, content, messages)
+    await on_complete(mode_id, query, content, messages, list(_state.effect_receipts))
 
     # ── Phase 3.5: Post-turn opportunistic slice ─────────────────────
     # Fires after the response is committed. The user has already seen

@@ -815,6 +815,16 @@ async def _execute_mode_turn(
 
     resolved_model = _resolve_model_cmd(runtime, preferred_model_id)
 
+    # Compute the global turn index at turn start (before the turn runs)
+    # so the model can be annotated with its turn number and the
+    # pre-computed value can be threaded through to ``append_thread_entry``.
+    # One source of truth: the number the model sees in the briefing is the
+    # number stamped on the thread entry — no off-by-one between display and
+    # persistence.
+    from host.thread import next_turn_index  # noqa: PLC0415
+
+    turn_index = next_turn_index(thread_path=runtime.thread_path)
+
     # Build the turn context dict.
     run_context = build_turn_context(
         raw_message=message,
@@ -824,6 +834,7 @@ async def _execute_mode_turn(
         resolved_model=resolved_model,
         mode=mode,
     )
+    run_context["turn_index"] = turn_index
 
     _set_turn_context(runtime, run_context)
 
@@ -872,6 +883,7 @@ async def _execute_mode_turn(
             query=query or message,
             response_text=response_text,
             provenance={"source": "system-verified", "finish_reason": "error"},
+            turn=turn_index,
         )
         await transport.on_error(f"Operation error: {exc}", exc)
         runtime.operator_signal_value = ""
@@ -952,10 +964,10 @@ async def _execute_mode_turn(
     run_context["completion"] = completion_context
     _set_turn_context(runtime, run_context)
 
-    # Audit: emit the kernel turn's completion event carrying the effect
-    # receipt ledger (Phase 8: one verification primitive) so
-    # hallucination signals are queryable from the JSONL stream without
-    # reconstructing individual dispatch entries.
+    # Audit: emit the kernel turn's completion event. The event carries
+    # mode/handoff/blocked metadata; the effect-receipt ledger lives in
+    # the thread entry (the canonical, turn-addressable source) and is
+    # not duplicated in the event payload.
     emit_structured_event(
         logger,
         level=logging.INFO,
@@ -981,7 +993,9 @@ async def _execute_mode_turn(
     # Serialize the effect-receipt ledger and mode/stage transitions into
     # the thread entry so the workflow view can be derived losslessly
     # from the thread alone — no separate mutable position store needed.
-    # The receipts shape mirrors build_turn_completed_payload's receipts.
+    # The thread entry is the canonical source of receipts; the
+    # ``turn.completed`` event links to it by turn number rather than
+    # duplicating the receipt list.
     receipts = [
         {
             "capability_id": str(getattr(r, "capability_id", "")),
@@ -1001,6 +1015,7 @@ async def _execute_mode_turn(
         effect_receipts=receipts,
         handoff_to=result.handoff_to or "",
         transitioned_to=result.transitioned_to or "",
+        turn=turn_index,
     )
 
     # ── Centralized loop decision classification ────────────────────

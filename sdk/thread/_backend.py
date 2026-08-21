@@ -262,6 +262,22 @@ class ThreadStore:
             return []
         return _parse_entries(decompressed.decode("utf-8").splitlines())
 
+    def next_turn_index(self) -> int:
+        """Return the 0-based global turn index the next appended entry will receive.
+
+        Same derivation ``host.thread.append_thread_entry`` uses to stamp the
+        ``turn`` field at append time: the sum of all sealed-segment turn
+        spans plus the current active-segment entry count. Computing this at
+        turn start (before the turn runs) lets the host annotate the model
+        briefing with the turn number and thread the pre-computed value
+        through to the append, so the number the model saw and the number
+        stamped on the entry are one source of truth — no off-by-one.
+        """
+        records = _read_index(self._paths.index_path)
+        sealed_spans = sum(r.turn_hi - r.turn_lo + 1 for r in records)
+        active_count = len(_read_active_entries(self._paths.current))
+        return sealed_spans + active_count
+
     def load_range(self, *, start_turn: int, end_turn: int) -> list[dict[str, Any]]:
         """Load entries whose global turn index falls in ``[start_turn, end_turn]``.
 

@@ -1,7 +1,7 @@
 """Tests for auto-capture salience → tier classification.
 
 ``classify_memory_tier`` maps the trigger salience onto a retention tier so
-workflow-state captures (write-effect tools, soft commitments) expire as
+workflow-state captures (write-effect receipts, soft commitments) expire as
 ``daily``/``weekly`` instead of polluting ``long_term`` recall for a year.
 """
 
@@ -71,21 +71,27 @@ class TestClassifyMemoryTier:
 class TestShouldAutoCaptureSalienceFeedsTier:
     """The salience ``should_auto_capture`` returns must classify sensibly."""
 
-    def test_write_effect_tool_call_is_not_long_term(self) -> None:
-        # A coding_ write tool fires the write-effect trigger at salience 0.6,
+    def test_write_effect_receipt_is_not_long_term(self) -> None:
+        # A write-effect receipt fires the write trigger at salience 0.6,
         # which must classify as daily (workflow state), not long_term.
-        messages = [
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {"function": {"name": "coding_edit_file"}},
-                ],
-            },
-        ]
-        captured, salience = should_auto_capture("update the file", "done", messages)
+        messages: list[dict[str, object]] = []
+        receipts = [{"capability_id": "coding_edit_file", "effect": "write", "artifact_id": ""}]
+        captured, salience = should_auto_capture(
+            "update the file", "done", messages, effect_receipts=receipts
+        )
         assert captured is True
         assert salience == 0.6
         assert classify_memory_tier(salience) == "daily"
+
+    def test_read_only_receipt_does_not_trigger(self) -> None:
+        # A read-only receipt (effect="read") must not fire the write trigger.
+        messages: list[dict[str, object]] = []
+        receipts = [{"capability_id": "coding_read_file", "effect": "read", "artifact_id": ""}]
+        captured, salience = should_auto_capture(
+            "look at the file", "done", messages, effect_receipts=receipts
+        )
+        assert captured is False
+        assert salience == 0.0
 
     def test_soft_commitment_is_not_long_term(self) -> None:
         # "I prefer" fires at salience 0.6 → daily, not long_term.

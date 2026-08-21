@@ -113,6 +113,15 @@ class WorkflowStep(BaseModel):
     # write-receipt contract — no false completes from stray receipts, no
     # incomplete-forever read steps.
     write_capability: str | None = None
+    # The global turn index whose write receipt completed this step, set
+    # by ``WorkflowView`` when it matches ``write_capability`` against a
+    # later thread entry's ``effect_receipts``. ``None`` until the match
+    # is found. This makes the completion turn-addressed: the receipt
+    # string match is the *discovery* mechanism, and this field is the
+    # *conclusion* — the step is complete because turn N wrote, and turn
+    # N is addressable via ``thread_read_range`` / the markdown render
+    # operation for verification.
+    completing_turn: int | None = None
     # The full rendered ``## Plan`` block from ``plan_workflow``'s
     # ``output_text``. Carried on the position (not just the turn's
     # ephemeral ``_state.plan_prefix``) so the handoff context builder

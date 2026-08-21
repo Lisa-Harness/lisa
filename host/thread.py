@@ -79,6 +79,7 @@ __all__ = [
     "load_recent_thread_entries",
     "load_thread_digest",
     "load_thread_range",
+    "next_turn_index",
     "write_turn_history",
 ]
 
@@ -435,6 +436,20 @@ def load_thread_range(
     return store.load_range(start_turn=start_turn, end_turn=end_turn)
 
 
+def next_turn_index(*, thread_path: Path | None) -> int:
+    """Return the 0-based global turn index the next appended entry will receive.
+
+    Delegates to :meth:`sdk.thread.ThreadStore.next_turn_index`. Returns ``0``
+    when ``thread_path`` is ``None`` or no store exists. The host computes
+    this at turn start so it can annotate the model briefing with the turn
+    number and thread the pre-computed value through to ``append_thread_entry``.
+    """
+    store = _thread_store(thread_path)
+    if store is None:
+        return 0
+    return store.next_turn_index()
+
+
 def load_thread_digest(*, thread_path: Path | None) -> str:
     """Load the per-user thread digest sidecar (``<base>.digest.md``).
 
@@ -467,6 +482,7 @@ def append_thread_entry(
     handoff_to: str = "",
     transitioned_to: str = "",
     segment_turns: int = _DEFAULT_SEGMENT_TURNS,
+    turn: int | None = None,
 ) -> None:
     """Append a new thread entry to the active segment.
 
@@ -478,6 +494,13 @@ def append_thread_entry(
     workflow-tracking fields that enable a ``WorkflowView`` to be derived
     from the thread tail alone — completion is inferred from matching
     receipts in later entries, not from a mutable position store.
+
+    ``turn`` is the pre-computed global turn index from turn start
+    (:func:`next_turn_index`). When supplied, it is used directly so the
+    number the model saw in its briefing matches the number stamped on the
+    entry. When ``None``, the index is derived at append time (the legacy
+    path — safe but potentially off-by-one if the active segment changed
+    between turn start and append).
     """
     if thread_path is None or not user_slug:
         return
@@ -493,9 +516,14 @@ def append_thread_entry(
     # ordinals. The index is the sum of all sealed-segment turn spans
     # plus the current active-segment entry count — the same derivation
     # ``load_range`` uses for the active tail's ``active_turn_lo``.
-    sealed_records = _read_index(paths.index_path)
-    active_count = _read_active_entries_count(paths.current)
-    global_turn = sum(r.turn_hi - r.turn_lo + 1 for r in sealed_records) + active_count
+    # When the caller supplies a pre-computed ``turn`` (from turn start),
+    # use it directly so the briefing and the entry agree.
+    if turn is None:
+        sealed_records = _read_index(paths.index_path)
+        active_count = _read_active_entries_count(paths.current)
+        global_turn = sum(r.turn_hi - r.turn_lo + 1 for r in sealed_records) + active_count
+    else:
+        global_turn = turn
 
     entry: dict[str, Any] = {
         "timestamp_utc": datetime.now(UTC).isoformat(),

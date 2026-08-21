@@ -11,8 +11,6 @@ from host.turn_hooks._auto_capture import (
     COMMITMENT_PATTERNS,
     DEFAULT_TIER_THRESHOLD_DAILY,
     DEFAULT_TIER_THRESHOLD_WEEKLY,
-    WRITE_EFFECT_TOOL_PREFIXES,
-    WRITE_EFFECT_TOOL_SUFFIXES,
     classify_memory_tier,
     should_auto_capture,
 )
@@ -22,8 +20,6 @@ __all__ = [
     "COMMITMENT_PATTERNS",
     "DEFAULT_TIER_THRESHOLD_DAILY",
     "DEFAULT_TIER_THRESHOLD_WEEKLY",
-    "WRITE_EFFECT_TOOL_PREFIXES",
-    "WRITE_EFFECT_TOOL_SUFFIXES",
     "classify_memory_tier",
     "should_auto_capture",
 ]

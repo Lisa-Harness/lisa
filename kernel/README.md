@@ -196,7 +196,7 @@ sequenceDiagram
 
 | Hook | Purpose |
 | --- | --- |
-| `on_turn_complete` | Called after every successful turn with `(mode_id, query, response_text, messages)`. Default: no-op. |
+| `on_turn_complete` | Called after every successful turn with `(mode_id, query, response_text, messages, effect_receipts)`. Default: no-op. |
 
 ### Opportunistic House-Keeping (Slice)
 
