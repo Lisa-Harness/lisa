@@ -165,7 +165,9 @@ class TestBuildRecentThreadExcerpt:
             response_text="here is my reflection",
         )
         excerpt = build_recent_thread_excerpt(thread_path=thread_path, limit=3)
-        assert "Recent thread context:" in excerpt
+        assert "Recent thread context" in excerpt
+        # The recency preamble must frame the list as past exchanges.
+        assert "past exchanges" in excerpt
         # The /pack command must NOT appear in the excerpt.
         assert "/pack disable github" not in excerpt
         assert "ok" not in excerpt

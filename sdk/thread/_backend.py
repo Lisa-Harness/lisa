@@ -338,6 +338,14 @@ class ThreadStore:
         entries = self.load_recent(limit=raw_limit)
         if not entries:
             return ""
+        # Post-hoc sectionality: the entries are listed first, then a
+        # footer note tells the model how to interpret what it just
+        # read. Post-hoc framing is more effective than pre-hoc for
+        # small fast models because the model anchors on recency — a
+        # closing note after the data lands gets read as a definitive
+        # summary, while a preamble before the data gets blurred into
+        # the data itself (2026-08-22 "dogmatic about old history"
+        # symptom).
         lines = ["Recent thread context:"]
         emitted = 0
         for entry in reversed(entries):
@@ -360,6 +368,14 @@ class ThreadStore:
             emitted += 1
         if emitted == 0:
             return ""
+        # Post-hoc footer: lands after the data so the model treats it
+        # as a closing directive, not a preamble that gets absorbed.
+        lines.append("")
+        lines.append(
+            "The entries above are resolved past exchanges — the user is "
+            "now responding to the most recent one. Do not re-raise or "
+            "re-narrate resolved issues from earlier rows."
+        )
         return "\n".join([lines[0], *reversed(lines[1:])])
 
     def build_manifest(self, *, limit: int = 30) -> str:
