@@ -96,6 +96,54 @@ def bare_tool_name(tool_id: str) -> str:
     return tool_id
 
 
+def _unwrap_exception_group(exc: BaseException) -> BaseException:
+    """Return the deepest non-group cause from a nested ExceptionGroup.
+
+    The MCP SDK's ``streamable_http_client`` and ``negotiate_auto`` run their
+    work inside anyio TaskGroups. When a background task fails, anyio
+    wraps the error in an ``ExceptionGroup`` (often nested). The kernel's
+    ``except RuntimeError`` clause on the negotiate path only catches a bare
+    ``RuntimeError``; when the same error arrives wrapped in a group, the
+    adopt-directly fallback never runs and the server stays cold with a
+    useless "unhandled errors in a TaskGroup (1 sub-exception)" message.
+
+    This helper drills through ``BaseExceptionGroup.exceptions`` to find the
+    first leaf (non-group) exception so callers can inspect the real cause.
+    """
+    seen: set[int] = set()
+    current: BaseException = exc
+    while isinstance(current, BaseExceptionGroup):
+        if id(current) in seen:
+            break
+        seen.add(id(current))
+        if not current.exceptions:
+            break
+        current = current.exceptions[0]
+    return current
+
+
+def _find_runtime_error(exc: BaseException) -> RuntimeError | None:
+    """Find a ``RuntimeError`` anywhere in a (possibly nested) exception group.
+
+    Returns the first ``RuntimeError`` leaf found via breadth-first traversal,
+    or ``None`` when the tree contains none. Used by the ``negotiate_auto``
+    adopt path so the modern-version fallback fires whether the SDK raises
+    the ``RuntimeError`` bare or wrapped in an anyio ``ExceptionGroup``.
+    """
+    queue: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while queue:
+        node = queue.pop(0)
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, RuntimeError):
+            return node
+        if isinstance(node, BaseExceptionGroup):
+            queue.extend(node.exceptions)
+    return None
+
+
 def _safe_exc_desc(exc: BaseException | None) -> str:
     """Return a log-safe description of a connect exception.
 
@@ -105,16 +153,23 @@ def _safe_exc_desc(exc: BaseException | None) -> str:
     guards against for provider probes). This never surfaces the raw URL,
     headers, or token; it reports the error type plus a length-bounded,
     URL-stripped message.
+
+    anyio TaskGroup failures arrive as ExceptionGroups whose
+    ``str()`` is the useless "unhandled errors in a TaskGroup (N
+    sub-exception(s)". Unwrap to the real leaf so the operator sees the
+    actual cause (e.g. ``RuntimeError: Unsupported protocol version …``)
+    instead of the wrapper.
     """
     if exc is None:
         return "unknown"
-    text = str(exc)
+    leaf = _unwrap_exception_group(exc)
+    text = str(leaf)
     # Strip anything that looks like a URL (scheme://...) so a leaked
     # query-string token cannot ride through the message.
     text = _URL_RE.sub("<url>", text)
     if len(text) > _EXC_DESC_MAX:
         text = text[:_EXC_DESC_MAX] + "…"
-    return text or type(exc).__name__
+    return text or type(leaf).__name__
 
 
 @dataclass(frozen=True, slots=True)
@@ -930,6 +985,51 @@ class MCPToolPool:
         self._sessions[config.server_id] = session
         self._last_errors.pop(config.server_id, None)
 
+    def _adopt_modern_protocol_version(
+        self,
+        config: MCPClientConfig,
+        session: Any,
+        exc: RuntimeError,
+    ) -> None:
+        """Adopt a modern protocol version when ``negotiate_auto`` rejects one.
+
+        ``negotiate_auto`` falls back to the ``initialize()`` handshake for
+        servers that don't speak ``server/discover``. When the server
+        responds with a modern protocol version (e.g. ``2026-07-28``) that
+        ``initialize()`` rejects, extract the version and adopt it directly
+        via ``session.adopt()`` with a synthesized ``DiscoverResult``.
+
+        Raises the original ``exc`` unchanged when it is not the
+        unsupported-version ``RuntimeError`` or when no version can be
+        parsed, so the caller's ``except BaseException`` handles the real
+        failure. Called from both the bare ``except RuntimeError`` and the
+        ``except BaseExceptionGroup`` clauses of ``_connect_http`` so the
+        fallback fires whether the SDK raises the error bare or wrapped in
+        an anyio ``ExceptionGroup``.
+        """
+        msg = str(exc)
+        if "Unsupported protocol version from the server:" not in msg:
+            raise exc
+        version = msg.rsplit(":", 1)[-1].strip()
+        if not version:
+            raise exc
+        logger.info(
+            "MCP server %s: negotiate_auto fell back to initialize "
+            "which rejected modern version %s; adopting directly.",
+            config.server_id,
+            version,
+        )
+        import mcp_types as _mcp_types  # noqa: PLC0415
+
+        discover_result = _mcp_types.DiscoverResult(
+            supported_versions=[version],
+            capabilities=_mcp_types.ServerCapabilities(),
+            result_type="complete",
+            ttl_ms=0,
+            cache_scope="public",
+        )
+        session.adopt(discover_result)
+
     async def _connect_http(self, config: MCPClientConfig) -> None:
         """Connect one streamable-HTTP MCP server.
 
@@ -959,6 +1059,7 @@ class MCPToolPool:
         http_client = self._build_http_client(config)
         stack = AsyncExitStack()
         await stack.__aenter__()
+        session: Any = None
         try:
             read, write = await stack.enter_async_context(
                 streamable_http_client(config.url, http_client=http_client)
@@ -971,30 +1072,35 @@ class MCPToolPool:
                 # because the server responded with a modern protocol
                 # version (e.g. "2026-07-28") that the handshake path
                 # rejects. Extract the version and adopt it directly.
-                msg = str(exc)
-                if "Unsupported protocol version from the server:" not in msg:
+                self._adopt_modern_protocol_version(config, session, exc)
+            except BaseExceptionGroup as exc:
+                # anyio TaskGroup failures arrive wrapped in an
+                # ExceptionGroup; the negotiate ``RuntimeError`` may be a
+                # leaf inside it. Find it and run the same adopt path so the
+                # modern-version fallback fires regardless of wrapping.
+                runtime_err = _find_runtime_error(exc)
+                if runtime_err is None:
                     raise
-                # Parse the version from the error message.
-                version = msg.rsplit(":", 1)[-1].strip()
-                if not version:
+                self._adopt_modern_protocol_version(config, session, runtime_err)
+        except BaseExceptionGroup as exc:
+            # The streamable_http_client anyio TaskGroup can wrap even
+            # context-entry failures (e.g. the negotiate RuntimeError
+            # surfacing through a dead read-stream background task). Unwrap
+            # to find the negotiate RuntimeError and adopt; if no
+            # RuntimeError is found, this is a real transport error — close
+            # the stack and re-raise so the caller records it.
+            runtime_err = _find_runtime_error(exc)
+            if runtime_err is not None and session is not None:
+                try:
+                    self._adopt_modern_protocol_version(config, session, runtime_err)
+                except RuntimeError:
+                    await stack.aclose()
+                    self._last_errors[config.server_id] = _safe_exc_desc(exc)
                     raise
-                logger.info(
-                    "MCP server %s: negotiate_auto fell back to initialize "
-                    "which rejected modern version %s; adopting directly.",
-                    config.server_id,
-                    version,
-                )
-                # Import here to avoid pulling mcp_types at module load.
-                import mcp_types as _mcp_types  # noqa: PLC0415
-
-                discover_result = _mcp_types.DiscoverResult(
-                    supported_versions=[version],
-                    capabilities=_mcp_types.ServerCapabilities(),
-                    result_type="complete",
-                    ttl_ms=0,
-                    cache_scope="public",
-                )
-                session.adopt(discover_result)
+            else:
+                await stack.aclose()
+                self._last_errors[config.server_id] = _safe_exc_desc(exc)
+                raise
         except BaseException as exc:
             await stack.aclose()
             self._last_errors[config.server_id] = _safe_exc_desc(exc)
