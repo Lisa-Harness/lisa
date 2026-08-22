@@ -331,7 +331,8 @@ class MCPServerSpec:
 
     url: str | None = None
     """Endpoint URL for runtime_kind=HTTP (streamable-HTTP MCP).
-    None for all subprocess-based runtimes."""
+    None for all subprocess-based runtimes. ${VAR} expansion happens in
+    the manifest loader before the spec is built."""
 
     headers: dict[str, str] = field(default_factory=dict)
     """HTTP headers for runtime_kind=HTTP (e.g. Authorization bearer token).

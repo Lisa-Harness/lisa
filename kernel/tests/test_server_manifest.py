@@ -199,6 +199,58 @@ servers:
         load_mcp_server_manifest(manifest)
 
 
+def test_load_manifest_http_url_expands_env_vars(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """runtime_kind: http url supports ${VAR} expansion at load time."""
+    monkeypatch.setenv("CLOUDSERVER_MCP_URL", "https://api.cloudservers.app/mcp")
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: cloudservers
+    runtime_kind: http
+    url: "${CLOUDSERVER_MCP_URL}"
+""",
+        encoding="utf-8",
+    )
+    specs, _ = load_mcp_server_manifest(manifest)
+    assert len(specs) == 1
+    assert specs[0].runtime_kind is RuntimeKind.HTTP
+    assert specs[0].url == "https://api.cloudservers.app/mcp"
+
+
+def test_load_manifest_memory_backend_http_url_expands_env_vars(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """memory.backends kind=http url supports ${VAR} expansion at load time."""
+    monkeypatch.setenv("CLOUDSERVER_MCP_URL", "https://api.cloudservers.app/mcp")
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+version: 1
+memory:
+  default_backend: cloudservers
+  backends:
+    - id: cloudservers
+      kind: http
+      url: "${CLOUDSERVER_MCP_URL}"
+      tool_names:
+        search: search_memory
+servers:
+  - server_id: cloudservers
+    runtime_kind: http
+    url: "${CLOUDSERVER_MCP_URL}"
+""",
+        encoding="utf-8",
+    )
+    specs, mem = load_mcp_server_manifest(manifest)
+    backend = next(b for b in mem.backends if b.id == "cloudservers")
+    assert backend.kind == "http"
+    assert backend.url == "https://api.cloudservers.app/mcp"
+    assert specs[0].url == "https://api.cloudservers.app/mcp"
+
+
 def test_load_manifest_parses_bearer_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """auth: {type: bearer, token} parses with ${VAR} expansion."""
     monkeypatch.setenv("GITHUB_TOKEN_TEST", "ghp_secret")

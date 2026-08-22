@@ -96,6 +96,7 @@ class MemoryBackendSpec:
     normalization). Together they make the alias boundary the single
     chokepoint for both directions of backend-specific translation."""
     # http connection details (kind="http")
+    # ${VAR} expansion happens in the manifest loader before the spec is built.
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
     # stdio connection details (kind="stdio")
@@ -257,7 +258,7 @@ def _parse_memory_backends(raw: Any) -> tuple[MemoryBackendSpec, ...]:
             )
         result_maps = {str(op): str(path) for op, path in result_maps_raw.items()}
         if kind == "http":
-            url = str(entry.get("url") or "").strip()
+            url = _expand_env_value(entry.get("url") or "").strip()
             if not url:
                 raise MCPServerManifestError(
                     f"memory.backends[{index}] {backend_id!r}: 'url' is required for kind=http"
@@ -371,7 +372,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
     headers: dict[str, str] = {}
     auth = AuthSpec()
     if runtime_kind is RuntimeKind.HTTP:
-        url = str(entry.get("url") or "").strip()
+        url = _expand_env_value(entry.get("url") or "").strip()
         if not url:
             raise MCPServerManifestError(
                 f"servers[{index}] '{server_id}': 'url' is required for runtime_kind=http"
