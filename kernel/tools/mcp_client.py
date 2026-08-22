@@ -1236,6 +1236,111 @@ class MCPToolPool:
         )
         return result
 
+    async def _call_tool_lenient(
+        self,
+        config: MCPClientConfig,
+        bare_name: str,
+        arguments: dict[str, Any],
+        *,
+        server_id: str,
+    ) -> Any:
+        """Invoke ``tools/call`` via a raw HTTP POST that bypasses the SDK pipeline.
+
+        Companion to :meth:`_list_tools_lenient`. The SDK's
+        ``ClientSession.call_tool`` validates the response against the strict
+        ``CallToolResult`` model, which (like ``ListToolsResult``) rejects
+        modern-protocol responses that omit ``cacheScope``/``resultType``/
+        ``ttlMs``. This method issues a raw ``tools/call`` POST, parses the
+        JSON manually, and synthesizes a ``CallToolResult`` so the caller's
+        :meth:`_build_result` works unchanged.
+        """
+        import httpx  # noqa: PLC0415
+        import mcp_types as _types  # noqa: PLC0415
+
+        if not config.url:
+            raise RuntimeError(f"lenient call_tool requires an HTTP url for {server_id!r}")
+
+        headers = self._resolved_http_headers(config)
+        headers["Content-Type"] = "application/json"
+        headers["Accept"] = "application/json, text/event-stream"
+
+        # Reuse the same id counter discipline as _list_tools_lenient; a
+        # fresh per-call counter is fine since the server only needs ids to
+        # be unique within a single request/response pair on this stream.
+        request_id = 0
+
+        async def _post(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            nonlocal request_id
+            request_id += 1
+            payload = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(config.url, json=payload, headers=headers)
+                resp.raise_for_status()
+                body = resp.json()
+                if isinstance(body, list):
+                    body = next((b for b in body if isinstance(b, dict)), {})
+                if not isinstance(body, dict):
+                    raise RuntimeError(
+                        f"lenient call_tool: unexpected response type {type(body)!r}"
+                    )
+                if "error" in body:
+                    err = body["error"]
+                    raise RuntimeError(f"lenient call_tool server error: {err}")
+                return body.get("result") or {}
+
+        # The pool's session was already initialized by _connect_http; the
+        # server tracks the streamable-HTTP session via the Mcp-Session-Id
+        # header, which the SDK's httpx client set during initialize. Our
+        # raw httpx client here does NOT carry that header, so the server
+        # treats each POST as a fresh session. That means we must re-initial
+        # before tools/call. The cost is one extra round-trip per tool call
+        # on the lenient path — only taken when the SDK path already failed.
+        await _post(
+            "initialize",
+            {
+                "protocolVersion": "2026-07-28",
+                "capabilities": {},
+                "clientInfo": {"name": "lisa-lenient", "version": "1.0"},
+            },
+        )
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(
+                    config.url,
+                    json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    headers=headers,
+                )
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+        call_result = await _post("tools/call", {"name": bare_name, "arguments": arguments})
+
+        content_blocks: list[Any] = []
+        for block in call_result.get("content", []):
+            block_type = block.get("type", "text")
+            if block_type == "text":
+                content_blocks.append(_types.TextContent(type="text", text=block.get("text", "")))
+            else:
+                # Preserve non-text blocks as raw text so _build_result still
+                # surfaces their content; the strict model would reject
+                # unknown block types we cannot map.
+                content_blocks.append(
+                    _types.TextContent(type="text", text=str(block.get("data", block)))
+                )
+        result = _types.CallToolResult(
+            content=content_blocks,
+            is_error=bool(call_result.get("isError", False)),
+            cache_scope=call_result.get("cacheScope", "public"),
+            result_type=call_result.get("resultType", "complete"),
+            ttl_ms=call_result.get("ttlMs", 0),
+        )
+        logger.info(
+            "MCP server %r tool %r succeeded via lenient raw POST",
+            server_id,
+            bare_name,
+        )
+        return result
+
     async def _refresh_tool_index(self) -> None:
         """Merge tool lists from all connected servers into one index.
 
@@ -1741,8 +1846,38 @@ class MCPToolPool:
         try:
             result = await session.call_tool(bare_name, arguments=mapped)
         except Exception as exc:  # pylint: disable=broad-except
-            # Session died mid-call. Close the child stack to kill the
-            # subprocess immediately — do NOT restart from the data path.
+            # Modern-protocol servers (2026-07-28) may omit required
+            # cache-control fields from CallToolResult, just as they do
+            # from ListToolsResult. The SDK's strict model raises
+            # ValidationError before we see the result. Retry via a raw
+            # HTTP POST that bypasses the SDK's response pipeline, the
+            # same escape hatch used by _list_tools_lenient. Only HTTP
+            # servers can take this path; stdio servers do not hit the
+            # modern-protocol validation because they speak a legacy
+            # version the SDK accepts.
+            if (
+                config is not None
+                and config.url
+                and "CallToolResult" in str(exc)
+                and "Field required" in str(exc)
+            ):
+                try:
+                    result = await self._call_tool_lenient(
+                        config, bare_name, mapped, server_id=server_id
+                    )
+                    return self._build_result(tool_id, result)
+                except Exception as exc2:  # pylint: disable=broad-except
+                    return MCPToolResult(
+                        tool_id=tool_id,
+                        output_text=(
+                            f"MCP tool '{tool_id}' failed (lenient retry also "
+                            f"failed): {type(exc2).__name__}: {exc2}"
+                        ),
+                        is_error=True,
+                    )
+            # Genuine connection/transport error: close the child stack to
+            # kill the subprocess immediately — do NOT restart from the data
+            # path.
             await self._disconnect_server(server_id)
             if config is not None and config.warm:
                 self._warm_failed.add(server_id)
@@ -1820,8 +1955,32 @@ class MCPToolPool:
         try:
             result = await session.call_tool(tool_id, arguments=mapped)
         except Exception as exc:  # pylint: disable=broad-except
-            # Session died mid-call. Close the child stack to kill the
-            # subprocess immediately — do NOT restart from the data path.
+            # Same lenient-retry contract as the non-scoped call_tool path:
+            # modern-protocol servers omit required cache-control fields and
+            # the SDK rejects the CallToolResult. Retry via raw HTTP POST
+            # before tearing down the session.
+            if (
+                config.url
+                and "CallToolResult" in str(exc)
+                and "Field required" in str(exc)
+            ):
+                try:
+                    result = await self._call_tool_lenient(
+                        config, tool_id, mapped, server_id=server_id
+                    )
+                    return self._build_result(tool_id, result)
+                except Exception as exc2:  # pylint: disable=broad-except
+                    return MCPToolResult(
+                        tool_id=tool_id,
+                        output_text=(
+                            f"MCP tool '{tool_id}' failed (lenient retry also "
+                            f"failed): {type(exc2).__name__}: {exc2}"
+                        ),
+                        is_error=True,
+                    )
+            # Genuine connection/transport error: close the child stack to
+            # kill the subprocess immediately — do NOT restart from the data
+            # path.
             await self._disconnect_server(server_id)
             if config.warm:
                 self._warm_failed.add(server_id)
