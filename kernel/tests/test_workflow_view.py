@@ -381,6 +381,76 @@ class TestRenderWorkflowProgress:
         progress = render_workflow_progress(view)
         assert "[x] search: Found 3 results" in progress
 
+    def test_progress_includes_completing_turn_annotation(self):
+        """Completed steps show ``← turn N`` when ``completing_turn`` is set."""
+        from kernel.workflow_position import WorkflowStep
+
+        steps = (
+            WorkflowStep(
+                step_id="search_0",
+                mode_id="search",
+                completing_turn=5,
+            ),
+            WorkflowStep(step_id="coding_1", mode_id="coding"),
+        )
+        view = WorkflowView(
+            declared_steps=steps,
+            completed_steps=("search_0",),
+            current_step_id="coding_1",
+        )
+        progress = render_workflow_progress(view)
+        assert "[x] search" in progress
+        assert "← turn 5" in progress
+
+    def test_progress_includes_current_step_block(self):
+        """The ``## Current step`` block gives the full description + rationale."""
+        from kernel.workflow_position import WorkflowStep
+
+        steps = (
+            WorkflowStep(
+                step_id="search_0",
+                mode_id="search",
+                step_query="Search for rust async runtime benchmarks",
+                plan_text="_Provides web_search_",
+                completing_turn=3,
+            ),
+            WorkflowStep(
+                step_id="coding_1",
+                mode_id="coding",
+                step_query="Implement the async client based on search findings",
+                plan_text="_writes: coding_apply_patch_",
+            ),
+        )
+        view = WorkflowView(
+            declared_steps=steps,
+            completed_steps=("search_0",),
+            current_step_id="coding_1",
+        )
+        progress = render_workflow_progress(view)
+        assert "## Current step" in progress
+        assert "**coding**: Implement the async client based on search findings" in progress
+        assert "_writes: coding_apply_patch_" in progress
+
+    def test_progress_preview_uses_300_char_limit(self):
+        """The step result preview is truncated at 300 chars, not 120."""
+        from kernel.workflow_position import WorkflowStep
+
+        long_preview = "A" * 400
+        steps = (
+            WorkflowStep(step_id="search_0", mode_id="search", completing_turn=1),
+            WorkflowStep(step_id="coding_1", mode_id="coding"),
+        )
+        view = WorkflowView(
+            declared_steps=steps,
+            completed_steps=("search_0",),
+            current_step_id="coding_1",
+            step_results={"search_0": long_preview},
+        )
+        progress = render_workflow_progress(view)
+        # 300 chars of the preview should be present, but not 400.
+        assert "A" * 300 in progress
+        assert "A" * 301 not in progress
+
 
 class TestWriteReceiptContract:
     """Lock in the terminal-write-mode receipt contract from the execution plan.

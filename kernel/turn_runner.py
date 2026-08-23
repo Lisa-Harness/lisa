@@ -1551,19 +1551,20 @@ def _coordinator_routing_hint(
     )
     if _step is None or not _step.mode_id:
         return ""
-    # Skip the hint when the position's current step names the mode the
-    # turn is already running in — a self-handoff hint causes the
-    # forced-action enforcer to synthesize a no-op transition_stage to the
-    # current mode, looping until the iteration cap (the 2026-08-11
-    # executor→executor and researcher→researcher stuck loops).
-    if _step.mode_id == mode_id:
-        return ""
-    return (
-        "## Routing Hint\n\n"
-        f"Continue with the next step in the workflow. "
-        f"Hand off to `{_step.mode_id}` by calling "
-        f"`transition_stage` with target_stage_id "
-        f"`{_step.mode_id}`."
+    # Guard against self-handoff via the shared helper contract: a
+    # self-handoff hint causes the forced-action enforcer to synthesize a
+    # no-op transition_stage to the current mode, looping until the
+    # iteration cap (the 2026-08-11 executor→executor and
+    # researcher→researcher stuck loops).
+    return emit_transition_hint(
+        target_mode_id=_step.mode_id,
+        current_mode_id=mode_id,
+        prose_template=(
+            "## Routing Hint\n\n"
+            "Continue with the next step in the workflow. "
+            "Hand off to `{target}` by calling "
+            "`transition_stage` with target_stage_id `{target}`."
+        ),
     )
 
 
@@ -4984,31 +4985,42 @@ async def _run_turn_inner(
                                                 _position.current_step_id
                                             )
                                             if _next_step is not None:
-                                                # Skip the plan-driven hint when
-                                                # the next step's mode is the one
-                                                # the turn just handed off to —
-                                                # a self-handoff hint causes the
-                                                # forced-action enforcer to
+                                                # Emit the plan-driven hint via
+                                                # the shared self-handoff guard.
+                                                # When the next step's mode is
+                                                # the one the turn just handed
+                                                # off to, the guard returns ""
+                                                # (a self-handoff hint causes
+                                                # the forced-action enforcer to
                                                 # synthesize a no-op
                                                 # transition_stage to the
                                                 # current mode, looping until
-                                                # the iteration cap (the
+                                                # the iteration cap — the
                                                 # 2026-08-11 executor→executor
                                                 # stuck loop).
-                                                if (
-                                                    _next_step.mode_id
-                                                    == target_stage
-                                                ):
+                                                post_handoff_hint = emit_transition_hint(
+                                                    target_mode_id=_next_step.mode_id,
+                                                    current_mode_id=target_stage,
+                                                    prose_template=(
+                                                        "## Routing Hint\n\n"
+                                                        "This is the next step "
+                                                        "in the planned "
+                                                        "workflow. Call "
+                                                        "`transition_stage` "
+                                                        "with target_stage_id "
+                                                        "`{target}`."
+                                                    ),
+                                                )
+                                                if post_handoff_hint:
                                                     _log.info(
-                                                        "plan-driven next step "
-                                                        "is current mode; "
-                                                        "skipping self-handoff "
-                                                        "hint (position=%s "
-                                                        "step=%s target=%s)",
+                                                        "plan-driven next step: "
+                                                        "position=%s step=%s "
+                                                        "target=%s",
                                                         _position.position_id,
                                                         _next_step.step_id,
                                                         _next_step.mode_id,
                                                     )
+                                                else:
                                                     # ── Do-the-work backstop ──
                                                     # The routing hint and the
                                                     # plan-driven hint both
@@ -5057,24 +5069,6 @@ async def _run_turn_inner(
                                                                 target_stage,
                                                                 _state.forced_work_tool,
                                                             )
-                                                else:
-                                                    post_handoff_hint = (
-                                                        "## Routing Hint\n\n"
-                                                        f"This is the next step "
-                                                        f"in the planned "
-                                                        f"workflow. Call "
-                                                        f"`transition_stage` "
-                                                        f"with target_stage_id "
-                                                        f"`{_next_step.mode_id}`."
-                                                    )
-                                                    _log.info(
-                                                        "plan-driven next step: "
-                                                        "position=%s step=%s "
-                                                        "target=%s",
-                                                        _position.position_id,
-                                                        _next_step.step_id,
-                                                        _next_step.mode_id,
-                                                    )
                                 if post_handoff_hint:
                                     # ── Hint-override suppression ──────
                                     # After the model overrides the hint
@@ -6411,6 +6405,7 @@ from kernel.turn_phases._routing_hint import (  # noqa: F401
     _query_is_sequential,
     _single_handoff_target_for_gap,
     _tool_effect,
+    emit_transition_hint,
 )
 
 # Tool-schema cluster (extracted in Phase 3)

@@ -337,7 +337,7 @@ def derive_workflow_view(
         )
         if completing_entry is not None:
             completed.append(step.step_id)
-            preview = str(completing_entry.get("response_text") or "").strip()[:240]
+            preview = str(completing_entry.get("response_text") or "").strip()[:300]
             if preview:
                 step_results[step.step_id] = preview
             # Record the completing turn index on the step so the
@@ -426,10 +426,15 @@ def is_complete(view: WorkflowView) -> bool:
 
 
 def render_workflow_progress(view: WorkflowView) -> str:
-    """Render a short human-readable summary of completed and remaining steps.
+    """Render a human-readable summary of completed and remaining steps.
 
     Returns an empty string when the view has no declared steps or is
-    complete (no progress to report).
+    complete (no progress to report). Otherwise emits a checklist of
+    all declared steps (with a 300-char result preview and the
+    completing turn index for completed steps), followed by a
+    ``## Current step`` block giving the current step's full description
+    and rationale so the model can orient narratively — not just
+    structurally.
     """
     if not view.declared_steps:
         return ""
@@ -442,6 +447,22 @@ def render_workflow_progress(view: WorkflowView) -> str:
         label = f"{mark} {step.mode_id}"
         preview = view.step_results.get(step.step_id, "")
         if preview:
-            label += f": {preview[:120]}"
+            label += f": {preview[:300]}"
+        if step.step_id in completed and step.completing_turn is not None:
+            label += f" ← turn {step.completing_turn}"
         lines.append(label)
+    # ── Current step orientation block ───────────────────────────────
+    # Give the model the full description and rationale for the step it
+    # is about to run (or is running), not just a checkbox label. This
+    # is the narrative orientation that lets the model "pick up where we
+    # left off" rather than just seeing a structural checklist.
+    current_step = view.step_by_id(view.current_step_id) if view.current_step_id else None
+    if current_step is not None:
+        lines.append("")
+        lines.append("## Current step")
+        lines.append("")
+        lines.append(f"**{current_step.mode_id}**: {current_step.step_query}")
+        if current_step.plan_text:
+            lines.append("")
+            lines.append(current_step.plan_text)
     return "\n".join(lines)

@@ -4169,6 +4169,136 @@ def _manifest_with_coding_tools() -> CapabilityManifest:
     )
 
 
+def test_routing_hint_partial_coverage_fallback_instead_of_silence() -> None:
+    """When no single target covers the whole gap but one target covers a
+    subset, the section-6 fallback emits a hint naming that target with a
+    residual-chain note — not silence.
+
+    Regression for the 2026-08-14 silent-route incident: a multi-intent
+    query with 2+ disjoint gap intents and no ``fork_allowed`` targets
+    produced an empty hint, the model returned text only, and the turn
+    blocked as ``no_tools``. The fix routes through
+    ``_best_partial_coverage_target`` so the model gets a directive hint
+    to the best partial target instead of no signal at all.
+
+    This test uses two non-producer, non-consumer intents (``remember`` +
+    ``explain``) so the producer/consumer mix guard (section 4b) does not
+    fire before section 6. Neither mode declares ``fork_allowed``, so the
+    fork branch cannot build targets. No single target covers both
+    intents → section-6 partial-coverage fallback fires.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    # Two modes, each covering a disjoint non-producer/non-consumer intent.
+    # Neither declares fork_allowed (the default), so the fork branch
+    # cannot build targets. No single target covers {remember, explain}
+    # → section-6 fires.
+    remember_cfg = _mode_config(
+        mode_id="remember",
+        satisfies_intents=["remember"],
+        routing_intent_tags=["remember"],
+        routing_intent_keywords={"remember": ["remember", "note", "capture"]},
+    )
+    explainer_cfg = _mode_config(
+        mode_id="explainer",
+        satisfies_intents=["explain"],
+        routing_intent_tags=["explain"],
+        routing_intent_keywords={"explain": ["explain", "summarize", "expound"]},
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {
+        "remember": remember_cfg,
+        "explainer": explainer_cfg,
+        "default": default_cfg,
+    }
+
+    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="remember this and explain the summary",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["remember", "explainer"],
+            mode_config=default_cfg,
+        )
+
+    # The hint must NOT be empty — the partial-coverage fallback fires.
+    assert hint != ""
+    assert "Routing Hint" in hint
+    assert "transition_stage" in hint
+    # The residual-chain note must be present.
+    assert "remaining steps will chain after" in hint
+    # One of the two partial-coverage targets is named (deterministic:
+    # remember appears first in routing_targets and covers "remember").
+    assert "remember" in hint
+
+
+def test_routing_hint_silence_when_no_target_covers_any_gap_intent() -> None:
+    """When no target covers *any* gap intent, the section-6 fallback
+    correctly returns silence — the model self-routes via
+    ``transition_stage``. This is the genuine uncoverable gap case.
+    """
+    from unittest.mock import patch
+
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    # A mode whose intent tags don't overlap the detected gap at all.
+    other_cfg = _mode_config(
+        mode_id="other",
+        satisfies_intents=["unrelated"],
+        routing_intent_tags=["unrelated"],
+        routing_intent_keywords={"unrelated": ["unrelated_keyword_xyz"]},
+    )
+    default_cfg = _mode_config(mode_id="default")
+    patched_catalog = {"other": other_cfg, "default": default_cfg}
+
+    with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+        hint = _compute_capability_routing_hint(
+            mode_id="default",
+            query="research the observability problem",
+            capability_manifest=_empty_manifest(),
+            routing_targets=["other"],
+            mode_config=default_cfg,
+        )
+
+    # No target covers "research" → silence is correct.
+    assert hint == ""
+
+
+def test_emit_transition_hint_guard_returns_empty_on_self_handoff() -> None:
+    """The shared ``emit_transition_hint`` helper returns ``""`` when
+    target == current, preventing the self-handoff loop class regardless
+    of which hint site calls it. This is the contract test — new hint
+    sites that use the helper inherit the guard automatically.
+    """
+    from kernel.turn_phases._routing_hint import emit_transition_hint
+
+    # Same target and current → empty (self-handoff guard).
+    result = emit_transition_hint(
+        target_mode_id="executor",
+        current_mode_id="executor",
+        prose_template="## Routing Hint\n\nHand off to `{target}`.",
+    )
+    assert result == ""
+
+    # Different target and current → formatted hint.
+    result = emit_transition_hint(
+        target_mode_id="coding",
+        current_mode_id="executor",
+        prose_template="## Routing Hint\n\nHand off to `{target}`.",
+    )
+    assert result == "## Routing Hint\n\nHand off to `coding`."
+
+    # The guard works with different prose templates too.
+    result = emit_transition_hint(
+        target_mode_id="researcher",
+        current_mode_id="researcher",
+        prose_template="Continue with `{target}` by calling transition_stage.",
+    )
+    assert result == ""
+
+
 # ── Capability gate tests (required_capabilities) ─────────────────────
 #
 # The gate validates the resolved model's declared capabilities against the

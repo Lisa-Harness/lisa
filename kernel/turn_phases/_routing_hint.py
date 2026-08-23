@@ -64,6 +64,44 @@ def is_plan_escalation_hint(hint: str) -> bool:
     return bool(hint) and hint == _PLAN_ESCALATION_HINT
 
 
+def emit_transition_hint(
+    *,
+    target_mode_id: str,
+    current_mode_id: str,
+    prose_template: str,
+) -> str:
+    """Emit a ``transition_stage`` routing hint, guarding against self-handoff.
+
+    Returns ``""`` when ``target_mode_id == current_mode_id`` (a self-handoff
+    hint causes the forced-action enforcer to synthesize a no-op
+    ``transition_stage`` to the current mode, looping until the iteration
+    cap — the 2026-08-11 executor→executor and researcher→researcher stuck
+    loops). Otherwise returns ``prose_template.format(target=target_mode_id)``.
+
+    This is the single contract every hint site should use so the self-handoff
+    guard cannot be forgotten when new hint emission points are added. The
+    do-the-work backstop at the post-handoff site is orthogonal to hint
+    emission and stays at its call site.
+
+    Args:
+        target_mode_id: The mode to hand off to.
+        current_mode_id: The mode the turn is currently running in.
+        prose_template: A format string with a ``{target}`` placeholder
+            (e.g. ``"## Routing Hint\\n\\nHand off to `{target}`..."``).
+
+    Returns:
+        The formatted hint string, or ``""`` when target == current.
+    """
+    if target_mode_id == current_mode_id:
+        _log.info(
+            "emit_transition_hint: target=%s == current=%s; skipping self-handoff hint",
+            target_mode_id,
+            current_mode_id,
+        )
+        return ""
+    return prose_template.format(target=target_mode_id)
+
+
 __all__ = [
     "_compute_capability_routing_hint",
     "_detect_query_intents",
@@ -71,6 +109,7 @@ __all__ = [
     "_format_remaining_steps",
     "_query_is_sequential",
     "_tool_effect",
+    "emit_transition_hint",
     "is_plan_escalation_hint",
 ]
 
@@ -868,19 +907,44 @@ def _compute_capability_routing_hint(
         )
         return hint
 
-    # ── 6. No clean cover → silence (let the model self-route) ─────
-    # When no single target cleanly covers the gap (the disjoint-coverage
-    # and producer-first branches above did not fire), the hint layer
-    # cannot confidently resolve a target. Return ``""`` so the turn runs
-    # in the current mode and the model self-routes via ``transition_stage``
-    # (the 2026-08-11 decision: the prior ``AMBIGUOUS_INTENT:<csv>``
-    # sentinel yielded to the user at iteration 0, which turned keyword
-    # noise into a blocking clarification. The current mode already carries
-    # the tools to self-handoff; silence lets it do so. The 2026-08-11
-    # root cause — keyword buckets keyed by tags not in
-    # routing_intent_tags producing uncoverable intents — is now caught
-    # at catalog load, so genuine ambiguity reaching this branch is rare.
-    # The producer/consumer and fork branches above still handle the
-    # common multi-intent shapes before this falls through.)
-    _log.info("routing hint: no clean cover found; silence (let model self-route) (gap=%s routing_targets=%d)", sorted(gap_intents), len(routing_targets))
+    # ── 6. No clean cover → partial-coverage fallback or silence ─────
+    # When no single target cleanly covers the whole gap (the disjoint-
+    # coverage and producer-first branches above did not fire), try the
+    # best partial-coverage target — the one whose ``routing_intent_tags``
+    # overlap the most residual gap intents. This prevents the silent-route
+    # class (the 2026-08-14 incident: a multi-intent query with no
+    # fork-allowed targets produced an empty hint, the model returned text
+    # only, and the turn blocked as ``no_tools``). When a partial target
+    # is found, emit a directive hint with a residual-chain note so the
+    # model knows remaining steps will be handled by post-handoff hints.
+    # When no target covers *any* gap intent, silence is still correct —
+    # the current mode already carries the tools to self-handoff and
+    # genuine uncoverable ambiguity reaching this branch is rare (the
+    # 2026-08-11 root cause — keyword buckets keyed by tags not in
+    # routing_intent_tags — is caught at catalog load).
+    partial_target = _best_partial_coverage_target(
+        routing_targets=routing_targets,
+        catalog=catalog,
+        gap_intents=gap_intents,
+    )
+    if partial_target is not None:
+        _log.info(
+            "routing hint: partial-coverage fallback (target=%s gap=%s)",
+            partial_target,
+            sorted(gap_intents),
+        )
+        hint = (
+            "## Routing Hint\n\n"
+            f"This request requires `{partial_target}`'s tools. Call "
+            f"`transition_stage` with target_stage_id `{partial_target}`. "
+            f"This covers part of your request; remaining steps will "
+            f"chain after."
+        )
+        return hint
+    _log.info(
+        "routing hint: no target covers any gap intent; silence "
+        "(let model self-route) (gap=%s routing_targets=%d)",
+        sorted(gap_intents),
+        len(routing_targets),
+    )
     return ""
