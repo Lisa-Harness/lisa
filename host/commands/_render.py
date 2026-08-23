@@ -220,14 +220,137 @@ def render_runtime_settings(runtime: HostRuntime) -> str:
 
 
 def format_token_stats(runtime: HostRuntime) -> str:
-    """Return on-demand detailed token statistics as Markdown."""
+    """Return on-demand detailed token statistics as Markdown.
+
+    Combines the in-memory session roll-up (turn/model/mode/stage) with a
+    lifetime view read from the durable ``token-usage.jsonl`` telemetry log.
+    The lifetime section aggregates every persisted event across all
+    sessions for this host's data directory.
+    """
     state = dataclasses.asdict(runtime.tokens)
-    return "\n".join(
-        format_session_exit_summary_lines(
-            state,
-            session_started_utc=runtime.tokens.session_started_utc,
-        )
+    lines = format_session_exit_summary_lines(
+        state,
+        session_started_utc=runtime.tokens.session_started_utc,
     )
+    lifetime_lines = _format_lifetime_token_usage(runtime.token_usage_path)
+    if lifetime_lines:
+        lines.extend(lifetime_lines)
+    return "\n".join(lines)
+
+
+def _format_lifetime_token_usage(token_usage_path: Any) -> list[str]:
+    """Read the full ``token-usage.jsonl`` and return a lifetime Markdown section.
+
+    Aggregates every persisted ``TokenUsageEvent`` (across all sessions) into
+    prompt / completion / total / cached / reasoning / billed totals, a
+    per-model breakdown, total estimated cost, event count, and the
+    first/last event timestamps. Returns an empty list when the log is
+    missing or empty so ``/tokens`` degrades gracefully to the session view.
+    """
+    if token_usage_path is None:
+        return []
+    try:
+        path = token_usage_path
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    if not lines:
+        return []
+
+    prompt = 0
+    completion = 0
+    total = 0
+    cached = 0
+    reasoning = 0
+    cost = 0.0
+    event_count = 0
+    first_at = ""
+    last_at = ""
+    model_totals: dict[str, dict[str, int]] = {}
+
+    for raw_line in lines:
+        try:
+            record = json.loads(raw_line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        event_count += 1
+        rec_prompt = int(record.get("prompt_tokens") or 0)
+        rec_completion = int(record.get("completion_tokens") or 0)
+        rec_total = int(record.get("total_tokens") or 0)
+        rec_cached = int(record.get("cached_tokens") or 0)
+        rec_reasoning = int(record.get("reasoning_tokens") or 0)
+        rec_cost = float(record.get("cost_usd") or 0.0)
+        prompt += rec_prompt
+        completion += rec_completion
+        total += rec_total
+        cached += rec_cached
+        reasoning += rec_reasoning
+        cost += rec_cost
+        emitted_at = str(record.get("emitted_at") or "")
+        if emitted_at:
+            if not first_at or emitted_at < first_at:
+                first_at = emitted_at
+            if not last_at or emitted_at > last_at:
+                last_at = emitted_at
+        model_id = str(record.get("model_id") or "")
+        if model_id:
+            entry = model_totals.setdefault(
+                model_id,
+                {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "cached_tokens": 0,
+                    "reasoning_tokens": 0,
+                },
+            )
+            entry["prompt_tokens"] += rec_prompt
+            entry["completion_tokens"] += rec_completion
+            entry["total_tokens"] += rec_total
+            entry["cached_tokens"] += rec_cached
+            entry["reasoning_tokens"] += rec_reasoning
+
+    if event_count == 0:
+        return []
+
+    billed = max(0, total - cached)
+    out: list[str] = [
+        "",
+        "### Lifetime (all sessions)",
+        f"- Events: {event_count}",
+        f"- Span: {first_at or 'n/a'} → {last_at or 'n/a'}",
+        f"- Estimated cost: ${cost:.4f}",
+        "| Prompt | Completion | Total | Cached | Reasoning | Billed (total-cached) |",
+        "| --- | --- | --- | --- | --- | --- |",
+        f"| {prompt} | {completion} | {total} | {cached} | {reasoning} | {billed} |",
+    ]
+
+    if model_totals:
+        out.extend(
+            [
+                "",
+                "#### Lifetime by Model",
+                "| Model | Prompt | Completion | Total | Cached | Reasoning | "
+                "Billed (total-cached) |",
+                "| --- | --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+        for model_key in sorted(model_totals):
+            entry = model_totals[model_key]
+            model_total = entry["total_tokens"]
+            model_cached = entry["cached_tokens"]
+            out.append(
+                f"| {model_key} | {entry['prompt_tokens']} | "
+                f"{entry['completion_tokens']} | {model_total} | "
+                f"{model_cached} | {entry['reasoning_tokens']} | "
+                f"{max(0, model_total - model_cached)} |"
+            )
+
+    return out
 
 
 # ── Help ─────────────────────────────────────────────────────────────

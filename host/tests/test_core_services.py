@@ -2335,6 +2335,69 @@ def test_format_session_exit_summary_lines_includes_useful_stats() -> None:
     assert "Most used mode: search (2)" in summary
 
 
+def test_format_token_stats_appends_lifetime_section(tmp_path: Path) -> None:
+    """``/tokens`` appends a lifetime section read from token-usage.jsonl."""
+    from host.commands._render import format_token_stats
+
+    runtime = _make_runtime(tmp_path)
+
+    # Write two durable telemetry records spanning distinct models.
+    records = [
+        {
+            "emitted_at": "2026-08-20T10:00:00Z",
+            "model_id": "gemma3:latest",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cached_tokens": 20,
+            "reasoning_tokens": 0,
+            "cost_usd": 0.001,
+        },
+        {
+            "emitted_at": "2026-08-22T18:30:00Z",
+            "model_id": "deepseek-r1:latest",
+            "prompt_tokens": 300,
+            "completion_tokens": 200,
+            "total_tokens": 500,
+            "cached_tokens": 100,
+            "reasoning_tokens": 40,
+            "cost_usd": 0.01,
+        },
+    ]
+    token_log = runtime.token_usage_path
+    token_log.parent.mkdir(parents=True, exist_ok=True)
+    token_log.write_text(
+        "\n".join(json.dumps(rec) for rec in records) + "\n",
+        encoding="utf-8",
+    )
+
+    output = format_token_stats(runtime)
+
+    assert "### Lifetime (all sessions)" in output
+    assert "- Events: 2" in output
+    assert "- Span: 2026-08-20T10:00:00Z → 2026-08-22T18:30:00Z" in output
+    assert "- Estimated cost: $0.0110" in output
+    # Totals row: 400 prompt | 250 completion | 650 total | 120 cached | 40 reasoning | 530 billed
+    assert "| 400 | 250 | 650 | 120 | 40 | 530 |" in output
+    assert "#### Lifetime by Model" in output
+    assert "| deepseek-r1:latest | 300 | 200 | 500 | 100 | 40 | 400 |" in output
+    assert "| gemma3:latest | 100 | 50 | 150 | 20 | 0 | 130 |" in output
+
+
+def test_format_token_stats_lifetime_absent_without_log(tmp_path: Path) -> None:
+    """When no token-usage.jsonl exists, /tokens omits the lifetime section."""
+    from host.commands._render import format_token_stats
+
+    runtime = _make_runtime(tmp_path)
+    assert not runtime.token_usage_path.exists()
+
+    output = format_token_stats(runtime)
+
+    assert "### Lifetime (all sessions)" not in output
+    # Session summary still renders.
+    assert "### Session Summary" in output or "## Session Summary" in output
+
+
 # ── /settings ─────────────────────────────────────────────────────────
 
 
