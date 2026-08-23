@@ -78,6 +78,7 @@ One JSON object per line in the active and sealed segments:
 | `transitioned_to` | string | no | Stage transition target |
 | `yielded` | bool | no | True when the turn paused to ask the user (YieldAction) |
 | `yield_question` | string | no | The question surfaced when `yielded` is true |
+| `turn_input` | object | no | Raw, unedited model input captured at the `hooks.complete` seam: `{"calls": [{iteration, messages, tools, model_id, provider, reasoning_model, temperature, max_tokens, response_format}, ...]}`, one entry per model round-trip in the turn. Absent for turns with no model call (host commands) or turns predating this field. Read back by `/debug [N]`. |
 
 ### Segment index record
 

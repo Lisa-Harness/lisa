@@ -33,9 +33,7 @@ Public surface
 - :func:`handle_models_command`
 - :func:`format_help`
 - :func:`render_capability_help`
-- :func:`render_capability_debug`
-- :func:`render_debug_context`
-- :func:`render_debug_self`
+- :func:`render_debug_turn`
 - :func:`render_runtime_settings`
 - :func:`format_token_stats`
 - :func:`build_capability_snapshot`
@@ -77,7 +75,6 @@ from host.commands._log import (
     _append_thread_entry,
     _append_turn_log,
     _last_capability_manifest,
-    _last_turn_context_dict,
     _resolve_int_env,
     _resolve_model,
     _set_turn_context,
@@ -136,11 +133,9 @@ from host.commands._render import (
     build_capability_snapshot,
     format_help,
     format_token_stats,
-    render_capability_debug,
     render_capability_help,
     render_command_help,
-    render_debug_context,
-    render_debug_self,
+    render_debug_turn,
     render_runtime_settings,
 )
 from host.commands._routing import (
@@ -189,7 +184,6 @@ __all__ = [
     "_is_git_pack_spec",
     "_is_local_pack_spec",
     "_last_capability_manifest",
-    "_last_turn_context_dict",
     "_load_installed_packs_lock",
     "_models_help_text",
     "_normalize_pack_install_spec",
@@ -228,11 +222,9 @@ __all__ = [
     "pack_require_git_ref",
     "predict_model",
     "preferred_model_id_for_route",
-    "render_capability_debug",
     "render_capability_help",
     "render_command_help",
-    "render_debug_context",
-    "render_debug_self",
+    "render_debug_turn",
     "render_mcp_server_detail",
     "render_mcp_summary",
     "render_modes_list",

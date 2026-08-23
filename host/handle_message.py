@@ -1017,6 +1017,9 @@ async def _execute_mode_turn(
         turn=turn_index,
         yielded=result.yielded is not None,
         yield_question=result.yielded.question if result.yielded else "",
+        turn_input=run_context.get("turn_input")
+        if isinstance(run_context.get("turn_input"), dict)
+        else None,
     )
 
     # ── Centralized loop decision classification ────────────────────

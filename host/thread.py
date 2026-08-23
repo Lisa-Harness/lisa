@@ -483,6 +483,7 @@ def append_thread_entry(
     turn: int | None = None,
     yielded: bool = False,
     yield_question: str = "",
+    turn_input: dict[str, Any] | None = None,
 ) -> None:
     """Append a new thread entry to the active segment.
 
@@ -506,6 +507,11 @@ def append_thread_entry(
     entry. When ``None``, the index is derived at append time (the legacy
     path — safe but potentially off-by-one if the active segment changed
     between turn start and append).
+
+    ``turn_input`` is the raw, unedited per-call model input captured at
+    the ``hooks.complete`` seam (one snapshot per model round-trip within
+    the turn) — the durable source ``/debug [N]`` reads back by turn index.
+    ``None`` when the turn made no model call (host-command turns).
     """
     if thread_path is None or not user_slug:
         return
@@ -550,6 +556,8 @@ def append_thread_entry(
         entry["yielded"] = True
         if yield_question:
             entry["yield_question"] = yield_question
+    if turn_input:
+        entry["turn_input"] = turn_input
 
     paths.current.parent.mkdir(parents=True, exist_ok=True)
     with paths.current.open("a", encoding="utf-8") as handle:

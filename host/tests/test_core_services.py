@@ -45,7 +45,7 @@ from host.config import HostConfig
 from host.config_resolver import resolve_log_level, resolve_stream_enabled, resolve_timezone
 from host.handle_message import handle_message
 from host.model_runtime import StubModelDefinition, resolve_model
-from host.runtime import HostRuntime, TurnContext
+from host.runtime import HostRuntime
 from host.state_provider import FileBackedStateProvider
 from host.token_accounting import apply_turn_usage, format_session_exit_summary_lines
 
@@ -352,24 +352,87 @@ def test_get_little_lisa_tool_catalog_empty_before_setup() -> None:
 
 
 @pytest.mark.asyncio
-async def test_debug_context_reports_last_turn_sections(tmp_path: Path) -> None:
+async def test_debug_no_prior_turns(tmp_path: Path) -> None:
     runtime = _make_runtime(tmp_path)
-    runtime.last_turn_context = TurnContext(
+    transport = NullTransport()
+    output = await handle_message(runtime, "/debug", transport)
+
+    assert "No completed turns yet." in output.text
+
+
+@pytest.mark.asyncio
+async def test_debug_default_renders_previous_turn_calls_verbatim(tmp_path: Path) -> None:
+    from host.thread import append_thread_entry
+
+    runtime = _make_runtime(tmp_path)
+    append_thread_entry(
+        thread_path=runtime.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query="hello",
+        response_text="hi there",
+        turn=0,
         turn_input={
-            "assembled_user_payload": {
-                "pre_turn_briefing": "brief",
-                "memory_recall": "memory",
-                "dynamic_user_context": "ctx",
-                "user_query": "query",
-            }
-        }
+            "calls": [
+                {
+                    "iteration": 0,
+                    "messages": [{"role": "system", "content": "sys"}],
+                    "tools": None,
+                    "model_id": "stub-model",
+                    "provider": "stub",
+                    "reasoning_model": False,
+                    "temperature": 0.2,
+                    "max_tokens": 100,
+                    "response_format": None,
+                }
+            ]
+        },
     )
     transport = NullTransport()
-    output = await handle_message(runtime, "/debug context", transport)
+    # This "/debug" invocation is turn 1; default target is turn 0.
+    output = await handle_message(runtime, "/debug", transport)
 
-    assert "Last Turn Context" in output.text
-    assert "pre_turn_briefing" in output.text
-    assert "brief" in output.text
+    assert "## Turn 0" in output.text
+    assert '"model_id": "stub-model"' in output.text
+    assert '"role": "system"' in output.text
+
+
+@pytest.mark.asyncio
+async def test_debug_explicit_turn_index(tmp_path: Path) -> None:
+    from host.thread import append_thread_entry
+
+    runtime = _make_runtime(tmp_path)
+    append_thread_entry(
+        thread_path=runtime.thread_path,
+        user_slug=runtime.config.user_slug,
+        mode_id="default",
+        query="hello",
+        response_text="hi there",
+        turn=0,
+    )
+    transport = NullTransport()
+    output = await handle_message(runtime, "/debug 0", transport)
+
+    assert "## Turn 0" in output.text
+    assert "No captured model input for this turn" in output.text
+
+
+@pytest.mark.asyncio
+async def test_debug_unknown_turn_index(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path)
+    transport = NullTransport()
+    output = await handle_message(runtime, "/debug 42", transport)
+
+    assert "Turn 42 not found in the thread log." in output.text
+
+
+@pytest.mark.asyncio
+async def test_debug_bad_argument_usage_error(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path)
+    transport = NullTransport()
+    output = await handle_message(runtime, "/debug abc", transport)
+
+    assert "Usage: /debug [turn_number]" in output.text
 
 
 # ── System prompt assembly ────────────────────────────────────────────

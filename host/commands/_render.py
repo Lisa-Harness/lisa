@@ -4,9 +4,8 @@ Pure rendering helpers that read runtime state and emit Markdown strings.
 No command dispatch lives here — the ``handle_*`` functions in ``_simple``
 and ``_slice`` call these renderers.
 
-Dependency direction: ``_render`` → ``_log`` (``_last_capability_manifest``,
-``_last_turn_context_dict``), ``_routing`` (``mode_support_gap``),
-``kernel.*``, ``host.*``.
+Dependency direction: ``_render`` → ``_log`` (``_last_capability_manifest``),
+``_routing`` (``mode_support_gap``), ``kernel.*``, ``host.*``.
 """
 
 from __future__ import annotations
@@ -22,10 +21,10 @@ from kernel.ipsar_fsm import get_workflow_catalog
 from kernel.operations.registry import get_operation_catalog
 from kernel.tools.registry import get_tool_catalog
 
-from host.commands._log import _last_capability_manifest, _last_turn_context_dict
+from host.commands._log import _last_capability_manifest
 from host.commands._routing import mode_support_gap
 from host.runtime import HostRuntime
-from host.thread import load_recent_thread_entries
+from host.thread import load_thread_range, next_turn_index
 from host.token_accounting import format_session_exit_summary_lines
 
 logger = logging.getLogger(__name__)
@@ -89,7 +88,7 @@ def render_capability_help(runtime: HostRuntime) -> str:
         f"- Operations: {len(snapshot['operations'])}",
         f"- Tools: {len(snapshot['tools'])}",
         f"- Models: {model_preview}",
-        f"- Unsupported installed modes: {unsupported_count} (run /debug capabilities)",
+        f"- Unsupported installed modes: {unsupported_count}",
     ]
     live = _last_capability_manifest(runtime)
     if live is not None:
@@ -104,105 +103,53 @@ def render_capability_help(runtime: HostRuntime) -> str:
     return "\n".join(lines)
 
 
-def render_capability_debug(runtime: HostRuntime) -> str:
-    """Render a JSON capability debug payload for ``/debug capabilities``."""
-    snapshot = build_capability_snapshot(runtime)
-    live = _last_capability_manifest(runtime)
-    payload: dict[str, Any] = {
-        "total_horizon": {
-            "supported_modes": snapshot["supported_modes"],
-            "unsupported_modes": snapshot["unsupported_modes"],
-            "operations": snapshot["operations"],
-            "tools": snapshot["tools"],
-            "models": snapshot["models"],
-        },
-    }
-    if live is not None:
-        payload["active_mode"] = {
-            "mode_id": live.metadata.get("mode_id", "default"),
-            "tools_authoritative": live.metadata.get("tools_authoritative", False),
-            "callable": sorted(e.capability_id for e in live.entries),
-            "kind_counts": live.metadata.get("kind_counts", {}),
-        }
+def render_debug_turn(runtime: HostRuntime, arg: str) -> str:
+    """Render the complete, unedited raw model input for turn ``arg``.
+
+    ``arg`` is the stripped argument after ``/debug`` — empty for the
+    default (the most recently completed turn), or a non-negative integer
+    turn index. Reads the thread log directly (the durable source of
+    truth) rather than in-memory runtime state, so this works identically
+    right after a restart.
+    """
+    arg = arg.strip()
+    if arg:
+        if not arg.isdigit():
+            return "Usage: /debug [turn_number]"
+        turn_index = int(arg)
     else:
-        payload["active_mode"] = None
-    return "## Capability Debug\n\n```json\n" + json.dumps(payload, indent=2) + "\n```"
+        turn_index = next_turn_index(thread_path=runtime.thread_path) - 1
+        if turn_index < 0:
+            return "No completed turns yet."
 
-
-def render_debug_context(runtime: HostRuntime) -> str:
-    """Render the last turn context for ``/debug context``."""
-    context = _last_turn_context_dict(runtime) or {}
-    if not context:
-        return "No completed turn context is available yet."
-    turn_input = context.get("turn_input") if isinstance(context, dict) else None
-    if not isinstance(turn_input, dict):
-        return "No assembled turn-input summary is available yet."
-    payload = turn_input.get("assembled_user_payload")
-    if not isinstance(payload, dict):
-        return "No assembled user payload is available yet."
-    lines = ["## Last Turn Context"]
-
-    # System prompt summary
-    system_prompt_info = turn_input.get("system_prompt")
-    if isinstance(system_prompt_info, dict):
-        lines.append("\n### system_prompt")
-        lines.append(f"- chars: {system_prompt_info.get('chars', 0)}")
-        lines.append(f"- preview: {system_prompt_info.get('preview', '(empty)')}")
-        if system_prompt_info.get("omitted_for_brevity"):
-            lines.append("- (truncated for brevity)")
-    else:
-        lines.append("\n### system_prompt\n(not available)")
-
-    # Session context
-    session_ref = runtime.config.session_context
-    session_active = bool(session_ref)
-    lines.append("\n### session_context")
-    lines.append(f"- ref: {session_ref or '(none)'}")
-    lines.append(f"- active: {'true' if session_active else 'false'}")
-
-    for key in (
-        "pre_turn_briefing",
-        "memory_recall",
-        "dynamic_user_context",
-        "selected_user_context",
-        "user_query",
-    ):
-        value = str(payload.get(key) or "").strip()
-        lines.append(f"\n### {key}\n{value or '(empty)'}")
-    return "\n".join(lines)
-
-
-def render_debug_self(runtime: HostRuntime) -> str:
-    """Render the host self-model for ``/debug self``."""
-    snapshot = build_capability_snapshot(runtime)
-
-    thread_entries = load_recent_thread_entries(
+    entries = load_thread_range(
         thread_path=runtime.thread_path,
-        limit=10,
+        start_turn=turn_index,
+        end_turn=turn_index,
     )
-    state_snapshot = runtime.state_snapshot
-    lines = [
-        "## Host Self Model",
-        f"- user_slug: {snapshot['user_slug']}",
-        f"- timezone: {snapshot['timezone']} ({snapshot['timezone_source']})",
-        f"- supported_modes: {len(snapshot['supported_modes'])}",
-        f"- operations: {len(snapshot['operations'])}",
-        f"- tools: {len(snapshot['tools'])}",
-        f"- models: {len(snapshot['models'])}",
-        f"- local_thread_entries: {len(thread_entries)}",
-        f"- local_state_snapshot_loaded: {'yes' if isinstance(state_snapshot, dict) else 'no'}",
+    if not entries:
+        return f"Turn {turn_index} not found in the thread log."
+    entry = entries[0]
+
+    header = [
+        f"## Turn {turn_index}",
+        f"- timestamp_utc: {entry.get('timestamp_utc', '')}",
+        f"- mode_id: {entry.get('mode_id', '')}",
+        f"- query: {entry.get('query', '')}",
     ]
-    live = _last_capability_manifest(runtime)
-    if live is not None:
-        meta = live.metadata
-        active_mode = meta.get("mode_id", "default")
-        active_count = len(live.entries)
-        active_names = sorted(e.capability_id for e in live.entries)
-        lines.append("")
-        lines.append(f"### Active Mode: {active_mode}")
-        lines.append(f"- callable_this_turn: {active_count} ({', '.join(active_names)})")
-        lines.append(f"- tools_authoritative: {'yes' if meta.get('tools_authoritative') else 'no'}")
-    return "\n".join(lines)
+
+    turn_input = entry.get("turn_input")
+    if not isinstance(turn_input, dict) or not turn_input.get("calls"):
+        header.append(
+            "\nNo captured model input for this turn (host-command turn, or the "
+            "turn predates raw-input capture)."
+        )
+        return "\n".join(header)
+
+    header.append("\n```json")
+    header.append(json.dumps(turn_input["calls"], indent=2, ensure_ascii=False))
+    header.append("```")
+    return "\n".join(header)
 
 
 def render_runtime_settings(runtime: HostRuntime) -> str:
@@ -638,10 +585,8 @@ def _host_shortcut_help_text(topic: str) -> str:
         ),
         "debug": (
             "## /debug\n\n"
-            "Local diagnostics:\n"
-            "- /debug context — assembled turn context (mode, route, capability manifest).\n"
-            "- /debug capabilities — JSON capability snapshot.\n"
-            "- /debug self — runtime self-inspection (pool, providers, state)."
+            "Show the complete, unedited raw model input for turn N "
+            "(default: the previous turn): `/debug [N]`."
         ),
         "consolidate": (
             "## /consolidate (or /slice)\n\n"

@@ -135,6 +135,33 @@ def _derive_view(runtime: HostRuntime) -> Any:
     return derive_workflow_view(entries)
 
 
+def _capture_turn_input_call(ctx_dict: dict[str, Any], kwargs: dict[str, Any]) -> None:
+    """Snapshot one model round-trip's raw request into ``ctx_dict["turn_input"]``.
+
+    Called once per ``hooks.complete`` invocation, so a tool-calling turn
+    accumulates one entry per iteration. Failures here must never block the
+    actual model call, hence the broad catch.
+    """
+    try:
+        model_def = kwargs.get("model_def")
+        calls = ctx_dict.setdefault("turn_input", {}).setdefault("calls", [])
+        calls.append(
+            {
+                "iteration": len(calls),
+                "messages": kwargs.get("messages"),
+                "tools": kwargs.get("tools"),
+                "model_id": getattr(model_def, "model_id", ""),
+                "provider": getattr(model_def, "provider", ""),
+                "reasoning_model": getattr(model_def, "reasoning_model", False),
+                "temperature": kwargs.get("temperature"),
+                "max_tokens": kwargs.get("max_tokens"),
+                "response_format": kwargs.get("response_format"),
+            }
+        )
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("failed to capture turn_input snapshot", exc_info=True)
+
+
 def build_turn_hooks(
     runtime: HostRuntime,
     context: dict[str, Any] | None = None,
@@ -312,6 +339,7 @@ def build_turn_hooks(
 
     # ── Completion ────────────────────────────────────────────────
     async def _complete(**kwargs: Any) -> Any:
+        _capture_turn_input_call(ctx_dict, kwargs)
         return await complete_live(
             runtime=runtime,
             transport=transport,

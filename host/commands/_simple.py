@@ -21,11 +21,9 @@ from host.commands._log import (
 )
 from host.commands._render import (
     format_help,
-    render_capability_debug,
     render_capability_help,
     render_command_help,
-    render_debug_context,
-    render_debug_self,
+    render_debug_turn,
 )
 from host.runtime import HostRuntime
 
@@ -108,18 +106,7 @@ def handle_debug_command(
     stripped: str,
     message: str,
 ) -> str:
-    """Handle ``/debug`` subcommands."""
-    subcommand = stripped[6:].strip().lower()
-    if subcommand in {"", "help"}:
-        response_text = "Supported debug commands: /debug context, /debug capabilities, /debug self"
-    elif subcommand == "context":
-        response_text = render_debug_context(runtime)
-    elif subcommand == "capabilities":
-        response_text = render_capability_debug(runtime)
-    elif subcommand == "self":
-        response_text = render_debug_self(runtime)
-    else:
-        response_text = (
-            f"Unknown debug command '{subcommand}'. Supported: context, capabilities, self."
-        )
+    """Handle ``/debug [N]``: the complete, unedited model input for turn N."""
+    arg = stripped[6:].strip()
+    response_text = render_debug_turn(runtime, arg)
     return handle_simple_command(runtime, message, "debug", response_text)

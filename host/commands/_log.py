@@ -15,7 +15,6 @@ No imports from sibling ``commands._*`` modules.
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import os
 from typing import Any
@@ -144,11 +143,3 @@ def _resolve_model(runtime: HostRuntime, model_id: str) -> StubModelDefinition:
 def _last_capability_manifest(runtime: HostRuntime) -> CapabilityManifest | None:
     """Return the last capability manifest stored on the runtime, if any."""
     return getattr(runtime, "last_capability_manifest", None)
-
-
-def _last_turn_context_dict(runtime: HostRuntime) -> dict[str, Any] | None:
-    """Return the last turn context as a dict (for debug rendering compatibility)."""
-    ctx = runtime.last_turn_context
-    if ctx is None:
-        return None
-    return dataclasses.asdict(ctx)
