@@ -224,8 +224,9 @@ class HostRuntime:
         self.restart_required: bool = False
         self.restart_reason: str = ""
         # Stashed by the CLI host from the LISA_RESTART_RESUME_MESSAGE env
-        # var on startup; the REPL replays it as the first turn, then clears
-        # it. ``None`` means no resume pending.
+        # var on startup (e.g. after ``/pack install`` restart) or set by the
+        # ``/resume <reply>`` command; the REPL replays it as the first turn,
+        # then clears it. ``None`` means no resume pending.
         self.pending_resume_message: str | None = None
 
         # ── Copilot customizations cache ──────────────────────────────
@@ -261,28 +262,6 @@ class HostRuntime:
     def token_usage_handler(self) -> Any:
         """Return the durable ``TokenUsageTelemetryHandler`` for this runtime."""
         return self._token_usage_handler
-
-    async def _on_checkpoint(self, bundle: Any) -> None:
-        """Persist a ``CheckpointBundle`` via the storage MCP tool pool.
-
-        Called by the kernel after a turn when the checkpoint tuning gate
-        fires. The bundle is serialized and saved through the
-        ``lisa-storage`` MCP server's ``save_checkpoint`` tool, mirroring how
-        recovery records and approval state are persisted through their
-        respective stores. No-op when no pool is available.
-        """
-        if self.mcp_tool_pool is None:
-            return
-        try:
-            import json  # noqa: PLC0415
-
-            payload = bundle.model_dump(mode="json") if hasattr(bundle, "model_dump") else {}
-            await self.mcp_tool_pool.call_tool(
-                "save_checkpoint",
-                {"checkpoint": json.dumps(payload)},
-            )
-        except Exception:  # pylint: disable=broad-except
-            pass
 
     @property
     def start_mode_id(self) -> str:

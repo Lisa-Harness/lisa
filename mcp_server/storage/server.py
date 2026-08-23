@@ -2,24 +2,22 @@
 
 This is the sole storage server for the framework. It is a transport-only
 wrapper: every tool delegates to the SDK backend, which owns the sandbox
-resolution, deny-glob policy, checkpoint persistence, and model-manifest
-read/write. Hosts or tools that want in-process storage access can use
+resolution, deny-glob policy, and model-manifest read/write. Hosts or
+tools that want in-process storage access can use
 :class:`sdk.storage.StorageBackend` directly without spawning this server.
 
-Tools (13 total):
+Tools (10 total):
 
 - File I/O (8): ``read_file``, ``read_file_range``, ``write_file``,
   ``append_file``, ``list_files``, ``delete_file``, ``stat_file``,
   ``make_dir`` — scoped to ``data_dir / "files"``. ``read_file_range``
   returns a char-bounded slice (never splits multibyte codepoints);
   ``append_file`` creates parent dirs and the file if absent.
-- Checkpoints (3): ``save_checkpoint``, ``restore_checkpoint``, ``list_checkpoints``
-  — serialized checkpoint bundles as JSON under ``data_dir / "checkpoints"``.
 - Model manifests (2): ``read_model_manifest``, ``write_model_manifest`` —
   ``models.yaml`` / ``models.proposed.yaml`` directly under ``data_dir``.
 
-``--readonly`` disables writes, deletes, checkpoint saves, and manifest
-writes. ``--deny-glob`` (repeatable) + ``LISA_STORAGE_DENY_GLOBS`` env add
+``--readonly`` disables writes, deletes, and manifest writes.
+``--deny-glob`` (repeatable) + ``LISA_STORAGE_DENY_GLOBS`` env add
 glob patterns to the file-sandbox denylist.
 
 Error contract: the SDK backend returns ``json.dumps({"error": ...})``
@@ -312,53 +310,6 @@ async def make_dir(
     return _raise_on_error(_resolve_deps(ctx).backend.make_dir(path))
 
 
-# ── Checkpoint tools ────────────────────────────────────────────────────────
-
-
-@mcp.tool(annotations=ToolAnnotations(destructive_hint=True))
-async def save_checkpoint(
-    bundle: dict[str, Any],
-    ctx: Context[StorageDeps, Any] | None = None,
-) -> str:
-    """Persist a checkpoint bundle as JSON under the checkpoints directory.
-
-    The ``bundle`` is a serialized :class:`~kernel.models.CheckpointBundle`
-    (or any JSON-serializable dict). If ``checkpoint_id`` is present in the
-    bundle, it is used as the filename stem; otherwise a new ID is generated.
-
-    Returns a JSON object with ``checkpoint_id``. Raises :class:`ToolError`
-    on readonly or save failure.
-    """
-    return _raise_on_error(_resolve_deps(ctx).backend.save_checkpoint(bundle))
-
-
-@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
-async def restore_checkpoint(
-    checkpoint_id: str,
-    ctx: Context[StorageDeps, Any] | None = None,
-) -> str:
-    """Load a checkpoint bundle by ID and return it as a JSON string.
-
-    Returns the full bundle dict. Raises :class:`ToolError` if not found or
-    on restore failure.
-    """
-    return _raise_on_error(_resolve_deps(ctx).backend.restore_checkpoint(checkpoint_id))
-
-
-@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
-async def list_checkpoints(
-    prefix: str = "",
-    ctx: Context[StorageDeps, Any] | None = None,
-) -> str:
-    """List saved checkpoints as a JSON array of summary objects.
-
-    Each entry contains ``checkpoint_id``, ``label``, ``created_at``,
-    ``stage_id``, ``turn_count``, and ``mode_id`` (extracted from the
-    stored JSON). Sorted by ``created_at`` descending (newest first).
-    """
-    return _raise_on_error(_resolve_deps(ctx).backend.list_checkpoints(prefix))
-
-
 # ── Model manifest tools ────────────────────────────────────────────────────
 
 
@@ -441,8 +392,8 @@ def main() -> None:
     """Entry point for the lisa-storage MCP server (stdio transport).
 
     Parses the standard CLI contract via the shared ``run()`` helper.
-    ``--data-dir`` is required; the files and checkpoints subdirectories
-    are derived from it. ``--readonly`` disables all write operations.
+    ``--data-dir`` is required; the files subdirectory is derived from it.
+    ``--readonly`` disables all write operations.
     ``--deny-glob`` (repeatable) adds glob patterns to the file-sandbox
     denylist; ``LISA_STORAGE_DENY_GLOBS`` (comma-separated) is merged in
     too, so hosts can set policy via env without editing the launch YAML.

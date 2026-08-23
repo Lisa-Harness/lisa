@@ -1,7 +1,6 @@
 """Phase 7 tests: workflow progress rendering.
 
-Covers ``render_workflow_progress`` (the "work done so far" summary that
-replaces re-reading ``CheckpointBundle.turn_history``).
+Covers ``render_workflow_progress`` (the "work done so far" summary).
 """
 
 from __future__ import annotations

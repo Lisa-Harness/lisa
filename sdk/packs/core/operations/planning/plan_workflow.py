@@ -12,7 +12,7 @@ and return a structured plan (a list of steps, each naming a target mode).
 The plan is surfaced to the user as a markdown block before the first step
 executes (auto-proceed — no forced pause). The turn runner persists the plan
 as a ``WorkflowInstance`` with ``spawned_from="plan_workflow_op"`` so it
-survives across turns and is resumable with ``/proceed``. When the model
+survives across turns and is resumable with ``/resume``. When the model
 returns no ``steps`` (weak model, old shape), the turn runner falls back
 to the deterministic ``compile_steps_from_routing_targets`` path.
 

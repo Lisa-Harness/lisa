@@ -3,10 +3,9 @@
 Extracted from ``host.thread``: the segment-path derivation, sparse
 index parsing, zstd decompression, and the public read operations
 (``load_recent``, ``load_range``, ``build_recent_excerpt``,
-``build_manifest``). The write path (``append`` / ``write_turn_history`` /
-sealing) stays in ``host.thread`` because it owns the per-turn response
-and effect-receipt persistence and the host-command query check used
-by ``build_recent_excerpt``.
+``build_manifest``). The write path stays in ``host.thread`` because it
+owns the per-turn response and effect-receipt persistence and the
+host-command query check used by ``build_recent_excerpt``.
 
 The MCP server (``mcp_server.thread.server``) wraps this; the host
 imports it directly for the context-assembly excerpt/manifest builders.

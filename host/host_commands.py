@@ -22,10 +22,9 @@ layer (``handle_message`` / ``commands``) and the persistence layer
 This module owns NO command-name vocabulary. The static list of commands
 that existed here previously was a boundary violation: it duplicated the
 dispatch table in ``handle_message._dispatch_host_command`` and hardcoded
-pack-owned commands (``/checkpoint``, ``/restore``, ``/checkpoints``,
-``/pack``) in the host. The dispatch layer is the authority on what gets
-intercepted; it registers its prefixes here so the transcript filter can
-consult the registry without owning command vocabulary.
+pack-owned commands (``/pack``) in the host. The dispatch layer is the
+authority on what gets intercepted; it registers its prefixes here so the
+transcript filter can consult the registry without owning command vocabulary.
 
 ``/quit`` is CLI-only and never appended to the thread.
 
@@ -56,7 +55,7 @@ def register_host_command_prefix(prefix: str) -> None:
 
     Called by the command dispatch layer for each prefix it intercepts.
     A query is a host command if its stripped lower form starts with a
-    registered prefix (e.g. ``/pack``, ``/help``, ``/checkpoint``) OR
+    registered prefix (e.g. ``/pack``, ``/help``) OR
     equals a registered exact form (e.g. ``help``, ``tokens``).
     """
     _prefixes.add(prefix.strip().lower())

@@ -18,7 +18,6 @@ from kernel.approval import EffectKind
 from kernel.models import ConversationSurface, MemoryScope
 
 __all__ = [
-    "RecoveryFailureScope",
     "RecoveryIdentity",
     "RecoveryRecord",
     "RecoveryRetryPolicy",
@@ -27,7 +26,7 @@ __all__ = [
     "RecoveryTargetKind",
 ]
 
-RecoveryTargetKind = Literal["operation", "pack_tool", "mcp_tool", "transition"]
+RecoveryTargetKind = Literal["operation", "pack_tool", "mcp_tool"]
 RecoveryState = Literal[
     "running",
     "succeeded",
@@ -37,7 +36,6 @@ RecoveryState = Literal[
     "cancelled",
 ]
 RecoveryRetryPolicy = Literal["safe", "confirm", "never"]
-RecoveryFailureScope = Literal["item", "workflow"]
 _OPEN_STATES: tuple[RecoveryState, ...] = ("running", "stalled", "indeterminate")
 
 
@@ -54,7 +52,6 @@ class RecoveryIdentity(_FrozenRecoveryModel):
     surface_type: ConversationSurface
     surface_id: str
     memory_scope: MemoryScope
-    session_plan_digest: str = ""
 
 
 class RecoveryRecord(_FrozenRecoveryModel):
@@ -62,24 +59,19 @@ class RecoveryRecord(_FrozenRecoveryModel):
 
     work_item_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     identity: RecoveryIdentity
-    conversation_id: str = ""
     mode_id: str = ""
     stage_id: str = ""
-    # ── Durable workflow-instance correlation ────────────────────────
-    # When a ``WorkflowInstance`` is active, recovery records carry its id
-    # and the current step id so the host can decide whether a stalled
-    # record blocks the instance from advancing (``step_blocks_instance``).
-    # Empty when no multi-stage workflow is in flight (single-mode turns).
-    workflow_instance_id: str = ""
+    # Current step id within a multi-stage workflow. Empty when no
+    # multi-stage workflow is in flight (single-mode turns). Used by
+    # ``step_blocks_instance`` to decide whether a stalled record blocks
+    # the instance from advancing.
     step_id: str = ""
     target_kind: RecoveryTargetKind
     target_id: str
     effect: EffectKind = "read"
     parameters: dict[str, Any] = Field(default_factory=dict)
     state: RecoveryState = "running"
-    failure_scope: RecoveryFailureScope = "item"
     retry_policy: RecoveryRetryPolicy = "safe"
-    blocks_workflow: bool = False
     attempt: int = 1
     last_error: str = ""
     result_preview: str = ""
@@ -106,9 +98,7 @@ class RecoveryService(Protocol):
         state: RecoveryState,
         last_error: str = "",
         result_preview: str = "",
-        failure_scope: RecoveryFailureScope | None = None,
         retry_policy: RecoveryRetryPolicy | None = None,
-        blocks_workflow: bool | None = None,
     ) -> RecoveryRecord | None:
         """Transition one record from open to terminal or stalled state."""
 
@@ -144,10 +134,8 @@ def step_blocks_instance(record: RecoveryRecord, instance: Any) -> bool:
     resume logic decide whether to retry the step (the record blocks) or skip
     it (the step already completed via another path and the record is stale).
 
-    ``blocks_workflow`` on the record itself is a coarser flag set at dispatch
-    time; this helper composes it with the instance's step graph so the host
-    can make a step-aware decision. Returns ``False`` when the record carries
-    no ``step_id`` or the instance is ``None`` (no multi-stage workflow).
+    Returns ``False`` when the record carries no ``step_id`` or the instance
+    is ``None`` (no multi-stage workflow).
     """
     if instance is None:
         return False

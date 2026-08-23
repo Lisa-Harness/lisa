@@ -1,7 +1,0 @@
-operation_id: checkpoint_restore
-description: Load a saved checkpoint by ID and return its full contents (conversation history, state, enrichment) for the host to restore. Call when the user wants to resume from a saved point.
-effect: read
-tool_ids: [restore_checkpoint]
-timeout_seconds: 10
-max_calls_per_turn: 1
-exportable: true

@@ -34,7 +34,6 @@ def _identity() -> RecoveryIdentity:
         surface_type="personal_dm",
         surface_id="surface",
         memory_scope="personal",
-        session_plan_digest="digest",
     )
 
 
@@ -56,9 +55,7 @@ class _FakeService:
         state: str,
         last_error: str = "",
         result_preview: str = "",
-        failure_scope: str | None = None,
         retry_policy: str | None = None,
-        blocks_workflow: bool | None = None,
     ) -> RecoveryRecord | None:
         record = self.records.get(work_item_id)
         if record is None or record.identity != identity:
@@ -70,8 +67,6 @@ class _FakeService:
         }
         if retry_policy is not None:
             update["retry_policy"] = retry_policy
-        if blocks_workflow is not None:
-            update["blocks_workflow"] = blocks_workflow
         updated = record.model_copy(update=update)
         self.records[work_item_id] = updated
         return updated
@@ -131,10 +126,10 @@ def _make_record(
 # ── get_host_commands ─────────────────────────────────────────────────
 
 
-def test_get_host_commands_returns_all_six_specs() -> None:
+def test_get_host_commands_returns_all_seven_specs() -> None:
     specs = get_host_commands()
     prefixes = {s.prefix for s in specs}
-    assert prefixes == {"/stalls", "/stall", "/retry", "/retry-safe", "/skip", "/cancel"}
+    assert prefixes == {"/stalls", "/stall", "/retry", "/retry-safe", "/skip", "/cancel", "/resume"}
 
 
 # ── /stalls ───────────────────────────────────────────────────────────

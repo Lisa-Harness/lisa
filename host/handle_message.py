@@ -6,8 +6,7 @@ This is the core ``handle_message`` entry point that all transport hosts
 1. **Host command dispatch** — delegates to ``host.commands`` for
    ``/help``, ``/settings``, ``/tokens``, ``/debug``, ``/consolidate``,
     ``/intake``, ``/pack``, ``/models``, ``/modes``, ``/operations``,
-    ``/tools``. Pack-registered commands (``/checkpoint``, ``/restore``,
-    ``/checkpoints``, ``/summarize-history``) are discovered via
+    ``/tools``. Pack-registered commands are discovered via
     ``lisa.extensions.host_commands`` and dispatched after built-in host
     commands.
 2. **Model turn routing** — for non-command messages: parses slash-command
@@ -349,9 +348,9 @@ async def _dispatch_host_command(
     ``HostCommandResult`` and emits the transport callback.
     """
     # Ensure the (possibly deferred) MCP pool is ready before any slash
-    # command touches runtime.mcp_tool_pool (/settings, /debug, /checkpoint,
-    # /restore, /pack). Cheap commands (/help, /quit) don't need the pool,
-    # but awaiting a completed no-op task is free.
+    # command touches runtime.mcp_tool_pool (/settings, /debug, /pack).
+    # Cheap commands (/help, /quit) don't need the pool, but awaiting a
+    # completed no-op task is free.
     await runtime.ensure_pool_ready()
     response_text: str | None = None
 
@@ -407,8 +406,8 @@ async def _dispatch_host_command(
     # ── Pack-registered commands ────────────────────────────────────
     # Packs register slash commands via lisa.extensions.host_commands.
     # The host owns only the dispatch mechanism and host-intrinsic
-    # commands; pack-owned commands (e.g. /checkpoint, /restore) live in
-    # the pack that owns the operations they call.
+    # commands; pack-owned commands live in the pack that owns the
+    # operations they call.
     for entry in _pack_host_commands():
         for spec in entry.specs:
             if lowered.startswith(spec.prefix):
@@ -904,8 +903,8 @@ async def _execute_mode_turn(
     #   fresh turn against the preserved position.
     # - ``terminated``: the transport returns the prompt. The workflow is
     #   marked complete; the next message is a fresh turn with no workflow.
-    # The kernel handles checkpoint stamping and WorkflowPosition marking;
-    # the host only needs to surface the exit to the transport.
+    # The kernel handles WorkflowPosition marking; the host only needs to
+    # surface the exit to the transport.
     _operator_exit = getattr(result, "operator_exit", "")
     if _operator_exit:
         if _operator_exit == "paused":
@@ -1016,6 +1015,8 @@ async def _execute_mode_turn(
         handoff_to=result.handoff_to or "",
         transitioned_to=result.transitioned_to or "",
         turn=turn_index,
+        yielded=result.yielded is not None,
+        yield_question=result.yielded.question if result.yielded else "",
     )
 
     # ── Centralized loop decision classification ────────────────────

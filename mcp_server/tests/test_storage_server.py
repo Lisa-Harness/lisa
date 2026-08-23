@@ -1,7 +1,7 @@
 """Tests for the lisa-storage MCP server.
 
 Covers tool registration, file I/O, path traversal rejection, readonly mode,
-and checkpoint save/restore/list — using MCPServer's in-process ``call_tool`` API.
+and model manifest read/write — using MCPServer's in-process ``call_tool`` API.
 """
 
 from __future__ import annotations
@@ -74,9 +74,6 @@ async def test_storage_lists_eleven_tools(storage_setup: None) -> None:
         "delete_file",
         "stat_file",
         "make_dir",
-        "save_checkpoint",
-        "restore_checkpoint",
-        "list_checkpoints",
         "read_model_manifest",
         "write_model_manifest",
     } == names
@@ -250,74 +247,6 @@ async def test_readonly_blocks_make_dir(storage_readonly: None) -> None:
 
     with pytest.raises(ToolError, match="read-only"):
         await mcp.call_tool("make_dir", {"path": "newdir"})
-
-
-# ── Checkpoints ─────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_save_restore_checkpoint_roundtrip(storage_setup: None) -> None:
-    from mcp_server.storage.server import mcp
-
-    bundle = {
-        "label": "test-checkpoint",
-        "mode_id": "default",
-        "stage_id": "gather",
-        "turn_count": 5,
-        "unified_state": {"compiled_at": "2026-07-11T00:00:00Z"},
-        "workflow_session_state": {"mode_id": "research", "stage_id": "gather"},
-    }
-    save_result = await mcp.call_tool("save_checkpoint", {"bundle": bundle})
-    data = json.loads(_tool_text(save_result))
-    assert "checkpoint_id" in data
-    cid = data["checkpoint_id"]
-
-    restore_result = await mcp.call_tool("restore_checkpoint", {"checkpoint_id": cid})
-    restored = json.loads(_tool_text(restore_result))
-    assert restored["label"] == "test-checkpoint"
-    assert restored["stage_id"] == "gather"
-    assert restored["turn_count"] == 5
-
-
-@pytest.mark.asyncio
-async def test_restore_missing_checkpoint_returns_error(storage_setup: None) -> None:
-    from mcp_server.storage.server import mcp
-
-    with pytest.raises(ToolError):
-        await mcp.call_tool("restore_checkpoint", {"checkpoint_id": "nonexistent"})
-
-
-@pytest.mark.asyncio
-async def test_list_checkpoints_sorted_desc(storage_setup: None) -> None:
-    from mcp_server.storage.server import mcp
-
-    for i in range(3):
-        await mcp.call_tool("save_checkpoint", {"bundle": {"label": f"cp-{i}", "turn_count": i}})
-
-    result = await mcp.call_tool("list_checkpoints", {})
-    data = json.loads(_tool_text(result))
-    assert len(data) == 3
-    # Should be sorted by created_at descending; all should have checkpoint_id
-    ids = [entry["checkpoint_id"] for entry in data]
-    assert len(ids) == 3
-    assert all(ids)
-
-
-@pytest.mark.asyncio
-async def test_list_checkpoints_empty(storage_setup: None) -> None:
-    from mcp_server.storage.server import mcp
-
-    result = await mcp.call_tool("list_checkpoints", {})
-    data = json.loads(_tool_text(result))
-    assert data == []
-
-
-@pytest.mark.asyncio
-async def test_readonly_blocks_save_checkpoint(storage_readonly: None) -> None:
-    from mcp_server.storage.server import mcp
-
-    with pytest.raises(ToolError, match="read-only"):
-        await mcp.call_tool("save_checkpoint", {"bundle": {"label": "x"}})
 
 
 # ── Model manifest ──────────────────────────────────────────────────────────

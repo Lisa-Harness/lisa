@@ -4,6 +4,56 @@ All notable changes to the Lisa Framework will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+
+#### Checkpoint system entirely
+
+- **What:** The checkpoint subsystem has been removed entirely and replaced
+  with thread-based `/resume`. Removed: `CheckpointBundle` and
+  `CheckpointTuning` models, the `on_checkpoint` hook, auto-checkpoint
+  Phase 3.6, the `sdk/packs/checkpoint/` pack (`lisa-pack-checkpoint`),
+  the `save_checkpoint`/`restore_checkpoint`/`list_checkpoints` storage
+  tools, the `write_turn_history` destructive compaction write-back, and
+  the `/checkpoint`/`/restore`/`/checkpoints`/`/proceed`/`/summarize-history`
+  commands.
+- **Why:** The checkpoint layer duplicated durability that the append-only
+  thread store already provides. One durable substrate (the thread) plus
+  recovery records for in-flight dispatch items covers the same ground
+  with less surface area and fewer drift bugs.
+- **Migration:** `StorageBackend.__init__` now deletes any existing
+  `artifacts/checkpoints/` directory (best-effort `shutil.rmtree`). The
+  directory is not recreated.
+
+### Added
+
+#### Thread-based `/resume` command
+
+- **What:** The recovery pack now ships a `/resume [reply]` command that
+  scans the thread tail for the most recent `yielded=True` entry and
+  surfaces its `yield_question`, optionally alongside stalled recovery
+  records.
+- **Why:** Replaces the `/proceed` command's resume-from-yield behavior
+  with a thread-derived source of truth — no separate checkpoint bundle
+  to rehydrate.
+
+#### `yielded` and `yield_question` fields on thread entries
+
+- **What:** `append_thread_entry` now stamps `yielded=True` and
+  `yield_question` on the thread entry when a `YieldAction` fires.
+- **Why:** Lets `/resume` reconstruct the paused question directly from
+  the thread, without a sidecar checkpoint.
+
+### Changed
+
+#### Trimmed `RecoveryRecord`
+
+- **What:** Removed `conversation_id`, `workflow_instance_id`,
+  `blocks_workflow`, and `failure_scope` from `RecoveryRecord`; removed
+  `session_plan_digest` from `RecoveryIdentity`; removed `"transition"`
+  from `RecoveryTargetKind`.
+- **Why:** These fields were populated only by the checkpoint layer or
+  carried information now derivable from the thread/workflow view.
+
 ### Changed
 
 #### Thread storage: segmented JSONL + zstd-sealed segments

@@ -3,13 +3,12 @@
 The kernel's durability primitives, scoped by boundary:
 
 - ``RecoveryRecord`` (``kernel/recovery.py``) — one work item (tool dispatch).
-- ``CheckpointBundle`` (``kernel/models.py``) — one turn snapshot.
 - ``chain_satisfied`` (``kernel/turn_phases/_turn_state.py``) — one NL turn's
   ephemeral intent-chain accumulator (a projection of the position's
   ``completed_steps``).
 - **``WorkflowPosition``** (this module) — the workflow itself: one object
   that survives across modes, stages, turns, and host restarts and that
-  routing, checkpoint, recovery, and the iteration budget all reference.
+  routing, recovery, and the iteration budget all reference.
 
 ``WorkflowPosition`` merges what used to be two objects that drifted apart:
 the inter-mode ``WorkflowInstance`` (declared steps, completed steps) and
@@ -17,8 +16,7 @@ the intra-mode ``WorkflowSessionState`` (mode/stage pointer, per-stage turn
 count). The split produced the drift class of bugs: a mode handoff advanced
 the instance but left the session pointing at the old mode's stage; the
 resolver's stall counter was fed from two different units depending on mode
-kind; checkpoints serialized both and restores could rehydrate one without
-the other. One position object makes those splits unrepresentable.
+kind. One position object makes those splits unrepresentable.
 
 The thread-derived ``WorkflowView`` (``kernel/workflow_view.py``) is the
 host-facing projection: it derives the active workflow from the append-only
@@ -36,7 +34,7 @@ Design constraints (mirroring the codebase conventions):
   mirroring ``RecoveryRecord`` immutability.
 - Ad-hoc and specified workflows share the shape: ``compile_steps_from_routing_targets``
   produces steps for an ad-hoc position at turn 1; ``PlanWorkflowOutput.steps``
-  produces steps for a specified position. Both resume/checkpoint/recover
+  produces steps for a specified position. Both resume/recover
   identically because they share the same ``WorkflowPosition`` model.
 - Catalog-aware stage moves live in ``kernel/ipsar_fsm.py``
   (``create_position`` / ``apply_stage_transition`` / ``enter_mode``); this
@@ -177,7 +175,7 @@ class WorkflowPosition(BaseModel):
     # Per-step result previews (step_id -> short text). Populated from
     # ``RecoveryRecord.result_preview`` as steps complete; used by the
     # compaction/context layer as the "what we've done so far" summary
-    # instead of re-reading ``CheckpointBundle.turn_history``.
+    # instead of re-reading the thread tail.
     step_results: dict[str, str] = Field(default_factory=dict)
     # ── Intra-mode FSM pointer (absorbed WorkflowSessionState) ───────
     mode_id: str = ""
@@ -503,7 +501,7 @@ def render_workflow_progress(position: WorkflowPosition) -> str:
     """Render a short human-readable summary of completed and remaining steps.
 
     Used by the host's context assembler as the "work done so far"
-    summary — replacing re-reading ``CheckpointBundle.turn_history`` (which
+    summary — replacing re-reading the thread tail (which
     is host-owned UI/replay state the kernel never reads for routing). The
     summary lists each declared step with a checkmark (done) or a dash
     (remaining), plus the result preview when available.

@@ -47,7 +47,7 @@ _TRANSITION_TOOL_NAME = "transition_stage"
 
 # The tool name the model calls to yield (ask the user a question).
 # Intercepted by the turn loop alongside transition_stage — it is a terminal
-# action that breaks the loop and stamps CheckpointBundle.lifecycle_state.
+# action that breaks the loop and records the yield state on the thread entry.
 _YIELD_TOOL_NAME = "yield"
 
 

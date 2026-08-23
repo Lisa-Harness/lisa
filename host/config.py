@@ -188,14 +188,6 @@ class HostConfig:
     memory_auto_capture_daily_threshold: float = 0.65
     memory_auto_capture_weekly_threshold: float = 0.8
 
-    # ── Checkpoint (post-turn persistence) ────────────────────────────
-    # Wall-clock cap on the on_checkpoint hook's MCP ``save_checkpoint``
-    # call. An unresponsive lisa-storage subprocess can hang the await
-    # indefinitely at ~0 CPU (no exception to catch), blocking turn
-    # finalization. The timeout converts that silent hang into a logged
-    # warning. Set to 0 to disable the timeout (not recommended).
-    checkpoint_timeout_seconds: float = 10.0
-
     # ── Execution policy ───────────────────────────────────────────────
     execution_policy: ExecutionPolicy = field(default_factory=default_interactive_execution_policy)
 

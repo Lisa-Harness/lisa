@@ -477,11 +477,9 @@ def _bundled_pack_dirs() -> list[Path]:
 
     Bundled packs ship with the framework tree (``<framework_root>/sdk/packs/
     <name>``) and are **not** published to PyPI. External packs may declare
-    cross-pack dependencies on them (e.g.
-    ``lisa-pack-checkpoint`` — see ``sdk/README.md``). Without
+    cross-pack dependencies on them (see ``sdk/README.md``). Without
     seeding the packs venv with editable installs of these directories, ``uv
-    pip install`` of the depending external pack fails dependency resolution:
-    *"lisa-pack-checkpoint was not found in the package registry"*.
+    pip install`` of the depending external pack fails dependency resolution.
 
     Returns the sorted list of bundled pack directories (each containing a
     ``pyproject.toml``).
@@ -501,10 +499,9 @@ async def _seed_packs_venv_with_framework(packs_venv: Path) -> tuple[bool, str]:
 
     External packs (installed from git or PyPI) declare dependencies on
     ``lisa-kernel``, ``lisa-sdk``, ``lisa-mcp-servers``, and any bundled
-    ``lisa-pack-*`` (e.g. ``lisa-pack-checkpoint``) — all workspace packages
-    that are **not** published to PyPI. Without seeding, ``uv pip install``
-    fails: *"lisa-kernel was not found in the package registry"* (or, for a
-    cross-pack dependency, *"lisa-pack-checkpoint was not found"*).
+    ``lisa-pack-*`` — all workspace packages that are **not** published to
+    PyPI. Without seeding, ``uv pip install`` fails:
+    *"lisa-kernel was not found in the package registry"*.
 
     This installs the framework packages as editable ``-e`` installs from
     their source directories so the packs venv can resolve those dependencies.

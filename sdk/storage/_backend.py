@@ -1,32 +1,33 @@
-"""Sandboxed file I/O and checkpoint persistence for the lisa-storage server.
+"""Sandboxed file I/O for the lisa-storage server.
 
 Extracted verbatim from the former ``mcp_server/storage/server.py``: the
-sandbox resolver, deny-glob matcher, ``PathRejected`` exception, checkpoint
-helpers, and model-manifest path logic. The MCP server is now a thin
-wrapper — it wires ``--data-dir`` / ``--readonly`` / ``--deny-globs`` into
-a :class:`StorageBackend` and exposes the 11 tools.
+sandbox resolver, deny-glob matcher, ``PathRejected`` exception, and
+model-manifest path logic. The MCP server is now a thin wrapper — it
+wires ``--data-dir`` / ``--readonly`` / ``--deny-globs`` into a
+:class:`StorageBackend` and exposes the 8 file tools plus the manifest
+pair.
 
 This gives the SDK a complete contract for storage access that can be
 fulfilled without MCP — a host or tool that wants in-process file I/O
-or checkpoint persistence can call the backend directly instead of
-spawning the MCP server.
+can call the backend directly instead of spawning the MCP server.
 """
 
 from __future__ import annotations
 
 import fnmatch
 import json
-import uuid
+import logging
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from sdk.content import is_safe_relative_path
 
 __all__ = ["PathRejected", "StorageBackend"]
 
 _FILES_SUBDIR = "files"
-_CHECKPOINTS_SUBDIR = "checkpoints"
+
+logger = logging.getLogger(__name__)
 
 
 class PathRejected(Exception):
@@ -43,32 +44,25 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _checkpoint_id() -> str:
-    return uuid.uuid4().hex[:16]
-
-
 class StorageBackend:
-    """Sandboxed file I/O and checkpoint persistence backend.
+    """Sandboxed file I/O backend.
 
-    Owns three concerns, all derived from a single ``data_dir``:
+    Owns two concerns, both derived from a single ``data_dir``:
 
     1. **File I/O** — a filesystem sandbox scoped to
        ``data_dir / "files"``. Path traversal (``..`` segments, absolute
        paths) is rejected so a crafted path cannot escape the sandbox.
        An optional deny-glob list (``fnmatch`` syntax, forward-slash
        paths, case-insensitive) adds defense-in-depth policy on top.
-    2. **Checkpoints** — serialized checkpoint bundles saved as JSON
-       files under ``data_dir / "checkpoints"``.
-    3. **Model manifests** — ``models.yaml`` (active) and
+    2. **Model manifests** — ``models.yaml`` (active) and
        ``models.proposed.yaml`` (proposal) live directly under
        ``data_dir``, outside the files sandbox.
 
     Args:
         data_dir: The canonical data root. All storage paths derive from it.
-        readonly: When ``True``, write / delete / checkpoint-save operations
-            are rejected. The ``files/`` and ``checkpoints/`` subdirectories
-            are NOT created in readonly mode (they must pre-exist or reads
-            will return empty / error results).
+        readonly: When ``True``, write / delete operations are rejected.
+            The ``files/`` subdirectory is NOT created in readonly mode
+            (it must pre-exist or reads will return empty / error results).
         deny_globs: Glob patterns (forward-slash, ``fnmatch`` syntax) matched
             against the relative path within the ``files/`` sandbox. Any
             match denies read/write/list/stat/delete/make_dir on that path.
@@ -88,7 +82,19 @@ class StorageBackend:
         self._deny_globs: tuple[str, ...] = tuple(deny_globs)
         if not readonly:
             (data_dir / _FILES_SUBDIR).mkdir(parents=True, exist_ok=True)
-            (data_dir / _CHECKPOINTS_SUBDIR).mkdir(parents=True, exist_ok=True)
+        # One-time migration: the legacy ``checkpoints/`` directory was
+        # removed in Phase 5 of the checkpoint teardown. Best-effort rmtree;
+        # failures (permissions, missing dir) are logged and ignored.
+        legacy_checkpoints = data_dir / "checkpoints"
+        if legacy_checkpoints.exists():
+            try:
+                shutil.rmtree(legacy_checkpoints)
+            except OSError as exc:
+                logger.warning(
+                    "could not remove legacy checkpoints dir %s: %s",
+                    legacy_checkpoints,
+                    exc,
+                )
 
     @property
     def data_dir(self) -> Path:
@@ -108,17 +114,13 @@ class StorageBackend:
         """Return the files sandbox root."""
         return self._data_dir / _FILES_SUBDIR
 
-    def checkpoints_root(self) -> Path:
-        """Return the checkpoints root."""
-        return self._data_dir / _CHECKPOINTS_SUBDIR
-
     def manifest_path(self, which: str) -> Path:
         """Return the path to the active or proposed model manifest.
 
-        Manifests are first-class framework artifacts (like checkpoints),
-        so they live directly under ``data_dir`` — not under the ``files/``
-        sandbox. The ``which`` argument selects the active manifest
-        (``"active"`` → ``models.yaml``) or the proposal (``"proposal"`` →
+        Manifests are first-class framework artifacts, so they live
+        directly under ``data_dir`` — not under the ``files/`` sandbox.
+        The ``which`` argument selects the active manifest (``"active"``
+        → ``models.yaml``) or the proposal (``"proposal"`` →
         ``models.proposed.yaml``).
         """
         normalized = which.strip().lower()
@@ -396,88 +398,6 @@ class StorageBackend:
             return json.dumps({"ok": True, "path": path, "bytes": resolved.stat().st_size})
         except OSError as exc:
             return json.dumps({"error": f"append failed: {exc}"})
-
-    # ── Checkpoints ─────────────────────────────────────────────────────────
-
-    def _checkpoint_path(self, checkpoint_id: str) -> Path:
-        return self.checkpoints_root() / f"{checkpoint_id}.json"
-
-    def save_checkpoint(self, bundle: dict[str, Any]) -> str:
-        """Persist a checkpoint bundle as JSON under the checkpoints directory.
-
-        The ``bundle`` is a serialized checkpoint bundle (or any
-        JSON-serializable dict). If ``checkpoint_id`` is present in the
-        bundle, it is used as the filename stem; otherwise a new ID is
-        generated. Returns a JSON object with ``checkpoint_id``.
-        """
-        if self._readonly:
-            return json.dumps({"error": "server is read-only"})
-        checkpoints_root = self.checkpoints_root()
-        checkpoints_root.mkdir(parents=True, exist_ok=True)
-
-        checkpoint_id = str(bundle.get("checkpoint_id") or "").strip() or _checkpoint_id()
-        bundle["checkpoint_id"] = checkpoint_id
-        if "created_at" not in bundle:
-            bundle["created_at"] = _now_iso()
-
-        path = self._checkpoint_path(checkpoint_id)
-        try:
-            path.write_text(json.dumps(bundle, default=str, indent=2), encoding="utf-8")
-        except OSError as exc:
-            return json.dumps({"error": f"save_checkpoint failed: {exc}"})
-
-        return json.dumps({"checkpoint_id": checkpoint_id})
-
-    def restore_checkpoint(self, checkpoint_id: str) -> str:
-        """Load a checkpoint bundle by ID and return it as a JSON string.
-
-        Returns the full bundle dict, or a JSON error object if not found.
-        """
-        cid = checkpoint_id.strip()
-        if not cid or not is_safe_relative_path(f"{cid}.json"):
-            return json.dumps({"error": "invalid checkpoint_id"})
-        path = self._checkpoint_path(cid)
-        if not path.is_file():
-            return json.dumps({"error": f"checkpoint not found: {checkpoint_id}"})
-        try:
-            return path.read_text(encoding="utf-8")
-        except OSError as exc:
-            return json.dumps({"error": f"restore_checkpoint failed: {exc}"})
-
-    def list_checkpoints(self, prefix: str = "") -> str:
-        """List saved checkpoints as a JSON array of summary objects.
-
-        Each entry contains ``checkpoint_id``, ``label``, ``created_at``,
-        ``stage_id``, ``turn_count``, and ``mode_id`` (extracted from the
-        stored JSON). Sorted by ``created_at`` descending (newest first).
-        """
-        root = self.checkpoints_root()
-        if not root.is_dir():
-            return json.dumps([])
-
-        summaries: list[dict[str, Any]] = []
-        for item in sorted(root.glob("*.json")):
-            try:
-                data = json.loads(item.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                continue
-            cid = str(data.get("checkpoint_id") or item.stem)
-            label = str(data.get("label") or "")
-            if prefix and prefix not in cid and prefix not in label:
-                continue
-            summaries.append(
-                {
-                    "checkpoint_id": cid,
-                    "label": label,
-                    "created_at": str(data.get("created_at") or ""),
-                    "stage_id": str(data.get("stage_id") or ""),
-                    "turn_count": int(data.get("turn_count") or 0),
-                    "mode_id": str(data.get("mode_id") or ""),
-                }
-            )
-
-        summaries.sort(key=lambda s: s["created_at"], reverse=True)
-        return json.dumps(summaries, default=str)
 
     # ── Model manifests ─────────────────────────────────────────────────────
 

@@ -470,7 +470,7 @@ async def test_seed_packs_venv_seeds_framework_and_bundled_packs(
     assert any("kernel" in t for t in targets)
     assert any("sdk" in t for t in targets)
     assert any("mcp_server" in t for t in targets)
-    # Bundled packs under sdk/packs/ are present (e.g. checkpoint, core, ...).
+    # Bundled packs under sdk/packs/ are present (e.g. core, recovery, ...).
     bundled = commands._bundled_pack_dirs()
     assert bundled, "expected at least one bundled pack dir under sdk/packs/"
     bundled_names = {p.name for p in bundled}
@@ -490,9 +490,9 @@ async def test_bundled_pack_dirs_discovers_packs_with_pyproject(
     for d in dirs:
         assert d.is_dir()
         assert (d / "pyproject.toml").is_file()
-    # checkpoint is the pack that compaction cross-depends on; it must be found.
+    # recovery is a pack that compaction cross-depends on; it must be found.
     names = {d.name for d in dirs}
-    assert "checkpoint" in names
+    assert "recovery" in names
 
 
 @pytest.mark.asyncio

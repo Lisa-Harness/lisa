@@ -5,9 +5,9 @@ Public API (import from :mod:`sdk.thread`, not the ``_backend`` module):
 - :class:`ThreadStore` — owns the three-tier layout (active segment,
   sealed segments, sparse index) and the zstd compression sidecars.
   Exposes read-only operations: ``load_recent``, ``load_range``,
-  ``build_recent_excerpt``, ``build_manifest``. The write path
-  (``append`` / ``write_turn_history``) stays in the host because it
-  owns the per-turn response and effect-receipt persistence.
+  ``build_recent_excerpt``, ``build_manifest``. The write path stays
+  in the host because it owns the per-turn response and effect-receipt
+  persistence.
 
 The ``lisa-thread`` MCP server (``mcp_server/thread/server.py``) wraps
 this; hosts or tools that want in-process thread access can use the

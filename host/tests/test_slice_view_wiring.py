@@ -52,7 +52,6 @@ def test_view_accepts_execute_tool_assignment(tmp_path: Path) -> None:
 
     view = _SliceProviderHooksView(
         runtime=runtime,
-        write_turn_history=lambda _msgs: None,
     )
     view.execute_tool = fake_execute_tool
 

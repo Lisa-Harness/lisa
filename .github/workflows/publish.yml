@@ -32,7 +32,6 @@ jobs:
           uv build --package lisa-pack-core
           uv build --package lisa-pack-introspect
           uv build --package lisa-pack-memory
-          uv build --package lisa-pack-checkpoint
           uv build --package lisa-pack-recovery
           uv build --package lisa-host-runtime
 

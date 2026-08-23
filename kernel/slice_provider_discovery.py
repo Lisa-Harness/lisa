@@ -10,8 +10,7 @@ slice (e.g. ``FileBackedStateProvider``).
 The factory contract is intentionally narrow:
 
 - It receives the host's ``TurnHooks`` (so it can read
-  ``last_context_snapshot`` and call ``execute_operation`` /
-  ``write_turn_history_fn``) and the resolved ``SessionPlan`` (so it can
+  ``last_context_snapshot`` and call ``execute_operation``) and the resolved ``SessionPlan`` (so it can
   read its own tuning).
 - It returns ``None`` when the pack should not contribute a slice this
   session. The host skips wiring in that case — no behavior change for

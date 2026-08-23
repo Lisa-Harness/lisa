@@ -65,7 +65,7 @@ def _strip_authored_heading(text: str) -> str:
     """Strip the leading ``# heading`` line from an authored asset.
 
     Authored prompt assets carry a top-level heading for lint cleanliness and
-    discoverability (matching the checkpoint operation prompts). The heading
+    discoverability. The heading
     is documentation metadata, not model-facing content; the loader drops it
     so only the prose body reaches ``str.format_map`` substitution.
     """

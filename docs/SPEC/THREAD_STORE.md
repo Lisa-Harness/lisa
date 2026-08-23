@@ -72,6 +72,12 @@ One JSON object per line in the active and sealed segments:
 | `query` | string | yes | User's input |
 | `response_text` | string | yes | Model/system response |
 | `provenance` | object | no | Optional metadata (`source`, `finish_reason`, `model_id`) |
+| `turn` | int | yes | 0-based global turn index |
+| `effect_receipts` | list[object] | no | Each: `{capability_id, effect, artifact_id}` |
+| `handoff_to` | string | no | Mode handoff target |
+| `transitioned_to` | string | no | Stage transition target |
+| `yielded` | bool | no | True when the turn paused to ask the user (YieldAction) |
+| `yield_question` | string | no | The question surfaced when `yielded` is true |
 
 ### Segment index record
 
@@ -189,19 +195,6 @@ segment) into the per-user `<base>.digest.md` sidecar:
 The active segment is **never truncated** — sealing already moves old
 turns out of it. `max_thread_entries` now bounds how many sealed segments
 to digest per slice (budget-bounded), not a truncation threshold.
-
-### `write_turn_history` (destructive compaction write-back)
-
-Used by the checkpoint pack's `/summarize-history`. This is a **destructive** operation:
-
-1. Delete all sealed segments (`<base>.*.jsonl.zst`).
-2. Delete the index, dictionary, and digest marker.
-3. Clear the digest sidecar.
-4. Write `new_history` as the fresh active segment.
-
-Old turns are gone — this is the existing compaction semantic (compacted
-history replaces everything). Sealed segments that existed before the
-write-back are not recoverable.
 
 ## Configuration
 

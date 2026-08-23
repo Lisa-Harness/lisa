@@ -789,8 +789,9 @@ sequentially while the parent waits, so they inherit the mode's foreground
 intercepts it and surfaces the child's question to the user — the parent
 is the interactive proxy. The `YieldAction.context` is enriched with the
 original delegated query ("the delegate was asked 'X'; it asks 'Y'") so
-the user has the surrounding input to answer. The checkpoint layer stamps
-`lifecycle_state="yielded"` and the turn is resumable by `/proceed`.
+the user has the surrounding input to answer. The yield state is recorded
+on the thread entry (`yielded=True` plus `yield_question`) and is resumable
+via `/resume`.
 
 **Why delegate needs recursion bounding.** A delegate child can itself
 call `delegate`, forming an agent tree of arbitrary depth.

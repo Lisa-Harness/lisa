@@ -114,22 +114,22 @@ from kernel.models import OperationExecutionContext, OperationResult, ToolExecut
 
 async def execute(ctx: OperationExecutionContext) -> OperationResult:
     tool_ctx = ToolExecutionContext(
-        tool_id="save_checkpoint",
+        tool_id="read_file",
         workspace_id=ctx.workspace_id,
         user_id=ctx.user_id,
         query=ctx.query,
-        parameters={"label": "my checkpoint"},
+        parameters={"path": "status.txt"},
     )
-    result = await ctx.host.execute_tool("save_checkpoint", tool_ctx)
+    result = await ctx.host.execute_tool("read_file", tool_ctx)
     return OperationResult(output_text=result.output_text)
 ```
 
 Matching YAML:
 
 ```yaml
-operation_id: my_checkpoint_op
-description: Save a labeled checkpoint.
-tool_ids: [save_checkpoint]
+operation_id: read_status_file
+description: Read a status file from storage.
+tool_ids: [read_file]
 mode_allowlist: [my_mode]
 ```
 
@@ -330,7 +330,7 @@ def test_tool_ids_declared() -> None:
 
     root = my_pack.get_content_root() / "operations"
     catalog = json.loads(build_operation_catalog_json([root]))
-    assert catalog["my_checkpoint_op"]["tool_ids"] == ["save_checkpoint"]
+    assert catalog["read_status_file"]["tool_ids"] == ["read_file"]
 ```
 
 ### Validate against live modes

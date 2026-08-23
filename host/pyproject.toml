@@ -19,7 +19,6 @@ dependencies = [
     "lisa-pack-memory",
     "lisa-pack-core",
     "lisa-pack-introspect",
-    "lisa-pack-checkpoint",
     "lisa-pack-recovery",
     "openai>=1.30.0",
     "pyyaml>=6.0",

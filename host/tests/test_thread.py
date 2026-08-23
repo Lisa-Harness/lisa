@@ -37,7 +37,6 @@ from host.thread import (
     load_thread_range,
     load_thread_digest,
     next_turn_index,
-    write_turn_history,
 )
 
 # ── is_host_command_query ────────────────────────────────────────────
@@ -93,10 +92,6 @@ class TestIsHostCommandQuery:
         assert "/pack" in prefixes
         assert "/models" in prefixes
         assert "/debug" in prefixes
-        # Pack-registered commands (checkpoint pack) should also be registered.
-        assert "/checkpoint" in prefixes
-        assert "/restore" in prefixes
-        assert "/checkpoints" in prefixes
 
     def test_registry_exact_populated_by_handle_message_import(self) -> None:
         exact = host_command_exact()
@@ -391,29 +386,6 @@ class TestSegmentedStore:
         # Range [0, 6] returns everything.
         all_entries = load_thread_range(thread_path=thread_path, start_turn=0, end_turn=6)
         assert len(all_entries) == 7
-
-    def test_write_turn_history_clears_sealed_segments(self, tmp_path: Path) -> None:
-        """Destructive write-back removes sealed segments + index, replaces active."""
-        thread_path = tmp_path / "thread"
-        for i in range(5):
-            _write_entry(thread_path, query=f"q{i}", response_text=f"a{i}", segment_turns=3)
-        # Verify we have sealed segments.
-        sealed = list(thread_path.parent.glob("thread.*.jsonl.zst"))
-        assert len(sealed) >= 1
-        # Destructive write-back.
-        write_turn_history(
-            thread_path=thread_path,
-            new_history=[{"query": "new", "response_text": "new response"}],
-        )
-        # Sealed segments + index should be gone.
-        sealed_after = list(thread_path.parent.glob("thread.*.jsonl.zst"))
-        assert len(sealed_after) == 0
-        paths = _segment_paths(thread_path)
-        assert not paths.index_path.exists()
-        # Active segment should have the new history.
-        entries = load_recent_thread_entries(thread_path=thread_path, limit=10)
-        assert len(entries) == 1
-        assert entries[0]["query"] == "new"
 
     def test_one_time_rename_of_old_jsonl(self, tmp_path: Path) -> None:
         """A legacy ``<base>.jsonl`` is renamed to the active segment on first append."""

@@ -5,13 +5,11 @@ Covers:
   - Output guard: blocking (safe fallback + guardrail.audit event),
     sanitization (output rewritten)
   - ContextSeams defaults (pass-through guards, in-process event bus)
-  - _build_checkpoint_bundle (state_provider + workflow_position integration)
   - _fire_slice (budget enforcement, error handling, outcome coercion)
 """
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,13 +18,11 @@ import pytest
 from kernel.models import (
     SurfaceContext,
 )
-from kernel.workflow_position import WorkflowPosition
 from kernel.seams.protocols import GuardResult
 from kernel.slice import SliceMode, SliceOutcome, SlicePolicy, SliceTuning
 from kernel.turn_runner import (
     TurnHooks,
     TurnResult,
-    _build_checkpoint_bundle,
     _fire_slice,
     run_turn,
 )
@@ -276,96 +272,6 @@ async def test_default_input_guard_allows_everything() -> None:
     assert result.response_text == "Done."
 
 
-# ── _build_checkpoint_bundle ──────────────────────────────────────────
-
-
-def test_build_checkpoint_bundle_returns_none_when_no_state() -> None:
-    """_build_checkpoint_bundle returns None when neither state_provider nor
-    workflow_position is wired."""
-    hooks = TurnHooks()
-    bundle = _build_checkpoint_bundle(
-        mode_id="default",
-        transitioned_to=None,
-        hooks=hooks,
-    )
-    assert bundle is None
-
-
-def test_build_checkpoint_bundle_from_state_provider() -> None:
-    """When state_provider is wired, the bundle includes the unified state dump."""
-    from kernel.models import UnifiedState
-
-    state = UnifiedState(compiled_at="2026-01-01T00:00:00Z")
-    hooks = TurnHooks(state_provider=lambda: state)
-
-    bundle = _build_checkpoint_bundle(
-        mode_id="default",
-        transitioned_to=None,
-        hooks=hooks,
-    )
-    assert bundle is not None
-    assert bundle.mode_id == "default"
-    assert "compiled_at" in bundle.unified_state
-
-
-def test_build_checkpoint_bundle_from_workflow_session() -> None:
-    """When workflow_position is wired, the bundle includes stage_id and turn_count."""
-    session = WorkflowPosition(
-        mode_id="ponder",
-        stage_id="reason",
-        entered_at="2026-01-01T00:00:00Z",
-        turn_count=5,
-    )
-    hooks = TurnHooks(workflow_position=lambda: session)
-
-    bundle = _build_checkpoint_bundle(
-        mode_id="ponder",
-        transitioned_to="reason",
-        hooks=hooks,
-    )
-    assert bundle is not None
-    assert bundle.stage_id == "reason"
-    assert bundle.turn_count == 5
-    assert bundle.mode_id == "ponder"
-
-
-def test_build_checkpoint_bundle_transitioned_to_used_as_stage_fallback() -> None:
-    """When the workflow session has no stage_id, transitioned_to is used."""
-    session = WorkflowPosition(
-        mode_id="ponder",
-        stage_id="",
-        entered_at="2026-01-01T00:00:00Z",
-        turn_count=0,
-    )
-    hooks = TurnHooks(workflow_position=lambda: session)
-
-    bundle = _build_checkpoint_bundle(
-        mode_id="ponder",
-        transitioned_to="reason",
-        hooks=hooks,
-    )
-    assert bundle is not None
-    assert bundle.stage_id == "reason"  # falls back to transitioned_to
-
-
-def test_build_checkpoint_bundle_generates_unique_id() -> None:
-    """Each bundle gets a unique checkpoint_id."""
-    from kernel.models import UnifiedState
-
-    state = UnifiedState(compiled_at="2026-01-01T00:00:00Z")
-    hooks = TurnHooks(state_provider=lambda: state)
-
-    bundle1 = _build_checkpoint_bundle(
-        mode_id="default", transitioned_to=None, hooks=hooks,
-    )
-    bundle2 = _build_checkpoint_bundle(
-        mode_id="default", transitioned_to=None, hooks=hooks,
-    )
-    assert bundle1 is not None
-    assert bundle2 is not None
-    assert bundle1.checkpoint_id != bundle2.checkpoint_id
-
-
 # ── _fire_slice ────────────────────────────────────────────────────────
 
 
@@ -580,174 +486,3 @@ async def test_pre_turn_slice_updates_last_slice_finished_at() -> None:
 
     assert hooks.last_slice_finished_at is not None
     assert hooks.last_slice_finished_at > 0
-
-
-# ── Checkpoint integration ────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_checkpoint_fires_on_stage_transition() -> None:
-    """When on_checkpoint is wired and a transition occurs, the hook is called."""
-    checkpoint_bundles: list[Any] = []
-
-    async def on_checkpoint(bundle: Any) -> None:
-        checkpoint_bundles.append(bundle)
-
-    session = WorkflowPosition(
-        mode_id="ponder",
-        stage_id="inquire",
-        entered_at="2026-01-01T00:00:00Z",
-    )
-
-    call_count = 0
-
-    async def two_step(**kwargs: Any) -> _StubCompletion:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return _StubCompletion(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "c1",
-                        "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "reason"}',
-                        },
-                    }
-                ],
-            )
-        return _StubCompletion(content="Done.")
-
-    from kernel.turn_runner import CheckpointTuning
-
-    hooks = _build_hooks(two_step)
-    hooks.workflow_position = lambda: session
-    hooks.workflow_position_updater = lambda updated: None
-    hooks.on_checkpoint = on_checkpoint
-    hooks.checkpoint_tuning = CheckpointTuning(enabled=True, on_stage_transition=True)
-
-    result = await run_turn(mode_id="ponder", query="analyze", hooks=hooks)
-
-    assert result.transitioned_to == "reason"
-    assert len(checkpoint_bundles) == 1
-    assert checkpoint_bundles[0].stage_id == "reason"
-
-
-@pytest.mark.asyncio
-async def test_checkpoint_does_not_fire_when_disabled() -> None:
-    """When checkpoint_tuning is None or disabled, no checkpoint fires."""
-    checkpoint_called = False
-
-    async def on_checkpoint(bundle: Any) -> None:
-        nonlocal checkpoint_called
-        checkpoint_called = True
-
-    async def complete(**kwargs: Any) -> _StubCompletion:
-        return _StubCompletion(content="Done.")
-
-    hooks = _build_hooks(complete)
-    hooks.on_checkpoint = on_checkpoint
-    # checkpoint_tuning defaults to None
-
-    await run_turn(mode_id="default", query="test", hooks=hooks)
-
-    assert checkpoint_called is False
-
-
-@pytest.mark.asyncio
-async def test_checkpoint_failure_does_not_break_turn() -> None:
-    """When on_checkpoint raises, the turn completes normally."""
-
-    async def failing_checkpoint(bundle: Any) -> None:
-        raise RuntimeError("checkpoint storage failed")
-
-    session = WorkflowPosition(
-        mode_id="ponder",
-        stage_id="inquire",
-        entered_at="2026-01-01T00:00:00Z",
-    )
-
-    call_count = 0
-
-    async def two_step(**kwargs: Any) -> _StubCompletion:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return _StubCompletion(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "c1",
-                        "function": {
-                            "name": "transition_stage",
-                            "arguments": '{"target_stage_id": "reason"}',
-                        },
-                    }
-                ],
-            )
-        return _StubCompletion(content="Done.")
-
-    from kernel.turn_runner import CheckpointTuning
-
-    hooks = _build_hooks(two_step)
-    hooks.workflow_position = lambda: session
-    hooks.workflow_position_updater = lambda updated: None
-    hooks.on_checkpoint = failing_checkpoint
-    hooks.checkpoint_tuning = CheckpointTuning(enabled=True, on_stage_transition=True)
-
-    result = await run_turn(mode_id="ponder", query="analyze", hooks=hooks)
-
-    assert result.response_text == "Done."
-    assert result.transitioned_to == "reason"
-
-
-@pytest.mark.asyncio
-async def test_checkpoint_timeout_does_not_break_turn() -> None:
-    """A hanging on_checkpoint hook is cancelled by the timeout; turn completes.
-
-    Regression: an unresponsive MCP ``save_checkpoint`` subprocess can hang
-    the ``await hooks.on_checkpoint(bundle)`` indefinitely at ~0 CPU (no
-    exception to catch). The ``CheckpointTuning.timeout_seconds`` cap
-    converts that silent hang into a logged warning so turn finalization
-    proceeds.
-    """
-    import asyncio
-
-    hang_event = asyncio.Event()
-
-    async def hanging_checkpoint(bundle: Any) -> None:
-        await hang_event.wait()  # never set — simulates a stuck MCP call
-
-    async def complete(**kwargs: Any) -> _StubCompletion:
-        return _StubCompletion(content="Done.")
-
-    session = WorkflowPosition(
-        mode_id="default",
-        stage_id="default",
-        entered_at="2026-01-01T00:00:00Z",
-        turn_count=10,
-    )
-
-    from kernel.turn_runner import CheckpointTuning
-
-    hooks = _build_hooks(complete)
-    hooks.workflow_position = lambda: session
-    hooks.workflow_position_updater = lambda updated: None
-    hooks.on_checkpoint = hanging_checkpoint
-    hooks.checkpoint_tuning = CheckpointTuning(
-        enabled=True,
-        every_n_turns=10,
-        on_stage_transition=False,
-        timeout_seconds=0.05,
-    )
-
-    start = time.monotonic()
-    result = await run_turn(mode_id="default", query="test", hooks=hooks)
-    elapsed = time.monotonic() - start
-
-    # The timeout cancels the hanging checkpoint; the turn completes in
-    # seconds, not minutes. Without the timeout this await hangs forever.
-    assert elapsed < 5.0, (
-        f"checkpoint timeout did not fire; turn took {elapsed:.2f}s"
-    )

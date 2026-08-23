@@ -43,7 +43,6 @@ from kernel.models import (
     BlockDiagnostic,
     CallLedger,
     CapabilityManifest,
-    CheckpointBundle,
     ConversationSurface,
     DelegationResult,
     DelegationSpec,
@@ -677,10 +676,10 @@ class TurnResult:
     finish and render the question with its context — ``YieldAction.context``
     carries the reason ("model-emitted yield", "turn budget exhausted …",
     "stuck in stage …", "recovery record blocks …") and ``target_mode_id``
-    names the mode the yield routes to. The checkpoint layer stamps the
-    same fields on ``CheckpointBundle``; ``TurnResult.yielded`` is the
-    non-durable mirror for in-process transports. See
-    :class:`kernel.models.YieldAction`."""
+    names the mode the yield routes to. ``TurnResult.yielded`` is the
+    non-durable mirror for in-process transports; the thread entry records
+    ``yielded=True`` + ``yield_question`` for durable resume via ``/resume``.
+    See :class:`kernel.models.YieldAction`."""
     pending_approval: ApprovalInvocation | None = None
     """The exact action that paused this turn, when an approval is required."""
     per_model_usage: list[dict[str, Any]] = field(default_factory=list)
@@ -788,46 +787,6 @@ class ContextSeams:
     ``PassThroughOutputGuard`` allows everything. Hosts override with a real
     implementation. Blocked outputs are replaced with a safe fallback and
     audited via ``event_bus.publish("guardrail.audit", ...)``."""
-
-
-@dataclass(slots=True)
-class CheckpointTuning:
-    """Host-level knobs for automatic checkpoint creation.
-
-    Checkpoints are turn-anchored, not wall-clock: automatic checkpoints
-    fire in the post-turn phase (Phase 3.6), piggybacking on the existing
-    turn cadence. No background scheduler, no cron. Stage transitions are
-    the primary trigger (cheap, infrequent, high-value); every-N-turns is
-    secondary and off by default.
-
-    All fields have sensible defaults so a host can construct
-    ``CheckpointTuning()`` and let the framework fill in the rest. The
-    default is ``enabled=False`` — a host must opt in.
-    """
-
-    enabled: bool = False
-    on_stage_transition: bool = True
-    every_n_turns: int = 0
-    explicit: bool = True
-    timeout_seconds: float = 10.0
-    """Wall-clock cap on the ``on_checkpoint`` hook. The hook persists a
-    ``CheckpointBundle`` through an MCP tool call; an unresponsive MCP
-    subprocess can hang the await indefinitely at ~0 CPU (no exception to
-    catch). The timeout converts that silent hang into a logged warning so
-    turn finalization proceeds. Set to ``0`` to disable the timeout."""
-
-    @classmethod
-    def from_mapping(cls, mapping: dict[str, Any] | None) -> CheckpointTuning:
-        """Build a tuning from a host config dict. Unknown keys are ignored."""
-        if not mapping:
-            return cls()
-        return cls(
-            enabled=bool(mapping.get("enabled", False)),
-            on_stage_transition=bool(mapping.get("on_stage_transition", True)),
-            every_n_turns=int(mapping.get("every_n_turns", 0) or 0),
-            explicit=bool(mapping.get("explicit", True)),
-            timeout_seconds=float(mapping.get("timeout_seconds", 10.0) or 0) or 10.0,
-        )
 
 
 @dataclass
@@ -1065,21 +1024,7 @@ class TurnHooks:
     slices treat this as "unknown" and no-op). Read-only from the
     kernel's perspective — the kernel never writes this field."""
 
-    write_turn_history_fn: Callable[[list[dict[str, Any]]], None] | None = None
-    """Host-owned write-back seam for the live session's turn history.
-    Receives a fully-formed replacement turn-history list (typically a
-    single summary record followed by retained recent turns) and is
-    responsible for persisting it to the session's thread store. Default:
-    None means "host does not support turn-history write-back";
-    the ``/summarize-history`` command detects this
-    and no-ops with a warning instead of silently dropping the result."""
-
     # Identity defaults are read from ``kernel.config.Settings.identity_*``
-    # so the historical ``"lite-host"`` / ``"lite-user"`` literals live in
-    # one place. Production hosts override these by wiring the real
-    # ``runtime.config`` / ``session_plan`` identity (see
-    # ``host.turn_hooks_builder``); the defaults here are only fallbacks
-    # for tests and lightweight hosts without a wired identity.
     workspace_id: str = field(default_factory=lambda: _kernel_settings.identity_workspace_id)
     user_id: str = field(default_factory=lambda: _kernel_settings.identity_user_id)
     user_slug: str = field(default_factory=lambda: _kernel_settings.identity_user_slug)
@@ -1113,25 +1058,6 @@ class TurnHooks:
     ``OperationExecutionContext.host.introspect`` so the self-model operation
     and the reflect_self operation can access live runtime state. Default:
     None (self-model telemetry fields stay empty)."""
-
-    # ── Checkpoints (turn-anchored, not wall-clock) ──────────────────────
-    checkpoint_tuning: CheckpointTuning | None = None
-    """``CheckpointTuning`` instance that controls automatic checkpoint
-    creation. Default: ``None`` means "no automatic checkpoints." A host
-    opts in by setting ``CheckpointTuning(enabled=True, ...)``. Explicit
-    checkpoints (``/checkpoint <label>``) are always available when the
-    ``on_checkpoint`` hook is wired, regardless of this tuning."""
-
-    on_checkpoint: Callable[[CheckpointBundle], Awaitable[None]] | None = None
-    """Called after a qualifying turn (stage transition or every-N-turns
-    boundary) with a ``CheckpointBundle`` built from the current
-    ``UnifiedState`` and ``WorkflowPosition``. The host persists it —
-    typically by calling ``save_checkpoint`` on ``lisa-storage`` through
-    the MCP tool pool. Default: None (no checkpointing).
-
-    Checkpoint failures (exceptions in this hook) are caught and logged;
-    they do not break the turn. The kernel builds the bundle; the host
-    owns persistence and turn-history population."""
 
     # ── Live stage telemetry ─────────────────────────────────────────────
     on_stage: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
@@ -1169,9 +1095,9 @@ class TurnHooks:
 
     The signal is *terminal* — the resolver produces a ``PauseAction`` /
     ``StopAction`` / ``TerminateAction`` on the iteration it is observed,
-    the loop breaks before the model call, and the checkpoint is stamped
-    ``lifecycle_state="paused"`` (pause/stop) or ``"terminated"``
-    (terminate). The model never sees the signal; it is not a tool. In-flight
+    the loop breaks before the model call, and the operator exit is
+    encoded in ``TurnResult.operator_exit`` (``"paused"`` / ``"stopped"`` /
+    ``"terminated"``). The model never sees the signal; it is not a tool. In-flight
     tool dispatches from the prior iteration complete before the loop breaks
     at the next iteration boundary (the poll is at the top of the loop, not
     mid-``await``).
@@ -1641,107 +1567,6 @@ def _coordinator_routing_hint(
     )
 
 
-# ── Checkpoint helpers ──────────────────────────────────────────────────────
-
-
-def _should_checkpoint(
-    *,
-    tuning: CheckpointTuning | None,
-    transitioned_to: str | None,
-    hooks: TurnHooks,
-) -> bool:
-    """Return True when this turn qualifies for an automatic checkpoint.
-
-    Rules (all require ``tuning.enabled`` and ``hooks.on_checkpoint`` wired):
-    - Stage transition: ``transitioned_to is not None`` and
-      ``tuning.on_stage_transition`` is True.
-    - Every-N-turns: ``tuning.every_n_turns > 0`` and the current
-      position's ``turn_count`` is a positive multiple of ``every_n_turns``.
-    """
-    if tuning is None or not tuning.enabled:
-        return False
-    if transitioned_to is not None and tuning.on_stage_transition:
-        return True
-    if tuning.every_n_turns > 0 and hooks.workflow_position is not None:
-        position = hooks.workflow_position()
-        if position is not None:
-            count = getattr(position, "turn_count", 0)
-            if count > 0 and count % tuning.every_n_turns == 0:
-                return True
-    return False
-
-
-def _build_checkpoint_bundle(
-    *,
-    mode_id: str,
-    transitioned_to: str | None,
-    hooks: TurnHooks,
-    lifecycle_state: Literal["working", "yielded", "committed", "stalled", "paused", "terminated"] = "working",
-    awaiting_input_question: str = "",
-) -> CheckpointBundle | None:
-    """Build a CheckpointBundle from the current host state.
-
-    Reads ``UnifiedState`` via ``hooks.state_provider`` (if wired) and the
-    ``WorkflowPosition`` via ``hooks.workflow_position`` (if wired).
-    Returns None when neither is available — there's nothing to checkpoint.
-
-    ``lifecycle_state`` / ``awaiting_input_question`` carry the unified turn
-    lifecycle's terminal action so a yielded checkpoint is resumable by
-    ``/proceed`` (the host loads the bundle, sees ``yielded``, injects the
-    user's reply, and resumes the turn against the same ``WorkflowPosition``
-    step). ``working`` is the legacy default (in-progress snapshot);
-    ``committed`` marks a clean finish.
-    """
-    import uuid
-    from datetime import UTC, datetime
-
-    unified_state_dict: dict[str, Any] = {}
-    if hooks.state_provider is not None:
-        state = hooks.state_provider()
-        if state is not None:
-            try:
-                unified_state_dict = state.model_dump(mode="json")
-            except Exception as exc:  # pylint: disable=broad-except
-                logger.warning("checkpoint: state_provider dump failed: %s", exc)
-
-    # ── Durable workflow-position snapshot ───────────────────────────
-    # Capture the active ``WorkflowPosition`` so a restore rehydrates both
-    # axes of workflow state at once: the inter-mode chain
-    # (completed_steps, current_step_id — the fix for the glm-5.2 stall
-    # where a restored turn had no memory of which chain steps had already
-    # run) and the intra-mode stage pointer (stage_id, turn_count).
-    workflow_position_dict: dict[str, Any] = {}
-    stage_id = ""
-    turn_count = 0
-    if hooks.workflow_position is not None:
-        try:
-            position = hooks.workflow_position()
-        except Exception:  # pylint: disable=broad-except
-            position = None
-        if position is not None:
-            try:
-                workflow_position_dict = position.model_dump(mode="json")
-            except Exception as exc:  # pylint: disable=broad-except
-                logger.warning("checkpoint: workflow_position dump failed: %s", exc)
-            stage_id = str(getattr(position, "stage_id", "") or "")
-            turn_count = int(getattr(position, "turn_count", 0) or 0)
-
-    if not unified_state_dict and not workflow_position_dict:
-        return None
-
-    return CheckpointBundle(
-        checkpoint_id=uuid.uuid4().hex[:16],
-        created_at=datetime.now(UTC).isoformat(),
-        mode_id=mode_id,
-        stage_id=stage_id or (transitioned_to or ""),
-        turn_count=turn_count,
-        unified_state=unified_state_dict,
-        workflow_position=workflow_position_dict,
-        lifecycle_state=lifecycle_state,
-        awaiting_input_question=awaiting_input_question,
-    )
-
-
 def _build_recovery_identity(hooks: TurnHooks) -> RecoveryIdentity:
     """Build the exact identity scope for recovery records."""
 
@@ -1752,7 +1577,6 @@ def _build_recovery_identity(hooks: TurnHooks) -> RecoveryIdentity:
         surface_type=cast(ConversationSurface, hooks.surface_type),
         surface_id=hooks.surface_id,
         memory_scope=cast(MemoryScope, hooks.memory_scope),
-        session_plan_digest=hooks.session_plan_digest,
     )
 
 
@@ -2969,8 +2793,8 @@ async def _run_turn_inner(
     # chat modes) OR when the mode names a ``fallback_mode``. When the model
     # calls ``yield``, the dispatch loop intercepts it (same pattern as
     # ``transition_stage``) — it does NOT dispatch to any executor; it breaks
-    # the loop with the question as the turn content and stamps
-    # ``CheckpointBundle.lifecycle_state="yielded"``.
+    # the loop with the question as the turn content. The thread entry is
+    # stamped ``yielded=True`` + ``yield_question`` for durable resume.
     #
     # Unified FSM routing: ``transition_stage`` is advertised when the
     # mode's stage graph has edges (intra-mode advancement) or the mode
@@ -3310,8 +3134,8 @@ async def _run_turn_inner(
     workflow_terminated = False
     # ── Unified turn lifecycle ───────────────────────────────────────────
     # ``_yielded`` is set True when the loop breaks via a forced or
-    # model-emitted ``YieldAction``. The checkpoint layer reads it to stamp
-    # ``CheckpointBundle.lifecycle_state`` (``yielded`` vs ``committed``).
+    # model-emitted ``YieldAction``. The thread entry records it for
+    # durable resume via ``/resume``.
     _yielded = False
     # total_tool_calls, iteration, and per-model usage live on _state
     # (initialized to 0/empty by _TurnState).
@@ -3391,7 +3215,7 @@ async def _run_turn_inner(
     # recovery stall), it sets ``_pending_yield``. The loop checks this after
     # the model produces its next completion: if set, the loop breaks with the
     # yield's question as the turn's content and stamps
-    # ``CheckpointBundle.lifecycle_state="yielded"``. This makes "ask"
+    # ``yielded=True on the thread entry``. This makes "ask"
     # distinguishable from "done" (the 2026-07-30 bug: both were "no tool
     # calls"). ``None`` means no forced yield is pending; the model works
     # normally.
@@ -3402,11 +3226,6 @@ async def _run_turn_inner(
     # reads ``TurnResult.operator_exit`` to decide whether to return the
     # prompt. ``""`` means not an operator exit.
     _pending_operator_exit: Literal["", "paused", "stopped", "terminated"] = ""
-    # Checkpoint lifecycle_state to stamp for the operator exit. Pause and
-    # stop share ``"paused"``; terminate uses ``"terminated"``. Empty means
-    # no operator exit — the post-turn checkpoint path uses its own ternary
-    # (``yielded`` vs ``committed``).
-    _pending_checkpoint_state: Literal["", "paused", "terminated"] = ""
     # Cap-pause reason: when the stuck-in-stage cap (NOT an operator signal)
     # produces a ``PauseAction``, its reason is saved here so the post-loop
     # code can surface a diagnostic instead of a silent empty response. An
@@ -3575,17 +3394,11 @@ async def _run_turn_inner(
 
         # ── Operator-exit actions (Phase: pause/stop/terminate) ──────────
         # Pause/stop/terminate are terminal: break before the model call.
-        # Pause and stop share one checkpoint (``lifecycle_state="paused"``);
-        # the difference is whether the transport returns the prompt, encoded
-        # in ``_pending_operator_exit``. Terminate marks the workflow complete
-        # via ``mark_step_complete`` + ``workflow_position_updater`` before the
-        # checkpoint is built, so the persisted snapshot reflects the kill.
         # The MCP pool is NOT cancelled — any in-flight tool dispatch from the
         # prior iteration already completed; the poll is at the top of the
         # loop, not mid-``await``.
         if isinstance(_lifecycle_action, _PauseAction):
             _pending_operator_exit = "paused"
-            _pending_checkpoint_state = "paused"
             # Distinguish cap-pause from operator-signal pause: the cap's
             # reason starts with "stuck in" (set by the stuck-in-stage cap
             # in section 5 of the resolver), while an operator signal's
@@ -3605,7 +3418,6 @@ async def _run_turn_inner(
 
         if isinstance(_lifecycle_action, _StopAction):
             _pending_operator_exit = "stopped"
-            _pending_checkpoint_state = "paused"
             _log.info(
                 "turn lifecycle: operator stop (mode=%s, iteration=%d, reason=%s)",
                 mode_id,
@@ -3616,7 +3428,6 @@ async def _run_turn_inner(
 
         if isinstance(_lifecycle_action, _TerminateAction):
             _pending_operator_exit = "terminated"
-            _pending_checkpoint_state = "terminated"
             _log.info(
                 "turn lifecycle: operator terminate (mode=%s, iteration=%d, reason=%s)",
                 mode_id,
@@ -4124,8 +3935,8 @@ async def _run_turn_inner(
                 # at the same iteration the cap fired). Instead of accepting
                 # the model's text as the final answer, break the loop with
                 # the yield's question as the turn content so the user can
-                # redirect. The checkpoint layer stamps
-                # ``lifecycle_state="yielded"``.
+                # redirect. The thread entry records
+                # ``yielded=True`` on the thread entry.
                 #
                 # The hallucinated-transition guard, chain-incomplete guard,
                 # and write-tool guard that lived here were removed in the
@@ -4343,10 +4154,9 @@ async def _run_turn_inner(
                     recovery_retry_policy = "safe" if effect == "read" else "confirm"
                     # ── Durable workflow-position correlation ──────────
                     # When a ``WorkflowPosition`` is active, stamp the
-                    # recovery record with its id + current step id so the
-                    # host can decide whether a stalled record blocks the
+                    # recovery record with the current step id so the host
+                    # can decide whether a stalled record blocks the
                     # position from advancing (``step_blocks_instance``).
-                    _wi_id = ""
                     _wi_step_id = ""
                     if hooks.workflow_position is not None:
                         try:
@@ -4354,17 +4164,14 @@ async def _run_turn_inner(
                         except Exception:  # pylint: disable=broad-except
                             _position_for_record = None
                         if _position_for_record is not None:
-                            _wi_id = getattr(_position_for_record, "position_id", "") or ""
                             _wi_step_id = getattr(_position_for_record, "current_step_id", "") or ""
                     started_record = await hooks.recovery_service.begin(
                         RecoveryRecord(
                             identity=_build_recovery_identity(hooks),
-                            conversation_id=hooks.conversation_id,
                             mode_id=mode_id,
                             stage_id=_current_recovery_stage_id(
                                 hooks=hooks,
                             ),
-                            workflow_instance_id=_wi_id,
                             step_id=_wi_step_id,
                             target_kind=cast(Any, _tool_kind),
                             target_id=tool_name,
@@ -4384,8 +4191,8 @@ async def _run_turn_inner(
                 # The kernel extracts the question/context/target, sets
                 # ``_pending_yield`` and ``_yielded``, appends a tool result
                 # so the message history stays well-formed, and breaks the
-                # loop. The checkpoint layer stamps
-                # ``lifecycle_state="yielded"`` with the question.
+                # loop. The thread entry records
+                # ``yielded=True`` on the thread entry with the question.
                 if tool_name == _YIELD_TOOL_NAME:
                     _yield_question = str(tool_arguments.get("question") or "").strip()
                     _yield_context = str(tool_arguments.get("context") or "").strip()
@@ -5655,7 +5462,7 @@ async def _run_turn_inner(
                     # ``_pending_yield`` and ``break`` the ``for`` loop; the
                     # ``while`` loop's forced-yield path (L4091) then breaks
                     # with the question as the turn content, and the
-                    # checkpoint layer stamps ``lifecycle_state="yielded"``.
+                    # thread entry records ``yielded=True`` on the thread entry.
                     if (
                         isinstance(op_json, dict)
                         and tool_name == "delegate"
@@ -5949,9 +5756,7 @@ async def _run_turn_inner(
                             _build_recovery_identity(hooks),
                             state="stalled",
                             last_error="approval required",
-                            failure_scope="workflow",
                             retry_policy="confirm",
-                            blocks_workflow=True,
                         )
                     except Exception as recovery_exc:  # pylint: disable=broad-except
                         _log.warning(
@@ -5970,9 +5775,7 @@ async def _run_turn_inner(
                             _build_recovery_identity(hooks),
                             state="stalled",
                             last_error=str(exc),
-                            failure_scope="item",
                             retry_policy=cast(Any, recovery_retry_policy),
-                            blocks_workflow=False,
                         )
                     except Exception as recovery_exc:  # pylint: disable=broad-except
                         _log.warning(
@@ -6135,7 +5938,7 @@ async def _run_turn_inner(
         # ── Operator exit with no content ──────────────────────────────
         # A PauseAction / StopAction / TerminateAction broke the loop before
         # the model call. The transport reads ``operator_exit`` to decide
-        # prompt behavior; the checkpoint layer stamps ``paused`` /
+        # prompt behavior; the operator exit is encoded in
         # ``terminated``. Do NOT synthesize a yield question — operator
         # exits do not surface a question (only model-emitted yields and
         # recovery stalls do). The cap-pause diagnostic above already set
@@ -6485,74 +6288,6 @@ async def _run_turn_inner(
         )
         if post_turn_outcome is not None:
             hooks.last_slice_finished_at = time.monotonic()
-
-    # ── Phase 3.6: Checkpoint evaluation ─────────────────────────────
-    # Turn-anchored, not wall-clock. Fires after the post-turn slice on
-    # non-blocked turns when the host has wired checkpointing. The kernel
-    # builds a CheckpointBundle from current state + workflow session;
-    # the host's on_checkpoint hook persists it. Checkpoint failures are
-    # caught — they must not break the turn.
-    if not turn_blocked and hooks.on_checkpoint is not None:
-        tuning = hooks.checkpoint_tuning
-        should_checkpoint = _should_checkpoint(
-            tuning=tuning,
-            transitioned_to=transitioned_to,
-            hooks=hooks,
-        )
-        if should_checkpoint:
-            try:
-                # ── Unified turn lifecycle: stamp the checkpoint ──────────
-                # ``_yielded`` is set when the loop broke via a forced or
-                # model-emitted ``YieldAction``. A yielded checkpoint is
-                # resumable by ``/proceed`` (the host loads the bundle, sees
-                # ``lifecycle_state="yielded"``, injects the user's reply,
-                # and resumes the turn against the same ``WorkflowPosition``
-                # step). Otherwise the turn committed cleanly.
-                #
-                # Operator exits (Phase: pause/stop/terminate) override the
-                # ternary: pause/stop stamp ``paused`` (one shared substrate;
-                # the difference is the transport prompt behavior, not the
-                # checkpoint), terminate stamps ``terminated``. Neither
-                # surfaces a question (``awaiting_input_question`` empty).
-                if _pending_checkpoint_state:
-                    _ckpt_state = _pending_checkpoint_state
-                    _ckpt_question = ""
-                else:
-                    _ckpt_state: Literal[
-                        "working", "yielded", "committed", "stalled", "paused", "terminated"
-                    ] = (
-                        "yielded" if _yielded else "committed"
-                    )
-                    _ckpt_question = content if _yielded else ""
-                bundle = _build_checkpoint_bundle(
-                    mode_id=mode_id,
-                    transitioned_to=transitioned_to,
-                    hooks=hooks,
-                    lifecycle_state=_ckpt_state,
-                    awaiting_input_question=_ckpt_question,
-                )
-                if bundle is not None:
-                    import asyncio  # noqa: PLC0415
-
-                    _ckpt_timeout = float(
-                        getattr(tuning, "timeout_seconds", 10.0) or 0
-                    )
-                    if _ckpt_timeout > 0:
-                        try:
-                            await asyncio.wait_for(
-                                hooks.on_checkpoint(bundle),
-                                timeout=_ckpt_timeout,
-                            )
-                        except TimeoutError:
-                            _log.warning(
-                                "on_checkpoint hook timed out after %.1fs; "
-                                "turn finalization proceeds without a checkpoint",
-                                _ckpt_timeout,
-                            )
-                    else:
-                        await hooks.on_checkpoint(bundle)
-            except Exception as exc:  # pylint: disable=broad-except
-                _log.warning("on_checkpoint hook failed: %s", exc)
 
     # ── Workflow progress rendering ───────────────────────────────
     # When a position is active and has remaining steps, append a short

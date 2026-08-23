@@ -4964,8 +4964,7 @@ async def test_forced_transition_enforcer_advances_non_plan_target_on_empty_comp
 @pytest.mark.asyncio
 async def test_run_turn_model_yield_tool_terminates_with_question() -> None:
     """When the model calls the ``yield`` tool, the turn terminates with
-    the question as the response text and ``_yielded`` stamps the
-    checkpoint.
+    the question as the response text and ``_yielded`` stamps the turn.
 
     This is the core unified-lifecycle fix: the model can now *voluntarily*
     ask the user a question by calling a tool, instead of the harness

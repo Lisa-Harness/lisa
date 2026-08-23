@@ -16,6 +16,7 @@ This pack provides the operator UX for inspecting and resolving those records:
 | `/retry-safe` | Retry all safe (read-only) stalled items in one command. |
 | `/skip <id>` | Mark one item as skipped, unblocking dependent workflow steps. |
 | `/cancel <id>` | Mark one item as cancelled, unblocking dependent workflow steps. |
+| `/resume [reply]` | Resume from the most recent yielded turn. |
 
 ## Architecture boundary
 
@@ -34,6 +35,6 @@ This pack provides the operator UX for inspecting and resolving those records:
 
 Indeterminate items (recovered after a crash while `running`) are always `confirm` — the effect may or may not have happened, so silent replay risks duplication.
 
-## Relationship to checkpointing
+## Relationship to the thread store
 
-Checkpoints capture stable workflow boundaries. Recovery records capture in-flight, failed, and indeterminate work since the last boundary. On restart, the host restores stable state first, then reconciles outstanding recovery items — never auto-replaying indeterminate writes.
+Recovery records are the only durability primitive besides the thread store. The thread captures what the model said and the workflow view derived from it; recovery records capture what the harness knows about individual dispatch work items — whether they completed, failed, or are indeterminate after a crash. The `/resume` command scans the thread for the most recent yielded turn and surfaces its question, optionally alongside stalled recovery records.

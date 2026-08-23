@@ -9,7 +9,6 @@ The public Lisa framework packages: runtime-neutral kernel contracts, an author-
 - `sdk/packs/core/`: baseline public modes (`default`, `workshop`) and shared prompt assets.
 - `sdk/packs/memory/`: memory-backed learning behaviors (`learn`, memory ops, default override candidate).
 - `sdk/packs/introspect/`: operational self-model and reflective self-assessment operations.
-- `sdk/packs/checkpoint/`: LLM-enriched checkpoint/restore operations.
 - `host/`: the shared transport-neutral runtime (`HostConfig`, `HostRuntime`, `TransportCallbacks`, provider gateways) used by transport hosts.
 - `../lisa-hosts/cli/`: the terminal host (submodule of the `lisa-hosts` umbrella repo). Entry point: `lisa`. Provides the REPL, `once`, `verify`, `modes`, `models`, `operations`, `tools`, `mcp`, `pack`, and `intake` commands. Distribution: `lisa-host-cli` (`uv tool install lisa-host-cli`); meta-package `lisa-host` (`uv tool install lisa-host`).
 - `mcp_server/`: MCP (Model Context Protocol) servers that expose Lisa's surface-scoped tools over stdio — `lisa-context`, `lisa-content`, `lisa-catalog`, `lisa-memory`, `lisa-guard`, `lisa-storage`.
@@ -76,7 +75,6 @@ The root `pyproject.toml` defines a public-only `uv` workspace. The workspace me
 - `lisa-pack-core` (`sdk/packs/core/`)
 - `lisa-pack-introspect` (`sdk/packs/introspect/`)
 - `lisa-pack-memory` (`sdk/packs/memory/`)
-- `lisa-pack-checkpoint` (`sdk/packs/checkpoint/`)
 - `lisa-host-runtime` (`host/`)
 - `lisa-host-cli` (`../lisa-hosts/cli/hosts/cli/`) — entry point `lisa` (submodule of the `lisa-hosts` umbrella repo)
 - `lisa-host` (`../lisa-hosts/packaging/lisa-host/`) — meta-package (`uv tool install lisa-host`)

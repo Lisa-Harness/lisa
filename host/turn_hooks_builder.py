@@ -28,7 +28,7 @@ from kernel.provider_gateway_discovery import discover_provider_gateway_factorie
 from kernel.seams.host_adapter import build_callable_host
 from kernel.seams.protocols import ContentRegistry
 from kernel.slice import SliceOutcome, SliceTuning
-from kernel.turn_runner import CheckpointTuning, ContextSeams, TurnHooks
+from kernel.turn_runner import ContextSeams, TurnHooks
 
 from host.context_assembly import (
     assemble_dynamic_user_context,
@@ -90,24 +90,21 @@ class _SliceProviderHooksView:
 
     Exposes only the seams a utilization-aware slice needs:
     ``last_context_snapshot`` (read from the runtime; the snapshot sink
-    keeps it current each turn), ``write_turn_history_fn`` (the host
-    writer closure), ``execute_operation`` (the kernel operation
+    keeps it current each turn), ``execute_operation`` (the kernel operation
     dispatcher), and ``execute_tool`` (the MCP tool dispatcher). This
     avoids handing the factory the full ``TurnHooks`` before it is fully
     constructed. ``execute_tool`` is wired so the memory-consolidation
     slice can call ``memory.list`` to count and load episodic records.
     """
 
-    __slots__ = ("_runtime", "_write_turn_history", "execute_operation", "execute_tool")
+    __slots__ = ("_runtime", "execute_operation", "execute_tool")
 
     def __init__(
         self,
         *,
         runtime: HostRuntime,
-        write_turn_history: Callable[[list[dict[str, Any]]], None],
     ) -> None:
         self._runtime = runtime
-        self._write_turn_history = write_turn_history
         # Lazy: wire execute_operation when the factory asks for it via
         # attribute access; the closure is defined later in build_turn_hooks
         # but factories only invoke it at slice time, not at construction.
@@ -115,10 +112,6 @@ class _SliceProviderHooksView:
     @property
     def last_context_snapshot(self) -> Any:
         return self._runtime.last_context_snapshot
-
-    @property
-    def write_turn_history_fn(self) -> Callable[[list[dict[str, Any]]], None]:
-        return self._write_turn_history
 
     def __getattr__(self, name: str) -> Any:
         # Fall back to runtime attributes for seams the factory may need
@@ -748,19 +741,6 @@ def build_turn_hooks(
     async def _explicit_slice(policy: Any) -> Any:
         return await file_state_provider.slice(ctx=None, policy=policy)
 
-    # ── Turn-history write-back seam ─────────────────────────────────
-    # Used by the /summarize-history command to persist a compacted
-    # turn-history list back to the live thread store. When the host has
-    # no thread (e.g. ``--no-thread``), this raises and callers no-op
-    # with a warning.
-    def _write_turn_history(new_history: list[dict[str, Any]]) -> None:
-        from host.thread import write_turn_history  # noqa: PLC0415  # lazy: breaks cycle
-
-        write_turn_history(
-            thread_path=runtime.thread_path,
-            new_history=new_history,
-        )
-
     # ── Live stage telemetry ─────────────────────────────────────────
     # Forward the kernel's fine-grained stage events to the transport so the
     # CLI/web stage line can show model_call, tool_dispatch, and
@@ -782,7 +762,7 @@ def build_turn_hooks(
     from kernel.slice_provider_discovery import discover_slice_provider_factories
 
     _slice_provider_hooks_view = _SliceProviderHooksView(
-        runtime=runtime, write_turn_history=_write_turn_history
+        runtime=runtime,
     )
     _slice_provider_hooks_view.execute_operation = _execute_operation  # type: ignore[attr-defined]
     _slice_provider_hooks_view.execute_tool = _execute_tool  # type: ignore[attr-defined]
@@ -824,9 +804,9 @@ def build_turn_hooks(
             else:
                 # Direct factory: call with 2 args.
                 provider = entry.factory(
-                    # The provider reads last_context_snapshot and
-                    # write_turn_history_fn off the view and invokes
-                    # execute_operation to fire the summarize operation.
+                    # The provider reads last_context_snapshot off the
+                    # view and invokes execute_operation to fire the
+                    # summarize operation.
                     _slice_provider_hooks_view,
                     runtime.session_plan,
                 )
@@ -939,17 +919,6 @@ def build_turn_hooks(
         # _snapshot_sink wired into _assemble_user_context. Utilization-
         # aware slice providers read this via hooks.last_context_snapshot.
         last_context_snapshot=runtime.last_context_snapshot,
-        # Host-owned write-back seam for the live thread JSONL. Used by
-        # /summarize-history.
-        write_turn_history_fn=_write_turn_history,
-        checkpoint_tuning=CheckpointTuning(
-            enabled=True,
-            on_stage_transition=True,
-            every_n_turns=10,
-            timeout_seconds=float(
-                getattr(runtime.config, "checkpoint_timeout_seconds", 10.0) or 10.0
-            ),
-        ),
         # Wire the content registry into context_seams so the turn runner's
         # _build_minimal_context can resolve read_authored_text_fn for
         # operations that load authored prompts (e.g. synthesize_and_store_learning).
@@ -982,7 +951,6 @@ def build_turn_hooks(
         # and the view is derived, never mutated.
         workflow_position=lambda: _derive_view(runtime),
         workflow_position_updater=None,
-        on_checkpoint=runtime._on_checkpoint,
         # ── Operator signal (pause/stop/terminate) ──────────────────────
         # The transport sets ``runtime.operator_signal_value`` from a key
         # binding; the kernel polls it once per iteration. ``None`` would

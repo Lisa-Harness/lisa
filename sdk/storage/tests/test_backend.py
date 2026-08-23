@@ -1,5 +1,5 @@
 """Tests for the StorageBackend — sandbox resolution, deny-glob policy,
-checkpoint persistence, and model-manifest read/write.
+legacy checkpoints-dir teardown, and model-manifest read/write.
 
 Covers the same behaviors the lisa-storage MCP server exposes, but
 exercised directly against the SDK backend without MCPServer. These are
@@ -37,19 +37,34 @@ def _readonly_backend(tmp_path: Path) -> StorageBackend:
 def test_init_creates_subdirs(tmp_path: Path) -> None:
     StorageBackend(tmp_path)
     assert (tmp_path / "files").is_dir()
-    assert (tmp_path / "checkpoints").is_dir()
 
 
 def test_init_readonly_does_not_create_subdirs(tmp_path: Path) -> None:
     StorageBackend(tmp_path, readonly=True)
     assert not (tmp_path / "files").exists()
-    assert not (tmp_path / "checkpoints").exists()
+
+
+def test_init_deletes_legacy_checkpoints_dir(tmp_path: Path) -> None:
+    """StorageBackend.__init__ removes a legacy ``checkpoints/`` directory.
+
+    The checkpoint system was removed in Phase 5 of the checkpoint
+    teardown; the backend best-effort ``rmtree``s any leftover
+    ``checkpoints/`` dir so stale data does not accumulate. A dummy
+    file inside confirms the whole tree is gone after construction.
+    """
+    checkpoints_dir = tmp_path / "checkpoints"
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    (checkpoints_dir / "stale.json").write_text("{}", encoding="utf-8")
+    assert checkpoints_dir.exists()
+
+    StorageBackend(tmp_path)
+
+    assert not checkpoints_dir.exists()
 
 
 def test_roots_and_manifest_path(tmp_path: Path) -> None:
     b = StorageBackend(tmp_path)
     assert b.files_root() == tmp_path / "files"
-    assert b.checkpoints_root() == tmp_path / "checkpoints"
     assert b.manifest_path("active") == tmp_path / "models.yaml"
     assert b.manifest_path("proposal") == tmp_path / "models.proposed.yaml"
     assert b.manifest_path("  Proposal  ") == tmp_path / "models.proposed.yaml"
@@ -298,45 +313,6 @@ def test_denied_by_policy_case_insensitive(tmp_path: Path) -> None:
     b = StorageBackend(tmp_path, deny_globs=("*.DB",))
     assert b.denied_by_policy("evil.db") is True
     assert b.denied_by_policy("evil.DB") is True
-
-
-# ── Checkpoints ─────────────────────────────────────────────────────────────
-
-
-def test_save_restore_checkpoint(tmp_path: Path) -> None:
-    b = _backend(tmp_path)
-    bundle = {"label": "cp1", "stage_id": "s1", "turn_count": 3, "mode_id": "default"}
-    saved = json.loads(b.save_checkpoint(bundle))
-    assert "checkpoint_id" in saved
-    cid = saved["checkpoint_id"]
-
-    restored = json.loads(b.restore_checkpoint(cid))
-    assert restored["label"] == "cp1"
-    assert restored["turn_count"] == 3
-
-
-def test_restore_checkpoint_missing(tmp_path: Path) -> None:
-    b = _backend(tmp_path)
-    data = json.loads(b.restore_checkpoint("nope"))
-    assert "error" in data
-
-
-def test_list_checkpoints(tmp_path: Path) -> None:
-    b = _backend(tmp_path)
-    b.save_checkpoint({"label": "a", "created_at": "2026-01-01T00:00:00Z"})
-    b.save_checkpoint({"label": "b", "created_at": "2026-02-01T00:00:00Z"})
-    summaries = json.loads(b.list_checkpoints(""))
-    labels = [s["label"] for s in summaries]
-    assert "a" in labels
-    assert "b" in labels
-    # Sorted by created_at descending
-    assert summaries[0]["created_at"] == "2026-02-01T00:00:00Z"
-
-
-def test_save_checkpoint_readonly(tmp_path: Path) -> None:
-    b = _readonly_backend(tmp_path)
-    data = json.loads(b.save_checkpoint({"label": "x"}))
-    assert data["error"] == "server is read-only"
 
 
 # ── Model manifests ──────────────────────────────────────────────────────────

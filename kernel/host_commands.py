@@ -41,7 +41,7 @@ class HostCommandSpec:
     """One pack-registered slash command.
 
     Attributes:
-        prefix: The slash prefix (e.g. ``/checkpoint``).
+        prefix: The slash prefix (e.g. ``/resume``).
         handler: Async callable matching :class:`HostCommandHandler`.
         help_text: One-line description for ``/help`` output.
     """

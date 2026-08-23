@@ -20,18 +20,15 @@ class OperatorSignal(str, Enum):
 
     Values:
         NONE: No signal — the turn should proceed normally.
-        PAUSE: Freeze the turn in place. The kernel writes a ``paused``
-            checkpoint and holds the turn open. Resume by sending any
-            input or pressing the pause key again.
-        STOP: Return the prompt but keep the workflow state. Same
-            ``paused`` checkpoint as pause; the difference is the transport
+        PAUSE: Freeze the turn in place. The kernel holds the turn open.
+            Resume by sending any input or pressing the pause key again.
+        STOP: Return the prompt but keep the workflow state. The transport
             returns the prompt so the next message is a fresh turn.
         TERMINATE: Kill the workflow. The kernel marks the WorkflowPosition
-            complete, writes a ``terminated`` checkpoint for audit/undo,
-            and returns the prompt. No resume.
+            complete and returns the prompt. No resume.
         INTERRUPT: Cooperative cancel requested (Ctrl+C first press). The
-            kernel cancels the in-flight turn, checkpoints, and returns the
-            prompt. The MCP pool survives.
+            kernel cancels the in-flight turn and returns the prompt. The
+            MCP pool survives.
         EOF: End-of-input (Ctrl+D, or Ctrl+Z on Windows). Sent when the
             transport wants to exit the session cleanly.
         SUSPEND: Suspend the process (Ctrl+Z on POSIX). The transport

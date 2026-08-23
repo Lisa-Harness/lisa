@@ -50,9 +50,8 @@ def _installed_pack_names(runtime: HostRuntime) -> set[str]:
     ``importlib.metadata`` in the host process:
 
     1. Main-venv entry points (``importlib.metadata.entry_points``) —
-       bundled packs (core/checkpoint/introspect/memory) and any external
-       pack the user also installed into the main venv (e.g. via
-       ``uv sync --extra ext``).
+       bundled packs (core/introspect/memory) and any external pack the
+       user also installed into the main venv (e.g. via ``uv sync --extra ext``).
     2. Packs-venv content roots (``discover_packs_venv_content_roots``) —
        external packs installed via ``uv pip install -e`` into the packs
        venv. This is the authoritative home for external packs; without it,

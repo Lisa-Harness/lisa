@@ -111,15 +111,14 @@ class FinishAction:
 class PauseAction:
     """Operator-initiated freeze. Break the loop WITHOUT returning the prompt.
 
-    Checkpoint ``lifecycle_state="paused"``; the ``WorkflowPosition`` is
+    The ``WorkflowPosition`` is
     preserved unchanged. The transport keeps the turn open; resume re-enters
     the same turn against the preserved position with a fresh iteration budget.
 
-    Pause and stop write the **identical** ``CheckpointBundle`` — the only
+    Pause and stop produce the **identical** outcome — the only
     difference is whether the transport returns the prompt. If the terminal
-    dies mid-pause, boot loads the paused checkpoint and the user lands in
-    the stop state (prompt returned). One durable substrate, two live-session
-    presentations.
+    dies mid-pause, the user lands in the stop state (prompt returned). One
+    durable substrate, two live-session presentations.
 
     Also the terminal action the cap paths (global iteration cap, per-step
     exhausted with no next step, resource-budget exhausted) produce instead of
@@ -132,9 +131,9 @@ class PauseAction:
 
 @dataclass(frozen=True, slots=True)
 class StopAction:
-    """Operator-initiated stop. Same checkpoint as pause, prompt returned.
+    """Operator-initiated stop. Same outcome as pause, prompt returned.
 
-    Checkpoint ``lifecycle_state="paused"`` (same as pause); the
+    The
     ``WorkflowPosition`` is preserved. The transport returns the prompt; the
     next message starts a fresh turn against the preserved position.
     """
@@ -146,9 +145,8 @@ class StopAction:
 class TerminateAction:
     """Operator-initiated hard terminate. Workflow is killed.
 
-    Checkpoint ``lifecycle_state="terminated"`` for audit/``/undo`` only (no
-    resume). Mark the ``WorkflowPosition`` complete (clear ``current_step_id``)
-    before building the checkpoint so the persisted snapshot reflects the
+    Mark the ``WorkflowPosition`` complete (clear ``current_step_id``)
+    so the persisted state reflects the
     termination. The transport returns the prompt; the next message is a
     fresh turn with no active workflow.
 
@@ -161,7 +159,7 @@ class TerminateAction:
 
 
 # ``YieldAction`` (from kernel.models) is the fourth variant — reused directly
-# so the durable checkpoint contract and the loop-control union share one type.
+# so the loop-control union shares one type.
 
 
 LifecycleAction = (
@@ -182,9 +180,9 @@ LifecycleAction = (
   ``yield``, or the resolver forced a yield on a recovery stall). Terminal —
   breaks the loop like ``FinishAction``.
 - ``FinishAction``: produce final output and end the turn.
-- ``PauseAction``: operator freeze — checkpoint paused, no prompt returned.
-- ``StopAction``: operator stop — same checkpoint as pause, prompt returned.
-- ``TerminateAction``: operator terminate — checkpoint terminated (audit
+- ``PauseAction``: operator freeze — paused, no prompt returned.
+- ``StopAction``: operator stop — same outcome as pause, prompt returned.
+- ``TerminateAction``: operator terminate — terminated (audit
   only), workflow marked complete, prompt returned.
 """
 
@@ -501,9 +499,9 @@ def resolve_lifecycle_action(
     # ── 0. Operator signal (highest priority) ──────────────────────────
     # The operator is the highest authority: pause/stop/terminate override
     # the router decision and every cap path. Pause and stop share one
-    # checkpoint (``lifecycle_state="paused"``); the difference is whether
+    # outcome; the difference is whether
     # the transport returns the prompt. Terminate marks the workflow
-    # complete and writes a ``terminated`` checkpoint for audit/``/undo``.
+    # complete for audit/``/undo``.
     _op = state.operator_signal
     if _op == "pause":
         _log.info("lifecycle: operator pause request (mode=%s)", mode_id)
@@ -645,8 +643,8 @@ def resolve_lifecycle_action(
 
     # ── 3. Global iteration cap (the only true ceiling) ────────────────
     # Caps pause, they do not yield. The operator did not ask a question;
-    # the kernel ran out of budget. Freeze the turn in place with a paused
-    # checkpoint so the operator can resume for a fresh budget, or stop /
+    # the kernel ran out of budget. Freeze the turn in place
+    # so the operator can resume for a fresh budget, or stop /
     # terminate. The old "How would you like me to proceed?" question is
     # gone — only model-emitted yields and recovery stalls surface a
     # question.
@@ -659,7 +657,7 @@ def resolve_lifecycle_action(
             )
         # Action mode with no yield escape: pausing would hang a mode that
         # cannot resume. Terminate is the honest answer — mark the workflow
-        # done, checkpoint for audit, return the prompt. The old silent
+        # done, return the prompt. The old silent
         # truncate (FinishAction) is gone; the operator gets a real terminal
         # state they can see.
         return TerminateAction(

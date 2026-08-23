@@ -129,7 +129,6 @@ sequenceDiagram
     TurnRunner->>TurnRunner: Output guard validation
     TurnRunner->>Host: hooks.on_turn_complete(result)
     TurnRunner->>TurnRunner: Post-turn slice (opportunistic)
-    TurnRunner->>TurnRunner: Checkpoint evaluation (if wired)
     TurnRunner-->>Host: TurnResult
 ```
 
@@ -158,7 +157,6 @@ sequenceDiagram
 1. **Output guard**: `ContextSeams.output_guard.validate()` runs. Blocked outputs are replaced with a safe fallback and a `guardrail.audit` event is published.
 2. **`on_turn_complete`**: Host persists the turn (thread history, conversation digest, provenance).
 3. **Post-turn slice**: Opportunistic house-keeping fires (skipped if output was blocked).
-4. **Checkpoint evaluation**: Turn-anchored (not wall-clock). Fires on stage transitions or every-N-turns boundaries when the host has wired checkpointing.
 
 ## TurnHooks
 
@@ -227,13 +225,6 @@ sequenceDiagram
 | `code_change_artifact_store` | Host-owned store for coding workflow artifacts. |
 | `build_workshop_context_bundle_fn` | Builds a `WorkshopContextBundle` from a plan and state. |
 | `introspect` | Returns an `IntrospectSnapshot` from the host's live runtime. |
-
-### Checkpoints
-
-| Hook | Purpose |
-| --- | --- |
-| `checkpoint_tuning` | `CheckpointTuning` controlling automatic checkpoint creation. Default: disabled. |
-| `on_checkpoint` | Called with a `CheckpointBundle` after a qualifying turn. Host persists it. |
 
 ### Identity Fields
 
@@ -456,8 +447,8 @@ For step-by-step authoring instructions see [`../sdk/AUTHORING.md`](../sdk/AUTHO
 | Concept | Role | Example |
 | --- | --- | --- |
 | **Mode** | User-facing route; owns personality, FSM, and operation bindings | `stripe`, `search`, `discuss` |
-| **Operation** | Internal reusable behavior bound to one or more modes | `stripe_status`, `web_search`, `checkpoint_create` |
-| **Internal tool** | Atomic capability; single Python call; no orchestration | `web_search` (tool), `save_checkpoint`, `gmail_create_draft` |
+| **Operation** | Internal reusable behavior bound to one or more modes | `stripe_status`, `web_search` |
+| **Internal tool** | Atomic capability; single Python call; no orchestration | `web_search` (tool), `gmail_create_draft` |
 | **MCP server tool** | External capability accessed over stdio/HTTP via the MCP protocol | `memory.add`, `memory.search`, `brave.search` |
 
 Operations are **not** user-facing routes. A user never types the name of an operation;
@@ -484,8 +475,7 @@ operations/stripe_status/
 ```
 
 Real examples: `lisa_packs/stripe/operations/stripe_status/`,
-`lisa_packs/github/operations/github_status/`,
-`sdk/packs/checkpoint/operations/checkpoint_create/`.
+`lisa_packs/github/operations/github_status/`.
 
 #### The `OperationHost` typed seam
 
@@ -632,10 +622,10 @@ mechanically prevented from calling an undeclared tool through other paths. Hono
 contract; it is the basis for capability auditing.
 
 ```yaml
-# checkpoint_create.yml
-operation_id: checkpoint_create
-description: Create a checkpoint enriched by the model and persist it to lisa-storage.
-tool_ids: [save_checkpoint]   # this operation may call exactly one tool
+# stripe_status.yml
+operation_id: stripe_status
+description: Fetch the current Stripe account status.
+tool_ids: [stripe_status]
 mode_allowlist: [default, discuss, learn]
 ```
 

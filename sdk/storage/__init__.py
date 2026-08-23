@@ -1,12 +1,11 @@
-"""Lisa Storage SDK — sandboxed file I/O and checkpoint persistence.
+"""Lisa Storage SDK — sandboxed file I/O.
 
 Public API (import from :mod:`sdk.storage`, not the ``_backend`` module):
 
 - :class:`StorageBackend` — owns the files sandbox, deny-glob policy,
-  checkpoint persistence, and model-manifest read/write. The
-  ``lisa-storage`` MCP server wraps this; hosts or tools that want
-  in-process storage access can use it directly without spawning the
-  MCP server.
+  and model-manifest read/write. The ``lisa-storage`` MCP server wraps
+  this; hosts or tools that want in-process storage access can use it
+  directly without spawning the MCP server.
 - :class:`PathRejected` — raised when a path matches a deny glob (distinct
   from the ``None`` returned for unsafe / escaping paths).
 

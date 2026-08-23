@@ -37,9 +37,7 @@ class FileRecoveryService:
         state: str,
         last_error: str = "",
         result_preview: str = "",
-        failure_scope: str | None = None,
         retry_policy: str | None = None,
-        blocks_workflow: bool | None = None,
     ) -> RecoveryRecord | None:
         async with self._lock:
             records = self._load_records()
@@ -54,12 +52,8 @@ class FileRecoveryService:
                 "result_preview": result_preview.strip(),
                 "settled_at": now,
             }
-            if failure_scope is not None:
-                update["failure_scope"] = failure_scope
             if retry_policy is not None:
                 update["retry_policy"] = retry_policy
-            if blocks_workflow is not None:
-                update["blocks_workflow"] = blocks_workflow
             updated = record.model_copy(update=update)
             records[work_item_id] = updated
             self._store_records(records)
@@ -99,7 +93,6 @@ class FileRecoveryService:
                             or "Recovered after host restart while item was running."
                         ),
                         "retry_policy": "confirm",
-                        "blocks_workflow": True,
                     }
                 )
                 changed += 1

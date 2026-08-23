@@ -43,7 +43,6 @@ Public surface
 - :func:`load_recent_thread_entries`
 - :func:`load_thread_range`
 - :func:`append_thread_entry`
-- :func:`write_turn_history`
 - :func:`load_thread_digest`
 - :func:`build_recent_thread_excerpt`
 """
@@ -80,7 +79,6 @@ __all__ = [
     "load_thread_digest",
     "load_thread_range",
     "next_turn_index",
-    "write_turn_history",
 ]
 
 # ── Defaults ───────────────────────────────────────────────────────────
@@ -394,7 +392,7 @@ def _maybe_rename_legacy(paths: _SegmentPaths) -> None:
 # (``mcp_server.thread``) and the host share one contract without the
 # server importing the host. These thin wrappers preserve the existing
 # ``host.thread`` public surface for callers that already import it
-# (context_assembly, turn_hooks_builder, checkpoint commands).
+# (context_assembly, turn_hooks_builder).
 
 
 def _thread_store(thread_path: Path | None) -> ThreadStore | None:
@@ -483,6 +481,8 @@ def append_thread_entry(
     transitioned_to: str = "",
     segment_turns: int = _DEFAULT_SEGMENT_TURNS,
     turn: int | None = None,
+    yielded: bool = False,
+    yield_question: str = "",
 ) -> None:
     """Append a new thread entry to the active segment.
 
@@ -494,6 +494,11 @@ def append_thread_entry(
     workflow-tracking fields that enable a ``WorkflowView`` to be derived
     from the thread tail alone — completion is inferred from matching
     receipts in later entries, not from a mutable position store.
+
+    ``yielded`` marks a turn that paused to ask the user a question (a
+    ``YieldAction``). ``yield_question`` carries the question text. The
+    thread-based ``/resume`` command scans for the most recent entry with
+    ``yielded == True`` to surface the pending question.
 
     ``turn`` is the pre-computed global turn index from turn start
     (:func:`next_turn_index`). When supplied, it is used directly so the
@@ -541,52 +546,14 @@ def append_thread_entry(
         entry["handoff_to"] = handoff_to
     if transitioned_to:
         entry["transitioned_to"] = transitioned_to
+    if yielded:
+        entry["yielded"] = True
+        if yield_question:
+            entry["yield_question"] = yield_question
 
     paths.current.parent.mkdir(parents=True, exist_ok=True)
     with paths.current.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-
-def write_turn_history(
-    *,
-    thread_path: Path | None,
-    new_history: list[dict[str, Any]],
-) -> None:
-    """Destructive compaction write-back (used by /summarize-history).
-
-    Deletes all sealed segments, the index, the dictionary, and the digest
-    marker, then writes ``new_history`` as the fresh active segment and
-    clears the digest sidecar. Old turns are gone — this is the existing
-    compaction semantic (compacted history replaces everything).
-    """
-    if thread_path is None:
-        raise RuntimeError("write_turn_history: no thread path configured")
-    paths = _segment_paths(thread_path)
-    # Remove all sealed segments + index + dictionary + marker.
-    for sealed in paths.base.parent.glob(f"{paths.base.name}.*.jsonl.zst"):
-        try:
-            sealed.unlink()
-        except OSError as exc:
-            logger.warning("write_turn_history: failed to remove %s: %s", sealed, exc)
-    for sidecar in (paths.index_path, paths.dictionary, paths.marker):
-        if sidecar.exists():
-            try:
-                sidecar.unlink()
-            except OSError as exc:
-                logger.warning("write_turn_history: failed to remove %s: %s", sidecar, exc)
-    # Clear the digest.
-    if paths.digest.exists():
-        try:
-            paths.digest.write_text("", encoding="utf-8")
-        except OSError as exc:
-            logger.warning("write_turn_history: failed to clear digest: %s", exc)
-    # Write the new active segment.
-    paths.current.parent.mkdir(parents=True, exist_ok=True)
-    lines = [json.dumps(entry, ensure_ascii=False) for entry in new_history]
-    paths.current.write_text(
-        ("\n".join(lines) + "\n") if lines else "",
-        encoding="utf-8",
-    )
 
 
 # ── Excerpt (prompt injection) ─────────────────────────────────────────

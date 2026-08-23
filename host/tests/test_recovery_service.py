@@ -20,14 +20,12 @@ def _identity() -> RecoveryIdentity:
         surface_type="personal_dm",
         surface_id="surface",
         memory_scope="personal",
-        session_plan_digest="digest",
     )
 
 
 def _record(*, target_id: str) -> RecoveryRecord:
     return RecoveryRecord(
         identity=_identity(),
-        conversation_id="conversation",
         mode_id="default",
         target_kind="operation",
         target_id=target_id,
@@ -99,7 +97,6 @@ async def test_mark_running_indeterminate_promotes_orphans(tmp_path: Path) -> No
     assert promoted is not None
     assert promoted.state == "indeterminate"
     assert promoted.retry_policy == "confirm"
-    assert promoted.blocks_workflow is True
 
 
 @pytest.mark.asyncio
@@ -114,12 +111,10 @@ async def test_stalls_command_lists_open_recovery_items(tmp_path: Path) -> None:
                 surface_type=runtime.config.surface_type,
                 surface_id=runtime.config.surface_id,
                 memory_scope=runtime.config.memory_scope,
-                session_plan_digest=runtime.session_plan.plan_digest,
             ),
-            conversation_id=runtime.config.surface_id,
             mode_id="default",
             target_kind="operation",
-            target_id="checkpoint_create",
+            target_id="test_read_op",
             state="stalled",
             last_error="timeout",
             retry_policy="confirm",
@@ -134,7 +129,6 @@ async def test_stalls_command_lists_open_recovery_items(tmp_path: Path) -> None:
             surface_type=runtime.config.surface_type,
             surface_id=runtime.config.surface_id,
             memory_scope=runtime.config.memory_scope,
-            session_plan_digest=runtime.session_plan.plan_digest,
         ),
         state="stalled",
         last_error="timeout",
@@ -143,5 +137,5 @@ async def test_stalls_command_lists_open_recovery_items(tmp_path: Path) -> None:
 
     result = await handle_message(runtime, "/stalls", NullTransport())
     assert "Open recovery work items:" in result.text
-    assert "checkpoint_create" in result.text
+    assert "test_read_op" in result.text
     assert "state=stalled" in result.text
