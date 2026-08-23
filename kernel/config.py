@@ -207,7 +207,7 @@ class Settings(BaseSettings):
     # After this many turns in the same stage, the loop forces a final
     # no-tools completion to stop burning tokens. Override via
     # ``STAGE_NUDGE_CAP``.
-    stage_nudge_cap: int = 6
+    stage_nudge_cap: int = 9
     # Iterations *before* the stuck-in-stage cap at which the parent-turn
     # write-nudge fires for a mode with unmet ``action_tool_ids``. ``1``
     # means the nudge fires one iteration before the cap would pause the
