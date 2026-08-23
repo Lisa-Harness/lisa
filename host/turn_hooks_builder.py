@@ -135,6 +135,18 @@ def _derive_view(runtime: HostRuntime) -> Any:
     return derive_workflow_view(entries)
 
 
+def _json_safe_response_format(response_format: Any) -> Any:
+    """Reduce response_format to a JSON-serializable summary.
+
+    Operations pass a Pydantic model class here; storing the class itself
+    (a ``ModelMetaclass`` instance) breaks ``json.dumps`` in
+    ``append_thread_entry``. Record just its name instead.
+    """
+    if isinstance(response_format, type):
+        return {"type": "json_schema", "name": getattr(response_format, "__name__", str(response_format))}
+    return response_format
+
+
 def _capture_turn_input_call(ctx_dict: dict[str, Any], kwargs: dict[str, Any]) -> None:
     """Snapshot one model round-trip's raw request into ``ctx_dict["turn_input"]``.
 
@@ -155,7 +167,7 @@ def _capture_turn_input_call(ctx_dict: dict[str, Any], kwargs: dict[str, Any]) -
                 "reasoning_model": getattr(model_def, "reasoning_model", False),
                 "temperature": kwargs.get("temperature"),
                 "max_tokens": kwargs.get("max_tokens"),
-                "response_format": kwargs.get("response_format"),
+                "response_format": _json_safe_response_format(kwargs.get("response_format")),
             }
         )
     except Exception:  # pylint: disable=broad-except

@@ -561,7 +561,10 @@ def append_thread_entry(
 
     paths.current.parent.mkdir(parents=True, exist_ok=True)
     with paths.current.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        # ``default=str`` is a last-resort net: a turn must never lose its
+        # thread entry because an unexpected non-serializable object (e.g. a
+        # Pydantic model class) leaked into a captured field.
+        handle.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
 
 
 # ── Excerpt (prompt injection) ─────────────────────────────────────────
