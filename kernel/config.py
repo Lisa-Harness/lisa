@@ -11,7 +11,20 @@ from typing import Any
 
 from pydantic import field_validator, model_validator
 from pydantic.fields import FieldInfo
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    EnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+# Shell (global) env vars for ``kernel.config.Settings`` accept an optional
+# ``LISA_`` prefix. ``LISA_STAGE_NUDGE_CAP`` and ``STAGE_NUDGE_CAP`` are both
+# honored; ``LISA_`` is never *required*. ``.env`` files keep the bare
+# unprefixed names — only the live environment is prefix-aware. See
+# ``docs/python-BCP.md`` (env-var conventions) for rationale.
+_LISA_ENV_PREFIX = "LISA_"
+
 
 _REMOVED_MODEL_ENV_ALIASES = frozenset(
     {
@@ -82,9 +95,16 @@ class Settings(BaseSettings):
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         del settings_cls
+        # Shell env: honor both bare (``STAGE_NUDGE_CAP``) and
+        # ``LISA_``-prefixed (``LISA_STAGE_NUDGE_CAP``) names. The bare
+        # source wins so an explicit unprefixed value is never shadowed by
+        # a stray prefixed one. ``.env`` files keep the bare unprefixed
+        # names (``env_prefix=""``).
+        _lisa_env = EnvSettingsSource(cls, env_prefix=_LISA_ENV_PREFIX)
         return (
             init_settings,
             _KnownSettingFilteringSource(env_settings),
+            _KnownSettingFilteringSource(_lisa_env),
             _KnownSettingFilteringSource(dotenv_settings),
             file_secret_settings,
         )
@@ -161,6 +181,11 @@ class Settings(BaseSettings):
     # without editing kernel source. Each defaults to its historical
     # value (see the git-blame comments in ``turn_runner.py`` for the
     # incidents that motivated each cap).
+    #
+    # Override any of these via the bare env-var name (e.g.
+    # ``STAGE_NUDGE_CAP``) OR the ``LISA_``-prefixed name (e.g.
+    # ``LISA_STAGE_NUDGE_CAP``) in the shell; the bare name wins when
+    # both are set. In ``.env`` files only the bare name is honored.
     # Forced-action enforcer (Phase 5): when a routing hint encodes a
     # deterministic routing decision — a ``fork:`` fan-out or any
     # single-handoff target (``plan``, ``search``, ``remember`` …) — and
