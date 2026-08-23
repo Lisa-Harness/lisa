@@ -11,7 +11,6 @@ dependencies = [
     "lisa-pack-core",
     "lisa-pack-introspect",
     "lisa-pack-checkpoint",
-    "lisa-pack-compaction",
     "lisa-pack-recovery",
     "lisa-host-runtime",
 ]
@@ -41,7 +40,6 @@ members = [
     "sdk/packs/introspect",
     "sdk/packs/memory",
     "sdk/packs/checkpoint",
-    "sdk/packs/compaction",
     "sdk/packs/recovery",
     "host",
 ]
@@ -54,7 +52,6 @@ lisa-pack-memory = { workspace = true }
 lisa-pack-core = { workspace = true }
 lisa-pack-introspect = { workspace = true }
 lisa-pack-checkpoint = { workspace = true }
-lisa-pack-compaction = { workspace = true }
 lisa-pack-recovery = { workspace = true }
 lisa-host-runtime = { workspace = true }
 

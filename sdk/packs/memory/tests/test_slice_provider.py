@@ -2,7 +2,7 @@
 
 Mocks the ``turn_hooks`` view (``execute_tool``, ``execute_operation``) to
 verify the decision matrix, sidecar persistence, budget short-circuit, and
-operation invocation — mirroring the compaction slice tests. No live model
+operation invocation — mirroring the slice provider test pattern. No live model
 or SQLite store is involved.
 """
 

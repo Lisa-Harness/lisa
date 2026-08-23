@@ -1,7 +1,6 @@
 """Tests for the checkpoint pack slash-command write-back fix.
 
-Covers the bug fix landed alongside the compaction pack:
-``handle_summarize_history`` previously discarded
+Covers the bug fix for ``handle_summarize_history``: discarded
 ``result.output_json["turn_history"]`` and never persisted the compacted
 history to the live thread JSONL. It now uses the host's
 ``write_turn_history_fn`` seam (when wired).

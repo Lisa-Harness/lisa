@@ -256,4 +256,3 @@ def resolve_lifecycle_action(state):
 
 - `sdk/logging_setup.py` — the centralized logging configuration and `JSONFormatter` implementation.
 - `sdk/router/README.md` — decision-point logging example in router (logged at `INFO` with `reason` and `routed_by` fields).
-- `docs/COMPACTION_GUIDE.md` — no-op logging principle: *"you will never see a silent no-op."*

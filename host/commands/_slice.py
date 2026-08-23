@@ -1,7 +1,7 @@
 """``/consolidate`` (``/slice``) and ``/intake`` command handlers.
 
 These run host-side side-effectful work outside the model turn: the explicit
-compaction slice and the one-shot intake tick. Both set turn context and
+slice and the one-shot intake tick. Both set turn context and
 append thread entries to keep the local thread consistent with model turns.
 
 Dependency direction: ``_slice`` → ``_log``, ``host.state_provider``,

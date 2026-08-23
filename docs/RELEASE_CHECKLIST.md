@@ -37,7 +37,7 @@ ______________________________________________________________________
 - [ ] `README.md` accurately describes the pack registry, pack lifecycle, and how to add packs
 - [ ] `CONTRIBUTING.md` present and aligned with the promotion lifecycle (private standalone → packs-wip → lisa-packs)
 - [ ] `docs/PROMOTION_GUIDE.md` reviewed for accuracy and completeness
-- [ ] `.gitmodules` reviewed — all 7 submodule URLs resolve and point to `github.com/Lisa-Framework/lisa-pack-<name>`
+- [ ] `.gitmodules` reviewed — all 6 submodule URLs resolve and point to `github.com/Lisa-Framework/lisa-pack-<name>`
 - [ ] All submodule SHAs pinned to intended commits (not floating `HEAD`)
 - [ ] `.cspell` dictionary reviewed; no false positives blocking CI
 - [ ] `.github` workflows reviewed and passing
@@ -120,10 +120,9 @@ ______________________________________________________________________
 
 - [ ] Linting configured and passing
 - [ ] Spell check (`.cspell`) passing
-- [ ] Submodule integrity test — all 7 packs clone and load successfully
+- [ ] Submodule integrity test — all 6 packs clone and load successfully
 - [ ] Smoke test for each pack:
   - [ ] `brave_search`
-  - [ ] `compaction`
   - [ ] `letta`
   - [ ] `markdown`
   - [ ] `mem0`
@@ -136,7 +135,7 @@ ______________________________________________________________________
 
 ## 4. Pack Readiness
 
-For each of the 7 packs, verify the following in the individual `lisa-pack-<name>` repository:
+For each of the 6 packs, verify the following in the individual `lisa-pack-<name>` repository:
 
 ### 4.1 brave_search
 
@@ -147,7 +146,7 @@ For each of the 7 packs, verify the following in the individual `lisa-pack-<name
 - [ ] Version tagged
 - [ ] Submodule SHA in lisa-packs matches latest stable tag
 
-### 4.2 compaction
+### 4.2 letta
 
 - [ ] README present and accurate
 - [ ] License file present
@@ -155,7 +154,7 @@ For each of the 7 packs, verify the following in the individual `lisa-pack-<name
 - [ ] Version tagged
 - [ ] Submodule SHA in lisa-packs matches latest stable tag
 
-### 4.3 letta
+### 4.3 markdown
 
 - [ ] README present and accurate
 - [ ] License file present
@@ -163,7 +162,7 @@ For each of the 7 packs, verify the following in the individual `lisa-pack-<name
 - [ ] Version tagged
 - [ ] Submodule SHA in lisa-packs matches latest stable tag
 
-### 4.4 markdown
+### 4.4 mem0
 
 - [ ] README present and accurate
 - [ ] License file present
@@ -171,7 +170,7 @@ For each of the 7 packs, verify the following in the individual `lisa-pack-<name
 - [ ] Version tagged
 - [ ] Submodule SHA in lisa-packs matches latest stable tag
 
-### 4.5 mem0
+### 4.5 okf
 
 - [ ] README present and accurate
 - [ ] License file present
@@ -179,7 +178,7 @@ For each of the 7 packs, verify the following in the individual `lisa-pack-<name
 - [ ] Version tagged
 - [ ] Submodule SHA in lisa-packs matches latest stable tag
 
-### 4.6 okf
+### 4.6 search
 
 - [ ] README present and accurate
 - [ ] License file present
@@ -187,15 +186,7 @@ For each of the 7 packs, verify the following in the individual `lisa-pack-<name
 - [ ] Version tagged
 - [ ] Submodule SHA in lisa-packs matches latest stable tag
 
-### 4.7 search
-
-- [ ] README present and accurate
-- [ ] License file present
-- [ ] Tests present and passing
-- [ ] Version tagged
-- [ ] Submodule SHA in lisa-packs matches latest stable tag
-
-### 4.8 Cross-cutting pack checks
+### 4.7 Cross-cutting pack checks
 
 - [ ] Pack naming convention consistent (`lisa-pack-<name>`)
 - [ ] All packs follow the promotion lifecycle (none promoted from `packs-wip` prematurely)
@@ -259,7 +250,7 @@ ______________________________________________________________________
 - [ ] Version number decided
 - [ ] Git tag created (`vX.Y.Z`)
 - [ ] GitHub Release created with notes
-- [ ] All 7 submodule SHAs pinned to tagged releases (not commit SHAs from `main`)
+- [ ] All 6 submodule SHAs pinned to tagged releases (not commit SHAs from `main`)
 - [ ] Clone-and-verify test: fresh clone of lisa-packs with `--recursive` succeeds and all packs load
 
 ______________________________________________________________________
@@ -268,7 +259,7 @@ ______________________________________________________________________
 
 - [ ] Fresh install of lisa core from release artifact succeeds
 - [ ] Fresh clone of lisa-packs with submodules succeeds
-- [ ] All 7 packs load into a running lisa instance
+- [ ] All 6 packs load into a running lisa instance
 - [ ] End-to-end smoke test: markdown mode, coding mode, search mode each function
 - [ ] Memory tools (search, recall, dispute, synthesize) function end-to-end
 - [ ] `transition_stage` tested in a real workflow — confirm fix or document limitation

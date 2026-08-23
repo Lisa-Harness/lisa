@@ -12,10 +12,10 @@ The factory contract is intentionally narrow:
 - It receives the host's ``TurnHooks`` (so it can read
   ``last_context_snapshot`` and call ``execute_operation`` /
   ``write_turn_history_fn``) and the resolved ``SessionPlan`` (so it can
-  read its own ``context.history.compaction`` tuning).
+  read its own tuning).
 - It returns ``None`` when the pack should not contribute a slice this
-  session (e.g. ``compaction.enabled`` is ``False``). The host skips
-  wiring in that case — no behavior change for sessions that don't opt in.
+  session. The host skips wiring in that case — no behavior change for
+  sessions that don't opt in.
 - It returns a callable matching the duck-typed ``slice(ctx, policy)``
   contract used by ``kernel.slice.SlicePolicy`` and
   ``kernel.turn_runner._fire_slice``. The provider's ``slice()`` method

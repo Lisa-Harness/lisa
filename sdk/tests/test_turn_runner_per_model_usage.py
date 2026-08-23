@@ -2,7 +2,7 @@
 
 These tests live in ``sdk/tests/`` because ``kernel/tests/conftest.py`` has an
 autouse module-scope fixture that spawns the real ``lisa-catalog`` MCP server
-over external packs (``lisa_packs/{search,markdown,compaction,letta}``). When
+over external packs (``lisa_packs/{search,markdown,letta}``). When
 those submodules are not installed, every kernel test errors at setup.
 ``sdk/tests/`` has no such conftest, so we exercise ``run_turn`` with stubs
 and patch ``get_workflow_catalog`` directly.

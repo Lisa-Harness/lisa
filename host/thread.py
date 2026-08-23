@@ -394,7 +394,7 @@ def _maybe_rename_legacy(paths: _SegmentPaths) -> None:
 # (``mcp_server.thread``) and the host share one contract without the
 # server importing the host. These thin wrappers preserve the existing
 # ``host.thread`` public surface for callers that already import it
-# (context_assembly, turn_hooks_builder, checkpoint/compaction commands).
+# (context_assembly, turn_hooks_builder, checkpoint commands).
 
 
 def _thread_store(thread_path: Path | None) -> ThreadStore | None:
@@ -552,7 +552,7 @@ def write_turn_history(
     thread_path: Path | None,
     new_history: list[dict[str, Any]],
 ) -> None:
-    """Destructive compaction write-back (used by compaction /summarize-history).
+    """Destructive compaction write-back (used by /summarize-history).
 
     Deletes all sealed segments, the index, the dictionary, and the digest
     marker, then writes ``new_history`` as the fresh active segment and

@@ -32,9 +32,7 @@ _LEARNING_ROOT: Path = (
 # (external submodules; note the hyphenated repo name — the inner Python
 # package dir is still ``lisa_packs``). Only include a content root when the
 # submodule is checked out alongside the framework; tests that need a
-# migrated mode skip when absent. compaction was promoted back to an in-tree
-# workspace member (sdk/packs/compaction) and is discovered via entry points
-# like checkpoint.
+# migrated mode skip when absent.
 _PACKS_ROOT: Path = (Path(__file__).resolve().parents[1] / ".." / ".." / "lisa-packs").resolve()
 
 
@@ -47,8 +45,7 @@ def _installed_pack_names() -> set[str]:
     is present, the source-tree root under ``_PACKS_ROOT`` is redundant
     and must NOT be added as an extra content root — adding both makes
     the catalog scan the same ``operations/`` twice and raises
-    "Duplicate operation ID" errors (the 2026-07-27 ``context_compact``
-    collision).
+    "Duplicate operation ID" errors.
     """
     try:
         from kernel.content_roots import discover_installed_content_roots
@@ -69,8 +66,7 @@ def _external_pack_roots() -> list[Path]:
     (e.g. via ``uv sync --extra ext``), because the installed root under
     the venv's ``site-packages/lisa_packs/<name>`` already covers it.
     Adding both produces a duplicate ``operations/`` scan → "Duplicate
-    operation ID" catalog errors at fixture setup (the 2026-07-27
-    ``context_compact`` collision).
+    operation ID" catalog errors at fixture setup.
     """
     installed = _installed_pack_names()
     roots: list[Path] = []

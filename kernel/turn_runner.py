@@ -1071,8 +1071,8 @@ class TurnHooks:
     single summary record followed by retained recent turns) and is
     responsible for persisting it to the session's thread store. Default:
     None means "host does not support turn-history write-back";
-    compaction slices and the ``/summarize-history`` command detect this
-    and no-op with a warning instead of silently dropping the result."""
+    the ``/summarize-history`` command detects this
+    and no-ops with a warning instead of silently dropping the result."""
 
     # Identity defaults are read from ``kernel.config.Settings.identity_*``
     # so the historical ``"lite-host"`` / ``"lite-user"`` literals live in

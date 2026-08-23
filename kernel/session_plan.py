@@ -17,7 +17,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from kernel.ipsar_fsm import parse_front_matter
 
 __all__ = [
-    "CompactionTuning",
     "ContextBudgetPlan",
     "ContextHistoryPlan",
     "ContextLanePlan",
@@ -387,42 +386,8 @@ class ContextBudgetPlan(_StrictSessionModel):
     max_materialized_candidates: int = Field(default=32, ge=1)
 
 
-class CompactionTuning(_StrictSessionModel):
-    """Utilization-triggered, pressure-driven context compaction knobs.
-
-    When ``enabled`` is ``False`` (the default), no automatic compaction
-    fires and the existing deterministic thread compaction in
-    ``FileBackedStateProvider`` runs unchanged. When ``enabled`` is
-    ``True``, a host that wires the compaction slice provider reads the
-    live ``ContextBudgetSnapshot`` each turn and fires the configured
-    ``summarize_operation`` (default: ``checkpoint_history_summarize``)
-    when utilization crosses a threshold, paid for out of the post-turn
-    slice pressure budget rather than the user's turn latency.
-
-    Thresholds are fractions of the model's context window
-    (``0.0``-``1.0``). The pressure curve (``kernel.slice``) decides
-    whether a between-thresholds turn actually runs the compaction; the
-    ``hard_threshold`` overrides the curve when utilization is critical.
-    """
-
-    enabled: bool = False
-    trigger: Literal["post_turn", "pre_turn", "explicit", "never"] = "post_turn"
-    pressure_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
-    hard_threshold: float = Field(default=0.90, ge=0.0, le=1.0)
-    min_interval_turns: int = Field(default=4, ge=0)
-    retention_count: int = Field(default=6, ge=1)
-    preferred_model_id: str = "default"
-    summarize_operation: str = "checkpoint_history_summarize"
-
-    @model_validator(mode="after")
-    def _validate_thresholds(self) -> CompactionTuning:
-        if self.hard_threshold < self.pressure_threshold:
-            raise ValueError("compaction.hard_threshold must be >= compaction.pressure_threshold")
-        return self
-
-
 class ContextHistoryPlan(_StrictSessionModel):
-    """Conversation sources and deterministic compaction constraints."""
+    """Conversation sources and deterministic digest constraints."""
 
     include_digest: bool = True
     include_recent_conversation: bool = True
@@ -430,7 +395,6 @@ class ContextHistoryPlan(_StrictSessionModel):
     recent_message_limit: int = Field(default=6, ge=0)
     digest_max_lines: int = Field(default=200, ge=1)
     digest_summary_max_chars: int = Field(default=240, ge=60)
-    compaction: CompactionTuning = Field(default_factory=CompactionTuning)
 
 
 def _default_context_lanes() -> tuple[ContextLanePlan, ...]:

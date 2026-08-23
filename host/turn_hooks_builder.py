@@ -749,10 +749,10 @@ def build_turn_hooks(
         return await file_state_provider.slice(ctx=None, policy=policy)
 
     # ── Turn-history write-back seam ─────────────────────────────────
-    # Used by utilization-aware compaction (lisa-pack-compaction) and the
-    # /summarize-history command to persist a compacted turn-history list
-    # back to the live thread store. When the host has no thread (e.g.
-    # ``--no-thread``), this raises and callers no-op with a warning.
+    # Used by the /summarize-history command to persist a compacted
+    # turn-history list back to the live thread store. When the host has
+    # no thread (e.g. ``--no-thread``), this raises and callers no-op
+    # with a warning.
     def _write_turn_history(new_history: list[dict[str, Any]]) -> None:
         from host.thread import write_turn_history  # noqa: PLC0415  # lazy: breaks cycle
 
@@ -776,9 +776,9 @@ def build_turn_hooks(
     # non-None factory result ahead of the host's deterministic
     # FileBackedStateProvider slices. The first applicable provider wins;
     # later entries are not consulted for the same slot. A provider
-    # returns None when its session-plan tuning is disabled (e.g.
-    # compaction.enabled=False), in which case it is skipped and the host
-    # falls back to FileBackedStateProvider alone — no behavior change.
+    # returns None when its session-plan tuning is disabled, in which
+    # case it is skipped and the host falls back to
+    # FileBackedStateProvider alone — no behavior change.
     from kernel.slice_provider_discovery import discover_slice_provider_factories
 
     _slice_provider_hooks_view = _SliceProviderHooksView(
@@ -793,7 +793,7 @@ def build_turn_hooks(
         try:
             # The entry point is expected to be the factory callable
             # ``(turn_hooks, session_plan) -> provider | None``. Some packs
-            # (notably lisa-pack-compaction) register a *factory-factory*
+            # register a *factory-factory*
             # that takes 0 args and returns the real factory. Detect the
             # arity via ``inspect.signature`` and resolve the double-
             # indirection without relying on ``TypeError`` catching (which
@@ -843,7 +843,7 @@ def build_turn_hooks(
         """Wrap a base slice so pack providers for this trigger run first.
 
         Each pack provider is asked to run; if it reports work or raises,
-        later providers and the base slice still run (compaction and
+        later providers and the base slice still run (pack providers and
         deterministic file compaction are complementary, not exclusive).
         """
         applicable: list[Any] = []
@@ -940,7 +940,7 @@ def build_turn_hooks(
         # aware slice providers read this via hooks.last_context_snapshot.
         last_context_snapshot=runtime.last_context_snapshot,
         # Host-owned write-back seam for the live thread JSONL. Used by
-        # the compaction pack's slice and by /summarize-history.
+        # /summarize-history.
         write_turn_history_fn=_write_turn_history,
         checkpoint_tuning=CheckpointTuning(
             enabled=True,

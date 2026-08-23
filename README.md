@@ -77,7 +77,6 @@ The root `pyproject.toml` defines a public-only `uv` workspace. The workspace me
 - `lisa-pack-introspect` (`sdk/packs/introspect/`)
 - `lisa-pack-memory` (`sdk/packs/memory/`)
 - `lisa-pack-checkpoint` (`sdk/packs/checkpoint/`)
-- `lisa-pack-compaction` (`sdk/packs/compaction/`)
 - `lisa-host-runtime` (`host/`)
 - `lisa-host-cli` (`../lisa-hosts/cli/hosts/cli/`) — entry point `lisa` (submodule of the `lisa-hosts` umbrella repo)
 - `lisa-host` (`../lisa-hosts/packaging/lisa-host/`) — meta-package (`uv tool install lisa-host`)

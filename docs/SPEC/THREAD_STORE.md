@@ -2,7 +2,6 @@
 
 > **Status:** Active. Introduced 2026-08-10.
 > **Implementation:** `host/thread.py`, `host/state_provider.py`
-> **Related:** `docs/COMPACTION_GUIDE.md` (compaction semantics)
 
 ## Overview
 
@@ -193,8 +192,7 @@ to digest per slice (budget-bounded), not a truncation threshold.
 
 ### `write_turn_history` (destructive compaction write-back)
 
-Used by the compaction pack's `/compact-now` and the checkpoint pack's
-`/summarize-history`. This is a **destructive** operation:
+Used by the checkpoint pack's `/summarize-history`. This is a **destructive** operation:
 
 1. Delete all sealed segments (`<base>.*.jsonl.zst`).
 2. Delete the index, dictionary, and digest marker.

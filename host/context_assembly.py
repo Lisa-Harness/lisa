@@ -209,7 +209,7 @@ def build_session_mapped_context_markdown(
     (window size, conversation tokens, used tokens, lane totals) is handed
     to the callback before the rendered markdown is returned. This lets a
     host stash the latest snapshot on its ``TurnHooks.last_context_snapshot``
-    field so utilization-aware slices (e.g. the compaction pack) can read
+    field so utilization-aware slice providers can read
     actual context-window pressure without re-running the mapper. The sink
     is never called on the empty-state fallback paths.
     """

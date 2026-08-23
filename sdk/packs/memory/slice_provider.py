@@ -55,7 +55,7 @@ __all__ = [
 _MIN_SLICE_BUDGET_MS = 150
 
 #: Sidecar filename (beside the memory DB) holding the last-fire counter
-#: and timestamp. Mirrors the compaction slice's ``last_compaction.json``.
+#: and timestamp, mirroring the slice-provider sidecar pattern.
 _LAST_CONSOLIDATION_FILE_NAME = "last_consolidation.json"
 
 

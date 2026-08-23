@@ -34,10 +34,6 @@ This pack provides the operator UX for inspecting and resolving those records:
 
 Indeterminate items (recovered after a crash while `running`) are always `confirm` — the effect may or may not have happened, so silent replay risks duplication.
 
-## Relationship to compaction
-
-Recovery is orthogonal to compaction. Compaction manages what conversation material reaches the model; recovery manages executable truth and operator decisions. Recovery records live outside turn history and are never summarized away by compaction.
-
 ## Relationship to checkpointing
 
 Checkpoints capture stable workflow boundaries. Recovery records capture in-flight, failed, and indeterminate work since the last boundary. On restart, the host restores stable state first, then reconciles outstanding recovery items — never auto-replaying indeterminate writes.
