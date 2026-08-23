@@ -439,3 +439,114 @@ class ThreadStore:
                 f"| {turn} | {mode_id} | {query} | {writes} | {handoff}{row_marker} |"
             )
         return "\n".join(lines)
+
+    def search(
+        self,
+        *,
+        query: str,
+        limit: int = 10,
+        is_host_command: "Any | None" = None,
+    ) -> list[dict[str, Any]]:
+        """Search all thread entries by content and return ranked matches.
+
+        Unlike ``load_recent`` / ``load_range`` (which address by position),
+        this scans every entry across sealed and active segments and ranks
+        them by lexical overlap with the search query. It is the finding
+        aid that makes ``thread_read_range`` useful for deep history beyond
+        the manifest window — the model searches to discover the right
+        turn numbers, then pulls those turns for full content.
+
+        Ranking mirrors ``SqliteMemoryStore.recall_records``
+        (``sdk/memory/store.py``): whitespace-tokenized overlap scored as
+        ``overlap / max(len(tokens), 1) * (1 - 1/content_word_count)``,
+        with a recency tiebreak on the global turn index (descending).
+        An empty query returns the most recent entries (recency fallback),
+        matching the memory store's behavior.
+
+        Each result dict carries: ``turn`` (global index), ``mode_id``,
+        ``query`` (full, not truncated — the model needs the complete query
+        to judge relevance), ``response_preview`` (first 200 chars of
+        ``response_text``), ``handoff_to``, ``transitioned_to``, and
+        ``score`` (the lexical match score, so the model can see
+        confidence). Entries with no query and no response are skipped.
+        Host-only command entries are stripped when ``is_host_command``
+        is provided (mirrors ``build_recent_excerpt``).
+
+        The scan decompresses every sealed segment on each call. This is
+        acceptable for a tool the model calls occasionally; for
+        high-frequency search an in-memory entry cache (rebuilt on seal)
+        would be the next optimization.
+        """
+        capped_limit = max(1, min(limit, 20))
+        tokens = {tok.strip().lower() for tok in query.split() if tok.strip()}
+
+        # Gather every entry with its global turn index.
+        records = _read_index(self._paths.index_path)
+        candidates: list[tuple[float, int, dict[str, Any]]] = []
+
+        for record in records:
+            sealed_path = _sealed_segment_path(self._paths.base, record.seg_id)
+            sealed_entries = self._load_sealed_entries(sealed_path, record.seg_id)
+            for offset, entry in enumerate(sealed_entries):
+                global_turn = record.turn_lo + offset
+                scored = self._score_entry(entry, global_turn, tokens, is_host_command)
+                if scored is not None:
+                    candidates.append(scored)
+
+        active_turn_lo = sum(r.turn_hi - r.turn_lo + 1 for r in records)
+        for offset, entry in enumerate(_read_active_entries(self._paths.current)):
+            global_turn = active_turn_lo + offset
+            scored = self._score_entry(entry, global_turn, tokens, is_host_command)
+            if scored is not None:
+                candidates.append(scored)
+
+        if not candidates:
+            return []
+
+        # Sort by (score desc, turn desc) — recency tiebreak.
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [entry for _, _, entry in candidates[:capped_limit]]
+
+    @staticmethod
+    def _score_entry(
+        entry: dict[str, Any],
+        global_turn: int,
+        tokens: set[str],
+        is_host_command: "Any | None",
+    ) -> "tuple[float, int, dict[str, Any]] | None":
+        """Score one entry for search ranking. Returns ``(score, turn, result)`` or ``None``.
+
+        ``None`` means the entry should be skipped (empty, or a host-command
+        entry when the filter is wired).
+        """
+        query_text = str(entry.get("query") or "").strip()
+        response_text = str(entry.get("response_text") or "").strip()
+        if not query_text and not response_text:
+            return None
+        if is_host_command is not None and is_host_command(query_text):
+            return None
+
+        mode_id = str(entry.get("mode_id") or "")
+        haystack = f"{query_text} {response_text} {mode_id}".lower()
+        haystack_tokens = {tok for tok in haystack.split()}
+        content_word_count = max(len(haystack_tokens), 1)
+
+        if tokens:
+            overlap = len(tokens & haystack_tokens)
+            lexical = overlap / max(len(tokens), 1) * (1.0 - 1.0 / content_word_count)
+        else:
+            # Empty query → recency fallback: every entry scores equally,
+            # so the (score, turn) sort reduces to turn-descending.
+            lexical = 1.0
+
+        response_preview = response_text[:200] if response_text else ""
+        result = {
+            "turn": global_turn,
+            "mode_id": entry.get("mode_id"),
+            "query": query_text,
+            "response_preview": response_preview,
+            "handoff_to": entry.get("handoff_to"),
+            "transitioned_to": entry.get("transitioned_to"),
+            "score": round(lexical, 4),
+        }
+        return (lexical, global_turn, result)

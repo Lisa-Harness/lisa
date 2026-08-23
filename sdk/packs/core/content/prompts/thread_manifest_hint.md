@@ -2,4 +2,21 @@
 
 The manifest above is a table of contents of **past** turns. Each row is a resolved exchange — do not re-raise, re-narrate, or continue issues from earlier rows. The row marked `← current` is the turn the user is responding to; treat the rest as history.
 
-Use the `thread_read_range` tool to get prior turns by index when you need their content. Do not pull old turns just to summarize what went wrong before — answer the current query from the current row and live tool results.
+## When to pull prior turns
+
+Pull prior turns when:
+
+- The user references prior work ("that thing we did earlier", "the fix from yesterday").
+- You need to verify a past decision before acting on a related request.
+- The current query does not make sense without older context.
+- You need to check what was already tried to avoid repeating a failed approach.
+
+## How to find the right turns
+
+- **Within this manifest window**: scan the table for queries matching the current topic. Note the turn index, then use `thread_read_range` to pull the full entry.
+- **Beyond this manifest window** (turns older than the last 30): use `thread_search` with a keyword or phrase from the topic you are looking for. It returns matching turn numbers ranked by relevance. Then use `thread_read_range` with those turn numbers to pull full content.
+
+## What not to do
+
+- Do not pull old turns just to summarize what went wrong before — answer the current query from the current row and live tool results.
+- Do not re-raise, re-narrate, or continue resolved issues from earlier rows.

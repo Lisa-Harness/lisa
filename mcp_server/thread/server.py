@@ -150,8 +150,8 @@ async def thread_read_range(
     2000 chars), handoff_to, transitioned_to, and receipt_capability_ids.
 
     Pass start_turn=0 and a large end_turn (e.g. 999999) for the full
-    thread. Use the thread manifest in the system prompt to find turn
-    numbers worth reading.
+    thread. Use ``thread_search`` to find turn numbers for topics beyond
+    the manifest window, then pull those turns with this tool.
 
     Args:
         start_turn: The global (0-based) turn index to start reading from,
@@ -178,7 +178,8 @@ async def thread_read_recent(
     Returns the same compact JSON shape as ``thread_read_range``, but for
     the most recent ``limit`` entries (default 10). Useful when the system
     prompt's recent excerpt (3 entries) is not enough and you need a few
-    more turns of context.
+    more turns of context. For content-based lookups across deeper
+    history, use ``thread_search`` instead.
 
     Args:
         limit: Maximum number of recent entries to return (default 10,
@@ -192,6 +193,43 @@ async def thread_read_recent(
     entries = deps.store.load_recent(limit=capped_limit)
     compact = [_compact_entry(e) for e in entries]
     return json.dumps(compact, ensure_ascii=False)
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def thread_search(
+    query: str,
+    limit: int = 10,
+    ctx: Context[ThreadDeps, Any] | None = None,
+) -> str:
+    """Search the conversation thread by content and return ranked matches.
+
+    Use this to find prior turns by topic when the thread manifest (last
+    30 turns) does not cover what you need. Returns a JSON array of search
+    results ranked by lexical relevance, each containing turn, mode_id,
+    query (full text), response_preview (first 200 chars), handoff_to,
+    transitioned_to, and score (match confidence, 0–1).
+
+    After finding the right turn numbers with this tool, use
+    ``thread_read_range`` to pull the full entry content for those turns.
+
+    An empty query returns the most recent entries (recency fallback),
+    which is useful for a quick "what just happened" check without
+    scanning the manifest.
+
+    Args:
+        query: Search text. Matched against the query, response_text, and
+            mode_id of every thread entry using whitespace-tokenized
+            lexical overlap.
+        limit: Maximum number of results to return (default 10, capped at
+            20).
+
+    Returns:
+        JSON array of search result objects (oldest match first within
+        equal-score ties).
+    """
+    deps = _resolve_deps(ctx)
+    results = deps.store.search(query=query, limit=limit)
+    return json.dumps(results, ensure_ascii=False)
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────
