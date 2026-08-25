@@ -191,8 +191,8 @@ def test_load_manifest_rejects_negative_context_window(tmp_path: Path) -> None:
 def test_load_manifest_preserves_thinking_model_flag(tmp_path: Path) -> None:
     """``thinking_model: true`` on a Gemini model survives manifest loading.
 
-    The host's ``_requires_thought_signature`` gate reads
-    ``StubModelDefinition.thinking_model`` (forwarded from
+    Gemini's native gateway reads ``StubModelDefinition.thinking_model``
+    (forwarded from
     ``ManifestModelEntry.thinking_model`` via ``resolve_model``) to decide
     whether to prune signature-less synthesized ``transition_stage`` calls
     for Gemini thinking models. If the flag is dropped during resolution,

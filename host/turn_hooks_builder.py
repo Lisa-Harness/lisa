@@ -135,45 +135,6 @@ def _derive_view(runtime: HostRuntime) -> Any:
     return derive_workflow_view(entries)
 
 
-def _json_safe_response_format(response_format: Any) -> Any:
-    """Reduce response_format to a JSON-serializable summary.
-
-    Operations pass a Pydantic model class here; storing the class itself
-    (a ``ModelMetaclass`` instance) breaks ``json.dumps`` in
-    ``append_thread_entry``. Record just its name instead.
-    """
-    if isinstance(response_format, type):
-        return {"type": "json_schema", "name": getattr(response_format, "__name__", str(response_format))}
-    return response_format
-
-
-def _capture_turn_input_call(ctx_dict: dict[str, Any], kwargs: dict[str, Any]) -> None:
-    """Snapshot one model round-trip's raw request into ``ctx_dict["turn_input"]``.
-
-    Called once per ``hooks.complete`` invocation, so a tool-calling turn
-    accumulates one entry per iteration. Failures here must never block the
-    actual model call, hence the broad catch.
-    """
-    try:
-        model_def = kwargs.get("model_def")
-        calls = ctx_dict.setdefault("turn_input", {}).setdefault("calls", [])
-        calls.append(
-            {
-                "iteration": len(calls),
-                "messages": kwargs.get("messages"),
-                "tools": kwargs.get("tools"),
-                "model_id": getattr(model_def, "model_id", ""),
-                "provider": getattr(model_def, "provider", ""),
-                "reasoning_model": getattr(model_def, "reasoning_model", False),
-                "temperature": kwargs.get("temperature"),
-                "max_tokens": kwargs.get("max_tokens"),
-                "response_format": _json_safe_response_format(kwargs.get("response_format")),
-            }
-        )
-    except Exception:  # pylint: disable=broad-except
-        logger.warning("failed to capture turn_input snapshot", exc_info=True)
-
-
 def build_turn_hooks(
     runtime: HostRuntime,
     context: dict[str, Any] | None = None,
@@ -355,38 +316,17 @@ def build_turn_hooks(
                 continue
         return None
 
-    # ── Completion captured for turn_input telemetry ───────────────
-    # The model call itself is no longer wired here — the kernel routes
-    # through ``ContextSeams.provider_gateways`` now. The hooks keep the
-    # turn-input capture so the host's turn-input ledger still records each
-    # completion's request shape; the callable is bound to ``hooks.complete``
-    # for backward-shape telemetry only and is not invoked by the kernel.
-    async def _complete(**kwargs: Any) -> Any:
-        _capture_turn_input_call(ctx_dict, kwargs)
-        raise NotImplementedError(
-            "Host-side complete() is removed; the kernel dispatches model calls "
-            "through ContextSeams.provider_gateways. This hook only exists to "
-            "capture turn_input telemetry and must not be called."
-        )
-
-    # ── Streaming completion ──────────────────────────────────────
-    # Wired only when the host config has text/hybrid streaming enabled. The
-    # kernel now calls ``gateway.complete_stream(request)`` directly on the
-    # provider gateway; the ``hooks.complete_stream`` flag simply tells the
-    # kernel whether streaming is desired. It is never invoked as a provider
-    # call — the kernel uses the gateway's ``complete_stream`` method instead.
+    # ── Streaming request signal ───────────────────────────────────
+    # The kernel calls ``gateway.complete_stream(request)`` directly. This
+    # non-None sentinel preserves its existing streaming-request signal.
     streaming_cfg = runtime.config.streaming
     _complete_stream: Callable[..., Any] | None = None
     if streaming_cfg.enabled and streaming_cfg.mode in {"text", "hybrid"}:
 
-        async def _complete_stream_fn(**kwargs: Any) -> Any:
-            raise NotImplementedError(
-                "Host-side complete_stream() is removed; the kernel calls the "
-                "provider gateway's complete_stream(request) directly."
-            )
-            yield  # pragma: no cover - unreachable, keeps this an async generator
+        async def _stream_requested() -> None:
+            return None
 
-        _complete_stream = _complete_stream_fn
+        _complete_stream = _stream_requested
 
     # ── Content loader (injected into context assembly) ───────────
     loader = content_loader(runtime)
@@ -618,7 +558,7 @@ def build_turn_hooks(
                         query=query,
                         response=response_text,
                         host=build_callable_host(
-                            complete_fn=_complete,
+                            gateway_provider_fn=_discover_active_provider_gateways,
                             resolve_model_fn=_resolve_model,
                             read_authored_text_fn=getattr(
                                 content_registry() if content_registry else None,
@@ -934,7 +874,7 @@ def build_turn_hooks(
 
     return TurnHooks(
         resolve_model=_resolve_model,
-        complete=_complete,
+        complete=None,
         complete_stream=_complete_stream,
         mcp_tool_pool=runtime.mcp_tool_pool,
         mcp_tool_servers=runtime.mcp_cold_configs,

@@ -151,7 +151,6 @@ class HostRuntime:
         self._openai_client: Any = None
         self._anthropic_http_client: Any = None
         self._ollama_client: Any = None
-        self._google_client: Any = None
         # OpenRouter (OpenAI-compatible) client. Built lazily by the
         # gateway provider's OpenRouter client factory; None until used.
         self._openrouter_client: Any = None
@@ -252,11 +251,9 @@ class HostRuntime:
 
         # ── Token usage handler ───────────────────────────────────────
         # The durable JSONL appender for ``TokenUsageEvent`` payloads. The
-        # host's completion dispatch (``publish_completion_usage``) publishes
-        # one event per provider call to this handler, which appends it to
-        # ``token-usage.jsonl`` under the data directory. ``introspect`` reads
-        # that file to build the 24h token summary. Without this wiring the
-        # session token count is always zero even though models were called.
+        # kernel records the normalized ``CompletionUsage`` from each provider
+        # gateway call here; ``introspect`` reads the resulting file to build
+        # the 24h token summary.
         from kernel.token_usage import TokenUsageTelemetryHandler
 
         self._token_usage_handler: Any = TokenUsageTelemetryHandler(self.token_usage_path)
@@ -450,14 +447,6 @@ class HostRuntime:
     @ollama_client.setter
     def ollama_client(self, value: Any) -> None:
         self._ollama_client = value
-
-    @property
-    def google_client(self) -> Any:
-        return self._google_client
-
-    @google_client.setter
-    def google_client(self, value: Any) -> None:
-        self._google_client = value
 
     # ── Manifest cache ────────────────────────────────────────────────
 

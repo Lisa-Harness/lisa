@@ -26,7 +26,7 @@ async def test_handler_appends_event_as_jsonl_line() -> None:
             reasoning_tokens=5,
             duration_ms=450.0,
             latency_ms=450,
-            call_site="complete_live.openai_compatible",
+            call_site="provider_gateway.openai_compatible",
         )
         await handler.publish(event)
 
@@ -44,7 +44,7 @@ async def test_handler_appends_event_as_jsonl_line() -> None:
         assert record["reasoning_tokens"] == 5
         assert record["duration_ms"] == 450.0
         assert record["latency_ms"] == 450
-        assert record["call_site"] == "complete_live.openai_compatible"
+        assert record["call_site"] == "provider_gateway.openai_compatible"
         # Idempotency key is stamped when empty.
         assert record["idempotency_key"]
 

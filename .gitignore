@@ -26,3 +26,5 @@ htmlcov/
 
 # Outputs
 artifacts/
+lisa-content.jsonl
+lisa-guard.jsonl

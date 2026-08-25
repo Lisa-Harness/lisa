@@ -195,8 +195,8 @@ def build_token_usage_event(
 ) -> TokenUsageEvent:
     """Build one ``TokenUsageEvent`` with normalized defaults.
 
-    Hosts call this from each LLM call site (e.g. ``_complete_live``)
-    so every provider call produces exactly one durable record. The
+    Hosts call this from each LLM call site so every provider call produces
+    exactly one durable record. The
     ``total_tokens`` field falls out as ``prompt + completion`` when
     the caller does not supply it directly.
 

@@ -18,7 +18,7 @@ functions at startup.
 
 Dependency direction
 --------------------
-``state_provider.py`` ← ``main.py`` / ``turn_hooks.py``  (callers import
+``state_provider.py`` ← ``main.py`` / ``turn_hooks_builder.py``  (callers import
 from state_provider; state_provider never imports main or any transport
 code)
 
