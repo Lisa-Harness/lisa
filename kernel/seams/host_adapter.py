@@ -33,6 +33,7 @@ class _CallableHost:
         "_execute_tool_fn",
         "_fork_fn",
         "_generate_image_fn",
+        "_gateway_provider_fn",
         "_introspect_fn",
         "_read_authored_text_fn",
         "_resolve_model_fn",
@@ -50,6 +51,7 @@ class _CallableHost:
         introspect_fn: Any = None,
         delegate_fn: Any = None,
         fork_fn: Any = None,
+        gateway_provider_fn: Any = None,
     ) -> None:
         self._complete_fn = complete_fn
         self._resolve_model_fn = resolve_model_fn
@@ -60,6 +62,7 @@ class _CallableHost:
         self._introspect_fn = introspect_fn
         self._delegate_fn = delegate_fn
         self._fork_fn = fork_fn
+        self._gateway_provider_fn = gateway_provider_fn
 
     async def complete(
         self,
@@ -71,6 +74,39 @@ class _CallableHost:
         tools: list[dict[str, Any]] | None = None,
         response_format: type[Any] | None = None,
     ) -> Any:
+        # The production completion path is the provider gateway: resolve the
+        # gateway for the model's provider and call its ``complete`` method.
+        # ``complete_fn`` remains for callers that have not yet cut over to a
+        # gateway (operations tests until the seam is fully wired). When neither
+        # is present this raises the documented no-completion-path error.
+        if self._gateway_provider_fn is not None:
+            provider_gateways = (
+                self._gateway_provider_fn() if callable(self._gateway_provider_fn) else self._gateway_provider_fn
+            )
+            if provider_gateways is None:
+                raise NotImplementedError(
+                    "OperationHost.complete: no provider gateway wired "
+                    "(provider_gateways is None)."
+                )
+            gateway = provider_gateways.gateway_for(
+                str(getattr(model_def, "provider", "") or "")
+            )
+            if gateway is None:
+                raise NotImplementedError(
+                    f"OperationHost.complete: no provider gateway registered for "
+                    f"provider {getattr(model_def, 'provider', '')!r}."
+                )
+            from kernel.provider_contracts import CompletionRequest
+
+            request = CompletionRequest(
+                messages=messages,
+                model_def=model_def,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+                response_format=response_format,
+            )
+            return await gateway.complete(request)
         if self._complete_fn is None:
             raise RuntimeError("OperationHost.complete is not wired on this host")
         return await self._complete_fn(
@@ -135,8 +171,18 @@ def build_callable_host(
     introspect_fn: Any = None,
     delegate_fn: Any = None,
     fork_fn: Any = None,
+    gateway_provider_fn: Any = None,
 ) -> _CallableHost:
-    """Construct a ``_CallableHost`` from the legacy callable seams."""
+    """Construct a ``_CallableHost`` from the callable seams + provider gateway.
+
+    ``gateway_provider_fn`` is either a zero-arg callable returning a
+    ``ProviderGatewayProvider`` (resolved lazily so the wiring survives a
+    ``TurnHooks`` that is assembled before ``context_seams`` is populated) or
+    the provider directly. When set, ``complete()`` dispatches through the
+    gateway for the model's provider; ``complete_fn`` is only a fallback for
+    hosts that have not cut over yet. The legacy ``complete_fn`` path is on
+    the removal track.
+    """
     return _CallableHost(
         complete_fn=complete_fn,
         resolve_model_fn=resolve_model_fn,
@@ -147,4 +193,5 @@ def build_callable_host(
         introspect_fn=introspect_fn,
         delegate_fn=delegate_fn,
         fork_fn=fork_fn,
+        gateway_provider_fn=gateway_provider_fn,
     )

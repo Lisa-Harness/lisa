@@ -156,3 +156,51 @@ google:gemini-2.5-flash:
   cost_tier: budget
   latency_tier: low
   context_window: 1048576
+
+# ── OpenRouter overrides ──────────────────────────────────────────────
+# OpenRouter's /api/v1/models already carries pricing/context/modalities;
+# these entries pin the models it under-reports (exact cost tiers, coding
+# capability) so the router has a stable ground truth. Keys are
+# "openrouter:<author>/<slug>" (lowercased).
+
+openrouter:openai/gpt-5.4:
+  display_name: GPT-5.4
+  capabilities: [text, tools, structured_output, code, vision, reasoning]
+  cost_tier: frontier
+  latency_tier: medium
+  context_window: 256000
+
+openrouter:openai/gpt-5.4-mini:
+  display_name: GPT-5.4 Mini
+  capabilities: [text, tools, structured_output, code, vision]
+  cost_tier: standard
+  latency_tier: low
+  context_window: 256000
+
+openrouter:anthropic/claude-sonnet-5:
+  display_name: Claude Sonnet 5
+  capabilities: [text, tools, structured_output, code, vision]
+  cost_tier: standard
+  latency_tier: medium
+  context_window: 1000000
+
+openrouter:anthropic/claude-opus-4-8:
+  display_name: Claude Opus 4.8
+  capabilities: [text, tools, structured_output, code, vision, reasoning]
+  cost_tier: premium
+  latency_tier: high
+  context_window: 200000
+
+openrouter:google/gemini-2.5-pro:
+  display_name: Gemini 2.5 Pro
+  capabilities: [text, tools, structured_output, vision, reasoning]
+  cost_tier: premium
+  latency_tier: medium
+  context_window: 1048576
+
+openrouter:deepseek/deepseek-coder-v2:
+  display_name: DeepSeek Coder V2
+  capabilities: [text, tools, structured_output, code]
+  cost_tier: budget
+  latency_tier: medium
+  context_window: 128000

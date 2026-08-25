@@ -191,7 +191,7 @@ def build_turn_hooks(
     Returns:
         A ``TurnHooks`` ready to pass to ``kernel.turn_runner.run_turn``.
     """
-    from host.providers import complete_live, complete_live_stream
+    from host.gateway_provider import HostGatewayProvider
 
     ctx_dict = context if context is not None else {}
     pack_configuration_resolver = SessionPackConfigurationResolver(
@@ -338,7 +338,13 @@ def build_turn_hooks(
                         loaded = loaded()
                 if loaded is not None:
                     logger.debug("active provider gateway provider: %s", entry.pack_name)
-                    return loaded
+                    # The discovered provider returns gateway *classes*; the
+                    # kernel calls ``gateway_for(provider).complete(...)`` at
+                    # the model-call site. Wrap it in the host provider so that
+                    # call receives a credential-bound, runtime-cached gateway
+                    # *instance* instead. This is the one place env credentials
+                    # meet the gateway seam.
+                    return HostGatewayProvider(runtime=runtime, discovered_provider=loaded)
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning(
                     "provider gateway entry %r failed: %s",
@@ -349,31 +355,36 @@ def build_turn_hooks(
                 continue
         return None
 
-    # ── Completion ────────────────────────────────────────────────
+    # ── Completion captured for turn_input telemetry ───────────────
+    # The model call itself is no longer wired here — the kernel routes
+    # through ``ContextSeams.provider_gateways`` now. The hooks keep the
+    # turn-input capture so the host's turn-input ledger still records each
+    # completion's request shape; the callable is bound to ``hooks.complete``
+    # for backward-shape telemetry only and is not invoked by the kernel.
     async def _complete(**kwargs: Any) -> Any:
         _capture_turn_input_call(ctx_dict, kwargs)
-        return await complete_live(
-            runtime=runtime,
-            transport=transport,
-            **kwargs,
+        raise NotImplementedError(
+            "Host-side complete() is removed; the kernel dispatches model calls "
+            "through ContextSeams.provider_gateways. This hook only exists to "
+            "capture turn_input telemetry and must not be called."
         )
 
     # ── Streaming completion ──────────────────────────────────────
-    # Wired only when the host config has text/hybrid streaming enabled.
-    # The turn runner checks ``hooks.complete_stream is not None`` to decide
-    # whether to take the streaming path; leaving it None when streaming is
-    # off preserves the non-streaming behavior.
+    # Wired only when the host config has text/hybrid streaming enabled. The
+    # kernel now calls ``gateway.complete_stream(request)`` directly on the
+    # provider gateway; the ``hooks.complete_stream`` flag simply tells the
+    # kernel whether streaming is desired. It is never invoked as a provider
+    # call — the kernel uses the gateway's ``complete_stream`` method instead.
     streaming_cfg = runtime.config.streaming
     _complete_stream: Callable[..., Any] | None = None
     if streaming_cfg.enabled and streaming_cfg.mode in {"text", "hybrid"}:
 
         async def _complete_stream_fn(**kwargs: Any) -> Any:
-            async for chunk in complete_live_stream(
-                runtime=runtime,
-                transport=transport,
-                **kwargs,
-            ):
-                yield chunk
+            raise NotImplementedError(
+                "Host-side complete_stream() is removed; the kernel calls the "
+                "provider gateway's complete_stream(request) directly."
+            )
+            yield  # pragma: no cover - unreachable, keeps this an async generator
 
         _complete_stream = _complete_stream_fn
 

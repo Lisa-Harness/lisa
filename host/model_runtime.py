@@ -17,11 +17,23 @@ _MANIFEST_CACHE_KEY = "manifest"
 
 @dataclass(frozen=True, slots=True)
 class StubModelDefinition:
-    """Tiny model-definition shape expected by the host's operations."""
+    """Tiny model-definition shape expected by the host's operations.
+
+    Satisfies the kernel's ``ModelDescriptor`` Protocol (provider, model_id,
+    display_name, reasoning_model, thinking_model) so it can be dispatched
+    directly to a provider gateway without a converter.
+    """
 
     model_id: str
 
     provider: str = "azure_openai"
+
+    display_name: str = ""
+
+    """Display label forwarded from ``ManifestModelEntry.display_name`` so the
+    ``ModelDescriptor`` Protocol's ``display_name`` member is satisfied. Empty
+    default for stubs that do not carry it; the descriptor only requires the
+    attribute to exist."""
 
     reasoning_model: bool = False
 
@@ -358,6 +370,7 @@ def resolve_model(
     return StubModelDefinition(
         model_id=resolved.model_id,
         provider=resolved.provider,
+        display_name=resolved.display_name,
         reasoning_model=resolved.reasoning_model,
         thinking_model=resolved.thinking_model,
         context_window=resolved.context_window,

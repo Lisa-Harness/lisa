@@ -80,6 +80,15 @@ class CompletionResult:
     request_id: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     usage: CompletionUsage | None = None
+    #: Aggregated reasoning text for thinking/reasoning models that emit it
+    #: separately from the visible answer. ``completion_content`` falls back
+    #: to this when ``content`` is empty so reasoning models still record a
+    #: visible assistant message. Matches ``StreamedChunk.reasoning_content``.
+    reasoning_content: str = ""
+    #: Wall-clock duration of the provider call in milliseconds. Surfaced flat
+    #: (in addition to ``usage.duration_ms``) because the turn runner reads it
+    #: as a flat completion attribute.
+    duration_ms: float = 0.0
 
 
 @dataclass(slots=True)

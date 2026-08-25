@@ -62,10 +62,16 @@ def _build_minimal_hooks(complete_fn) -> TurnHooks:
 
 @pytest.mark.asyncio
 async def test_run_turn_requires_complete_hook() -> None:
-    """run_turn raises NotImplementedError when hooks.complete is None."""
-    hooks = TurnHooks()  # no complete
+    """run_turn raises NotImplementedError when no provider gateway is wired.
 
-    with pytest.raises(NotImplementedError, match="complete"):
+    The kernel dispatches model calls through
+    ``ContextSeams.provider_gateways`` now; a ``TurnHooks()`` with neither a
+    ``complete`` callable nor an explicit gateway yields no gateway, and the
+    model-call site raises the documented "no gateway wired" error.
+    """
+    hooks = TurnHooks()  # no complete, no gateway
+
+    with pytest.raises(NotImplementedError, match="provider gateway"):
         await run_turn(mode_id="default", query="hello", hooks=hooks)
 
 

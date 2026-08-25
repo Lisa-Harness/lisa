@@ -7,7 +7,9 @@ from typing import Any
 
 import yaml
 
-_DEFAULT_ALLOWED_PROVIDERS = frozenset({"azure_openai", "openai", "anthropic", "google", "ollama"})
+_DEFAULT_ALLOWED_PROVIDERS = frozenset(
+    {"azure_openai", "openai", "anthropic", "google", "ollama", "openrouter"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +29,17 @@ class ManifestModelEntry:
     cost_tier: str = "standard"
     latency_tier: str = "medium"
     context_window: int = 0
+    #: Per-token USD price for prompt (input) tokens, when the provider
+    #: publishes pricing. 0.0 = unknown/not priced. OpenRouter exposes this
+    #: via ``pricing.prompt``; other providers may leave it 0.0. Display
+    #: layers multiply by 1e6 for a $/M-token view — the field itself stays
+    #: per-token so pricing_units remains implied and forward-compatible.
+    prompt_price: float = 0.0
+    #: Per-token USD price for completion (output) tokens, when known.
+    completion_price: float = 0.0
+    #: Currency for the above prices (ISO 4217). Defaults to USD, the only
+    #: currency OpenRouter prices in today; kept for forward compatibility.
+    pricing_currency: str = "USD"
     operator_only: bool = False
     deployment_only: bool = False
     api_key_env: str = ""
@@ -425,6 +438,17 @@ def _parse_model_entry(
             field_name="structured_reliability",
             model_id=key,
         ),
+        prompt_price=_parse_price(
+            raw_model.get("prompt_price"),
+            field_name="prompt_price",
+            model_id=key,
+        ),
+        completion_price=_parse_price(
+            raw_model.get("completion_price"),
+            field_name="completion_price",
+            model_id=key,
+        ),
+        pricing_currency=str(raw_model.get("pricing_currency") or "USD").strip() or "USD",
         needs_guidance=bool(raw_model.get("needs_guidance", False)),
     )
 
@@ -496,6 +520,39 @@ def _parse_unit_float(raw_value: Any, *, field_name: str, model_id: str) -> floa
     if value < 0.0 or value > 1.0:
         raise ValueError(
             f"Manifest model entry for '{model_id}' {field_name} must be in the range [0.0, 1.0]."
+        )
+    return value
+
+
+def _parse_price(raw_value: Any, *, field_name: str, model_id: str) -> float:
+    """Parse an optional non-negative per-token price, defaulting to 0.0.
+
+    Accepts a number or a numeric string (providers publish string prices,
+    e.g. OpenRouter's ``pricing.prompt``). 0.0 means unknown/not priced.
+    """
+
+    if raw_value is None:
+        return 0.0
+    if isinstance(raw_value, bool):
+        raise ValueError(
+            f"Manifest model entry for '{model_id}' {field_name} must be a non-negative float."
+        )
+    if isinstance(raw_value, (int, float)):
+        value = float(raw_value)
+    elif isinstance(raw_value, str) and raw_value.strip():
+        try:
+            value = float(raw_value.strip())
+        except ValueError as exc:
+            raise ValueError(
+                f"Manifest model entry for '{model_id}' {field_name} must be a non-negative float."
+            ) from exc
+    else:
+        raise ValueError(
+            f"Manifest model entry for '{model_id}' {field_name} must be a non-negative float."
+        )
+    if value < 0.0:
+        raise ValueError(
+            f"Manifest model entry for '{model_id}' {field_name} must be a non-negative float."
         )
     return value
 

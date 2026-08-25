@@ -68,6 +68,7 @@ from kernel.operations.registry import (
 )
 from kernel.operations.structured_output import completion_content
 from kernel.provider_contracts import (
+    CompletionRequest,
     StreamedChunk,
     StreamedCompletion,
     _aggregate_streamed_chunks,
@@ -1130,7 +1131,7 @@ class StreamedCompletionAdapter:
     ``self.reasoning_content`` for callers that want to distinguish the two.
     """
 
-    __slots__ = ("_aggregated", "content", "reasoning_content", "tool_calls", "usage")
+    __slots__ = ("_aggregated", "content", "reasoning_content", "tool_calls", "usage", "duration_ms")
 
     def __init__(self, aggregated: StreamedCompletion) -> None:
         self._aggregated = aggregated
@@ -1139,6 +1140,9 @@ class StreamedCompletionAdapter:
         self.content = aggregated.content or aggregated.reasoning_content
         self.tool_calls = aggregated.tool_calls
         self.usage = aggregated.usage
+        # Surfaced flat for the turn-runner's duration extraction; the stream
+        # carries no per-chunk duration, so the caller measures and stamps it.
+        self.duration_ms = 0.0
 
     def __repr__(self) -> str:
         return (
@@ -2159,6 +2163,7 @@ async def execute_approved_invocation(
                 ),
                 execute_tool_fn=_nested_tool_executor,
                 execute_operation_fn=hooks.execute_operation or _default_execute_operation,
+                gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
             ),
             **common,
         )
@@ -2472,6 +2477,7 @@ async def _run_turn_inner(
                 pack_configuration_resolver=hooks.pack_configuration_resolver,
                 approval_service=hooks.approval_service,
                 code_change_artifact_store=hooks.code_change_artifact_store,
+                gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
                 workspace_id=hooks.workspace_id,
                 user_id=hooks.user_id,
                 user_slug=hooks.user_slug,
@@ -2982,6 +2988,7 @@ async def _run_turn_inner(
                 ),
                 execute_tool_fn=_mcp_tool_executor,
                 execute_operation_fn=exec_op,
+                gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
                 state_provider=hooks.state_provider,
                 pack_configuration_resolver=hooks.pack_configuration_resolver,
                 approval_service=hooks.approval_service,
@@ -3740,42 +3747,68 @@ async def _run_turn_inner(
                     "tools_offered": bool(effective_tools),
                 },
             )
-            if hooks.complete_stream is not None:
+
+            # ── Provider-gateway dispatch (single live completion path) ──
+            # The legacy ``complete_live`` dispatch is gone: every model call
+            # routes through ``ContextSeams.provider_gateways``. A model call
+            # with no gateway wired for the resolved provider fails with a
+            # clear error (this is the error the ``provider_gateways``
+            # docstring has always promised).
+            _provider_gateways = hooks.context_seams.provider_gateways
+            if _provider_gateways is None:
+                raise NotImplementedError(
+                    "No provider gateway wired: TurnHooks.context_seams.provider_gateways "
+                    "is None. Wire a ProviderGatewayProvider (e.g. the SDK's, discovered "
+                    "via lisa.extensions.provider_gateways) into ContextSeams."
+                )
+            _provider_name = str(getattr(effective_model_def, "provider", "") or "")
+            _gateway = _provider_gateways.gateway_for(_provider_name)
+            if _gateway is None:
+                raise NotImplementedError(
+                    f"No provider gateway registered for provider {_provider_name!r}. "
+                    f"Known to the active gateway provider: model "
+                    f"{getattr(effective_model_def, 'model_id', '')!r} cannot be completed."
+                )
+            completion_request = CompletionRequest(
+                messages=messages,
+                model_def=effective_model_def,
+                max_tokens=4096,
+                temperature=0.4,
+                tools=effective_tools,
+            )
+
+            _stream_gateway_fn = getattr(_gateway, "complete_stream", None)
+            _complete_started = time.perf_counter()
+            if hooks.complete_stream is not None and callable(_stream_gateway_fn):
                 # ── Streaming path ──────────────────────────────────────
                 # v1: stream tokens to the host. When the stream indicates
                 # tool_calls are needed (finish_reason='tool_calls'), fall
                 # back to the non-streaming complete() for that iteration to
                 # get the structured tool-call payload.
                 chunks: list[StreamedChunk] = []
-                async for chunk in hooks.complete_stream(
-                    messages=messages,
-                    model_def=effective_model_def,
-                    max_tokens=4096,
-                    temperature=0.4,
-                    tools=effective_tools,
-                ):
+                async for chunk in _stream_gateway_fn(completion_request):
                     chunks.append(chunk)
+                _stream_ms = (time.perf_counter() - _complete_started) * 1000.0
                 aggregated = _aggregate_streamed_chunks(chunks)
                 if aggregated.finish_reason == "tool_calls":
                     # Fall back to non-streaming for tool-call payload
-                    completion = await complete(
-                        messages=messages,
-                        model_def=effective_model_def,
-                        max_tokens=4096,
-                        temperature=0.4,
-                        tools=effective_tools,
-                    )
+                    _fallback_started = time.perf_counter()
+                    completion = await _gateway.complete(completion_request)
+                    if completion.duration_ms <= 0.0:
+                        completion.duration_ms = (
+                            time.perf_counter() - _fallback_started
+                        ) * 1000.0
                 else:
                     # Build a completion-like object from the aggregated stream
                     completion = StreamedCompletionAdapter(aggregated)
+                    if not aggregated.usage:
+                        # The stream carried no usage; stamp measured duration so
+                        # duration_ms survives the flip for time-billed providers.
+                        completion.duration_ms = _stream_ms
             else:
-                completion = await complete(
-                    messages=messages,
-                    model_def=effective_model_def,
-                    max_tokens=4096,
-                    temperature=0.4,
-                    tools=effective_tools,
-                )
+                completion = await _gateway.complete(completion_request)
+                if completion.duration_ms <= 0.0:
+                    completion.duration_ms = (time.perf_counter() - _complete_started) * 1000.0
         (
             prompt_tokens,
             completion_tokens,

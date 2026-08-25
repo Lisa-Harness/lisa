@@ -257,6 +257,12 @@ def _extract_completion_usage(
         usage_total = _coerce_non_negative_int(getattr(usage, "total_tokens", None))
         usage_cached = _coerce_non_negative_int(getattr(usage, "cached_tokens", None))
         usage_reasoning = _coerce_non_negative_int(getattr(usage, "reasoning_tokens", None))
+        if duration_ms <= 0.0:
+            # Gateways can measure duration on the nested ``usage`` object
+            # (``CompletionUsage.duration_ms``). Flat attrs take precedence;
+            # fall back to the nested counter so time-billed providers keep
+            # their duration without the caller re-stamping it.
+            duration_ms = _coerce_non_negative_float(getattr(usage, "duration_ms", 0.0))
 
     prompt = prompt_tokens or usage_prompt
     completion_value = completion_tokens or usage_completion
@@ -265,5 +271,7 @@ def _extract_completion_usage(
         total_value = prompt + completion_value
     cached = cached_tokens or usage_cached
     reasoning = reasoning_tokens or usage_reasoning
+    if latency_ms <= 0 and duration_ms > 0.0:
+        latency_ms = _coerce_non_negative_int(duration_ms)
 
     return prompt, completion_value, total_value, cached, reasoning, duration_ms, latency_ms

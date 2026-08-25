@@ -152,6 +152,9 @@ class HostRuntime:
         self._anthropic_http_client: Any = None
         self._ollama_client: Any = None
         self._google_client: Any = None
+        # OpenRouter (OpenAI-compatible) client. Built lazily by the
+        # gateway provider's OpenRouter client factory; None until used.
+        self._openrouter_client: Any = None
 
         # ── Manifest cache ────────────────────────────────────────────
         self._manifest: Any = None

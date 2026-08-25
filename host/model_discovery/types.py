@@ -59,6 +59,14 @@ class DiscoveredModel:
     cost_tier: str = ""
     latency_tier: str = ""
     context_window: int = 0
+    #: Per-token USD price for prompt (input) tokens when the provider
+    #: publishes it (e.g. OpenRouter's ``pricing.prompt``). 0.0 = unknown.
+    prompt_price: float = 0.0
+    #: Per-token USD price for completion (output) tokens when known.
+    completion_price: float = 0.0
+    #: Currency for the prices above (ISO 4217). Defaults to USD; OpenRouter
+    #: prices are USD-only today.
+    pricing_currency: str = "USD"
     description: str = ""
     structured_reliability: float = 0.0
     # Which OpenAI-style completion endpoint this model requires. Codex

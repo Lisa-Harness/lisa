@@ -49,6 +49,14 @@ class SdkProviderGatewayProvider:
             from sdk.providers.openai_gateway import OpenAICompatibleGateway
 
             return OpenAICompatibleGateway
+        if normalized == "openrouter":
+            # OpenRouter is OpenAI-compatible; the host's client factory
+            # (host/gateway_provider.py) points the shared
+            # OpenAICompatibleGateway at https://openrouter.ai/api/v1 with the
+            # OpenRouter attribution headers.
+            from sdk.providers.openai_gateway import OpenAICompatibleGateway
+
+            return OpenAICompatibleGateway
         return None
 
 

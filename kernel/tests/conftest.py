@@ -6,12 +6,73 @@ MCP-mediated catalog loading fixture from ``conftest_catalog.py``.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 # Import the catalog setup fixture so it's auto-use across all kernel tests.
 from kernel.tests.conftest_catalog import _mcp_catalog_setup  # noqa: F401
+
+
+# ── Provider-gateway bridge for TurnHooks fakes ─────────────────────
+#
+# The kernel's turn loop no longer calls the ``TurnHooks.complete`` callable —
+# every model call routes through ``ContextSeams.provider_gateways``. Kernel
+# unit tests still construct ``TurnHooks(complete=...)`` fakes. Rather than
+# touch 175 test sites, the autouse fixture below patches ``TurnHooks.__init__``
+# so a non-None ``complete`` callable is ALSO wrapped as a
+# ``StubGatewayProvider`` and set onto ``context_seams.provider_gateways`` (when
+# the caller did not already supply one). Tests that assert the *absence* of a
+# completion path (e.g. ``test_run_turn_requires_complete_hook``) pass
+# ``complete=None`` and get no gateway, so the kernel's "no gateway wired"
+# ``NotImplementedError`` still surfaces.
+_ORIGINAL_TURNHOOKS_INIT: Any = None
+
+
+@pytest.fixture(autouse=True)
+def _bridge_turnhooks_complete_to_gateway() -> Any:
+    """Route ``TurnHooks(complete=...)`` fakes through the provider gateway.
+
+    Wraps the test's ``complete`` callable into a ``StubGatewayProvider`` so
+    the kernel's gateway call-site resolves it. Preserves the caller's
+    explicit ``context_seams`` if provided. Yields so the patch is active only
+    during each test.
+    """
+
+    global _ORIGINAL_TURNHOOKS_INIT  # pylint: disable=global-statement
+
+    from kernel.testing.gateway_stub import StubGatewayProvider
+    from kernel.turn_runner import ContextSeams, TurnHooks
+
+    if _ORIGINAL_TURNHOOKS_INIT is None:
+        _ORIGINAL_TURNHOOKS_INIT = TurnHooks.__init__
+
+    def _patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        _ORIGINAL_TURNHOOKS_INIT(self, *args, **kwargs)
+        if getattr(self, "context_seams", None) is None:
+            # Should not happen (default_factory guarantees it), but be safe.
+            self.context_seams = ContextSeams()
+        complete_fn = getattr(self, "complete", None)
+        if (
+            complete_fn is not None
+            and getattr(self.context_seams, "provider_gateways", None) is None
+        ):
+            self.context_seams = replace(
+                self.context_seams,
+                provider_gateways=StubGatewayProvider(
+                    complete_fn,
+                    complete_stream_fn=getattr(self, "complete_stream", None),
+                ),
+            )
+
+    TurnHooks.__init__ = _patched_init  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        if _ORIGINAL_TURNHOOKS_INIT is not None:
+            TurnHooks.__init__ = _ORIGINAL_TURNHOOKS_INIT  # type: ignore[method-assign]
 
 
 @pytest.fixture(scope="module", autouse=True)

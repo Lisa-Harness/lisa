@@ -21,6 +21,7 @@ from .probes import (
     GoogleProbe,
     OllamaProbe,
     OpenAIProbe,
+    OpenRouterProbe,
     ProviderProbe,
 )
 from .types import DiscoveryReport
@@ -37,6 +38,7 @@ _DEFAULT_PROBE_TIMEOUT = 8.0
 _DEFAULT_PROBES: tuple[ProviderProbe, ...] = (
     OllamaProbe(),
     OpenAIProbe(),
+    OpenRouterProbe(),
     AzureOpenAIProbe(),
     GoogleProbe(),
 )

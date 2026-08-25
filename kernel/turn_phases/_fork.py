@@ -436,8 +436,15 @@ def _build_minimal_context(
     fork_fn: Any = None,
     conversation_excerpt_markdown: str = "",
     response: str = "",
+    gateway_provider_fn: Any = None,
 ) -> OperationExecutionContext:
-    """Build a minimal OperationExecutionContext for the turn runner."""
+    """Build a minimal OperationExecutionContext for the turn runner.
+
+    ``gateway_provider_fn`` is forwarded to ``build_callable_host`` so the
+    host's ``complete`` dispatches through the provider gateway (the live
+    completion path) instead of the removed legacy callable. Callers pass a
+    zero-arg callable that resolves ``hooks.context_seams.provider_gateways``.
+    """
     host = build_callable_host(
         complete_fn=complete_fn,
         resolve_model_fn=resolve_model_fn,
@@ -446,6 +453,7 @@ def _build_minimal_context(
         execute_operation_fn=execute_operation_fn,
         delegate_fn=delegate_fn,
         fork_fn=fork_fn,
+        gateway_provider_fn=gateway_provider_fn,
     )
     _ws_id = workspace_id if workspace_id is not None else _kernel_settings.identity_workspace_id
     _u_id = user_id if user_id is not None else _kernel_settings.identity_user_id

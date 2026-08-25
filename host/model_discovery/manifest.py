@@ -276,6 +276,12 @@ def _model_entry(model: DiscoveredModel) -> dict[str, Any]:
         entry["latency_tier"] = model.latency_tier
     if model.context_window:
         entry["context_window"] = model.context_window
+    if model.prompt_price:
+        entry["prompt_price"] = model.prompt_price
+    if model.completion_price:
+        entry["completion_price"] = model.completion_price
+    if model.pricing_currency and model.pricing_currency != "USD":
+        entry["pricing_currency"] = model.pricing_currency
     if model.description:
         entry["description"] = model.description
     if model.structured_reliability:

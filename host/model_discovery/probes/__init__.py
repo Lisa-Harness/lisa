@@ -8,6 +8,7 @@ from .base import ProviderProbe
 from .google import GoogleProbe
 from .ollama import OllamaProbe
 from .openai import OpenAIProbe
+from .openrouter import OpenRouterProbe
 
 __all__ = (
     "AnthropicProbe",
@@ -15,5 +16,6 @@ __all__ = (
     "GoogleProbe",
     "OllamaProbe",
     "OpenAIProbe",
+    "OpenRouterProbe",
     "ProviderProbe",
 )
