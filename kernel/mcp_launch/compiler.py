@@ -173,7 +173,12 @@ def compile_mcp_config(spec: MCPServerSpec) -> MCPClientConfig:
     # this version) inherits into the host terminal — visible on Linux as
     # stray log lines corrupting the Rich TUI. A spec may override
     # ``LISA_MCP_LOG_PATH`` via ``env_policy.forced_overrides``; respect that.
-    if resolved_data_dir is not None and "LISA_MCP_LOG_PATH" not in env:
+    # Treat a present-but-empty value as unset: an empty ``LISA_MCP_LOG_PATH``
+    # would otherwise fall through to ``configure_logging``'s cwd fallback
+    # and drop a ``<server_name>.jsonl`` in the subprocess's cwd (the
+    # project root when the host launched from there) — the 2026-08-25
+    # stray-jsonl-files-in-root symptom.
+    if resolved_data_dir is not None and not env.get("LISA_MCP_LOG_PATH"):
         env["LISA_MCP_LOG_PATH"] = str(Path(resolved_data_dir) / f"{spec.server_id}.jsonl")
 
     return MCPClientConfig(

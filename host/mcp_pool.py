@@ -573,22 +573,22 @@ def compile_mcp_configs(
 
     # Make FRAMEWORK_ROOT available for ${FRAMEWORK_ROOT} expansion in
     # the manifest's path-like fields (venv_dir, command_path, etc.).
-    os.environ.setdefault("FRAMEWORK_ROOT", workspace_root)
-
-    # Propagate the resolved timezone so ${LISA_TIMEZONE} expansion in
-    # mcp_servers.yaml (e.g. lisa-context --timezone) works even when the
-    # user hasn't set the env var explicitly — the host resolved it from
-    # CLI flags or the system-local tzinfo.
-    os.environ.setdefault("LISA_TIMEZONE", config.timezone)
-
-    # Propagate the thread-dir and user-slug so the lisa-thread MCP
-    # server can expand ${LISA_THREAD_DIR} / ${LISA_USER_SLUG} in its
-    # cli_args. The thread server reads the per-user thread store at
-    # <thread-dir>/<user-slug> (mirrors runtime.thread_path).
+    # Use unconditional assignment, not ``setdefault``: a parent shell
+    # may export these as empty strings (e.g. ``LISA_USER_SLUG=""``),
+    # and ``setdefault`` treats a present-but-empty value as already
+    # set — silently dropping the host's resolved value. The empty
+    # value then expands to ``""`` in the manifest, sending subprocesses
+    # to the wrong path (the 2026-08-25 lisa-thread empty-read incident:
+    # ``LISA_USER_SLUG=""`` made the thread server read
+    # ``<data_dir>/threads`` instead of ``<data_dir>/threads/<slug>``
+    # and return ``[]``). The host is the authoritative source for these
+    # values once it has resolved them from CLI flags and config.
+    os.environ["FRAMEWORK_ROOT"] = workspace_root
+    os.environ["LISA_TIMEZONE"] = config.timezone
     if not config.no_thread:
-        os.environ.setdefault("LISA_THREAD_DIR", str(config.resolved_thread_dir))
+        os.environ["LISA_THREAD_DIR"] = str(config.resolved_thread_dir)
     if config.user_slug:
-        os.environ.setdefault("LISA_USER_SLUG", config.user_slug)
+        os.environ["LISA_USER_SLUG"] = config.user_slug
 
     registry = MCPServerRegistry()
 

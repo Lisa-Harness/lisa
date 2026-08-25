@@ -129,7 +129,10 @@ def configure_logging(level: str, *, server_name: str) -> logging.Logger:
     if not log_path:
         # Fall back to a per-server JSONL file in the current working
         # directory (the host sets cwd to the data dir for first-party
-        # servers). Avoids the inherited-stderr leak.
+        # servers). Avoids the inherited-stderr leak. This path is only
+        # reached when the server is launched outside the host's compiler
+        # (which always sets ``LISA_MCP_LOG_PATH`` under the resolved
+        # data dir, treating an empty value as unset since 2026-08-25).
         log_path = str(Path.cwd() / f"{server_name}.jsonl")
     _configure_shared(
         log_path=Path(log_path),

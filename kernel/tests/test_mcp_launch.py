@@ -454,6 +454,47 @@ def test_compile_mcp_config_first_party_default_preserves_behavior() -> None:
     assert config.ensure_data_dir is False
 
 
+def test_compile_mcp_config_overwrites_empty_lisa_mcp_log_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A present-but-empty ``LISA_MCP_LOG_PATH`` must not suppress the default.
+
+    Reproduces the 2026-08-25 stray-jsonl-files symptom: when the parent
+    env exported ``LISA_MCP_LOG_PATH=""``, the old ``not in env`` guard
+    skipped the default, so the server fell back to ``<cwd>/<name>.jsonl``
+    and dropped a log file in the project root.
+    """
+    monkeypatch.setenv("LISA_MCP_LOG_PATH", "")
+    spec = MCPServerSpec(
+        server_id="lisa-thread",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="mcp_server.thread.server",
+        data_dir="/data",
+        env_policy=EnvPolicy(inherit_parent=True),
+    )
+    config = compile_mcp_config(spec)
+    from pathlib import Path
+
+    expected = str(Path("/data") / "lisa-thread.jsonl")
+    assert config.env["LISA_MCP_LOG_PATH"] == expected
+
+
+def test_compile_mcp_config_respects_explicit_lisa_mcp_log_path_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit non-empty ``LISA_MCP_LOG_PATH`` override is honored."""
+    monkeypatch.setenv("LISA_MCP_LOG_PATH", "/custom/log.jsonl")
+    spec = MCPServerSpec(
+        server_id="lisa-thread",
+        runtime_kind=RuntimeKind.PYTHON,
+        module="mcp_server.thread.server",
+        data_dir="/data",
+        env_policy=EnvPolicy(inherit_parent=True),
+    )
+    config = compile_mcp_config(spec)
+    assert config.env["LISA_MCP_LOG_PATH"] == "/custom/log.jsonl"
+
+
 # ── filter_tools ─────────────────────────────────────────────────────────────
 
 
