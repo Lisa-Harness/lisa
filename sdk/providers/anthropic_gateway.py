@@ -25,7 +25,25 @@ from kernel.provider_contracts import (
 )
 from kernel.token_usage import coerce_non_negative_int
 
-from sdk.providers.openai_gateway import _normalize_openai_tool_arguments
+from sdk.providers.openai_gateway import (
+    _normalize_openai_tool_arguments,
+    normalize_structured_content,
+)
+
+
+def _derive_anthropic_truncated(stop_reason: str | None) -> bool | None:
+    """Derive the authoritative ``truncated`` flag from Anthropic's stop_reason.
+
+    ``max_tokens`` / ``max_sequence`` → ``True`` (hit a limit).
+    ``end_turn`` / ``stop_sequence`` / ``tool_use`` → ``False`` (clean stop).
+    Anything else (including ``None``) → ``None`` (cannot tell).
+    """
+
+    if stop_reason in {"max_tokens", "max_sequence"}:
+        return True
+    if stop_reason in {"end_turn", "stop_sequence", "tool_use"}:
+        return False
+    return None
 
 
 def extract_anthropic_usage(response: Any) -> CompletionUsage | None:
@@ -216,36 +234,64 @@ class AnthropicGateway:
         self,
         client_factory: Callable[[], Any],
         *,
+        api_key: str = "",
+        api_version: str = "2023-06-01",
         event_emitter: ProviderEventEmitter | None = None,
     ) -> None:
+        """Construct the gateway.
+
+        ``client_factory`` returns a raw ``httpx.AsyncClient`` pointed at the
+        Anthropic base URL (the host's runtime-cached client). Auth is
+        injected per-request by this gateway — ``api_key`` (``x-api-key``) and
+        ``api_version`` (``anthropic-version``) are NOT expected to be baked
+        into the client's default headers.
+        """
         self._client_factory = client_factory
+        self._api_key = api_key.strip()
+        self._api_version = api_version.strip() or "2023-06-01"
         self._event_emitter = event_emitter
+
+    def _headers(self) -> dict[str, str]:
+        """Build the per-request auth/version headers."""
+
+        headers: dict[str, str] = {"anthropic-version": self._api_version}
+        if self._api_key:
+            headers["x-api-key"] = self._api_key
+        return headers
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
         client = self._client_factory()
-        system_text = next(
-            (message["content"] for message in request.messages if message["role"] == "system"),
-            "",
-        )
+        # Legacy merged ALL system messages with blank lines; taking only the
+        # first silently dropped the rest of the assembled prompt.
+        system_text = "\n\n".join(
+            str(message.get("content") or "")
+            for message in request.messages
+            if message.get("role") == "system" and message.get("content")
+        ).strip()
+        # Structured-output requests get an explicit JSON-only instruction —
+        # Anthropic has no response_format constraint on the wire.
+        if request.response_format is not None:
+            format_prompt = "Return only a valid JSON object with no Markdown wrapper."
+            system_text = f"{system_text}\n\n{format_prompt}".strip()
         anthropic_messages = _build_anthropic_messages(
             [message for message in request.messages if message["role"] != "system"]
         )
-        create_kwargs: dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": request.model_def.model_id,
             "max_tokens": request.max_tokens,
             "messages": anthropic_messages,
         }
         if system_text:
-            create_kwargs["system"] = system_text
+            payload["system"] = system_text
         if request.temperature:
-            create_kwargs["temperature"] = request.temperature
+            payload["temperature"] = request.temperature
         if request.tools:
             anthropic_tools, name_map = _build_anthropic_tools_with_name_map(request.tools)
-            create_kwargs["tools"] = anthropic_tools
+            payload["tools"] = anthropic_tools
         else:
             name_map = {}
         if getattr(request.model_def, "thinking_model", False):
-            create_kwargs["thinking"] = {
+            payload["thinking"] = {
                 "type": "enabled",
                 "budget_tokens": request.max_tokens,
             }
@@ -258,7 +304,9 @@ class AnthropicGateway:
             }
         )
         try:
-            response = await client.messages.create(**create_kwargs)
+            response = await client.post("/v1/messages", json=payload, headers=self._headers())
+            response.raise_for_status()
+            response_json = response.json()
         except Exception as exc:  # pylint: disable=broad-except
             await self._emit(
                 {
@@ -272,15 +320,17 @@ class AnthropicGateway:
             )
             raise provider_gateway_error_from_exception(request, exc) from exc
 
-        content_blocks = getattr(response, "content", [])
+        content_blocks = response_json.get("content") or []
         text_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
         for block in content_blocks:
-            block_type = getattr(block, "type", "")
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "")
             if block_type == "text":
-                text_parts.append(getattr(block, "text", "") or "")
+                text_parts.append(str(block.get("text") or ""))
             elif block_type == "tool_use":
-                sanitized_name = getattr(block, "name", "")
+                sanitized_name = str(block.get("name") or "")
                 # Restore the original (namespaced) tool name from the
                 # sanitized name Anthropic echoes back. Falls back to the
                 # sanitized name if no mapping exists (e.g. the model
@@ -288,13 +338,17 @@ class AnthropicGateway:
                 restored_name = name_map.get(sanitized_name, sanitized_name)
                 tool_calls.append(
                     {
-                        "id": getattr(block, "id", ""),
+                        "id": str(block.get("id") or ""),
                         "type": "function",
                         "name": restored_name,
-                        "arguments": _normalize_openai_tool_arguments(getattr(block, "input", {})),
+                        "arguments": _normalize_openai_tool_arguments(
+                            block.get("input") or {}
+                        ),
                     }
                 )
-        request_id = extract_request_id(response)
+        request_id = extract_request_id(response_json) or str(
+            response.headers.get("request-id", "") or ""
+        )
         await self._emit(
             {
                 "type": "provider_call_completed",
@@ -304,48 +358,66 @@ class AnthropicGateway:
                 "request_id": request_id,
             }
         )
+        # Anthropic's native stop_reason is the authoritative termination
+        # signal; map it to finish_reason and derive the truncation flag.
+        stop_reason = str(response_json.get("stop_reason") or "").strip().lower() or None
         return CompletionResult(
-            content="\n".join(text_parts),
+            content=normalize_structured_content("\n".join(text_parts), request.response_format),
             provider=request.model_def.provider,
             model_id=request.model_def.model_id,
             display_name=request.model_def.display_name,
             request_id=request_id,
             tool_calls=tool_calls,
-            usage=extract_anthropic_usage(response),
+            usage=extract_anthropic_usage(response_json),
+            finish_reason=stop_reason,
+            truncated=_derive_anthropic_truncated(stop_reason),
         )
 
     async def complete_stream(self, request: CompletionRequest) -> AsyncIterator[StreamedChunk]:
         """Stream completion chunks from the Anthropic Messages API.
 
-        v1 streams tokens only. Uses ``client.messages.stream()`` which yields
-        events; we extract ``text_delta`` events for content deltas and the
-        ``message_stop`` event for ``finish_reason``. Usage is read from the
-        final message object via ``extract_anthropic_usage``.
+        Uses raw ``httpx`` SSE streaming against ``/v1/messages`` (matching
+        the host's runtime-cached client). Aggregates:
+
+        - ``content_block_delta`` / ``text_delta`` → visible content chunks.
+        - ``content_block_delta`` / ``thinking_delta`` → reasoning chunks
+          (thinking models put their "thinking" here, separate from the
+          answer).
+        - ``message_delta`` → authoritative ``stop_reason``, mapped to
+          ``finish_reason`` (``tool_use`` → ``tool_calls`` so the turn
+          runner's tool-call fallback fires).
+
+        Usage is read from the final ``message_stop`` payload when present.
         """
 
         client = self._client_factory()
-        system_text = next(
-            (message["content"] for message in request.messages if message["role"] == "system"),
-            "",
-        )
+        system_text = "\n\n".join(
+            str(message.get("content") or "")
+            for message in request.messages
+            if message.get("role") == "system" and message.get("content")
+        ).strip()
+        if request.response_format is not None:
+            format_prompt = "Return only a valid JSON object with no Markdown wrapper."
+            system_text = f"{system_text}\n\n{format_prompt}".strip()
         anthropic_messages = _build_anthropic_messages(
             [message for message in request.messages if message["role"] != "system"]
         )
-        create_kwargs: dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": request.model_def.model_id,
             "max_tokens": request.max_tokens,
             "messages": anthropic_messages,
+            "stream": True,
         }
         if system_text:
-            create_kwargs["system"] = system_text
+            payload["system"] = system_text
         if request.temperature:
-            create_kwargs["temperature"] = request.temperature
+            payload["temperature"] = request.temperature
         if request.tools:
-            create_kwargs["tools"] = [
+            payload["tools"] = [
                 _openai_tool_to_anthropic_tool(tool) for tool in request.tools
             ]
         if getattr(request.model_def, "thinking_model", False):
-            create_kwargs["thinking"] = {
+            payload["thinking"] = {
                 "type": "enabled",
                 "budget_tokens": request.max_tokens,
             }
@@ -358,20 +430,53 @@ class AnthropicGateway:
             }
         )
         try:
-            async with client.messages.stream(**create_kwargs) as stream:
-                async for event in stream:
-                    event_type = getattr(event, "type", "")
+            finish_reason: str | None = None
+            stream_usage: CompletionUsage | None = None
+            async with client.stream(
+                "POST", "/v1/messages", json=payload, headers=self._headers()
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_text = line[len("data:") :].strip()
+                    if not data_text or data_text == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(data_text)
+                    except ValueError:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    event_type = str(event.get("type") or "")
+                    delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
                     if event_type == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        delta_text = getattr(delta, "text", None) if delta is not None else None
-                        if delta_text:
-                            yield StreamedChunk(content=delta_text)
+                        delta_type = str(delta.get("type") or "")
+                        if delta_type == "text_delta" and delta.get("text"):
+                            yield StreamedChunk(content=str(delta["text"]))
+                        elif delta_type == "thinking_delta" and delta.get("thinking"):
+                            yield StreamedChunk(reasoning_content=str(delta["thinking"]))
+                    elif event_type == "message_delta":
+                        # Authoritative stop_reason AND cumulative usage both
+                        # arrive here (Anthropic puts ``usage`` in this
+                        # event's delta), before message_stop. Map Anthropic's
+                        # stop vocabulary to the OpenAI-style one the turn
+                        # runner branches on.
+                        stop_reason = str(delta.get("stop_reason") or "").strip().lower()
+                        if stop_reason:
+                            finish_reason = (
+                                "tool_calls" if stop_reason == "tool_use" else stop_reason
+                            )
+                        stream_usage = extract_anthropic_usage({"usage": delta.get("usage")})
                     elif event_type == "message_stop":
-                        yield StreamedChunk(finish_reason="stop")
-                final_message = await stream.get_final_message()
-                usage = extract_anthropic_usage(final_message)
-                if usage is not None:
-                    yield StreamedChunk(usage=usage)
+                        # Usage may ride message_delta (real Anthropic) or
+                        # message_stop (defensive); prefer whichever is set.
+                        final_usage = stream_usage or extract_anthropic_usage(event)
+                        yield StreamedChunk(
+                            finish_reason=finish_reason or "stop",
+                            usage=final_usage,
+                        )
         except Exception as exc:  # pylint: disable=broad-except
             await self._emit(
                 {

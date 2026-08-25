@@ -89,6 +89,31 @@ class CompletionResult:
     #: (in addition to ``usage.duration_ms``) because the turn runner reads it
     #: as a flat completion attribute.
     duration_ms: float = 0.0
+    #: Provider termination signal: ``'stop'``, ``'length'``, ``'tool_calls'``,
+    #: or provider-specific text. Operations read this flat attribute for
+    #: empty-completion diagnostics (distinguishing truncation from a genuine
+    #: provider-empty response).
+    finish_reason: str | None = None
+    #: Authoritative truncation signal where the provider reports one:
+    #: ``True`` = hit a token limit, ``False`` = clean stop, ``None`` =
+    #: unknown. ``None`` is treated as a single safety-net continuation, not
+    #: a multi-attempt loop.
+    truncated: bool | None = None
+
+    @property
+    def prompt_tokens(self) -> int:
+        """Flat prompt-token counter (operations read these as attributes)."""
+        return self.usage.prompt_tokens if self.usage else 0
+
+    @property
+    def completion_tokens(self) -> int:
+        """Flat completion-token counter."""
+        return self.usage.completion_tokens if self.usage else 0
+
+    @property
+    def total_tokens(self) -> int:
+        """Flat total-token counter."""
+        return self.usage.total_tokens if self.usage else 0
 
 
 @dataclass(slots=True)

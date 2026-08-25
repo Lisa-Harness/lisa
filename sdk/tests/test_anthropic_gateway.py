@@ -52,58 +52,75 @@ def _request(
     )
 
 
-def _text_block(text: str) -> SimpleNamespace:
-    return SimpleNamespace(type="text", text=text)
+def _text_block(text: str) -> dict[str, Any]:
+    return {"type": "text", "text": text}
 
 
-def _tool_use_block(block_id: str, name: str, input_obj: dict[str, Any]) -> SimpleNamespace:
-    return SimpleNamespace(type="tool_use", id=block_id, name=name, input=input_obj)
+def _tool_use_block(block_id: str, name: str, input_obj: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "tool_use", "id": block_id, "name": name, "input": input_obj}
 
 
 def _response(
-    blocks: list[SimpleNamespace],
+    blocks: list[dict[str, Any]],
     *,
     input_tokens: int = 10,
     output_tokens: int = 20,
     response_id: str = "resp_123",
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        content=blocks,
-        id=response_id,
-        usage=SimpleNamespace(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_creation_input_tokens=0,
-            cache_read_input_tokens=0,
-        ),
-    )
+    stop_reason: str | None = "end_turn",
+) -> dict[str, Any]:
+    """Return an Anthropic Messages JSON payload (the gateway reads dicts)."""
+
+    return {
+        "id": response_id,
+        "content": blocks,
+        "stop_reason": stop_reason,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        },
+    }
 
 
-class _StubMessages:
-    """Minimal stub for the Anthropic client's ``messages.create``."""
+class _StubHttpResponse:
+    """Minimal stub for a raw ``httpx.Response`` (json/raise_for_status/headers)."""
 
-    def __init__(self, response: SimpleNamespace, captured: dict[str, Any]) -> None:
-        self._response = response
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+        self.headers: dict[str, str] = {"request-id": str(payload.get("id") or "")}
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+class _StubHttpClient:
+    """Stub raw-httpx client exposing ``post(url, json=..., headers=...)``."""
+
+    def __init__(self, payload: dict[str, Any], captured: dict[str, Any]) -> None:
+        self._payload = payload
         self.captured = captured
 
-    async def create(self, **kwargs: Any) -> SimpleNamespace:
-        self.captured.update(kwargs)
-        return self._response
-
-
-class _StubAnthropicClient:
-    """Stub client exposing ``.messages`` for ``AnthropicGateway``."""
-
-    def __init__(self, response: SimpleNamespace, captured: dict[str, Any]) -> None:
-        self.messages = _StubMessages(response, captured)
+    async def post(self, url: str, *, json: Any = None, headers: Any = None) -> _StubHttpResponse:
+        self.captured["url"] = url
+        self.captured["json"] = json
+        self.captured["headers"] = headers
+        return _StubHttpResponse(self._payload)
 
 
 def _gateway(
-    response: SimpleNamespace,
+    payload: dict[str, Any],
     captured: dict[str, Any],
 ) -> AnthropicGateway:
-    client = _StubAnthropicClient(response, captured)
-    return AnthropicGateway(client_factory=lambda: client)
+    client = _StubHttpClient(payload, captured)
+    return AnthropicGateway(
+        client_factory=lambda: client,
+        api_key="test-key",
+        api_version="2023-06-01",
+    )
 
 
 # ── Text-only response ────────────────────────────────────────────────
@@ -193,8 +210,7 @@ async def test_tools_translated_to_anthropic_format() -> None:
         },
     }
     await gateway.complete(_request([{"role": "user", "content": "hi"}], tools=[openai_tool]))
-    assert "tools" in captured
-    assert captured["tools"] == [
+    assert captured["json"]["tools"] == [
         {
             "name": "get_weather",
             "description": "Get the weather",
@@ -233,7 +249,7 @@ async def test_assistant_tool_calls_translated_to_anthropic() -> None:
         },
     ]
     await gateway.complete(_request(list(messages)))
-    anthropic_messages = captured["messages"]
+    anthropic_messages = captured["json"]["messages"]
     # user message passes through
     assert anthropic_messages[0] == {"role": "user", "content": "weather?"}
     # assistant message becomes content blocks

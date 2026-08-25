@@ -15,7 +15,9 @@ from typing import Any, cast
 
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 from pydantic import BaseModel as PydanticBaseModel
+from pydantic import ValidationError
 
+from kernel.operations.structured_output import parse_structured_payload
 from kernel.provider_contracts import (
     ChatMessages,
     CompletionRequest,
@@ -313,7 +315,13 @@ def build_openai_completion_kwargs(request: CompletionRequest) -> dict[str, Any]
         "model": request.model_def.model_id,
         "messages": cast(Any, normalize_openai_messages(request.messages)),
     }
-    if request.model_def.reasoning_model:
+    # Azure deployments take ``max_completion_tokens`` regardless of the
+    # reasoning flag (the legacy host dispatch special-cased the provider for
+    # exactly this); public OpenAI only accepts it on reasoning models.
+    is_azure = (
+        str(getattr(request.model_def, "provider", "") or "").strip().lower() == "azure_openai"
+    )
+    if request.model_def.reasoning_model or is_azure:
         kwargs["max_completion_tokens"] = request.max_tokens
     elif request.model_def.thinking_model:
         kwargs["max_tokens"] = request.max_tokens
@@ -867,6 +875,62 @@ def _uses_openai_responses_api(model_def: ModelDescriptor) -> bool:
     return completion_api.strip().lower() == "responses"
 
 
+# ── Structured-output normalization ──────────────────────────────────────
+
+
+def _extract_json_object(text: str) -> str:
+    """Extract the first likely JSON object from a model response.
+
+    Strips ```` ```json ```` / ```` ``` ```` markdown fences, then narrows to
+    the outermost ``{...}`` span. Ported from the legacy host dispatch so
+    structured-output operations see clean JSON regardless of whether the
+    model wrapped its answer in a fence.
+    """
+
+    normalized = str(text or "").strip()
+    if normalized.startswith("```json"):
+        normalized = normalized[7:]
+    elif normalized.startswith("```"):
+        normalized = normalized[3:]
+    if normalized.endswith("```"):
+        normalized = normalized[:-3]
+    normalized = normalized.strip()
+
+    if normalized.startswith("{") and normalized.endswith("}"):
+        return normalized
+
+    start = normalized.find("{")
+    end = normalized.rfind("}")
+    if start >= 0 and end > start:
+        return normalized[start : end + 1]
+    return normalized
+
+
+def normalize_structured_content(content: str, response_format: Any) -> str:
+    """Return re-validated structured JSON when possible, else the original.
+
+    When ``response_format`` is a Pydantic model class, strip any markdown
+    fence, validate the payload against the schema, and return the canonical
+    ``model_dump_json()`` round-trip. On validation failure the raw content is
+    returned unchanged so callers can degrade gracefully instead of raising.
+    """
+
+    if (
+        response_format is None
+        or not content
+        or not hasattr(response_format, "model_validate_json")
+    ):
+        return content
+    try:
+        parsed = parse_structured_payload(response_format, _extract_json_object(content))
+    except ValidationError:
+        return content
+    normalized = parsed.model_dump_json()
+    if not isinstance(normalized, str):
+        return content
+    return normalized
+
+
 # ── Gateways ─────────────────────────────────────────────────────────────
 
 
@@ -877,13 +941,22 @@ class AzureOpenAIGateway:
         self,
         *,
         complete_client_factory: Callable[[], AsyncAzureOpenAI],
+        responses_client_factory: Callable[[], AsyncAzureOpenAI] | None = None,
         event_emitter: ProviderEventEmitter | None = None,
     ) -> None:
+        """Construct the Azure gateway.
+
+        ``responses_client_factory`` supplies the client for the Responses API
+        (``/openai/responses``), which requires a preview api-version — the GA
+        chat-completions api-version 404s that endpoint. When omitted, the
+        Responses path falls back to ``complete_client_factory`` (single-client
+        deployments where one api-version covers both endpoints).
+        """
         self._complete_client_factory = complete_client_factory
+        self._responses_client_factory = responses_client_factory or complete_client_factory
         self._event_emitter = event_emitter
 
     async def complete(self, request: CompletionRequest) -> CompletionResult:
-        client = self._complete_client_factory()
         await self._emit(
             {
                 "type": "provider_call_started",
@@ -894,17 +967,30 @@ class AzureOpenAIGateway:
         )
         try:
             if _uses_openai_responses_api(request.model_def):
+                # The Responses endpoint needs its own (preview api-version)
+                # client; the GA chat-completions client 404s it.
+                client = self._responses_client_factory()
+                name_map = build_responses_tool_name_map(request.tools or [])
                 response = await client.responses.create(**build_openai_responses_kwargs(request))
-                content = extract_responses_content(response)
-                tool_calls = extract_responses_tool_calls(response)
+                content = normalize_structured_content(
+                    extract_responses_content(response), request.response_format
+                )
+                # Dotted tool names are sanitized for the wire; restore the
+                # originals so the kernel dispatcher can match them.
+                tool_calls = restore_responses_tool_names(
+                    extract_responses_tool_calls(response), name_map
+                )
                 usage = extract_responses_usage(response)
             else:
+                client = self._complete_client_factory()
                 kwargs = build_openai_completion_kwargs(request)
                 if is_pydantic_model_class(request.response_format):
                     response = await client.beta.chat.completions.parse(**kwargs)
                 else:
                     response = await client.chat.completions.create(**kwargs)
-                content = extract_openai_content(response)
+                content = normalize_structured_content(
+                    extract_openai_content(response), request.response_format
+                )
                 tool_calls = extract_openai_tool_calls(response)
                 usage = extract_openai_completion_usage(response)
         except Exception as exc:  # pylint: disable=broad-except
@@ -1017,7 +1103,9 @@ class OpenAICompatibleGateway:
             }
         )
         return CompletionResult(
-            content=extract_openai_content(response),
+            content=normalize_structured_content(
+                extract_openai_content(response), request.response_format
+            ),
             provider=request.model_def.provider,
             model_id=request.model_def.model_id,
             display_name=request.model_def.display_name,

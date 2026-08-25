@@ -126,99 +126,106 @@ async def test_openai_gateway_stream_passes_stream_flag() -> None:
 
 
 # ── Anthropic gateway streaming ─────────────────────────────────────────
+#
+# The gateway streams via raw httpx SSE (``client.stream("POST", url, ...)``)
+# and parses ``data: {...}`` lines, so the stub serves pre-rendered SSE lines.
 
 
-class _StubAnthropicStreamEvent:
-    def __init__(self, event_type: str, delta_text: str | None = None) -> None:
-        self.type = event_type
-        if delta_text is not None:
-            self.delta = SimpleNamespace(text=delta_text)
+def _sse(event: dict[str, Any]) -> str:
+    import json as _json
+
+    return f"data: {_json.dumps(event)}"
 
 
-class _StubAnthropicStreamContext:
-    """Simulates ``client.messages.stream()`` async context manager."""
+class _StubAnthropicStreamResponse:
+    """Async context manager yielding SSE lines like a raw httpx response."""
 
-    def __init__(self, events: list[_StubAnthropicStreamEvent], final_message: Any) -> None:
-        self._events = events
-        self._final_message = final_message
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = lines
 
-    async def __aenter__(self) -> _StubAnthropicStreamContext:
+    async def __aenter__(self) -> _StubAnthropicStreamResponse:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
         return None
 
-    def __aiter__(self):
-        return self
+    def raise_for_status(self) -> None:
+        return None
 
-    async def __anext__(self):
-        if not self._events:
-            raise StopAsyncIteration
-        return self._events.pop(0)
-
-    async def get_final_message(self) -> Any:
-        return self._final_message
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
 
 
-class _StubAnthropicMessages:
-    def __init__(self, events: list[_StubAnthropicStreamEvent], final_message: Any) -> None:
-        self._events = events
-        self._final_message = final_message
-        self.captured_kwargs: dict[str, Any] = {}
+class _StubAnthropicStreamClient:
+    def __init__(self, lines: list[str], captured: dict[str, Any]) -> None:
+        self._lines = lines
+        self.captured = captured
 
-    def stream(self, **kwargs: Any) -> _StubAnthropicStreamContext:
-        self.captured_kwargs.update(kwargs)
-        return _StubAnthropicStreamContext(list(self._events), self._final_message)
-
-
-class _StubAnthropicClient:
-    def __init__(self, events: list[_StubAnthropicStreamEvent], final_message: Any) -> None:
-        self.messages = _StubAnthropicMessages(events, final_message)
+    def stream(self, method: str, url: str, *, json: Any = None, headers: Any = None):
+        self.captured["method"] = method
+        self.captured["url"] = url
+        self.captured["json"] = json
+        self.captured["headers"] = headers
+        return _StubAnthropicStreamResponse(self._lines)
 
 
 @pytest.mark.asyncio
 async def test_anthropic_gateway_stream_yields_text_deltas() -> None:
-    events = [
-        _StubAnthropicStreamEvent("content_block_delta", delta_text="Hello"),
-        _StubAnthropicStreamEvent("content_block_delta", delta_text=" world"),
-        _StubAnthropicStreamEvent("message_stop"),
+    lines = [
+        _sse(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "Hello"},
+            }
+        ),
+        _sse(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": " world"},
+            }
+        ),
+        _sse(
+            {
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 10, "output_tokens": 20},
+                },
+            }
+        ),
+        _sse({"type": "message_stop"}),
     ]
-    final_message = SimpleNamespace(
-        usage=SimpleNamespace(
-            input_tokens=10,
-            output_tokens=20,
-            cache_creation_input_tokens=0,
-            cache_read_input_tokens=0,
-        )
+    captured: dict[str, Any] = {}
+    client = _StubAnthropicStreamClient(lines, captured)
+    gateway = AnthropicGateway(
+        client_factory=lambda: client, api_key="test-key", api_version="2023-06-01"
     )
-    client = _StubAnthropicClient(events, final_message)
-    gateway = AnthropicGateway(client_factory=lambda: client)
     chunks = []
     async for chunk in gateway.complete_stream(_request()):
         chunks.append(chunk)
-    # 2 text deltas + 1 message_stop + 1 usage chunk
-    assert len(chunks) == 4
+    # 2 text deltas + 1 message_stop (usage rides it; finish_reason from message_delta).
+    assert len(chunks) == 3
     assert chunks[0].content == "Hello"
     assert chunks[1].content == " world"
-    assert chunks[2].finish_reason == "stop"
-    assert chunks[3].usage is not None
-    assert chunks[3].usage.prompt_tokens == 10
-    assert chunks[3].usage.completion_tokens == 20
+    # Anthropic's native stop_reason passes through (tool_use → tool_calls).
+    assert chunks[2].finish_reason == "end_turn"
+    assert chunks[2].usage is not None
+    assert chunks[2].usage.prompt_tokens == 10
+    assert chunks[2].usage.completion_tokens == 20
+    # Auth headers are injected per-request by the gateway.
+    assert captured["headers"]["x-api-key"] == "test-key"
+    assert captured["headers"]["anthropic-version"] == "2023-06-01"
 
 
 @pytest.mark.asyncio
 async def test_anthropic_gateway_stream_system_extracted() -> None:
-    events = [_StubAnthropicStreamEvent("message_stop")]
-    final_message = SimpleNamespace(
-        usage=SimpleNamespace(
-            input_tokens=5,
-            output_tokens=5,
-            cache_creation_input_tokens=0,
-            cache_read_input_tokens=0,
-        )
+    lines = [_sse({"type": "message_stop"})]
+    captured: dict[str, Any] = {}
+    client = _StubAnthropicStreamClient(lines, captured)
+    gateway = AnthropicGateway(
+        client_factory=lambda: client, api_key="test-key", api_version="2023-06-01"
     )
-    client = _StubAnthropicClient(events, final_message)
-    gateway = AnthropicGateway(client_factory=lambda: client)
     async for _ in gateway.complete_stream(
         _request(
             [
@@ -228,4 +235,4 @@ async def test_anthropic_gateway_stream_system_extracted() -> None:
         )
     ):
         pass
-    assert client.messages.captured_kwargs.get("system") == "You are helpful."
+    assert captured["json"].get("system") == "You are helpful."

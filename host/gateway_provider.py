@@ -115,10 +115,14 @@ class HostGatewayProvider:
                     responses_client_factory=lambda: azure_responses_client_instance(runtime),
                 )
             if provider == "anthropic":
-                # AnthropicGateway holds raw ``httpx.AsyncClient``; the key and
-                # version headers are injected by the runtime-cached client
-                # factory rather than the gateway body.
-                return gateway_cls(client_factory=lambda: anthropic_http_client_instance(runtime))
+                # AnthropicGateway holds the raw runtime-cached httpx client;
+                # auth (x-api-key) and anthropic-version are injected
+                # per-request by the gateway from these values.
+                return gateway_cls(
+                    client_factory=lambda: anthropic_http_client_instance(runtime),
+                    api_key=_env("LISA_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
+                    api_version=_env("LISA_ANTHROPIC_VERSION") or "2023-06-01",
+                )
             if provider == "google":
                 # Native REST path (chosen over the legacy OpenAI-compat wire
                 # shape). The gateway takes concrete credentials, not a client
