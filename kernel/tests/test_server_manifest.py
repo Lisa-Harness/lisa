@@ -110,6 +110,58 @@ servers:
     assert specs[0].env_policy.forced_overrides["MEM0_API_KEY"] == "secret123"
 
 
+def test_load_manifest_expands_cli_args_env_vars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``cli_args`` ${VAR} references are expanded at load time.
+
+    Regression for the 2026-08-25 thread-read-empty incident: ``cli_args``
+    were stored verbatim (``str(a)``), so the lisa-thread server received a
+    literal ``${LISA_USER_SLUG}`` path and read a nonexistent store.
+    """
+    monkeypatch.setenv("LISA_THREAD_DIR_TEST", "/tmp/threads")
+    monkeypatch.setenv("LISA_USER_SLUG_TEST", "alice")
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: lisa-thread
+    runtime_kind: python
+    module: mcp_server.thread.server
+    cli_args:
+      - "--thread-dir"
+      - "${LISA_THREAD_DIR_TEST}"
+      - "--user-slug"
+      - "${LISA_USER_SLUG_TEST}"
+""",
+        encoding="utf-8",
+    )
+    specs, _ = load_mcp_server_manifest(manifest)
+    assert specs[0].cli_args == [
+        "--thread-dir",
+        "/tmp/threads",
+        "--user-slug",
+        "alice",
+    ]
+
+
+def test_load_manifest_cli_args_unexpanded_var_becomes_empty(tmp_path: Path) -> None:
+    """An unset ${VAR} in cli_args expands to empty string (not a literal ${VAR})."""
+    manifest = tmp_path / "mcp_servers.yaml"
+    manifest.write_text(
+        """
+servers:
+  - server_id: srv
+    runtime_kind: python
+    module: srv.server
+    cli_args: ["--flag", "${DEFINITELY_UNSET_VAR_XYZ}"]
+""",
+        encoding="utf-8",
+    )
+    specs, _ = load_mcp_server_manifest(manifest)
+    assert specs[0].cli_args == ["--flag", ""]
+
+
 def test_load_manifest_data_dir_arg_custom_flag(tmp_path: Path) -> None:
     manifest = tmp_path / "mcp_servers.yaml"
     manifest.write_text(

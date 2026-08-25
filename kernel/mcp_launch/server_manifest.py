@@ -367,6 +367,14 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
     cli_args_raw = entry.get("cli_args") or []
     if not isinstance(cli_args_raw, list):
         raise MCPServerManifestError(f"servers[{index}] '{server_id}': 'cli_args' must be a list")
+    # Expand ${VAR} references against the parent environment, mirroring
+    # every other path-like field (venv_dir, command_path, url, …). The
+    # lisa-thread server's ``--thread-dir ${LISA_THREAD_DIR}`` /
+    # ``--user-slug ${LISA_USER_SLUG}`` rely on this; storing the literal
+    # ``${...}`` string (the pre-2026-08-25 ``str(a)`` passthrough) sent
+    # the subprocess a literal ``${LISA_USER_SLUG}`` path that resolved
+    # to a nonexistent store, so ``thread_read_range`` returned ``[]``.
+    cli_args = [_expand_env_value(a) for a in cli_args_raw]
 
     url: str | None = None
     headers: dict[str, str] = {}
@@ -407,7 +415,7 @@ def _parse_server_entry(entry: dict[str, Any], index: int, path: Path) -> MCPSer
         uv_directory=_expand_env_value(entry.get("uv_directory"))
         if entry.get("uv_directory")
         else None,
-        cli_args=[str(a) for a in cli_args_raw],
+        cli_args=cli_args,
         data_dir_arg=data_dir_arg,
         data_dir_subdir=data_dir_subdir,
         ensure_data_dir=ensure_data_dir,
