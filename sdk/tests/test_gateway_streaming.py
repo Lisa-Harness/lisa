@@ -14,10 +14,10 @@ import pytest
 
 from kernel.provider_contracts import (
     CompletionRequest,
-    StreamedChunk,
     _aggregate_streamed_chunks,
 )
 from sdk.providers.anthropic_gateway import AnthropicGateway
+from sdk.providers.google_gateway import GoogleGeminiGateway
 from sdk.providers.openai_gateway import OpenAICompatibleGateway
 
 
@@ -236,3 +236,65 @@ async def test_anthropic_gateway_stream_system_extracted() -> None:
     ):
         pass
     assert captured["json"].get("system") == "You are helpful."
+
+
+# ── Google Gemini gateway streaming ────────────────────────────────────
+
+
+class _StubGoogleStreamResponse:
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = lines
+
+    async def __aenter__(self) -> _StubGoogleStreamResponse:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+class _StubGoogleStreamClient:
+    def __init__(self, lines: list[str], captured: dict[str, Any]) -> None:
+        self._lines = lines
+        self.captured = captured
+
+    def stream(self, method: str, url: str, *, json: Any = None, headers: Any = None):
+        self.captured.update(method=method, url=url, json=json, headers=headers)
+        return _StubGoogleStreamResponse(self._lines)
+
+
+@pytest.mark.asyncio
+async def test_google_gateway_stream_yields_text_reasoning_and_usage() -> None:
+    lines = [
+        _sse({"candidates": [{"content": {"parts": [{"text": "Thinking", "thought": True}]}}]}),
+        _sse({"candidates": [{"content": {"parts": [{"text": "Hello"}]}}]}),
+        _sse(
+            {
+                "candidates": [{"finishReason": "STOP", "content": {"parts": []}}],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 20,
+                    "totalTokenCount": 30,
+                    "thoughtsTokenCount": 4,
+                },
+            }
+        ),
+    ]
+    captured: dict[str, Any] = {}
+    gateway = GoogleGeminiGateway(
+        api_key="test-key", client=_StubGoogleStreamClient(lines, captured)
+    )
+    chunks = [chunk async for chunk in gateway.complete_stream(_request())]
+    assert [chunk.content for chunk in chunks] == ["", "Hello", ""]
+    assert chunks[0].reasoning_content == "Thinking"
+    assert chunks[2].finish_reason == "stop"
+    assert chunks[2].usage is not None
+    assert chunks[2].usage.reasoning_tokens == 4
+    assert captured["url"].endswith(":streamGenerateContent?alt=sse")
+    assert captured["headers"]["x-goog-api-key"] == "test-key"

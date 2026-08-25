@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from kernel.provider_contracts import (
     CompletionRequest,
@@ -39,6 +40,7 @@ def _request(
     tools: list[dict[str, Any]] | None = None,
     temperature: float = 0.0,
     max_tokens: int = 1024,
+    response_format: Any | None = None,
 ) -> CompletionRequest:
     return CompletionRequest(
         messages=messages,
@@ -46,6 +48,7 @@ def _request(
         max_tokens=max_tokens,
         temperature=temperature,
         tools=tools,
+        response_format=response_format,
     )
 
 
@@ -67,10 +70,17 @@ class _StubHttpxClient:
         self._response_data = response_data
         self.captured_url: str = ""
         self.captured_json: dict[str, Any] = {}
+        self.captured_headers: dict[str, str] = {}
 
-    async def post(self, url: str, json: dict[str, Any] | None = None) -> _StubHttpxResponse:
+    async def post(
+        self,
+        url: str,
+        json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> _StubHttpxResponse:
         self.captured_url = url
         self.captured_json = json or {}
+        self.captured_headers = headers or {}
         return _StubHttpxResponse(self._response_data)
 
 
@@ -94,7 +104,7 @@ async def test_text_only_response() -> None:
             }
         ]
     }
-    gateway, client = _gateway(data)
+    gateway, _ = _gateway(data)
     result = await gateway.complete(_request([{"role": "user", "content": "hi"}]))
     assert isinstance(result, CompletionResult)
     assert result.content == "hello world"
@@ -344,6 +354,67 @@ async def test_system_message_extracted() -> None:
         assert c["role"] != "system"
 
 
+@pytest.mark.asyncio
+async def test_generation_config_and_all_system_messages_are_sent() -> None:
+    data = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+    gateway, client = _gateway(data)
+    await gateway.complete(
+        _request(
+            [
+                {"role": "system", "content": "First instruction."},
+                {"role": "system", "content": "Second instruction."},
+                {"role": "user", "content": "hi"},
+            ],
+            max_tokens=4096,
+            temperature=0.35,
+        )
+    )
+    assert client.captured_json["generationConfig"] == {
+        "maxOutputTokens": 4096,
+        "temperature": 0.35,
+    }
+    assert client.captured_json["systemInstruction"]["parts"][0]["text"] == (
+        "First instruction.\n\nSecond instruction."
+    )
+    assert "?key=" not in client.captured_url
+    assert client.captured_headers["x-goog-api-key"] == "test-key"
+
+
+class _StructuredReply(BaseModel):
+    answer: str
+    count: int | None = None
+
+
+@pytest.mark.asyncio
+async def test_structured_output_uses_json_mode_schema_and_normalizes_content() -> None:
+    data = {
+        "candidates": [
+            {"content": {"parts": [{"text": "```json\n{\"answer\": \"ok\"}\n```"}]}}
+        ]
+    }
+    gateway, client = _gateway(data)
+    result = await gateway.complete(
+        _request(
+            [{"role": "user", "content": "hi"}],
+            response_format=_StructuredReply,
+        )
+    )
+    generation_config = client.captured_json["generationConfig"]
+    assert generation_config["responseMimeType"] == "application/json"
+    assert generation_config["responseSchema"] == {
+        "type": "OBJECT",
+        "properties": {
+            "answer": {"type": "STRING"},
+            "count": {"type": "INTEGER", "nullable": True},
+        },
+        "required": ["answer"],
+    }
+    assert client.captured_json["systemInstruction"]["parts"][0]["text"].endswith(
+        "Return only a valid JSON object with no Markdown wrapper."
+    )
+    assert result.content == '{"answer":"ok","count":null}'
+
+
 # ── Usage extraction ──────────────────────────────────────────────────
 
 
@@ -355,6 +426,7 @@ async def test_usage_extracted_from_gemini_response() -> None:
             "promptTokenCount": 42,
             "candidatesTokenCount": 58,
             "totalTokenCount": 100,
+            "thoughtsTokenCount": 13,
         },
     }
     gateway, _ = _gateway(data)
@@ -363,6 +435,30 @@ async def test_usage_extracted_from_gemini_response() -> None:
     assert result.usage.prompt_tokens == 42
     assert result.usage.completion_tokens == 58
     assert result.usage.total_tokens == 100
+    assert result.usage.reasoning_tokens == 13
+
+
+@pytest.mark.asyncio
+async def test_finish_reason_and_reasoning_content_are_normalized() -> None:
+    data = {
+        "candidates": [
+            {
+                "finishReason": "MAX_TOKENS",
+                "content": {
+                    "parts": [
+                        {"text": "hidden", "thought": True},
+                        {"text": "shown"},
+                    ]
+                },
+            }
+        ]
+    }
+    gateway, _ = _gateway(data)
+    result = await gateway.complete(_request([{"role": "user", "content": "hi"}]))
+    assert result.content == "shown"
+    assert result.reasoning_content == "hidden"
+    assert result.finish_reason == "length"
+    assert result.truncated is True
 
 
 # ── supports() static method ─────────────────────────────────────────
