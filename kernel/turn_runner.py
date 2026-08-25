@@ -3963,6 +3963,72 @@ async def _run_turn_inner(
                     )
                     break
 
+                # ── Write-contract empty-completion backstop ──────────────
+                # A chat/action mode with a side-effecting completion
+                # contract (``action_tool_ids`` non-empty) that ends with
+                # ZERO tool calls and no write receipt returned prose
+                # instead of doing its work. The post-loop ``_parent_no_tools``
+                # check blocks it as hallucinated success — and the
+                # chat-mode softening cannot rescue it because every
+                # softening branch is gated on ``_did_work`` (the 2026-08-14
+                # proceed-loop guard, intentionally strict on zero-tool
+                # turns). Without this backstop the turn throws away the
+                # model's prose and the user sees a generic "no verified
+                # write" block instead of the answer they asked for.
+                #
+                # Reuse the existing ``forced_work_tool`` synthesizer: arm
+                # it with the mode's first action tool (sorted) and
+                # ``continue`` so the next iteration synthesizes a real
+                # dispatch. The synthesizer at the top of the empty-
+                # completion block consumes it and clears it (one-shot);
+                # the dispatch path clears it on any real call (``:3987``),
+                # so it cannot loop. The model's prose is discarded on the
+                # synth iteration and replaced with the tool's result, after
+                # which ``_did_work=True`` and the chat-mode softening can
+                # accept the follow-up response.
+                #
+                # Gated narrowly to avoid masking genuine hallucination:
+                #   - ``mode_config`` present (mode resolved)
+                #   - ``action_tool_ids`` non-empty (the mode HAS a write
+                #     contract — read-only chat modes legitimately complete
+                #     with zero tools)
+                #   - ``not has_write_receipt`` (the contract is unmet)
+                #   - ``total_tool_calls == 0`` (zero tools this turn — a
+                #     turn that already did read work is handled by the
+                #     chat-mode softening downstream)
+                #   - ``_pending_yield is None`` (checked above; a forced
+                #     yield takes precedence)
+                #   - ``_state.forced_work_tool`` empty (not already armed —
+                #     the synth block is one-shot, re-arming would loop)
+                #   - budget not exhausted (no point arming a synth the
+                #     cap will override next iteration)
+                _has_write_receipt = any(
+                    r.capability_id in _state.action_tool_ids
+                    or bare_tool_name(r.capability_id) in _state.action_tool_ids
+                    for r in _state.effect_receipts
+                )
+                if (
+                    mode_config is not None
+                    and _state.action_tool_ids
+                    and not _has_write_receipt
+                    and _state.total_tool_calls == 0
+                    and not _state.forced_work_tool
+                    and not _budget_forces_final()
+                ):
+                    _work_target = next(iter(sorted(_state.action_tool_ids)))
+                    _state.forced_work_tool = _work_target
+                    _log.info(
+                        "write-contract backstop armed (mode=%s "
+                        "iteration=%d tool=%s); model returned prose with "
+                        "zero tool calls — synthesizing an action-tool "
+                        "dispatch instead of accepting a hallucinated "
+                        "success",
+                        mode_id,
+                        _state.iteration,
+                        _work_target,
+                    )
+                    continue
+
                 _log.debug(
                     "turn loop: natural completion (mode=%s, iteration=%d, no tool calls, no pending yield)",
                     mode_id,

@@ -684,6 +684,110 @@ async def test_parent_turn_dense_content_zero_tool_calls_blocked() -> None:
     assert "I'll start the research" not in result.response_text
 
 
+@pytest.mark.asyncio
+async def test_parent_turn_zero_tool_calls_backstop_synthesizes_dispatch() -> None:
+    """Zero-tool prose on a chat write-contract mode triggers the backstop.
+
+    Regression for the 2026-08-24 cloudservers stall: a ``chat``-kind mode
+    with a side-effecting completion contract whose model returned prose
+    with ZERO tool calls on its first iteration used to block as
+    ``no_tools`` — the chat-mode softening cannot rescue it because every
+    softening branch is gated on ``_did_work`` (the 2026-08-14 proceed-loop
+    guard, intentionally strict on zero-tool turns). The write-contract
+    empty-completion backstop arms ``forced_work_tool`` with the mode's
+    first action tool and synthesizes a real dispatch instead of accepting
+    the hallucinated prose. After the synth dispatch the turn has
+    ``total_tool_calls > 0`` and the chat-mode softening can accept the
+    follow-up response (or the failed-write block fires honestly).
+    """
+    from kernel.tools.mcp_client import MCPToolResult
+
+    class _Pool:
+        async def list_tools(self, *, allowed_server_ids: set[str] | None = None) -> list[Any]:
+            return []
+
+        async def call_tool(self, tool_id: str, _arguments: dict[str, Any]) -> MCPToolResult:
+            return MCPToolResult(tool_id=tool_id, output_text="tool ran")
+
+        def tool_spec(self, tool_id: str) -> Any:
+            return SimpleNamespace(read_only_hint=True)
+
+        async def __aenter__(self) -> _Pool:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    call_count = 0
+
+    async def model(**_kwargs: Any) -> _StubCompletion:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # Zero tool calls: announcement prose. The backstop must arm.
+            return _StubCompletion(content="I'll check the servers for you now.")
+        # Second completion (after the synthesized dispatch returned a
+        # tool result): dense prose that the chat-mode softening accepts.
+        return _StubCompletion(
+            content=(
+                "I checked the servers and gathered the status. The bind "
+                "VM is running and the bind-tls VM is stopped. Here is the "
+                "synthesis of the current state across the fleet — done."
+            )
+        )
+
+    hooks = TurnHooks(complete=model, mcp_tool_pool=_Pool())
+    catalog = {
+        "writer": WorkflowModeConfig(
+            mode_id="writer",
+            start_stage_id="none",
+            mode_kind="chat",
+            routable=True,
+            authored_allowed_operation_ids=["write_file"],
+            allowed_operation_ids=["write_file"],
+        ),
+    }
+    from kernel import config
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(config.settings, "chat_mode_dense_content_min_chars", 100)
+    try:
+        with (
+            patch(
+                "kernel.turn_runner.get_workflow_catalog",
+                return_value=catalog,
+            ),
+            patch(
+                "kernel.operations.registry.get_workflow_catalog",
+                return_value=catalog,
+                create=True,
+            ),
+            patch(
+                "kernel.ipsar_fsm.get_workflow_catalog",
+                return_value=catalog,
+            ),
+        ):
+            result = await run_turn(mode_id="writer", query="check the servers", hooks=hooks)
+    finally:
+        mp.undo()
+
+    # The backstop synthesized a dispatch (call_count > 1) and the
+    # follow-up dense prose was accepted by the chat-mode softening —
+    # NOT blocked as no_tools.
+    assert call_count >= 2, "backstop did not synthesize a dispatch"
+    assert result.blocked is False
+    assert result.block_origin == ""
+    assert "checked the servers" in result.response_text
+    # A real tool call was dispatched (the synth counts as a tool call).
+    assert result.tool_call_count >= 1
+
+
 # ── Regression: read-only MCP tool must not emit a write receipt ──────
 
 
