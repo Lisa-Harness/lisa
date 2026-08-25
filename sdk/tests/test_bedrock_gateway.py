@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from kernel.provider_contracts import (
     CompletionRequest,
@@ -44,6 +45,7 @@ def _request(
     tools: list[dict[str, Any]] | None = None,
     temperature: float = 0.0,
     max_tokens: int = 1024,
+    response_format: Any | None = None,
 ) -> CompletionRequest:
     return CompletionRequest(
         messages=messages,
@@ -51,6 +53,7 @@ def _request(
         max_tokens=max_tokens,
         temperature=temperature,
         tools=tools,
+        response_format=response_format,
     )
 
 
@@ -266,6 +269,64 @@ async def test_system_message_extracted() -> None:
     # system message should not appear in messages
     for m in client.captured_kwargs["messages"]:
         assert m["role"] != "system"
+
+
+@pytest.mark.asyncio
+async def test_inference_config_and_all_system_messages_are_sent() -> None:
+    response = {"output": {"message": {"content": [{"text": "ok"}]}}}
+    gateway, client = _gateway(response)
+    await gateway.complete(
+        _request(
+            [
+                {"role": "system", "content": "First instruction."},
+                {"role": "system", "content": "Second instruction."},
+                {"role": "user", "content": "hi"},
+            ],
+            max_tokens=4096,
+            temperature=0.3,
+        )
+    )
+    assert client.captured_kwargs["inferenceConfig"] == {
+        "maxTokens": 4096,
+        "temperature": 0.3,
+    }
+    assert client.captured_kwargs["system"] == [
+        {"text": "First instruction.\n\nSecond instruction."}
+    ]
+
+
+class _StructuredReply(BaseModel):
+    answer: str
+
+
+@pytest.mark.asyncio
+async def test_structured_output_adds_json_instruction_and_normalizes_content() -> None:
+    response = {
+        "output": {"message": {"content": [{"text": "```json\n{\"answer\": \"ok\"}\n```"}]}}
+    }
+    gateway, client = _gateway(response)
+    result = await gateway.complete(
+        _request(
+            [{"role": "user", "content": "hi"}],
+            response_format=_StructuredReply,
+        )
+    )
+    assert client.captured_kwargs["system"] == [
+        {"text": "Return only a valid JSON object with no Markdown wrapper."}
+    ]
+    assert result.content == '{"answer":"ok"}'
+
+
+@pytest.mark.asyncio
+async def test_stop_reason_is_normalized() -> None:
+    response = {
+        "output": {"message": {"content": [{"text": "partial"}]}},
+        "stopReason": "max_tokens",
+    }
+    gateway, _ = _gateway(response)
+    result = await gateway.complete(_request([{"role": "user", "content": "hi"}]))
+    assert result.finish_reason == "max_tokens"
+    assert result.truncated is True
 
 
 # ── Usage extraction ──────────────────────────────────────────────────

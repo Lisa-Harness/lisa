@@ -1,8 +1,7 @@
 """Host-side provider-gateway provider.
 
-The kernel's single live completion path now routes through
-``ContextSeams.provider_gateways`` (a :class:`ProviderGatewayProvider`) —
-the legacy ``host.providers.complete_live`` dispatch is removed. This module
+The kernel's single live completion path routes through
+``ContextSeams.provider_gateways`` (a :class:`ProviderGatewayProvider`). This module
 turns the pack's entry-point gateway factory (which returns gateway
 *classes*) into concrete, credential-bound gateway **instances** keyed by
 provider name.
@@ -10,28 +9,22 @@ provider name.
 Environment variables are resolved here (the host owns credentials), and the
 constructed gateway instances are cached per provider for the runtime's
 lifetime so the underlying SDK clients (which the existing
-``host.providers.*_client_instance`` factories cache on
-:class:`~host.runtime.HostRuntime`) are reused across turns. No gateway is
-constructed eagerly: instances are created lazily on the first
+local client factories cache on :class:`~host.runtime.HostRuntime`) are reused
+across turns. No gateway is constructed eagerly: instances are created lazily on the first
 ``gateway_for(provider)`` call and cached.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from collections.abc import Callable
 from typing import Any, Protocol
 
 import httpx
+from openai import AsyncAzureOpenAI, AsyncOpenAI
 
-from host.providers import (
-    anthropic_http_client_instance,
-    azure_client_instance,
-    azure_responses_client_instance,
-    ollama_client_instance,
-    openai_client_instance,
-)
 from host.runtime import HostRuntime
 
 logger = logging.getLogger(__name__)
@@ -97,7 +90,7 @@ class HostGatewayProvider:
         return self._instances[normalized]
 
     # ── Construction ────────────────────────────────────────────────
-    def _build(self, provider: str) -> Any | None:
+    def _build(self, provider: str) -> Any | None:  # noqa: PLR0911
         """Construct the gateway instance for one provider (uncached)."""
 
         gateway_cls = self._discovered.gateway_for(provider)
@@ -111,15 +104,15 @@ class HostGatewayProvider:
                 # api-version and the Responses API (Codex) on a preview
                 # api-version. Both factories are runtime-cached.
                 return gateway_cls(
-                    complete_client_factory=lambda: azure_client_instance(runtime),
-                    responses_client_factory=lambda: azure_responses_client_instance(runtime),
+                    complete_client_factory=lambda: _azure_client_instance(runtime),
+                    responses_client_factory=lambda: _azure_responses_client_instance(runtime),
                 )
             if provider == "anthropic":
                 # AnthropicGateway holds the raw runtime-cached httpx client;
                 # auth (x-api-key) and anthropic-version are injected
                 # per-request by the gateway from these values.
                 return gateway_cls(
-                    client_factory=lambda: anthropic_http_client_instance(runtime),
+                    client_factory=lambda: _anthropic_http_client_instance(runtime),
                     api_key=_env("LISA_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
                     api_version=_env("LISA_ANTHROPIC_VERSION") or "2023-06-01",
                 )
@@ -131,6 +124,20 @@ class HostGatewayProvider:
                     api_key=_env("LISA_GOOGLE_API_KEY", "GOOGLE_API_KEY"),
                     base_url=_env("LISA_GOOGLE_API_BASE_URL", "GOOGLE_API_BASE_URL")
                     or "https://generativelanguage.googleapis.com",
+                )
+            if provider == "aws":
+                # Let boto3's default credential chain handle instances,
+                # profiles, and env credentials when explicit values are absent.
+                return gateway_cls(
+                    region_name=_env("LISA_AWS_REGION", "AWS_REGION", "AWS_DEFAULT_REGION")
+                    or "us-east-1",
+                    aws_access_key_id=_env("LISA_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+                    or None,
+                    aws_secret_access_key=_env(
+                        "LISA_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"
+                    )
+                    or None,
+                    aws_session_token=_env("LISA_AWS_SESSION_TOKEN", "AWS_SESSION_TOKEN") or None,
                 )
             if provider == "openrouter":
                 return gateway_cls(client_factory=_openrouter_client_factory(runtime))
@@ -161,8 +168,110 @@ def _openai_compatible_client_factory(runtime: HostRuntime, provider: str) -> Ca
     """Return a client factory for the OpenAI-compatible (openai/ollama) gateways."""
 
     if provider == "openai":
-        return lambda: openai_client_instance(runtime)
-    return lambda: ollama_client_instance(runtime)
+        return lambda: _openai_client_instance(runtime)
+    return lambda: _ollama_client_instance(runtime)
+
+
+def _azure_client_instance(runtime: HostRuntime) -> AsyncAzureOpenAI:
+    """Return the cached Azure chat-completions client."""
+
+    existing_client = runtime.azure_client
+    if isinstance(existing_client, AsyncAzureOpenAI):
+        return existing_client
+    endpoint = _env("LISA_AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT")
+    api_key = _env("LISA_AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_KEY")
+    if not endpoint or not api_key:
+        raise ValueError(
+            "Azure OpenAI is not configured. Set LISA_AZURE_OPENAI_ENDPOINT and "
+            "LISA_AZURE_OPENAI_API_KEY (or AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY)."
+        )
+    client = AsyncAzureOpenAI(
+        api_version=_env("LISA_AZURE_OPENAI_API_VERSION") or "2024-10-21",
+        azure_endpoint=endpoint,
+        api_key=api_key,
+    )
+    runtime.azure_client = client
+    return client
+
+
+def _azure_responses_client_instance(runtime: HostRuntime) -> AsyncAzureOpenAI:
+    """Return the cached Azure Responses API client with its preview version."""
+
+    existing_client = runtime.azure_responses_client
+    if isinstance(existing_client, AsyncAzureOpenAI):
+        return existing_client
+    endpoint = _env("LISA_AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT")
+    api_key = _env("LISA_AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_KEY")
+    if not endpoint or not api_key:
+        raise ValueError(
+            "Azure OpenAI is not configured. Set LISA_AZURE_OPENAI_ENDPOINT and "
+            "LISA_AZURE_OPENAI_API_KEY (or AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY)."
+        )
+    api_version = _env("LISA_AZURE_OPENAI_RESPONSES_API_VERSION")
+    if not api_version:
+        raise ValueError(
+            "The Azure Responses API requires LISA_AZURE_OPENAI_RESPONSES_API_VERSION."
+        )
+    client = AsyncAzureOpenAI(
+        api_version=api_version,
+        azure_endpoint=endpoint,
+        api_key=api_key,
+    )
+    runtime.azure_responses_client = client
+    return client
+
+
+def _openai_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
+    """Return the cached public OpenAI client."""
+
+    existing_client = runtime.openai_client
+    if isinstance(existing_client, AsyncOpenAI):
+        return existing_client
+    api_key = _env("LISA_OPENAI_API_KEY", "OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OpenAI is not configured. Set LISA_OPENAI_API_KEY (or OPENAI_API_KEY).")
+    client = AsyncOpenAI(api_key=api_key)
+    runtime.openai_client = client
+    return client
+
+
+def _ollama_client_instance(runtime: HostRuntime) -> AsyncOpenAI:
+    """Return the cached Ollama OpenAI-compatible client."""
+
+    existing_client = runtime.ollama_client
+    if isinstance(existing_client, AsyncOpenAI):
+        return existing_client
+    configured_host = _env("LISA_OLLAMA_HOST", "OLLAMA_HOST")
+    base_url = _normalize_ollama_host_to_base_url(configured_host) or "http://localhost:11434/v1/"
+    client = AsyncOpenAI(
+        api_key=_env("LISA_OLLAMA_API_KEY", "OLLAMA_API_KEY") or "ollama",
+        base_url=base_url,
+    )
+    runtime.ollama_client = client
+    return client
+
+
+def _anthropic_http_client_instance(runtime: HostRuntime) -> httpx.AsyncClient:
+    """Return the cached raw Anthropic HTTP client."""
+
+    existing_client = runtime.anthropic_http_client
+    if isinstance(existing_client, httpx.AsyncClient):
+        return existing_client
+    base_url = _env("LISA_ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+    client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=60.0)
+    runtime.anthropic_http_client = client
+    return client
+
+
+def _normalize_ollama_host_to_base_url(host: str) -> str:
+    """Normalize an Ollama host value to an OpenAI-compatible base URL."""
+
+    normalized = host.strip().rstrip("/")
+    if not normalized:
+        return ""
+    if not normalized.startswith(("http://", "https://")):
+        normalized = f"http://{normalized}"
+    return f"{normalized}/" if normalized.endswith("/v1") else f"{normalized}/v1/"
 
 
 def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
@@ -179,8 +288,6 @@ def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
         existing = getattr(runtime, "_openrouter_client", None)
         if existing is not None:
             return existing
-        from openai import AsyncOpenAI
-
         api_key = _env(LISA_OPENROUTER_API_KEY_ENV, "OPENROUTER_API_KEY")
         if not api_key:
             raise ValueError(
@@ -203,10 +310,8 @@ def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
             base_url=base_url,
             default_headers=default_headers or None,
         )
-        try:
-            runtime._openrouter_client = client  # noqa: SLF001
-        except AttributeError:
-            pass
+        with contextlib.suppress(AttributeError):
+            runtime._openrouter_client = client
         return client
 
     return _build
@@ -214,5 +319,4 @@ def _openrouter_client_factory(runtime: HostRuntime) -> Callable[[], Any]:
 
 __all__ = [
     "HostGatewayProvider",
-    "httpx",
 ]

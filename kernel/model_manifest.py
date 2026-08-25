@@ -8,7 +8,7 @@ from typing import Any
 import yaml
 
 _DEFAULT_ALLOWED_PROVIDERS = frozenset(
-    {"azure_openai", "openai", "anthropic", "google", "ollama", "openrouter"}
+    {"aws", "azure_openai", "openai", "anthropic", "google", "ollama", "openrouter"}
 )
 
 

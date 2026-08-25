@@ -157,6 +157,32 @@ google:gemini-2.5-flash:
   latency_tier: low
   context_window: 1048576
 
+# ── AWS Bedrock overrides ────────────────────────────────────────────
+# Bedrock models are selected by their cross-region inference-profile IDs.
+# Discovery has no unauthenticated model-list endpoint, so these entries
+# provide the initial catalog for explicitly configured AWS credentials.
+
+aws:us.anthropic.claude-sonnet-4-20250514-v1:0:
+  display_name: Claude Sonnet 4 (Bedrock)
+  capabilities: [text, tools, structured_output, code, vision]
+  cost_tier: premium
+  latency_tier: medium
+  context_window: 200000
+
+aws:us.meta.llama4-maverick-17b-instruct-v1:0:
+  display_name: Llama 4 Maverick (Bedrock)
+  capabilities: [text, tools, structured_output, code, vision]
+  cost_tier: standard
+  latency_tier: medium
+  context_window: 1000000
+
+aws:us.amazon.nova-pro-v1:0:
+  display_name: Amazon Nova Pro (Bedrock)
+  capabilities: [text, tools, structured_output, code, vision]
+  cost_tier: standard
+  latency_tier: medium
+  context_window: 300000
+
 # ── OpenRouter overrides ──────────────────────────────────────────────
 # OpenRouter's /api/v1/models already carries pricing/context/modalities;
 # these entries pin the models it under-reports (exact cost tiers, coding
