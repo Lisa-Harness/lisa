@@ -2693,6 +2693,7 @@ async def _run_turn_inner(
         pack_configuration_resolver=hooks.pack_configuration_resolver,
         approval_service=hooks.approval_service,
         code_change_artifact_store=hooks.code_change_artifact_store,
+        gateway_provider_fn=lambda: hooks.context_seams.provider_gateways,
         workspace_id=hooks.workspace_id,
         user_id=hooks.user_id,
         user_slug=hooks.user_slug,

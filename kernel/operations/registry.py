@@ -698,6 +698,14 @@ async def execute_operation(
         introspect_fn=_existing_host._introspect_fn if _existing_host is not None else None,
         delegate_fn=_existing_host._delegate_fn if _existing_host is not None else None,
         fork_fn=_existing_host._fork_fn if _existing_host is not None else None,
+        # Preserve the provider-gateway seam. The production host sets
+        # ``complete=None`` and routes completion through the gateway; without
+        # this carry-through, ``ctx.host.complete`` falls back to the noop
+        # ``_complete_fn`` and operations fail with ``TurnHooks.complete is
+        # required``.
+        gateway_provider_fn=(
+            _existing_host._gateway_provider_fn if _existing_host is not None else None
+        ),
     )
     module = definition.implementation_module
     if module is None:
