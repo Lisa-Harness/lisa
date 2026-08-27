@@ -308,6 +308,114 @@ def normalize_openai_messages(
 # ── Request builders ─────────────────────────────────────────────────────
 
 
+def sanitize_chat_tool_names(
+    tools: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Sanitize function tool names for strict chat-completions backends.
+
+    Some OpenAI-compatible backends (OpenRouter upstreams such as Decart,
+    and others) enforce ``^[a-zA-Z0-9_-]+$`` on function names and reject
+    Lisa's dotted namespace names (e.g. ``lisa-storage.read_file``) with
+    ``400 backend_invalid_argument``. Sanitize every disallowed character
+    to ``_`` on the wire and return the reverse map so extracted tool calls
+    can be restored to their original names for the kernel dispatcher.
+
+    Returns ``(sanitized_tools, name_map)`` where ``name_map`` maps
+    ``sanitized_name -> original_name`` (empty when nothing was renamed).
+    """
+
+    if not tools:
+        return tools or [], {}
+    sanitized_tools: list[dict[str, Any]] = []
+    name_map: dict[str, str] = {}
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            sanitized_tools.append(tool)
+            continue
+        function_payload = tool.get("function")
+        if not isinstance(function_payload, dict):
+            sanitized_tools.append(tool)
+            continue
+        original = str(function_payload.get("name", "") or "")
+        sanitized = _sanitize_responses_tool_name(original)
+        if original and sanitized != original:
+            name_map[sanitized] = original
+            patched = dict(tool)
+            patched["function"] = {**function_payload, "name": sanitized}
+            sanitized_tools.append(patched)
+        else:
+            sanitized_tools.append(tool)
+    return sanitized_tools, name_map
+
+
+def restore_chat_tool_names(
+    tool_calls: list[dict[str, Any]], 
+    name_map: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Restore original dotted tool names in extracted chat-completions calls."""
+
+    if not name_map:
+        return tool_calls
+    for call in tool_calls:
+        sanitized = str(call.get("name", "") or "")
+        if sanitized in name_map:
+            call["name"] = name_map[sanitized]
+    return tool_calls
+
+
+def sanitize_chat_history_tool_names(
+    messages: ChatMessages,
+    name_map: dict[str, str],
+) -> ChatMessages:
+    """Sanitize tool-call names inside assistant message history.
+
+    Past turns record the original dotted names (the kernel dispatcher
+    matches on them), but strict backends reject those names anywhere in
+    the payload — including historical ``tool_calls``. Rewrite every
+    assistant ``tool_calls`` entry through the same sanitizer, extending
+    ``name_map`` so responses referencing those calls restore correctly.
+    """
+
+    if not messages:
+        return messages
+    sanitized_messages: ChatMessages = []
+    changed = False
+    for message in messages:
+        raw_tool_calls = message.get("tool_calls")
+        if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
+            sanitized_messages.append(message)
+            continue
+        patched_calls: list[Any] = []
+        message_changed = False
+        for tool_call in raw_tool_calls:
+            if not isinstance(tool_call, dict):
+                patched_calls.append(tool_call)
+                continue
+            function_payload = tool_call.get("function")
+            if not isinstance(function_payload, dict):
+                patched_calls.append(tool_call)
+                continue
+            original = str(function_payload.get("name", "") or "")
+            sanitized = _sanitize_responses_tool_name(original)
+            if original and sanitized != original:
+                name_map.setdefault(sanitized, original)
+                patched_calls.append(
+                    {
+                        **tool_call,
+                        "function": {**function_payload, "name": sanitized},
+                    }
+                )
+                message_changed = True
+            else:
+                patched_calls.append(tool_call)
+        if message_changed:
+            changed = True
+            sanitized_messages.append({**message, "tool_calls": patched_calls})
+        else:
+            sanitized_messages.append(message)
+    return sanitized_messages if changed else messages
+
+
 def build_openai_completion_kwargs(request: CompletionRequest) -> dict[str, Any]:
     """Build provider kwargs for one OpenAI-compatible completion request."""
 
@@ -1066,6 +1174,15 @@ class OpenAICompatibleGateway:
     async def complete(self, request: CompletionRequest) -> CompletionResult:
         client = self._client_factory()
         kwargs = build_openai_completion_kwargs(request)
+        # Strict OpenAI-compatible backends (OpenRouter upstreams, etc.)
+        # reject dotted tool names; sanitize on the wire and restore the
+        # originals on extraction so the kernel dispatcher still matches.
+        sanitized_tools, name_map = sanitize_chat_tool_names(kwargs.get("tools"))
+        if name_map:
+            kwargs["tools"] = sanitized_tools
+            kwargs["messages"] = sanitize_chat_history_tool_names(
+                kwargs["messages"], name_map
+            )
         await self._emit(
             {
                 "type": "provider_call_started",
@@ -1110,7 +1227,9 @@ class OpenAICompatibleGateway:
             model_id=request.model_def.model_id,
             display_name=request.model_def.display_name,
             request_id=request_id,
-            tool_calls=extract_openai_tool_calls(response),
+            tool_calls=restore_chat_tool_names(
+                extract_openai_tool_calls(response), name_map
+            ),
             usage=extract_openai_completion_usage(response),
         )
 
@@ -1144,6 +1263,15 @@ class OpenAICompatibleGateway:
         kwargs = build_openai_completion_kwargs(request)
         kwargs["stream"] = True
         kwargs["stream_options"] = {"include_usage": True}
+        # Strict backends validate tool names even on streaming requests;
+        # sanitize here too (no restoration needed — this path never parses
+        # tool-call deltas, the host falls back to complete() for tools).
+        sanitized_tools, _ = sanitize_chat_tool_names(kwargs.get("tools"))
+        if sanitized_tools is not kwargs.get("tools"):
+            kwargs["tools"] = sanitized_tools
+            kwargs["messages"] = sanitize_chat_history_tool_names(
+                kwargs["messages"], {}
+            )
         await self._emit(
             {
                 "type": "provider_call_started",
