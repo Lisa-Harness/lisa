@@ -4157,8 +4157,19 @@ async def _run_turn_inner(
                                 "routing hint named a target."
                             ),
                         }
-                    tool_call["function"]["name"] = _forced.expected_tool
-                    tool_call["function"]["arguments"] = json.dumps(tool_arguments)
+                    # Normalize the override to the provider's tool_call
+                    # shape. OpenAI wraps name/arguments inside a
+                    # ``function`` sub-dict; Ollama and other flat-shape
+                    # providers put them at the top level. ``openai_tool_call_to_mcp``
+                    # already handles both on read; this override path must
+                    # too, or it raises ``KeyError: 'function'`` for the
+                    # flat shape (2026-08-25 glm-5.2:cloud crash).
+                    if isinstance(tool_call.get("function"), dict):
+                        tool_call["function"]["name"] = _forced.expected_tool
+                        tool_call["function"]["arguments"] = json.dumps(tool_arguments)
+                    else:
+                        tool_call["name"] = _forced.expected_tool
+                        tool_call["arguments"] = json.dumps(tool_arguments)
                     tool_name = _forced.expected_tool
                     # The enforcer fires once per decision; clear the state
                     # so a subsequent model-issued call is not re-enforced
