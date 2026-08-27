@@ -1080,9 +1080,7 @@ class TurnHooks:
         active call.
 
     Failures in this hook are caught and logged; they never break the
-    turn. Default: None (no stage telemetry; the host's own
-    ``complete_live`` stage callbacks still fire separately when the
-    provider streaming mode is ``stage``/``hybrid``)."""
+    turn. Default: None (no stage telemetry)."""
 
     # ── Operator signals ────────────────────────────────────────────────
     operator_signal: Callable[[], str] | None = None
@@ -3750,8 +3748,8 @@ async def _run_turn_inner(
             )
 
             # ── Provider-gateway dispatch (single live completion path) ──
-            # The legacy ``complete_live`` dispatch is gone: every model call
-            # routes through ``ContextSeams.provider_gateways``. A model call
+            # Every model call routes through ``ContextSeams.provider_gateways``.
+            # A model call
             # with no gateway wired for the resolved provider fails with a
             # clear error (this is the error the ``provider_gateways``
             # docstring has always promised).
