@@ -34,6 +34,8 @@ class FakeSpec:
             "list": "list_memories",
             "get": "get_memory",
             "delete": "delete_memory",
+            "retire": "retire_memory",
+            "count": "count_memories",
         }
     )
     result_maps: dict[str, str] = field(default_factory=dict)
@@ -106,7 +108,15 @@ class TestImplicitLisaMemoryOnly:
         )
         names = _registered_names(pool)
         # Only the generic router — no per-backend synthetics.
-        assert names == ["memory.add", "memory.search", "memory.list"]
+        assert names == [
+            "memory.add",
+            "memory.search",
+            "memory.list",
+            "memory.get",
+            "memory.delete",
+            "memory.retire",
+            "memory.count",
+        ]
         # The generic router targets the implicit lisa_memory backend.
         add = next(r for r in pool.registered if r["name"] == "memory.add")
         assert add["target_tool"] == "add_memory"
@@ -158,8 +168,6 @@ class TestMem0AndLisaMemoryDeclared:
             "memory.add",
             "memory.search",
             "memory.list",
-            "memory.get",
-            "memory.delete",
         ]
 
     def test_generic_router_targets_default_backend(self) -> None:
@@ -258,10 +266,8 @@ class TestBackendResultMaps:
         from host.memory_aliases import _backend_result_maps
 
         spec = FakeSpec(id="lisa_memory", kind="stdio")
-        add_map, search_map, list_map = _backend_result_maps(spec)
-        assert add_map is None
-        assert search_map is None
-        assert list_map is None
+        maps = _backend_result_maps(spec)
+        assert all(m is None for m in maps)
 
     def test_mem0_result_maps_resolve_to_callables(self) -> None:
         """Mem0 result_maps import paths resolve to the actual adapter functions."""
@@ -277,7 +283,7 @@ class TestBackendResultMaps:
                 "list": "lisa_packs.mem0.result_maps.mem0_list_result_map",
             },
         )
-        add_map, search_map, list_map = _backend_result_maps(mem0_spec)
+        add_map, search_map, list_map, *_ = _backend_result_maps(mem0_spec)
         assert callable(add_map)
         assert callable(search_map)
         assert callable(list_map)
@@ -301,7 +307,7 @@ class TestBackendResultMaps:
             kind="http",
             result_maps={"add": "nonexistent.module.bad_function"},
         )
-        add_map, search_map, list_map = _backend_result_maps(spec)
+        add_map, search_map, list_map, *_ = _backend_result_maps(spec)
         assert add_map is None
         assert search_map is None
         assert list_map is None

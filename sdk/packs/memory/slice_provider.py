@@ -154,17 +154,37 @@ class MemoryConsolidationSlice:
     # ── Pressure + decision ──────────────────────────────────────────
 
     async def _episodic_count(self) -> int | None:
-        """Count active episodic records via the memory.list tool.
+        """Count active episodic records via the memory.count tool with list fallback.
 
-        Uses ``execute_tool("memory.list", {memory_kind="episodic",
-        status="active", limit=batch_size})`` and returns the list length.
-        A precise ``count_memories`` tool is not model-facing, so the
-        list length is the cheapest available proxy. Returns ``None`` when
-        the tool seam is unavailable or the call fails.
+        Uses ``execute_tool("memory.count", {memory_kind="episodic", status="active"})``.
+        Falls back to ``memory.list`` (bounded by ``max_records``) when ``memory.count``
+        is unavailable. Returns ``None`` when the tool seam is unavailable or fails.
         """
         exec_tool = getattr(self._hooks, "execute_tool", None)
         if not callable(exec_tool):
             return None
+        try:
+            result = await exec_tool(
+                "memory.count",
+                {
+                    "user_slug": self._config.user_slug,
+                    "workspace_id": self._config.workspace_id,
+                    "memory_scope": self._config.memory_scope,
+                    "surface_id": self._config.surface_id,
+                    "memory_kind": "episodic",
+                    "status": "active",
+                },
+            )
+            if not getattr(result, "error", None):
+                text = (getattr(result, "output_text", "") or "").strip()
+                if text.isdigit():
+                    return int(text)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.debug(
+                "memory_consolidation: memory.count unavailable, trying list fallback: %s",
+                exc,
+            )
+
         try:
             result = await exec_tool(
                 "memory.list",
@@ -175,7 +195,7 @@ class MemoryConsolidationSlice:
                     "surface_id": self._config.surface_id,
                     "memory_kind": "episodic",
                     "status": "active",
-                    "limit": self._config.batch_size,
+                    "limit": self._config.max_records,
                 },
             )
             if getattr(result, "error", None):

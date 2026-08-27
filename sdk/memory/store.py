@@ -278,7 +278,7 @@ class SqliteMemoryStore:
         # mismatch) logs and continues — the row is already durable in
         # ``memories``; semantic recall simply won't find it until the
         # embedding is backfilled.
-        await self._write_embedding(record.id, write.content)
+        await self._write_embedding(int(record.id), write.content)
         return record
 
     async def _write_embedding(self, memory_id: int, content: str) -> None:
@@ -606,6 +606,7 @@ class SqliteMemoryStore:
         tokens = {token.strip().lower() for token in query.split() if token.strip()}
         now_iso = _now_iso()
 
+        is_semantic = False
         rows = await self._semantic_pool(
             query=query,
             user_slug=user_slug,
@@ -617,7 +618,9 @@ class SqliteMemoryStore:
             now_iso=now_iso,
             recall_pool=recall_pool,
         )
-        if not rows:
+        if rows:
+            is_semantic = True
+        else:
             rows = self._lexical_pool(
                 user_slug=user_slug,
                 workspace_id=workspace_id,
@@ -640,6 +643,8 @@ class SqliteMemoryStore:
             if tokens:
                 haystack_tokens = {tok for tok in haystack_lower.split()}
                 overlap = len(tokens & haystack_tokens)
+                if not is_semantic and overlap == 0:
+                    continue
                 # Normalize by both query size and content length to avoid
                 # rewarding short content with a single matching keyword.
                 content_word_count = max(len(haystack_tokens), 1)
@@ -650,6 +655,9 @@ class SqliteMemoryStore:
             # Small recency bias: newer records (higher id) get a slight edge,
             # bounded so it never overrides a strong lexical match.
             ranked.append((lexical + salience_boost, record))
+
+        if not ranked:
+            return ""
 
         ranked.sort(key=lambda item: (item[0], item[1].id), reverse=True)
         top = ranked[: max(1, min(limit, 8))]
@@ -698,6 +706,7 @@ class SqliteMemoryStore:
         tokens = {token.strip().lower() for token in query.split() if token.strip()}
         now_iso = _now_iso()
 
+        is_semantic = False
         rows = await self._semantic_pool(
             query=query,
             user_slug=user_slug,
@@ -709,7 +718,9 @@ class SqliteMemoryStore:
             now_iso=now_iso,
             recall_pool=recall_pool,
         )
-        if not rows:
+        if rows:
+            is_semantic = True
+        else:
             rows = self._lexical_pool(
                 user_slug=user_slug,
                 workspace_id=workspace_id,
@@ -732,12 +743,17 @@ class SqliteMemoryStore:
             if tokens:
                 haystack_tokens = {tok for tok in haystack_lower.split()}
                 overlap = len(tokens & haystack_tokens)
+                if not is_semantic and overlap == 0:
+                    continue
                 content_word_count = max(len(haystack_tokens), 1)
                 lexical = overlap / max(len(tokens), 1) * (1.0 - 1.0 / content_word_count)
             else:
                 lexical = 1.0
             salience_boost = max(record.salience, 0.0) * 0.2
             ranked.append((lexical + salience_boost, record))
+
+        if not ranked:
+            return []
 
         ranked.sort(key=lambda item: (item[0], item[1].id), reverse=True)
         top = ranked[: max(1, min(limit, 8))]

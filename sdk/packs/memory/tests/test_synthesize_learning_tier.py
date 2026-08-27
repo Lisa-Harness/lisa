@@ -66,7 +66,7 @@ async def test_model_called_without_tier_defaults_to_daily() -> None:
         return ToolResult(tool_id=tool_id, error=f"unknown tool {tool_id}")
 
     ctx = _make_ctx(
-        params={"content": "some workflow status note"},
+        params={"content": "some workflow status note", "salience": 0.75},
         execute_tool_fn=execute_tool_fn,
     )
 
@@ -74,6 +74,10 @@ async def test_model_called_without_tier_defaults_to_daily() -> None:
     assert "✅ Learning stored" in result.output_text
     assert len(captured) == 1
     assert captured[0]["memory_tier"] == "daily"
+    assert captured[0]["salience"] == 0.75
+    assert captured[0]["operation_id"] == "save_learning"
+    assert captured[0]["confidence"] == 1.0
+    assert "content_json" in captured[0]
 
 
 @pytest.mark.asyncio

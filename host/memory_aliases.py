@@ -163,6 +163,8 @@ _LISA_MEMORY_IMPLICIT_SPEC = [
                 "list": "list_memories",
                 "get": "get_memory",
                 "delete": "delete_memory",
+                "retire": "retire_memory",
+                "count": "count_memories",
             },
         },
     )()
@@ -187,14 +189,34 @@ def _register_generic_router(
     raw_server_id = _BACKEND_ID_TO_SERVER_ID.get(backend_id, backend_id)
     server_id = f"{prefix}{raw_server_id}"
     tool_names = dict(default_spec.tool_names)
-    add_arg_map, search_arg_map, list_arg_map, get_arg_map, delete_arg_map = _backend_arg_maps(
-        backend_id
-    )
-    add_result_map, search_result_map, list_result_map, get_result_map, delete_result_map = (
-        _backend_result_maps(default_spec)
-    )
+    (
+        add_arg_map,
+        search_arg_map,
+        list_arg_map,
+        get_arg_map,
+        delete_arg_map,
+        retire_arg_map,
+        count_arg_map,
+    ) = _backend_arg_maps(backend_id)
+    (
+        add_result_map,
+        search_result_map,
+        list_result_map,
+        get_result_map,
+        delete_result_map,
+        retire_result_map,
+        count_result_map,
+    ) = _backend_result_maps(default_spec)
 
-    add_schema, search_schema, list_schema, get_schema, delete_schema = _memory_schemas()
+    (
+        add_schema,
+        search_schema,
+        list_schema,
+        get_schema,
+        delete_schema,
+        retire_schema,
+        count_schema,
+    ) = _memory_schemas()
 
     # Build the alias list dynamically, skipping any operation the backend
     # doesn't declare a tool name for. This keeps the router robust against
@@ -241,6 +263,22 @@ def _register_generic_router(
             delete_arg_map,
             delete_result_map,
         ),
+        (
+            "memory.retire",
+            "Retire a single memory record by id via the default backend.",
+            "retire",
+            retire_schema,
+            retire_arg_map,
+            retire_result_map,
+        ),
+        (
+            "memory.count",
+            "Count memory records matching scope and status via the default backend.",
+            "count",
+            count_schema,
+            count_arg_map,
+            count_result_map,
+        ),
     ]
     aliases = []
     for name, desc, op, schema, arg_map, result_map in alias_defs:
@@ -262,8 +300,8 @@ def _register_generic_router(
     pool.add_synthetic_tools(aliases)
 
 
-def _backend_arg_maps(backend_id: str) -> tuple[Any, Any, Any, Any, Any]:
-    """Return (add, search, list, get, delete) arg maps for a backend."""
+def _backend_arg_maps(backend_id: str) -> tuple[Any, Any, Any, Any, Any, Any, Any]:
+    """Return (add, search, list, get, delete, retire, count) arg maps for a backend."""
     if backend_id == "mem0":
 
         def _mem0_add_arg_map(args: dict[str, Any]) -> dict[str, Any]:
@@ -286,22 +324,33 @@ def _backend_arg_maps(backend_id: str) -> tuple[Any, Any, Any, Any, Any]:
             }
             return {k: v for k, v in mapped.items() if v is not None}
 
+        def _mem0_retire_arg_map(args: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "memory_id": args.get("memory_id"),
+                "user_id": args.get("user_slug", "default"),
+            }
+
+        def _mem0_count_arg_map(args: dict[str, Any]) -> dict[str, Any]:
+            return {k: v for k, v in args.items() if k != "user_slug"}
+
         return (
             _mem0_add_arg_map,
             _mem0_search_or_list_arg_map,
             _mem0_search_or_list_arg_map,
             _mem0_get_or_delete_arg_map,
             _mem0_get_or_delete_arg_map,
+            _mem0_retire_arg_map,
+            _mem0_count_arg_map,
         )
-    return None, None, None, None, None
+    return None, None, None, None, None, None, None
 
 
 def _backend_result_maps(
     default_spec: Any,
-) -> tuple[Any, Any, Any, Any, Any]:
+) -> tuple[Any, Any, Any, Any, Any, Any, Any]:
     """Resolve the backend's ``result_maps`` dotted import paths into callables.
 
-    Returns ``(add, search, list, get, delete)`` result maps — each is a
+    Returns ``(add, search, list, get, delete, retire, count)`` result maps — each is a
     ``Callable[[str], str]`` or ``None``. When the backend declares no
     ``result_maps`` (e.g. first-party lisa_memory which already returns the
     canonical ``list[MemoryRecord]`` JSON array), all five are ``None`` and
@@ -315,7 +364,7 @@ def _backend_result_maps(
     """
     result_maps = getattr(default_spec, "result_maps", None) or {}
     if not result_maps:
-        return None, None, None, None, None
+        return None, None, None, None, None, None, None
 
     def _resolve(path: str | None) -> Any:
         if not path:
@@ -343,13 +392,21 @@ def _backend_result_maps(
         _resolve(result_maps.get("list")),
         _resolve(result_maps.get("get")),
         _resolve(result_maps.get("delete")),
+        _resolve(result_maps.get("retire")),
+        _resolve(result_maps.get("count")),
     )
 
 
 def _memory_schemas() -> tuple[
-    dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
 ]:
-    """Return the (add, search, list, get, delete) input schemas shared by all surfaces.
+    """Return the (add, search, list, get, delete, retire, count) input schemas shared by all surfaces.
 
     These are the model-facing schemas for the generic ``memory.*`` aliases.
     ``user_slug`` is intentionally ABSENT from every schema: it is an ambient
@@ -399,4 +456,26 @@ def _memory_schemas() -> tuple[
         },
         "required": ["memory_id"],
     }
-    return add_schema, search_schema, list_schema, get_schema, delete_schema
+    retire_schema = {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "integer", "description": "The memory record id to retire."},
+        },
+        "required": ["memory_id"],
+    }
+    count_schema = {
+        "type": "object",
+        "properties": {
+            "memory_kind": {"type": "string", "description": "Optional kind filter."},
+            "status": {"type": "string", "default": "active"},
+        },
+    }
+    return (
+        add_schema,
+        search_schema,
+        list_schema,
+        get_schema,
+        delete_schema,
+        retire_schema,
+        count_schema,
+    )

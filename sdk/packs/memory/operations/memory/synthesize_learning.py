@@ -325,6 +325,10 @@ async def execute(ctx: OperationExecutionContext) -> OperationResult:
                 "surface_id": ctx.surface_id,
                 "memory_scope": ctx.memory_scope,
                 "memory_tier": memory_tier,
+                "salience": salience,
+                "operation_id": memory_operation_id,
+                "confidence": 1.0,
+                "content_json": content_json,
             },
         ),
     )

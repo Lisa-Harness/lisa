@@ -72,6 +72,7 @@ def build_memory_recall_answer(
 
     evidence: list[MemoryRecallEvidence] = []
     for score, record in top:
+        reasons = ["lexical overlap"] if score > (record.salience * 0.2) else ["salience match"]
         evidence.append(
             MemoryRecallEvidence(
                 memory_id=record.id,
@@ -86,12 +87,19 @@ def build_memory_recall_answer(
                 combined_score=round(score, 3),
                 lexical_score=round(score, 3),
                 recency_score=1.0,
-                match_reasons=["lexical overlap"],
+                match_reasons=reasons,
             )
         )
 
     summary = evidence[0].content
     confidence = evidence[0].combined_score if evidence else 0.0
+    if query_tokens and confidence <= 0.0:
+        return MemoryRecallAnswer(
+            query=query,
+            found=False,
+            answer=f"No memory matches found for: {query}",
+        )
+
     return MemoryRecallAnswer(
         query=query,
         found=True,

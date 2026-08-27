@@ -373,15 +373,34 @@ async def test_recall_returns_empty_when_no_records(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_recall_falls_back_to_recent_when_no_token_overlap(
+async def test_recall_returns_empty_when_no_token_overlap(
     tmp_path: Path,
 ) -> None:
-    """When the query matches nothing, the most recent records are returned."""
+    """When a non-empty query matches nothing, empty string is returned and access_count is not bumped."""
+    store = _store(tmp_path)
+    r1 = await store.record_memory(_write(content="unrelated content one"))
+    r2 = await store.record_memory(_write(content="unrelated content two"))
+
+    result = await store.recall("zzz no match", user_slug="adam", limit=2)
+    assert result == ""
+
+    # Verify access_count was not bumped
+    fetched1 = await store.get_memory(memory_id=r1.id, user_slug="adam")
+    fetched2 = await store.get_memory(memory_id=r2.id, user_slug="adam")
+    assert fetched1 is not None and fetched1.access_count == 0
+    assert fetched2 is not None and fetched2.access_count == 0
+
+
+@pytest.mark.asyncio
+async def test_recall_returns_recent_when_query_is_empty(
+    tmp_path: Path,
+) -> None:
+    """When the query is empty (unfiltered browse), the most recent records are returned."""
     store = _store(tmp_path)
     await store.record_memory(_write(content="unrelated content one"))
     await store.record_memory(_write(content="unrelated content two"))
 
-    result = await store.recall("zzz no match", user_slug="adam", limit=2)
+    result = await store.recall("", user_slug="adam", limit=2)
 
     lines = [line[2:] for line in result.splitlines()]
     assert "unrelated content two" in lines

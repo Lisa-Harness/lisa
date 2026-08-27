@@ -55,6 +55,20 @@ def test_build_memory_recall_answer_ranks_overlap_then_salience() -> None:
     assert [item.memory_id for item in recall.evidence] == [1, 2]
 
 
+def test_build_memory_recall_answer_zero_overlap_returns_not_found() -> None:
+    recall = build_memory_recall_answer(
+        query="completely unrelated query",
+        records=[
+            _record(record_id=1, content="We chose PostgreSQL for the database.", salience=0.0),
+        ],
+        limit=2,
+    )
+
+    assert recall.found is False
+    assert "No memory matches found" in recall.answer
+    assert recall.confidence == 0.0
+
+
 @pytest.mark.asyncio
 async def test_recall_operation_uses_memory_list_and_returns_ranked_evidence() -> None:
     calls: list[str] = []

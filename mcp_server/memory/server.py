@@ -8,10 +8,12 @@ Owns the SQLite-backed memory store (extracted from the former
 - ``list_memories`` — raw JSON array of recent memory records
 - ``get_memory`` — fetch a single record by id
 - ``delete_memory`` — remove a single record by id
+- ``retire_memory`` — mark a memory retired
+- ``count_memories`` — count memory records matching scope and filters
 
 This is the default backend behind the generic ``memory.add`` /
-``memory.search`` / ``memory.list`` / ``memory.get`` / ``memory.delete``
-synthetic aliases. Mem0 (or any other HTTP/stdio memory server) serves the
+``memory.search`` / ``memory.list`` / ``memory.get`` / ``memory.delete`` /
+``memory.retire`` / ``memory.count`` synthetic aliases. Mem0 (or any other HTTP/stdio memory server) serves the
 same five operations and more via the MCP tool pool; modes that want Mem0's
 full surface declare the server's tools directly.
 """
@@ -378,6 +380,34 @@ async def retire_memory(
     if not retired:
         raise ToolError("No active memory found.")
     return f"Retired memory {memory_id}."
+
+
+@mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+async def count_memories(
+    user_slug: str,
+    memory_scope: str = "personal",
+    workspace_id: str = "default",
+    surface_id: str = "",
+    memory_kind: str | None = None,
+    status: str | None = "active",
+    ctx: Context[MemoryDeps, Any] | None = None,
+) -> str:
+    """Return the count of memory records matching the scope and filters.
+
+    ``status`` defaults to ``"active"`` so retired records are excluded;
+    pass ``None`` to count all statuses. ``memory_kind`` filters by
+    ``episodic``/``semantic``/… when given.
+    """
+    store = _resolve_deps(ctx).store
+    count = await store.count_memories(
+        user_slug=user_slug,
+        workspace_id=workspace_id,
+        memory_scope=memory_scope,
+        surface_id=surface_id,
+        memory_kind=memory_kind,
+        status=status,
+    )
+    return str(count)
 
 
 def _init(args: Any) -> None:

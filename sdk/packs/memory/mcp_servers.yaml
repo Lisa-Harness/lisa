@@ -20,6 +20,7 @@ memory:
         get: get_memory
         delete: delete_memory
         retire: retire_memory
+        count: count_memories
 servers:
   - server_id: lisa-memory
     runtime_kind: venv_bin
@@ -38,6 +39,7 @@ servers:
         - delete_memory
         - list_memories
         - retire_memory
+        - count_memories
     # proxy_policy strips the ambient identity field (user_slug) from the
     # native tools' model-facing schema and injects it from the host
     # runtime at dispatch time. The model never sees or sets user_slug —

@@ -78,10 +78,14 @@ class _FakeHooks:
 
     async def execute_tool(self, tool_id: str, params: dict[str, Any]) -> Any:
         self.tool_calls.append((tool_id, dict(params)))
+        if tool_id == "memory.count":
+            class _RCount:
+                output_text = str(len(self._records))
+            return _RCount()
         if tool_id == "memory.list":
-            class _R:
+            class _RList:
                 output_text = json.dumps(self._records)
-            return _R()
+            return _RList()
         return type("_R", (), {"output_text": "", "error": "unknown"})()
 
     async def execute_operation(self, op_id: str, params: dict[str, Any]) -> Any:
@@ -94,7 +98,7 @@ class _FakeHooks:
 
 
 class _ErrorHooks(_FakeHooks):
-    """Hooks view whose memory.list returns a ToolResult-shaped error.
+    """Hooks view whose memory.count and memory.list return ToolResult-shaped errors.
 
     Mirrors what ``host.turn_hooks_builder._execute_tool`` now produces when
     the MCP pool returns an error: an object with a non-empty ``error`` and an
@@ -104,7 +108,7 @@ class _ErrorHooks(_FakeHooks):
 
     async def execute_tool(self, tool_id: str, params: dict[str, Any]) -> Any:
         self.tool_calls.append((tool_id, dict(params)))
-        if tool_id == "memory.list":
+        if tool_id in ("memory.count", "memory.list"):
             return type("_R", (), {"output_text": "", "error": "server down"})()
         return await super().execute_tool(tool_id, params)
 
@@ -248,6 +252,37 @@ async def test_tool_error_result_is_no_count(tmp_path: Path) -> None:
     # The list call was attempted; the error short-circuited before firing.
     assert hooks.op_calls == []
     assert outcome.notes[0] == "no_episodic_count_seam"
+
+
+@pytest.mark.asyncio
+async def test_fallback_to_list_when_count_unavailable(tmp_path: Path) -> None:
+    """When memory.count is unsupported/fails, the slice falls back to memory.list."""
+    class _FallbackHooks(_FakeHooks):
+        async def execute_tool(self, tool_id: str, params: dict[str, Any]) -> Any:
+            self.tool_calls.append((tool_id, dict(params)))
+            if tool_id == "memory.count":
+                return type("_R", (), {"output_text": "", "error": "unknown tool memory.count"})()
+            if tool_id == "memory.list":
+                return type("_R", (), {"output_text": json.dumps(self._records), "error": None})()
+            return type("_R", (), {"output_text": "", "error": "unknown"})()
+
+    records = [{"id": i, "content": f"e{i}", "created_at": "2026-07-01T00:00:00Z"} for i in range(9)]
+    hooks = _FallbackHooks(episodic_records=records)
+    slc = MemoryConsolidationSlice(
+        config=_config(
+            pressure_threshold=0.3,
+            hard_threshold=0.85,
+            min_interval_turns=0,
+            min_episodic_count=5,
+            max_records=10,
+            memory_data_dir=tmp_path,
+        ),
+        turn_hooks=hooks,
+    )
+    outcome = await slc.slice(None, _policy())
+    assert outcome.work_items_completed == 1
+    assert "memory.count" in [c[0] for c in hooks.tool_calls]
+    assert "memory.list" in [c[0] for c in hooks.tool_calls]
 
 
 def test_factory_returns_none_when_disabled() -> None:

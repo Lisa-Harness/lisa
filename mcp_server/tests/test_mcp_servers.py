@@ -84,7 +84,7 @@ async def test_memory_search_no_match(memory_env: Path) -> None:
         "search_memory",
         {"user_slug": "nobody", "query": "zzzzz"},
     )
-    assert "No relevant memories" in _tool_text(result)
+    assert _tool_text(result) == "[]"
 
 
 @pytest.mark.asyncio
@@ -193,7 +193,38 @@ async def test_memory_delete_memory_cross_surface_is_not_found(memory_env: Path)
 
 
 @pytest.mark.asyncio
-async def test_memory_lists_five_tools() -> None:
+async def test_memory_retire_memory_by_id(memory_env: Path) -> None:
+    from mcp_server.memory.server import mcp
+
+    add_result = await mcp.call_tool(
+        "add_memory",
+        {"user_slug": "alice", "content": "retire target"},
+    )
+    memory_id = int(_tool_text(add_result).rsplit("ID ", 1)[-1])
+    retire_result = await mcp.call_tool(
+        "retire_memory",
+        {"memory_id": memory_id, "user_slug": "alice"},
+    )
+    assert f"Retired memory {memory_id}" in _tool_text(retire_result)
+
+    # list_memories by default excludes retired
+    list_result = await mcp.call_tool("list_memories", {"user_slug": "alice"})
+    parsed = json.loads(_tool_text(list_result))
+    assert all(r["id"] != memory_id for r in parsed)
+
+
+@pytest.mark.asyncio
+async def test_memory_count_memories(memory_env: Path) -> None:
+    from mcp_server.memory.server import mcp
+
+    await mcp.call_tool("add_memory", {"user_slug": "alice", "content": "note 1"})
+    await mcp.call_tool("add_memory", {"user_slug": "alice", "content": "note 2"})
+    count_result = await mcp.call_tool("count_memories", {"user_slug": "alice"})
+    assert _tool_text(count_result) == "2"
+
+
+@pytest.mark.asyncio
+async def test_memory_lists_tools() -> None:
     from mcp_server.memory.server import mcp
 
     tools = await mcp.list_tools()
@@ -204,6 +235,8 @@ async def test_memory_lists_five_tools() -> None:
         "list_memories",
         "get_memory",
         "delete_memory",
+        "retire_memory",
+        "count_memories",
     } <= names
 
 
