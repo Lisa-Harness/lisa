@@ -3939,6 +3939,15 @@ async def _run_turn_inner(
             }
         messages.append(assistant_msg)
 
+        # Initialize before the tool-calls branch: the dispatch path
+        # (real tool calls) reaches the synthesized-call required-params
+        # guard below and reads ``_synthesized_forced``. When the model
+        # returns its own calls, this stays ``False`` — no synth happened.
+        # When the empty-completion path synthesizes a forced call, the
+        # branch below flips it to ``True``. Without this default the
+        # dispatch path raises ``UnboundLocalError`` on a real-tool-call
+        # iteration (2026-08-27 planner transition turn).
+        _synthesized_forced = False
         if not tool_calls:
             # ── Forced-action enforcer (empty-completion path) ───────
             # The model returned no tool calls while a deterministic
@@ -3948,7 +3957,6 @@ async def _run_turn_inner(
             # of accepting the empty turn (the 2026-07-27 fork incident;
             # the 2026-08-07 chained-pipeline stall). One synth site for
             # both shapes (Phase 5).
-            _synthesized_forced = False
             if _state.forced_action:
                 _fa = _state.forced_action
                 _log.warning(
