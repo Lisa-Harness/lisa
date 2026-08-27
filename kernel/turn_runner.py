@@ -128,6 +128,61 @@ def _read_cache_signature(tool_name: str, tool_arguments: dict[str, Any]) -> str
     return "|".join(parts)
 
 
+def _synthesized_call_missing_all_required(
+    tool_name: str,
+    tool_arguments: dict[str, Any],
+    *,
+    operation_catalog: dict[str, Any],
+    tool_catalog: dict[str, Any],
+) -> bool:
+    """Return True when a *kernel-synthesized* call is missing every required
+    parameter of its target tool/operation.
+
+    The forced-action enforcer and the do-the-work backstop synthesize tool
+    calls with empty (``{}``) arguments when the model returns no tool calls.
+    For routing-only syntheses (``transition_stage``, ``fork``) that is
+    correct — those tools take optional/derived args. For an action-tool
+    synthesis (the write-contract backstop picking the mode's first action
+    tool), empty args are a guaranteed validation failure: action tools
+    require user-supplied parameters (``cs_apply_cloud_init`` needs 7). The
+    dispatch raises a pydantic ``ValidationError``, the result is fed back to
+    the model, and the backstop can re-arm and loop — burning iterations on a
+    call that can never succeed because the kernel has no values to fill.
+
+    This guard lets the synthesis sites detect that case and abort the turn
+    with the model's prose instead of dispatching a guaranteed failure. A
+    turn that routed into a write-contract mode the user never actually
+    requested (the 2026-08-27 cloudservers misroute) should surface the
+    model's answer, not fire a destructive action with empty params.
+
+    Returns False when the tool is unknown (MCP-native tools have no kernel
+    definition — let the normal dispatch path handle them), when the tool
+    has no ``parameters_schema`` (no validation contract — dispatch), or
+    when at least one required parameter is supplied.
+    """
+    bare = bare_tool_name(tool_name)
+    definition = operation_catalog.get(tool_name) or tool_catalog.get(tool_name)
+    if definition is None:
+        definition = operation_catalog.get(bare) or tool_catalog.get(bare)
+    if definition is None:
+        return False
+    schema = getattr(definition, "parameters_schema", None)
+    if schema is None:
+        return False
+    model_fields = getattr(schema, "model_fields", None)
+    if not model_fields:
+        return False
+    required_names = [
+        name
+        for name, field in model_fields.items()
+        if getattr(field, "is_required", lambda: False)()
+    ]
+    if not required_names:
+        return False
+    supplied = {k for k, v in (tool_arguments or {}).items() if v is not None}
+    return not any(name in supplied for name in required_names)
+
+
 def _format_read_abbreviation(
     template: str,
     params: dict[str, Any],
@@ -4103,6 +4158,44 @@ async def _run_turn_inner(
         for tool_call in tool_calls:
             tool_name, tool_arguments = openai_tool_call_to_mcp(tool_call)
             tool_call_id = str(tool_call.get("id") or "")
+
+            # ── Synthesized-call required-params guard ─────────────────
+            # A kernel-synthesized call (forced-action enforcer or
+            # do-the-work backstop) with empty arguments cannot succeed
+            # against an action tool that requires user-supplied params.
+            # Dispatching it raises a pydantic ValidationError, feeds the
+            # error back to the model, and the backstop can re-arm and
+            # loop — burning iterations on a call the kernel has no
+            # values to fill. This is the 2026-08-27 cloudservers misroute:
+            # the write-contract backstop synthesized ``cs_apply_cloud_init``
+            # with ``{}``, it failed 7-missing-required, re-armed, and
+            # looped while the user had asked to *leave* the topic.
+            #
+            # Abort the turn with the model's prose instead of
+            # dispatching a guaranteed failure. Routing-only syntheses
+            # (``transition_stage``, ``fork``) take optional/derived args
+            # and are never missing all required params, so they pass
+            # through unchanged. A turn that routed into a write-contract
+            # mode the user never requested should surface the model's
+            # answer, not fire a destructive action with empty params.
+            if _synthesized_forced and _synthesized_call_missing_all_required(
+                tool_name,
+                tool_arguments,
+                operation_catalog=operation_catalog,
+                tool_catalog=tool_catalog,
+            ):
+                _log.warning(
+                    "synthesized call %s is missing all required "
+                    "parameters; aborting dispatch to avoid a guaranteed "
+                    "validation failure and backstop loop (mode=%s, "
+                    "iteration=%d) — routing misfire, surfacing model prose",
+                    tool_name,
+                    mode_id,
+                    _state.iteration,
+                )
+                _state.forced_action = None
+                _state.forced_work_tool = ""
+                break
 
             # ── Forced-action enforcer (dispatch path) ────────────────
             # When the kernel has computed a deterministic routing

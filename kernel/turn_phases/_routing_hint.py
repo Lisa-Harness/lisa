@@ -128,12 +128,41 @@ def _detect_query_intents(
     (case-insensitive). This is data-driven: the kernel does not hardcode
     which keywords map to which intents — the mode front-matter declares both
     the patterns and the tags.
+
+    Intent polarity guard: when the session's ``topic_abandonment_markers``
+    vocabulary contains a marker present in the query (e.g. "side quest",
+    "rewind", "never mind"), the user is *talking about* a topic to leave
+    it, not requesting its tools. Any target whose keywords/patterns
+    matched in the same query is treated as the abandoned topic and its
+    intents are suppressed. Without this guard a bare-substring keyword
+    match fires on any mention — "the whole cloudservers thing was a side
+    quest, so lets rewind" matched ``cloudservers``'s ``cloud`` keyword and
+    routed the user INTO ``cloudservers`` (2026-08-27 incident).
     """
     if not routing_targets:
         _log.debug("query intent detection: no routing targets to match")
         return set()
     catalog = get_workflow_catalog()
     query_lower = query.lower()
+
+    # Intent-polarity guard: detect topic-abandonment discourse markers.
+    # When present, a target whose keywords/patterns also match the query
+    # is the topic being abandoned, not requested — suppress its intents.
+    abandoned_targets: set[str] = set()
+    try:
+        from kernel.routing_vocabulary import get_topic_abandonment_markers
+
+        abandonment_markers = get_topic_abandonment_markers()
+    except RuntimeError:
+        abandonment_markers = ()
+    if abandonment_markers:
+        has_marker = any(marker in query_lower for marker in abandonment_markers)
+        if has_marker:
+            _log.info(
+                "query intent detection: topic-abandonment marker present; "
+                "suppressing matched targets' intents (markers=%s)",
+                [m for m in abandonment_markers if m in query_lower],
+            )
     detected: set[str] = set()
     for target_id in routing_targets:
         mode_config = catalog.get(target_id)
@@ -145,35 +174,54 @@ def _detect_query_intents(
         for pattern in mode_config.fast_path_patterns:
             try:
                 if re.search(pattern, query_lower, re.IGNORECASE):
-                    detected.update(mode_config.routing_intent_tags)
-                    _log.debug("query intent detection: target=%s matched via pattern=%r (tags=%s)", target_id, pattern, mode_config.routing_intent_tags)
                     matched = True
                     break
             except re.error:
                 _log.debug("query intent detection: target=%s invalid pattern=%r", target_id, pattern)
-        if matched:
-            continue
-        # Check routing_intent_keywords (per-tag substring match). Each
-        # keyword only attributes its associated tag, so a keyword match for
-        # one tag does not falsely trigger a different tag the same mode
-        # declares. The tag vocabulary is pack-authored and opaque to the
-        # kernel.
-        for tag, keywords in mode_config.routing_intent_keywords.items():
-            for keyword in keywords:
-                if keyword in query_lower:
-                    detected.add(tag)
-                    _log.debug("query intent detection: target=%s matched via keyword=%r for tag=%s", target_id, keyword, tag)
+        if not matched:
+            # Check routing_intent_keywords (per-tag substring match). Each
+            # keyword only attributes its associated tag, so a keyword match
+            # for one tag does not falsely trigger a different tag the same
+            # mode declares. The tag vocabulary is pack-authored and opaque
+            # to the kernel.
+            for keywords in mode_config.routing_intent_keywords.values():
+                for keyword in keywords:
+                    if keyword in query_lower:
+                        matched = True
+                        break
+                if matched:
                     break
-        # Also check the command_pattern — a query that explicitly names the
-        # mode (e.g. "remember that...") is a strong signal.
-        if not mode_config.routing_intent_keywords and mode_config.command_pattern:
-            try:
-                if re.search(mode_config.command_pattern, query, re.IGNORECASE):
-                    detected.update(mode_config.routing_intent_tags)
-                    _log.debug("query intent detection: target=%s matched via command_pattern=%r", target_id, mode_config.command_pattern)
-            except re.error:
-                _log.debug("query intent detection: target=%s invalid command_pattern=%r", target_id, mode_config.command_pattern)
-    _log.info("query intents detected: intents=%s (from %d routing targets)", sorted(detected), len(routing_targets))
+            # Also check the command_pattern — a query that explicitly names
+            # the mode (e.g. "remember that...") is a strong signal.
+            if not matched and not mode_config.routing_intent_keywords and mode_config.command_pattern:
+                try:
+                    if re.search(mode_config.command_pattern, query, re.IGNORECASE):
+                        matched = True
+                except re.error:
+                    _log.debug("query intent detection: target=%s invalid command_pattern=%r", target_id, mode_config.command_pattern)
+        if not matched:
+            continue
+        # Polarity guard: this target matched, but if an abandonment marker
+        # is present the match means the user is *mentioning* the topic to
+        # abandon it, not requesting its tools. Suppress its intents and
+        # record it as abandoned so the covering/fork logic below also skips
+        # it. A genuine request for the same mode would not co-occur with a
+        # marker in the same query.
+        if abandonment_markers and any(marker in query_lower for marker in abandonment_markers):
+            abandoned_targets.add(target_id)
+            _log.info(
+                "query intent detection: target=%s matched but suppressed (topic-abandonment marker present)",
+                target_id,
+            )
+            continue
+        detected.update(mode_config.routing_intent_tags)
+        _log.debug("query intent detection: target=%s matched (tags=%s)", target_id, mode_config.routing_intent_tags)
+    _log.info(
+        "query intents detected: intents=%s suppressed=%s (from %d routing targets)",
+        sorted(detected),
+        sorted(abandoned_targets),
+        len(routing_targets),
+    )
     return detected
 
 

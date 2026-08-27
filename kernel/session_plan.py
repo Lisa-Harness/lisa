@@ -235,6 +235,34 @@ class SessionRouting(_StrictSessionModel):
     The counterpart to ``producer_intents``; see that field's docstring.
     The session defines the set; the kernel has no hardcoded fallback."""
 
+    topic_abandonment_markers: tuple[str, ...] = ()
+    """Lowercased substrings that signal the user is *leaving* a topic,
+    not requesting it (e.g. ``"side quest"``, ``"rewind"``, ``"never
+    mind"``, ``"forget"``, ``"different topic"``, ``"not about"``). When a
+    marker is present in the query, the routing-hint generator's
+    :func:`kernel.turn_phases._routing_hint._detect_query_intents`
+    suppresses intents for any routing target whose keywords/patterns also
+    appear in the query — the user is *mentioning* the topic to abandon
+    it, not requesting its tools.
+
+    Without this guard a bare-substring keyword match fires on any
+    mention of a topic. "TBH the whole cloudservers thing was a side
+    quest, so lets rewind" matched the ``cloudservers`` mode's ``cloud``
+    keyword, routed the user INTO ``cloudservers``, and the write-contract
+    backstop synthesized a destructive ``cs_apply_cloud_init`` call with
+    empty args (2026-08-27 incident). This is the same class of bug as the
+    ``read``/``coding`` keyword-pollution loop
+    (``read-keyword-pollution-traps-coding-2026-08-03``): the detector has
+    no notion of intent polarity (requesting vs. referencing vs.
+    rejecting a topic).
+
+    The list is **session-authored vocabulary** — opaque to the kernel,
+    which only does case-insensitive substring matching. The session
+    defines the list; the kernel has no hardcoded fallback. Keep entries
+    to unambiguous discourse markers; avoid words that appear in genuine
+    requests (e.g. ``"back"`` would suppress a real "go back to coding"
+    handoff)."""
+
 
 class InstructionFragment(_StrictSessionModel):
     """An explicit authored instruction fragment resolved at plan compilation."""

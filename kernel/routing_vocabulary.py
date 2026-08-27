@@ -41,6 +41,7 @@ __all__ = [
     "get_producer_intents",
     "get_resume_phrases",
     "get_sequential_connectors",
+    "get_topic_abandonment_markers",
     "is_plan_reliable_for_model",
     "mark_plan_unreliable_for_model",
     "register_routing_vocabulary",
@@ -55,6 +56,13 @@ _sequential_connectors: tuple[str, ...] | None = None
 _producer_intents: frozenset[str] | None = None
 _consumer_intents: frozenset[str] | None = None
 _resume_phrases: tuple[str, ...] | None = None
+# Lowercased substrings signaling the user is leaving a topic, not
+# requesting it (e.g. "side quest", "rewind", "never mind"). See
+# ``SessionRouting.topic_abandonment_markers``. Empty tuple (not None)
+# means "session explicitly wired an empty list — no abandonment
+# detection"; None means "unwired — reader raises". The kernel has no
+# hardcoded fallback.
+_topic_abandonment_markers: tuple[str, ...] | None = None
 
 # Per-(model, op) entry-op reliability registry. When a routing-capable
 # entry operation (``plan_workflow`` today; ``delegate`` in the future)
@@ -175,6 +183,7 @@ def register_routing_vocabulary(
     producer_intents: list[str] | tuple[str, ...] | None = None,
     consumer_intents: list[str] | tuple[str, ...] | None = None,
     resume_phrases: list[str] | tuple[str, ...] | None = None,
+    topic_abandonment_markers: list[str] | tuple[str, ...] | None = None,
 ) -> None:
     """Inject routing vocabulary compiled from the session plan.
 
@@ -185,14 +194,16 @@ def register_routing_vocabulary(
     ``RuntimeError``. The host is responsible for compiling the session
     plan's ``routing.sequential_connectors`` /
     ``routing.producer_intents`` / ``routing.consumer_intents`` /
-    ``routing.resume_phrases`` lists and passing them here; the kernel
-    never reads the session plan directly.
+    ``routing.resume_phrases`` / ``routing.topic_abandonment_markers``
+    lists and passing them here; the kernel never reads the session plan
+    directly.
     """
-    global _sequential_connectors, _producer_intents, _consumer_intents, _resume_phrases  # noqa: PLW0603
+    global _sequential_connectors, _producer_intents, _consumer_intents, _resume_phrases, _topic_abandonment_markers  # noqa: PLW0603
     _sequential_connectors = _normalize_connectors(sequential_connectors) or None
     _producer_intents = _normalize_intent_roles(producer_intents)
     _consumer_intents = _normalize_intent_roles(consumer_intents)
     _resume_phrases = _normalize_resume_phrases(resume_phrases) or None
+    _topic_abandonment_markers = _normalize_abandonment_markers(topic_abandonment_markers)
 
 
 def _normalize_intent_roles(
@@ -229,17 +240,47 @@ def _normalize_resume_phrases(
     return tuple(out)
 
 
+def _normalize_abandonment_markers(
+    raw: list[str] | tuple[str, ...] | None,
+) -> tuple[str, ...] | None:
+    """Normalize topic-abandonment markers to lowercased, stripped tokens.
+
+    Unlike sequential connectors, abandonment markers are NOT space-padded:
+    they are multi-word discourse phrases ("side quest", "never mind",
+    "different topic") and must match anywhere in the lowered query, so
+    padding would break multi-word phrases that abut punctuation. The
+    detector applies them as plain case-insensitive substring matches.
+    Empty entries are dropped; duplicates are removed, preserving
+    first-seen order. Returns ``None`` when ``raw`` is falsy so the reader
+    raises (no hardcoded fallback); an explicitly empty list also yields
+    ``None`` — an empty abandonment vocabulary is "unwired", not "wire an
+    empty detector", matching the other fields' contract.
+    """
+    if not raw:
+        return None
+    seen: set[str] = set()
+    out: list[str] = []
+    for entry in raw:
+        token = (entry or "").strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return tuple(out) or None
+
+
 def reset_routing_vocabulary() -> None:
     """Clear any session-injected vocabulary, returning to the historical default.
 
     Primarily for tests that construct a ``TurnHooks`` without a host boot
     path and need a clean slate. Production code never calls this.
     """
-    global _sequential_connectors, _producer_intents, _consumer_intents, _resume_phrases  # noqa: PLW0603
+    global _sequential_connectors, _producer_intents, _consumer_intents, _resume_phrases, _topic_abandonment_markers  # noqa: PLW0603
     _sequential_connectors = None
     _producer_intents = None
     _consumer_intents = None
     _resume_phrases = None
+    _topic_abandonment_markers = None
     reset_plan_reliability()
 
 
@@ -305,4 +346,27 @@ def get_resume_phrases() -> tuple[str, ...]:
     raise RuntimeError(
         "resume phrases not wired — register_routing_vocabulary must be "
         "called at boot with routing.resume_phrases from the session plan"
+    )
+
+
+def get_topic_abandonment_markers() -> tuple[str, ...]:
+    """Return the active topic-abandonment marker vocabulary.
+
+    Returns the session-injected list of lowercased discourse phrases
+    (e.g. ``"side quest"``, ``"rewind"``, ``"never mind"``) that signal the
+    user is *leaving* a topic, not requesting it. The routing-hint
+    generator's :func:`kernel.turn_phases._routing_hint._detect_query_intents`
+    reads this so that a query which *mentions* a topic to abandon it
+    (e.g. "the whole cloudservers thing was a side quest, so lets
+    rewind") does not route the user INTO the mode whose keywords matched
+    the bare substring. Entries are applied as case-insensitive substring
+    matches anywhere in the lowered query. Raises ``RuntimeError`` when
+    no session vocabulary has been wired.
+    """
+    if _topic_abandonment_markers is not None:
+        return _topic_abandonment_markers
+    raise RuntimeError(
+        "topic abandonment markers not wired — register_routing_vocabulary "
+        "must be called at boot with routing.topic_abandonment_markers from "
+        "the session plan"
     )

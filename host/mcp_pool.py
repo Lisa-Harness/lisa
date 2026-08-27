@@ -369,6 +369,7 @@ def setup_framework(
         resume_phrases=runtime.session_plan.manifest.routing.resume_phrases,
         producer_intents=runtime.session_plan.manifest.routing.producer_intents,
         consumer_intents=runtime.session_plan.manifest.routing.consumer_intents,
+        topic_abandonment_markers=runtime.session_plan.manifest.routing.topic_abandonment_markers,
     )
 
     if discovery is None:

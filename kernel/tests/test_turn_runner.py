@@ -3900,6 +3900,107 @@ def test_routing_hint_detects_analyze_tradeoff_intent() -> None:
     assert "ponder" in hint
 
 
+def test_routing_hint_suppresses_target_on_topic_abandonment_marker() -> None:
+    """A query that *mentions* a topic to abandon it (with a session
+    ``topic_abandonment_markers`` marker present) must NOT route into the
+    mentioned target. The bare-substring keyword match would otherwise fire
+    on any mention.
+
+    Regression for the 2026-08-27 cloudservers misroute: "TBH, the whole
+    cloudservers thing was a bit of a side quest. So lets just rewind"
+    matched the ``cloudservers`` mode's ``cloud`` keyword, routed the user
+    INTO ``cloudservers``, and the write-contract backstop synthesized a
+    destructive ``cs_apply_cloud_init`` call with empty args. The
+    abandonment marker ("side quest" / "rewind") signals the user is
+    *leaving* the topic, not requesting its tools.
+    """
+    from unittest.mock import patch
+
+    from kernel.routing_vocabulary import (
+        register_routing_vocabulary,
+        reset_routing_vocabulary,
+    )
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    reset_routing_vocabulary()
+    register_routing_vocabulary(
+        sequential_connectors=["then", "and then"],
+        producer_intents=["research", "analyze"],
+        consumer_intents=["cloud", "write", "code"],
+        resume_phrases=["proceed", "continue"],
+        topic_abandonment_markers=["side quest", "rewind"],
+    )
+    try:
+        cloudservers_cfg = _mode_config(
+            mode_id="cloudservers",
+            satisfies_intents=["cloud"],
+            routing_intent_tags=["cloud"],
+            routing_intent_keywords={"cloud": ["cloud", "cloudservers", "vm"]},
+        )
+        default_cfg = _mode_config(mode_id="default")
+        patched_catalog = {"cloudservers": cloudservers_cfg, "default": default_cfg}
+
+        with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+            hint = _compute_capability_routing_hint(
+                mode_id="default",
+                query="TBH, the whole cloudservers thing was a bit of a side quest. So lets just rewind",
+                capability_manifest=_empty_manifest(),
+                routing_targets=["cloudservers"],
+                mode_config=default_cfg,
+            )
+
+        # The mentioned topic is suppressed → no gap → no hint.
+        assert hint == ""
+        assert "cloudservers" not in hint
+    finally:
+        reset_routing_vocabulary()
+
+
+def test_routing_hint_routes_into_target_when_no_abandonment_marker() -> None:
+    """Without an abandonment marker, the same keyword match routes into
+    the target normally — the polarity guard only suppresses when a marker
+    is co-present in the query."""
+    from unittest.mock import patch
+
+    from kernel.routing_vocabulary import (
+        register_routing_vocabulary,
+        reset_routing_vocabulary,
+    )
+    from kernel.turn_runner import _compute_capability_routing_hint
+
+    reset_routing_vocabulary()
+    register_routing_vocabulary(
+        sequential_connectors=["then", "and then"],
+        producer_intents=["research", "analyze"],
+        consumer_intents=["cloud", "write", "code"],
+        resume_phrases=["proceed", "continue"],
+        topic_abandonment_markers=["side quest", "rewind"],
+    )
+    try:
+        cloudservers_cfg = _mode_config(
+            mode_id="cloudservers",
+            satisfies_intents=["cloud"],
+            routing_intent_tags=["cloud"],
+            routing_intent_keywords={"cloud": ["cloud", "cloudservers", "vm"]},
+        )
+        default_cfg = _mode_config(mode_id="default")
+        patched_catalog = {"cloudservers": cloudservers_cfg, "default": default_cfg}
+
+        with patch("kernel.turn_runner.get_workflow_catalog", return_value=patched_catalog):
+            hint = _compute_capability_routing_hint(
+                mode_id="default",
+                query="help me provision a new cloudservers vm",
+                capability_manifest=_empty_manifest(),
+                routing_targets=["cloudservers"],
+                mode_config=default_cfg,
+            )
+
+        assert hint != ""
+        assert "cloudservers" in hint
+    finally:
+        reset_routing_vocabulary()
+
+
 def test_routing_hint_falls_back_to_generic_list_for_tool_gap() -> None:
     """A pure tool-gap query (write a file) with no reasoning cue lists all
     targets rather than singling out ponder.
@@ -4851,6 +4952,100 @@ def test_extract_hint_target_returns_empty_for_no_marker() -> None:
 
     assert _extract_hint_target("") == ""
     assert _extract_hint_target("no marker here") == ""
+
+
+def test_synthesized_call_missing_all_required_true_for_empty_args() -> None:
+    """A synthesized call with empty args against a tool that requires
+    params is detected as missing-all-required (the 2026-08-27
+    ``cs_apply_cloud_init`` misroute: 7 required fields, none supplied).
+
+    The guard lets the synthesis sites abort the turn rather than
+    dispatch a guaranteed validation failure and risk a backstop loop.
+    """
+    from pydantic import BaseModel
+
+    from kernel.models import OperationDefinition
+    from kernel.turn_runner import _synthesized_call_missing_all_required
+
+    class _Params(BaseModel):
+        template_id: str
+        name: str
+        provider: str
+
+    op_def = OperationDefinition(
+        operation_id="cs_apply_cloud_init",
+        description="apply cloud-init",
+        parameters_schema=_Params,
+    )
+    assert _synthesized_call_missing_all_required(
+        "cs_apply_cloud_init",
+        {},
+        operation_catalog={"cs_apply_cloud_init": op_def},
+        tool_catalog={},
+    ) is True
+
+
+def test_synthesized_call_missing_all_required_false_when_some_supplied() -> None:
+    """When at least one required param is supplied, the call is not
+    missing-all-required — let dispatch proceed (the model or kernel
+    provided a value)."""
+    from pydantic import BaseModel
+
+    from kernel.models import OperationDefinition
+    from kernel.turn_runner import _synthesized_call_missing_all_required
+
+    class _Params(BaseModel):
+        template_id: str
+        name: str
+
+    op_def = OperationDefinition(
+        operation_id="cs_apply_cloud_init",
+        description="apply cloud-init",
+        parameters_schema=_Params,
+    )
+    assert _synthesized_call_missing_all_required(
+        "cs_apply_cloud_init",
+        {"template_id": "tpl_123"},
+        operation_catalog={"cs_apply_cloud_init": op_def},
+        tool_catalog={},
+    ) is False
+
+
+def test_synthesized_call_missing_all_required_false_for_optional_only_schema() -> None:
+    """A tool with no required params (e.g. ``transition_stage``) is never
+    missing-all-required — routing-only syntheses pass through unchanged."""
+    from pydantic import BaseModel
+
+    from kernel.models import ToolDefinition
+    from kernel.turn_runner import _synthesized_call_missing_all_required
+
+    class _Params(BaseModel):
+        rationale: str = ""
+
+    tool_def = ToolDefinition(
+        tool_id="transition_stage",
+        description="transition",
+        parameters_schema=_Params,
+    )
+    assert _synthesized_call_missing_all_required(
+        "transition_stage",
+        {},
+        operation_catalog={},
+        tool_catalog={"transition_stage": tool_def},
+    ) is False
+
+
+def test_synthesized_call_missing_all_required_false_for_unknown_tool() -> None:
+    """An unknown tool (MCP-native, no kernel definition) is not flagged —
+    let the normal dispatch path handle it."""
+    from kernel.turn_runner import _synthesized_call_missing_all_required
+
+    assert _synthesized_call_missing_all_required(
+        "lisa-storage.read_file",
+        {},
+        operation_catalog={},
+        tool_catalog={},
+    ) is False
 
 
 def test_turn_state_has_loop_guard_fields() -> None:

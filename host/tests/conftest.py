@@ -127,6 +127,7 @@ def _routing_vocabulary() -> None:
         producer_intents=["research", "gather", "learn", "read", "analyze", "review", "architect"],
         consumer_intents=["code", "write", "implement", "review"],
         resume_phrases=["proceed", "continue", "go ahead", "go for it", "do it", "carry on", "pick up", "resume", "next step", "keep going"],
+        topic_abandonment_markers=["side quest", "rewind", "never mind", "forget", "different topic", "not about"],
     )
     yield
     reset_routing_vocabulary()

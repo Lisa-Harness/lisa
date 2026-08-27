@@ -14,6 +14,7 @@ from kernel.routing_vocabulary import (
     get_producer_intents,
     get_resume_phrases,
     get_sequential_connectors,
+    get_topic_abandonment_markers,
     register_routing_vocabulary,
     reset_routing_vocabulary,
 )
@@ -164,3 +165,51 @@ def test_register_intent_roles_none_leaves_unwired() -> None:
     register_routing_vocabulary(consumer_intents=[])
     with pytest.raises(RuntimeError):
         get_consumer_intents()
+
+
+# ── Topic-abandonment markers ──────────────────────────────────────────
+
+
+def test_get_topic_abandonment_markers_raises_when_unwired() -> None:
+    """With no session vocabulary registered, the reader raises."""
+    with pytest.raises(RuntimeError, match="topic abandonment markers not wired"):
+        get_topic_abandonment_markers()
+
+
+def test_register_topic_abandonment_markers_replaces_registry() -> None:
+    """A registered marker list is the sole source — no fallback mix-in."""
+    register_routing_vocabulary(topic_abandonment_markers=["side quest", "rewind"])
+    markers = get_topic_abandonment_markers()
+    assert "side quest" in markers
+    assert "rewind" in markers
+
+
+def test_register_topic_abandonment_markers_normalizes_entries() -> None:
+    """Entries are stripped, lowercased, de-duplicated (no space padding)."""
+    register_routing_vocabulary(
+        topic_abandonment_markers=["  Side Quest  ", "REWIND", "side quest", "", "  "]
+    )
+    assert get_topic_abandonment_markers() == ("side quest", "rewind")
+
+
+def test_register_topic_abandonment_markers_none_leaves_unwired() -> None:
+    """Passing ``None`` leaves the vocabulary unset — the reader raises."""
+    register_routing_vocabulary(topic_abandonment_markers=["rewind"])
+    assert "rewind" in get_topic_abandonment_markers()
+
+    register_routing_vocabulary(topic_abandonment_markers=None)
+    with pytest.raises(RuntimeError):
+        get_topic_abandonment_markers()
+
+    register_routing_vocabulary(topic_abandonment_markers=["rewind"])
+    register_routing_vocabulary(topic_abandonment_markers=[])
+    with pytest.raises(RuntimeError):
+        get_topic_abandonment_markers()
+
+
+def test_reset_routing_vocabulary_clears_topic_abandonment_markers() -> None:
+    """``reset_routing_vocabulary`` returns markers to unwired (raises)."""
+    register_routing_vocabulary(topic_abandonment_markers=["rewind"])
+    reset_routing_vocabulary()
+    with pytest.raises(RuntimeError):
+        get_topic_abandonment_markers()
